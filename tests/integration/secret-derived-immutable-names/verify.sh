@@ -93,6 +93,14 @@
 #      (go-to-k/cdkd#4819). (SecretQueueReaderPolicy no longer discriminates: its literal
 #      reference, go-to-k/cdkd#4810, makes it store the reference whatever the
 #      fix.) A second redeploy is expected to change nothing (a NOTE otherwise).
+#      LOAD-BEARING (go-to-k/cdkd#4805): AssembledNameQueue, named by an
+#      Fn::Join around a parameter naming the secret, is NO_CHANGE and its SSM
+#      reader AssembledQueueReader is edited: no literal token proved the
+#      region of the queue's recorded ARN reference, so the reader was sent its
+#      `{{resolve:` spelling and SSM refused it. Now it holds the live ARN, and
+#      its record the reference form. (The reader stored the plaintext ARN on
+#      the step-2 create, so step 4's update already takes this path; before
+#      the fix that deploy is where it failed.)
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -277,6 +285,8 @@ REPO_NAME="sdin-repo-${SUFFIX}"
 STREAM_NAME="sdin-stream-${SUFFIX}"
 # The orphan stack's completed CREATE, which each rollback deletes.
 RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
+# go-to-k/cdkd#4805: AssembledNameQueue, named by an Fn::Join around the secret.
+AQ_QUEUE_NAME="sdin-aq-${SUFFIX}"
 # Step 5c's log group, named from the secret (go-to-k/cdkd#3869).
 LOG_GROUP_NAME="sdin-lg-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
@@ -288,6 +298,9 @@ export SDIN_SECRET_NAME="cdkd-integ-sdin-secret-${SUFFIX}"
 # included.
 export SDIN_CHILD_PARAM_NAME="/cdkd-integ/sdin-${SUFFIX}/child-queue-arn"
 CHILD_PARAM_NAME="${SDIN_CHILD_PARAM_NAME}"
+# AssembledQueueReader's SSM parameter, named per run the same way (go-to-k/cdkd#4805).
+export SDIN_AQ_PARAM_NAME="/cdkd-integ/sdin-${SUFFIX}/assembled-queue-arn"
+AQ_PARAM_NAME="${SDIN_AQ_PARAM_NAME}"
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
 # the pre-flight must not destroy (or sweep the state history of) a stack an
@@ -347,6 +360,13 @@ cleanup() {
     # any deploy, so a child create that wrote no state is covered), and the
     # child's state (its resources are gone by now, or deleted just here).
     aws ssm delete-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" >/dev/null 2>&1
+    # go-to-k/cdkd#4805's queue and reader, by their per-run names.
+    aws ssm delete-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}" >/dev/null 2>&1
+    LEFT_AQ_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}" \
+      --query QueueUrl --output text 2>/dev/null)"
+    if [ -n "${LEFT_AQ_QUEUE_URL}" ] && [ "${LEFT_AQ_QUEUE_URL}" != "None" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_AQ_QUEUE_URL}" >/dev/null 2>&1
+    fi
     # SecretNamedGroup, by its per-run name; deleting it takes MovingFilter.
     aws logs delete-log-group --region "${REGION}" --log-group-name "${LOG_GROUP_NAME}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET:-}/${CHILD_STATE_KEY}" >/dev/null 2>&1
@@ -420,8 +440,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -696,8 +716,8 @@ done
 
 echo "==> Step 3b: rotate the secret's filter field only"
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME}" \
   > "${SECRET_FILE}"
 aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -719,11 +739,20 @@ if [ "${UPDATE_RC}" -ne 0 ]; then
       echo "FAIL: the update failed with '${refusal}': the recorded secret reference was compared with the resolved value (go-to-k/cdkd#4275)" >&2
     fi
   done
+  if awk 'index($0, "AssembledQueueReader") && index($0, "{{") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+    echo "FAIL: AssembledQueueReader's update failed on a {{ value: it was likely sent AssembledNameQueue's recorded {{resolve: ARN (go-to-k/cdkd#4805)" >&2
+  fi
   echo "FAIL: update deploy exited ${UPDATE_RC}" >&2
   log_tail
   exit 1
 fi
 echo "    OK: update deploy exited 0"
+# go-to-k/cdkd#4805: AssembledQueueReader stored the plaintext ARN on create,
+# so this deploy updates it from AssembledNameQueue's record (the path 5f
+# asserts too). Its absence would mean step 4 no longer exercises it.
+if ! awk 'index($0, "AssembledQueueReader") && index($0, "(AWS::SSM::Parameter)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "NOTE: step 4 did not update AssembledQueueReader; go-to-k/cdkd#4805 is exercised by step 5f alone"
+fi
 # The log must not be empty, or the absence checks below certify nothing; the
 # Service's updating line is one this fix made reachable.
 if [ ! -s "${DEPLOY_LOG}" ] || ! grep -qF "Updating ECS service" "${DEPLOY_LOG}"; then
@@ -759,7 +788,7 @@ fi
 # QueuePolicy's from both passes (its Sid changes).
 expect_read_lines "${DEPLOY_LOG}" "update"
 expect_child_read_line "${DEPLOY_LOG}" "update"
-for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME; do
+for needle_var in STAGE_NAME SERVICE_NAME POLICY_PATH POLICY_DESC GQL_API_NAME DS_NAME QUEUE_NAME FILTER_NAME_ROTATED GROUP_NAME AQ_QUEUE_NAME; do
   # A here-string, not a pipe: see state_holds.
   if grep -qF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" <<< "${UPDATE_LOG_BODY}" | cut -d: -f1 | paste -sd ' ' -)"
@@ -1093,6 +1122,47 @@ fi
 expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIVE}" \
   "$(aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}" \
     --query 'Parameter.Value' --output text)"
+# go-to-k/cdkd#4805: AssembledNameQueue's name is an Fn::Join, so no literal
+# token proved the region of its recorded ARN's reference. PREMISES: this
+# deploy updated its reader and not the queue, so the reader was served the
+# record.
+if ! awk 'index($0, "AssembledQueueReader") && index($0, "(AWS::SSM::Parameter)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy's log has no 'AssembledQueueReader (AWS::SSM::Parameter) updated' line" >&2
+  log_tail
+  exit 1
+fi
+if awk 'index($0, "AssembledNameQueue") && index($0, "(AWS::SQS::Queue)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy UPDATED AssembledNameQueue, so its reader was served the provider's ARN (go-to-k/cdkd#4805 is not exercised)" >&2
+  log_tail
+  exit 1
+fi
+AQ_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}" \
+  --query QueueUrl --output text)"
+AQ_ARN_LIVE="$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${AQ_QUEUE_URL}" \
+  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)"
+if [ "${AQ_ARN_LIVE##*:}" != "${AQ_QUEUE_NAME}" ]; then
+  echo "FAIL: premise: AssembledNameQueue's live ARN does not end with the secret's aqueue value" >&2
+  exit 1
+fi
+# PREMISE: the queue's record stores its ARN in reference form, the shape a
+# reader of it was sent as is.
+case "$(state_attribute AssembledNameQueue Arn)" in
+  arn:*'{{resolve:secretsmanager:'*) ;;
+  *) echo "FAIL: premise: AssembledNameQueue's recorded Arn is not in {{resolve: reference form" >&2; exit 1 ;;
+esac
+# LOAD-BEARING: the reader was sent the real ARN (SSM refused the reference
+# spelling, and the deploy failed above), and stores the reference form.
+expect_eq "AssembledQueueReader's SSM parameter after the redeploy (go-to-k/cdkd#4805)" "${AQ_ARN_LIVE}" \
+  "$(aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}" \
+    --query 'Parameter.Value' --output text)"
+if grep -qF -- "${AQ_QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy's log names AssembledNameQueue in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+case "$(state_property AssembledQueueReader Value)" in
+  arn:*'{{resolve:secretsmanager:'*) ;;
+  *) echo "FAIL: AssembledQueueReader's recorded Value is not in {{resolve: reference form (go-to-k/cdkd#4805)" >&2; exit 1 ;;
+esac
 # go-to-k/cdkd#4819: ChildQueuePolicy reads the parent-passed URL and ARN.
 # PREMISE: its bag carried the queue name (the ARN it read is recorded in its
 # reference form), so the save's value scan met the URL. Since go-to-k/cdkd#4802
@@ -1137,6 +1207,10 @@ if [ "${NOOP2_RC}" -ne 0 ]; then
 fi
 if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
   echo "FAIL: the second redeploy's log names SecretQueue in plaintext (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+if grep -qF -- "${AQ_QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  echo "FAIL: the second redeploy's log names AssembledNameQueue in plaintext (go-to-k/cdkd#3869)" >&2
   exit 1
 fi
 # A NOTE until a real run shows this fixture can reach a no-op at all (the
@@ -1442,6 +1516,10 @@ assert_gone "QueueReaderChild's state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
 assert_gone "QueueReaderChild's SSM parameter ${CHILD_PARAM_NAME} still exists after destroy" \
   aws ssm get-parameter --region "${REGION}" --name "${CHILD_PARAM_NAME}"
+assert_gone "AssembledQueueReader's SSM parameter ${AQ_PARAM_NAME} still exists after destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}"
+assert_gone "AssembledNameQueue still exists after destroy" \
+  aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}"
 assert_gone "API ${API_ID} still exists after destroy" \
   aws apigatewayv2 get-api --region "${REGION}" --api-id "${API_ID}"
 assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \

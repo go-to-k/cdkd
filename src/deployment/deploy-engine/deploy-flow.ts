@@ -181,6 +181,7 @@ export async function doDeployWithPrefetch(
     };
     const currentEtag = currentStateData?.etag;
     this.healBaseline = currentState.resources ?? {};
+    this.runProducerRegionEvidence = () => this.producerRegionEvidence(currentState);
     // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
     // the most write-capable consumer of this bag there is: the no-change
     // merge path below carries `currentState.outputs ?? {}` into
