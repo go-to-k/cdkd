@@ -87,9 +87,16 @@
 #      which ends inside the value, so no literal needle matches it. The
 #      `Creating final snapshot` line prints that name masked, the output
 #      holds no fragment of it, and AWS holds the snapshot, which is deleted.
-#   5. Destroy, gone-probes, and the S3 version sweep (a physical id named
-#      from the value stays in the clear, as AWS publishes it, so every
-#      version is purged).
+#   4c. Redeploy with CDKD_TEST_NOECHO_RENAME=true again: the topic is
+#      value-named for the destroy.
+#   4d. Rewrite NoEchoRenamed's record as a binary before schema v11 stored
+#      it: TopicName in plaintext, no `noEchoLeaves` (go-to-k/cdkd#3869).
+#   5. LOAD-BEARING for 4d: destroy with --verbose; its output carries no
+#      value, though the record marks nothing secret (cdkd destroy judges it
+#      with the template's NoEcho values). Then gone-probes, and the S3
+#      version sweep (a physical id named from the value stays in the clear,
+#      as AWS publishes it, and so does Phase 4d's record, so every version is
+#      purged).
 #
 # The value is generated per run and never printed.
 #
@@ -99,7 +106,9 @@
 # NoEchoSnapshotGroup's final-snapshot base in plaintext": the engine judges
 # the state record's plaintext id from the stack's NoEcho values and masks the
 # whole id, which the snapshot name no longer spells (not yet measured on real
-# AWS).
+# AWS). Revert the `noEchoValues` that src/cli/commands/destroy-runner.ts
+# passes to `secretNamePrintingBags` and Phase 5 fails "prints a name taken
+# from the NoEcho value in plaintext" (not yet measured on real AWS).
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -1670,12 +1679,83 @@ if [ "${SNAP_GONE}" -ne 1 ]; then
   exit 1
 fi
 
-# --- Phase 5: destroy --------------------------------------------------------
-echo "==> Phase 5: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+# --- Phase 4c: the value-named topic again, for the destroy -----------------
+echo "==> Phase 4c: redeploy with NoEchoRenamed's TopicName embedding the NoEcho value"
+if ! DEPLOY_OUT_P4C=$(CDKD_TEST_NOECHO_RENAME=true env -u CDKD_TEST_NOECHO_SNAPSHOT -u CDKD_TEST_NOECHO_REJECT \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes 2>&1); then
+  echo "FAIL: the Phase 4c deploy exited non-zero" >&2
+  diag_output "${DEPLOY_OUT_P4C}"
+  exit 1
+fi
+if gone_probe aws sns get-topic-attributes --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}"; then
+  echo "FAIL: premise: AWS holds no value-named topic after Phase 4c" >&2
+  exit 1
+fi
+
+# --- Phase 4d: that record as a binary before schema v11 stored it -----------
+# go-to-k/cdkd#3869: before v11 a NoEcho value was persisted in PLAINTEXT, and
+# nothing migrates a record when it is read, so such a record carries no `***`
+# or `{{resolve:` marker. No current binary writes one: it is written by hand,
+# into NoEchoRenamed's record only. The document's `version` stays 11 on
+# purpose: the judge never reads it, only the record's markers. The bucket is
+# versioned, and the final sweep purges this version too.
+echo "==> Phase 4d: rewrite NoEchoRenamed's record as a pre-v11 binary stored it"
+P4D_STATE=$(mktemp)
+SCRATCH_FILES+=("${P4D_STATE}")
+P4D_NEW=$(mktemp)
+SCRATCH_FILES+=("${P4D_NEW}")
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4D_STATE}" --region "${REGION}" --quiet
+P4D_TOPIC_NAME="cdkd-test-noecho-rename-${ACCOUNT_ID}-${TOKEN}"
+# Every v11-only field of the record goes, and a masked observed copy reads
+# back as the plaintext the older binary stored there too.
+jq --arg name "${P4D_TOPIC_NAME}" '
+  .resources.NoEchoRenamed.properties.TopicName = $name
+  | del(.resources.NoEchoRenamed.noEchoLeaves, .resources.NoEchoRenamed.noEchoExactEchoLeaves,
+      .resources.NoEchoRenamed.noEchoAttributeNames)
+  | if (.resources.NoEchoRenamed.observedProperties.TopicName? // null) == "***"
+    then .resources.NoEchoRenamed.observedProperties.TopicName = $name else . end' \
+  "${P4D_STATE}" > "${P4D_NEW}"
+aws s3 cp "${P4D_NEW}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" --quiet
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${P4D_STATE}" --region "${REGION}" --quiet
+if [ "$(jq -r '.resources.NoEchoRenamed.properties.TopicName' "${P4D_STATE}")" != "${P4D_TOPIC_NAME}" ] \
+  || [ "$(jq -c '.resources.NoEchoRenamed.noEchoLeaves // "<absent>"' "${P4D_STATE}")" != '"<absent>"' ] \
+  || [ "$(jq -r '.resources.NoEchoRenamed.physicalId' "${P4D_STATE}")" != "${RENAME_NEW_ARN}" ]; then
+  echo "FAIL: premise: state.json does not hold NoEchoRenamed as a pre-v11 plaintext record of the value-named topic" >&2
+  exit 1
+fi
+
+# --- Phase 5: destroy --------------------------------------------------------
+# --verbose: the SNS provider's `Deleting SNS topic <id>: <arn>` debug line
+# names the topic, whose ARN embeds the value. LOAD-BEARING for
+# go-to-k/cdkd#3869 item 4: Phase 4d's record carries no marker, so only the
+# stack's NoEcho values, which `cdkd destroy` re-binds from the synthesized
+# template, can withhold it.
+echo "==> Phase 5: destroy"
+if ! DESTROY_OUT_P5=$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the Phase 5 destroy exited non-zero" >&2
+  diag_output "${DESTROY_OUT_P5}"
+  exit 1
+fi
+P5_DELETE_LINE=$(grep -F 'Deleting SNS topic NoEchoRenamed: ' <<< "${DESTROY_OUT_P5}" || true)
+if [ -z "${P5_DELETE_LINE}" ]; then
+  echo "FAIL: sentinel: the Phase 5 destroy printed no 'Deleting SNS topic NoEchoRenamed: ' line -- its wording drifted, so the check below is vacuous" >&2
+  exit 1
+fi
+if [[ "${DESTROY_OUT_P5}" == *"${TOKEN}"* ]]; then
+  echo "FAIL: the Phase 5 destroy prints a name taken from the NoEcho value in plaintext -- a pre-v11 record holds it unmarked, and the destroy did not judge it with the stack's NoEcho values (go-to-k/cdkd#3869)" >&2
+  mask_literals "${P5_DELETE_LINE}" "${TOKEN}" >&2
+  echo >&2
+  exit 1
+fi
+assert_no_split_piece "the Phase 5 destroy output" "${DESTROY_OUT_P5}"
+echo "    OK: the destroy withholds the value-named topic of a pre-v11 plaintext record"
 assert_gone "SSM parameter '${CONSUMER_NAME}' still exists after destroy" \
   aws ssm get-parameter --name "${CONSUMER_NAME}" --region "${REGION}"
 assert_gone "SSM parameter '${REJECT_NAME}' exists after destroy" \
