@@ -371,7 +371,9 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     };
     const out = redactRollbackRecord(restored, secrets(), prev.properties, prev.attributes);
     expect(out.properties['Queues']).toEqual([`${echoed.replace(NAME, REF)}`]);
-    expect(out.attributes).toEqual({ Url: `${URL.replace(NAME, REF)}/new`, Arn: ARN_REF });
+    // `Url` holds the record's OWN physical id, stored in plaintext beside it,
+    // so the scan keeps that copy (go-to-k/cdkd#4849); `Arn` holds none.
+    expect(out.attributes).toEqual({ Url: `${URL}/new`, Arn: ARN_REF });
   });
 
   it('never keeps a persisted leaf that carried a reference', () => {

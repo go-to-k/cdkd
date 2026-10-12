@@ -36,6 +36,8 @@ import {
   redactInheritedParameterValue,
   redactSecretsForState,
   unionOfSecretBags,
+  physicalNameCopiesOf,
+  recordPhysicalNameCopy,
 } from '../secret-redaction.js';
 import {
   secretNameNeedlesOf,
@@ -327,6 +329,12 @@ export function absorbOutputsPassSecrets(this: DeployEngine): void {
       this.outputSecrets.set(value, expr);
     }
     mergeResolvedPairs(passSecrets, this.outputSecrets);
+    // go-to-k/cdkd#4849: the physical ids the pass read stay copies of an id
+    // in the outputs bag too (an `!Ref Topic` output, its export), or a
+    // resource NAMED from a `NoEcho` value stores its ARN output as `***`.
+    for (const physicalId of physicalNameCopiesOf.get(passSecrets) ?? []) {
+      recordPhysicalNameCopy(this.outputSecrets, physicalId);
+    }
   }
 }
 

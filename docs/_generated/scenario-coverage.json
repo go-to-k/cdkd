@@ -1867,6 +1867,11 @@
       "scenarios": []
     },
     {
+      "name": "noecho-named-producer",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "noecho-parameter-masking",
       "annotated": false,
       "scenarios": []
@@ -3350,6 +3355,7 @@
     "nested-stack-replace-guard",
     "nested-stack-rollback",
     "nodejs-function",
+    "noecho-named-producer",
     "noecho-parameter-masking",
     "orphan-getatt-takeover",
     "partial-create-handback",

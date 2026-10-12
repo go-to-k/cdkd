@@ -1,0 +1,258 @@
+/**
+ * go-to-k/cdkd#4849: a resource NAMED from a `NoEcho` parameter keeps its own
+ * physical id in state as AWS returns it, and so must every copy of that id:
+ * its own ARN-type attribute (`TopicArn`) and a stack output or export holding
+ * it. They were stored as `***` (the value arm's containment), so the next
+ * deploy re-resolving a `Fn::GetAtt` reader of the attribute failed. A value
+ * equal WHOLE to the parameter (the `TopicName` attribute, a `!Ref Name`
+ * output) stays masked. Driven through `DeployEngine.deploy` with the REAL
+ * `DiffCalculator`, `DagBuilder` and `IntrinsicFunctionResolver`.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+
+const renderer = {
+  start: vi.fn(),
+  stop: vi.fn(),
+  addTask: vi.fn(),
+  removeTask: vi.fn(),
+  updateTaskLabel: vi.fn(),
+  printAbove: (write: () => void) => write(),
+};
+vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
+
+// Per-test DescribeType knobs (review round 8): a type's write-only list, and
+// a lookup that fails outright (the snapshot fallback then answers).
+const describeType = vi.hoisted(() => ({
+  writeOnly: new Map<string, string[]>(),
+  fail: false,
+}));
+
+vi.mock('../../../src/utils/aws-clients.js', async () => {
+  const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
+    '../../../src/provisioning/create-only-snapshot.generated.js'
+  );
+  return {
+    getAwsClients: () => ({
+      cloudFormation: {
+        send: vi.fn((command: { input?: { TypeName?: string } }) => {
+          const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
+          if (paths === undefined || describeType.fail) {
+            return Promise.reject(
+              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+                name: 'AccessDeniedException',
+                $metadata: { httpStatusCode: 403 },
+              })
+            );
+          }
+          return Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
+              writeOnlyProperties: (describeType.writeOnly.get(command.input?.TypeName ?? '') ?? []).map(
+                (name) => `/properties/${name}`
+              ),
+            }),
+          });
+        }),
+      },
+      sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+      secretsManager: {
+        send: vi
+          .fn()
+          .mockResolvedValue({ SecretString: JSON.stringify({ pw: 'sm-secret-plaintext-value' }) }),
+      },
+    }),
+  };
+});
+
+vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+
+const STACK = 'noecho-producer-attr-stack';
+const REGION = 'us-east-1';
+const TOPIC = 'topic-4849-distinctive-name';
+const TOPIC_ARN = `arn:aws:sns:us-east-1:123456789012:${TOPIC}`;
+
+describe('DeployEngine - a NoEcho-named resource keeps copies of its own id (go-to-k/cdkd#4849)', () => {
+  let provider: Record<string, ReturnType<typeof vi.fn>>;
+  let stateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    describeType.writeOnly.clear();
+    describeType.fail = false;
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    vi.clearAllMocks();
+    provider = {
+      create: vi.fn((logicalId: string) =>
+        Promise.resolve({ physicalId: `${logicalId}-new-arn`, attributes: {} })
+      ),
+      update: vi.fn((_logicalId: string, physicalId: string) =>
+        Promise.resolve({ physicalId, wasReplaced: false })
+      ),
+      delete: vi.fn().mockResolvedValue(undefined),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn(() => Promise.resolve({ TopicName: TOPIC })),
+    };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('etag-new'),
+      appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+    } as never;
+  });
+
+  function makeEngine(): DeployEngine {
+    return new DeployEngine(
+      stateBackend as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      new DagBuilder(),
+      new DiffCalculator(),
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+      } as never,
+      { dryRun: false, captureObservedState: false },
+      REGION,
+      {
+        updateForStack: vi.fn().mockResolvedValue(undefined),
+        lookup: vi.fn().mockResolvedValue(null),
+        patchEntry: vi.fn().mockResolvedValue(undefined),
+      } as never
+    );
+  }
+
+  const topicCalls = (fn: ReturnType<typeof vi.fn>): number =>
+    fn.mock.calls.filter((c) => c[0] === 'Topic').length;
+
+  /** What a binary before the change wrote: a marked record, `TopicName` stored as `stored`. */
+  const markedState = (topicName: unknown, displayName: unknown, leaves: string[][]): StackState => ({
+    version: STATE_SCHEMA_VERSION_CURRENT,
+    region: REGION,
+    stackName: STACK,
+    resources: {
+      Topic: {
+        physicalId: TOPIC_ARN,
+        resourceType: 'AWS::SNS::Topic',
+        properties: { TopicName: topicName, DisplayName: displayName },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: leaves,
+      } as ResourceState,
+    },
+    outputs: {},
+    lastModified: 0,
+  });
+
+  const template = (endpoint: string, outputs = false): CloudFormationTemplate =>
+    ({
+      Parameters: { Name: { Type: 'String', NoEcho: true, Default: TOPIC } },
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { Ref: 'Name' } } },
+        Sub: {
+          Type: 'AWS::SNS::Subscription',
+          Properties: {
+            TopicArn: { 'Fn::GetAtt': ['Topic', 'TopicArn'] },
+            Protocol: 'email',
+            Endpoint: endpoint,
+          },
+        },
+      },
+      ...(outputs && {
+        Outputs: {
+          ArnOut: { Value: { Ref: 'Topic' }, Export: { Name: 'arn-export-4849' } },
+          NameOut: { Value: { Ref: 'Name' } },
+        },
+      }),
+    }) as unknown as CloudFormationTemplate;
+
+  beforeEach(() => {
+    let created = 0;
+    provider.create.mockImplementation((logicalId: string) =>
+      Promise.resolve(
+        logicalId === 'Topic'
+          ? { physicalId: TOPIC_ARN, attributes: { TopicArn: TOPIC_ARN, TopicName: TOPIC } }
+          : { physicalId: `${logicalId}-arn-${++created}`, attributes: {} }
+      )
+    );
+    provider.getAttribute.mockImplementation((_physicalId: string, _type: string, attribute: string) =>
+      Promise.resolve(attribute === 'TopicArn' ? TOPIC_ARN : TOPIC)
+    );
+    provider.readCurrentState.mockImplementation(() => Promise.resolve({ TopicName: TOPIC }));
+  });
+
+  const lastSaved = (): StackState => stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState;
+
+  it("stores the producer's own ARN attribute as AWS returns it; the name attribute stays masked", async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const topic = lastSaved().resources['Topic'];
+    expect(topic?.physicalId).toBe(TOPIC_ARN);
+    expect(topic?.attributes?.['TopicArn']).toBe(TOPIC_ARN);
+    expect(topic?.attributes?.['TopicName']).toBe('***');
+    expect(topic?.properties['TopicName']).toBe('***');
+  });
+
+  it('a later deploy editing a Fn::GetAtt reader of that attribute succeeds', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com'));
+    const first = JSON.parse(JSON.stringify(lastSaved())) as StackState;
+    provider.create.mockClear();
+    stateBackend.getState.mockResolvedValue({ state: first, etag: 'etag-2' });
+    await makeEngine().deploy(STACK, template('b@example.com'));
+    // The subscription's Endpoint is create-only: replaced, reading the ARN.
+    const created = provider.create.mock.calls.filter((c) => c[0] === 'Sub');
+    expect(created).toHaveLength(1);
+    expect((created[0]![2] as Record<string, unknown>)['TopicArn']).toBe(TOPIC_ARN);
+  });
+
+  it('an output and an export holding the id keep it; an output of the value itself stays masked', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    await makeEngine().deploy(STACK, template('a@example.com', true));
+    const outputs = lastSaved().outputs as Record<string, unknown>;
+    expect(outputs['ArnOut']).toBe(TOPIC_ARN);
+    expect(outputs['arn-export-4849']).toBe(TOPIC_ARN);
+    expect(outputs['NameOut']).toBe('***');
+  });
+
+  it('negative control: an ARN that embeds the value with no record holding it as an id stays masked', async () => {
+    // A LITERAL string, not a physical id: nothing vouches for its spelling.
+    stateBackend.getState.mockResolvedValue(null);
+    const t = template('a@example.com');
+    t.Resources['Note'] = {
+      Type: 'AWS::SSM::Parameter',
+      Properties: { Type: 'String', Value: `arn:aws:sns:us-east-1:123456789012:${TOPIC}`, Description: { Ref: 'Name' } },
+    } as never;
+    await makeEngine().deploy(STACK, t);
+    expect(lastSaved().resources['Note']?.properties['Value']).toBe('***');
+  });
+});

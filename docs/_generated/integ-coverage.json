@@ -6341,6 +6341,7 @@
       "resourceType": "AWS::SNS::Subscription",
       "integs": [
         "composite-stack",
+        "noecho-named-producer",
         "sns-event-source",
         "sns-inline-subscription",
         "sns-sqs-event",
@@ -6349,6 +6350,10 @@
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "noecho-named-producer": [
+          "l1",
           "literal"
         ],
         "sns-event-source": [
@@ -6399,6 +6404,7 @@
         "migrate-from-cfn",
         "monitoring",
         "nested-stack-3level",
+        "noecho-named-producer",
         "noecho-parameter-masking",
         "partial-create-handback",
         "perf-cross-backend-check",
@@ -6508,6 +6514,10 @@
         ],
         "nested-stack-3level": [
           "l2"
+        ],
+        "noecho-named-producer": [
+          "l1",
+          "literal"
         ],
         "noecho-parameter-masking": [
           "l1",
@@ -6663,6 +6673,7 @@
         "multi-resource",
         "nested-required-preflight",
         "nested-stack-rollback",
+        "noecho-named-producer",
         "noecho-parameter-masking",
         "perf-cross-backend-check",
         "rename-refactor",
@@ -6810,6 +6821,10 @@
         ],
         "nested-stack-rollback": [
           "l1"
+        ],
+        "noecho-named-producer": [
+          "l2",
+          "literal"
         ],
         "noecho-parameter-masking": [
           "l1"
@@ -6999,6 +7014,7 @@
         "nested-stack-deep",
         "nested-stack-replace-guard",
         "nested-stack-secret",
+        "noecho-named-producer",
         "noecho-parameter-masking",
         "opensearch-domain-getatt",
         "orphan-getatt-takeover",
@@ -7243,6 +7259,10 @@
         ],
         "nested-stack-secret": [
           "l2",
+          "literal"
+        ],
+        "noecho-named-producer": [
+          "l1",
           "literal"
         ],
         "noecho-parameter-masking": [

@@ -444,7 +444,21 @@ export function scrubResourceRecord<
   }
   const next = { ...record };
   next.properties = redactSecretsForState(record.properties, secrets, sourceProperties);
-  if (record.attributes) next.attributes = redactSecretsForState(record.attributes, secrets);
+  if (record.attributes) {
+    // go-to-k/cdkd#4849: a copy of the record's OWN physical id among its
+    // attributes (an SNS topic's `TopicArn`, a queue's `QueueUrl`) stays as
+    // the id does, in plaintext: a resource NAMED from a `NoEcho` value would
+    // otherwise store the attribute as `***`, and a later `Fn::GetAtt` reader
+    // could not resolve it. Nothing new reaches state, since `physicalId` is
+    // beside it. A value equal to the secret WHOLE (`TopicName`) is no copy
+    // of the id and stays masked.
+    const ownId = (record as { physicalId?: unknown }).physicalId;
+    const attributes = record.attributes;
+    next.attributes =
+      typeof ownId === 'string' && ownId !== ''
+        ? withPhysicalNameCopies(secrets, [ownId], () => redactSecretsForState(attributes, secrets))
+        : redactSecretsForState(attributes, secrets);
+  }
   if (record.observedProperties) {
     // `observedProperties` is a live AWS readback, so its OWN source of truth is
     // the record's (already redacted) `properties` — a member whose stored value
