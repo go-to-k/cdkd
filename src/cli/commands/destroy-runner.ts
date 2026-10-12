@@ -1059,28 +1059,51 @@ export async function runDestroyForStack(
   // is confirmed), so a declined run binds nothing it does not print; it never
   // rejects, a synchronous throw included. Capped at
   // NOECHO_PRINTING_BIND_CAP_MS (an SSM-typed parameter's lookup can hang
-  // before the prompt and under the lock): past it the run goes on
-  // record-only, as `cdkd state destroy` judges.
-  let noEchoValuesPending: Promise<RecordedSecretValues | undefined> | undefined;
+  // before the prompt and under the lock): past it the run warns and goes on
+  // record-only, as `cdkd state destroy` judges, but only while the binding
+  // is still pending: a later call (the deletes, after a slow prompt) takes
+  // the binding's value once it settles.
+  let binding:
+    | {
+        bound: Promise<RecordedSecretValues | undefined>;
+        capped: Promise<undefined>;
+        settled: boolean;
+        value: RecordedSecretValues | undefined;
+      }
+    | undefined;
   const stackNoEchoValues = (): Promise<RecordedSecretValues | undefined> => {
-    if (noEchoValuesPending !== undefined) return noEchoValuesPending;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const capped = new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => {
-        logger.debug(
-          safeMsg`The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s; ` +
-            `a name a record holds in plaintext is judged from the record alone.`
-        );
-        resolve(undefined);
-      }, NOECHO_PRINTING_BIND_CAP_MS);
-      timer.unref?.();
-    });
-    const bound = Promise.resolve()
-      .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
-      .catch(() => undefined)
-      .finally(() => clearTimeout(timer));
-    noEchoValuesPending = Promise.race([bound, capped]);
-    return noEchoValuesPending;
+    if (binding === undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const capped = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          logger.warn(
+            safeMsg`The stack's NoEcho values were not bound within ${NOECHO_PRINTING_BIND_CAP_MS / 1000}s, ` +
+              `so a resource name taken from one may print unmasked where state holds it in plaintext ` +
+              `(state written before schema v11).`
+          );
+          resolve(undefined);
+        }, NOECHO_PRINTING_BIND_CAP_MS);
+        timer.unref?.();
+      });
+      const bound = Promise.resolve()
+        .then(() => ctx.noEchoReresolver?.printingNoEchoValues())
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+      const created = {
+        bound,
+        capped,
+        settled: false,
+        value: undefined as RecordedSecretValues | undefined,
+      };
+      void bound.then((value) => {
+        created.settled = true;
+        created.value = value;
+      });
+      binding = created;
+    }
+    const current = binding;
+    if (current.settled) return Promise.resolve(current.value);
+    return Promise.race([current.bound, current.capped]);
   };
   const orphansAtDestroy = state.orphans ?? [];
   if (orphansAtDestroy.length > 0) {

@@ -18,12 +18,13 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const infoSink = vi.hoisted(() => ({ write: (_line: string): void => undefined }));
+const warned = vi.hoisted(() => [] as string[]);
 vi.mock('../../../src/utils/logger.js', () => {
   const quiet = {
     setLevel: (): void => undefined,
     debug: (): void => undefined,
     info: (...args: unknown[]): void => infoSink.write(args.map(String).join(' ')),
-    warn: (): void => undefined,
+    warn: (...args: unknown[]): void => void warned.push(args.map(String).join(' ')),
     error: (): void => undefined,
     child: (): unknown => quiet,
   };
@@ -64,6 +65,7 @@ import {
 } from '../../../src/cli/commands/destroy-runner.js';
 import { TemplateNoEchoReresolver } from '../../../src/deployment/noecho-delete-reresolution.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 
 const REGION = 'us-east-1';
 const SECRET = 'SuperSecretPassword123';
@@ -416,6 +418,83 @@ describe('the NoEcho binding at destroy (go-to-k/cdkd#3869)', () => {
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(result.cancelled).toBe(true);
     expect(printingNoEchoValues).not.toHaveBeenCalled();
+  });
+
+  it('a cap fired before the prompt yields to a binding that settles later', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      warned.length = 0;
+      let settle: (bag: Map<string, string>) => void = () => undefined;
+      const late = new Promise<Map<string, string>>((resolve) => (settle = resolve));
+      const values = new Map<string, string>();
+      recordLogOnlyValue(values, SECRET);
+      const rows: string[] = [];
+      infoSink.write = (raw) => {
+        if (raw.startsWith('  - PlainTextNamed')) rows.push(currentLogLineMasker()?.(raw) ?? raw);
+      };
+      const lines: Record<string, string | undefined> = {};
+      const providerDelete = vi.fn((logicalId: string, physicalId: string) => {
+        const line = `Deleting ${logicalId} ${physicalId}`;
+        lines[logicalId] = currentLogLineMasker()?.(line) ?? line;
+        return Promise.resolve(undefined);
+      });
+      const base = makeCtx(providerDelete, false);
+      const ctx = {
+        ...base,
+        lockManager: {
+          // The binding settles after the listing's cap, before the deletes.
+          acquireLock: vi.fn(async () => {
+            settle(values);
+            for (let i = 0; i < 20; i++) await Promise.resolve();
+            return true;
+          }),
+          releaseLock: vi.fn(),
+        } as unknown as LockManager,
+        noEchoReresolver: {
+          printingNoEchoValues: () => late,
+          valuesFor: () => Promise.resolve(undefined),
+        } as unknown as TemplateNoEchoReresolver,
+      };
+      const state = {
+        ...preV11State(),
+        orphans: [
+          { logicalId: 'PlainTextNamed', orphanedAt: 1, state: record(SECRET, 'AWS::SQS::Queue', { QueueName: SECRET }) },
+        ],
+      } as unknown as StackState;
+      const run = runDestroyForStack('NoEchoStack', state, ctx);
+      await vi.advanceTimersByTimeAsync(NOECHO_PRINTING_BIND_CAP_MS);
+      const result = await run;
+      expect(result.errorCount).toBe(0);
+      // Premise: the cap fired for the listing, which printed record-only, and warned.
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain(SECRET);
+      expect(warned.some((w) => w.includes('were not bound within'))).toBe(true);
+      expect(warned.join('\n')).not.toContain(SECRET);
+      // The deletes took the value that settled after the cap.
+      expect(lines['Bucket']).toBe('Deleting Bucket ***');
+    } finally {
+      infoSink.write = () => undefined;
+      vi.useRealTimers();
+    }
+  });
+
+  it('a binding that settles in time clears its cap timer: nothing warns later', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      warned.length = 0;
+      const result = await runDestroyForStack('NoEchoStack', v11State(), {
+        ...makeCtx(vi.fn().mockResolvedValue(undefined), false),
+        noEchoReresolver: {
+          printingNoEchoValues: () => Promise.resolve(undefined),
+          valuesFor: () => Promise.resolve(undefined),
+        } as unknown as TemplateNoEchoReresolver,
+      });
+      expect(result.errorCount).toBe(0);
+      await vi.advanceTimersByTimeAsync(NOECHO_PRINTING_BIND_CAP_MS);
+      expect(warned.some((w) => w.includes('were not bound within'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a binding that never settles is capped: the destroy goes on record-only', async () => {
