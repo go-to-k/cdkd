@@ -31,6 +31,9 @@ cdkd diff --all --fail
 # CI gate: exit 1 only on a replace / delete / orphan
 cdkd diff --all --fail-on=destructive
 
+# CI gate: exit 1 only on an IAM / security-group broadening
+cdkd diff --all --fail-on=broadening
+
 # machine-readable payload
 cdkd diff MyStack --json
 ```
@@ -237,7 +240,7 @@ The full rules are in
 | `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
 | `--recursive` | off | Diff every nested stack against its own state. See [`--recursive`](#recursive-nested-stacks). |
-| `--fail-on <kind>` | `never` | Exit `1` on `any-change` or `destructive` changes. See [`--fail-on`](#fail-on). |
+| `--fail-on <kind>` | `never` | Exit `1` on `any-change`, `broadening` or `destructive` changes. See [`--fail-on`](#fail-on). |
 | `--fail` / `--no-fail` | off | Aliases for `--fail-on=any-change` / `--fail-on=never`. Cannot be combined with `--fail-on`. |
 | `--json` | off | Emit the diff as JSON. See [cdkd diff: JSON output](cli-diff-json.md). |
 | `--use-cdk-bootstrap-assets` | off | Compare against the CDK bootstrap asset destinations verbatim, skipping cdkd's asset-storage redirection. |
@@ -290,17 +293,20 @@ cdkd diff --all --fail-on=any-change
 
 # fail only when a resource would be lost
 cdkd diff --all --fail-on=destructive
+
+# fail only when a permission would be granted
+cdkd diff --all --fail-on=broadening
 ```
 
 | Value | Exits `1` when |
 | --- | --- |
 | `any-change` | Anything changed. `--fail` is an alias. |
+| `broadening` | A change broadens IAM permissions or security-group rules. |
 | `destructive` | A change replaces, deletes or orphans an existing resource. |
 | `never` (default) | Never. `--no-fail` is an alias. |
 
 `--fail-on` can be given only once, and it cannot be combined with `--fail` or
-`--no-fail`. The AWS CDK CLI's `broadening` value is not available, because
-cdkd does not compute a security diff.
+`--no-fail`.
 
 ### `any-change`
 
@@ -353,6 +359,39 @@ The construct path of a removed resource comes from state, where the last
 deploy recorded it. Older cdkd releases did not record paths. A stack one of
 them last saved lists a removed resource by logical ID only, until the next
 deploy that writes state.
+
+### `broadening`
+
+`broadening` fails only when a change grants something new: an added IAM
+statement, a managed-policy attachment, an `AWS::Lambda::Permission`, or a
+security-group ingress or egress rule. Removing a permission passes. The
+verdict comes from the AWS CDK CLI's own security diff
+(`@aws-cdk/cloudformation-diff`), computed only for this value.
+
+This mode always checks nested stacks, as if `--recursive` were given.
+
+Each stack that broadens is reported after the diff, with the AWS CDK CLI's
+security table:
+
+```console
+$ cdkd diff --fail-on=broadening MyStack
+...
+❌  Stack MyStack broadens permissions (--fail-on=broadening):
+Security Group Changes
+┌───┬───────────────┬─────┬──────────┬─────────────────┐
+│   │ Group         │ Dir │ Protocol │ Peer            │
+├───┼───────────────┼─────┼──────────┼─────────────────┤
+│ + │ ${Sg.GroupId} │ In  │ TCP 22   │ Everyone (IPv4) │
+└───┴───────────────┴─────┴──────────┴─────────────────┘
+```
+
+cdkd compares its state with the new template rather than two templates, so a
+property that only reads a parameter or another stack's output can count as
+changed when that value moved. A secret value is shown as `***`, and a masked
+policy or rule that changed fails the check, since whether it broadens cannot
+be told.
+[`--require-approval`](cli-deploy-safety-ci-flags.md#broadening) explains the
+comparison.
 
 ## `--recursive` (nested stacks)
 

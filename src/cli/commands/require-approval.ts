@@ -15,30 +15,29 @@ import type {
 import { displayIdent } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
-import type { Logger } from '../../types/config.js';
 import { loadCdkJson } from '../config-loader.js';
 import { confirmOrRefuse, serializePrompt } from './confirm-prompt.js';
 
-export const REQUIRE_APPROVAL_VALUES = ['never', 'any-change', 'destructive'] as const;
+export const REQUIRE_APPROVAL_VALUES = [
+  'never',
+  'any-change',
+  'broadening',
+  'destructive',
+] as const;
 
 export const requireApprovalOption = new Option(
   '--require-approval <level>',
-  'What changes require manual approval before they are deployed: "never" (default), "any-change", or "destructive" (a change that replaces, deletes or orphans an existing resource, including in nested stacks). Without a terminal the deploy fails instead of asking, unless --yes is given. Also read from "requireApproval" in cdk.json.'
+  'What changes require manual approval before they are deployed: "never" (default), "any-change", "broadening" (a change that broadens IAM permissions or security-group rules), or "destructive" (a change that replaces, deletes or orphans an existing resource). Both "broadening" and "destructive" check nested stacks too. Without a terminal the deploy fails instead of asking, unless --yes is given. Also read from "requireApproval" in cdk.json.'
 ).choices(REQUIRE_APPROVAL_VALUES);
 
 /**
  * The level for this run: the flag, else cdk.json's top-level `requireApproval`
- * (where the AWS CDK CLI reads it), else `never` — cdkd has never asked.
- *
- * cdk.json's `broadening` (the AWS CDK CLI's own default, often written out
- * explicitly) is IGNORED with a warning rather than refused: cdkd has no
- * security diff to decide it, and cdkd read no `requireApproval` before, so
- * refusing would break deploys of apps that already carry it. The flag has no
- * such history, so `--require-approval broadening` is refused by its choices.
+ * (where the AWS CDK CLI reads it), else `never`. The AWS CDK CLI defaults to
+ * `broadening`; cdkd keeps `never`, as it has never asked without being told
+ * to. cdk.json's `broadening` is honoured (go-to-k/cdkd#4601).
  */
 export function resolveRequireApproval(
   cliValue: RequireApprovalLevel | undefined,
-  logger: Pick<Logger, 'warn'>,
   cdkJson: { requireApproval?: unknown } | null = loadCdkJson()
 ): RequireApprovalLevel {
   if (cliValue !== undefined) return cliValue;
@@ -46,12 +45,6 @@ export function resolveRequireApproval(
   if (configured === undefined) return 'never';
   if ((REQUIRE_APPROVAL_VALUES as readonly unknown[]).includes(configured)) {
     return configured as RequireApprovalLevel;
-  }
-  if (configured === 'broadening') {
-    logger.warn(
-      `cdk.json "requireApproval": "broadening" is ignored: cdkd does not detect security-broadening changes, so no approval is asked. Use "any-change" or "destructive" to have cdkd ask.`
-    );
-    return 'never';
   }
   throw new CdkdError(
     `cdk.json "requireApproval" must be one of ${REQUIRE_APPROVAL_VALUES.join(', ')}, got: ${displayIdent(typeof configured === 'string' ? configured : JSON.stringify(configured))}`,
@@ -92,7 +85,11 @@ export function createApprovalPrompter(options: { yes: boolean }): DeploymentApp
 /** The block printed above the question. Exported for tests. */
 export function renderApprovalRequest(request: DeploymentApprovalRequest): string {
   const lines: string[] = [''];
-  if (request.destructiveChanges.length > 0) {
+  if (request.securityChanges !== undefined && request.securityChanges !== '') {
+    lines.push(request.securityChanges.replace(/\n+$/, ''));
+    lines.push('');
+  }
+  if (request.destructiveChanges.length > 0 && request.level !== 'broadening') {
     lines.push('Destructive changes:');
     for (const change of request.destructiveChanges) {
       lines.push(`  ${formatDestructiveChange(change)}`);
@@ -108,7 +105,9 @@ export function renderApprovalRequest(request: DeploymentApprovalRequest): strin
   lines.push(
     request.level === 'destructive'
       ? `Stack includes destructive updates and "--require-approval" is set to 'destructive'.`
-      : `Stack includes updates and "--require-approval" is set to 'any-change'.`
+      : request.level === 'broadening'
+        ? `Stack includes security-sensitive updates and "--require-approval" is set to 'broadening'.`
+        : `Stack includes updates and "--require-approval" is set to 'any-change'.`
   );
   return `${lines.join('\n')}\n`;
 }

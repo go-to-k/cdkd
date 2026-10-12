@@ -79,7 +79,7 @@ These six flags are explained on this page.
 | `--dry-run` | `false` | Show the changes without applying them. |
 | `--skip-assets` | `false` | Skip asset publishing. |
 | `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Roll Back a Failed Deploy](rollback.md). |
-| `--require-approval <level>` | `never` | Ask before `any-change` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
+| `--require-approval <level>` | `never` | Ask before `any-change`, `broadening` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
 
 ### Assets
 
