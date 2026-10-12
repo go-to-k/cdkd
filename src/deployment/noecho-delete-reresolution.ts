@@ -441,16 +441,10 @@ export class TemplateNoEchoReresolver {
    * record written before schema v11 holds such a value in plaintext, which
    * nothing else marks as secret. Bound at most once (the parameters' binding
    * is shared with {@link valuesFor}), and only when the template declares a
-   * `NoEcho` parameter or a parent handed some. READ-ONLY to callers.
+   * `NoEcho` parameter ({@link printingNeedles}); `undefined` when there is
+   * nothing to mask. READ-ONLY to callers.
    */
   printingNoEchoValues(): Promise<RecordedSecretValues | undefined> {
-    if (
-      this.noEchoParameters.size === 0 &&
-      !hasMaskableValues(this.options.inheritedSecrets) &&
-      !hasMaskableValues(this.options.printingSeed)
-    ) {
-      return Promise.resolve(undefined);
-    }
     this.printingNoEchoPromise ??= this.printingNeedles().then((bag) =>
       hasMaskableValues(bag) ? bag : undefined
     );
