@@ -158,6 +158,9 @@ export async function doDeployWithPrefetch(
   // throws while the gate is still pending, the gate's refusal (if it
   // refuses) is the error reported -- it is the more fundamental one.
   let firstDeployStateGate: Promise<void> | undefined;
+  // The exports index read step 1b starts (#4837); awaited before the lock
+  // goes, like the journal purge. Never rejects.
+  let exportsPrefetch: Promise<void> | undefined;
   // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
   // failed -- the `finally` then checks whether it left one.
   let firstDeploy = false;
@@ -322,7 +325,7 @@ export async function doDeployWithPrefetch(
       void prefetchCreateTokenLedger();
       const exportIndexStore = this.exportIndexStore;
       if (exportIndexStore && importableOutputKeys(currentState).length === 0) {
-        void afterGate(() => exportIndexStore.prefetch());
+        exportsPrefetch = afterGate(() => exportIndexStore.prefetch());
       }
     }
     this.absentJournalVersionPurge = undefined;
@@ -1476,12 +1479,11 @@ export async function doDeployWithPrefetch(
     // (typically <300ms in practice for medium stacks; see PR notes).
     // The state save, the ledger and the events flush below share the state
     // backend's client; open its connections now, beside the drain (#4837).
-    if (!this.options.dryRun) {
-      try {
-        void this.stateBackend.warmConnections(stackName, this.stackRegion, TAIL_WARM_CONNECTIONS);
-      } catch {
-        // Best-effort: never in the way of the save it serves.
-      }
+    // A dry run returned before this point.
+    try {
+      void this.stateBackend.warmConnections(stackName, this.stackRegion, TAIL_WARM_CONNECTIONS);
+    } catch {
+      // Best-effort: never in the way of the save it serves.
     }
     await this.drainObservedCaptures(newState.resources);
 
@@ -1670,10 +1672,11 @@ export async function doDeployWithPrefetch(
     } catch {
       // Both warn on their own failures.
     }
-    // The purge step 1b started finishes before the lock goes and before the
-    // caller destroys the client, on every path, not only the success settle
-    // that awaits it. It never rejects.
-    await this.absentJournalVersionPurge;
+    // What step 1b started -- the journal purge and the exports index read --
+    // finishes before the lock goes and before the caller destroys the
+    // client, on every path, not only the success settle that awaits the
+    // purge. Neither rejects.
+    await Promise.all([this.absentJournalVersionPurge, exportsPrefetch]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed

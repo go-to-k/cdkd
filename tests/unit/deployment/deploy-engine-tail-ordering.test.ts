@@ -416,6 +416,30 @@ describe('DeployEngine — reads and writes a deploy starts early (#4837)', () =
     expect(h.order.lastIndexOf('warm')).toBeLessThan(h.order.lastIndexOf('saveState'));
   });
 
+  it('waits for the index read before releasing the lock when the deploy fails', async () => {
+    const h = buildHarness({ currentState: recordWithOutput([]) });
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    h.exportIndexStore.prefetch.mockImplementation(async () => {
+      await held;
+      h.order.push('exports:prefetch:end');
+    });
+    h.provider.create.mockRejectedValue(new Error('create boom'));
+
+    const deploying = h.engine.deploy(stackName, template);
+    deploying.catch(() => undefined);
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    expect(h.order).not.toContain('releaseLock');
+
+    release();
+    await expect(deploying).rejects.toThrow();
+    expect(h.order.indexOf('exports:prefetch:end')).toBeLessThan(h.order.indexOf('releaseLock'));
+  });
+
+  // The warm-up sits after the dry run's early return; the purge and the
+  // index read sit before it, behind their own checks.
   it('starts none of them under --dry-run', async () => {
     const h = buildHarness({ engineOptions: { dryRun: true } });
 
