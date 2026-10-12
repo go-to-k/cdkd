@@ -92,6 +92,7 @@ import {
   recordNoEchoParameterFreshValue,
   valueAtCoordinate,
   type NoEchoCoordinate,
+  physicalNameCopiesOf,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -7134,6 +7135,9 @@ export async function scrubStack(
       // the needle lands in the bag of the resource that consumed the
       // parameter and nowhere else (issue #2087).
       ...(inheritedSecrets && { inheritedSecrets }),
+      // go-to-k/cdkd#4819: the physical ids the parent row read, ungated, as
+      // `NestedStackProvider` hands a child engine.
+      ...(nestedInput && copiesOfParentRow(nestedInput.inheritedSecrets)),
     });
     const resolveCrossStackReads = makeCrossStackPrePass({
       stackName: stack.stackName,
@@ -9272,4 +9276,12 @@ function noEchoFilledRowParameters(
     if (!readsNoEchoSource(withoutFnIf(value), needleSources)) conditional.push(name);
   }
   return { names, conditional };
+}
+
+/** The parent row's physical-id copies as a resolver context field (go-to-k/cdkd#4819). */
+function copiesOfParentRow(bag: RecordedSecretValues): {
+  inheritedPhysicalNameCopies?: ReadonlySet<string>;
+} {
+  const copies = physicalNameCopiesOf.get(bag);
+  return copies === undefined || copies.size === 0 ? {} : { inheritedPhysicalNameCopies: copies };
 }

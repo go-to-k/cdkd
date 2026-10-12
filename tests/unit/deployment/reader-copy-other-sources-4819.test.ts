@@ -328,6 +328,60 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
     expect(redactParametersForDiff.call(engine, { [PARAM]: URL })[PARAM]).toBe(URL);
   });
 
+  it("keeps the copy when the parent row holds no secret, beside the child's own literal reference", async () => {
+    // The row passed only `Ref Queue`, so the child engine gets the row's
+    // copies (`inheritedPhysicalNameCopies`) and no `inheritedSecrets`; the
+    // child resource spells the reference itself.
+    const source = {
+      Queues: [{ Ref: PARAM }],
+      Resource: `arn:aws:sqs:us-east-1:123456789012:${REF}`,
+    };
+    for (const copies of [new Set([URL]), undefined]) {
+      const child: RecordedSecretValues = new Map();
+      const resolved = (await new IntrinsicFunctionResolver('us-east-1').resolve(source, {
+        template: childTemplate,
+        resources: {},
+        parameters: { [PARAM]: URL },
+        conditions: {},
+        recordedSecretValues: child,
+        ...(copies && { inheritedPhysicalNameCopies: copies }),
+      } as never)) as Record<string, unknown>;
+      expect(child.get(NAME)).toBe(REF);
+      const persisted = redactSecretsForState(
+        markSameGenerationBag({ ...resolved }),
+        child,
+        source
+      ) as Record<string, unknown>;
+      // Control (no copies): the rewrite the destroy then failed on.
+      expect(persisted['Queues']).toEqual([copies ? URL : URL.replace(NAME, REF)]);
+      expect(persisted['Resource']).toBe(`arn:aws:sqs:us-east-1:123456789012:${REF}`);
+    }
+  });
+
+  it("a child engine binds the row's copies into its resolver contexts", async () => {
+    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    const copies = new Set([URL]);
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { dryRun: false, inheritedPhysicalNameCopies: copies },
+      'us-east-1'
+    );
+    const context = (
+      engine as unknown as {
+        buildResolverContext: (
+          base: { template: CloudFormationTemplate; resources: Record<string, never> },
+          stackName: string
+        ) => { inheritedPhysicalNameCopies?: ReadonlySet<string>; inheritedSecrets?: unknown };
+      }
+    ).buildResolverContext({ template: { Resources: {} } as CloudFormationTemplate, resources: {} }, 's');
+    expect(context.inheritedPhysicalNameCopies).toBe(copies);
+    expect(context.inheritedSecrets).toBeUndefined();
+  });
+
   it('control: a URL the parent never read as a physical id is still rewritten', async () => {
     const parent = parentBag(false);
     const source = { Queues: [{ Ref: PARAM }] };

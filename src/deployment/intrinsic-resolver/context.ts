@@ -658,6 +658,13 @@ export interface ResolverContext {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * A nested child's: the physical ids the parent row read
+   * (go-to-k/cdkd#4810), set whether or not {@link inheritedSecrets} is. A
+   * `{Ref: <Param>}` value containing one records it as a copy of THIS
+   * context's bag (go-to-k/cdkd#4819).
+   */
+  inheritedPhysicalNameCopies?: ReadonlySet<string>;
+  /**
    * A PRINT-ONLY corpus of LOG-ONLY needles (go-to-k/cdkd#4043): read by the
    * render mask of this resolver's own lines ({@link maskSecretsRaw}) and by
    * nothing that detects, records into {@link recordedSecretValues} or
