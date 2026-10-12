@@ -66,8 +66,12 @@
 #      `<LogGroupName>|<FilterName>`, and neither may name the group
 #      (go-to-k/cdkd#3869). The filter then lives on FilterLogGroup, which the
 #      destroy below deletes with it. The same deploy updates SecretQueue's
-#      VisibilityTimeout (45), so its readers resolve its ARN from the provider
-#      and store it in plaintext: step 5f's premise.
+#      VisibilityTimeout (45), so its readers resolve its ARN from the provider.
+#      LOAD-BEARING (go-to-k/cdkd#4802): step 4 updated the queue and the nested
+#      row in one deploy, and the row and the child's SSM parameter stored the
+#      ARN in reference form, as a reader of an unchanged queue does, so this
+#      deploy does not update the row. Before, they stored the plaintext ARN
+#      and this deploy updated the row once more.
 #   5e. SDIN_ROLLBACK=true updates SecretQueue and SecretQueueReaderPolicy,
 #      then RollbackBreaker's create fails (SSM refuses a Standard-tier value
 #      over 4096 characters), WITHOUT --no-rollback. LOAD-BEARING: the
@@ -77,8 +81,9 @@
 #      restore rewrote both into the reference, so step 6's destroy failed
 #      (go-to-k/cdkd#4801).
 #   5f. LOAD-BEARING (go-to-k/cdkd#4800): step 5d's template redeployed after
-#      5e's rollback restored that state, so SecretQueue is NO_CHANGE and its
-#      readers resolve its ARN from the record, which holds it as
+#      5e's rollback restored that state, with SDIN_READER_EDIT=true editing the
+#      nested child's parameter so its row is UPDATEd, while SecretQueue is
+#      NO_CHANGE and its readers resolve its ARN from the record, which holds it as
 #      `arn:...:{{resolve:secretsmanager:...}}`. The reader that discriminates
 #      is the nested QueueReaderChild row (its `QueueArn` parameter): it was
 #      sent that spelling and the child's SSM parameter refused it, so the
@@ -943,12 +948,38 @@ if grep -qF -- "${LOG_GROUP_NAME}" "${DEPLOY_LOG}"; then
   exit 1
 fi
 echo "    OK: the moved deploy's log withholds the replaced filter's old, secret-derived log group name"
-# PREMISE for step 5f: the queue WAS updated in this deploy, so its readers stored the plaintext ARN.
+# PREMISE for the go-to-k/cdkd#4802 checks below: the queue WAS updated in this deploy.
 expect_eq "SecretQueue's VisibilityTimeout after the move" "45" \
   "$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${QUEUE_URL}" \
     --attribute-names VisibilityTimeout --query 'Attributes.VisibilityTimeout' --output text)"
 expect_eq "MovingFilter's recorded LogGroupName after the move" "${FILTER_LOG_GROUP}" \
   "$(state_property MovingFilter LogGroupName)"
+# LOAD-BEARING (go-to-k/cdkd#4802): step 4's update deploy updated the queue
+# and the nested row together, so the row was served the provider's fresh ARN
+# in plaintext. It now records the queue's own secret pairs the value carries
+# and stores the reference form, as a reader of an unchanged queue does;
+# before, it stored the plaintext ARN, and this deploy (which updates the
+# queue again) updated the row once more. Both halves: no row update in this
+# deploy (the symptom), and the reference form in state.
+if awk 'index($0, "QueueReaderChild") && index($0, "(AWS::CloudFormation::Stack)") && index($0, "updated") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: step 5d updated QueueReaderChild again: step 5's deploy, which updated SecretQueue, left its reader unsettled (go-to-k/cdkd#4802)" >&2
+  log_tail
+  exit 1
+fi
+for reader_check in \
+  "QueueReaderChild's recorded QueueArn parameter|${STATE_KEY}|.resources.QueueReaderChild.properties.Parameters.QueueArn" \
+  "ChildQueueArn's recorded Value|${CHILD_STATE_KEY}|.resources.ChildQueueArn.properties.Value"; do
+  IFS='|' read -r reader_what reader_key reader_path <<< "${reader_check}"
+  reader_value="$(aws s3 cp "s3://${STATE_BUCKET}/${reader_key}" - | jq -r "${reader_path} // empty")"
+  case "${reader_value}" in
+    arn:*"{{resolve:secretsmanager:"*) ;;
+    *)
+      echo "FAIL: ${reader_what} after step 5d does not hold the {{resolve:secretsmanager: reference form (go-to-k/cdkd#4802)" >&2
+      exit 1
+      ;;
+  esac
+done
+echo "    OK: the readers of the queue updated in this deploy store its ARN in reference form (go-to-k/cdkd#4802)"
 
 echo "==> Step 5e: an automatic rollback restores SecretQueueReaderPolicy with its queue URL in plaintext (go-to-k/cdkd#4801)"
 # SDIN_ROLLBACK=true updates SecretQueue (VisibilityTimeout 50) and the policy
@@ -1018,27 +1049,26 @@ if [ "${QUEUE_ARN_LIVE##*:}" != "${QUEUE_NAME}" ]; then
   echo "FAIL: premise: SecretQueue's live ARN '${QUEUE_ARN_LIVE}' does not end in its name" >&2
   exit 1
 fi
-# PREMISE: the readers hold the plaintext ARN step 5d wrote (5e's rollback
-# restored that state), so this deploy re-sends it (an UPDATE) instead of being
-# a no-op that would pass with the fix reverted. The nested row's QueueArn
-# parameter in the parent's record, and the child's SSM parameter in the
-# child's. Holding the expression already is go-to-k/cdkd#4802 fixed: this
-# step then needs another way to make a reader UPDATE.
-expect_eq "premise: QueueReaderChild's recorded QueueArn parameter after step 5d (go-to-k/cdkd#4802)" \
-  "${QUEUE_ARN_LIVE}" \
-  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
-    | jq -r '.resources.QueueReaderChild.properties.Parameters.QueueArn // empty')"
-expect_eq "premise: ChildQueueArn's recorded Value after step 5d (go-to-k/cdkd#4802)" \
-  "${QUEUE_ARN_LIVE}" \
-  "$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
-    | jq -r '.resources.ChildQueueArn.properties.Value // empty')"
+# PREMISE: the readers hold the reference form step 5d wrote (5e's rollback
+# restored that state; go-to-k/cdkd#4802), so nothing in them differs from
+# today's template: SDIN_READER_EDIT=true edits the nested child's parameter
+# so the row is UPDATEd and resolves SecretQueue's ARN from the record.
+CHILD_VALUE_AFTER_5D="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
+  | jq -r '.resources.ChildQueueArn.properties.Value // empty')"
+case "${CHILD_VALUE_AFTER_5D}" in
+  arn:*"{{resolve:secretsmanager:"*) ;;
+  *)
+    echo "FAIL: premise: ChildQueueArn's recorded Value after step 5e is not the reference form (go-to-k/cdkd#4802)" >&2
+    exit 1
+    ;;
+esac
 # PREMISE: the queue is NO_CHANGE in this deploy, so its readers resolve its ARN
 # from the record. An UPDATE would serve the provider's fresh ARN, and every
 # check below would pass with the fix reverted.
 expect_eq "premise: SecretQueue's recorded VisibilityTimeout after step 5e's rollback (5f needs the queue NO_CHANGE)" \
   "45" "$(state_property SecretQueue VisibilityTimeout)"
 set +e
-SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+SDIN_READER_EDIT=true SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
 NOOP_RC=$?
 set -e
@@ -1065,7 +1095,10 @@ expect_eq "QueueReaderChild's SSM parameter after the redeploy" "${QUEUE_ARN_LIV
     --query 'Parameter.Value' --output text)"
 # go-to-k/cdkd#4819: ChildQueuePolicy reads the parent-passed URL and ARN.
 # PREMISE: its bag carried the queue name (the ARN it read is recorded in its
-# reference form), so the save's value scan met the URL.
+# reference form), so the save's value scan met the URL. Since go-to-k/cdkd#4802
+# the pair is carried from step 4, the update that kept the queue's physical
+# id, so the record checked here may be that save's rather than this deploy's;
+# either way the URL met the scan beside the name.
 CHILD_POLICY_RESOURCE="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" - \
   | jq -r '.resources.ChildQueuePolicy.properties.PolicyDocument.Statement[0].Resource // empty')"
 case "${CHILD_POLICY_RESOURCE}" in
@@ -1093,7 +1126,7 @@ if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
 fi
 echo "    OK: the readers of a NO_CHANGE secret-named queue got its real ARN"
 set +e
-SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+SDIN_READER_EDIT=true SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
 NOOP2_RC=$?
 set -e

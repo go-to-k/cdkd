@@ -93,6 +93,12 @@ function livePool(deletionProtection: 'ACTIVE' | 'INACTIVE'): Record<string, unk
     UserPoolTier: 'PLUS',
     KeyConfiguration: { KeyType: 'AWS_OWNED_KEY' },
     IssuerConfiguration: { Type: 'ORIGINAL' },
+    AcrConfiguration: {
+      Level1: { AcrValue: 'urn:example:level1' },
+      Level2: { AcrValue: 'urn:cognito:loa:2' },
+      Level3: { AcrValue: 'urn:cognito:loa:3' },
+      Level4: { AcrValue: 'urn:cognito:loa:4' },
+    },
   };
 }
 
@@ -192,6 +198,8 @@ describe('userPoolDeletionProtectionUpdate', () => {
     const input = userPoolDeletionProtectionUpdate(POOL, pool as never, 'INACTIVE');
     const expected: Record<string, unknown> = { UserPoolId: POOL, DeletionProtection: 'INACTIVE' };
     for (const m of USER_POOL_ECHO_MEMBERS) expected[m] = pool[m];
+    // Only the CUSTOM ACR level travels; the default-named ones are dropped.
+    expected.AcrConfiguration = { Level1: { AcrValue: 'urn:example:level1' } };
     expect(input).toEqual(expected);
     // The measured-KEPT members are refusal triggers with nothing to protect:
     // SmsConfiguration and EmailConfiguration are re-validated on write.
@@ -199,6 +207,40 @@ describe('userPoolDeletionProtectionUpdate', () => {
     for (const readOnly of ['Id', 'Name', 'Arn', 'Domain', 'SchemaAttributes', 'Status']) {
       expect(input).not.toHaveProperty(readOnly);
     }
+  });
+
+  it('sends no AcrConfiguration when every level carries its default name (a Lite pool reads back all four)', () => {
+    const input = userPoolDeletionProtectionUpdate(
+      POOL,
+      {
+        Id: POOL,
+        AcrConfiguration: Object.fromEntries(
+          [1, 2, 3, 4].map((n) => [`Level${n}`, { AcrValue: `urn:cognito:loa:${n}` }])
+        ),
+      } as never,
+      'INACTIVE'
+    );
+    expect(input).not.toHaveProperty('AcrConfiguration');
+  });
+
+  it('keeps a level whose custom name is another level\'s default', () => {
+    const input = userPoolDeletionProtectionUpdate(
+      POOL,
+      {
+        Id: POOL,
+        AcrConfiguration: {
+          Level1: { AcrValue: 'urn:cognito:loa:2' },
+          Level2: { AcrValue: 'urn:example:two' },
+          Level3: { AcrValue: 'urn:cognito:loa:3' },
+          Level4: { AcrValue: 'urn:cognito:loa:4' },
+        },
+      } as never,
+      'INACTIVE'
+    );
+    expect(input.AcrConfiguration).toEqual({
+      Level1: { AcrValue: 'urn:cognito:loa:2' },
+      Level2: { AcrValue: 'urn:example:two' },
+    });
   });
 
   it('omits a member the read did not carry, rather than sending it as undefined', () => {
@@ -289,6 +331,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // A member moved between them is a behaviour change (echoed or not) that
     // the partition fence alone would accept.
     expect([...USER_POOL_ECHO_MEMBERS].sort()).toEqual([
+      'AcrConfiguration',
       'AdminCreateUserConfig',
       'AutoVerifiedAttributes',
       'DeviceConfiguration',

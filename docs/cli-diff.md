@@ -369,8 +369,8 @@ deploy that writes state.
 `broadening` fails only when a change grants something new: an added IAM
 statement, a managed-policy attachment, an `AWS::Lambda::Permission`, or a
 security-group ingress or egress rule. Removing a permission passes. The
-verdict comes from the AWS CDK CLI's own security diff
-(`@aws-cdk/cloudformation-diff`), computed only for this value.
+verdict follows the AWS CDK CLI's security diff rules and is computed only for
+this value.
 
 This mode always checks nested stacks, as if `--recursive` were given.
 

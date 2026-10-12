@@ -618,6 +618,12 @@ cdkd's own source imports no `@aws-cdk/*` package, and `aws-cdk-lib` is a
 `devDependency` used by the test suite only. That is a statement about cdkd's
 code, and the installed tree looks different.
 
+At run time, every command synthesizes the CDK app through cdkd's own
+synthesizer except four `local` commands that hand synthesis to cdk-local:
+`start-agentcore` and `start-cloudfront` (cdk-local's command of the same name)
+and `start-service` and `start-alb` (cdk-local's ECS service emulator).
+cdk-local synthesizes through `@aws-cdk/toolkit-lib`, loaded only then.
+
 Installing cdkd does bring `@aws-cdk/*` packages in, all of them through [`cdk-local`](https://www.npmjs.com/package/cdk-local) — the
 local-emulation engine cdkd depends on at runtime. It depends on
 `@aws-cdk/toolkit-lib` and `@aws-cdk/cloud-assembly-api` directly, reaches

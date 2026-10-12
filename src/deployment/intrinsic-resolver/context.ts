@@ -736,6 +736,27 @@ export interface ResolverContext {
    */
   secretNameSink?: RecordedSecretValues;
   /**
+   * The secrets bag a resource's resolution recorded in THIS run, by logical
+   * id (go-to-k/cdkd#4802): `undefined` for one not resolved this run. A
+   * reader served an attribute of a producer updated this run gets the
+   * provider's fresh value, in plaintext; the producer's own pairs whose
+   * plaintext that value carries are recorded into the READER's bag, so the
+   * reader persists the reference form, as a reader of an unchanged producer
+   * does (go-to-k/cdkd#4800). Read only for that; never mutated.
+   */
+  producerSecrets?: (logicalId: string) => RecordedSecretValues | undefined;
+  /**
+   * The physical id a resource had when this run LOADED its state, by logical
+   * id, or `undefined` for one the run did not load (go-to-k/cdkd#4802). A
+   * `{{resolve:` reference does not say which secret value it stood for, so
+   * {@link producerSecrets}' pairs are copied only for a producer that keeps
+   * this id and whose id embeds the plaintext: the same generation, as
+   * go-to-k/cdkd#4800's `referencesMatchPhysicalId` requires. A replaced
+   * producer's new value must reach the reader, which a reference-to-reference
+   * compare would skip.
+   */
+  producerPreRunPhysicalId?: (logicalId: string) => string | undefined;
+  /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
    * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
    * (issue #2274).

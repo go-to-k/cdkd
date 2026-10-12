@@ -74,8 +74,10 @@ The value is stored in:
 - the queue's `physicalId`;
 - another resource's resolved copy of the name, or of an identifier that
   contains it, such as the `Resource` ARN in an IAM policy. A copy of an
-  attribute other than the physical ID (the queue's ARN) that was resolved
-  while the queue was unchanged stores the reference in place of the name;
+  attribute other than the physical ID (the queue's ARN) stores the reference
+  in place of the name, except on the deploy that creates or replaces the
+  queue, which stores it as read (the next deploy updates it to the
+  reference);
 - stack outputs, the exports index, `rollback-journal.json`, and the queue's
   `orphans` entry if a rollback keeps the queue;
 - the `physicalId` field of a [deployment event](deployment-events.md).
