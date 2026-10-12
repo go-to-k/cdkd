@@ -203,7 +203,8 @@ const NO_ECHO_DEFAULT_MASK = '<cdkd:noecho-default>';
  * constant, for hashing only.
  *
  * The pre-resolution snapshot already keeps RESOLVED secret values out of the
- * digest. An authored `Default` under `NoEcho: true` is not one of those — it
+ * digest. An authored `Default` under a declared `NoEcho` (`true`, or the
+ * string `"true"`, go-to-k/cdkd#4824) is not one of those — it
  * is template text, and it went into the hash. With the rest of the
  * non-`Resources` sections known, a reader of `state.json` holds a confirm
  * ORACLE for a low-entropy default: guess it, recompute, compare.
