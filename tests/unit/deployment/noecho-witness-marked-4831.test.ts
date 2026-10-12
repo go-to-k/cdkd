@@ -229,6 +229,33 @@ describe('DeployEngine - the migration witness on a MARKED record (go-to-k/cdkd#
     expect(saved?.resources['Topic']?.noEchoExactEchoLeaves).toEqual([['TopicName']]);
   });
 
+  it('takes the migration readback when the witness confirms a mutable leaf no other block reads', async () => {
+    // DisplayName is NOT create-only, so no ceiling reads; the migration
+    // readback runs anyway and records the create-only TopicName's fidelity.
+    const t = {
+      Parameters: {
+        Name: { Type: 'String', NoEcho: true, Default: TOPIC },
+        Disp: { Type: 'String', NoEcho: true, Default: TOKEN },
+      },
+      Resources: {
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: { Ref: 'Name' }, DisplayName: { Ref: 'Disp' } },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    // Marked at TopicName; DisplayName read an ordinary parameter until now.
+    stateBackend.getState.mockResolvedValue({
+      state: markedState('***', TOKEN, [['TopicName']]),
+      etag: 'etag-old',
+    });
+    await makeEngine().deploy(STACK, t);
+    expect(topicCalls(provider.update)).toBe(0);
+    const saved = (stateBackend.saveState.mock.calls.at(-1)?.[2] as StackState).resources['Topic'];
+    expect(saved?.noEchoLeaves).toEqual([['DisplayName'], ['TopicName']]);
+    expect(saved?.noEchoExactEchoLeaves).toEqual([['TopicName']]);
+  });
+
   it.each([
     ['an array element (Tags[0].Value)', { Tags: [{ Key: 'k', Value: { Ref: 'TopicName' } }] }, { Tags: [{ Key: 'k', Value: TOPIC }] }, ['Tags', 0, 'Value']],
     ['a nested object leaf (ArchivePolicy.Name)', { ArchivePolicy: { Name: { Ref: 'TopicName' } } }, { ArchivePolicy: { Name: TOPIC } }, ['ArchivePolicy', 'Name']],
