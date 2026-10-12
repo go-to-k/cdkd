@@ -29,7 +29,9 @@
 #   2c. Hand inline policy names between resources on the role in ONE deploy
 #       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
 #       create of the same name, and a rename away from a name the role's own
-#       Policies takes. The receiving resource must keep each name.
+#       Policies takes. The receiving resource must keep each name. The swap
+#       and a rename-plus-create also run between resources with NO dependency
+#       on each other (go-to-k/cdkd#4227).
 #   3. Destroy + assert the function / queue / role are gone and the cdkd
 #      state file is removed.
 #
@@ -266,6 +268,10 @@ HANDOFF_WANT=(
   "cdkd-iam-drift-clean-handoff=sqs:DeleteMessage"
   "cdkd-iam-drift-clean-to-role=sqs:ReceiveMessage"
   "cdkd-iam-drift-clean-to-role-moved=sqs:PurgeQueue"
+  "cdkd-iam-drift-clean-unordered-x=sqs:UntagQueue"
+  "cdkd-iam-drift-clean-unordered-y=sqs:TagQueue"
+  "cdkd-iam-drift-clean-unordered-handoff=sqs:StartMessageMoveTask"
+  "cdkd-iam-drift-clean-unordered-moved=sqs:SetQueueAttributes"
 )
 handoff_mismatch() { # -> prints every name whose holder is wrong; empty when all match
   local pair name want got
@@ -282,7 +288,10 @@ first_owner_mismatch() { # -> prints every name not held by its FIRST owner; emp
     "cdkd-iam-drift-clean-swap-x=sqs:ListQueueTags" \
     "cdkd-iam-drift-clean-swap-y=sqs:ListDeadLetterSourceQueues" \
     "cdkd-iam-drift-clean-handoff=sqs:ChangeMessageVisibility" \
-    "cdkd-iam-drift-clean-to-role=sqs:PurgeQueue"; do
+    "cdkd-iam-drift-clean-to-role=sqs:PurgeQueue" \
+    "cdkd-iam-drift-clean-unordered-x=sqs:TagQueue" \
+    "cdkd-iam-drift-clean-unordered-y=sqs:UntagQueue" \
+    "cdkd-iam-drift-clean-unordered-handoff=sqs:SetQueueAttributes"; do
     name="${pair%%=*}"
     want="${pair#*=}"
     got="$(policy_action "${name}")"
@@ -319,7 +328,7 @@ if ! grep -q 'Rolling back [0-9]* completed operation' "${ROLLBACK_LOG}"; then
   echo "FAIL: the failed deploy did not roll back (no 'Rolling back N completed operation(s)' line)" >&2
   exit 1
 fi
-for lid in SwapA SwapB ToRolePolicy; do
+for lid in SwapA SwapB ToRolePolicy UnorderedSwapA UnorderedSwapB UnorderedRenamed; do
   if ! grep -qE "Rollback: ${lid} (replacement reversed|restored successfully)" "${ROLLBACK_LOG}"; then
     echo "FAIL: the rollback ran but logged no reversal of ${lid}; the hand-off did not complete before the failure, or the rollback wording drifted" >&2
     exit 1
@@ -331,6 +340,10 @@ if ! grep -qE 'Rollback: WorkerRole[0-9A-Fa-f]* restored successfully' "${ROLLBA
 fi
 if ! grep -q 'Rollback: HandoffNew deleted successfully' "${ROLLBACK_LOG}"; then
   echo "FAIL: the rollback ran but logged no delete of HandoffNew; its create did not complete before the failure, or the rollback wording drifted" >&2
+  exit 1
+fi
+if ! grep -q 'Rollback: UnorderedNew deleted successfully' "${ROLLBACK_LOG}"; then
+  echo "FAIL: the rollback ran but logged no delete of UnorderedNew; its create did not complete before the failure, or the rollback wording drifted" >&2
   exit 1
 fi
 if ! grep -q 'Rollback: put back the inline policy HandoffOld records on its role' "${ROLLBACK_LOG}"; then
@@ -356,6 +369,8 @@ fi
 # `policy_action` read can also mean a failed probe.
 assert_gone "cdkd-iam-drift-clean-to-role-moved is still on ${ROLE_NAME} after the rollback" \
   aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-iam-drift-clean-to-role-moved --region "${REGION}"
+assert_gone "cdkd-iam-drift-clean-unordered-moved is still on ${ROLE_NAME} after the rollback" \
+  aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-iam-drift-clean-unordered-moved --region "${REGION}"
 echo "    every name is back with its first owner"
 assert_no_role_drift "after the rolled-back hand-off" true
 
@@ -367,7 +382,8 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if [ "$(policy_action cdkd-iam-drift-clean-swap-x)" = "sqs:ListQueueTags" ] &&
     [ "$(policy_action cdkd-iam-drift-clean-swap-y)" = "sqs:ListDeadLetterSourceQueues" ] &&
     [ "$(policy_action cdkd-iam-drift-clean-handoff)" = "sqs:ChangeMessageVisibility" ] &&
-    [ "$(policy_action cdkd-iam-drift-clean-to-role)" = "sqs:PurgeQueue" ]; then
+    [ "$(policy_action cdkd-iam-drift-clean-to-role)" = "sqs:PurgeQueue" ] &&
+    [ -z "$(first_owner_mismatch)" ]; then
     premise_ok=1
     break
   fi

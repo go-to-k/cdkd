@@ -317,7 +317,7 @@ async function resolveEventsRegion(
       // on a LINE of its own, since it names flags and the first line displays
       // the stack name (go-to-k/cdkd#4127's per-line block rule).
       `No deployment-event history found for stack ${displayStackName(stackName)}. ` +
-        `Events are recorded by cdkd's deploy and destroy commands (issue #808); ` +
+        `Events are recorded by cdkd's deploy and destroy commands; ` +
         `a stack deployed by an older cdkd version has none.\n` +
         `If its history was deleted earlier, the prune subcommand with --all and ` +
         `--stack-region still purges the earlier versions left on a versioned state bucket, ` +
@@ -822,9 +822,7 @@ export function colorizeEventType(eventType: DeploymentEvent['eventType']): stri
  */
 export function createEventsCommand(): Command {
   const cmd = new Command('events')
-    .description(
-      "Read back structured deployment events (cdkd's DescribeStackEvents equivalent, issue #808)"
-    )
+    .description("Read back structured deployment events (cdkd's DescribeStackEvents equivalent)")
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .option('--run <runId>', "Read a single run's full event stream instead of the run listing")
     .option(

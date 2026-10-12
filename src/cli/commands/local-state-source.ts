@@ -254,7 +254,7 @@ function cfnProviderRefusal(drift: readonly string[]): string {
     `--from-cfn-stack cannot run under --role-arn with this cdk-local version: it has ` +
     `${drift.join(', ')}, so cdkd cannot make it read the stack with your own credentials ` +
     `instead of the role's. Pass --profile <name> (your own profile), or use the cdk-local ` +
-    `version this cdkd release ships with (go-to-k/cdkd#3240).`
+    `version this cdkd release ships with.`
   );
 }
 
@@ -601,7 +601,6 @@ export function engineRoleExposureWarning(
     `cdkd local ${commandName}: --role-arn ${why}, so the local emulation engine resolves ` +
     `these AS THE ROLE and hands them to your local code: ${open.map((c) => c.what).join('; ')}. ` +
     'Pass --profile <name> with your own profile to keep them on your identity, or do not pass ' +
-    'a role whose permissions you would not give the code in the container. Tracked as ' +
-    'go-to-k/cdkd#3240 (upstream go-to-k/cdk-local#783).'
+    'a role whose permissions you would not give the code in the container.'
   );
 }

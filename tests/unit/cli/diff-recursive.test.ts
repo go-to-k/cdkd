@@ -5154,7 +5154,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
     const node = await tree(crTemplate(NEW), { Cr: res('Custom::Thing', { ServiceToken: OLD, Seed: 'a' }) });
     expect(node.blocking).toEqual([
       `Cr: ServiceToken changes to ${NEW}, away from the handler its record names. cdkd deploy refuses a changed ` +
-        `custom-resource ServiceToken, as CloudFormation does (issue #4749); give the custom ` +
+        `custom-resource ServiceToken, as CloudFormation does; give the custom ` +
         `resource a new logical id to move it to another handler.`,
     ]);
   });
@@ -5174,7 +5174,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
     });
     expect(node.changes.get('Cr')?.changeType).toBe('NO_CHANGE');
     expect(node.blocking).toEqual([]);
-    expect(warnings().filter((w) => w.includes('#4749'))).toEqual([]);
+    expect(warnings().filter((w) => w.includes('its ServiceToken reads'))).toEqual([]);
   });
 
   it('warns, without blocking, when the token reads a Lambda this deploy replaces', async () => {
@@ -5188,7 +5188,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
         ?.replacementPropagated
     ).toBe(true);
     expect(node.blocking).toEqual([]);
-    const lines = warnings().filter((w) => w.includes('#4749'));
+    const lines = warnings().filter((w) => w.includes('its ServiceToken reads'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('Cr: its ServiceToken reads a resource this deploy replaces');
   });
@@ -5205,7 +5205,7 @@ describe('buildDiffTree - a changed custom-resource ServiceToken (go-to-k/cdkd#4
       Cr: res('Custom::Thing', { ServiceToken: ref, Seed: 'a' }),
     });
     expect(node.blocking).toEqual([]);
-    expect(warnings().filter((w) => w.includes('#4749'))).toEqual([]);
+    expect(warnings().filter((w) => w.includes('its ServiceToken reads'))).toEqual([]);
   });
 });
 

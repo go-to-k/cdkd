@@ -621,10 +621,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'EnableTerminationProtection',
           'CFn-only per-nested-stack flag — cdkd records stack-level terminationProtection at CDK synth time (parent only) and `cdkd destroy` consults that for refusal',
         ],
-        [
-          'NotificationARNs',
-          'CFn-only SNS-on-stack-event surface — cdkd has no equivalent (issue #459 design §9)',
-        ],
+        ['NotificationARNs', 'CFn-only SNS-on-stack-event surface — cdkd has no equivalent'],
         [
           'RoleARN',
           'CFn-only role-assumption — cdkd uses the caller credentials directly, no per-resource role assumption',
@@ -649,7 +646,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ],
         [
           'TimeoutInMinutes',
-          'CFn-only stack-create deadline — cdkd uses per-resource --resource-timeout instead (issue #459 design §9)',
+          'CFn-only stack-create deadline — cdkd uses per-resource --resource-timeout instead',
         ],
       ]),
       createOnlyDrops: new Set<string>(['StackName']),
@@ -1554,7 +1551,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         [
           'ClientToken',
-          'cdkd supplies its own retry-stable ClientToken on CreateAccessPoint (issues #2039 and #2080), so a template-supplied value would be overwritten. The SDK does not own this field either: measured against @aws-sdk/client-efs 3.1018.0, an omitted ClientToken is auto-filled with a FRESH uuid per attempt, which leaves a retried 500 free to mint a second access point, while a caller-supplied value goes on the wire verbatim.',
+          'cdkd supplies its own retry-stable ClientToken on CreateAccessPoint, so a template-supplied value would be overwritten. The SDK does not own this field either: an omitted ClientToken is auto-filled with a FRESH uuid per attempt, which leaves a retried 500 free to mint a second access point, while a caller-supplied value goes on the wire verbatim.',
         ],
       ]),
       createOnlyDrops: new Set<string>(['ClientToken']),
@@ -1582,7 +1579,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         [
           'ReplicationConfiguration',
-          'Cross-region EFS replication (CreateReplicationConfiguration) provisions a separate destination file system in another region with its own lifecycle, KMS key, and availability-zone placement; replicating + then tearing down the destination on destroy is a multi-resource, cross-region orchestration that is out of scope for the single-resource SDK provider. Tracked as a follow-up to issue #609.',
+          'Cross-region EFS replication (CreateReplicationConfiguration) provisions a separate destination file system in another region with its own lifecycle, KMS key, and availability-zone placement; replicating + then tearing down the destination on destroy is a multi-resource, cross-region orchestration that is out of scope for the single-resource SDK provider.',
         ],
       ]),
       createOnlyDrops: new Set<string>(),
@@ -2627,7 +2624,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DBSystemId', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
@@ -2739,7 +2736,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['DedicatedLogVolume', 'not yet implemented by cdkd'],
         [
           'DeleteAutomatedBackups',
-          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainAuthSecretArn', 'not yet implemented by cdkd'],

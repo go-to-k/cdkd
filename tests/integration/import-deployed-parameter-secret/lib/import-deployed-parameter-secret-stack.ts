@@ -27,7 +27,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * `ssm.CfnParameter` (L1) rather than `StringParameter`: the value must be a
  * bare `{Ref: <Parameter>}`, and the logical ids are pinned for verify.sh.
  *
- * REDEPLOY ARM (issue #3462): `SecretEnvFn` carries `DbPassword` in an
+ * REDEPLOY ARM (issue #3462): `SecretEnvFn` carries `ApiToken` in an
  * environment variable, and `CDKD_TEST_UPDATE=true` changes ONLY the inline
  * code of that function. cdkd's Lambda provider sends `UpdateFunctionCode` alone for that, so
  * the variable AWS holds stays the DECRYPTED value through the `cdkd deploy`
@@ -35,6 +35,15 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * positioned against the placeholder `Default`, would persist the secret. An
  * SSM parameter cannot carry this arm: its update always rewrites `Value`, which
  * overwrites the secret with the placeholder and leaves nothing to leak.
+ * Nor can a `NoEcho` parameter: since go-to-k/cdkd#4043 the import stores its
+ * position as `***` and the deploy reads it back, so a value that differs from
+ * the `Default` is a change the update sends, overwriting the secret too.
+ *
+ * ACCEPT ARM (issue #3466): `CDKD_TEST_ACCEPT=true` moves `SecretEnvFn`'s
+ * environment variable from `ApiToken` to the dynamic reference itself, the
+ * user's own fix. The in-place deploy keeps the refusal, and
+ * `cdkd state refresh-observed --accept-refused SecretEnvFn` must then capture
+ * a baseline that holds the reference, never the decrypted value.
  *
  * The secret itself is created by verify.sh BEFORE the deploy, under the fixed
  * name below, because the reference has to be spelled at synth time.
@@ -142,7 +151,12 @@ export class ImportDeployedParameterSecretStack extends cdk.Stack {
       handler: 'index.handler',
       role: fnRole.attrArn,
       code: { zipFile: `exports.handler = async () => '${codeRevision}';` },
-      environment: { variables: { DB_PASSWORD: dbPassword.valueAsString } },
+      environment: {
+        variables: {
+          DB_PASSWORD:
+            process.env.CDKD_TEST_ACCEPT === 'true' ? SECRET_REFERENCE : apiToken.valueAsString,
+        },
+      },
     });
 
     const child = new ChildStack(this, 'Child', {

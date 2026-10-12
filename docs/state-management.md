@@ -86,7 +86,7 @@ one feature each:
 | `deployments/` | [Deployment events](deployment-events.md) | Kept after a destroy unless you pass `--purge-events` |
 | `_index/{region}/exports.json` | Exported values of every stack in the region | Rewritten by each deploy |
 | `cdkd-bootstrap/{region}.json` | The region's asset bucket and ECR repository names | `cdkd bootstrap --destroy` |
-| `custom-resource-responses/{requestId}.json` | One custom resource handler's response | Deleted after the call |
+| `custom-resource-responses/{requestId}.json` | One custom resource handler's response | Deleted after the call, or by a [lifecycle rule](cli-bootstrap.md#re-running-bootstrap) within days |
 | `cdkd-migrate-tmp/` | A template too large to send inline to CloudFormation | Deleted by the command that uploaded it |
 
 Three of these need a word more:

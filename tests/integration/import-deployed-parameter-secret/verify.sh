@@ -55,6 +55,14 @@
 #      plaintext reached state, its object versions, or the log. Selective, not
 #      auto: nothing here has a physical-name property, so an auto rebuild
 #      would drop every record and orphan the resources.
+#   6d. ACCEPT ARM (issue #3466): `CDKD_TEST_ACCEPT=true` moves SecretEnvFn's
+#      environment variable onto the dynamic reference and `cdkd deploy`s it in
+#      place (the refusal stands, AWS still holds the decrypted value). Before
+#      that deploy, `--accept-refused SecretEnvFn` with the synthesized template
+#      is REFUSED (the record does not prove the template deployed). After it,
+#      the same command REFUSES RootPwParam, which still reads `DbPassword`, writing
+#      nothing, and ACCEPTS SecretEnvFn: both fields gone, a baseline holding
+#      the REFERENCE, no plaintext in state, its versions, or the logs.
 #   7. `cdkd destroy`, then assert resources, state and every S3 object VERSION
 #      under both state prefixes are gone, and force-delete the secret.
 set -euo pipefail
@@ -122,6 +130,9 @@ IMPORT_LOG="$(mktemp -t cdkd-2854-import.XXXXXX)"
 DEPLOY_LOG="$(mktemp -t cdkd-3462-deploy.XXXXXX)"
 REIMPORT_LOG="$(mktemp -t cdkd-3462-reimport.XXXXXX)"
 STRIP_FILE="$(mktemp -t cdkd-3468-strip.XXXXXX)"
+ACCEPT_DEPLOY_LOG="$(mktemp -t cdkd-3466-deploy.XXXXXX)"
+ACCEPT_LOG="$(mktemp -t cdkd-3466-accept.XXXXXX)"
+ACCEPT_SYNTH_DIR="$(mktemp -d -t cdkd-3466-synth.XXXXXX)"
 ROOT_PARAM_NAMES=""
 CHILD_PARAM_NAMES=""
 FN_NAME=""
@@ -177,7 +188,8 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_STATE_PREFIX:-}" noncurrent || true
-  rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}" "${REIMPORT_LOG}" "${STRIP_FILE}"
+  rm -f "${IMPORT_LOG}" "${DEPLOY_LOG}" "${REIMPORT_LOG}" "${STRIP_FILE}" "${ACCEPT_DEPLOY_LOG}" "${ACCEPT_LOG}"
+  rm -rf "${ACCEPT_SYNTH_DIR}"
   set -eu
   return 0
 }
@@ -696,6 +708,147 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 assert_no_plaintext_in_versions "${STATE_PREFIX}" "root state prefix after the re-import"
 echo "[verify] step 6c ok"
 
+echo "[verify] step 6d: ACCEPT ARM (issue #3466) -- state refresh-observed --accept-refused"
+fn_env_field() { # usage: fn_env_field <state-json> properties|observedProperties -- prints "reference" or "other", never the value
+  printf '%s' "$1" | python3 -c '
+import json, sys
+record = json.load(sys.stdin)["resources"]["SecretEnvFn"]
+value = (record.get(sys.argv[1]) or {}).get("Environment", {}).get("Variables", {}).get("DB_PASSWORD")
+print("reference" if value == sys.argv[2] else "other")
+' "$2" "${SECRET_REFERENCE}"
+}
+# The accept-variant template, synthesized into its own dir BEFORE it is deployed.
+(cd "${TEST_DIR}" && CDKD_TEST_UPDATE=true CDKD_TEST_ACCEPT=true cdk synth "${STACK}" \
+  --quiet --no-version-reporting --no-asset-metadata --no-path-metadata \
+  -o "${ACCEPT_SYNTH_DIR}") >/dev/null
+ACCEPT_TEMPLATE="${ACCEPT_SYNTH_DIR}/${STACK}.template.json"
+[ -f "${ACCEPT_TEMPLATE}" ] || { echo "[verify] FAIL: synthesized template ${ACCEPT_TEMPLATE} not found" >&2; exit 1; }
+
+# REFUSE, UNDEPLOYED: the template now spells the reference at SecretEnvFn,
+# but the record still holds the placeholder `Default` there, so the record
+# does not prove this template is the deployed shape.
+ROOT_STATE_UNDEPLOYED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+# PREMISE: the record does NOT yet hold the reference there, which is what the
+# refusal below must be about.
+if [ "$(fn_env_field "${ROOT_STATE_UNDEPLOYED}" properties)" != "other" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn's recorded DB_PASSWORD is already the reference before the accept-variant deploy" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+if (cd "${TEST_DIR}" && ${CLI} state refresh-observed "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --accept-refused SecretEnvFn \
+    --template "${ACCEPT_TEMPLATE}" \
+    --yes) >"${ACCEPT_LOG}" 2>&1; then
+  echo "[verify] FAIL: --accept-refused ACCEPTED SecretEnvFn against a template not yet deployed to it" >&2
+  exit 1
+fi
+if ! grep -qF "does not hold what this template defines" "${ACCEPT_LOG}"; then
+  sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" "${ACCEPT_LOG}" | tail -20 >&2
+  echo "[verify] FAIL: the undeployed-template refusal did not give the deployed-shape reason" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_UNDEPLOYED_AFTER="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+if [ "$(state_last_modified "${ROOT_STATE_UNDEPLOYED_AFTER}")" != "$(state_last_modified "${ROOT_STATE_UNDEPLOYED}")" ]; then
+  echo "[verify] FAIL: the refused undeployed-template run wrote state" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+(cd "${TEST_DIR}" && CDKD_TEST_UPDATE=true CDKD_TEST_ACCEPT=true ${CLI} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --yes \
+  --verbose) >"${ACCEPT_DEPLOY_LOG}" 2>&1 || {
+  tail -40 "${ACCEPT_DEPLOY_LOG}" | sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" >&2
+  echo "[verify] FAIL: the accept-variant deploy exited non-zero" >&2
+  exit 1
+}
+if grep -qF "${SECRET_PLAINTEXT}" "${ACCEPT_DEPLOY_LOG}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the accept-variant deploy's --verbose output" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# NON-VACUITY: AWS still holds the decrypted value where the accepted readback
+# reads it (the reference resolves to the same secret).
+if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn no longer holds the seeded plaintext after the accept-variant deploy" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_4="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+# PREMISE: the in-place deploy kept the refusal, so the override has something
+# to clear, and recorded the reference where the template now spells it.
+assert_record root-accept-deployed "${ROOT_STATE_4}" SecretEnvFn refused
+if [ "$(fn_env_field "${ROOT_STATE_4}" properties)" != "reference" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn's recorded DB_PASSWORD is not the dynamic reference after the accept-variant deploy" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# REFUSE: RootPwParam's template definition still reads DbPassword.
+if (cd "${TEST_DIR}" && ${CLI} state refresh-observed "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --accept-refused RootPwParam \
+    --template "${ACCEPT_TEMPLATE}" \
+    --yes) >"${ACCEPT_LOG}" 2>&1; then
+  echo "[verify] FAIL: --accept-refused ACCEPTED RootPwParam, whose template still reads a parameter" >&2
+  exit 1
+fi
+if ! grep -qF "still depends on a template parameter" "${ACCEPT_LOG}"; then
+  sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" "${ACCEPT_LOG}" | tail -20 >&2
+  echo "[verify] FAIL: the RootPwParam refusal did not give the parameter-dependence reason" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_5="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+if [ "$(state_last_modified "${ROOT_STATE_5}")" != "$(state_last_modified "${ROOT_STATE_4}")" ]; then
+  echo "[verify] FAIL: the refused --accept-refused run wrote state" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+
+# ACCEPT: SecretEnvFn now spells the secret as a reference.
+(cd "${TEST_DIR}" && ${CLI} state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --accept-refused SecretEnvFn \
+  --template "${ACCEPT_TEMPLATE}" \
+  --yes \
+  --verbose) >"${ACCEPT_LOG}" 2>&1 || {
+  tail -40 "${ACCEPT_LOG}" | sed "s/${SECRET_PLAINTEXT}/<SEEDED-PLAINTEXT>/g" >&2
+  echo "[verify] FAIL: --accept-refused SecretEnvFn exited non-zero" >&2
+  exit 1
+}
+if ! grep -qF "By accepting you assert that this template is deployed" "${ACCEPT_LOG}"; then
+  echo "[verify] FAIL: the --yes run did not log the assertion it made" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+if grep -qF "${SECRET_PLAINTEXT}" "${ACCEPT_LOG}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the --accept-refused --verbose output" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+ROOT_STATE_6="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+if printf '%s' "${ROOT_STATE_6}" | grep -qF "${SECRET_PLAINTEXT}"; then
+  echo "[verify] FAIL: the DECRYPTED secret is in the root state.json after --accept-refused" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_record root-accepted "${ROOT_STATE_6}" SecretEnvFn captured
+if [ "$(fn_env_field "${ROOT_STATE_6}" observedProperties)" != "reference" ]; then
+  echo "[verify] FAIL: SecretEnvFn's captured baseline does not hold the dynamic reference at DB_PASSWORD" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+# The run touched ONLY the named resource: RootPwParam keeps its refusal.
+assert_record root-accepted "${ROOT_STATE_6}" RootPwParam refused
+if [ "$(live_fn_env)" != "${SECRET_PLAINTEXT}" ]; then
+  echo "[verify] FAIL: premise: SecretEnvFn no longer holds the seeded plaintext after --accept-refused" >&2
+  exit 1
+fi
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_no_plaintext_in_versions "${STATE_PREFIX}" "root state prefix after --accept-refused"
+echo "[verify] step 6d ok"
+
 echo "[verify] step 7: cdkd destroy"
 (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
 for n in ${ROOT_PARAM_NAMES} ${CHILD_PARAM_NAMES}; do
@@ -744,9 +897,14 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # the child-state-rewritten proof = 47, plus the child function's 1 import
 # premise + 1 import verdict + 1 code sha + 1 live premise after the redeploy +
 # 1 redeploy verdict = 5 -> 52, plus the stale-baseline seed premise + the
-# sentinel's absence after the re-import (issue #2872) = 2 -> 54.
-if [ "${ASSERTIONS_RUN}" -lt 54 ]; then
-  echo "FAIL: only ${ASSERTIONS_RUN} of 54 assertions executed -- a block was skipped" >&2
+# sentinel's absence after the re-import (issue #2872) = 2 -> 54, plus the
+# accept arm (issue #3466): 1 deploy log grep + 2 live premises + 1 deploy
+# verdict + 1 recorded-reference premise + 1 refusal reason + 1 no-write proof
+# + 1 assertion logged + 1 accept log grep + 1 state grep + 2 accept verdicts +
+# 1 captured reference + 1 version scan = 14 -> 68, plus the undeployed-template
+# refusal's premise + reason + no-write proof = 3 -> 71.
+if [ "${ASSERTIONS_RUN}" -lt 71 ]; then
+  echo "FAIL: only ${ASSERTIONS_RUN} of 71 assertions executed -- a block was skipped" >&2
   exit 1
 fi
-echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462), with the refusal reason stripped as cdkd 0.290.35 wrote it (issue #3468); ${ASSERTIONS_RUN} assertions executed"
+echo "[verify] PASS -- no decrypted deployed-parameter secret reached state, at import (issue #2854), at the redeploy after it, or at a source-less re-import (issue #3462), with the refusal reason stripped as cdkd 0.290.35 wrote it (issue #3468), or when --accept-refused captured a baseline (issue #3466); ${ASSERTIONS_RUN} assertions executed"

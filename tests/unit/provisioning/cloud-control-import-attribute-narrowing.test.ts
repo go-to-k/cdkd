@@ -644,3 +644,53 @@ describe('CloudControlProvider.import attribute narrowing (issue #2847)', () => 
     });
   });
 });
+
+describe('CloudControlProvider.import keeps writable properties CloudFormation accepts in Fn::GetAtt (issue #3735)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearReadOnlyPropertiesCache();
+    clearPrimaryIdentifierCache();
+    describeTypeRetryDelays.sleep = async () => {};
+  });
+
+  it('records AvailabilityZone / InstanceType / Tenancy in the clear and still masks a writable non-attribute', async () => {
+    // A Cloud-Control-routed type (no SDK provider). Its registry schema's
+    // readOnlyProperties (trimmed) do NOT list `AvailabilityZone`,
+    // `InstanceType` or `Tenancy`, yet the resource specification lists all
+    // three as attributes, so `Fn::GetAtt Res.InstanceType` is a template
+    // CloudFormation and CDK accept. Masking them made the deploy refuse.
+    const type = 'AWS::EC2::CapacityReservation';
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        readOnlyProperties: ['/properties/Id', '/properties/AvailableInstanceCount'],
+      }),
+    });
+    wireGetResource({
+      Id: 'cr-1',
+      AvailableInstanceCount: 2,
+      AvailabilityZone: 'us-east-1a',
+      InstanceType: 'm5.large',
+      Tenancy: 'default',
+      InstanceCount: 2,
+    });
+
+    const result = await new CloudControlProvider().import({
+      logicalId: 'Res',
+      resourceType: type,
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: {},
+      knownPhysicalId: 'cr-1',
+    });
+
+    expect(result?.attributes).toEqual({
+      Id: 'cr-1',
+      AvailableInstanceCount: 2,
+      AvailabilityZone: 'us-east-1a',
+      InstanceType: 'm5.large',
+      Tenancy: 'default',
+      // Writable and NOT an attribute: still masked, still present.
+      InstanceCount: SECRET_MASK,
+    });
+  });
+});

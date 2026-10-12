@@ -58,24 +58,25 @@ import {
  *     "Credential should be scoped to a valid region."
  * ```
  *
- * Two routes a raw region could take are therefore closed BEFORE this function:
- * `--region` / `AWS_REGION` are folded at the CLI boundary (`foldRegionOption`,
- * issue #2065), and a CDK app declaring `env: { region: 'US-EAST-1' }` fails at
- * `app.synth()` — `EnvironmentUtils.parse` is case-sensitive, measured on
- * aws-cdk-lib 2.244.0.
+ * Three routes a raw region could take are therefore closed BEFORE this
+ * function: `--region` / `AWS_REGION` are folded at the CLI boundary
+ * (`foldRegionOption`, issue #2065); a CDK app declaring
+ * `env: { region: 'US-EAST-1' }` fails at `app.synth()` —
+ * `EnvironmentUtils.parse` is case-sensitive, measured on aws-cdk-lib 2.244.0;
+ * and a Cloud Assembly reaching cdkd with such a region in its `environment`
+ * string (hand-authored, from a non-CDK toolchain, or a `cdk.out` left behind
+ * by a synth that threw AFTER writing the manifest) is refused by
+ * `parseEnvironment` (`src/types/assembly.ts`, issue #2221), as the AWS CDK CLI
+ * refuses it.
  *
- * What is NOT closed, and is the reason this fold is more than tidiness: a Cloud
- * Assembly that reaches cdkd with a raw region in its `environment` string.
- * cdkd's own `parseEnvironment` (`src/types/assembly.ts`) accepts any region
- * text, so a hand-authored assembly, a non-CDK toolchain, or a `cdk.out` left
- * behind by a synth that threw AFTER writing the manifest all reach
- * `stackInfo.region` unfolded, and `deploy.ts` passes it on as the resolver's
- * region. That deploy SUCCEEDS — `AwsClients`' constructor folds the region its
- * clients sign with, so SigV4 never sees the raw spelling — and every
- * `${AWS::Region}` a user's `Fn::Sub` interpolates inherits it, producing
- * `arn:aws:s3:US-EAST-1:...`, which no IAM policy matches, and persisting it,
- * while every ARN cdkd itself constructs beside it is canonical (issue #1850).
- * Folding here removes that self-contradiction.
+ * Before that refusal, such an assembly reached `stackInfo.region` unfolded and
+ * `deploy.ts` passed it on as the resolver's region. That deploy SUCCEEDED —
+ * `AwsClients`' constructor folds the region its clients sign with, so SigV4
+ * never saw the raw spelling — and every `${AWS::Region}` a user's `Fn::Sub`
+ * interpolated inherited it, producing `arn:aws:s3:US-EAST-1:...`, which no IAM
+ * policy matches, while every ARN cdkd itself constructs beside it is canonical
+ * (issue #1850). This fold closed that self-contradiction and stays as defense
+ * in depth for any caller that does not come through `parseEnvironment`.
  *
  * UPGRADE CONSEQUENCE, stated because #1850's own entry states it for its fold:
  * a stack deployed that way keeps the raw spelling in its recorded properties,
@@ -83,7 +84,9 @@ import {
  * and where the property is create-only that classifies as a REPLACEMENT.
  * Deliberate — the recorded value is unusable, so converging it is the point.
  * State KEYS are unaffected: they are built from `stackRegion`, which this does
- * not touch.
+ * not touch. Since #2221 refuses the raw-region assembly, no deploy reaches
+ * that record any more: it stays under its raw-spelled key, which a deploy from
+ * the canonically-spelled assembly does not read.
  *
  * The consumer-side `canonicalizeRegion` calls this subsumes are deliberately
  * LEFT in place. Only `s3-endpoints.ts`'s is still reachable from a caller that

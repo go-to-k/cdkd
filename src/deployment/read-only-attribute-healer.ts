@@ -152,7 +152,7 @@ export function createReadOnlyAttributeHealerFactory(options: {
           // Logging must not turn a completed read into `failed`.
           try {
             logger.debug(
-              safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS for this preview — its state record lacked one a Fn::GetAtt asked for (#1852); nothing is written: ${Object.keys(outcome.attributes).length} attribute(s) read`
+              safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS for this preview — its state record lacked one a Fn::GetAtt asked for; nothing is written: ${Object.keys(outcome.attributes).length} attribute(s) read`
             );
           } catch {
             // Diagnostic only.

@@ -277,7 +277,7 @@ export class RDSProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'DeleteAutomatedBackups',
-          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
       ]),
     ],
@@ -294,7 +294,7 @@ export class RDSProvider implements ResourceProvider {
         ],
         [
           'DeleteAutomatedBackups',
-          'delete-time flag, sent on the delete when the record carries it (issue #3993); kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot (issue #1352), which this flag does not control',
+          'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
         ],
       ]),
     ],

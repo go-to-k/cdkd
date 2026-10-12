@@ -183,8 +183,7 @@ export function warnUnresolvedLambdaTargetEnv(
             "The only state source the Lambda path reads is --from-cfn-stack '<name>', which " +
             'REPLACES --from-state (the two are mutually exclusive) and reaches both target ' +
             'kinds on a CloudFormation-deployed stack; otherwise override the affected ' +
-            'variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
-            'go-to-k/cdk-local#707).',
+            'variables with --env-vars.',
         ],
       };
     },
@@ -259,8 +258,8 @@ export function createLocalStartAlbCommand(): Command {
         "Read cdkd's S3 state for the target stack and substitute Ref / Fn::GetAtt / Fn::Sub / " +
           'Fn::ImportValue / Fn::GetStackOutput intrinsics in container images, environment ' +
           'variables, secrets, role ARNs, and volumes of the ECS services behind the ALB. ' +
-          "Does NOT reach a Lambda target group's container environment (upstream " +
-          'go-to-k/cdk-local#707; a boot warning names the affected functions) — use ' +
+          "Does NOT reach a Lambda target group's container environment " +
+          '(a boot warning names the affected functions) — use ' +
           '--from-cfn-stack for those. Mutually exclusive with --from-cfn-stack.'
       ).default(false)
     )

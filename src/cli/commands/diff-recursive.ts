@@ -392,7 +392,7 @@ function nestedStackTypeChangeReason(tc: NestedStackTypeChange): string {
   return (
     `${displayIdent(tc.logicalId)}: Type changes from ${displayIdent(tc.currentType)} to ` +
     `${displayIdent(tc.desiredType)}. cdkd does not replace a resource into or out of ` +
-    `${NESTED_STACK_RESOURCE_TYPE} (issue #2668); give the new resource a different logical ` +
+    `${NESTED_STACK_RESOURCE_TYPE}; give the new resource a different logical ` +
     `id, or remove it in one deploy and add its replacement in the next.`
   );
 }

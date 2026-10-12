@@ -34,7 +34,9 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * asserts the role holds only the NEW-named policy (go-to-k/cdkd#4152). A
  * HAND-OFF phase then moves inline policy names between resources on the same
  * role in one deploy, and asserts the receiving resource keeps each name
- * (go-to-k/cdkd#4156). Before it, a FORCED-ROLLBACK phase deploys the same
+ * (go-to-k/cdkd#4156), including a swap and a rename-plus-create between
+ * resources with NO dependency on each other (go-to-k/cdkd#4227). Before it, a
+ * FORCED-ROLLBACK phase deploys the same
  * hand-off with a failing resource after it, and asserts the rollback leaves
  * every name with its first owner (go-to-k/cdkd#4225, and go-to-k/cdkd#4408
  * for the name a rolled-back create took over).
@@ -141,6 +143,28 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
     const handoffPolicy = handoff
       ? inlinePolicy('HandoffNew', 'cdkd-iam-drift-clean-handoff', 'sqs:DeleteMessage')
       : inlinePolicy('HandoffOld', 'cdkd-iam-drift-clean-handoff', 'sqs:ChangeMessageVisibility');
+    // go-to-k/cdkd#4227: the same two hand-offs with NO dependency between the
+    // resources, so cdkd itself must order them: a swap of two names, and a
+    // rename away from a name a new policy takes. Before the fix both ran at
+    // once and each removal could miss the other's put.
+    const unorderedSwapA = inlinePolicy(
+      'UnorderedSwapA',
+      handoff ? 'cdkd-iam-drift-clean-unordered-y' : 'cdkd-iam-drift-clean-unordered-x',
+      'sqs:TagQueue'
+    );
+    const unorderedSwapB = inlinePolicy(
+      'UnorderedSwapB',
+      handoff ? 'cdkd-iam-drift-clean-unordered-x' : 'cdkd-iam-drift-clean-unordered-y',
+      'sqs:UntagQueue'
+    );
+    const unorderedRenamed = inlinePolicy(
+      'UnorderedRenamed',
+      handoff ? 'cdkd-iam-drift-clean-unordered-moved' : 'cdkd-iam-drift-clean-unordered-handoff',
+      'sqs:SetQueueAttributes'
+    );
+    const unorderedNew = handoff
+      ? inlinePolicy('UnorderedNew', 'cdkd-iam-drift-clean-unordered-handoff', 'sqs:StartMessageMoveTask')
+      : undefined;
     const toRole = inlinePolicy(
       'ToRolePolicy',
       handoff ? 'cdkd-iam-drift-clean-to-role-moved' : 'cdkd-iam-drift-clean-to-role',
@@ -158,6 +182,10 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       failing.addDependency(swapB);
       failing.addDependency(toRole);
       failing.addDependency(handoffPolicy);
+      failing.addDependency(unorderedSwapA);
+      failing.addDependency(unorderedSwapB);
+      failing.addDependency(unorderedRenamed);
+      if (unorderedNew) failing.addDependency(unorderedNew);
       failing.addDependency(role.node.defaultChild as cdk.CfnResource);
     }
 

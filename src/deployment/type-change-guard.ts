@@ -267,8 +267,7 @@ export function renderNestedStackTypeChangeRefusal(
     (typeChanges.length === 1
       ? `a resource changes its Type `
       : `${typeChanges.length} resources change their Type `) +
-    `into or out of ${NESTED_STACK_RESOURCE_TYPE}, which cdkd does not replace in place ` +
-    `(issue #2668).\n` +
+    `into or out of ${NESTED_STACK_RESOURCE_TYPE}, which cdkd does not replace in place.\n` +
     `${rows.join('\n')}\n` +
     `  Deploy this as two changes instead: give the new resource a DIFFERENT logical id ` +
     `(in CDK, rename the construct) so the existing row is deleted through its own type's ` +

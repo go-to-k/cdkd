@@ -138,7 +138,7 @@ export async function readStaleAttributes(
     });
   }
   this.logger.debug(
-    `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for (#1852): ${Object.keys(attributes).length} attribute(s) read`
+    `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(attributes).length} attribute(s) read`
   );
   return outcome;
 }

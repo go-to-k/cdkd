@@ -396,9 +396,9 @@ describe('GlueProvider read-update round-trip', () => {
     expect(message).toContain("TableType: 'EXTERNAL_TABLE'");
     expect(message).toContain('StorageDescriptor');
     expect(message).toContain("MetadataOperation: 'CREATE'");
-    // Cites the decision + the probe transcript.
-    expect(message).toContain('#1454');
-    expect(message).toContain('#1408');
+    // Cites the probe transcript, with no issue number a user cannot read.
+    expect(message).toContain('Measured against AWS');
+    expect(message).not.toMatch(/#\d/);
   }
 
   it('AWS::Glue::Table — create() refuses IcebergInput.IcebergTableInput pre-flight, before any AWS call (#1454)', async () => {
@@ -511,10 +511,10 @@ describe('GlueProvider read-update round-trip', () => {
   ): void => {
     expectIcebergMessageBody(message, offendingKey, logicalId);
     expect(message).toContain('REPLAYING a historical cdkd STATE record');
-    expect(message).toContain('#1463');
+    expect(message).toContain('cdkd therefore warns and proceeds');
     // The two-outcome honesty, clause by clause.
     expect(message).toContain('DEGRADED');
-    expect(message).toContain('#1390'); // the CFn spelling is silently dropped
+    expect(message).toContain('the AWS SDK serializer drops the unknown member'); // the CFn spelling is silently dropped
     expect(message).toContain('without its Iceberg metadata');
     expect(message).toContain('Glue rejects'); // the SDK spelling is not
     expect(message).toContain('cdkd deploy'); // the fix-forward

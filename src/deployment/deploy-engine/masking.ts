@@ -625,7 +625,7 @@ export function refuseRedactedAttributeReads(
   // NEW way — a remedy that could not apply, then a cause that cannot produce
   // this refusal, then a remedy necessary but not sufficient. Do not re-expand
   // it into a list: the causes are not enumerable from here —
-  // `getTopLevelReadOnlyProperties` answers `undefined` for any failure at
+  // `getTopLevelAttributeNames` answers `undefined` for any failure at
   // all — so any list written here is a claim the code cannot support.
   //
   // THE TARGET IDS ARE COMPUTED, NOT DESCRIBED, and that is the fix for a
@@ -706,8 +706,9 @@ export function refuseRedactedAttributeReads(
       `stack's output — not by a {{resolve:ssm:...}} read of a String parameter holding the ` +
       `encoding, which cdkd treats as public and would record in state in the clear. ` +
       `(3) The resource was adopted by 'cdkd import' through the Cloud ` +
-      `Control fallback, which records only the attributes the type's CloudFormation schema ` +
-      `declares read-only and masks the rest. Either the attribute named above is not one of ` +
+      `Control fallback, which records only the type's Fn::GetAtt attributes (its read-only ` +
+      `properties plus the writable ones CloudFormation also accepts in Fn::GetAtt) and masks ` +
+      `the rest. Either the attribute named above is not one of ` +
       `them — CloudFormation would reject an Fn::GetAtt naming it too, so stop reading it — or ` +
       `cdkd could not read that schema and masked the whole model, which the import warned about ` +
       `when it happened. If that warning named a missing ` +

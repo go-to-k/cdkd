@@ -8,6 +8,8 @@ const {
   mockRebuildClient,
   sdkChain,
   existingMarkers,
+  loggerWarn,
+  loggerInfo,
 } = vi.hoisted(
   () => ({
     mockS3Send: vi.fn(),
@@ -20,6 +22,9 @@ const {
     sdkChain: { region: 'us-east-1' },
     /** Marker key -> body, for the issue-#2029 reconciliation probe. */
     existingMarkers: new Map<string, string>(),
+    /** The command's own logger, shared so issue #2353's lines are assertable. */
+    loggerWarn: vi.fn(),
+    loggerInfo: vi.fn(),
   })
 );
 
@@ -35,8 +40,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
+    info: loggerInfo,
+    warn: loggerWarn,
     error: vi.fn(),
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -142,8 +147,11 @@ import {
   PutBucketVersioningCommand,
   PutBucketEncryptionCommand,
   PutBucketPolicyCommand,
+  GetBucketLifecycleConfigurationCommand,
+  PutBucketLifecycleConfigurationCommand,
 } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import { CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID } from '../../../src/state/state-bucket-lifecycle.js';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
 
 const ACCOUNT = '123456789012';
@@ -586,5 +594,101 @@ describe('cdkd bootstrap', () => {
       `arn:aws:s3:::${bucket}`,
       `arn:aws:s3:::${bucket}/*`,
     ]);
+  });
+
+  describe('custom-resource response lifecycle rule (issue #2353)', () => {
+    it('reads, then writes the merged lifecycle configuration on a fresh state bucket', async () => {
+      scriptStateBucket(false);
+
+      await runBootstrap(['--region', 'us-east-1']);
+
+      const names = s3CommandNames();
+      const get = names.indexOf(GetBucketLifecycleConfigurationCommand.name);
+      const put = names.indexOf(PutBucketLifecycleConfigurationCommand.name);
+      expect(get).toBeGreaterThan(-1);
+      expect(put).toBeGreaterThan(get);
+      const putCall = mockS3Send.mock.calls[put]![0] as PutBucketLifecycleConfigurationCommand;
+      expect(putCall.input.Bucket).toBe(`cdkd-state-${ACCOUNT}`);
+      expect(putCall.input.ExpectedBucketOwner).toBe(ACCOUNT);
+      expect(putCall.input.LifecycleConfiguration?.Rules).toEqual([
+        expect.objectContaining({
+          ID: CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID,
+          Filter: { Prefix: 'custom-resource-responses/cdkd-1' },
+          Expiration: { Days: 1 },
+          NoncurrentVersionExpiration: { NoncurrentDays: 1 },
+        }),
+      ]);
+    });
+
+    it('leaves an existing bucket alone without --force (the first custom-resource deploy adds it)', async () => {
+      scriptStateBucket(true);
+
+      await runBootstrap(['--region', 'us-east-1']);
+
+      expect(s3CommandNames()).not.toContain(GetBucketLifecycleConfigurationCommand.name);
+      expect(s3CommandNames()).not.toContain(PutBucketLifecycleConfigurationCommand.name);
+    });
+
+    it('still completes, writing nothing, when the lifecycle permission is missing', async () => {
+      mockS3Send.mockImplementation(async (command: object) => {
+        if (command instanceof HeadBucketCommand) {
+          throw Object.assign(new Error('NotFound'), { name: 'NotFound' });
+        }
+        if (command instanceof GetBucketLifecycleConfigurationCommand) {
+          throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+        }
+        return {};
+      });
+
+      await runBootstrap(['--region', 'us-east-1']);
+
+      expect(s3CommandNames()).not.toContain(PutBucketLifecycleConfigurationCommand.name);
+      // The step AFTER the state-bucket configuration still ran.
+      expect(mockEnsureAssetStorage).toHaveBeenCalledTimes(1);
+      const warnings = loggerWarn.mock.calls.map((c) => String(c[0]));
+      const lifecycleWarning = warnings.find((w) => w.includes('expiration lifecycle rule'));
+      expect(lifecycleWarning).toContain('left unchanged');
+      expect(lifecycleWarning).toContain('s3:PutLifecycleConfiguration');
+    });
+
+    it('says "added" only when it wrote, and "already present" when the rule was there', async () => {
+      scriptStateBucket(false);
+      await runBootstrap(['--region', 'us-east-1']);
+      expect(loggerInfo.mock.calls.map((c) => String(c[0]))).toContain(
+        '✓ Set lifecycle rule (expire custom-resource-responses/ responses after 1 day)'
+      );
+
+      vi.clearAllMocks();
+      mockStsSend.mockResolvedValue({ Account: ACCOUNT });
+      mockRebuildClient.mockResolvedValue(null);
+      mockEnsureAssetStorage.mockResolvedValue({ assetBucket: 'a', containerRepo: 'r' });
+      mockS3Send.mockImplementation(async (command: object) => {
+        if (command instanceof GetBucketLifecycleConfigurationCommand) {
+          return { Rules: [{ ID: CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID, Status: 'Enabled' }] };
+        }
+        return {};
+      });
+      await runBootstrap(['--region', 'us-east-1', '--force']);
+      const infos = loggerInfo.mock.calls.map((c) => String(c[0]));
+      expect(s3CommandNames()).not.toContain(PutBucketLifecycleConfigurationCommand.name);
+      expect(infos.some((i) => i.includes('already present'))).toBe(true);
+      expect(infos.some((i) => i.startsWith('✓ Set lifecycle rule'))).toBe(false);
+    });
+
+    it('sends the lifecycle calls through the bucket-region client under --force', async () => {
+      const rebuiltSend = vi.fn().mockResolvedValue({});
+      mockRebuildClient.mockResolvedValue({
+        send: rebuiltSend,
+        destroy: vi.fn(),
+        config: { region: async () => 'us-east-1' },
+      });
+
+      await runBootstrap(['--region', 'ap-northeast-1', '--force']);
+
+      const names = rebuiltSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(names).toContain(GetBucketLifecycleConfigurationCommand.name);
+      expect(names).toContain(PutBucketLifecycleConfigurationCommand.name);
+      expect(s3CommandNames()).not.toContain(GetBucketLifecycleConfigurationCommand.name);
+    });
   });
 });

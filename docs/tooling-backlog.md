@@ -108,6 +108,7 @@ which PR took it, so nobody picks it up twice.
 
 | Issue | Title |
 | --- | --- |
+| — | lint: about 55 user-facing messages in `src/` (errors, warnings, `--help` text) cited GitHub issue numbers or probe dates, which a user cannot act on (go-to-k/cdkd#4796 removed them); nothing stops a new one. First occurrence: a check over string literals is the candidate if it recurs. |
 | — | CI: `check-build-test` / `once-leak-detect` / docs-deploy `build` hung ~45 min in `sudo apt-get install` (`zsh`, `playwright install --with-deps`) until cancelled, three times in one run (go-to-k/cdkd#4683, #4686 twice); a failed-job re-run passed each time. Third occurrence, so a `timeout-minutes` on those apt steps is now eligible. |
 | — | integ: a host DNS outage (`ENOTFOUND` / `EADDRNOTAVAIL`, ~14 min) failed four parallel fixtures mid-deploy (go-to-k/cdkd#4654's batch); their `cleanup` traps could not reach AWS either, leaving a deletion-protected RDS instance, a VPC, an IAM role, 13 DynamoDB tables and a state file to remove by hand. First occurrence, so nothing is built; a recurrence suggests a pre-flight DNS probe before a long batch. |
 | — | work-issues: the first full `vp test run` right after `vp run build` + `gen:all-matrices` failed 12 and 28 unrelated tests on two lanes, all green on an immediate re-run; host load ~15-22 from parallel integs. First occurrence of this shape. |

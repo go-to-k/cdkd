@@ -3785,7 +3785,7 @@ export function createLocalStartApiCommand(): Command {
       new Option(
         '--layer-role-arn <arn>',
         'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
-          'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
+          'entry in Properties.Layers. Use only when the dev credentials cannot ' +
           'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
           'Lambda Powertools) are readable from every account and need no role.'
       )

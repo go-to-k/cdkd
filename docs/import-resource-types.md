@@ -261,8 +261,13 @@ resource fails and names the full value to pass, for example
 
 A state record has an `attributes` map, which is where `Fn::GetAtt` reads
 from. Cloud Control returns every property of the resource, but cdkd keeps in
-`attributes` only the ones the type's schema declares as read-only. Those are
-the ones CloudFormation allows `Fn::GetAtt` to read.
+`attributes` only the ones CloudFormation allows `Fn::GetAtt` to read: the
+properties the type's schema declares as read-only, plus the writable
+properties the CloudFormation resource specification also lists as attributes
+(such as `VpcId` on `AWS::EC2::Subnet` or `QueueName` on `AWS::SQS::Queue`).
+A writable attribute whose `Fn::GetAtt` value has a different shape from the
+property (a list of strings where the property is a list of objects, say), or
+that can hold a secret (`AWS::SSM::Parameter` `Value`), stays masked.
 
 cdkd records every other property as the mask `***`. A later `Fn::GetAtt` on
 a masked property is refused by name, so it cannot resolve to a wrong value.
@@ -275,8 +280,8 @@ run `cdkd import` again.
 
 The record is still sensitive:
 
-- A credential that is itself a read-only attribute is recorded in the clear.
-  The schema does not mark which attributes are secret.
+- A credential that is itself an attribute is recorded in the clear. The
+  schema does not mark which attributes are secret.
 - The mask applies to `attributes` only. The copy of the resource that cdkd
   keeps for drift detection holds every property; see
   [A value your template never references](import.md#a-value-your-template-never-references-is-recorded-as-aws-holds-it).
