@@ -336,7 +336,24 @@ describe("cdkd destroy masks the prompt's list of kept orphans (go-to-k/cdkd#386
   });
 
   /** The listing's row per orphan, as the sink masks it. */
-  async function listed(withTemplate: boolean): Promise<Record<string, string>> {
+  const standard = () => [
+    orphan('RefNamed', 'team-secret-queue-url', REF),
+    orphan('PlainTextNamed', SECRET, SECRET),
+    orphan('Ordinary', 'ordinary-queue-url', 'ordinary-queue'),
+    // RDS folds the identifier: only the judge yields this spelling.
+    {
+      logicalId: 'Folded',
+      orphanedAt: 1,
+      state: record(DB_SECRET.toLowerCase(), 'AWS::RDS::DBInstance', {
+        DBInstanceIdentifier: DB_SECRET,
+      }),
+    },
+  ];
+
+  async function listed(
+    withTemplate: boolean,
+    orphans: unknown[] = standard()
+  ): Promise<Record<string, string>> {
     const rows: Record<string, string> = {};
     infoSink.write = (raw) => {
       const id = /^ {2}- (\S+) /.exec(raw)?.[1];
@@ -345,13 +362,7 @@ describe("cdkd destroy masks the prompt's list of kept orphans (go-to-k/cdkd#386
     const state = {
       ...preV11State(),
       resources: {},
-      orphans: [
-        orphan('RefNamed', 'team-secret-queue-url', REF),
-        orphan('PlainTextNamed', SECRET, SECRET),
-        orphan('Ordinary', 'ordinary-queue-url', 'ordinary-queue'),
-        // No name key: the id embeds the value, which only the carried value masks.
-        { logicalId: 'Embeds', orphanedAt: 1, state: record(`queue-${SECRET}`, 'AWS::SQS::Queue', {}) },
-      ],
+      orphans,
     } as unknown as StackState;
     await runDestroyForStack('NoEchoStack', state, makeCtx(vi.fn(), withTemplate));
     infoSink.write = () => undefined;
@@ -364,6 +375,14 @@ describe("cdkd destroy masks the prompt's list of kept orphans (go-to-k/cdkd#386
     expect(rows['RefNamed']).not.toContain('team-secret-queue-url');
     expect(rows['PlainTextNamed']).not.toContain(SECRET);
     expect(rows['Ordinary']).toContain('ordinary-queue-url');
+    expect(rows['Folded']).toBeDefined();
+    expect(rows['Folded']).not.toContain(DB_SECRET.toLowerCase());
+  });
+
+  it('masks the value itself where an id merely embeds it (no name key)', async () => {
+    const rows = await listed(true, [
+      { logicalId: 'Embeds', orphanedAt: 1, state: record(`queue-${SECRET}`, 'AWS::SQS::Queue', {}) },
+    ]);
     expect(rows['Embeds']).toContain('queue-');
     expect(rows['Embeds']).not.toContain(SECRET);
   });
