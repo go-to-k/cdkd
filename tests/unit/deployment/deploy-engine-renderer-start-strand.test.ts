@@ -91,6 +91,7 @@ describe('DeployEngine — renderer.start() cannot strand the lock (issue #2171)
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };

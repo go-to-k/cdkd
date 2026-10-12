@@ -96,6 +96,9 @@ type JournalMocks = {
   appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
   deleteRollbackJournal: ReturnType<typeof vi.fn>;
   loadRollbackJournal: ReturnType<typeof vi.fn>;
+  purgeRollbackJournalVersions: ReturnType<typeof vi.fn>;
+  rollbackJournalReadAbsent: ReturnType<typeof vi.fn>;
+  warmConnections: ReturnType<typeof vi.fn>;
   popRollbackJournalSegment: ReturnType<typeof vi.fn>;
 };
 
@@ -181,6 +184,9 @@ describe('DeployEngine.deploy() — skipped DELETE (issue #1862)', () => {
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     };
     saveState = vi.fn().mockResolvedValue('etag-1');

@@ -640,16 +640,16 @@ export function earliestDefined(...times: ReadonlyArray<number | undefined>): nu
   return defined.length === 0 ? undefined : Math.min(...defined);
 }
 
+/** See {@link CreateTokenLedger.prefetch}. No ledger bound, no-op. */
+export async function prefetchCreateTokenLedger(): Promise<void> {
+  await ledgerStore.getStore()?.prefetch();
+}
+
 /**
  * The deploy succeeded and its state record names `logicalIds`: forget their
  * `sent` entries in the bound ledger (see {@link CreateTokenLedger.forget}).
  * No ledger bound, no-op.
  */
-/** See {@link CreateTokenLedger.prefetch}. */
-export async function prefetchCreateTokenLedger(): Promise<void> {
-  await ledgerStore.getStore()?.prefetch();
-}
-
 export async function forgetRecordedCreateTokens(logicalIds: readonly string[]): Promise<void> {
   await ledgerStore.getStore()?.forget(logicalIds);
 }

@@ -155,6 +155,9 @@ async function deployAndRollBack(
         return 'etag';
       }),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn(async (_n: string, _r: string, seg: unknown) => {
         segments.push(structuredClone(seg) as RollbackJournalSegment);
       }),

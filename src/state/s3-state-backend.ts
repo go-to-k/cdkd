@@ -331,12 +331,6 @@ export class S3StateBackend {
   }
 
   /**
-   * Purge the noncurrent versions of the stack's journal key -- the purge
-   * {@link deleteRollbackJournal} runs, without its DeleteObject, for a
-   * journal already absent (an earlier delete whose purge did not finish
-   * leaves readable bodies behind). Never throws.
-   */
-  /**
    * Open `count` connections to the state bucket now, each with a HeadObject
    * on the stack's state key (`s3:GetObject`, which every deploy already
    * needs; a first deploy's 404 still completes the handshake). S3 closes a
@@ -361,6 +355,12 @@ export class S3StateBackend {
     }
   }
 
+  /**
+   * Purge the noncurrent versions of the stack's journal key -- the purge
+   * {@link deleteRollbackJournal} runs, without its DeleteObject, for a
+   * journal already absent (an earlier delete whose purge did not finish
+   * leaves readable bodies behind). Never throws.
+   */
   async purgeRollbackJournalVersions(stackName: string, region: string): Promise<void> {
     await this.purgeNoncurrentVersions([this.rollbackJournalKey(stackName, region)], {
       objectDescription: ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,

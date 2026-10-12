@@ -7512,32 +7512,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const emittedGsis = result['GlobalSecondaryIndexes'];
     if (!bagInformative || !Array.isArray(emittedGsis)) return;
     const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
-    await Promise.all(
-      (emittedGsis as Array<Record<string, unknown>>).map(async (emitted) => {
-        const indexName = emitted['IndexName'];
-        if (typeof indexName !== 'string') return;
-        const desiredEntry = desiredByName.get(indexName);
-        if (!indexDeclaresContributorInsights(desiredEntry)) return;
-        try {
-          const indexResp = await this.dynamoDBClient.send(
-            new DescribeContributorInsightsCommand({
-              TableName: physicalId,
-              IndexName: indexName,
-            })
-          );
-          const block = reverseMapIndexContributorInsights(
-            indexResp.ContributorInsightsStatus,
-            indexResp.ContributorInsightsMode,
-            desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
-          );
-          if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
-        } catch (err) {
-          this.logger.debug(
-            `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
-          );
-        }
-      })
-    );
+    // One index after another, as before: up to 20 indexes, and a throttled
+    // read drops its block from the baseline.
+    for (const emitted of emittedGsis as Array<Record<string, unknown>>) {
+      const indexName = emitted['IndexName'];
+      if (typeof indexName !== 'string') continue;
+      const desiredEntry = desiredByName.get(indexName);
+      if (!indexDeclaresContributorInsights(desiredEntry)) continue;
+      try {
+        const indexResp = await this.dynamoDBClient.send(
+          new DescribeContributorInsightsCommand({
+            TableName: physicalId,
+            IndexName: indexName,
+          })
+        );
+        const block = reverseMapIndexContributorInsights(
+          indexResp.ContributorInsightsStatus,
+          indexResp.ContributorInsightsMode,
+          desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
+        );
+        if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
+      } catch (err) {
+        this.logger.debug(
+          `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
+        );
+      }
+    }
   }
 
   /**

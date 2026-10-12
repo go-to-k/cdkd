@@ -431,6 +431,7 @@ describe('DeployEngine refuses a nested-stack Type change before provisioning (#
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };

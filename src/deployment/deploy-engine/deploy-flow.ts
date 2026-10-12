@@ -96,6 +96,13 @@ declare module '../deploy-engine.js' {
   }
 }
 
+/**
+ * Connections `warmConnections` opens before the tail (#4837): the state
+ * save, then the events flush's two concurrent calls, all on the state
+ * backend's client.
+ */
+const TAIL_WARM_CONNECTIONS = 3;
+
 export async function doDeployWithPrefetch(
   this: DeployEngine,
   stackName: string,
@@ -296,32 +303,42 @@ export async function doDeployWithPrefetch(
       }
     }
 
+    // go-to-k/cdkd#4837: reads and a purge the success path would otherwise
+    // make after the last resource, started here beside the deploy instead
+    // (under the stack lock, after `noteDeployStateRecord`). The two that can
+    // write -- the journal-key purge, and the exports index's rebuild of a
+    // missing index -- wait for a first deploy's gate, so a deploy it refuses
+    // has changed nothing. The exports index is read only when the record
+    // publishes no export: then no reader can patch an entry of this stack
+    // into it while this deploy runs, so this copy decides the update as a
+    // fresh read would.
+    const gate = firstDeployStateGate;
+    // Never rejects: the result is awaited in the `finally` below.
+    const afterGate = (start: () => Promise<void>): Promise<void> =>
+      (gate === undefined ? Promise.resolve() : gate)
+        .then(start, () => undefined)
+        .catch(() => undefined);
+    if (!this.options.dryRun) {
+      void prefetchCreateTokenLedger();
+      const exportIndexStore = this.exportIndexStore;
+      if (exportIndexStore && importableOutputKeys(currentState).length === 0) {
+        void afterGate(() => exportIndexStore.prefetch());
+      }
+    }
+    this.absentJournalVersionPurge = undefined;
+
     // 1b. If a rollback journal exists, a previous deploy failed / was
     // interrupted and has not yet been reverted (issue #1183). Note that
     // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
     // still supported). Best-effort — a journal read failure must not
     // block the deploy.
-    // Reads the success path would otherwise make after the last resource,
-    // started here beside the deploy instead (both under the stack lock, after
-    // `noteDeployStateRecord`). The exports index only when the record
-    // publishes no export: then no reader can patch an entry of this stack
-    // into it while this deploy runs, so this copy decides the update as a
-    // fresh read would.
-    if (!this.options.dryRun) {
-      void prefetchCreateTokenLedger();
-      if (this.exportIndexStore && importableOutputKeys(currentState).length === 0) {
-        void this.exportIndexStore.prefetch();
-      }
-    }
-    this.absentJournalVersionPurge = undefined;
     try {
       const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
       // No journal: purge what an earlier delete's unfinished purge left, now,
       // beside the deploy, so the success settle need not touch the key.
       if (loaded === null && !this.options.parentStackInfo && !this.options.dryRun) {
-        this.absentJournalVersionPurge = this.stateBackend.purgeRollbackJournalVersions(
-          stackName,
-          this.stackRegion
+        this.absentJournalVersionPurge = afterGate(() =>
+          this.stateBackend.purgeRollbackJournalVersions(stackName, this.stackRegion)
         );
       }
       // A nested child's `nested-pending-parent` segments record a deploy
@@ -1460,7 +1477,11 @@ export async function doDeployWithPrefetch(
     // The state save, the ledger and the events flush below share the state
     // backend's client; open its connections now, beside the drain (#4837).
     if (!this.options.dryRun) {
-      void this.stateBackend.warmConnections?.(stackName, this.stackRegion, 3);
+      try {
+        void this.stateBackend.warmConnections(stackName, this.stackRegion, TAIL_WARM_CONNECTIONS);
+      } catch {
+        // Best-effort: never in the way of the save it serves.
+      }
     }
     await this.drainObservedCaptures(newState.resources);
 
@@ -1649,6 +1670,10 @@ export async function doDeployWithPrefetch(
     } catch {
       // Both warn on their own failures.
     }
+    // The purge step 1b started finishes before the lock goes and before the
+    // caller destroys the client, on every path, not only the success settle
+    // that awaits it. It never rejects.
+    await this.absentJournalVersionPurge;
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed

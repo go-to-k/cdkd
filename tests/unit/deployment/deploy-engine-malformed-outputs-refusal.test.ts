@@ -74,6 +74,7 @@ describe('DeployEngine refuses a malformed `outputs` bag at the load (go-to-k/cd
   };
   let exportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };

@@ -72,6 +72,7 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
   };
   let exportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };

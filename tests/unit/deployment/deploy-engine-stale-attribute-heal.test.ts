@@ -102,6 +102,9 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     };

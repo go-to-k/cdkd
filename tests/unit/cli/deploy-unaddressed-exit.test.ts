@@ -297,6 +297,26 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     delete process.env['CDKD_NO_LIVE'];
   });
 
+  it('defers the lock-version purge and settles it before destroying the stack clients (#4837)', async () => {
+    const { LockManager } = await import('../../../src/state/lock-manager.js');
+    const { AwsClients } = await import('../../../src/utils/aws-clients.js');
+
+    await runDeploy(['--yes']);
+
+    const lockCtor = vi.mocked(LockManager);
+    expect(lockCtor).toHaveBeenCalledOnce();
+    expect(lockCtor.mock.calls[0]![2]).toEqual({ deferReleasePurge: true });
+    const lock = lockCtor.mock.results[0]!.value as { settleDeferredPurges: ReturnType<typeof vi.fn> };
+    expect(lock.settleDeferredPurges).toHaveBeenCalledOnce();
+    const settledAt = lock.settleDeferredPurges.mock.invocationCallOrder[0]!;
+    const destroyedAt = vi
+      .mocked(AwsClients)
+      .mock.results.flatMap((r) => (r.value as { destroy: ReturnType<typeof vi.fn> }).destroy.mock.invocationCallOrder);
+    expect(destroyedAt.length).toBeGreaterThan(0);
+    expect(Math.max(...destroyedAt)).toBeGreaterThan(settledAt);
+    expect(destroyedAt.filter((at) => at > settledAt).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('exits 0 on a clean deploy that leaves nothing unaddressed', async () => {
     const code = await runDeploy(['--yes']);
     expect(code).toBeUndefined();

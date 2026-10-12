@@ -367,3 +367,39 @@ describe('a journal read ABSENT is remembered until the key is touched (#4837)',
     );
   });
 });
+
+describe('S3StateBackend.warmConnections (#4837)', () => {
+  it('sends `count` concurrent HeadObjects on the state key, and never throws', async () => {
+    const sent: Sent[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let n = 0;
+    const client = {
+      send: async (cmd: unknown): Promise<unknown> => {
+        const c = cmd as { constructor: { name: string }; input: Sent['input'] };
+        sent.push({ name: c.constructor.name, input: c.input });
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        inFlight--;
+        // A first deploy's 404 and a denial both still count as warmed.
+        if (++n === 1) throw Object.assign(new Error('Forbidden'), { name: 'Forbidden' });
+        throw new NoSuchKey({ message: 'Not Found', $metadata: {} });
+      },
+      destroy: vi.fn(),
+    } as unknown as S3Client;
+    const b = new S3StateBackend(client, { bucket: BUCKET, prefix: 'cdkd' });
+
+    await expect(b.warmConnections(STACK, REGION, 3)).resolves.toBeUndefined();
+
+    expect(sent.map((s) => s.name)).toEqual(Array(3).fill('HeadObjectCommand'));
+    expect(maxInFlight).toBe(3);
+    for (const s of sent) {
+      expect(s.input).toEqual({
+        Bucket: BUCKET,
+        Key: `cdkd/${STACK}/${REGION}/state.json`,
+        ExpectedBucketOwner: OWNER,
+      });
+    }
+  });
+});

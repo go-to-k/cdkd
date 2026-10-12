@@ -148,7 +148,10 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     | 'deleteRollbackJournal'
     | 'loadRollbackJournal'
     | 'markRollbackJournalSuperseded'
-    | 'popRollbackJournalSegment',
+    | 'popRollbackJournalSegment'
+    | 'purgeRollbackJournalVersions'
+    | 'rollbackJournalReadAbsent'
+    | 'warmConnections',
     ReturnType<typeof vi.fn>
   >;
 
@@ -168,6 +171,9 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     };

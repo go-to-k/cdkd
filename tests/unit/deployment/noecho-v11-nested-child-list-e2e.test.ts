@@ -163,6 +163,9 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
         return `etag-${name}`;
       }),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       saveRollbackJournal: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),

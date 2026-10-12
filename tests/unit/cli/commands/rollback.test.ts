@@ -116,6 +116,9 @@ interface FakeBackend {
   listRawKeys: ReturnType<typeof vi.fn>;
   getState: ReturnType<typeof vi.fn>;
   loadRollbackJournal: ReturnType<typeof vi.fn>;
+  purgeRollbackJournalVersions: ReturnType<typeof vi.fn>;
+  rollbackJournalReadAbsent: ReturnType<typeof vi.fn>;
+  warmConnections: ReturnType<typeof vi.fn>;
   saveState: ReturnType<typeof vi.fn>;
   popRollbackJournalSegment: ReturnType<typeof vi.fn>;
   setRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
@@ -155,6 +158,9 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
     listRawKeys: vi.fn().mockResolvedValue([]),
     getState: vi.fn().mockResolvedValue(null),
     loadRollbackJournal: vi.fn().mockResolvedValue(null),
+    purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+    rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+    warmConnections: vi.fn().mockResolvedValue(undefined),
     saveState: vi.fn().mockResolvedValue('etag-1'),
     popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
     setRollbackJournalFailedOperations: vi.fn().mockResolvedValue(undefined),
@@ -504,6 +510,9 @@ describe('rollbackCommand', () => {
       listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
       getState: vi.fn().mockResolvedValue({ state: { resources: {}, outputs: {} }, etag: 'e' }),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
     });
     await expect(rollbackCommand('S', { ...baseOpts })).rejects.toThrow(/Nothing to roll back/);
   });

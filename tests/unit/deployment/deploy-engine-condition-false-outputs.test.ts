@@ -79,6 +79,7 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };
