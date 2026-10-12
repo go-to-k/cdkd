@@ -24,33 +24,30 @@ const request = (stackName: string): DeploymentApprovalRequest => ({
 });
 
 describe('resolveRequireApproval', () => {
-  const logger = { warn: vi.fn() };
-  beforeEach(() => logger.warn.mockReset());
-
   it('takes the flag over cdk.json', () => {
-    expect(resolveRequireApproval('any-change', logger, { requireApproval: 'destructive' })).toBe(
+    expect(resolveRequireApproval('any-change', { requireApproval: 'destructive' })).toBe(
       'any-change'
     );
   });
 
   it('reads cdk.json, and defaults to never', () => {
-    expect(resolveRequireApproval(undefined, logger, { requireApproval: 'destructive' })).toBe(
+    expect(resolveRequireApproval(undefined, { requireApproval: 'destructive' })).toBe(
       'destructive'
     );
-    expect(resolveRequireApproval(undefined, logger, {})).toBe('never');
-    expect(resolveRequireApproval(undefined, logger, null)).toBe('never');
+    expect(resolveRequireApproval(undefined, {})).toBe('never');
+    expect(resolveRequireApproval(undefined, null)).toBe('never');
   });
 
-  it("ignores cdk.json's broadening with a warning instead of failing the deploy", () => {
-    expect(resolveRequireApproval(undefined, logger, { requireApproval: 'broadening' })).toBe(
-      'never'
+  it("honours cdk.json's broadening, the AWS CDK CLI's default (go-to-k/cdkd#4601)", () => {
+    expect(resolveRequireApproval(undefined, { requireApproval: 'broadening' })).toBe(
+      'broadening'
     );
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('"broadening" is ignored'));
+    expect(resolveRequireApproval('broadening', { requireApproval: 'never' })).toBe('broadening');
   });
 
   it('refuses any other cdk.json value', () => {
-    expect(() => resolveRequireApproval(undefined, logger, { requireApproval: 'always' })).toThrow(
-      'cdk.json "requireApproval" must be one of never, any-change, destructive, got: always'
+    expect(() => resolveRequireApproval(undefined, { requireApproval: 'always' })).toThrow(
+      'cdk.json "requireApproval" must be one of never, any-change, broadening, destructive, got: always'
     );
   });
 });
@@ -118,6 +115,20 @@ describe('renderApprovalRequest', () => {
     const text = renderApprovalRequest({ ...request('S'), level: 'any-change', destructiveChanges: [] });
     expect(text).not.toContain('Destructive changes:');
     expect(text).toContain(`"--require-approval" is set to 'any-change'.`);
+  });
+
+  it('under broadening, prints the security table and says the stack has security-sensitive updates', () => {
+    const text = renderApprovalRequest({
+      ...request('S'),
+      level: 'broadening',
+      securityChanges: 'IAM Statement Changes\n[+] Allow s3:PutObject\n\n',
+    });
+    expect(text).toContain('IAM Statement Changes\n[+] Allow s3:PutObject\n\nStack S: 1 to create');
+    // The destructive list belongs to the destructive level.
+    expect(text).not.toContain('Destructive changes:');
+    expect(text).toContain(
+      `Stack includes security-sensitive updates and "--require-approval" is set to 'broadening'.`
+    );
   });
 
   it('says an Outputs-only change has no resource changes', () => {

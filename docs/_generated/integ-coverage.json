@@ -4308,7 +4308,8 @@
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
-        "migrate-from-cfn"
+        "migrate-from-cfn",
+        "require-approval-broadening"
       ],
       "signals": {
         "asset-migration": [
@@ -4341,6 +4342,10 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "require-approval-broadening": [
+          "l2",
           "literal"
         ]
       }
@@ -4419,6 +4424,7 @@
         "recreate-parent-child-permission",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "require-approval-broadening",
         "retain-orphan-redeploy",
         "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
@@ -4670,6 +4676,10 @@
         ],
         "recreate-via-sdk-provider": [
           "l2"
+        ],
+        "require-approval-broadening": [
+          "l2",
+          "literal"
         ],
         "retain-orphan-redeploy": [
           "l2",

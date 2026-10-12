@@ -8,8 +8,9 @@ paths:
 # `cdkd diff`
 
 `diff-recursive.ts` holds the recursive helpers; `diff.ts` is glue (synth,
-`buildDiffTree` per stack, render / JSON / `--fail-on`). `--fail-on=destructive`
-reads each node's `destructiveChanges` and forces the nested walk; plain
+`buildDiffTree` per stack, render / JSON / `--fail-on`). `destructive` reads
+each node's `destructiveChanges`, `broadening` runs
+`src/analyzer/security-diff.ts` per node; both force the nested walk. Plain
 `cdkd diff` exits 0, **or 3** when the preview finds a condition
 that would make `cdkd deploy` refuse to start (`DeployRefusalPreviewError`, on
 `blockingCount > 0`, ranked ABOVE `--fail-on`).
@@ -51,9 +52,7 @@ returned rather than appended to `blocking` in place precisely so that ONE gate
 governs both, and the root test is the explicit `isNestedChild` argument rather
 than `ancestorTemplatePaths` being empty — that set is for CYCLE detection, and
 keying the exit code on it would let a future caller unset exit 3 by seeding a
-parameter that has nothing to do with the decision. One case diffs a damaged
-ROOT with that set already populated, so the inference cannot be restored
-silently. Nested nodes are excluded as a CONSERVATIVE choice rather than because
+parameter that has nothing to do with the decision. Nested nodes are excluded as a CONSERVATIVE choice rather than because
 reachability is unknowable: the deploy skips an unchanged nested-stack row and
 an attribute-only UPDATE, so a reason there would report a refusal over a deploy
 that succeeds — while a CREATE row, a DELETE row or a property-changing UPDATE

@@ -1,4 +1,5 @@
 import { findDestructiveChanges } from '../analyzer/destructive-changes.js';
+import { diffSecurity } from '../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
 import { safeMsg } from '../utils/display-safe.js';
@@ -19,6 +20,10 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  *   (`findDestructiveChanges`). A `--recreate-via-*` target counts as a
  *   replacement: the engine destroys and re-creates it whatever its properties
  *   say.
+ * - `broadening` asks when a change broadens IAM permissions or security-group
+ *   rules, as the AWS CDK CLI decides it (`diffSecurity`; go-to-k/cdkd#4601).
+ *   The security diff is computed only at this level. Each nested child asks
+ *   for its own changes, as under `destructive`.
  * - `any-change` asks for any change, except when every change is an UPDATE of
  *   a nested-stack row: each child engine asks for its own changes when the
  *   row is reached, so asking here too would ask twice for one change. A
@@ -43,6 +48,8 @@ export async function requireDeploymentApproval(args: {
   records: Readonly<Record<string, ResourceState>>;
   template: CloudFormationTemplate;
   recreateTargetIds?: Iterable<string> | undefined;
+  /** Hides secrets in the `broadening` table (`diffSecurity`); built only at that level. */
+  secretMask?: (() => (text: string) => string) | undefined;
 }): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
@@ -64,10 +71,26 @@ export async function requireDeploymentApproval(args: {
   const onlyNestedUpdates = changes.every(
     (c) => c.changeType === 'UPDATE' && c.resourceType === NESTED_STACK_TYPE
   );
+  // A diff that cannot be computed fails the deploy before anything changes
+  // (a gate that cannot decide must not pass), and no retry computes it again.
+  const security =
+    level === 'broadening'
+      ? await diffSecurity({
+          stackName: args.stackName,
+          changes,
+          records: args.records,
+          template: args.template,
+          secretMask: args.secretMask,
+        }).catch((error: unknown) => {
+          throw error instanceof Error ? markNonRetryable(error) : error;
+        })
+      : undefined;
   const ask =
     level === 'destructive'
       ? destructiveChanges.length > 0
-      : changes.length > 0 && !onlyNestedUpdates;
+      : level === 'broadening'
+        ? security?.broadening === true
+        : changes.length > 0 && !onlyNestedUpdates;
   if (!ask) return false;
 
   const count = (type: ResourceChange['changeType']): number =>
@@ -82,6 +105,7 @@ export async function requireDeploymentApproval(args: {
         level,
         counts: { create: count('CREATE'), update: count('UPDATE'), delete: count('DELETE') },
         destructiveChanges,
+        ...(security !== undefined && { securityChanges: security.rendered }),
       })
     );
   } catch (error) {
@@ -164,6 +188,9 @@ export async function checkDestructivePlan(args: {
  * question is open, as for the up-front prompt. `onAsked` runs once the
  * question was answered (go-to-k/cdkd#4705: the generated-name lookups made
  * before it are read again at their creates).
+ *
+ * `broadening` does not ask: a replacement changes no permission, and that
+ * level asks only about a permission change (go-to-k/cdkd#4601).
  */
 export async function approveLateReplacement(args: {
   options: Pick<DeployEngineOptions, 'requireApproval' | 'approveDeployment'>;
@@ -175,7 +202,7 @@ export async function approveLateReplacement(args: {
 }): Promise<boolean> {
   const level = args.options.requireApproval ?? 'never';
   const approve = args.options.approveDeployment;
-  if (level === 'never' || approve === undefined) return true;
+  if (level === 'never' || level === 'broadening' || approve === undefined) return true;
   if (enclosingDeadlineExpired()) return false;
   try {
     const approved = await whileEnclosingDeadlinesPaused(() =>

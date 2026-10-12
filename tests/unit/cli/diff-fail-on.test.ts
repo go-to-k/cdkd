@@ -237,6 +237,55 @@ describe('cdkd diff --fail-on', () => {
     expect(stateForDiff.reads).not.toContain('S~Child');
   }, 30_000);
 
+  describe('broadening (go-to-k/cdkd#4601)', () => {
+    const SG = {
+      Type: 'AWS::EC2::SecurityGroup',
+      Properties: {
+        GroupDescription: 'sg',
+        SecurityGroupIngress: [{ CidrIp: '0.0.0.0/0', IpProtocol: 'tcp', FromPort: 22, ToPort: 22 }],
+      },
+    };
+
+    it('fails on an added ingress rule and prints the security table', async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE, Sg: SG });
+      const { code, said } = await runDiff(['S', '--fail-on', 'broadening']);
+      expect(code).toBe(1);
+      expect(said).toContain('❌  Stack S broadens permissions (--fail-on=broadening):');
+      expect(said).toContain('Everyone (IPv4)');
+    }, 30_000);
+
+    it('passes a change that broadens nothing, which any-change fails', async () => {
+      stateForDiff.value = stateWith({ Q: queue() });
+      synthTemplate({ Q: QUEUE_TEMPLATE, R: { Type: 'AWS::SQS::Queue' } });
+      expect((await runDiff(['S', '--fail-on', 'broadening'])).code).toBeUndefined();
+      expect((await runDiff(['S', '--fail-on', 'any-change'])).code).toBe(1);
+    }, 30_000);
+
+    it('passes the removal of a security group, which destructive fails', async () => {
+      stateForDiff.value = stateWith({
+        Q: queue(),
+        Sg: { physicalId: 'sg-1', resourceType: 'AWS::EC2::SecurityGroup', properties: SG.Properties },
+      });
+      synthTemplate({ Q: QUEUE_TEMPLATE });
+      expect((await runDiff(['S', '--fail-on', 'broadening'])).code).toBeUndefined();
+      expect((await runDiff(['S', '--fail-on', 'destructive'])).code).toBe(1);
+    }, 30_000);
+
+    it('walks nested stacks without --recursive', async () => {
+      stateForDiff.value = stateWith({
+        Q: queue(),
+        Child: queue({ physicalId: 'S~Child', resourceType: 'AWS::CloudFormation::Stack' }),
+      });
+      stateForDiff.byStack = {
+        'S~Child': { ...stateWith({ Inner: queue({ physicalId: 'i' }) }), stackName: 'S~Child' },
+      };
+      synthTemplate({ Q: QUEUE_TEMPLATE });
+      await runDiff(['S', '--fail-on', 'broadening']);
+      expect(stateForDiff.reads).toContain('S~Child');
+    }, 30_000);
+  });
+
   it('passes --fail-on=destructive when nothing changed', async () => {
     stateForDiff.value = stateWith({ Q: queue() });
     synthTemplate({ Q: QUEUE_TEMPLATE });
@@ -281,10 +330,10 @@ describe('cdkd diff --fail-on', () => {
       expect(mockSynthesize).not.toHaveBeenCalled();
     });
 
-    it('refuses broadening, which cdkd cannot decide', async () => {
-      const { code, said } = await runDiff(['S', '--fail-on', 'broadening']);
+    it('refuses a value outside the four', async () => {
+      const { code, said } = await runDiff(['S', '--fail-on', 'always']);
       expect(code).toBe(1);
-      expect(said).toContain('Allowed choices are never, any-change, destructive.');
+      expect(said).toContain('Allowed choices are never, any-change, broadening, destructive.');
       expect(mockSynthesize).not.toHaveBeenCalled();
     });
   });

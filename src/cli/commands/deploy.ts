@@ -217,7 +217,7 @@ async function deployCommand(
   // Before synth, so an invalid cdk.json `requireApproval` fails fast. A dry
   // run never asks (the engine returns before the approval), so it needs no
   // prompter either.
-  const requireApproval = resolveRequireApproval(options.requireApproval, logger);
+  const requireApproval = resolveRequireApproval(options.requireApproval);
   const approveDeployment =
     requireApproval !== 'never' && !options.dryRun
       ? createApprovalPrompter({ yes: options.yes ?? false })

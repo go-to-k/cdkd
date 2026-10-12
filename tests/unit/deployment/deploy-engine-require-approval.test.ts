@@ -241,6 +241,52 @@ describe('DeployEngine --require-approval', () => {
     });
   });
 
+  it('broadening (go-to-k/cdkd#4601): does not ask for an update that grants nothing', async () => {
+    const template = arrange(mocks(), { Kept: record(), Gone: record({ physicalId: 'gone' }) }, [
+      inPlaceUpdate,
+      deletion,
+    ]);
+    await makeEngine({ requireApproval: 'broadening' }).deploy(STACK_NAME, template);
+    expect(approve).not.toHaveBeenCalled();
+    expect(provider.update).toHaveBeenCalled();
+  });
+
+  it('broadening: asks for a new ingress rule, and a decline changes nothing', async () => {
+    approve.mockResolvedValue(false);
+    const before = { GroupDescription: 'sg', SecurityGroupIngress: [] };
+    const sgUpdate: ResourceChange = {
+      logicalId: 'Kept',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::EC2::SecurityGroup',
+      currentProperties: before,
+      propertyChanges: [
+        {
+          path: 'SecurityGroupIngress',
+          oldValue: [],
+          newValue: [{ CidrIp: '0.0.0.0/0', IpProtocol: 'tcp', FromPort: 22, ToPort: 22 }],
+          requiresReplacement: false,
+        },
+      ],
+    };
+    const template = arrange(
+      mocks(),
+      { Kept: record({ resourceType: 'AWS::EC2::SecurityGroup', properties: before }) },
+      [sgUpdate]
+    );
+    const err = await makeEngine({ requireApproval: 'broadening' })
+      .deploy(STACK_NAME, template)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(approve.mock.calls[0]![0]).toMatchObject({ level: 'broadening' });
+    expect(approve.mock.calls[0]![0].securityChanges).toContain('Everyone (IPv4)');
+    expect(err).toMatchObject({ code: 'DEPLOY_NOT_APPROVED' });
+    expect(provider.update).not.toHaveBeenCalled();
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+  });
+
   it('destructive: asks for an in-place update of a --recreate-via-* target', async () => {
     approve.mockResolvedValue(true);
     const template = arrange(mocks(), { Kept: record() }, [inPlaceUpdate]);

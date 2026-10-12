@@ -471,7 +471,9 @@ export interface DeployEngineOptions {
    * `--require-approval` (AWS CDK CLI parity, aws/aws-cdk-cli#2021): which
    * changes need {@link approveDeployment} to say yes before anything is
    * provisioned. `any-change` asks whenever the stack has a resource change,
-   * `destructive` only when one replaces, deletes or orphans a resource.
+   * `destructive` only when one replaces, deletes or orphans a resource,
+   * `broadening` only when one broadens IAM permissions or security-group
+   * rules (go-to-k/cdkd#4601).
    * Absent or `never`: no approval. Asked after the diff and the `--dry-run`
    * return, so a dry run never asks. A nested child engine inherits both
    * members through the options spread and asks for its own changes when the
@@ -520,8 +522,8 @@ export interface DeployEngineOptions {
   crossPrefixHolder?: ((stackName: string) => Promise<ForeignHolding>) | undefined;
 }
 
-/** The `--require-approval` levels cdkd implements (CDK's `broadening` needs a security diff cdkd has none of). */
-export type RequireApprovalLevel = 'never' | 'any-change' | 'destructive';
+/** The `--require-approval` levels, the AWS CDK CLI's four. */
+export type RequireApprovalLevel = 'never' | 'any-change' | 'broadening' | 'destructive';
 
 /**
  * {@link DeployEngineOptions.approveDeployment}. `autoApproves` (go-to-k/cdkd#4705
@@ -541,6 +543,11 @@ export interface DeploymentApprovalRequest {
   destructiveChanges: DestructiveChange[];
   /** The stack's Outputs (or its export set) change with no resource change. */
   outputsOnly?: true;
+  /**
+   * Under `broadening`: the security-change table (IAM and security-group
+   * changes) the question is about, already terminal-safe.
+   */
+  securityChanges?: string;
 }
 
 /**
