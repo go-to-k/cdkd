@@ -18,6 +18,8 @@ paths:
   [lock-contention-message.md](lock-contention-message.md).
   **malformed-resources-bag.ts**:
   [state-malformed-containers.md](state-malformed-containers.md).
+- **state-bucket-lifecycle.ts** — merges the response expiry rule (#2353);
+  never PUTs an unread config.
 - **earlier-state-versions.ts** — READ-only noncurrent `state.json` versions;
   kept out of `s3-state-backend.ts`, whose version listings must go through the
   shared purge.
@@ -29,8 +31,6 @@ paths:
   must skip `_cdkd-registry/`. `retained.json` (a destroy's kept resources) is
   a `state.json` sibling that `deleteState` must NOT sweep: it exists to
   outlive the record.
-- **types/assembly.ts** — Cloud Assembly types; **types/** also holds config,
-  state and resource types.
 
 - **types/rollback-journal.ts** — journal types, `parseRollbackJournal`,
   `UnknownRollbackJournalVersionError`

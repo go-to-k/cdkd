@@ -67,6 +67,14 @@ vi.mock('../../../src/utils/bucket-region-client.js', () => ({
   rebuildClientForBucketRegion: mockRebuildClientForBucketRegion,
 }));
 
+// Issue #2353's lifecycle check is stubbed so the per-client S3 call counts
+// below stay exact; what it is handed (the region-corrected client) is
+// asserted instead.
+const mockEnsureExpiration = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock('../../../src/state/state-bucket-lifecycle.js', () => ({
+  ensureCustomResourceResponseExpirationOnce: mockEnsureExpiration,
+}));
+
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
 
 describe('CustomResourceProvider response-bucket region correction (issue #1195)', () => {
@@ -86,6 +94,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     mockGetSignedUrl.mockResolvedValue('https://s3.example.com/presigned-url');
     mockRebuildClientForBucketRegion.mockReset();
     correctedSend.mockReset();
+    mockEnsureExpiration.mockClear();
     provider = new CustomResourceProvider();
   });
 
@@ -146,6 +155,13 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     // noncurrent-version purge that follows it...
     expect(correctedSend).toHaveBeenCalledTimes(S3_OPS_PER_CREATE);
     expect(mockS3Send).not.toHaveBeenCalled();
+    // ...the issue #2353 lifecycle check, which is a bucket-configuration
+    // call against the same bucket (a 301 there would only warn, silently)...
+    expect(mockEnsureExpiration).toHaveBeenCalledWith(
+      correctedClient,
+      'cdkd-state-123456789012',
+      expect.anything()
+    );
     // ...and the pre-signed ResponseURL must be signed with it too (the
     // URL's host is region-specific — this is where the 301 originated).
     expect(mockGetSignedUrl).toHaveBeenCalledWith(

@@ -72,7 +72,7 @@ cross-stack-secret-import	2026-10-05T15:24:10Z	PASS	396	verify.sh	rc ok, orph cl
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-11T15:30:01Z	PASS	170	verify.sh	rc ok, orph clean (#4738 PR #4792)
 custom-resource-noecho-nested	2026-10-09T06:13:03Z	PASS	1343	verify.sh	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-custom-resource-provider	2026-10-11T15:30:01Z	PASS	606	verify.sh	rc ok, orph clean (#4738 PR #4792)
+custom-resource-provider	2026-10-12T00:38:30Z	FAIL	401	verify.sh	PR #4814, arm D fixture: grep -q closes the pipe early so sed exits 141 under pipefail and the Added-line check fails although the line was printed; rule added, destroy clean, orph clean, lifecycle config restored
 custom-resource-resolved-secret	2026-10-11T15:30:01Z	PASS	370	verify.sh	rc ok, orph clean (#4738 PR #4792)
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

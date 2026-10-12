@@ -55,6 +55,13 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: vi.fn().mockResolvedValue('https://s3.example.com/presigned-url'),
 }));
 
+// Issue #2353's once-per-process lifecycle check sends on the same S3 mock and
+// would consume this file's ordered `mockResolvedValueOnce` queue. It has its
+// own suite (custom-resource-provider-response-lifecycle.test.ts).
+vi.mock('../../../src/state/state-bucket-lifecycle.js', () => ({
+  ensureCustomResourceResponseExpirationOnce: () => Promise.resolve(),
+}));
+
 import {
   CustomResourceProvider,
   CR_BACKING_LAMBDA_GONE_SKIP_REASON,

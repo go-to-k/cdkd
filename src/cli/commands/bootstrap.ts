@@ -35,6 +35,14 @@ import {
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
+import {
+  applyCustomResourceResponseExpiration,
+  customResourceResponseExpirationWarning,
+  CUSTOM_RESOURCE_RESPONSE_EXPIRATION_DAYS,
+  CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID,
+} from '../../state/state-bucket-lifecycle.js';
+import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /**
  * Bootstrap command implementation
@@ -351,6 +359,28 @@ async function bootstrapCommand(options: {
         })
       );
       logger.info('✓ Set bucket policy (deny external access)');
+
+      // Issue #2353: expire custom-resource response objects after one day.
+      // A read-merge-write that keeps every existing lifecycle rule, and a
+      // warning rather than a failure when it cannot run: a bootstrap that
+      // used to succeed without the lifecycle permissions still succeeds.
+      // Buckets bootstrapped before this get the rule from their first
+      // custom-resource deploy instead (`CustomResourceProvider`).
+      logger.debug('Setting custom-resource response lifecycle rule...');
+      const lifecycle = await applyCustomResourceResponseExpiration(stateBucketS3, bucketName, {
+        expectedBucketOwner: accountId,
+      });
+      if (lifecycle.status === 'failed' || lifecycle.status === 'refused') {
+        logger.warn(customResourceResponseExpirationWarning(bucketName, lifecycle));
+      } else if (lifecycle.status === 'added') {
+        logger.info(
+          safeMsg`✓ Set lifecycle rule (expire ${CUSTOM_RESOURCE_RESPONSE_PREFIX}/ responses after ${CUSTOM_RESOURCE_RESPONSE_EXPIRATION_DAYS} day)`
+        );
+      } else {
+        logger.info(
+          safeMsg`✓ Lifecycle rule ${CUSTOM_RESOURCE_RESPONSE_LIFECYCLE_RULE_ID} already present (left unchanged)`
+        );
+      }
     }
 
     // cdkd-owned asset storage (issue #1002): asset bucket + container-asset
