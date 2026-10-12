@@ -138,6 +138,9 @@ class QueueReaderChild extends cdk.NestedStack {
  *     child's `Resolved Ref to parameter: QueueArn` and provider lines printed
  *     the queue name until the row's reads joined the printing bag bound around
  *     its body.
+ *   - `AssembledNameQueue` (AWS::SQS::Queue), named by an `Fn::Join` around a
+ *     parameter naming the secret, and `AssembledQueueReader`
+ *     (AWS::SSM::Parameter) storing its ARN (go-to-k/cdkd#4805: step 5f).
  *   - `SecretNamedGroup` (AWS::Logs::LogGroup), `LogGroupName` from the secret,
  *     read by `MovingFilter` (go-to-k/cdkd#3869). SDIN_MOVE_FILTER=true moves
  *     the filter to FilterLogGroup, a replacement of its create-only
@@ -267,6 +270,33 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
             ? 60
             : 30,
     });
+    // go-to-k/cdkd#4805: a queue whose name the template ASSEMBLES (an
+    // `Fn::Join` around a parameter naming the secret, the shape of CDK's
+    // `secretValueFromJson` on a secret in the stack), never updated, and an
+    // SSM reader of its ARN, updated in step 4 (it stored the plaintext ARN on
+    // create) and edited in step 5f. Only a literal token proved its
+    // region, so the reader was sent the record's `{{resolve:` spelling of the
+    // ARN, which SSM refused; the deploy's producer-region evidence proves it.
+    const secretRef = new cdk.CfnParameter(this, 'SdinStoreName', {
+      type: 'String',
+      default: secretName,
+    });
+    const assembledQueue = new sqs.CfnQueue(this, 'AssembledNameQueue', {
+      queueName: cdk.Fn.join('', [
+        '{{resolve:secretsmanager:',
+        secretRef.valueAsString,
+        ':SecretString:aqueue::}}',
+      ]),
+    });
+    new ssm.CfnParameter(this, 'AssembledQueueReader', {
+      // Named per run by `verify.sh`, so its cleanup can delete it by name.
+      name: process.env.SDIN_AQ_PARAM_NAME ?? '/cdkd-integ/sdin-unset/assembled-queue-arn',
+      type: 'String',
+      value: assembledQueue.attrArn,
+      description:
+        process.env.SDIN_READER_EDIT === 'true' ? 'cdkd integ: reader edited' : 'cdkd integ: initial',
+    });
+
     // READERS of the secret-named queue (go-to-k/cdkd#3869): a `Ref` (its URL)
     // and a `Fn::GetAtt` (its ARN) each resolve to a value embedding the name
     // and are no recorded secret, so before the fix the resolver's `resolved
