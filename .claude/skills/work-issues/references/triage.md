@@ -115,8 +115,8 @@ a CDK CLI premise by running the inputs through its parser from `node_modules`
 — one read off its source refused more (#2221).
 
 **A decision-blocked issue is a candidate, not an exclusion**: return its
-options, each with its fix and what CFn / the CDK CLI does, for ONE
-`AskUserQuestion` (gotchas.md).
+options with each fix and what CFn / the CDK CLI do, for ONE
+`AskUserQuestion` at triage (gotchas.md).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
