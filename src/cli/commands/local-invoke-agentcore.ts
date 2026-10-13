@@ -13,6 +13,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
 import {
   displayIdent,
   displaySafe,
@@ -1631,8 +1632,11 @@ async function resolveAgentCoreCodeImage(
  * or resolved from `--from-cfn-stack` state for the bare form) yields STS temp
  * creds for the download; otherwise `--profile` / the default chain is used.
  * The region is `--region` / `--stack-region` / env / the stack's region.
+ *
+ * Exported so its `--assume-role` fallback warn can be driven by unit tests
+ * (go-to-k/cdkd#2300), as cdk-local exports its twin.
  */
-async function resolveAgentCoreCodeImageFromS3(
+export async function resolveAgentCoreCodeImageFromS3(
   resolved: ResolvedAgentCoreRuntime,
   code: AgentCoreCodeArtifact,
   s3Source: NonNullable<AgentCoreCodeArtifact['s3Source']>,
@@ -1974,8 +1978,10 @@ export async function buildAgentCoreImageContext(
   try {
     accountId = await resolveStackAccountId(region, options.profile, options.fromState);
   } catch (err) {
+    // cdkd-raw-beside-safe: the template is a `safeMsg` tag, which sanitizes
+    // every interpolation, `stateProvider.label` included.
     logger.warn(
-      safeMsg`${stateProvider.label}: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      safeMsg`${stateProvider.label}: STS GetCallerIdentity failed: ${describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
     );
   }
@@ -2083,7 +2089,7 @@ export async function applyAgentCoreCredentialEnv(
       assumeSucceeded = true;
     } catch (err) {
       logger.warn(
-        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${displaySafe(err instanceof Error ? err.message : String(err))}. ` +
+        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${describeLocalAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -2128,9 +2134,12 @@ export async function applyAgentCoreCredentialEnv(
  *   it renders bare exactly as before. cdk-local's twin of this line flattens
  *   the same value for the same reason; cdkd had nothing.
  *
- * `error` takes `displaySafe` — the DENYLIST, since an SDK error message is
- * free-form text rather than an identifier, which is the line
- * `display-safe.ts`'s header draws. The first cut stringified it and sanitized
+ * `error` takes `describeLocalAwsFailureForWarn` (go-to-k/cdkd#2300): a
+ * modeled STS exception keeps its message, flattened and capped, and any other
+ * failure is withheld to its class with the text at `debug`. It ends in
+ * `displaySafe` — the DENYLIST, since an SDK error message is free-form text
+ * rather than an identifier, which is the line `display-safe.ts`'s header
+ * draws. The first cut stringified it and sanitized
  * NOTHING, and go-to-k/cdkd#3390's round-2 security review showed that was the
  * hole the other two guards leave open: STS answers an unparseable RoleArn with
  * a `ValidationError` that ECHOES THE SUBMITTED VALUE VERBATIM, so the
@@ -2158,7 +2167,7 @@ export function assumeRoleFallbackWarning(args: {
     // remote value reaches it, so it is the one operand on this line that
     // cannot carry anything. The other two both take a helper.
     `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed for ` +
-    `${args.purpose}: ${displaySafe(args.error instanceof Error ? args.error.message : String(args.error))}. ` +
+    `${args.purpose}: ${describeLocalAwsFailureForWarn(args.error, 'STS AssumeRole')}. ` +
     `Falling back to ${fallback}.`
   );
 }
@@ -2398,7 +2407,12 @@ async function assumeAgentCoreExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  assertSendableRoleArn(roleArn);
+  // A `CdkdError`, so the STS-failure warn this lands in prints its remedy
+  // rather than withholding it (go-to-k/cdkd#2300).
+  assertSendableRoleArn(
+    roleArn,
+    (m) => new CdkdError(m, 'LOCAL_INVOKE_AGENTCORE_ASSUME_ROLE_INVALID')
+  );
   const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed

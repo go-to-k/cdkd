@@ -23,6 +23,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
 import {
   applyRoleArnIfSet,
   assertSendableRoleArn,
@@ -3627,8 +3628,10 @@ export async function resolvePseudoParametersForStartApi(
       sts.destroy();
     }
   } catch (err) {
+    // cdkd-raw-beside-safe: `sourceFlag` is one of two caller literals
+    // ('--from-state' / '--from-cfn-stack'), so it cannot carry anything.
     logger.warn(
-      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'Substitution will be skipped for AWS::AccountId; affected env entries will be dropped with per-key warnings.'
     );
   }
