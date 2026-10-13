@@ -7,12 +7,12 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * cdkd standalone `AWS::SNS::Subscription` UPDATE integ (issue
  * [#1967](https://github.com/go-to-k/cdkd/issues/1967)).
  *
- * `SNSSubscriptionProvider.update` replaces DELETE-first: it unsubscribes the
- * old subscription and subscribes a new one, even for a change AWS itself
- * would accept in place. Nothing in the integ tree drove that method before
- * this fixture, which is how the thrown-delete arm of #1967 — where the
- * unsubscribe fails and cdkd subscribed anyway, leaving TWO live subscriptions
- * delivering every message twice — reached main.
+ * `SNSSubscriptionProvider.update` applies a mutable attribute edit IN PLACE
+ * with `SetSubscriptionAttributes` (issue
+ * [#4853](https://github.com/go-to-k/cdkd/issues/4853)), keeping the
+ * subscription ARN as CloudFormation does; it used to unsubscribe and
+ * subscribe again. A change it cannot apply in place keeps the DELETE-first
+ * replacement and its #1967 thrown-delete abort, pinned by unit tests.
  *
  * ## Why the mutated property is `RawMessageDelivery` and NOT `Endpoint`
  *
@@ -28,11 +28,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * `if`. An endpoint-change fixture would therefore never execute one line of
  * the method under test, while looking exactly like a test of it.
  *
- * `RawMessageDelivery` is mutable per the same schema, so it lands in the
- * `else` branch and drives `update()` — which then performs its own
- * delete-then-create anyway. That is the behaviour worth pinning: a one-word
- * property flip silently destroys and recreates the subscription, so a failed
- * unsubscribe there is a duplicate for a change the user thinks is trivial.
+ * `RawMessageDelivery` and `FilterPolicy` are mutable per the same schema, so
+ * they land in the `else` branch and drive `update()`.
  *
  * ## Shape
  *
@@ -66,7 +63,14 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
     // resource: a mode-gated RESOURCE is deleted by every later step whose mode
     // list omits the token, and here that would delete the subscription this
     // fixture exists to UPDATE.
-    const rawDelivery = (process.env['CDKD_TEST_UPDATE'] ?? '').includes('raw-delivery');
+    const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
+    const rawDelivery = modes.includes('raw-delivery');
+    // `filter-b` edits the policy in place; `body-scope` then moves it to the
+    // message body (a scope-only edit, also in place); `drop-filter` removes
+    // both, which must leave the live subscription with no filter (#4853).
+    const dropFilter = modes.includes('drop-filter');
+    const filterPolicy = dropFilter ? undefined : { kind: [modes.includes('filter-b') ? 'b' : 'a'] };
+    const filterPolicyScope = !dropFilter && modes.includes('body-scope') ? 'MessageBody' : undefined;
 
     // BOTH polarities are explicit. Leaving the false arm to the AWS default
     // would make the mode-off deploy indistinguishable from one where cdkd
@@ -77,6 +81,8 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
       protocol: 'sqs',
       endpoint: queue.queueArn,
       rawMessageDelivery: rawDelivery,
+      filterPolicy,
+      filterPolicyScope,
     });
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });

@@ -3,18 +3,23 @@ import {
   SubscribeCommand,
   UnsubscribeCommand,
   GetSubscriptionAttributesCommand,
+  SetSubscriptionAttributesCommand,
   InvalidParameterException,
   NotFoundException,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
 import { safeStringify } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
+  CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -43,6 +48,85 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
  */
 export const SNS_SUBSCRIPTION_DELETE_THREW_REASON =
   'the Unsubscribe call did not complete, so the old subscription is unproven';
+
+/**
+ * The attributes `SetSubscriptionAttributes` changes in place (go-to-k/cdkd#4853),
+ * in the order an update applies them: `FilterPolicy` before
+ * `FilterPolicyScope`, so a cleared policy is gone before its scope returns to
+ * the default. `TopicArn` / `Protocol` / `Endpoint` are create-only.
+ */
+const MUTABLE_ATTRIBUTES = [
+  'RawMessageDelivery',
+  'FilterPolicy',
+  'FilterPolicyScope',
+  'RedrivePolicy',
+  'DeliveryPolicy',
+  'ReplayPolicy',
+  'SubscriptionRoleArn',
+] as const;
+
+/**
+ * The value that clears an attribute dropped from the template, for the ones
+ * where AWS documents one. An attribute missing here (`DeliveryPolicy`,
+ * `ReplayPolicy`, `SubscriptionRoleArn`) is removed by re-creating the
+ * subscription without it, as before go-to-k/cdkd#4853.
+ */
+const RESET_VALUES: Readonly<Record<string, string>> = {
+  RawMessageDelivery: 'false',
+  FilterPolicy: '',
+  FilterPolicyScope: 'MessageAttributes',
+  RedrivePolicy: '',
+};
+
+/** The create-only identity of a subscription; a change to one is a replacement. */
+const CREATE_ONLY_FIELDS = ['TopicArn', 'Protocol', 'Endpoint'] as const;
+
+/**
+ * A template value in the string form `Subscribe` / `SetSubscriptionAttributes`
+ * take: policies as JSON, a boolean as `"true"` / `"false"`. `undefined` for an
+ * absent value.
+ */
+function toAttributeValue(key: string, value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    key === 'FilterPolicy' ||
+    key === 'RedrivePolicy' ||
+    key === 'DeliveryPolicy' ||
+    key === 'ReplayPolicy'
+  ) {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  return stringifyValue(value);
+}
+
+/**
+ * Does AWS already hold `desired` for attribute `name`? A JSON policy compares
+ * parsed, and an absent value equals the attribute's default (AWS omits
+ * `RawMessageDelivery` on an email subscription, where setting it is refused).
+ */
+function sameAttributeValue(name: string, desired: string, current: string | undefined): boolean {
+  if (current === undefined) return desired === RESET_VALUES[name];
+  if (desired === current) return true;
+  try {
+    return JSON.stringify(JSON.parse(desired)) === JSON.stringify(JSON.parse(current));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Will the subscription hold no `FilterPolicy` once `plan` is applied? Either
+ * the plan clears it, or the plan leaves it and AWS holds none (a desired
+ * policy the plan does not set already equals what AWS holds).
+ */
+function filterPolicyCleared(
+  plan: ReadonlyArray<readonly [string, string]>,
+  current: Record<string, string>
+): boolean {
+  const planned = plan.find(([name]) => name === 'FilterPolicy');
+  if (planned !== undefined) return planned[1] === '';
+  return current['FilterPolicy'] === undefined || current['FilterPolicy'] === '';
+}
 
 /**
  * AWS SNS Subscription Provider
@@ -95,7 +179,8 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SNS subscription ${logicalId}`);
 
@@ -152,8 +237,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       // would also drop a `cdkd drift --revert` observedProperties snapshot
       // that round-trips an empty FilterPolicy / policy object (which AWS
       // does treat as "clear", per the FilterPolicy comment above).
-      // `update()` delegates to `create()` (delete + recreate), so these flow
-      // through the update path automatically.
+      // `update()`'s replacement arm delegates to `create()` (delete +
+      // recreate), so these reach that path too; its in-place arm sets them
+      // with `SetSubscriptionAttributes` (go-to-k/cdkd#4853).
 
       // FilterPolicyScope: string passthrough.
       const filterPolicyScope = properties['FilterPolicyScope'];
@@ -241,32 +327,215 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      // MASKED: `Subscribe` can quote a rejected attribute back, and a
+      // `FilterPolicy` can hold a resolved secret (the update's replacement
+      // arm reaches here too).
+      throw this.wrapMaskedAwsCallError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        `Failed to create SNS subscription ${logicalId}`,
         resourceType,
         logicalId,
-        undefined,
-        cause
+        undefined
       );
     }
   }
 
   /**
-   * Update an SNS subscription
+   * Update an SNS subscription.
    *
-   * SNS subscriptions are immutable for TopicArn/Protocol/Endpoint changes.
-   * For simplicity, we replace the subscription on any update.
+   * An edit to a mutable attribute is applied IN PLACE with
+   * `SetSubscriptionAttributes`, keeping the subscription ARN, as CloudFormation
+   * does (go-to-k/cdkd#4853): a replacement loses the messages published
+   * between the delete and the create, and puts an email / http(s) endpoint
+   * back into `PendingConfirmation`. Everything else takes the delete-first
+   * replacement in {@link replace}.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SNS subscription ${logicalId}: ${physicalId}`);
+    const plan = await this.planInPlaceUpdate(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      context
+    );
+    if (plan === undefined) {
+      return this.replace(logicalId, physicalId, resourceType, properties, context);
+    }
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    for (const [name, value] of plan) {
+      try {
+        await this.snsClient.send(
+          new SetSubscriptionAttributesCommand({
+            SubscriptionArn: physicalId,
+            AttributeName: name,
+            AttributeValue: value,
+          })
+        );
+      } catch (error) {
+        throw this.wrapMaskedAwsCallError(
+          mask,
+          error,
+          `Failed to update SNS subscription ${logicalId} (attribute ${name})`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+    }
+    const changed = plan.map(([name]) => name).join(', ') || 'no attribute differed';
+    this.logger.debug(safeMsg`Updated SNS subscription ${logicalId} in place: ${changed}`);
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: definedAttributes({
+        Arn: physicalId.startsWith('arn:') ? physicalId : undefined,
+      }),
+    };
+  }
 
+  /**
+   * The `SetSubscriptionAttributes` calls that bring the live subscription to
+   * `properties`, in order, or `undefined` when the change must replace it.
+   *
+   * Computed against what AWS holds, never `previousProperties`: a
+   * `cdkd drift --revert` hands the record as both bags while AWS differs, and
+   * a recorded value can be a mask. `undefined` (replace) for:
+   * - the `PendingConfirmation` placeholder id, which names no subscription
+   *   attributes can be set on;
+   * - a subscription AWS no longer has (`NotFound`), or a readback with no
+   *   attributes, so it is created again as before;
+   * - a subscription still `PendingConfirmation` (an email / http(s) endpoint
+   *   not yet confirmed), which has nothing to lose by being re-created;
+   * - a create-only field differing from AWS (the engine replaces such a
+   *   template change itself, so this is a rollback revert, or a record whose
+   *   physical id names a subscription of another topic or endpoint);
+   * - an attribute dropped from the template with no reset in
+   *   {@link RESET_VALUES};
+   * - a new (non-empty) `FilterPolicy` and a `FilterPolicyScope` change in one
+   *   plan, whether the template declares the scope or dropped it: `Subscribe`
+   *   applies them together, two calls would apply one at a time against the
+   *   other's old value.
+   *
+   * Any other readback failure is thrown, never answered with a replacement.
+   */
+  private async planInPlaceUpdate(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<Array<[string, string]> | undefined> {
+    if (physicalId === 'PendingConfirmation' || physicalId === 'pending confirmation') {
+      return undefined;
+    }
+    let current: Record<string, string> | undefined;
+    try {
+      const response = await this.snsClient.send(
+        new GetSubscriptionAttributesCommand({ SubscriptionArn: physicalId })
+      );
+      current = response?.Attributes;
+    } catch (error) {
+      if (error instanceof NotFoundException) return undefined;
+      throw this.wrapMaskedAwsCallError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        `Failed to update SNS subscription ${logicalId}: could not read its attributes`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    if (current === undefined || current['PendingConfirmation'] === 'true') return undefined;
+    for (const field of CREATE_ONLY_FIELDS) {
+      const desired = properties[field];
+      if (desired !== undefined && stringifyValue(desired) !== current[field]) return undefined;
+    }
+    const plan: Array<[string, string]> = [];
+    for (const name of MUTABLE_ATTRIBUTES) {
+      const desired = toAttributeValue(name, properties[name]);
+      const now = current[name];
+      if (desired !== undefined) {
+        if (!sameAttributeValue(name, desired, now)) plan.push([name, desired]);
+        continue;
+      }
+      // Dropped from the template: clear what AWS still holds.
+      if (now === undefined || now === '') continue;
+      // A scope without a policy filters nothing, and SNS may refuse to set
+      // one on a subscription with no policy: leave it for the next policy.
+      if (name === 'FilterPolicyScope' && filterPolicyCleared(plan, current)) continue;
+      const reset = RESET_VALUES[name];
+      if (reset === undefined) return undefined;
+      if (now !== reset) plan.push([name, reset]);
+    }
+    // A new policy and a scope change in one plan, whatever the template
+    // declares (a dropped scope resets too): two calls would evaluate the new
+    // policy against the OLD scope between them, and a failed second call
+    // would leave a pair neither side asked for. Either order has that gap (a
+    // scope set first is refused against the old policy's shape), so
+    // `Subscribe` sets them together. An EMPTY policy is exempt: cleared
+    // first, the subscription filters nothing between the calls. A scope the
+    // template DECLARES is still sent onto a subscription left with no policy
+    // (only raw CloudFormation spells that; CDK pairs a scope with a policy),
+    // and if SNS refuses it the deploy fails with the error, masked.
+    const policy = plan.find(([name]) => name === 'FilterPolicy');
+    if (
+      policy !== undefined &&
+      policy[1] !== '' &&
+      plan.some(([name]) => name === 'FilterPolicyScope')
+    ) {
+      return undefined;
+    }
+    return plan;
+  }
+
+  /**
+   * A create / update failure, quoting the AWS error's text MASKED: AWS
+   * quotes a rejected value back (a filter policy can carry a resolved
+   * secret). The `cause` stays unmasked, and a message the mask changed is
+   * stamped so the retry classifiers read that chain (`wrapMaskedAwsError`).
+   */
+  private wrapMaskedAwsCallError(
+    mask: (text: string) => string,
+    error: unknown,
+    prefix: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined
+  ): ProvisioningError {
+    return wrapMaskedAwsError(
+      mask,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `${prefix}: ${text}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        )
+    );
+  }
+
+  /**
+   * Replace an SNS subscription, DELETE-first: the path for a change
+   * {@link planInPlaceUpdate} cannot apply in place.
+   */
+  private async replace(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<ResourceUpdateResult> {
     // Delete old subscription
     let deleteResult: void | ResourceDeleteResult = undefined;
     // Issue #1967: the throw is REMEMBERED rather than swallowed, so the abort
@@ -274,7 +543,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // one rule instead of two (see the block comment on the abort).
     let deleteThrew = false;
     try {
-      deleteResult = await this.delete(logicalId, physicalId, resourceType);
+      // The record's region, so a `NotFound` in another region is not read as
+      // "already gone" (`assertRegionMatch`).
+      deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
+        expectedRegion: context?.expectedRegion,
+      });
     } catch (error) {
       deleteThrew = true;
       this.logger.warn(
@@ -324,10 +597,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // burning a backoff schedule on a certain failure.
     //
     // The duplicate is NOT unreachable in general — it needs the endpoint to
-    // differ, which happens when `cloudformation:DescribeType` is unavailable
-    // and `create-only-properties.ts` degrades an endpoint change into an
-    // in-place update (that file's own warning says so). That is the case the
-    // one rule still protects.
+    // differ from the recorded subscription's, which is the only way a
+    // create-only change reaches `update()` (see `planInPlaceUpdate`). That
+    // is the case the one rule still protects.
     //
     // Reachability differs from the skip arm and is worth stating: `delete()`
     // wraps a real `Unsubscribe` failure in a `ProvisioningError`, so this arm
@@ -416,7 +688,13 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     }
 
     // Create new subscription
-    const createResult = await this.create(logicalId, resourceType, properties);
+    // The masker only: this create is NOT a state replay (`replayingState`).
+    const createResult = await this.create(
+      logicalId,
+      resourceType,
+      properties,
+      context?.maskSecrets === undefined ? undefined : { maskSecrets: context.maskSecrets }
+    );
 
     return {
       physicalId: createResult.physicalId,

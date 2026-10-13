@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
-# verify.sh — standalone `AWS::SNS::Subscription` UPDATE integ (issue #1967).
+# verify.sh — standalone `AWS::SNS::Subscription` UPDATE integ (issues #1967,
+# #4853).
 #
-# `SNSSubscriptionProvider.update` replaces DELETE-first. Nothing in the integ
-# tree drove that method before this fixture, which is how the thrown-delete arm
-# of #1967 reached main.
+# `SNSSubscriptionProvider.update` applies a mutable attribute edit IN PLACE
+# with `SetSubscriptionAttributes` (#4853), as CloudFormation does.
 #
-#   Phase 1 (create): subscription with RawMessageDelivery=false.
-#   Phase 2 (update, CDKD_TEST_UPDATE=raw-delivery): the REGRESSION arm — the
-#     replacement must converge, leave EXACTLY ONE subscription, and mint a new
-#     SubscriptionArn that cdkd records.
-#   Phase 3 (throw arm): the state physicalId is rewritten to a malformed
-#     subscription ARN so `Unsubscribe` throws; cdkd must ABORT before creating.
+#   Phase 1 (create): RawMessageDelivery=false, FilterPolicy {kind:[a]}.
+#   Phase 2 (CDKD_TEST_UPDATE=raw-delivery,filter-b): the REGRESSION arm for
+#     #4853 — RawMessageDelivery true and FilterPolicy {kind:[b]} reach AWS on
+#     the SAME subscription: its ARN, cdkd's record and the Output are
+#     unchanged, and the topic holds exactly one subscription. A binary
+#     without #4853 is RED here (the ARN changes: it unsubscribed and
+#     subscribed again).
+#   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
+#   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
+#     template: the policy is cleared on the live subscription (the scope of a
+#     subscription with no policy filters nothing and is left), same ARN.
+#   Phase 3 (unreadable record): the state physicalId is rewritten to a
+#     malformed subscription ARN; the in-place path's readback is refused, so
+#     cdkd fails the deploy WITHOUT unsubscribing or subscribing anything.
+#     (The #1967 thrown-delete abort sits on the replacement path, which an
+#     attribute edit no longer takes; unit tests pin it.)
 #   Phase 4 (repair + destroy): restore the real ARN, `cdkd destroy`, leak check.
 #
 # ## Why the mutated property is `RawMessageDelivery` and not `Endpoint`
@@ -223,6 +233,16 @@ raw_delivery_of() { # usage: raw_delivery_of <subscriptionArn>
   aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "$1" \
     --query 'Attributes.RawMessageDelivery' --output text
 }
+filter_policy_of() { # usage: filter_policy_of <subscriptionArn>; compact JSON, or None
+  local raw
+  raw=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "$1" \
+    --query 'Attributes.FilterPolicy' --output text) || return 1
+  if [ "${raw}" = "None" ] || [ -z "${raw}" ]; then
+    printf 'None\n'
+  else
+    printf '%s' "${raw}" | jq -c . || return 1
+  fi
+}
 state_sub_physical_id() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
     | jq -r --arg t "${SUB_TYPE}" \
@@ -324,22 +344,22 @@ fi
 echo "    OK: one subscription ${SUB_ARN_1} -> ${QUEUE_ARN}, RawMessageDelivery=false"
 echo "    OK: state attributes.Arn and Output SubscriptionArn both ${SUB_ARN_1}"
 
-# --- Phase 2: the REGRESSION arm -------------------------------------------
-# `RawMessageDelivery` is mutable, so the engine hands this to
-# `SNSSubscriptionProvider.update()` — which unsubscribes and re-subscribes.
-echo "==> Phase 2: update RawMessageDelivery false -> true (drives update())"
-CDKD_TEST_UPDATE=raw-delivery node "${LOCAL_DIST}" deploy "${STACK}" \
+# --- Phase 2: the REGRESSION arm (#4853) -----------------------------------
+# `RawMessageDelivery` and `FilterPolicy` are mutable, so the engine hands this
+# to `SNSSubscriptionProvider.update()`, which must apply both IN PLACE.
+echo "==> Phase 2: RawMessageDelivery false -> true, FilterPolicy a -> b (in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
 assert_exactly_one_subscription "phase 2"
 SUB_ARN_2=$(sub_arn)
-if [ "${SUB_ARN_2}" = "${SUB_ARN_1}" ]; then
-  echo "FAIL: phase 2: SubscriptionArn is unchanged (${SUB_ARN_2})" >&2
-  echo "    => update() did NOT perform its delete-then-create replacement, so this run" >&2
-  echo "       exercised none of the path under test. A fresh Subscribe after Unsubscribe" >&2
-  echo "       mints a new GUID (measured), so the ARN is what proves the replacement ran." >&2
+if [ "${SUB_ARN_2}" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2: SubscriptionArn changed (${SUB_ARN_1} -> ${SUB_ARN_2})" >&2
+  echo "    => update() unsubscribed and subscribed again for an attribute edit" >&2
+  echo "       CloudFormation applies in place: messages published in between were" >&2
+  echo "       lost, and an email / http(s) endpoint would need re-confirming (#4853)." >&2
   exit 1
 fi
 ENDPOINT_2=$(sub_endpoint)
@@ -352,40 +372,69 @@ if [ "${RAW_2}" != "true" ]; then
   echo "FAIL: phase 2: RawMessageDelivery is '${RAW_2}', expected 'true' after the update" >&2
   exit 1
 fi
-STATE_PID_2=$(state_sub_physical_id)
-if [ "${STATE_PID_2}" != "${SUB_ARN_2}" ]; then
-  echo "FAIL: phase 2: state records physicalId '${STATE_PID_2}', AWS has '${SUB_ARN_2}'" >&2
-  echo "    => cdkd kept the OLD ARN, so the next destroy would address a subscription" >&2
-  echo "       that no longer exists and leak the live one." >&2
+FILTER_2=$(filter_policy_of "${SUB_ARN_2}")
+if [ "${FILTER_2}" != '{"kind":["b"]}' ]; then
+  echo "FAIL: phase 2: FilterPolicy is '${FILTER_2}', expected {\"kind\":[\"b\"]}" >&2
   exit 1
 fi
-# The attribute must track the REPLACEMENT (issue 3329). `update()` returns
-# `createResult.attributes` and the engine REPLACES the attribute map rather
-# than merging it, so a partial map here would leave the OLD ARN cached — and a
-# stale cached ARN is worse than none, since `Fn::GetAtt` would serve it without
-# ever reaching the fallback that would have been right.
-STATE_ARN_2=$(state_sub_arn_attribute)
-if [ "${STATE_ARN_2}" != "${SUB_ARN_2}" ]; then
-  echo "FAIL: phase 2: state attributes.Arn is '${STATE_ARN_2}', AWS has '${SUB_ARN_2}'" >&2
-  echo "    => the cached Arn did not follow the replacement (issue 3329)." >&2
+if [ "$(state_sub_physical_id)" != "${SUB_ARN_1}" ] \
+  || [ "$(state_sub_arn_attribute)" != "${SUB_ARN_1}" ] \
+  || [ "$(state_output SubscriptionArn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2: state physicalId / attributes.Arn / Output SubscriptionArn no longer all ${SUB_ARN_1}" >&2
   exit 1
 fi
-OUT_ARN_2=$(state_output SubscriptionArn)
-if [ "${OUT_ARN_2}" != "${SUB_ARN_2}" ]; then
-  echo "FAIL: phase 2: Output SubscriptionArn is '${OUT_ARN_2}', expected '${SUB_ARN_2}'" >&2
-  echo "    => the Output kept the pre-replacement ARN, so a consumer stack would read" >&2
-  echo "       a subscription that no longer exists." >&2
-  exit 1
-fi
-echo "    OK: replaced ${SUB_ARN_1} -> ${SUB_ARN_2}, RawMessageDelivery=true, state in sync"
-echo "    OK: attributes.Arn and Output followed the replacement to ${SUB_ARN_2}"
+echo "    OK: ${SUB_ARN_1} kept; RawMessageDelivery=true, FilterPolicy kind=b; state in sync"
 
-# --- Phase 3: the THROW arm -------------------------------------------------
-# A malformed subscription ARN makes `Unsubscribe` answer `InvalidParameter:
-# Subscription GUID` (measured) — neither `NotFoundException` nor the
-# pending-confirmation wording, so `delete()` raises a `ProvisioningError` and
-# `update()` reaches the arm issue #1967 fixed.
-echo "==> Phase 3: corrupt the recorded physicalId so the Unsubscribe THROWS"
+# --- Phase 2a: a scope-only edit ---------------------------------------------
+echo "==> Phase 2a: FilterPolicyScope MessageAttributes -> MessageBody (in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2a"
+if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2a: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
+  exit 1
+fi
+SCOPE_2A=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_1}" \
+  --query 'Attributes.FilterPolicyScope' --output text)
+if [ "${SCOPE_2A}" != "MessageBody" ] || [ "$(filter_policy_of "${SUB_ARN_1}")" != '{"kind":["b"]}' ]; then
+  echo "FAIL: phase 2a: FilterPolicyScope is '${SCOPE_2A}' (expected MessageBody) or the policy moved" >&2
+  exit 1
+fi
+echo "    OK: FilterPolicyScope MessageBody on ${SUB_ARN_1}, policy kept"
+
+# --- Phase 2b: attributes dropped from the template --------------------------
+echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2b"
+if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2b: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
+  exit 1
+fi
+FILTER_2B=$(filter_policy_of "${SUB_ARN_1}")
+if [ "${FILTER_2B}" != "None" ] && [ -n "${FILTER_2B}" ]; then
+  echo "FAIL: phase 2b: FilterPolicy is still '${FILTER_2B}' after it left the template" >&2
+  exit 1
+fi
+if [ "$(raw_delivery_of "${SUB_ARN_1}")" != "true" ]; then
+  echo "FAIL: phase 2b: RawMessageDelivery changed, expected the untouched 'true'" >&2
+  exit 1
+fi
+echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
+SUB_ARN_2="${SUB_ARN_1}"
+
+# --- Phase 3: an unreadable record ---------------------------------------
+# A malformed subscription ARN makes SNS answer `InvalidParameter` (measured
+# for `Unsubscribe`; `GetSubscriptionAttributes` validates the same ARN) —
+# not `NotFoundException`, so the in-place path's readback refuses, and cdkd
+# must fail the deploy without unsubscribing or subscribing anything.
+echo "==> Phase 3: corrupt the recorded physicalId so the readback is refused"
 # Checked at the first USE rather than only at creation: that is where a
 # re-ordering of the pre-run cleanup bites, and without it the failure is a bare
 # `No such file or directory` from a redirect 200 lines from the cause.
@@ -426,35 +475,40 @@ printf '%s\n' "${DEPLOY_OUT}"
 DEPLOY_TXT=$(printf '%s' "${DEPLOY_OUT}" | sed $'s/\033\[[0-9;]*m//g')
 
 if [ "${DEPLOY_RC}" -eq 0 ]; then
-  echo "FAIL: phase 3: deploy exited 0 with an un-deletable old subscription" >&2
+  echo "FAIL: phase 3: deploy exited 0 with an unreadable recorded subscription" >&2
   exit 1
 fi
 echo "    OK: deploy exited ${DEPLOY_RC}"
 
 # Two INDEPENDENT markers from different producers, so "the condition did not
-# occur" stays distinguishable from "the wording moved and the grep went blind".
-THROW_SEEN=0
-if printf '%s' "${DEPLOY_TXT}" | grep -q 'Failed to delete old subscription'; then
-  THROW_SEEN=1
+# occur" stays distinguishable from "the wording moved and the grep went blind":
+# cdkd's own refusal, and SNS's `Invalid parameter` it wraps.
+READ_REFUSED=0
+if printf '%s' "${DEPLOY_TXT}" | grep -q 'could not read its attributes'; then
+  READ_REFUSED=1
 fi
-ABORT_SEEN=0
-if printf '%s' "${DEPLOY_TXT}" | grep -q 'was not deleted'; then
-  ABORT_SEEN=1
+SNS_INVALID=0
+if printf '%s' "${DEPLOY_TXT}" | grep -qiE 'invalid ?parameter'; then
+  SNS_INVALID=1
 fi
+if [ "${READ_REFUSED}" -eq 0 ] && [ "${SNS_INVALID}" -eq 1 ]; then
+  echo "FAIL: phase 3: SNS refused the malformed ARN but cdkd's 'could not read its attributes'" >&2
+  echo "    refusal is absent: its wording drifted (check sns-subscription-provider.ts) or" >&2
+  echo "    another call met the ARN first." >&2
+  exit 1
+fi
+if [ "${READ_REFUSED}" -eq 0 ]; then
+  echo "FAIL: phase 3: the in-place readback was not refused — the arm under test never ran" >&2
+  exit 1
+fi
+echo "    OK: the readback of the malformed ARN was refused"
 
-# `Failed to delete old subscription` is logged ONLY by the catch in `update()`,
-# so it is what proves the THROW arm — not the skip arm — was the one taken.
-if [ "${THROW_SEEN}" -eq 0 ]; then
-  echo "FAIL: phase 3: the delete did not throw — the arm under test never ran" >&2
+# No replacement was attempted: `Failed to delete old subscription` is logged
+# only by the replacement path's Unsubscribe.
+if printf '%s' "${DEPLOY_TXT}" | grep -q 'Failed to delete old subscription'; then
+  echo "FAIL: phase 3: cdkd attempted the replacement's Unsubscribe after the refused readback" >&2
   exit 1
 fi
-if [ "${ABORT_SEEN}" -eq 0 ]; then
-  echo "FAIL: phase 3: the delete threw but cdkd did not report the replacement refusal." >&2
-  echo "    Either the #1967 abort regressed, or its wording drifted away from this grep —" >&2
-  echo "    check the warn text in sns-subscription-provider.ts before reading this as a bug." >&2
-  exit 1
-fi
-echo "    OK: the thrown delete produced the replacement refusal"
 
 # THE discriminator. Pre-fix, cdkd went on to `Subscribe` while the old
 # subscription was still live; SNS answers that with `InvalidParameter ...
@@ -462,12 +516,12 @@ echo "    OK: the thrown delete produced the replacement refusal"
 # deploy failed either way and the AWS end state is identical. Only the ABSENCE
 # of SNS's message proves the create was never issued.
 if printf '%s' "${DEPLOY_TXT}" | grep -q 'already exists with different attributes'; then
-  echo "FAIL: phase 3: cdkd issued the Subscribe anyway after the delete threw." >&2
-  echo "    SNS refused it ('already exists with different attributes'), which is the" >&2
-  echo "    pre-#1967 behaviour: the create must not be attempted at all." >&2
+  echo "FAIL: phase 3: cdkd issued a Subscribe after the refused readback." >&2
+  echo "    SNS refused it ('already exists with different attributes'): the create" >&2
+  echo "    must not be attempted at all." >&2
   exit 1
 fi
-echo "    OK: no Subscribe was issued after the thrown delete"
+echo "    OK: no Subscribe was issued"
 
 # ...and the live subscription is untouched.
 assert_exactly_one_subscription "phase 3"
@@ -521,4 +575,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "=== PASS: standalone SNS::Subscription update replacement + #1967 thrown-delete abort ==="
+echo "=== PASS: standalone SNS::Subscription attribute edits applied in place (#4853) + refused-readback arm ==="

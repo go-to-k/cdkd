@@ -949,8 +949,10 @@ the same for all of them:
   [#1819](https://github.com/go-to-k/cdkd/issues/1819) ALSO return
   `{ outcome: 'partial', reason }`, so the outcome is counted and recorded
   rather than living only in the log.
-- **delete-then-create** (SNS subscription): ABORT with a `ProvisioningError`
-  BEFORE creating the replacement. Continuing would leave two subscriptions on
+- **delete-then-create** (SNS subscription, for a change it cannot apply in
+  place with `SetSubscriptionAttributes`; issue
+  [#4853](https://github.com/go-to-k/cdkd/issues/4853)): ABORT with a
+  `ProvisioningError` BEFORE creating the replacement. Continuing would leave two subscriptions on
   the topic and deliver every message twice, and that duplicate is precisely
   what the CREATE would add — so not making it is the whole remedy.
 

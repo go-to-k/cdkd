@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  SetSubscriptionAttributesCommand,
   SubscribeCommand,
   UnsubscribeCommand,
   GetSubscriptionAttributesCommand,
@@ -35,7 +36,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 
 const SUB_ARN_OLD = 'arn:aws:sns:us-east-1:1:my-topic:abcd-efgh';
-const SUB_ARN_NEW = 'arn:aws:sns:us-east-1:1:my-topic:wxyz-1234';
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:1:my-topic';
 const QUEUE_ARN = 'arn:aws:sqs:us-east-1:1:queue';
 const RESOURCE_TYPE = 'AWS::SNS::Subscription';
@@ -77,25 +77,35 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
     expect(observed).not.toHaveProperty('SubscriptionRoleArn');
     expect(observed).not.toHaveProperty('ReplayPolicy');
 
-    // update() is delete + create. Mock both mock.send calls.
+    // update() applies a mutable edit in place (go-to-k/cdkd#4853): it reads
+    // the subscription, then sets only what differs. AWS holds the same email
+    // subscription here.
     vi.clearAllMocks();
-    mockSend.mockResolvedValueOnce({}); // Unsubscribe
-    mockSend.mockResolvedValueOnce({ SubscriptionArn: SUB_ARN_NEW }); // Subscribe
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        Protocol: 'email',
+        Endpoint: 'me@example.com',
+        Owner: '1',
+        SubscriptionArn: SUB_ARN_OLD,
+      },
+    }); // GetSubscriptionAttributes
 
-    await provider.update('L', SUB_ARN_OLD, RESOURCE_TYPE, observed!, observed!);
+    const result = await provider.update('L', SUB_ARN_OLD, RESOURCE_TYPE, observed!, observed!);
+    expect(result.physicalId).toBe(SUB_ARN_OLD);
+    expect(mockSend).toHaveBeenCalledTimes(1);
 
-    const subscribeCall = mockSend.mock.calls.find((c) => c[0] instanceof SubscribeCommand);
-    expect(subscribeCall).toBeDefined();
-    const input = subscribeCall![0].input as {
-      TopicArn?: string;
-      Protocol?: string;
-      Endpoint?: string;
-      Attributes?: Record<string, string>;
-    };
     // Class 1 guard: no protocol-only attribute is shipped on an email
     // protocol subscription. AWS would reject these as "is only valid
     // on sqs/lambda/firehose/http(s) protocols".
-    const attrs = input.Attributes ?? {};
+    const attrs = Object.fromEntries(
+      mockSend.mock.calls
+        .filter((c) => c[0] instanceof SetSubscriptionAttributesCommand)
+        .map((c) => {
+          const input = (c[0] as SetSubscriptionAttributesCommand).input;
+          return [input.AttributeName, input.AttributeValue];
+        })
+    );
     expect(attrs).not.toHaveProperty('RawMessageDelivery');
     expect(attrs).not.toHaveProperty('RedrivePolicy');
     expect(attrs).not.toHaveProperty('DeliveryPolicy');
@@ -128,7 +138,7 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
     expect(observed).not.toHaveProperty('DeliveryPolicy');
   });
 
-  it('truthy gate — empty FilterPolicy reaches Subscribe (placeholder survives round-trip)', async () => {
+  it('truthy gate — empty FilterPolicy reaches AWS (placeholder survives round-trip)', async () => {
     // Truthy-gate regression guard. Pre-fix code used
     // `if (filterPolicy)`, which silently drops `''` and the parsed
     // empty-object placeholder is technically truthy ({}), but a
@@ -144,18 +154,28 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
       FilterPolicy: '', // explicit empty (cleared on AWS side)
     };
 
-    mockSend.mockResolvedValueOnce({}); // Unsubscribe
-    mockSend.mockResolvedValueOnce({ SubscriptionArn: SUB_ARN_NEW }); // Subscribe
+    // AWS still holds a filter (the revert's target is the cleared one).
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        Protocol: 'sqs',
+        Endpoint: QUEUE_ARN,
+        RawMessageDelivery: 'false',
+        FilterPolicy: '{"foo":["bar"]}',
+        SubscriptionArn: SUB_ARN_OLD,
+      },
+    }); // GetSubscriptionAttributes
+    mockSend.mockResolvedValueOnce({}); // SetSubscriptionAttributes
 
     await provider.update('L', SUB_ARN_OLD, RESOURCE_TYPE, observed, observed);
 
-    const subscribeCall = mockSend.mock.calls.find((c) => c[0] instanceof SubscribeCommand);
-    expect(subscribeCall).toBeDefined();
-    const attrs = (subscribeCall![0].input as { Attributes?: Record<string, string> }).Attributes;
+    const setCall = mockSend.mock.calls.find((c) => c[0] instanceof SetSubscriptionAttributesCommand);
+    expect(setCall).toBeDefined();
+    const input = (setCall![0] as SetSubscriptionAttributesCommand).input;
     // The empty FilterPolicy must NOT be silently dropped — AWS uses
     // the empty placeholder as the documented "clear filter" signal.
-    expect(attrs).toBeDefined();
-    expect(attrs!['FilterPolicy']).toBe('');
+    expect([input.AttributeName, input.AttributeValue]).toEqual(['FilterPolicy', '']);
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   it('round-trip happy path — sqs subscription with FilterPolicy survives readCurrentState → update() without rejection-shape inputs', async () => {
@@ -183,34 +203,37 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
       FilterPolicy: { foo: ['bar'] },
     });
 
+    // AWS has since dropped raw delivery; the revert puts it back IN PLACE
+    // (go-to-k/cdkd#4853) and leaves the matching FilterPolicy alone.
     vi.clearAllMocks();
-    mockSend.mockResolvedValueOnce({}); // Unsubscribe (delete in update)
-    mockSend.mockResolvedValueOnce({ SubscriptionArn: SUB_ARN_NEW }); // Subscribe
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        Protocol: 'sqs',
+        Endpoint: QUEUE_ARN,
+        RawMessageDelivery: 'false',
+        FilterPolicy: '{"foo": ["bar"]}',
+        Owner: '1',
+        SubscriptionArn: SUB_ARN_OLD,
+      },
+    }); // GetSubscriptionAttributes
+    mockSend.mockResolvedValueOnce({}); // SetSubscriptionAttributes
 
     const result = await provider.update('L', SUB_ARN_OLD, RESOURCE_TYPE, observed!, observed!);
 
-    expect(result.wasReplaced).toBe(true);
-    expect(result.physicalId).toBe(SUB_ARN_NEW);
-
-    // Unsubscribe + Subscribe were called.
-    expect(mockSend.mock.calls.filter((c) => c[0] instanceof UnsubscribeCommand)).toHaveLength(1);
-    const subscribeCall = mockSend.mock.calls.find((c) => c[0] instanceof SubscribeCommand);
-    expect(subscribeCall).toBeDefined();
-
-    const input = subscribeCall![0].input as {
-      TopicArn?: string;
-      Protocol?: string;
-      Endpoint?: string;
-      Attributes?: Record<string, string>;
-    };
-    expect(input.TopicArn).toBe(TOPIC_ARN);
-    expect(input.Protocol).toBe('sqs');
-    expect(input.Endpoint).toBe(QUEUE_ARN);
-    // FilterPolicy was JSON.stringify-ed back to the wire form.
-    expect(input.Attributes?.['FilterPolicy']).toBe('{"foo":["bar"]}');
-    // Class 2 guard: no '{}' placeholder shipped.
-    expect(input.Attributes?.['FilterPolicy']).not.toBe('{}');
-    expect(input.Attributes?.['RedrivePolicy']).toBeUndefined();
+    expect(result.wasReplaced).toBe(false);
+    expect(result.physicalId).toBe(SUB_ARN_OLD);
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof UnsubscribeCommand)).toBe(false);
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof SubscribeCommand)).toBe(false);
+    const sets = mockSend.mock.calls
+      .filter((c) => c[0] instanceof SetSubscriptionAttributesCommand)
+      .map((c) => {
+        const input = (c[0] as SetSubscriptionAttributesCommand).input;
+        return [input.AttributeName, input.AttributeValue];
+      });
+    // Only the differing attribute; the FilterPolicy compares equal parsed,
+    // and no '{}' placeholder or RedrivePolicy is shipped (Class 2 guard).
+    expect(sets).toEqual([['RawMessageDelivery', 'true']]);
   });
 
   it('returns no-undefined readCurrentState that survives JSON serialization (state save round-trip)', async () => {

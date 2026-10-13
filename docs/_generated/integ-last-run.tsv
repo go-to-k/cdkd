@@ -340,11 +340,11 @@ servicediscovery-namespaces	2026-10-06T02:22:44Z	PASS	146	verify.sh	PR #4598 (#4
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-10-06T05:56:08Z	PASS	471	verify.sh	rc ok, orph clean (#4602 PR #4609)
 sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-sns-inline-subscription	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-sns-pending-subscription	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-sns-sqs-event	2026-10-11T09:33:22Z	PASS	236	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-sns-subscription-filter	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-sns-subscription-update	2026-10-11T09:33:22Z	PASS	106	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
+sns-pending-subscription	2026-10-13T05:13:33Z	PASS	85	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
+sns-sqs-event	2026-10-13T05:13:33Z	PASS	245	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
+sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95, re-run on b9a821718 after #4842)
+sns-subscription-update	2026-10-13T05:13:33Z	PASS	135	verify.sh	rc ok, orph clean; PR #4854 in-place SetSubscriptionAttributes (aa2317d95, re-run on b9a821718 after #4842); pre-fix arm red at Phase 2 (SubscriptionArn changed, #4853)
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ssm-secure-dynamic-ref	2026-10-05T10:27:06Z	PASS	115	verify.sh	rc ok, orph clean (#2624 PR #4572)

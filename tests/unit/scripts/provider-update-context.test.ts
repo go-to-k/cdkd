@@ -242,6 +242,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'Route53Provider',
       'S3BucketProvider',
       'S3VectorsProvider',
+      'SNSSubscriptionProvider',
       'SNSTopicPolicyProvider',
       'SNSTopicProvider',
       'SQSQueuePolicyProvider',

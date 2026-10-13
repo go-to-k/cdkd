@@ -62,6 +62,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { GetSubscriptionAttributesCommand } from '@aws-sdk/client-sns';
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
@@ -214,6 +215,15 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
   });
 
   it('throws instead of creating a second live subscription', async () => {
+    // AWS holds another endpoint: a create-only change, so the replacement
+    // path (an attribute-only edit is applied in place, go-to-k/cdkd#4853).
+    send.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof GetSubscriptionAttributesCommand
+          ? { Attributes: { ...PROPS, Endpoint: `${PROPS.Endpoint}-old` } }
+          : undefined
+      )
+    );
     const provider = new SNSSubscriptionProvider();
     const createSpy = vi.spyOn(provider, 'create');
     vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
@@ -226,9 +236,10 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
       provider.update('MySub', OLD_ARN, 'AWS::SNS::Subscription', PROPS, PROPS)
     ).rejects.toThrow(/deliver every message twice/);
 
-    // The abort is what prevents the duplicate: no create was issued.
+    // The abort is what prevents the duplicate: no create was issued, and the
+    // only AWS call was the readback.
     expect(createSpy).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
+    expect(send.mock.calls.map(([c]) => c instanceof GetSubscriptionAttributesCommand)).toEqual([true]);
   });
 
   it('the error names the old subscription and the duplicate-delivery consequence, and points at both repairs', async () => {
