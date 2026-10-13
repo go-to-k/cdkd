@@ -92,5 +92,6 @@ DAG-based parallel execution also lets cdkd provision resources with no dependen
 ## Notes
 
 - Results vary with network conditions and AWS API latency.
+- With `RUNS` > 1, each cdkd deploy waits until 65s have passed since the previous destroy. SQS refuses to recreate a queue under a just-deleted name for 60s, and cdkd's queue name is the same every run, so an immediate redeploy would time that cooldown.
 - `bench-ccapi` includes Cloud Control API polling (1s→2s→4s→8s→10s), so cdkd's lead is smaller than on `bench-sdk`.
 - `results-*.md` files are intentionally not committed.

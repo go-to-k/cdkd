@@ -147,6 +147,7 @@ describe('DeployEngine - re-attaching what a same-name IAM principal re-create d
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

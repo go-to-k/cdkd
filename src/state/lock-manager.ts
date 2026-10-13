@@ -44,6 +44,14 @@ export interface LockManagerOptions {
    * silently loses mutual exclusion.
    */
   disableRenewal?: boolean;
+  /**
+   * Let `releaseLock` return once the lock is DELETED, leaving its version
+   * purge running (default: false). The owner MUST await
+   * {@link LockManager.settleDeferredPurges} before it destroys the S3 client
+   * or exits; `cdkd deploy` does, overlapping the purge with its events
+   * flush instead of adding it to every deploy's tail.
+   */
+  deferReleasePurge?: boolean;
 }
 
 /**
@@ -282,6 +290,9 @@ export class LockManager {
   private readonly abandonedLocks = new Map<string, number>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
+  private readonly deferReleasePurge: boolean;
+  /** Release purges still running under `deferReleasePurge`. */
+  private readonly deferredPurges = new Set<Promise<void>>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, options?: LockManagerOptions) {
     this.s3Client = s3Client;
@@ -297,6 +308,16 @@ export class LockManager {
     this.ttlMs = ttlMinutes * 60 * 1000;
     this.renewalDisabled = options?.disableRenewal === true;
     this.renewalIntervalMs = renewalIntervalFor(this.ttlMs);
+    this.deferReleasePurge = options?.deferReleasePurge === true;
+  }
+
+  /**
+   * Await every release purge `deferReleasePurge` left running. Never throws:
+   * `purgeLockVersions` never does. It waits only for the purges started
+   * before it is called, so call it after this manager's last release.
+   */
+  async settleDeferredPurges(): Promise<void> {
+    await Promise.all(this.deferredPurges);
   }
 
   /**
@@ -940,8 +961,15 @@ export class LockManager {
       // caring who wrote it.
       //
       // It cannot mask the `LockError` this block may be throwing:
-      // `purgeLockVersions` never throws.
-      await this.purgeLockVersions(this.getLockKey(stackName, region), 'release');
+      // `purgeLockVersions` never throws. Deferred, it still starts here, after
+      // the delete; only the wait moves to `settleDeferredPurges`.
+      const purge = this.purgeLockVersions(this.getLockKey(stackName, region), 'release');
+      if (this.deferReleasePurge) {
+        this.deferredPurges.add(purge);
+        void purge.finally(() => this.deferredPurges.delete(purge));
+      } else {
+        await purge;
+      }
     }
   }
 

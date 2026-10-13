@@ -85,6 +85,7 @@ import {
   forgetRecordedCreateTokens,
   noteAbandonedRun,
   noteDeployStateRecord,
+  prefetchCreateTokenLedger,
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 
@@ -94,6 +95,13 @@ declare module '../deploy-engine.js' {
     doDeployWithPrefetch: OmitThisParameter<typeof doDeployWithPrefetch>;
   }
 }
+
+/**
+ * Connections `warmConnections` opens before the tail (#4837): the state
+ * save, then the events flush's two concurrent calls, all on the state
+ * backend's client.
+ */
+const TAIL_WARM_CONNECTIONS = 3;
 
 export async function doDeployWithPrefetch(
   this: DeployEngine,
@@ -150,6 +158,9 @@ export async function doDeployWithPrefetch(
   // throws while the gate is still pending, the gate's refusal (if it
   // refuses) is the error reported -- it is the more fundamental one.
   let firstDeployStateGate: Promise<void> | undefined;
+  // The exports index read step 1b starts (#4837); awaited before the lock
+  // goes, like the journal purge. Never rejects.
+  let exportsPrefetch: Promise<void> | undefined;
   // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
   // failed -- the `finally` then checks whether it left one.
   let firstDeploy = false;
@@ -295,6 +306,30 @@ export async function doDeployWithPrefetch(
       }
     }
 
+    // go-to-k/cdkd#4837: reads and a purge the success path would otherwise
+    // make after the last resource, started here beside the deploy instead
+    // (under the stack lock, after `noteDeployStateRecord`). The two that can
+    // write -- the journal-key purge, and the exports index's rebuild of a
+    // missing index -- wait for a first deploy's gate, so a deploy it refuses
+    // has changed nothing. The exports index is read only when the record
+    // publishes no export: then no reader can patch an entry of this stack
+    // into it while this deploy runs, so this copy decides the update as a
+    // fresh read would.
+    const gate = firstDeployStateGate;
+    // Never rejects: the result is awaited in the `finally` below.
+    const afterGate = (start: () => Promise<void>): Promise<void> =>
+      (gate === undefined ? Promise.resolve() : gate)
+        .then(start, () => undefined)
+        .catch(() => undefined);
+    if (!this.options.dryRun) {
+      void prefetchCreateTokenLedger();
+      const exportIndexStore = this.exportIndexStore;
+      if (exportIndexStore && importableOutputKeys(currentState).length === 0) {
+        exportsPrefetch = afterGate(() => exportIndexStore.prefetch());
+      }
+    }
+    this.absentJournalVersionPurge = undefined;
+
     // 1b. If a rollback journal exists, a previous deploy failed / was
     // interrupted and has not yet been reverted (issue #1183). Note that
     // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
@@ -302,6 +337,13 @@ export async function doDeployWithPrefetch(
     // block the deploy.
     try {
       const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+      // No journal: purge what an earlier delete's unfinished purge left, now,
+      // beside the deploy, so the success settle need not touch the key.
+      if (loaded === null && !this.options.parentStackInfo && !this.options.dryRun) {
+        this.absentJournalVersionPurge = afterGate(() =>
+          this.stateBackend.purgeRollbackJournalVersions(stackName, this.stackRegion)
+        );
+      }
       // A nested child's `nested-pending-parent` segments record a deploy
       // that SUCCEEDED while its parent's was still running (issue #3754);
       // they are its parent's to replay, not a failure to report here.
@@ -1435,6 +1477,14 @@ export async function doDeployWithPrefetch(
     // this point the deploy critical path is over, so awaiting the
     // remaining captures only adds the longest still-pending read
     // (typically <300ms in practice for medium stacks; see PR notes).
+    // The state save, the ledger and the events flush below share the state
+    // backend's client; open its connections now, beside the drain (#4837).
+    // A dry run returned before this point.
+    try {
+      void this.stateBackend.warmConnections(stackName, this.stackRegion, TAIL_WARM_CONNECTIONS);
+    } catch {
+      // Best-effort: never in the way of the save it serves.
+    }
     await this.drainObservedCaptures(newState.resources);
 
     // A part the drain cap stopped waiting for can record its secret after
@@ -1622,6 +1672,11 @@ export async function doDeployWithPrefetch(
     } catch {
       // Both warn on their own failures.
     }
+    // What step 1b started -- the journal purge and the exports index read --
+    // finishes before the lock goes and before the caller destroys the
+    // client, on every path, not only the success settle that awaits the
+    // purge. Neither rejects.
+    await Promise.all([this.absentJournalVersionPurge, exportsPrefetch]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed

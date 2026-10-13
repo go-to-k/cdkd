@@ -162,6 +162,7 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

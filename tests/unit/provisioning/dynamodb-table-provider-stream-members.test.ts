@@ -727,12 +727,18 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       const desired = streamBlock('KEYS_ONLY', MEMBERS);
       const live = await read(desired);
 
-      expect(sent(GetResourcePolicyCommand)[0]!.input.ResourceArn).toBe(streamArnOf(2));
-      // The stream tag read addresses the stream arn; the table-level one the TABLE arn.
-      expect(sent(ListTagsOfResourceCommand).map((cmd) => cmd.input.ResourceArn)).toEqual([
-        streamArnOf(2),
-        TABLE_ARN,
-      ]);
+      // The stream reads address the stream arn; the table-level ones the TABLE
+      // arn. The reads run concurrently, so their order is not asserted.
+      expect(
+        sent(GetResourcePolicyCommand)
+          .map((cmd) => cmd.input.ResourceArn)
+          .sort()
+      ).toEqual([TABLE_ARN, streamArnOf(2)].sort());
+      expect(
+        sent(ListTagsOfResourceCommand)
+          .map((cmd) => cmd.input.ResourceArn)
+          .sort()
+      ).toEqual([TABLE_ARN, streamArnOf(2)].sort());
       expect(live!['StreamSpecification']).toEqual({
         StreamEnabled: true,
         StreamViewType: 'KEYS_ONLY',

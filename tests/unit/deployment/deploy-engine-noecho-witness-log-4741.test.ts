@@ -216,6 +216,7 @@ describe('DeployEngine - a differing pre-v11 witness value is masked wherever it
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

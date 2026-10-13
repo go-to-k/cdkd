@@ -84,6 +84,7 @@ describe('DeployEngine - bare Fn::GetAtt over HostedZone NameServers as an Outpu
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };
@@ -140,6 +141,7 @@ describe('DeployEngine - bare Fn::GetAtt over HostedZone NameServers as an Outpu
     };
     mockExportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

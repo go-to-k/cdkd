@@ -131,6 +131,9 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     };
   });

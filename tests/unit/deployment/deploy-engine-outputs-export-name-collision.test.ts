@@ -293,12 +293,16 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
       // go-to-k/cdkd#4438: a successful deploy reads the create-token ledger.
       loadCreateTokenLedger: vi.fn().mockResolvedValue(null),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     };
     mockExportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

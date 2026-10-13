@@ -350,6 +350,20 @@ export class ExportIndexStore {
   }
 
   /**
+   * Load the index now, so a later {@link updateForStack} that changes
+   * nothing needs no read: its `mapsEqual` check runs against this copy, and
+   * a write still goes out under If-Match. Never throws; a failed load is
+   * retried by the next caller.
+   */
+  async prefetch(): Promise<void> {
+    try {
+      await this.ensureLoaded();
+    } catch {
+      // `doLoad` reset `loadState`; the next caller loads again.
+    }
+  }
+
+  /**
    * Replace all entries for `(stackName, producerRegion)` with the
    * supplied `outputs`. Used after a successful deploy save. Writes
    * the updated index to S3 under an If-Match optimistic lock,

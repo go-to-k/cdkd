@@ -84,6 +84,9 @@ describe('DeployEngine - resolved secrets are redacted out of persisted state (G
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
     loadRollbackJournal: ReturnType<typeof vi.fn>;
+    purgeRollbackJournalVersions: ReturnType<typeof vi.fn>;
+    rollbackJournalReadAbsent: ReturnType<typeof vi.fn>;
+    warmConnections: ReturnType<typeof vi.fn>;
     appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
   };
   let mockLockManager: {
@@ -146,6 +149,9 @@ describe('DeployEngine - resolved secrets are redacted out of persisted state (G
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     };
   });
