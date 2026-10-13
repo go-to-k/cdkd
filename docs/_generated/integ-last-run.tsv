@@ -156,7 +156,7 @@ iam-managed-policy	2026-10-13T11:42:44Z	PASS	76	verify.sh	PR #4862 (#2007) 594d8
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-propagation-stress	2026-10-11T09:33:22Z	PASS	135	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
-iam-role-fix-forward-orphan	2026-10-13T20:06:20Z	PASS	101	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket, after §8-d probe; PR #4881 31ea02e97
+iam-role-fix-forward-orphan	2026-10-13T20:59:29Z	PASS	106	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket; PR #4881 adc9b6fb4
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-13T11:42:44Z	PASS	145	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
