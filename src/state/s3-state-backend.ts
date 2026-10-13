@@ -58,6 +58,7 @@ import { RetainedTimeUnconfirmedError } from './retained-time.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { bodyMayCarryReferences, markTokenFreeState } from './token-free-state.js';
 import {
   purgeNoncurrentKeyVersions,
   purgeNoncurrentVersionsUnderPrefix,
@@ -633,6 +634,11 @@ export class S3StateBackend {
         shownStackName,
         shownRegionName
       );
+      // State schema v12's token-free fast path: one substring test over the
+      // body already in hand, read by every pass that would otherwise walk the
+      // records for a `{{resolve:` token (`token-free-state.ts`). Marked on the
+      // object returned, which `adoptKeyRegion` may have copied.
+      if (!bodyMayCarryReferences(bodyString)) markTokenFreeState(state);
       this.logger.debug(
         `Retrieved state: ${shownStackName} (${shownRegionName}), ETag: ${response.ETag}`
       );

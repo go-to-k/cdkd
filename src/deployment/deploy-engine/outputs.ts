@@ -436,10 +436,15 @@ export async function resolveOutputs(
       // pass a SECOND output reading the same masked record would see nothing
       // added and be published. See `refuseMaskedOutputReads`.
       const ownReads: RedactedAttributeRead[] = [];
+      // State schema v12: this output's OWN provenance sink, so two outputs
+      // holding one token at two generations keep apart in state.
+      const provenanceSink: RecordedSecretValues = new Map();
+      this.outputProvenanceSinks.set(outputKey, provenanceSink);
       try {
         const resolved = await this.resolver.resolve(output.Value, {
           ...context,
           redactedAttributeReads: ownReads,
+          provenanceSink,
         });
         refuseMaskedOutputReads(outputKey, ownReads);
         // A resolution that RETURNS `undefined` is as unresolved as one that
@@ -724,6 +729,10 @@ export async function resolveOutputs(
         this.logger.warn(exportAliasCollisionWarning(outputKey, exportName, outputsPassSecrets));
       } else {
         outputs[exportName] = value;
+        // State schema v12: the alias holds its output's value, so its
+        // provenance too.
+        const aliasedSink = this.outputProvenanceSinks.get(outputKey);
+        if (aliasedSink !== undefined) this.outputProvenanceSinks.set(exportName, aliasedSink);
         // A SET: two outputs declaring one Export.Name (which CloudFormation
         // rejects) alias the same key twice, and the second write wins the
         // value; the name must not be persisted twice.
@@ -809,6 +818,10 @@ export async function resolveOutputs(
   // previous deploy's bag, unmarked — so nothing this pass did not produce
   // ever carries the mark. `cdkd scrub`'s outputs walk never calls this
   // method at all.
+  // State schema v12: the persist writer takes this bag's provenance from the
+  // per-output sinks (`redactOutputs` carries the mark to its redacted copy).
+  this.outputsResolvedThisRun.add(outputs);
+  this.resolvedOutputsBag = outputs;
   return markSameGenerationBag(outputs);
 }
 

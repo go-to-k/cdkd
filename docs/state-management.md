@@ -252,7 +252,7 @@ resource, keyed by its logical ID from the template.
 
 | Field | Meaning |
 | --- | --- |
-| `version` | The [schema version](state-management-schema-versions.md); currently `11` |
+| `version` | The [schema version](state-management-schema-versions.md); currently `12` |
 | `stackName`, `region` | The stack, and the region its resources are in |
 | `resources` | One entry per resource, keyed by logical ID |
 | `outputs` | Each stack output's name and resolved value |
@@ -316,8 +316,9 @@ record it. [`cdkd export`](cli-export.md) rebuilds a template from
 A record can also carry bookkeeping fields that no command asks you to read or
 edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`,
 `maskedPropertyFingerprints`, `maskedPropertyInputFingerprints`,
-`acceptedCreateOnlyDrops`, `observedBaselineRefusalReason` and
-`conditionVerdicts`. The contributor page
+`acceptedCreateOnlyDrops`, `observedBaselineRefusalReason`,
+`referenceProvenance`, and the stack's `conditionVerdicts` and
+`outputReferenceProvenance`. The contributor page
 [State schema internals](state-schema-internals.md#schema-reference) documents
 each one.
 

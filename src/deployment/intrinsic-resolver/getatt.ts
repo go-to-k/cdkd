@@ -34,6 +34,11 @@ import {
   wholeStringLeavesOf,
 } from '../secret-redaction.js';
 import { type StaleAttributeHealOutcome } from '../stale-attribute-heal.js';
+import {
+  hasPassProvenance,
+  passProvenanceFor,
+  recordReferenceProvenanceEntry,
+} from '../secret-redaction/reference-provenance.js';
 import { NOT_CONSTRUCTED, constructAttributeForCoreTypes } from './getatt-construct-core.js';
 import { constructAttributeForAppTypes } from './getatt-construct-app.js';
 import { constructAttributeForComputeTypes } from './getatt-construct-compute.js';
@@ -740,6 +745,24 @@ function recordProducerSecretPairs(
   if (bag === undefined || context.producerSecrets === undefined) return;
   const producer = context.producerSecrets(logicalId);
   if (producer === undefined || producer === bag || producer.size === 0) return;
+  // State schema v12 (go-to-k/cdkd#4852): the producer's PASS provenance of
+  // each reference whose plaintext the served value carries, on the `read`
+  // route, whatever the generation gate below decides for the pair: the value
+  // is this run's, so its version is too. Only what clears the needle floor,
+  // as for the pairs, so a short plaintext matching by chance adds nothing.
+  if (hasPassProvenance(producer)) {
+    const served = [...wholeStringLeavesOf(value)];
+    for (const [plaintext, expression] of producer) {
+      if (plaintext.length < MIN_NEEDLE_LENGTH || !expression.startsWith('{{resolve:')) continue;
+      if (!served.some((leaf) => leaf.includes(plaintext))) continue;
+      const entry = passProvenanceFor(producer, expression);
+      if (entry === undefined) continue;
+      recordReferenceProvenanceEntry(bag, expression, entry, 'read');
+      if (context.provenanceSink !== undefined) {
+        recordReferenceProvenanceEntry(context.provenanceSink, expression, entry, 'read');
+      }
+    }
+  }
   const preRun = context.producerPreRunPhysicalId?.(logicalId);
   const record = Object.hasOwn(context.resources, logicalId)
     ? context.resources[logicalId]
@@ -850,6 +873,9 @@ export async function reresolveRecordedReferences(
   // deployed leaves it NO_CHANGE (the diff compares references), still under
   // the old name, and today's value would name a resource that does not exist.
   if (!(await this.referencesMatchPhysicalId(value, logicalId, context))) {
+    // The v12 migration capture resolves records the deploy itself resolves
+    // too; the line is the deploy's to print.
+    if (context.provenanceCapture) return value;
     this.logger.warn(
       safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
     );

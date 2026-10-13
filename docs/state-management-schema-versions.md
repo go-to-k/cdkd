@@ -5,7 +5,7 @@ description: "How cdkd handles state records written by older and newer versions
 
 # Schema versions and upgrades
 
-Every state record carries a schema `version`, and the current one is `11`.
+Every state record carries a schema `version`, and the current one is `12`.
 A newer cdkd reads every older version, so upgrading cdkd needs no migration
 step. An older cdkd cannot read a record that a newer one has written.
 
@@ -31,7 +31,7 @@ An older cdkd refuses a record written in a version it does not know, and
 exits:
 
 ```text
-Unsupported state schema version 11 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10. Upgrade cdkd to a version that supports schema 11.
+Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
 ```
 
 cdkd writes the current version on every record it saves. So once a newer
@@ -53,6 +53,7 @@ Upgrade every machine and CI job that deploys a stack at the same time.
 | 9 | `exportNames` |
 | 10 | `observedBaselineRefused` |
 | 11 | `NoEcho` values stored as `***` |
+| 12 | `referenceProvenance`, `outputReferenceProvenance`: where each stored secret reference was resolved, and at which secret version |
 
 [What a state record contains](state-management.md#what-a-state-record-contains)
 says what each field means. The contributor page
@@ -78,6 +79,15 @@ these updates.
 with `***`.
 [Secrets in state](state-management-secrets.md#upgrading-from-a-record-written-before-version-11)
 describes what to rotate afterwards.
+
+**From before version 12.** For each resource the deploy leaves unchanged
+whose record holds a `{{resolve:...}}` reference, the deploy looks the
+reference up once more, in the background, to record which region resolved
+it and the secret's version ID. It sends nothing to the resource and changes
+no other field. If it cannot tell where a reference was resolved, it records
+nothing for that reference and prints one warning naming the resource; the
+next update of that resource records it. A lookup that is throttled is tried
+again on the next deploy. Later deploys make no extra call.
 
 ## `provisionedBy`: which route owns a resource
 

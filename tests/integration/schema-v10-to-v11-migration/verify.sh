@@ -153,6 +153,41 @@ V10_TMPDIR=""
 V10_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# The schema version the LOCAL binary writes. It was 11 when this fixture was
+# written; a later bump moves it, and the local-binary phases assert "the
+# current version", not a literal, so this fixture keeps proving the migration
+# into the current schema. Read from the BUILT binary (the
+# `schema-v9-to-v10-migration` fixture's derivation, verbatim): the readable
+# list's LAST entry is the version a binary writes.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
+    exit 1
+    ;;
+esac
+if [ "${LOCAL_SCHEMA_VERSION}" -lt 11 ]; then
+  echo "FAIL: the local binary writes schema ${LOCAL_SCHEMA_VERSION}; this fixture needs a v11+ local binary" >&2
+  exit 1
+fi
+
 if ! command -v openssl >/dev/null 2>&1; then
   echo "FAIL: openssl is required to generate this fixture's per-run values" >&2
   exit 1
@@ -673,7 +708,7 @@ run_cdkd ok "v11 migration deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_log_has_no_tokens "v11 migration deploy"
 fetch_state "v11 migration deploy"
-assert_version "v11 migration deploy" 11
+assert_version "v11 migration deploy" "${LOCAL_SCHEMA_VERSION}"
 assert_no_tokens_in_state "v11 migration deploy"
 for id in "${TOKEN_ID}" "${SHORT_ID}"; do
   assert_eq "v11 migration deploy: ${id}.properties.Value" \

@@ -234,7 +234,7 @@ describe('DeployEngine - NoEcho persists as the mask (go-to-k/cdkd#4043, schema 
     expect(masked).not.toContain(NOECHO);
     expect(masked).not.toContain(encoded);
     const last = withNoEcho[withNoEcho.length - 1]!;
-    expect(last.version).toBe(11);
+    expect(last.version).toBeGreaterThanOrEqual(11);
     const record = last.resources['R']!;
     expect(record.properties['Value']).toBe('***');
     expect(record.properties['Description']).toBe('***');

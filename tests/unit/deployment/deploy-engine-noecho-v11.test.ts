@@ -305,7 +305,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       await makeEngine().deploy(STACK, tpl);
 
       const saved = lastSaved();
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBeGreaterThanOrEqual(11);
       expect(saved.resources['Param']!.properties['Value']).toBe('***');
       expect(saved.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
       expect(saved.resources['Queue']!.properties['DelaySeconds']).toBe('***');
@@ -608,7 +608,7 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
       expect(callsFor(provider.delete, 'Topic')).toHaveLength(0);
       const saved = lastSaved();
-      expect(saved.version).toBe(11);
+      expect(saved.version).toBeGreaterThanOrEqual(11);
       expect(saved.resources['Param']!.properties['Value']).toBe('***');
       expect(saved.resources['Param']!.noEchoLeaves).toEqual([['Value']]);
       expect(saved.resources['Topic']!.properties['TopicName']).toBe('***');

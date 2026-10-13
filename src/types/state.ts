@@ -165,14 +165,33 @@
  *       No read-time migration: a v10 document is read unchanged and the next
  *       `cdkd deploy` rewrites it.
  *
+ * - 12 — adds `ResourceState.referenceProvenance` and
+ *       `StackState.outputReferenceProvenance` (issues
+ *       [#4847](https://github.com/go-to-k/cdkd/issues/4847) /
+ *       [#4852](https://github.com/go-to-k/cdkd/issues/4852)). A stored
+ *       `{{resolve:...}}` token says neither WHERE it was resolved nor WHICH
+ *       value it stood for; the fields record, per token, the region that
+ *       answered and the secret's own version ids (a Secrets Manager
+ *       `VersionId`, an SSM parameter `Version`), never a value or a hash.
+ *       Read through `referenceProvenanceOf` / `outputReferenceProvenanceOf`
+ *       (`src/deployment/secret-redaction/reference-provenance.ts`), which
+ *       validate each entry and read a malformed one as absent.
+ *       A bump, for v10's reason: a v11 binary rewriting a record would drop
+ *       the fields, and the readers that rely on them would then take a
+ *       version recorded for an older value as current. ABSENT means "not
+ *       known" and keeps the v11 reading in every reader; a v11 document is
+ *       read unchanged, and the next `cdkd deploy` writes the fields: a record
+ *       it WRITES from this run's resolution, an unchanged one through a
+ *       one-time capture that sends nothing and changes no other field.
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 11;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 12;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -181,7 +200,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 11;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 ];
 
 /**
@@ -523,8 +542,55 @@ export interface StackState {
    */
   conditionVerdicts?: Record<string, RecordedConditionVerdict>;
 
+  /**
+   * v12+ (go-to-k/cdkd#4847 / go-to-k/cdkd#4852): per `outputs` bag key (an
+   * output's name, or its `Export.Name` alias), the provenance of each
+   * `{{resolve:...}}` token that key's value holds. Keyed by OUTPUT first, so
+   * two outputs holding one token at two generations (one read through a
+   * resource, one spelled literally) keep apart.
+   *
+   * Written by a save whose `outputs` bag this deploy resolved; a save that
+   * CARRIES the previous bag carries this field with it; a merged bag (a
+   * failed output on the no-change path) writes none. ABSENT means "not
+   * known", the reading of every pre-v12 record. Omitted when no key holds a
+   * token. Read through `outputReferenceProvenanceOf`, which validates each
+   * entry.
+   */
+  outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
+}
+
+/**
+ * What a deploy learned about one `{{resolve:...}}` token a record holds
+ * (state schema v12, go-to-k/cdkd#4847 / go-to-k/cdkd#4852). Metadata only:
+ * a region and the secret's own version ids, which AWS returns without the
+ * value. Never a value, never a hash of one.
+ *
+ * Every member is optional, and ABSENT means "not known": a reader then takes
+ * the v11 path for that arm. Validated on read (`reference-provenance-record.ts`):
+ * a `region` that is not a canonical client-safe region reads as absent; a
+ * version that fails its service's shape drops `versions` AND `readVersions`
+ * (the region is kept); `readVersions` not a subset of `versions` makes the
+ * whole entry read as absent.
+ */
+export interface ReferenceProvenance {
+  /** The region whose resolution produced the value. Absent = a conflict, or not known. */
+  region?: string;
+  /**
+   * The version ids the record's value was resolved at, over every route:
+   * a Secrets Manager `VersionId`, or an SSM parameter `Version`. Sorted,
+   * deduplicated, at most 8.
+   */
+  versions?: string[];
+  /**
+   * The subset of `versions` that reached the record through a READ: a
+   * `Fn::GetAtt` / `Ref` of a recorded value, a cross-stack read, a nested
+   * stack parameter. Persisted because a later deploy's diff compares it with
+   * what the upstream holds; a literal spelling's version never enters it.
+   */
+  readVersions?: string[];
 }
 
 /** One entry of {@link StackState.conditionVerdicts} (go-to-k/cdkd#4479). */
@@ -864,6 +930,25 @@ export interface ResourceState {
    * cdkd never forces the producer to run again.
    */
   noEchoAttributeNames?: string[] | undefined;
+
+  /**
+   * v12+ (go-to-k/cdkd#4847 / go-to-k/cdkd#4852): for each whole
+   * `{{resolve:...}}` token this record holds in `properties`, `attributes` or
+   * `observedProperties`, the region that resolved it and the version ids it
+   * was resolved at ({@link ReferenceProvenance}).
+   *
+   * The FIELD is the discriminator, not `version`: absent means "not known"
+   * (every pre-v12 record, and a record that holds no token), `{}` means
+   * known with nothing attributed. A record a deploy WROTE takes this run's
+   * entries for the tokens it holds; a record it did NOT write keeps its
+   * field verbatim (a stale key is bounded dead weight until the next write);
+   * an unchanged pre-v12 record that holds a token gains it once, from the
+   * migration capture, which sends nothing. A token under a create-only path
+   * of a record UPDATED IN PLACE keeps every generation AWS may still hold
+   * (previous versions unioned with this run's, at most 8). Spreading writers
+   * carry it. Read through `referenceProvenanceOf` / `recordedProvenanceOf`.
+   */
+  referenceProvenance?: Record<string, ReferenceProvenance> | undefined;
 
   /**
    * The CREATE-ONLY silent drops in `properties` that the SDK route was told to

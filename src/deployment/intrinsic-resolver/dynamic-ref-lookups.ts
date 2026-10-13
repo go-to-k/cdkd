@@ -58,7 +58,11 @@ export async function resolveSecretsManagerReference(
   // Each name's log text, from the token's twin (issue #3150,
   // `dynamicReferenceNameLogText`). Required: a default would print the
   // names raw for a caller that forgot it.
-  nameLogText: (name: string) => string
+  nameLogText: (name: string) => string,
+  // State schema v12 (go-to-k/cdkd#4847 / #4852): receives the response's
+  // `VersionId`, the version the value was read at. Read off the response this
+  // lookup already makes; never sent anywhere.
+  versionOut?: { version?: string }
 ): Promise<string> {
   // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
   // Remove the "secretsmanager:" prefix
@@ -167,6 +171,9 @@ export async function resolveSecretsManagerReference(
     )
   );
   const secretString = response.SecretString;
+  if (versionOut !== undefined && typeof response.VersionId === 'string') {
+    versionOut.version = response.VersionId;
+  }
 
   if (!secretString) {
     throw markNonRetryable(
@@ -299,7 +306,13 @@ export async function resolveSSMReference(
   // As in `resolveSecretsManagerReference` (issue #3150), and required for
   // the same reason.
   nameLogText: (name: string) => string
-): Promise<{ value: string; secure: boolean; type: string | undefined }> {
+): Promise<{
+  value: string;
+  secure: boolean;
+  type: string | undefined;
+  /** State schema v12: the parameter's `Version` off the same response, when it carries one. */
+  version?: string;
+}> {
   const parameterName = parts.slice(1).join(':');
 
   if (!parameterName) {
@@ -400,5 +413,12 @@ export async function resolveSSMReference(
         `public config.`
     );
   }
-  return { value: paramValue, secure, type: paramType };
+  const paramVersion = response.Parameter?.Version;
+  return {
+    value: paramValue,
+    secure,
+    type: paramType,
+    ...(typeof paramVersion === 'number' &&
+      Number.isSafeInteger(paramVersion) && { version: String(paramVersion) }),
+  };
 }

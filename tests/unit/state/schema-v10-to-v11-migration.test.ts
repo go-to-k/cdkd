@@ -77,12 +77,11 @@ describe('State schema v11 — noEchoLeaves / noEchoAttributeNames (#4043, #2449
     });
   };
 
-  it('v11 is the current version, and every version 1..11 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(11);
+  it('v11 is current or older, and every version 1..11 is readable', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(11);
     for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
       expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
     }
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(12);
   });
 
   it('reads a v10 blob unchanged, with both v11 fields absent, and writes nothing on read', async () => {
@@ -136,11 +135,12 @@ describe('State schema v11 — noEchoLeaves / noEchoAttributeNames (#4043, #2449
     expect(state.resources['Param']!.noEchoAttributeNames).toEqual(['Value']);
   });
 
-  it('refuses version 12 with the "Upgrade cdkd" error, as an older binary refuses 11', async () => {
-    serve({ version: 12, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 });
+  it('refuses a version past the current one with the "Upgrade cdkd" error, as an older binary refuses 11', async () => {
+    const next = STATE_SCHEMA_VERSION_CURRENT + 1;
+    serve({ version: next, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 });
     const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
     expect(caught).toBeInstanceOf(StateError);
-    expect((caught as Error).message).toMatch(/Unsupported state schema version 12/);
+    expect((caught as Error).message).toMatch(new RegExp(`Unsupported state schema version ${next}`));
     expect((caught as Error).message).toMatch(/1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11/);
     expect((caught as Error).message).toMatch(/Upgrade cdkd/);
   });

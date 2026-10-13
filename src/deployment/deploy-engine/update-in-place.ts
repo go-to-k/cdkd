@@ -28,6 +28,9 @@ import type {
 } from '../../types/resource.js';
 import { type ResourceState, hasUnverifiableParameterRefusal } from '../../types/state.js';
 import { acceptedCreateOnlyDropsField } from './record-shape.js';
+import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
+import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
+import { referenceProvenanceOf } from '../reference-provenance-record.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -1116,6 +1119,21 @@ export async function updateInPlace(
   // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
   // in-place update in place even when it changed the physical id.
   this.updateWasReplaced.set(logicalId, result.wasReplaced === true);
+  // State schema v12 (go-to-k/cdkd#4847 / #4852): an in-place update of a
+  // record holding a token keeps the create-only paths for the persist
+  // writer's union rule. Read from the per-type cache (or the committed
+  // snapshot), NEVER looked up here: a type with neither is `'all'`, the
+  // conservative answer. A token-free record asks nothing.
+  if (
+    result.wasReplaced !== true &&
+    (hasPassProvenance(updateSecrets) || referenceProvenanceOf(currentResource) !== undefined)
+  ) {
+    const cached = cachedCreateOnlyPropertyPaths(resourceType);
+    this.inPlaceCreateOnlyPaths.set(
+      logicalId,
+      cached === undefined ? 'all' : await cached.catch(() => 'all' as const)
+    );
+  }
   if (result.wasReplaced) {
     // go-to-k/cdkd#3869: the NEW id, judged with this deploy's bag, before
     // the line names it (the old one was judged before the body ran).

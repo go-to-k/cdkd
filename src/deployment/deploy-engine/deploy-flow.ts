@@ -88,6 +88,8 @@ import {
   prefetchCreateTokenLedger,
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
+import { isKnownTokenFreeState } from '../../state/token-free-state.js';
+import { kickOffProvenanceCapture, provenanceBaselineOf } from './provenance-capture.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -275,6 +277,13 @@ export async function doDeployWithPrefetch(
       stackName,
       this.stackRegion,
       this.options.refusalRecovery
+    );
+    // State schema v12: the loaded outputs bag and its provenance, for a save
+    // that carries that bag forward. After the refusals, which own the first
+    // read of the bag.
+    this.provenanceBaseline = provenanceBaselineOf(
+      currentState,
+      isKnownTokenFreeState(currentStateData?.state)
     );
     // Set when we loaded a `version: 1` legacy record. The next save
     // migrates it to the new key.
@@ -805,6 +814,22 @@ export async function doDeployWithPrefetch(
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
     createOnlyPrefetch.cancel();
+    // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
+    // capture of each unchanged record that holds a token and no provenance,
+    // OFF the critical path (drained with the observed captures before a
+    // save). A token-free stack never enters it; `--dry-run` saves nothing.
+    if (!this.options.dryRun && !isKnownTokenFreeState(currentStateData?.state)) {
+      kickOffProvenanceCapture(this, {
+        noChange: this.diffCalculator
+          .filterByType(changes, 'NO_CHANGE')
+          .map((change) => change.logicalId),
+        resources: currentState.resources,
+        template: effectiveTemplate,
+        parameters: parameterValues,
+        conditions,
+        stackName,
+      });
+    }
     // The re-baselined records, before anything provisions: an UPDATE row then
     // compares its provisioning-time inputs with today's, and the no-change
     // save below persists the rest.
@@ -1151,8 +1176,21 @@ export async function doDeployWithPrefetch(
           await requireOutputsOnlyApproval({ options: this.options, stackName });
         }
 
+        // State schema v12: the outputs' share of the migration. A record
+        // written before v12 has no `outputReferenceProvenance`; this deploy
+        // resolved an equal bag, so its provenance is saved once.
+        const outputProvenanceBackfill =
+          !outputsChanged &&
+          currentState.outputReferenceProvenance === undefined &&
+          this.provenanceBaseline?.tokenFree === false &&
+          this.outputReferenceProvenanceFor(
+            persistedOutputs,
+            this.redactOutputs(persistedOutputs)
+          ) !== undefined;
+
         if (
           observedRefresh ||
+          outputProvenanceBackfill ||
           maskedFingerprintsBackfilled ||
           conditionVerdictsChanged ||
           outputsChanged ||

@@ -90,11 +90,15 @@ describe('DeployEngine - deploy-start re-capture of a fail-closed-masked baselin
   let mockStateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
   let mockDiffCalculator: Record<string, ReturnType<typeof vi.fn>>;
 
+  // Already carries state schema v12's `referenceProvenance` (`{}`, known with
+  // nothing attributed), so the one-time provenance capture (#4847 / #4852)
+  // skips it and every save asserted here is the re-capture's own.
   const record = (over: Partial<ResourceState> = {}): ResourceState => ({
     physicalId: 'td-arn',
     resourceType: 'AWS::ECS::TaskDefinition',
     properties: { ...properties, EntryPoint: [...properties.EntryPoint] },
     observedProperties: maskedBaseline(),
+    referenceProvenance: {},
     ...over,
   });
 

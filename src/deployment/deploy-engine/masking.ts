@@ -350,6 +350,17 @@ export function redactOutputs(
   this: DeployEngine,
   outputs: Record<string, unknown>
 ): Record<string, unknown> {
+  const redacted = redactOutputsBag.call(this, outputs);
+  // State schema v12: a redacted copy of a bag this deploy resolved is still
+  // that bag, for the persist writer's provenance (`outputsResolvedThisRun`).
+  if (this.outputsResolvedThisRun.has(outputs)) this.outputsResolvedThisRun.add(redacted);
+  return redacted;
+}
+
+function redactOutputsBag(
+  this: DeployEngine,
+  outputs: Record<string, unknown>
+): Record<string, unknown> {
   // First, and before the empty-bag return: a late recording (issue #2814)
   // may be the only needle there is.
   this.absorbOutputsPassSecrets();

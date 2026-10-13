@@ -95,6 +95,7 @@ import { NodeHttpHandler } from '@smithy/node-http-handler';
 // fences the whole closure by resolving it the way `node` would.
 import { ProxyRoutingAgent } from './proxy-routing-agent.ts';
 import { currentStackAwsScope } from './stack-aws-scope.ts';
+import { sdkCallLogConfig } from './sdk-call-log.ts';
 
 export interface AwsClientDefaultsOptions {
   /** The profile the calling site was configured with, if any. */
@@ -198,6 +199,8 @@ export interface AwsClientDefaults {
   region?: string;
   requestHandler?: NodeHttpHandler;
   credentials?: ReturnType<typeof defaultProvider> | AssumedRoleCredentials | CallerEnvCredentials;
+  /** The SDK call log's counting logger, present only under `CDKD_SDK_CALL_LOG`. */
+  logger?: NonNullable<ReturnType<typeof sdkCallLogConfig>>['logger'];
 }
 
 /**
@@ -641,7 +644,11 @@ export function awsClientDefaults(options: AwsClientDefaultsOptions = {}): AwsCl
   // never shadowed and a site's own explicit `region` still overrides it.
   const scopeRegion = currentStackAwsScope()?.region;
   const defaults = credentialAndHandlerDefaults(options);
-  return scopeRegion === undefined ? defaults : { region: scopeRegion, ...defaults };
+  // The SDK call log (`sdk-call-log.ts`): absent unless `CDKD_SDK_CALL_LOG`
+  // is set, so every other run's config is byte-for-byte what it was.
+  const callLog = sdkCallLogConfig();
+  const withLog = callLog === undefined ? defaults : { ...defaults, ...callLog };
+  return scopeRegion === undefined ? withLog : { region: scopeRegion, ...withLog };
 }
 
 function credentialAndHandlerDefaults(options: AwsClientDefaultsOptions): AwsClientDefaults {

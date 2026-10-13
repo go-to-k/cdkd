@@ -13,11 +13,21 @@ import {
   scrubResourceRecord,
   maskSecretsInText,
   hasMaskableValues,
+  isSameGenerationBag,
   type RecordedSecretValues,
 } from './secret-redaction.js';
+import { outputMapsEqual } from './deploy-value-equality.js';
+import {
+  KEEP_REFERENCE_PROVENANCE,
+  outputProvenanceForPersist,
+  provenanceForWrittenRecord,
+  withReferenceProvenance,
+} from './reference-provenance-record.js';
+import type { ProvenanceCaptureOutcome } from './deploy-engine/provenance-capture.js';
 import {
   type ChildTemplateLoader,
   type parameterInputsFor,
+  isWrittenFromDeployedTemplate,
   withMaskedPropertyFingerprints,
 } from './masked-property-fingerprints.js';
 import {
@@ -33,6 +43,7 @@ import type {
   ResourceProvider,
 } from '../types/resource.js';
 import {
+  type ReferenceProvenance,
   type StackState,
   type StateImportEntry,
   type StateOutputReadEntry,
@@ -852,6 +863,54 @@ export class DeployEngine {
   updateWasReplaced = new Map<string, boolean>();
 
   /**
+   * State schema v12 (go-to-k/cdkd#4847 / #4852): per record UPDATED IN PLACE
+   * that holds a token, its type's create-only paths (`'all'` when not known),
+   * for the persist writer's union rule. Cleared per `deploy()`.
+   */
+  /** @internal */
+  inPlaceCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]> | 'all'>();
+
+  /**
+   * State schema v12: each output's OWN provenance sink, keyed by outputs-bag
+   * key (an `Export.Name` alias shares its output's). Cleared per `deploy()`.
+   */
+  /** @internal */
+  outputProvenanceSinks = new Map<string, RecordedSecretValues>();
+
+  /**
+   * State schema v12: the outputs bags THIS deploy resolved, and their
+   * redacted copies, so the persist writer can tell this pass's bag from a
+   * carried or merged one. Cleared per `deploy()`.
+   */
+  /** @internal */
+  outputsResolvedThisRun = new WeakSet<object>();
+
+  /**
+   * State schema v12: the loaded record's outputs bag and its provenance, for
+   * a save that carries that bag. Set at load, cleared per `deploy()`.
+   */
+  /** @internal */
+  provenanceBaseline:
+    | (Pick<StackState, 'outputs' | 'outputReferenceProvenance'> & { tokenFree: boolean })
+    | undefined = undefined;
+
+  /**
+   * State schema v12: the outputs bag this deploy's outputs pass resolved
+   * (unredacted), for the no-change path's outputs share of the migration.
+   * Cleared per `deploy()`.
+   */
+  /** @internal */
+  resolvedOutputsBag: Record<string, unknown> | undefined = undefined;
+
+  /**
+   * State schema v12: the one-time migration capture's in-flight tasks, keyed
+   * by logical id, drained with the observed captures before a save
+   * (`provenance-capture.ts`). Cleared per `deploy()`.
+   */
+  /** @internal */
+  provenanceCaptureTasks = new Map<string, Promise<ProvenanceCaptureOutcome>>();
+
+  /**
    * go-to-k/cdkd#4604: logical ids whose replacement deleted (or found gone)
    * the old resource BEFORE its create ran. A replacement orphan journaled for
    * one says so, so a rollback warns that the old resource is gone instead of
@@ -1054,6 +1113,12 @@ export class DeployEngine {
     this.restoredLostChildren = new Set();
     this.updatesThatSentNothing = new Set();
     this.updateWasReplaced = new Map();
+    this.inPlaceCreateOnlyPaths = new Map();
+    this.outputProvenanceSinks = new Map();
+    this.outputsResolvedThisRun = new WeakSet();
+    this.provenanceBaseline = undefined;
+    this.resolvedOutputsBag = undefined;
+    this.provenanceCaptureTasks = new Map();
     this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
@@ -1128,16 +1193,19 @@ export class DeployEngine {
         state.resources,
         secrets
       );
-      resources[logicalId] = withConstructPath(
-        withMaskedPropertyFingerprints(
-          noEchoScrubbed,
-          record.properties,
-          templateProps,
-          secrets,
-          this.fingerprintNoEchoValues,
-          this.perResourceInputFingerprints.get(logicalId)
+      resources[logicalId] = withReferenceProvenance(
+        withConstructPath(
+          withMaskedPropertyFingerprints(
+            noEchoScrubbed,
+            record.properties,
+            templateProps,
+            secrets,
+            this.fingerprintNoEchoValues,
+            this.perResourceInputFingerprints.get(logicalId)
+          ),
+          constructPathOf(this.constructPathTemplate, logicalId)
         ),
-        constructPathOf(this.constructPathTemplate, logicalId)
+        this.referenceProvenanceToPersist(logicalId, record, noEchoScrubbed, secrets)
       );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
@@ -1229,13 +1297,102 @@ export class DeployEngine {
     // pass then threw. Redact the outputs FIRST so the bag is filled.
     const outputs = this.redactOutputs(state.outputs);
     const crossStackReads = this.redactCrossStackReads(state);
+    // State schema v12: written from the bag this save persists, per key.
+    const { outputReferenceProvenance: _incoming, ...rest } = state;
+    const outputReferenceProvenance = this.outputReferenceProvenanceFor(state.outputs, outputs);
     return {
-      ...state,
+      ...rest,
       resources,
       outputs,
       ...(orphans === undefined ? {} : { orphans }),
       ...crossStackReads,
+      ...(outputReferenceProvenance !== undefined && { outputReferenceProvenance }),
     };
+  }
+
+  /**
+   * State schema v12 (go-to-k/cdkd#4847 / #4852): the
+   * `outputReferenceProvenance` a save persists beside `outputs` (the bag as
+   * the save holds it) / `redacted` (as it will persist):
+   *
+   * - a bag this deploy resolved: per key, from that output's own sink;
+   * - the loaded record's bag, carried: its field verbatim, or, when the
+   *   record has none (written before v12) and this deploy resolved an EQUAL
+   *   bag, that resolution's (the outputs' share of the migration);
+   * - anything else (a merge): none.
+   */
+  /** @internal */
+  outputReferenceProvenanceFor(
+    outputs: Record<string, unknown>,
+    redacted: Record<string, unknown>
+  ): Record<string, Record<string, ReferenceProvenance>> | undefined {
+    const sinkOf = (outputKey: string): RecordedSecretValues | undefined =>
+      this.outputProvenanceSinks.get(outputKey);
+    const baseline = this.provenanceBaseline;
+    if (
+      !this.outputsResolvedThisRun.has(outputs) &&
+      baseline !== undefined &&
+      outputs === baseline.outputs &&
+      baseline.outputReferenceProvenance === undefined &&
+      !baseline.tokenFree &&
+      this.resolvedOutputsBag !== undefined &&
+      outputMapsEqual(this.redactOutputs(this.resolvedOutputsBag), redacted)
+    ) {
+      return outputProvenanceForPersist({
+        outputs: redacted,
+        resolvedThisRun: true,
+        carriedFrom: undefined,
+        sinkOf,
+      });
+    }
+    return outputProvenanceForPersist({
+      outputs: redacted,
+      resolvedThisRun: this.outputsResolvedThisRun.has(outputs),
+      carriedFrom: baseline !== undefined && outputs === baseline.outputs ? baseline : undefined,
+      sinkOf,
+    });
+  }
+
+  /**
+   * State schema v12 (go-to-k/cdkd#4847 / #4852): the `referenceProvenance`
+   * one record persists. A record this deploy WROTE (its `properties` bag is
+   * marked same-generation, or written from this deploy's template through a
+   * provider's `effectiveProperties`) takes this pass's entries for the tokens its
+   * scrubbed form holds; an in-place update keeps every generation a
+   * create-only path may still hold. A record it did NOT write keeps its
+   * field verbatim and is never walked: `perResourceSecrets` is filled before
+   * an update's skip return and never cleared, so without the gate a skipped
+   * record would take versions it was never sent.
+   *
+   * Returns `KEEP` for "leave the record's own field as it is".
+   */
+  private referenceProvenanceToPersist(
+    logicalId: string,
+    record: ResourceState,
+    scrubbed: ResourceState,
+    secrets: RecordedSecretValues | undefined
+  ): Record<string, ReferenceProvenance> | undefined | typeof KEEP_REFERENCE_PROVENANCE {
+    // A provider's `effectiveProperties` replacement is written too
+    // (`isWrittenFromDeployedTemplate`) but is not same-generation: it may
+    // carry the previous record's leaves, so on an in-place update every
+    // token takes the union rule.
+    const sameGeneration = isSameGenerationBag(record.properties);
+    if (!sameGeneration && !isWrittenFromDeployedTemplate(record.properties)) {
+      return KEEP_REFERENCE_PROVENANCE;
+    }
+    const previous = Object.hasOwn(this.healBaseline, logicalId)
+      ? this.healBaseline[logicalId]
+      : undefined;
+    const createOnly = sameGeneration ? this.inPlaceCreateOnlyPaths.get(logicalId) : 'all';
+    const inPlace =
+      this.updateWasReplaced.get(logicalId) === false && previous !== undefined
+        ? {
+            createOnly: createOnly ?? ('all' as const),
+            attributesCarried:
+              record.attributes !== undefined && record.attributes === previous.attributes,
+          }
+        : undefined;
+    return provenanceForWrittenRecord({ record: scrubbed, secrets, previous, inPlace });
   }
 
   /**

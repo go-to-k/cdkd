@@ -210,6 +210,16 @@ export interface DeployEngineOptions {
   inheritedPhysicalNameCopies?: ReadonlySet<string> | undefined;
 
   /**
+   * State schema v12 (go-to-k/cdkd#4852): a snapshot of the reference
+   * provenance the PARENT row's resolution recorded, set by
+   * `NestedStackProvider`. A child resource reading an inherited pair through
+   * `{Ref: <Param>}` records the token's entry on the `read` route.
+   */
+  inheritedReferenceProvenance?:
+    | ReadonlyMap<string, import('../../types/state.js').ReferenceProvenance>
+    | undefined;
+
+  /**
    * How the parent classified each value it passes this child, for the
    * child's masked-property input fingerprints (go-to-k/cdkd#4543): `clean`
    * when the parent's expression for it reads only known non-secret inputs,

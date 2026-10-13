@@ -1,5 +1,6 @@
 import { carryMaskOnlyMarks } from './mask-only.js';
 import { singleSpanFrame } from './positions.js';
+import { mergeReferenceProvenance } from './reference-provenance.js';
 
 /**
  * Map of resolved plaintext secret value -> the original `{{resolve:...}}`
@@ -112,6 +113,8 @@ export function recordResolvedPair(
  */
 export function mergeResolvedPairs(from: RecordedSecretValues, to: RecordedSecretValues): void {
   carryMaskOnlyMarks(from, to);
+  // State schema v12: the provenance travels with the pairs it describes.
+  mergeReferenceProvenance(from, to);
   const pairs = resolvedPairsOf.get(from);
   if (pairs === undefined) return;
   for (const [expression, plaintext] of pairs) {

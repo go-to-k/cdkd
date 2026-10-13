@@ -105,6 +105,25 @@ export function getCreateOnlyPropertyPaths(
   return lookupCreateOnlyPropertyPaths(resourceType, false);
 }
 
+/**
+ * The create-only paths of `resourceType` WITHOUT starting a `DescribeType`:
+ * the per-type cache when a lookup is cached or in flight (joined, not
+ * started), else the committed snapshot — the answer
+ * {@link getCreateOnlyPropertyPaths} itself falls back to — else `undefined`
+ * (not known). For a reader that must add no AWS call: state schema v12's
+ * persist writer, after the diff has withdrawn the deploy-start prefetch.
+ */
+export function cachedCreateOnlyPropertyPaths(
+  resourceType: string
+): Promise<ReadonlyArray<readonly string[]>> | undefined {
+  if (hasNoRegistrySchema(resourceType)) return Promise.resolve([]);
+  if (createOnlyPropertiesCache.has(resourceType)) {
+    return lookupCreateOnlyPropertyPaths(resourceType, false);
+  }
+  const snapshot = CREATE_ONLY_PATHS_SNAPSHOT.get(resourceType);
+  return snapshot === undefined ? undefined : Promise.resolve(snapshot);
+}
+
 /** What {@link prefetchCreateOnlyPropertyPaths} returns. */
 export interface CreateOnlyPrefetch {
   /**

@@ -2376,6 +2376,10 @@ export function buildStackState(
     // (issue #2193); a record built from nothing exports nothing, and that is
     // a KNOWN `[]`, not an unknown.
     ...(existingState ? exportNamesCarriedFrom(existingState) : { exportNames: [] }),
+    // State schema v12: the carried bag's per-output provenance travels with it.
+    ...(existingState?.outputReferenceProvenance !== undefined && {
+      outputReferenceProvenance: existingState.outputReferenceProvenance,
+    }),
     // Carried for the same reason (issue #2934), and it matters MORE here than
     // the export set does: import into an existing state is a realistic
     // recovery route after a failed deploy, and this literal enumerates its

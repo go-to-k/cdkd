@@ -304,7 +304,14 @@ export async function reresolveCrossStackValue(
   // hold arrives verbatim; and `rebuild` writes `ref.region ?? this.region`,
   // where `??` passes an empty string through rather than replacing it. The
   // index-HIT arm hands that value straight to this method.
-  const pinnedContext = producerRegion ? withoutProducerRegions(context) : context;
+  // State schema v12 (go-to-k/cdkd#4847 / #4852): whatever resolves here is a
+  // value READ out of a record or another stack, so its provenance is recorded
+  // on the `read` route. A spread, like the evidence-stripping above: every
+  // bag stays the caller's own object.
+  const pinnedContext = {
+    ...(producerRegion ? withoutProducerRegions(context)! : context),
+    provenanceRoute: 'read' as const,
+  };
   const walk = async (v: unknown): Promise<unknown> => {
     if (typeof v === 'string') {
       return v.includes('{{resolve:')

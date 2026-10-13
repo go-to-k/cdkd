@@ -665,6 +665,37 @@ export interface ResolverContext {
    */
   inheritedPhysicalNameCopies?: ReadonlySet<string>;
   /**
+   * A nested child's (state schema v12, go-to-k/cdkd#4852): the reference
+   * provenance the parent row's resolution recorded, a snapshot taken when the
+   * child engine was built. A `{Ref: <Param>}` value carrying an inherited pair
+   * records that token's entry into THIS context's bag, on the `read` route.
+   */
+  inheritedReferenceProvenance?: ReadonlyMap<
+    string,
+    import('../../types/state.js').ReferenceProvenance
+  >;
+  /**
+   * State schema v12 (go-to-k/cdkd#4847 / #4852): the ROUTE every resolution
+   * in this context records its provenance under. `read` inside a
+   * re-resolution of a recorded value (a `Fn::GetAtt` / `Ref` served from a
+   * record, a cross-stack read, a nested `Outputs.<Key>`); absent means
+   * `literal`, a token the template spells.
+   */
+  provenanceRoute?: 'read';
+  /**
+   * A second bag the recording seam writes PROVENANCE into, beside
+   * {@link recordedSecretValues}: the outputs pass gives each output its own,
+   * so two outputs holding one token at two generations keep apart. Pairs are
+   * never recorded here.
+   */
+  provenanceSink?: RecordedSecretValues;
+  /**
+   * The one-time v12 migration capture's context (go-to-k/cdkd#4847 / #4852):
+   * suppresses the "Serving ... as recorded" warning, which the deploy's own
+   * resolution of the same record prints when it applies.
+   */
+  provenanceCapture?: true;
+  /**
    * A PRINT-ONLY corpus of LOG-ONLY needles (go-to-k/cdkd#4043): read by the
    * render mask of this resolver's own lines ({@link maskSecretsRaw}) and by
    * nothing that detects, records into {@link recordedSecretValues} or
@@ -1028,6 +1059,12 @@ export const cachedAvailabilityZones = new Map<string, string[]>();
 export interface CachedDynamicReference {
   value: string;
   secret: boolean;
+  /**
+   * State schema v12: the version id the lookup response carried (a Secrets
+   * Manager `VersionId`, an SSM `Version`), so a cache hit records the same
+   * provenance the lookup did. Absent when the response carried none.
+   */
+  version?: string;
 }
 
 /** What {@link IntrinsicFunctionResolver.namedRequestMasks} returns (go-to-k/cdkd#3171). */

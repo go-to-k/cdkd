@@ -1,3 +1,4 @@
+import { recordReferenceProvenanceEntry } from '../secret-redaction/reference-provenance.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -182,10 +183,15 @@ export function recordInheritedParameterSecrets(
     // answers with an ARRAY for a list-typed parameter's whole value, and
     // this bag holds strings. Nothing here asks for that shape, but the guard
     // is what says so rather than leaving it to the argument passed above.
-    recorded.set(
-      plaintext,
-      carriedExpressionFor(inherited, parameterName, value, plaintext, expression)
-    );
+    const carried = carriedExpressionFor(inherited, parameterName, value, plaintext, expression);
+    recorded.set(plaintext, carried);
+    // State schema v12 (go-to-k/cdkd#4852): the parent row's provenance of
+    // the token, on the `read` route, since this resource reads it through a
+    // parameter. A token the snapshot does not hold records nothing.
+    const parentEntry = context.inheritedReferenceProvenance?.get(carried);
+    if (parentEntry !== undefined) {
+      recordReferenceProvenanceEntry(recorded, carried, parentEntry, 'read');
+    }
     // Issue #2349: the persist walk answers a `{Ref: <Param>}` leaf of THIS
     // resource from the parent bag, as the diff side does, and only for a
     // parameter recorded here -- the #2087 scope this loop already applies.

@@ -17,6 +17,11 @@ import type {
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import {
+  recordReferenceProvenanceEntry,
+  snapshotPassProvenance,
+} from '../../deployment/secret-redaction/reference-provenance.js';
+import { outputReferenceProvenanceOf } from '../../deployment/reference-provenance-record.js';
 import { passedParameterClassesOf } from '../../deployment/masked-property-fingerprints.js';
 import { getCurrentProducerRegions } from '../../deployment/producer-regions-scope.js';
 import {
@@ -953,6 +958,10 @@ export class NestedStackProvider implements ResourceProvider {
         // a child resource spelling the secret itself must still keep it.
         // Always set, so a grandchild never inherits its grandparent's.
         inheritedPhysicalNameCopies: inheritedPhysicalNameCopiesOf(inheritedSecrets),
+        // State schema v12 (go-to-k/cdkd#4852): the provenance the row's
+        // resolution recorded, frozen now. Always set, so a grandchild never
+        // inherits its grandparent's.
+        inheritedReferenceProvenance: snapshotPassProvenance(inheritedSecrets),
         // go-to-k/cdkd#4543: how the parent classified each value it passes
         // (recorded on the same bag), so the child hashes a clean one into a
         // masked property's input fingerprint and keeps the rest as written.
@@ -1080,6 +1089,18 @@ export class NestedStackProvider implements ResourceProvider {
     // child a `NoEcho` value the id embeds, and a parent `Fn::GetAtt` reader
     // of it still resolves.
     const rowSecrets = getCurrentResourceSecrets();
+    // State schema v12 (go-to-k/cdkd#4852): each `Outputs.<Key>` token's
+    // provenance is the child's own record of that output, carried into the
+    // row's bag on the `read` route; the row persists it beside the attribute.
+    if (rowSecrets !== undefined) {
+      for (const outputKey of Object.keys(childStateData.state.outputs ?? {})) {
+        const entries = outputReferenceProvenanceOf(childStateData.state, outputKey);
+        if (entries === undefined) continue;
+        for (const [token, entry] of Object.entries(entries)) {
+          recordReferenceProvenanceEntry(rowSecrets, token, entry, 'read');
+        }
+      }
+    }
     if (rowSecrets !== undefined) {
       const childResources = childStateData.state.resources;
       const ids =

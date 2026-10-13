@@ -681,6 +681,10 @@ export async function revertNestedChildFromJournal(args: {
       const state = next();
       if (!restoring) return state;
       if (restoredOutputs && !restoredOutputs.exportNames) delete state.exportNames;
+      // State schema v12: the restored bag is the pre-run one, and the carried
+      // provenance describes the undone deploy's; no record of the restored
+      // bag's provenance exists, so none is kept (absent: not known).
+      if (restoredOutputs) delete state.outputReferenceProvenance;
       if (restoredReads && !restoredReads.imports) delete state.imports;
       if (restoredReads && !restoredReads.outputReads) delete state.outputReads;
       return state;

@@ -30,6 +30,7 @@ import {
   recordResolvedPair,
 } from '../secret-redaction.js';
 import { classifyReplaySecretRegion } from '../secret-region-classification.js';
+import { recordReferenceResolution } from '../secret-redaction/reference-provenance.js';
 
 declare module '../intrinsic-function-resolver.js' {
   interface IntrinsicFunctionResolver {
@@ -65,6 +66,35 @@ function secretVerdictScope(resolver: IntrinsicFunctionResolver): string {
     credentialFingerprint(ambientCredentialConfig()),
     canonicalizeRegion(resolver.explicitRegion) ?? ''
   );
+}
+
+/**
+ * Record one SECRET resolution's provenance (state schema v12,
+ * go-to-k/cdkd#4847 / #4852) into the context's bag and its provenance sink:
+ * the region of the resolver that answered ({@link explicitRegion}, the one
+ * {@link clientsForRegion} bound the lookup to; unknown when none was named),
+ * the version id the response carried, and the context's route. A
+ * region-pinned sibling records its own region, since it is the resolver
+ * that answered. Metadata only: no value reaches either bag through here.
+ */
+function recordProvenanceOfResolution(
+  resolver: IntrinsicFunctionResolver,
+  context: ResolverContext | undefined,
+  token: string,
+  version: string | undefined
+): void {
+  if (context === undefined) return;
+  const resolution = {
+    region: canonicalizeRegion(resolver.explicitRegion),
+    version,
+    route: context.provenanceRoute ?? ('literal' as const),
+  };
+  if (context.recordedSecretValues !== undefined) {
+    recordReferenceResolution(context.recordedSecretValues, token, resolution);
+  }
+  if (context.provenanceSink !== undefined) {
+    recordReferenceResolution(context.provenanceSink, token, resolution);
+  }
 }
 
 /**
@@ -464,6 +494,11 @@ export async function resolveDynamicReferencesWithLogTwin(
           // fresh-resolution seam below.
           recordResolvedPair(recorded, fullMatch, cached.value);
         }
+        // State schema v12: the provenance the lookup that filled this entry
+        // read, recorded for THIS pass as the fresh seam below does.
+        if (cached.secret && cached.value) {
+          recordProvenanceOfResolution(this, context, fullMatch, cached.version);
+        }
         // The PUBLIC proof travels with the entry too (issue #2036), for the
         // same reason the secret pair does: a later pass's bag must not lose
         // it to the cache. See the fresh-lookup arm's twin note.
@@ -507,8 +542,17 @@ export async function resolveDynamicReferencesWithLogTwin(
       // redaction path can still name it as a leaf's expression.
       let pinSecureVerdict = false;
 
+      // State schema v12: the version id off the lookup's own response.
+      let resolvedVersion: string | undefined;
       if (service === 'secretsmanager') {
-        resolved = await this.resolveSecretsManagerReference(inner, context, nameLogText);
+        const versionOut: { version?: string } = {};
+        resolved = await this.resolveSecretsManagerReference(
+          inner,
+          context,
+          nameLogText,
+          versionOut
+        );
+        resolvedVersion = versionOut.version;
       } else if (service === 'ssm') {
         // On the comparison path fetch the parameter WITHOUT decryption: a
         // `SecureString` then comes back as its encrypted blob, so the type can
@@ -573,6 +617,7 @@ export async function resolveDynamicReferencesWithLogTwin(
           }
         }
         resolved = param.value;
+        resolvedVersion = param.version;
       } else if (service === 'ssm-secure') {
         // Issue #2482. Before this arm existed the spelling fell through to
         // the unsupported-service warning below and the LITERAL TOKEN went to
@@ -621,6 +666,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         }
         isSecret = true;
         resolved = param.value;
+        resolvedVersion = param.version;
       } else {
         // Masked like the lookup echoes in dynamic-ref-lookups.ts (issue #2728, review round 1):
         // `service` is whatever sits before the first `:` of the ASSEMBLED
@@ -695,6 +741,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         this.cachedDynamicReferences.set(dynamicReferenceCacheKey, {
           value: resolved,
           secret: isSecret,
+          ...(resolvedVersion !== undefined && { version: resolvedVersion }),
         });
       }
       if (isSecret && resolved) {
@@ -711,6 +758,9 @@ export async function resolveDynamicReferencesWithLogTwin(
           recorded.set(resolved, fullMatch);
           recordResolvedPair(recorded, fullMatch, resolved);
         }
+        // State schema v12 (go-to-k/cdkd#4847 / #4852): which region answered
+        // and which version it read, beside the pair and in the same pass.
+        recordProvenanceOfResolution(this, context, fullMatch, resolvedVersion);
         // The value-keyed map above COLLAPSES a group of expressions sharing a
         // resolved value down to its last member; this set does not, which is
         // what lets the redaction path name the losing member (issue #1916).

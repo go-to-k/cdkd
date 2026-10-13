@@ -156,6 +156,10 @@ export function buildResolverContext(
     ...(this.options.inheritedPhysicalNameCopies && {
       inheritedPhysicalNameCopies: this.options.inheritedPhysicalNameCopies,
     }),
+    // State schema v12 (go-to-k/cdkd#4852): the parent row's provenance.
+    ...(this.options.inheritedReferenceProvenance && {
+      inheritedReferenceProvenance: this.options.inheritedReferenceProvenance,
+    }),
     // FRESH per-context map: the resolver records each resolved secret
     // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
     // captures it and stores it per-logicalId in `perResourceSecrets` (or in
