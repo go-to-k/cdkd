@@ -263,6 +263,9 @@ if [ "${#VA_NAME}" -lt 30 ]; then
 fi
 export CDKD_TEST_NOECHO_VALUE_ARM_NAME="${VA_NAME}"
 VA_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${VA_NAME}"
+# The topic's Fn::GetAtt TopicArn reader (security review m1, go-to-k/cdkd#4849).
+VA_READER="/cdkd-test/noecho-value-arm/$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+export CDKD_TEST_NOECHO_VALUE_ARM_READER="${VA_READER}"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -388,6 +391,9 @@ cleanup() {
     va_destroy_rc=$?
   fi
   aws sns delete-topic --topic-arn "${VA_ARN:-}" --region "${REGION}" >/dev/null 2>&1 || true
+  if [ -n "${VA_READER:-}" ]; then
+    aws ssm delete-parameter --name "${VA_READER}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${VA_TMPDIR:-}" ] && [ -d "${VA_TMPDIR}" ]; then
     rm -rf "${VA_TMPDIR}" || true
   fi
@@ -1935,6 +1941,35 @@ if [ "$(jq -r '.resources.NoEchoValueArmTopic.properties.TopicName' "${VA_STATE}
   echo "FAIL: after Phase 4v, state.json does not store the literal copy of the string-declared NoEcho value as the mask named in noEchoLeaves -- the value arm skipped the string form (go-to-k/cdkd#4831)" >&2
   exit 1
 fi
+# The reader edit (security review m1, go-to-k/cdkd#4849): the topic is NAMED
+# from the value, so its ARN carries it. State must keep that ARN as the
+# physical id is kept, or a deploy re-resolving NoEchoValueArmTopic.TopicArn
+# for the edited reader is refused with the redaction mask.
+if [ "$(jq -r '.resources.NoEchoValueArmTopic.attributes.TopicArn' "${VA_STATE}")" != "${VA_ARN}" ]; then
+  echo "FAIL: after Phase 4v, state.json does not hold NoEchoValueArmTopic.attributes.TopicArn as the topic's ARN -- it was masked, and a reader edit will be refused (go-to-k/cdkd#4849)" >&2
+  exit 1
+fi
+if ! VA_EDIT_OUT=$(CDKD_TEST_NOECHO_VALUE_ARM_EDIT=true node "${LOCAL_DIST}" deploy "${VA_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1); then
+  if [[ "${VA_EDIT_OUT}" == *"redaction mask"* ]]; then
+    echo "FAIL: the Phase 4v reader edit was refused reading NoEchoValueArmTopic.TopicArn as the redaction mask (go-to-k/cdkd#4849)" >&2
+  else
+    echo "FAIL: the Phase 4v reader edit exited non-zero" >&2
+  fi
+  diag_output "$(grep -vF -- "${VA_NAME}" <<< "${VA_EDIT_OUT}" || true)"
+  exit 1
+fi
+# GetParameter carries no Description; DescribeParameters carries no Value.
+VA_READ_VALUE=$(aws ssm get-parameter --name "${VA_READER}" --region "${REGION}" \
+  --query Parameter.Value --output text)
+VA_READ_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${VA_READER}" --query 'Parameters[0].Description' --output text)
+if [ "${VA_READ_VALUE}" != "${VA_ARN}" ] || [ "${VA_READ_DESC}" != "edited" ]; then
+  echo "FAIL: after the Phase 4v reader edit, the reader does not hold the topic's ARN with the edited description (got description '${VA_READ_DESC}') (go-to-k/cdkd#4849)" >&2
+  exit 1
+fi
 if ! node "${LOCAL_DIST}" destroy "${VA_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -1944,11 +1979,13 @@ if ! node "${LOCAL_DIST}" destroy "${VA_STACK}" \
 fi
 assert_gone "NoEchoValueArmTopic still exists after its destroy" \
   aws sns get-topic-attributes --topic-arn "${VA_ARN}" --region "${REGION}"
+assert_gone "NoEchoValueArmReader still exists after its destroy" \
+  aws ssm get-parameter --name "${VA_READER}" --region "${REGION}"
 assert_gone "state file s3://${STATE_BUCKET}/${VA_STATE_KEY} still exists after its destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${VA_STATE_KEY}"
 rm -rf "${VA_TMPDIR}"
 VA_TMPDIR=""
-echo "    OK: the string-declared value's literal copy is stored masked and named; the topic was not replaced"
+echo "    OK: the string-declared value's literal copy is stored masked and named; the topic was not replaced; its TopicArn reader redeployed edited"
 
 # --- Phase 4c: the value-named topic again, for the destroy -----------------
 echo "==> Phase 4c: redeploy with NoEchoRenamed's TopicName embedding the NoEcho value"

@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 /**
@@ -12,6 +13,12 @@ import type { Construct } from 'constructs';
  * LITERAL `TopicName`, which no template position reads: 0.297.0 stored that
  * copy in plaintext. This binary must not replace the topic, and must store
  * that copy as `***` named in `noEchoLeaves`.
+ *
+ * `NoEchoValueArmReader` reads the topic's ARN with `Fn::GetAtt` (security
+ * review m1 on #4848): the topic is NAMED from the value, so the ARN carries
+ * it. `CDKD_TEST_NOECHO_VALUE_ARM_EDIT=true` edits the reader, so a later
+ * deploy re-resolves `NoEchoValueArmTopic.TopicArn` from state, which must
+ * hold the ARN, not the mask (go-to-k/cdkd#4849).
  */
 export class NoechoValueArmStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -29,9 +36,15 @@ export class NoechoValueArmStack extends cdk.Stack {
       for (const body of Object.values(out.Parameters)) body['NoEcho'] = 'true';
       return out;
     };
-    new sns.CfnTopic(this, 'NoEchoValueArmTopic', {
+    const topic = new sns.CfnTopic(this, 'NoEchoValueArmTopic', {
       topicName: value,
       displayName: name.valueAsString,
+    });
+    new ssm.CfnParameter(this, 'NoEchoValueArmReader', {
+      name: process.env['CDKD_TEST_NOECHO_VALUE_ARM_READER'] ?? '/cdkd-test/noecho-value-arm/unset',
+      type: 'String',
+      value: topic.attrTopicArn,
+      description: process.env['CDKD_TEST_NOECHO_VALUE_ARM_EDIT'] === 'true' ? 'edited' : 'initial',
     });
   }
 }
