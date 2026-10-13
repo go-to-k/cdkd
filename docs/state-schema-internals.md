@@ -1193,9 +1193,11 @@ have the field makes no capture lookup.
 An older cdkd refuses a `version: 12` record with the "Upgrade cdkd" error,
 as for every bump. The exports index is unchanged.
 
-**Measuring calls.** `CDKD_SDK_CALL_LOG=<file>` makes a run write, at exit, a
-JSON count of every AWS SDK command it sent, by client and command
-(`src/utils/sdk-call-log.ts`); nothing of a request or response is kept.
+**Measuring calls.** `CDKD_SDK_CALL_LOG=<file>` makes each cdkd process append
+one JSON line to the file at exit: its pid, its command line with every flag
+value dropped, the time, and a count of every AWS SDK command it sent, by
+client and command (`src/utils/sdk-call-log.ts`). Nothing of a request,
+response or flag value is kept.
 
 ## Fields added without a version bump
 

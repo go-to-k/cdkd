@@ -2,9 +2,13 @@
  * The SDK CALL LOG (state schema v12's measurement harness,
  * go-to-k/cdkd#4847 / #4852): with `CDKD_SDK_CALL_LOG=<file>` set, every AWS
  * SDK command a client built from `awsClientDefaults` sends is counted per
- * client and command, and the counts are written to `<file>` as JSON when the
- * process exits. Unset (the default), nothing is installed and nothing is
- * counted.
+ * client and command, and ONE JSON line is APPENDED to `<file>` when the
+ * process exits: `{ pid, argv, at, counts }`. Appended, so a script running
+ * several cdkd processes against one file keeps a line per process. `argv` is
+ * the command line with every flag VALUE dropped (flag names and the leading
+ * positional arguments are kept), so no parameter value or secret passed on
+ * the command line is written. Unset (the default), nothing is installed and
+ * nothing is counted.
  *
  * It rides the SDK's own logger middleware: a client config's `logger` is
  * called once per command (outside the retry loop, so a retried call counts
@@ -16,7 +20,7 @@
  * This module sits in the import closure `scripts/audit-provider-coverage.ts`
  * resolves the way `node` does, so it imports nothing relative.
  */
-import { writeFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 
 /** The environment variable naming the file the counts are written to. */
 export const SDK_CALL_LOG_ENV = 'CDKD_SDK_CALL_LOG';
@@ -64,8 +68,41 @@ const CALL_LOG_LOGGER = {
 };
 
 /**
+ * `argv` (the arguments after the script) with every flag VALUE dropped:
+ * `--flag=value` keeps `--flag`, and once a flag appears every following
+ * non-flag token is dropped, since without the command's option table a
+ * flag's value cannot be told from a positional. The leading positionals (the
+ * subcommand and stack names) are kept. Lossy in the safe direction: a value
+ * is never kept.
+ */
+export function sanitizedArgv(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  let afterFlag = false;
+  for (const arg of argv) {
+    if (arg.startsWith('-') && arg !== '-') {
+      afterFlag = true;
+      const eq = arg.indexOf('=');
+      out.push(eq === -1 ? arg : arg.slice(0, eq));
+    } else if (!afterFlag) {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+/** The one line a process appends: pid, sanitized argv, ISO time, counts. */
+export function sdkCallLogLine(): string {
+  return `${JSON.stringify({
+    pid: process.pid,
+    argv: sanitizedArgv(process.argv.slice(2)),
+    at: new Date().toISOString(),
+    counts: sdkCallCounts(),
+  })}\n`;
+}
+
+/**
  * `{ logger }` for a client config when `CDKD_SDK_CALL_LOG` names a file, else
- * `undefined`. The first call installs the exit hook that writes the file.
+ * `undefined`. The first call installs the exit hook that appends the line.
  */
 export function sdkCallLogConfig(): { logger: typeof CALL_LOG_LOGGER } | undefined {
   const target = process.env[SDK_CALL_LOG_ENV];
@@ -74,7 +111,7 @@ export function sdkCallLogConfig(): { logger: typeof CALL_LOG_LOGGER } | undefin
     exitHookInstalled = true;
     process.once('exit', () => {
       try {
-        writeFileSync(target, `${JSON.stringify(sdkCallCounts(), null, 2)}\n`);
+        appendFileSync(target, sdkCallLogLine());
       } catch {
         // A measurement aid: an unwritable path must not fail the command.
       }

@@ -295,9 +295,16 @@ assert_log_has_no_password() { # <label>
   pass "$1: cdkd's output carries no password"
 }
 
+# A call log holds one JSON line per cdkd process; these read the counts
+# summed over its lines.
+call_counts() { # <calls file> -> { "<client>.<command>": n }
+  [ -f "$1" ] || fail "the SDK call log $1 was not written — CDKD_SDK_CALL_LOG did not take effect"
+  jq -cS -s 'map(.counts) | reduce .[] as $c ({}; reduce ($c | to_entries[]) as $e (.; .[$e.key] += $e.value))' "$1"
+}
+
 get_secret_value_calls() { # <calls file> -> the GetSecretValue count (0 when absent)
   [ -f "$1" ] || fail "the SDK call log $1 was not written — CDKD_SDK_CALL_LOG did not take effect"
-  jq -r '."SecretsManagerClient.GetSecretValueCommand" // 0' "$1"
+  call_counts "$1" | jq -r '."SecretsManagerClient.GetSecretValueCommand" // 0'
 }
 
 state_versions() { # number of object versions of state.json — strict
@@ -471,7 +478,7 @@ if [ "${MIGRATION_LOOKUPS}" -lt 1 ]; then
 fi
 pass "v12 migration deploy: ${MIGRATION_LOOKUPS} GetSecretValue call(s), the capture's included"
 # Nothing was SENT to a resource: the call log holds no SQS / SSM write.
-WRITES="$(jq -r 'keys[] | select(test("^(SQSClient|SSMClient)\\.") and (test("\\.(Get|List|Describe)") | not))' "${CALLS_DIR}/migration.json" | tr '\n' ' ')"
+WRITES="$(jq -r 'keys[] | select(test("^(SQSClient|SSMClient)\\.") and (test("\\.(Get|List|Describe)") | not))' <<<"$(call_counts "${CALLS_DIR}/migration.json")" | tr '\n' ' ')"
 assert_eq "v12 migration deploy: no SQS / SSM write command was sent (migration changed a resource = pre-fix)" "${WRITES}" ""
 if grep -qF -- "state schema v12 migration" "${DEPLOY_LOG}"; then
   redact_password <"${DEPLOY_LOG}" | tail -40 >&2
@@ -495,7 +502,7 @@ if [ "${REDEPLOY_LOOKUPS_1}" -ge "${MIGRATION_LOOKUPS}" ]; then
 fi
 pass "v12 redeploy 1: ${REDEPLOY_LOOKUPS_1} GetSecretValue call(s), fewer than the migration's ${MIGRATION_LOOKUPS}"
 assert_eq "v12 redeploys: the steady state's call logs are identical" \
-  "$(jq -cS . "${CALLS_DIR}/redeploy-1.json")" "$(jq -cS . "${CALLS_DIR}/redeploy-2.json")"
+  "$(call_counts "${CALLS_DIR}/redeploy-1.json")" "$(call_counts "${CALLS_DIR}/redeploy-2.json")"
 fetch_state "v12 redeploy"
 assert_eq "v12 redeploy: Queue's provenance is unchanged" \
   "$(jq -cS --arg t "${QUEUE_TOKEN}" '.resources.Queue.referenceProvenance[$t] // "absent"' "${STATE_FILE}")" \
