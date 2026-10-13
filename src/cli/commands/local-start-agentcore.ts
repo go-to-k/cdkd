@@ -1,4 +1,5 @@
 import { Option, type Command } from 'commander';
+import { cdkdHostSynthesizer } from './local-host-synthesizer.js';
 import {
   createLocalStartAgentCoreCommand as createCdkLocalStartAgentCoreCommand,
   getEmbedConfig,
@@ -64,9 +65,10 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * cdk-local's `cdkl` defaults.
  */
 export function createLocalStartAgentCoreCommand(): Command {
-  const cmd = createCdkLocalStartAgentCoreCommand({
+  const cmd: Command = createCdkLocalStartAgentCoreCommand({
     embedConfig: getEmbedConfig(),
     extraStateProviders: cdkdExtraStateProviders,
+    synthesizer: cdkdHostSynthesizer(() => cmd.opts<{ stateBucket?: string }>()),
   });
 
   // Layer cdkd's S3-backed state-source flags on top of cdk-local's inherited

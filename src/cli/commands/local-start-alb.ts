@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { withErrorHandling } from '../../utils/error-handler.js';
+import { cdkdHostSynthesizer } from './local-host-synthesizer.js';
 import {
   addAlbSpecificOptions,
   addCommonEcsServiceOptions,
@@ -280,7 +281,8 @@ export function createLocalStartAlbCommand(): Command {
           targets,
           options,
           buildAlbEmulatorStrategy(options),
-          cdkdExtraStateProviders
+          cdkdExtraStateProviders,
+          cdkdHostSynthesizer(() => options)
         );
       })
     );

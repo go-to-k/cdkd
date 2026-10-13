@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { withErrorHandling, LocalStartServiceError } from '../../utils/error-handler.js';
+import { cdkdHostSynthesizer } from './local-host-synthesizer.js';
 import { listTargets, getEmbedConfig } from 'cdk-local';
 import {
   addCommonEcsServiceOptions,
@@ -133,7 +134,13 @@ export function createLocalStartServiceCommand(): Command {
     )
     .action(
       withErrorHandling(async (targets: string[], options: LocalStartServiceOptions) => {
-        await runEcsServiceEmulator(targets, options, serviceStrategy(), cdkdExtraStateProviders);
+        await runEcsServiceEmulator(
+          targets,
+          options,
+          serviceStrategy(),
+          cdkdExtraStateProviders,
+          cdkdHostSynthesizer(() => options)
+        );
       })
     );
 

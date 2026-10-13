@@ -1,4 +1,5 @@
 import { Option, type Command } from 'commander';
+import { cdkdHostSynthesizer } from './local-host-synthesizer.js';
 import {
   createLocalStartCloudFrontCommand as createCdkLocalStartCloudFrontCommand,
   getEmbedConfig,
@@ -88,6 +89,8 @@ export function createLocalStartCloudFrontCommand(): Command {
   const cmd = createCdkLocalStartCloudFrontCommand({
     embedConfig: getEmbedConfig(),
     extraStateProviders: cdkdExtraStateProviders,
+    // `--state-bucket` is refused on this command, so there is none to pass.
+    synthesizer: cdkdHostSynthesizer(() => ({})),
   });
 
   // Declared, then refused (see the module doc): keeping the declarations is
