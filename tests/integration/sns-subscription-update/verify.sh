@@ -12,8 +12,10 @@
 #     unchanged, and the topic holds exactly one subscription. A binary
 #     without #4853 is RED here (the ARN changes: it unsubscribed and
 #     subscribed again).
-#   Phase 2b (+drop-filter): FilterPolicy removed from the template is
-#     cleared on the live subscription, still the same ARN.
+#   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
+#   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
+#     template: the policy is cleared on the live subscription (the scope of a
+#     subscription with no policy filters nothing and is left), same ARN.
 #   Phase 3 (unreadable record): the state physicalId is rewritten to a
 #     malformed subscription ARN; the in-place path's readback is refused, so
 #     cdkd fails the deploy WITHOUT unsubscribing or subscribing anything.
@@ -383,9 +385,29 @@ if [ "$(state_sub_physical_id)" != "${SUB_ARN_1}" ] \
 fi
 echo "    OK: ${SUB_ARN_1} kept; RawMessageDelivery=true, FilterPolicy kind=b; state in sync"
 
-# --- Phase 2b: an attribute dropped from the template -----------------------
-echo "==> Phase 2b: remove FilterPolicy from the template (reset in place)"
-CDKD_TEST_UPDATE=raw-delivery,filter-b,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
+# --- Phase 2a: a scope-only edit ---------------------------------------------
+echo "==> Phase 2a: FilterPolicyScope MessageAttributes -> MessageBody (in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2a"
+if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2a: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
+  exit 1
+fi
+SCOPE_2A=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_1}" \
+  --query 'Attributes.FilterPolicyScope' --output text)
+if [ "${SCOPE_2A}" != "MessageBody" ] || [ "$(filter_policy_of "${SUB_ARN_1}")" != '{"kind":["b"]}' ]; then
+  echo "FAIL: phase 2a: FilterPolicyScope is '${SCOPE_2A}' (expected MessageBody) or the policy moved" >&2
+  exit 1
+fi
+echo "    OK: FilterPolicyScope MessageBody on ${SUB_ARN_1}, policy kept"
+
+# --- Phase 2b: attributes dropped from the template --------------------------
+echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes

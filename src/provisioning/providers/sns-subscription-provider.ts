@@ -114,6 +114,20 @@ function sameAttributeValue(name: string, desired: string, current: string | und
 }
 
 /**
+ * Will the subscription hold no `FilterPolicy` once `plan` is applied? Either
+ * the plan clears it, or the plan leaves it and AWS holds none (a desired
+ * policy the plan does not set already equals what AWS holds).
+ */
+function filterPolicyCleared(
+  plan: ReadonlyArray<readonly [string, string]>,
+  current: Record<string, string>
+): boolean {
+  const planned = plan.find(([name]) => name === 'FilterPolicy');
+  if (planned !== undefined) return planned[1] === '';
+  return current['FilterPolicy'] === undefined || current['FilterPolicy'] === '';
+}
+
+/**
  * AWS SNS Subscription Provider
  *
  * Implements resource provisioning for AWS::SNS::Subscription using the SNS SDK.
@@ -221,8 +235,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       // would also drop a `cdkd drift --revert` observedProperties snapshot
       // that round-trips an empty FilterPolicy / policy object (which AWS
       // does treat as "clear", per the FilterPolicy comment above).
-      // `update()` delegates to `create()` (delete + recreate), so these flow
-      // through the update path automatically.
+      // `update()`'s replacement arm delegates to `create()` (delete +
+      // recreate), so these reach that path too; its in-place arm sets them
+      // with `SetSubscriptionAttributes` (go-to-k/cdkd#4853).
 
       // FilterPolicyScope: string passthrough.
       const filterPolicyScope = properties['FilterPolicyScope'];
@@ -391,8 +406,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    *   attributes can be set on;
    * - a subscription AWS no longer has (`NotFound`), or a readback with no
    *   attributes, so it is created again as before;
-   * - a create-only field differing from AWS (reached when `DescribeType` is
-   *   unavailable and the engine degrades it into an update);
+   * - a subscription still `PendingConfirmation` (an email / http(s) endpoint
+   *   not yet confirmed), which has nothing to lose by being re-created;
+   * - a create-only field differing from AWS (the engine replaces such a
+   *   template change itself, so this is a rollback revert, or a record whose
+   *   physical id names a subscription of another topic or endpoint);
    * - an attribute dropped from the template with no reset in
    *   {@link RESET_VALUES};
    * - `FilterPolicy` and `FilterPolicyScope` both changing to template values,
@@ -428,7 +446,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         physicalId
       );
     }
-    if (current === undefined) return undefined;
+    if (current === undefined || current['PendingConfirmation'] === 'true') return undefined;
     for (const field of CREATE_ONLY_FIELDS) {
       const desired = properties[field];
       if (desired !== undefined && stringifyValue(desired) !== current[field]) return undefined;
@@ -443,6 +461,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       }
       // Dropped from the template: clear what AWS still holds.
       if (now === undefined || now === '') continue;
+      // A scope without a policy filters nothing, and SNS may refuse to set
+      // one on a subscription with no policy: leave it for the next policy.
+      if (name === 'FilterPolicyScope' && filterPolicyCleared(plan, current)) continue;
       const reset = RESET_VALUES[name];
       if (reset === undefined) return undefined;
       if (now !== reset) plan.push([name, reset]);
@@ -554,10 +575,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // burning a backoff schedule on a certain failure.
     //
     // The duplicate is NOT unreachable in general — it needs the endpoint to
-    // differ, which happens when `cloudformation:DescribeType` is unavailable
-    // and `create-only-properties.ts` degrades an endpoint change into an
-    // in-place update (that file's own warning says so). That is the case the
-    // one rule still protects.
+    // differ from the recorded subscription's, which is the only way a
+    // create-only change reaches `update()` (see `planInPlaceUpdate`). That
+    // is the case the one rule still protects.
     //
     // Reachability differs from the skip arm and is worth stating: `delete()`
     // wraps a real `Unsubscribe` failure in a `ProvisioningError`, so this arm

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { NotFoundException, SubscribeCommand, UnsubscribeCommand } from '@aws-sdk/client-sns';
+import {
+  GetSubscriptionAttributesCommand,
+  NotFoundException,
+  SubscribeCommand,
+  UnsubscribeCommand,
+} from '@aws-sdk/client-sns';
 
 // Issue #1967: `SNSSubscriptionProvider.update` replaces DELETE-first, and its
 // skip arm already ABORTS — creating while the old subscription is still live
@@ -59,6 +64,19 @@ function subscribeCalls(): unknown[] {
   return mockSend.mock.calls.filter((call) => call[0] instanceof SubscribeCommand);
 }
 
+function readbackCalls(): unknown[] {
+  return mockSend.mock.calls.filter((call) => call[0] instanceof GetSubscriptionAttributesCommand);
+}
+
+/**
+ * The readback `update()` takes first (go-to-k/cdkd#4853): AWS holds ANOTHER
+ * endpoint, a create-only difference, so the change takes the DELETE-first
+ * replacement this file pins. An attribute-only edit is applied in place.
+ */
+const REPLACING_READBACK = {
+  Attributes: { ...PROPERTIES, Endpoint: 'arn:aws:sqs:us-east-1:123456789012:old-queue' },
+};
+
 function unsubscribeCalls(): unknown[] {
   return mockSend.mock.calls.filter((call) => call[0] instanceof UnsubscribeCommand);
 }
@@ -71,16 +89,21 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
     provider = new SNSSubscriptionProvider();
   });
 
-  /** Every SNS call succeeds except `Unsubscribe`, which fails the way AWS does. */
+  /**
+   * The readback reports a create-only difference (the replacement path), and
+   * every other SNS call succeeds except `Unsubscribe`, which fails the way
+   * AWS does.
+   */
   function wireFailingUnsubscribe(message: string): void {
     mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetSubscriptionAttributesCommand) return Promise.resolve(REPLACING_READBACK);
       if (cmd instanceof UnsubscribeCommand) {
         return Promise.reject(Object.assign(new Error(message), { name: 'AuthorizationError' }));
       }
       if (cmd instanceof SubscribeCommand) {
         return Promise.resolve({ SubscriptionArn: NEW_SUB_ARN });
       }
-      return Promise.resolve({ Attributes: {} });
+      return Promise.reject(new Error('unexpected SNS call'));
     });
   }
 
@@ -93,6 +116,7 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
       provider.update('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', PROPERTIES, PROPERTIES)
     ).rejects.toThrow();
 
+    expect(readbackCalls()).toHaveLength(1);
     expect(unsubscribeCalls()).toHaveLength(1);
     expect(subscribeCalls()).toHaveLength(0);
   });
@@ -101,6 +125,7 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
     // The polarity. Without it the case above is satisfied by a provider that
     // never replaces a subscription at all.
     mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetSubscriptionAttributesCommand) return Promise.resolve(REPLACING_READBACK);
       if (cmd instanceof SubscribeCommand) return Promise.resolve({ SubscriptionArn: NEW_SUB_ARN });
       return Promise.resolve({});
     });
@@ -181,6 +206,7 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
     // failed before recording it, so the re-run finds the subscription gone
     // and must go on to create the new one rather than refusing forever.
     mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetSubscriptionAttributesCommand) return Promise.resolve(REPLACING_READBACK);
       if (cmd instanceof UnsubscribeCommand) {
         return Promise.reject(
           new NotFoundException({ message: 'Subscription does not exist', $metadata: {} })
@@ -212,7 +238,13 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
       outcome: 'skipped',
       reason: 'malformed physicalId in state',
     });
-    mockSend.mockImplementation(() => Promise.resolve({ SubscriptionArn: NEW_SUB_ARN }));
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(
+        cmd instanceof GetSubscriptionAttributesCommand
+          ? REPLACING_READBACK
+          : { SubscriptionArn: NEW_SUB_ARN }
+      )
+    );
 
     await expect(
       skipping.update('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', PROPERTIES, PROPERTIES)

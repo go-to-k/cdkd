@@ -65,11 +65,12 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
     // fixture exists to UPDATE.
     const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
     const rawDelivery = modes.includes('raw-delivery');
-    // `filter-b` edits the policy in place; `drop-filter` removes it, which
-    // must reset the live subscription to no filter (#4853).
-    const filterPolicy = modes.includes('drop-filter')
-      ? undefined
-      : { kind: [modes.includes('filter-b') ? 'b' : 'a'] };
+    // `filter-b` edits the policy in place; `body-scope` then moves it to the
+    // message body (a scope-only edit, also in place); `drop-filter` removes
+    // both, which must leave the live subscription with no filter (#4853).
+    const dropFilter = modes.includes('drop-filter');
+    const filterPolicy = dropFilter ? undefined : { kind: [modes.includes('filter-b') ? 'b' : 'a'] };
+    const filterPolicyScope = !dropFilter && modes.includes('body-scope') ? 'MessageBody' : undefined;
 
     // BOTH polarities are explicit. Leaving the false arm to the AWS default
     // would make the mode-off deploy indistinguishable from one where cdkd
@@ -81,6 +82,7 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
       endpoint: queue.queueArn,
       rawMessageDelivery: rawDelivery,
       filterPolicy,
+      filterPolicyScope,
     });
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });

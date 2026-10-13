@@ -187,14 +187,34 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
       FilterPolicyScope: 'MessageBody',
       RedrivePolicy: { deadLetterTargetArn: DLQ_ARN },
     });
-    // The policy is cleared BEFORE its scope returns to the default, so the
-    // scope never applies to a policy written for the other one.
+    // A scope with no policy filters nothing, and SNS may refuse to set one on
+    // a subscription without a policy: it is left for the next policy.
     expect(setCalls()).toEqual([
       ['RawMessageDelivery', 'false'],
       ['FilterPolicy', ''],
-      ['FilterPolicyScope', 'MessageAttributes'],
       ['RedrivePolicy', ''],
     ]);
+    expect(replaced()).toBe(false);
+  });
+
+  it('resets a dropped FilterPolicyScope while a policy stays, after the policy', async () => {
+    route({
+      get: () => ({
+        Attributes: live({ FilterPolicy: '{"kind":["a"]}', FilterPolicyScope: 'MessageBody' }),
+      }),
+    });
+    await provider.update('Sub', SUB_ARN, TYPE, { ...BASE, FilterPolicy: { kind: ['b'] } }, { ...BASE });
+    expect(setCalls()).toEqual([
+      ['FilterPolicy', '{"kind":["b"]}'],
+      ['FilterPolicyScope', 'MessageAttributes'],
+    ]);
+    expect(replaced()).toBe(false);
+  });
+
+  it('leaves the scope of a subscription with no policy left alone', async () => {
+    route({ get: () => ({ Attributes: live({ FilterPolicyScope: 'MessageBody' }) }) });
+    await provider.update('Sub', SUB_ARN, TYPE, { ...BASE }, { ...BASE });
+    expect(setCalls()).toEqual([]);
     expect(replaced()).toBe(false);
   });
 
@@ -240,7 +260,7 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
   });
 
   describe('keeps the delete-first replacement where an in-place edit is not proven', () => {
-    it('a create-only field that differs from AWS (DescribeType degraded it into an update)', async () => {
+    it('a create-only field that differs from AWS (a rollback revert, or a record of another subscription)', async () => {
       route({ get: () => ({ Attributes: live() }) });
       const result = await provider.update(
         'Sub',
@@ -272,6 +292,13 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
         { ...BASE, FilterPolicy: { body: { kind: ['a'] } }, FilterPolicyScope: 'MessageBody' },
         { ...BASE }
       );
+      expect(replaced()).toBe(true);
+      expect(setCalls()).toEqual([]);
+    });
+
+    it('a subscription AWS reports still PendingConfirmation (an unconfirmed email endpoint)', async () => {
+      route({ get: () => ({ Attributes: live({ PendingConfirmation: 'true' }) }) });
+      await provider.update('Sub', SUB_ARN, TYPE, { ...BASE, RawMessageDelivery: true }, { ...BASE });
       expect(replaced()).toBe(true);
       expect(setCalls()).toEqual([]);
     });
