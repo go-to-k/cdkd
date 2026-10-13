@@ -83,6 +83,7 @@ import * as routingMixin from './deploy-engine/routing.js';
 import * as recordShapeMixin from './deploy-engine/record-shape.js';
 import * as dependenciesMixin from './deploy-engine/dependencies.js';
 import * as noEchoMixin from './deploy-engine/noecho.js';
+import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -404,6 +405,13 @@ export class DeployEngine {
    */
   /** @internal */
   observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> = new Map();
+  /**
+   * The journal-key version purge a deploy starts when it finds no rollback
+   * journal (`deploy-flow.ts` step 1b); the success settle awaits it in place
+   * of its own delete and purge. Never rejects.
+   * @internal
+   */
+  absentJournalVersionPurge: Promise<void> | undefined;
   /**
    * The cap on the readback that decides a fresh-`NoEcho` replacement ceiling
    * (go-to-k/cdkd#3729). Outliving it keeps the replacement. A field rather
@@ -867,6 +875,14 @@ export class DeployEngine {
   /** @internal */
   healBaseline: Readonly<Record<string, ResourceState>> = {};
   /**
+   * This deploy's producer-region evidence (`producerRegionEvidence` over the
+   * state it loaded and the reads it has made), for the resolver's
+   * recorded-reference re-resolution (go-to-k/cdkd#4805). Per-deploy, like
+   * `healBaseline`; `undefined` before the state loads.
+   * @internal
+   */
+  runProducerRegionEvidence: (() => ProducerRegionEvidence) | undefined = undefined;
+  /**
    * go-to-k/cdkd#4156: this deploy's diff, read by `inlinePolicyClaimedFor` to
    * tell whether a principal's completed update put its `Policies`.
    * Per-deploy, like `healBaseline`.
@@ -1042,6 +1058,7 @@ export class DeployEngine {
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.healBaseline = {};
+    this.runProducerRegionEvidence = undefined;
     this.deployChanges = new Map();
     this.deployStateResources = {};
     this.inlinePolicyWriters = new Map();

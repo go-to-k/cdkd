@@ -2435,6 +2435,9 @@ describe('the engine Export.Name copy sees a concurrent sibling record (issue #2
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
@@ -2479,6 +2482,7 @@ describe('the engine Export.Name copy sees a concurrent sibling record (issue #2
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
@@ -2722,12 +2726,16 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
         .mockResolvedValue(existing ? { state: existing, etag: 'etag-0' } : { state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     };
     const exportIndex = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

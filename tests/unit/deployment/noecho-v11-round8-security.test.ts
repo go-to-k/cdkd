@@ -223,6 +223,7 @@ describe('round 8 SECURITY 1: a NoEcho value that is an ARN, echoed by an attrib
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

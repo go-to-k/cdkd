@@ -2021,10 +2021,14 @@ mask with no such record still names every cause.
 **Known bound: a value used as a NAME.** A resource's physical id is what
 cdkd uses to find it again, so it is never masked. A `NoEcho` value passed as a
 create-only name (`QueueName`, `TableName`, a parameter `Name`) is therefore
-stored in the clear as that resource's physical id. The attributes AWS builds
-around the name on that resource (a queue URL, an ARN) are stored as `***`,
-because they contain the value (so a later deploy that has to write one of
-them is refused, like any masked read), but any other resource's property or output
+stored in the clear as that resource's physical id. An attribute of that
+resource holding the physical id (an SNS topic's `TopicArn`), and an output or
+export holding it, are stored as the id is (a record an earlier cdkd wrote
+with `***` there is repaired by the next deploy that reads the attribute,
+from a re-read of the resource). Any other attribute containing the value is
+stored as `***` (the name attribute itself, unless the physical id IS the
+value, or a queue's `Arn`, since a queue's physical id is its URL), so a later
+deploy that has to write one of those is refused, like any masked read. Any other resource's property or output
 that reads one of those holds it in the clear, and so does any command output
 that shows a physical id. CloudFormation behaves the same way: `DescribeStackResources`
 returns the physical id in the clear, whatever `NoEcho` said. Use `NoEcho`

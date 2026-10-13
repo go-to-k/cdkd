@@ -26,6 +26,20 @@ export function recordPhysicalNameCopy(secrets: RecordedSecretValues, physicalId
   sideSetOf(physicalNameCopiesOf, secrets).add(physicalId);
 }
 
+/**
+ * Physical ids a record's ATTRIBUTES copy, beyond its own (go-to-k/cdkd#4849):
+ * a nested-stack row's `Outputs.<Key>` holding a child resource's id. Read by
+ * `scrubResourceRecord` for the attributes walk ONLY, so the row's
+ * `properties` (its `Parameters`) keep their reference form.
+ */
+export const attributeIdCopiesOf = new WeakMap<RecordedSecretValues, Set<string>>();
+
+/** Record `physicalId` as one the attributes of the record owning `secrets` copy (see {@link attributeIdCopiesOf}). */
+export function recordAttributeIdCopy(secrets: RecordedSecretValues, physicalId: string): void {
+  if (physicalId === '') return;
+  sideSetOf(attributeIdCopiesOf, secrets).add(physicalId);
+}
+
 /** The `[start, end)` spans of every occurrence of a recorded physical name in `value`. */
 export function physicalNameSpans(
   names: ReadonlySet<string> | undefined,

@@ -206,6 +206,9 @@ function harness(
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState,
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn(),
       popRollbackJournalSegment: vi.fn(),
       deleteRollbackJournal: vi.fn(),
@@ -226,7 +229,7 @@ function harness(
     } as never,
     { dryRun: false, parameters, ...(inheritedSecrets && { inheritedSecrets }), ...extraOptions },
     'us-east-1',
-    { updateForStack } as never
+    { updateForStack, prefetch: vi.fn().mockResolvedValue(undefined) } as never
   );
   return { engine, saveState, updateForStack, props };
 }

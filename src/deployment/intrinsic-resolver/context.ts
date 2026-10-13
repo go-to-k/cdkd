@@ -757,6 +757,19 @@ export interface ResolverContext {
    */
   producerPreRunPhysicalId?: (logicalId: string) => string | undefined;
   /**
+   * The deploy's producer-region evidence (go-to-k/cdkd#4805): the regions this
+   * stack's cross-stack reads name, from its state and this run's reads,
+   * unioned with a nested child's ancestors', and whether that set is
+   * complete. Read ONLY by `reresolveRecordedReferences`, to prove that a
+   * region-less `{{resolve:` reference in a persisted record was resolved in
+   * this region: complete, with no producer in another region, it cannot
+   * have come from another region's stack. `undefined` (absent, or a getter
+   * answering nothing) proves nothing. Set by the deploy engine only.
+   */
+  secretRegionEvidence?: () =>
+    | { readonly regions: readonly string[]; readonly complete: boolean }
+    | undefined;
+  /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
    * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
    * (issue #2274).

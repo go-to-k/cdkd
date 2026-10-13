@@ -1060,4 +1060,69 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       });
     });
   });
+
+  describe('deferReleasePurge (cdkd deploy overlaps the purge with its events flush)', () => {
+    const PURGE_CALLS = [
+      'DeleteObjectCommand',
+      'ListObjectVersionsCommand',
+      'DeleteObjectsCommand',
+      'GetBucketReplicationCommand',
+    ];
+    /** Hold the version listing until the case releases it. */
+    const holdListing = (): { release: () => void } => {
+      const gate = { release: (): void => undefined };
+      behaviour.list = () =>
+        new Promise((resolve) => {
+          gate.release = () =>
+            resolve({
+              Versions: LOCK_VERSIONS,
+              DeleteMarkers: [{ Key: LOCK_KEY, VersionId: 'dm-latest', IsLatest: true }],
+              IsTruncated: false,
+            });
+        });
+      return gate;
+    };
+    const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('returns once the lock is deleted; settleDeferredPurges waits for the purge', async () => {
+      const listing = holdListing();
+      const lm = new LockManager(
+        client(),
+        { bucket: BUCKET, prefix: 'cdkd' },
+        { disableRenewal: true, deferReleasePurge: true }
+      );
+      await acquireThenRelease(lm);
+      await tick();
+      // Released while the purge is still listing.
+      expect(names()).toEqual(PURGE_CALLS.slice(0, 2));
+
+      let settled = false;
+      const settling = lm.settleDeferredPurges().then(() => {
+        settled = true;
+      });
+      await tick();
+      expect(settled).toBe(false);
+      listing.release();
+      await settling;
+      expect(names()).toEqual(PURGE_CALLS);
+      // Nothing left once settled.
+      await expect(lm.settleDeferredPurges()).resolves.toBeUndefined();
+    });
+
+    it('without the option, releaseLock still waits for the whole purge', async () => {
+      const listing = holdListing();
+      const lm = manager();
+      expect(await lm.acquireLock(STACK, REGION, 'me@host:1', 'deploy')).toBe(true);
+      sent.length = 0;
+      let released = false;
+      const releasing = lm.releaseLock(STACK, REGION).then(() => {
+        released = true;
+      });
+      await tick();
+      expect(released).toBe(false);
+      listing.release();
+      await releasing;
+      expect(names()).toEqual(PURGE_CALLS);
+    });
+  });
 });

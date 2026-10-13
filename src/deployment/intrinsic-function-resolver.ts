@@ -956,6 +956,8 @@ IntrinsicFunctionResolver.prototype.constructWithStaleRecordHeal =
 IntrinsicFunctionResolver.prototype.constructGuardedAttribute =
   getAttHealMixin.constructGuardedAttribute;
 IntrinsicFunctionResolver.prototype.healBeforeConstructing = getAttHealMixin.healBeforeConstructing;
+IntrinsicFunctionResolver.prototype.healMaskedOwnIdAttribute =
+  getAttHealMixin.healMaskedOwnIdAttribute;
 IntrinsicFunctionResolver.prototype.constructAttribute = getAttMixin.constructAttribute;
 IntrinsicFunctionResolver.prototype.refuseUnservedAttribute =
   getAttRefusalsMixin.refuseUnservedAttribute;

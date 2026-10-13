@@ -113,6 +113,7 @@ describe('DeployEngine stamps constructPath on every save', () => {
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

@@ -181,7 +181,7 @@ export function readHealedAttribute(
 export function mergeHealedAttributes(
   recorded: Record<string, unknown> | undefined,
   healed: Readonly<Record<string, unknown>>,
-  isStaleValue: (key: string, value: unknown) => boolean
+  isStaleValue: (key: string, value: unknown, healedValue: unknown) => boolean
 ): Record<string, unknown> | undefined {
   let merged: Record<string, unknown> | undefined;
   for (const [key, value] of Object.entries(healed)) {
@@ -190,7 +190,7 @@ export function mergeHealedAttributes(
     // with this one key would replace the bag's prototype instead of adding a member.
     if (key === '__proto__') continue;
     const has = recorded !== undefined && Object.hasOwn(recorded, key);
-    if (has && !isStaleValue(key, recorded[key])) continue;
+    if (has && !isStaleValue(key, recorded[key], value)) continue;
     merged ??= { ...recorded };
     merged[key] = value;
   }

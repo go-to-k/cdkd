@@ -160,6 +160,9 @@ function build(opts: {
     listStacks: vi.fn().mockResolvedValue([]),
     appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+    purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+    rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+    warmConnections: vi.fn().mockResolvedValue(undefined),
     loadRollbackJournal: vi
       .fn()
       .mockImplementation((name: string) =>

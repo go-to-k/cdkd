@@ -109,7 +109,9 @@ export {
   repairEmbeddedPhysicalNamesTowards,
 } from './secret-redaction/redact-state.js';
 export {
+  attributeIdCopiesOf,
   physicalNameCopiesOf,
+  recordAttributeIdCopy,
   recordPhysicalNameCopy,
 } from './secret-redaction/physical-name-copies.js';
 export {

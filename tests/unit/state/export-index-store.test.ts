@@ -1375,3 +1375,72 @@ describe('ExportIndexStore.ensureClientForBucket — region rebuild (issue #819)
     expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ExportIndexStore.prefetch (#4837)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const indexBody = (exports: Record<string, unknown>): string =>
+    JSON.stringify({ indexVersion: EXPORT_INDEX_VERSION, exports });
+
+  it('lets an update that changes nothing go out without a read or a write', async () => {
+    const s3 = mockS3(async (cmd) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        return { Body: { transformToString: async () => indexBody({}) }, ETag: '"e1"' };
+      }
+      throw new Error(`unexpected command ${cmd.constructor.name}`);
+    });
+    const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+    await store.prefetch();
+    expect(s3.send).toHaveBeenCalledOnce();
+    await store.updateForStack('NoExports', 'us-east-1', {});
+
+    expect(s3.send).toHaveBeenCalledOnce();
+  });
+
+  it('writes a changed update under If-Match with the prefetched ETag', async () => {
+    const puts: Array<{ IfMatch?: string }> = [];
+    const s3 = mockS3(async (cmd) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        return { Body: { transformToString: async () => indexBody({}) }, ETag: '"e1"' };
+      }
+      if (cmd.constructor.name === 'PutObjectCommand') {
+        puts.push(cmd.input as { IfMatch?: string });
+        return { ETag: '"e2"' };
+      }
+      throw new Error(`unexpected command ${cmd.constructor.name}`);
+    });
+    const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+    await store.prefetch();
+    await store.updateForStack('Producer', 'us-east-1', { Exported: 'v' });
+
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.IfMatch).toBe('"e1"');
+  });
+
+  it('swallows a failed load, and the next caller reads again', async () => {
+    let gets = 0;
+    const s3 = mockS3(async (cmd) => {
+      if (cmd.constructor.name === 'GetObjectCommand') {
+        gets++;
+        if (gets === 1) throw s3ErrorWith('AccessDenied', 403);
+        return {
+          Body: {
+            transformToString: async () =>
+              indexBody({ X: { value: 'v', producerStack: 'P', producerRegion: 'us-east-1' } }),
+          },
+          ETag: '"e1"',
+        };
+      }
+      throw new Error(`unexpected command ${cmd.constructor.name}`);
+    });
+    const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+    await expect(store.prefetch()).resolves.toBeUndefined();
+    expect((await store.lookup('X'))?.value).toBe('v');
+    expect(gets).toBe(2);
+  });
+});

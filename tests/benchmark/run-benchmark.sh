@@ -185,15 +185,40 @@ cdkd_destroy() {
   fi
 
   info "Destroying cdkd stack..."
-  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" destroy --app "$CDK_APP" "${state_bucket_args[@]+"${state_bucket_args[@]}"}" --force "$CDKD_STACK" 2>&1) || {
+  local out
+  out=$(cd "$EXAMPLE_DIR" && node "$CDKD_BIN" destroy --app "$CDK_APP" "${state_bucket_args[@]+"${state_bucket_args[@]}"}" --force "$CDKD_STACK" 2>&1) || {
     warn "cdkd destroy failed (stack may not exist)"
   }
+  echo "$out"
+  if [[ "$out" != *"matched no stack"* ]]; then
+    LAST_CDKD_DESTROY_MS=$(now_ms)
+  fi
+}
+
+# SQS refuses CreateQueue for 60s after a queue of the same name is deleted.
+# cdkd derives the queue name from the stack, so a deploy right after a destroy
+# spends that minute in retries and times AWS's cooldown instead of cdkd. The
+# CloudFormation side is unaffected: its names carry a random suffix.
+SQS_NAME_COOLDOWN_MS=65000
+LAST_CDKD_DESTROY_MS=0
+
+wait_for_name_cooldown() {
+  if [[ "$LAST_CDKD_DESTROY_MS" -eq 0 ]]; then
+    return 0
+  fi
+  local remaining_ms
+  remaining_ms=$((SQS_NAME_COOLDOWN_MS - ($(now_ms) - LAST_CDKD_DESTROY_MS)))
+  if [[ "$remaining_ms" -gt 0 ]]; then
+    info "Waiting $(fmt_time "$remaining_ms") for the SQS same-name cooldown..."
+    sleep $(((remaining_ms + 999) / 1000))
+  fi
 }
 
 run_cdkd_benchmark() {
   phase "Running cdkd benchmark (run $1/$RUNS)"
 
   cdkd_destroy >/dev/null 2>&1 || true
+  wait_for_name_cooldown
 
   info "Measuring synthesis time..."
   local synth_ms
@@ -399,6 +424,8 @@ run_scenario() {
   CFN_SYNTH_MS=0
   CFN_DEPLOY_MS=0
   CFN_TOTAL_MS=0
+  # Another scenario's queue does not share this one's name.
+  LAST_CDKD_DESTROY_MS=0
 
   if [[ "$SKIP_CDKD" != "true" ]]; then
     for i in $(seq 1 "$RUNS"); do

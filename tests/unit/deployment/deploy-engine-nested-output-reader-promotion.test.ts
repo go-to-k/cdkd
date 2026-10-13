@@ -193,6 +193,7 @@ describe('DeployEngine - readers of a moved nested output (issue #3631)', () => 
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

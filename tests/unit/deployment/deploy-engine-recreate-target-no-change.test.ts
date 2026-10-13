@@ -100,6 +100,9 @@ describe('a --recreate-via-* target with no template change is recreated (#2651)
       saveState: vi.fn().mockResolvedValue('etag-new'),
       // No journal: the success settle reads it first (go-to-k/cdkd#4600).
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(true),
     } as typeof mockStateBackend;
     // The real calculator's two summary methods, over whatever map it returned.
@@ -157,6 +160,7 @@ describe('a --recreate-via-* target with no template change is recreated (#2651)
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

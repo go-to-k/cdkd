@@ -902,7 +902,11 @@ async function deployCommand(
         region: baseRegion,
         ...(options.profile && { profile: options.profile }),
       });
-      const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
+      // The release purge overlaps the events flush below rather than adding
+      // a round trip to every deploy's tail.
+      const stackLockManager = new LockManager(stateS3Client.s3, stateConfig, {
+        deferReleasePurge: true,
+      });
       const stackProviderRegistry = new ProviderRegistry();
       registerAllProviders(stackProviderRegistry, providerClasses);
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
@@ -1450,10 +1454,13 @@ async function deployCommand(
         recordRunFailed(eventRecorder, stackInfo.stackName, deployError);
         throw deployError;
       } finally {
-        // Best-effort final flush + index update. Never throws.
-        if (eventRecorder) {
-          await eventRecorder.finalize(runResult);
-        }
+        // Best-effort final flush + index update, beside the lock's deferred
+        // version purge. Neither throws, and both finish before the S3 client
+        // they use is destroyed.
+        await Promise.all([
+          eventRecorder?.finalize(runResult),
+          stackLockManager.settleDeferredPurges(),
+        ]);
         stackAwsClients.destroy();
         stateS3Client.destroy();
       }

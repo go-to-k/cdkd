@@ -155,6 +155,9 @@ async function deployAndRollBack(
         return 'etag';
       }),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn(async (_n: string, _r: string, seg: unknown) => {
         segments.push(structuredClone(seg) as RollbackJournalSegment);
       }),
@@ -367,11 +370,14 @@ describe('redactRollbackRecord keeps only what the previous record persisted (#4
     const restored: ResourceState = {
       ...prev,
       properties: { Queues: [echoed], PolicyDocument: prev.properties['PolicyDocument'] },
-      attributes: { Url: `${URL}/new`, Arn: ARN },
+      attributes: { Url: `${URL}/new`, Arn: ARN, Tag: `tag-${NAME}` },
     };
     const out = redactRollbackRecord(restored, secrets(), prev.properties, prev.attributes);
     expect(out.properties['Queues']).toEqual([`${echoed.replace(NAME, REF)}`]);
-    expect(out.attributes).toEqual({ Url: `${URL.replace(NAME, REF)}/new`, Arn: ARN_REF });
+    // `Url` holds the record's OWN physical id, stored in plaintext beside it,
+    // so the scan keeps that copy (go-to-k/cdkd#4849); `Tag` differs from the
+    // persisted record and holds the name outside the id, so it is redacted.
+    expect(out.attributes).toEqual({ Url: `${URL}/new`, Arn: ARN_REF, Tag: `tag-${REF}` });
   });
 
   it('never keeps a persisted leaf that carried a reference', () => {

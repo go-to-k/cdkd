@@ -138,6 +138,7 @@ describe('DeployEngine - an IAM role Path change replaces the role (go-to-k/cdkd
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
