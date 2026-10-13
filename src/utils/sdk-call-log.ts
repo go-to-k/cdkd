@@ -21,21 +21,30 @@ import { writeFileSync } from 'node:fs';
 /** The environment variable naming the file the counts are written to. */
 export const SDK_CALL_LOG_ENV = 'CDKD_SDK_CALL_LOG';
 
-const counts = new Map<string, number>();
+/** client name -> command name -> count. Nested, so no composite key is built. */
+const counts = new Map<string, Map<string, number>>();
 let exitHookInstalled = false;
 
 function record(entry: unknown): void {
   if (entry === null || typeof entry !== 'object') return;
   const { clientName, commandName } = entry as { clientName?: unknown; commandName?: unknown };
-  const key = `${typeof clientName === 'string' ? clientName : '?'}.${
-    typeof commandName === 'string' ? commandName : '?'
-  }`;
-  counts.set(key, (counts.get(key) ?? 0) + 1);
+  const client = typeof clientName === 'string' ? clientName : '?';
+  const command = typeof commandName === 'string' ? commandName : '?';
+  let perClient = counts.get(client);
+  if (perClient === undefined) {
+    perClient = new Map();
+    counts.set(client, perClient);
+  }
+  perClient.set(command, (perClient.get(command) ?? 0) + 1);
 }
 
-/** The counts so far, sorted by key. */
+/** The counts so far as `{ "<client>.<command>": n }`, sorted (SDK names hold no `.`). */
 export function sdkCallCounts(): Record<string, number> {
-  return Object.fromEntries([...counts.entries()].sort(([a], [b]) => (a < b ? -1 : 1)));
+  const rows: Array<[string, number]> = [];
+  for (const [client, perClient] of counts) {
+    for (const [command, n] of perClient) rows.push([[client, command].join('.'), n]);
+  }
+  return Object.fromEntries(rows.sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
 /** Clear the counts (tests). */

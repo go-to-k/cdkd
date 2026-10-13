@@ -1171,7 +1171,7 @@ No read-time migration: a v11 document is read unchanged, and the next
 `cdkd deploy` writes `version: 12`. A record that deploy writes gains the
 field from its own resolution. A record it leaves unchanged and that holds a
 token gains it through a ONE-TIME capture
-(`src/deployment/deploy-engine/provenance-capture.ts`): after the diff, in the
+(`src/deployment/reference-provenance-capture.ts`): after the diff, in the
 background, the deploy resolves that record's template `Properties` once in a
 throwaway context and keeps the region of each token it attributes, the
 version only where the record's physical id contains the token's current
@@ -1413,7 +1413,7 @@ output's value changes (it used to be kept as written).
 So these are NOT sent through the mask: a flip of a condition over a `NoEcho`
 parameter, and a new value of anything above. (A new value of the `NoEcho`
 parameter itself is found by reading the resource back from AWS; see
-[`version: 11`](#version-11-stores-noecho-values-as-current-writers).) A hash
+[`version: 11`](#version-11-stores-noecho-values-as).) A hash
 that moved with such a value would let anyone holding the state file test
 guesses of it. CloudFormation would update the resource; change the
 property's template text, or replace the resource, to push one.

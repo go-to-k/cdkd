@@ -89,7 +89,7 @@ import {
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 import { isKnownTokenFreeState } from '../../state/token-free-state.js';
-import { kickOffProvenanceCapture, provenanceBaselineOf } from './provenance-capture.js';
+import { kickOffProvenanceCapture, provenanceBaselineOf } from '../reference-provenance-capture.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {

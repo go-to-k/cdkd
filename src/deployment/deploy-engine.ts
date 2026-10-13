@@ -23,7 +23,7 @@ import {
   provenanceForWrittenRecord,
   withReferenceProvenance,
 } from './reference-provenance-record.js';
-import type { ProvenanceCaptureOutcome } from './deploy-engine/provenance-capture.js';
+import type { ProvenanceCaptureOutcome } from './reference-provenance-capture.js';
 import {
   type ChildTemplateLoader,
   type parameterInputsFor,
@@ -905,7 +905,7 @@ export class DeployEngine {
   /**
    * State schema v12: the one-time migration capture's in-flight tasks, keyed
    * by logical id, drained with the observed captures before a save
-   * (`provenance-capture.ts`). Cleared per `deploy()`.
+   * (`reference-provenance-capture.ts`). Cleared per `deploy()`.
    */
   /** @internal */
   provenanceCaptureTasks = new Map<string, Promise<ProvenanceCaptureOutcome>>();

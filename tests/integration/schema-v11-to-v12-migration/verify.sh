@@ -50,6 +50,15 @@ cd "$(dirname "$0")"
 export AWS_PAGER=""
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
 gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
   local out
@@ -166,9 +175,8 @@ cleanup() {
     aws ssm delete-parameter --name "${PARAM_PREFIX}/${param}" --region "${REGION}" >/dev/null 2>&1
   done
   local url
-  url="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
-    --query QueueUrl --output text 2>/dev/null)"
-  if [ -n "${url}" ] && [ "${url}" != "None" ]; then
+  if url="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
+      --query QueueUrl --output text 2>/dev/null)" && [ -n "${url}" ] && [ "${url}" != "None" ]; then
     aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1
   fi
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
@@ -333,9 +341,10 @@ assert_no_password_in_versions() { # <label>
     if grep -qxF -- "${key}"$'\t'"${vid}" "${PRE_MIGRATION_VERSIONS}"; then
       continue
     fi
-    body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
-      --version-id "${vid}" /dev/stdout < /dev/null 2>&1)" \
-      || fail "$1: could not read s3://${STATE_BUCKET}/${key} version ${vid}"
+    if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
+        --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      fail "$1: could not read s3://${STATE_BUCKET}/${key} version ${vid}"
+    fi
     scanned=$((scanned + 1))
     if [[ "${body}" == *"${PASSWORD}"* ]]; then
       hits="${hits}  s3://${STATE_BUCKET}/${key} version ${vid} (LastModified ${modified})"$'\n'

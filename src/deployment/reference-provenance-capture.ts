@@ -33,19 +33,19 @@
  * entry. `provenanceCapture` suppresses the one warning the deploy's own
  * resolution of the same record already prints.
  */
-import type { DeployEngine } from '../deploy-engine.js';
-import type { CloudFormationTemplate } from '../../types/resource.js';
-import type { ReferenceProvenance, ResourceState, StackState } from '../../types/state.js';
-import { isThrottlingError } from '../retryable-errors.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { MIN_NEEDLE_LENGTH } from '../secret-redaction.js';
-import { type RecordedSecretValues, resolvedPlaintextOf } from '../secret-redaction/pairs.js';
-import { passProvenanceFor } from '../secret-redaction/reference-provenance.js';
+import type { DeployEngine } from './deploy-engine.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
+import type { ReferenceProvenance, ResourceState, StackState } from '../types/state.js';
+import { isThrottlingError } from './retryable-errors.js';
+import { safeMsg } from '../utils/display-safe.js';
+import { MIN_NEEDLE_LENGTH } from './secret-redaction.js';
+import { type RecordedSecretValues, resolvedPlaintextOf } from './secret-redaction/pairs.js';
+import { passProvenanceFor } from './secret-redaction/reference-provenance.js';
 import {
   hasReferenceProvenanceField,
   recordReferenceTokens,
   validateReferenceProvenance,
-} from '../reference-provenance-record.js';
+} from './reference-provenance-record.js';
 
 /** What one record's capture produced. `field: undefined` leaves the field absent. */
 export interface ProvenanceCaptureOutcome {

@@ -208,7 +208,7 @@ the deploy warns.
 - outputs saved after the deploy failed while resolving outputs.
 
 The contributor page
-[State schema internals](state-schema-internals.md#version-11-stores-noecho-values-as-current-writers)
+[State schema internals](state-schema-internals.md#version-11-stores-noecho-values-as)
 has every case.
 
 ### Upgrading from a record written before version 11

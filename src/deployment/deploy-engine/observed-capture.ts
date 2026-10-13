@@ -23,7 +23,7 @@ import {
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
-import { drainProvenanceCaptures } from './provenance-capture.js';
+import { drainProvenanceCaptures } from '../reference-provenance-capture.js';
 import {
   createUnionSecretMasker,
   markSameGenerationBag,
