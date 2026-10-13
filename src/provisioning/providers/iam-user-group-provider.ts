@@ -78,12 +78,47 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+
+/** The two types whose identity this provider answers (go-to-k/cdkd#4606). */
+type UserOrGroupType = 'AWS::IAM::User' | 'AWS::IAM::Group';
+
+/**
+ * An IAM user NAME (1-64) or group NAME (1-128) of `A-Z a-z 0-9 + = , . @ _ -`,
+ * IAM's `UserName` / `GroupName` pattern: the physical id this provider
+ * records for each. The identity answers (`isSameResource`,
+ * `resourceIdentity`) refuse anything else, an ARN included: this provider
+ * never records one.
+ */
+function isUserOrGroupName(resourceType: UserOrGroupType, id: string): boolean {
+  return resourceType === 'AWS::IAM::User'
+    ? /^[\w+=,.@-]{1,64}$/.test(id)
+    : /^[\w+=,.@-]{1,128}$/.test(id);
+}
+
+function isUserOrGroupType(resourceType: string): resourceType is UserOrGroupType {
+  return resourceType === 'AWS::IAM::User' || resourceType === 'AWS::IAM::Group';
+}
+
+/**
+ * go-to-k/cdkd#4606 / #4655: a user's or group's identity token is its
+ * `UserId` (`AIDA…`) or `GroupId` (`AGPA…`). IAM assigns it at `CreateUser` /
+ * `CreateGroup` and never changes it; one deleted and re-created under the
+ * same name gets another (IAM User Guide, "IAM identifiers" → "Unique
+ * identifiers"; the `iam-user-group-fix-forward-orphan` fixture measures the
+ * re-create). The wiring calls a CREATE makes afterwards (boundary, login
+ * profile, policies, group membership) do not touch it. `undefined` for a
+ * missing or empty one.
+ */
+function userOrGroupIdentityToken(id: string | undefined): string | undefined {
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties
@@ -488,6 +523,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateUser returns; cleared when the
     // partial-create cleanup deleted the user, so only a left-behind one is marked.
     let leftBehind = false;
+    // go-to-k/cdkd#4606: the UserId CreateUser answered with, carried on the
+    // mark so the journal needs no read of a user whose failure may fail that
+    // read too.
+    let createdUserIdentity: string | undefined;
     try {
       const createParams: {
         UserName: string;
@@ -508,6 +547,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const createClient = await this.createClient.get();
       const response = await createClient.send(new CreateUserCommand(createParams));
       leftBehind = true;
+      createdUserIdentity = userOrGroupIdentityToken(response.User?.UserId);
 
       // CreateUserCommand has succeeded — AWS has now committed the User
       // (and the inline `Tags` from `createParams` if any). Every
@@ -659,7 +699,11 @@ export class IAMUserGroupProvider implements ResourceProvider {
             cause
           )
       );
-      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, userName);
+      // With its UserId (go-to-k/cdkd#4606), which a later settle compares
+      // before deleting the user by name.
+      if (leftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, userName, createdUserIdentity);
+      }
       throw thrown;
     }
   }
@@ -870,7 +914,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          log.debug(`User ${v(physicalId)} does not exist, skipping deletion`);
+          if (context?.failedCreateOrphan === true) {
+            // A journaled failed-CREATE orphan already gone settles with exit
+            // 0 (go-to-k/cdkd#4606), so it is said once at info. The name is
+            // interpolated verbatim for the caller's printing bag to mask.
+            this.logger.info(
+              safeMsg`  IAM user ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            log.debug(`User ${v(physicalId)} does not exist, skipping deletion`);
+          }
           return;
         }
         throw error;
@@ -1272,6 +1325,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateGroup returns; cleared when the
     // partial-create cleanup deleted the group, so only a left-behind one is marked.
     let leftBehind = false;
+    // go-to-k/cdkd#4606: the GroupId CreateGroup answered with, as on the user.
+    let createdGroupIdentity: string | undefined;
     try {
       const createParams: {
         GroupName: string;
@@ -1287,6 +1342,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const createClient = await this.createClient.get();
       const response = await createClient.send(new CreateGroupCommand(createParams));
       leftBehind = true;
+      createdGroupIdentity = userOrGroupIdentityToken(response.Group?.GroupId);
 
       // CreateGroupCommand has succeeded — AWS has now committed the
       // Group. Every subsequent call wires sub-resources onto it
@@ -1384,7 +1440,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
             cause
           )
       );
-      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, groupName);
+      // With its GroupId (go-to-k/cdkd#4606), as on the user.
+      if (leftBehind) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, groupName, createdGroupIdentity);
+      }
       throw thrown;
     }
   }
@@ -1489,7 +1548,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        log.debug(`Group ${v(physicalId)} does not exist, skipping deletion`);
+        if (context?.failedCreateOrphan === true) {
+          // As on the user (go-to-k/cdkd#4606).
+          this.logger.info(
+            safeMsg`  IAM group ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+          );
+        } else {
+          log.debug(`Group ${v(physicalId)} does not exist, skipping deletion`);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2097,6 +2163,121 @@ export class IAMUserGroupProvider implements ResourceProvider {
         )
       );
     }
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the user or group a failed CREATE journaled is
+   * the one the record under the same logical id holds (a fix-forward that
+   * created a new one there under another name).
+   *
+   * Only `AWS::IAM::User` and `AWS::IAM::Group`; both ids must be NAMES of
+   * that type (the physical id this provider records), else `'unknown'`, and
+   * so are two names differing only in case: IAM treats those as one entity,
+   * and this check does not decide on IAM's case rules. Equal names are
+   * `'same'` without a read: whatever holds the name now is the record's, and
+   * deleting by that name would delete it. A user or group name is unique per
+   * account (case-insensitively), and a rename (`UpdateUser` /
+   * `UpdateGroup`) is never issued by cdkd. After the region check the
+   * record's entity must read back (else `'unknown'`); the journaled one is
+   * `'same'` when it reads back under the record's id, `'different'` under
+   * another, and `'different'` when IAM reports it gone: the record's entity
+   * answers to its own, other, name. Any other read failure throws, which the
+   * caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (!isUserOrGroupType(resourceType)) return 'unknown';
+    if (
+      !isUserOrGroupName(resourceType, journaledPhysicalId) ||
+      !isUserOrGroupName(resourceType, record.physicalId)
+    ) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordId = await this.readIdIfExists(resourceType, record.physicalId);
+    if (recordId === undefined) return 'unknown';
+    const journaledId = await this.readIdIfExists(resourceType, journaledPhysicalId);
+    if (journaledId === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case; kept so the
+    // verdict rests on AWS's answer.
+    return journaledId === recordId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the user's `UserId` or the group's `GroupId`
+   * ({@link userOrGroupIdentityToken}). One re-created under the name answers
+   * with another, so the settle keeps it rather than deleting it as the failed
+   * CREATE's orphan. A failed CREATE's own token comes from its `CreateUser` /
+   * `CreateGroup` response, on the failure's mark (`markCreatedBeforeFailure`);
+   * this is the live read.
+   *
+   * `undefined` for another type (`AWS::IAM::UserToGroupAddition` included),
+   * an id that is not a name of the type, or a client in another region than
+   * `expectedRegion` (IAM is global, but the check keeps every identity read
+   * on the stack's own client). `RESOURCE_NOT_FOUND` only on
+   * `NoSuchEntityException`; any other failure, a response naming another
+   * entity, and one with no id throw.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (!isUserOrGroupType(resourceType) || !isUserOrGroupName(resourceType, physicalId)) {
+      return undefined;
+    }
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const id = await this.readIdIfExists(resourceType, physicalId);
+    return id === undefined ? RESOURCE_NOT_FOUND : id;
+  }
+
+  /**
+   * The user's `UserId` (`GetUser`) or the group's `GroupId` (`GetGroup`,
+   * one member page at most), or `undefined` when IAM answers
+   * `NoSuchEntityException`. Any other failure, a response naming another
+   * entity, and one with no id throw: "could not read" never reads as "gone".
+   */
+  private async readIdIfExists(
+    resourceType: UserOrGroupType,
+    name: string
+  ): Promise<string | undefined> {
+    let answeredName: string | undefined;
+    let id: string | undefined;
+    try {
+      if (resourceType === 'AWS::IAM::User') {
+        const response = await this.iamClient.send(new GetUserCommand({ UserName: name }));
+        answeredName = response.User?.UserName;
+        id = response.User?.UserId;
+      } else {
+        const response = await this.iamClient.send(
+          new GetGroupCommand({ GroupName: name, MaxItems: 1 })
+        );
+        answeredName = response.Group?.GroupName;
+        id = response.Group?.GroupId;
+      }
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) return undefined;
+      throw error;
+    }
+    const noun = resourceType === 'AWS::IAM::User' ? 'user' : 'group';
+    if (answeredName !== name) {
+      throw new Error(`IAM answered for another ${noun} than the one asked for`);
+    }
+    const token = userOrGroupIdentityToken(id);
+    if (token === undefined) {
+      throw new Error(`IAM returned no ${noun === 'user' ? 'UserId' : 'GroupId'}`);
+    }
+    return token;
   }
 
   // ─── readCurrentState dispatch ───────────────────────────────────
