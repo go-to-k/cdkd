@@ -69,7 +69,7 @@ const CALL_LOG_LOGGER = {
 
 /**
  * `argv` (the arguments after the script) with every flag VALUE dropped:
- * `--flag=value` keeps `--flag`, and once a flag appears every following
+ * a flag token keeps only its name ({@link flagName}), and once a flag appears every following
  * non-flag token is dropped, since without the command's option table a
  * flag's value cannot be told from a positional. The leading positionals (the
  * subcommand and stack names) are kept. Lossy in the safe direction: a value
@@ -81,13 +81,28 @@ export function sanitizedArgv(argv: readonly string[]): string[] {
   for (const arg of argv) {
     if (arg.startsWith('-') && arg !== '-') {
       afterFlag = true;
-      const eq = arg.indexOf('=');
-      out.push(eq === -1 ? arg : arg.slice(0, eq));
+      const name = flagName(arg);
+      if (name !== undefined) out.push(name);
     } else if (!afterFlag) {
       out.push(arg);
     }
   }
   return out;
+}
+
+/**
+ * A flag token's NAME, or `undefined` when none is safe to keep: `--name` /
+ * `--name=value` keep `--name` when it is a plain option name; a single-dash
+ * token keeps only `-x`, since a short option may carry its value attached
+ * (`-anode app.js`, `-ckey=value`) or bundle another short option.
+ */
+function flagName(arg: string): string | undefined {
+  if (arg.startsWith('--')) {
+    const eq = arg.indexOf('=');
+    const name = eq === -1 ? arg : arg.slice(0, eq);
+    return /^--[A-Za-z][A-Za-z0-9-]*$/.test(name) ? name : undefined;
+  }
+  return /^-[A-Za-z]/.test(arg) ? arg.slice(0, 2) : undefined;
 }
 
 /** The one line a process appends: pid, sanitized argv, ISO time, counts. */

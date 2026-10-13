@@ -132,6 +132,10 @@ describe('the SDK call log', () => {
       `--context=token=${SECRET}`,
       '-c',
       SECRET,
+      `-anode app.js ${SECRET}`,
+      `-c${SECRET}=v`,
+      `-yc${SECRET}=v`,
+      `--weird name=${SECRET}`,
     ]);
     const body = readFileSync(file, 'utf8');
     expect(body).not.toContain(SECRET);
@@ -141,6 +145,9 @@ describe('the SDK call log', () => {
       '--parameters',
       '--context',
       '-c',
+      '-a',
+      '-c',
+      '-y',
     ]);
   });
 
