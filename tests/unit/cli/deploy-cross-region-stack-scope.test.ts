@@ -78,6 +78,7 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
+    settleDeferredPurges: vi.fn().mockResolvedValue(undefined),
   })),
 }));
 

@@ -142,6 +142,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
   };
   let mockExportIndexStore: {
     updateForStack: ReturnType<typeof vi.fn>;
+    prefetch: ReturnType<typeof vi.fn>;
     lookup: ReturnType<typeof vi.fn>;
     patchEntry: ReturnType<typeof vi.fn>;
   };
@@ -201,6 +202,7 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
     };
     mockExportIndexStore = {
       updateForStack: vi.fn().mockResolvedValue(undefined),
+      prefetch: vi.fn().mockResolvedValue(undefined),
       lookup: vi.fn().mockResolvedValue(null),
       patchEntry: vi.fn().mockResolvedValue(undefined),
     };

@@ -195,6 +195,9 @@ function legacyProbeBelongsTo(probe: LegacyStateProbe, region: string): boolean 
  */
 const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
 
+const ROLLBACK_JOURNAL_OBJECT_DESCRIPTION =
+  'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim';
+
 /**
  * S3-based state backend using conditional writes for optimistic locking.
  *
@@ -219,6 +222,10 @@ export class S3StateBackend {
   private clientResolved = false;
   private scanClient: S3Client | undefined;
   private resolveInFlight: Promise<void> | null = null;
+  /** Journal keys `loadRollbackJournal` found absent, untouched since. */
+  private readonly journalsReadAbsent = new Set<string>();
+  /** Per journal key, how many times a non-read access asked for it. */
+  private readonly journalTouches = new Map<string, number>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -299,7 +306,65 @@ export class S3StateBackend {
    * journal can never exist.
    */
   private getRollbackJournalKey(stackName: string, region: string): string {
+    // Every journal access but `loadRollbackJournal` comes through here, so a
+    // writer -- present or future -- voids the "read absent" fact by asking
+    // for the key.
+    const key = this.rollbackJournalKey(stackName, region);
+    this.journalsReadAbsent.delete(key);
+    this.journalTouches.set(key, (this.journalTouches.get(key) ?? 0) + 1);
+    return key;
+  }
+
+  private rollbackJournalKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/rollback-journal.json`;
+  }
+
+  /**
+   * Whether this backend's last `loadRollbackJournal` of the stack found NO
+   * journal and nothing has touched the key through this backend since. A
+   * deploy reads the journal under the stack lock, so for the rest of that
+   * deploy `true` means there is still none: its success settle has nothing
+   * to act on or delete.
+   */
+  rollbackJournalReadAbsent(stackName: string, region: string): boolean {
+    return this.journalsReadAbsent.has(this.rollbackJournalKey(stackName, region));
+  }
+
+  /**
+   * Open `count` connections to the state bucket now, each with a HeadObject
+   * on the stack's state key (`s3:GetObject`, which every deploy already
+   * needs; a first deploy's 404 still completes the handshake). S3 closes a
+   * keep-alive socket left idle about five seconds, which a deploy's last
+   * resource usually outwaits, so the writes after it would each open a new
+   * TLS connection. Read-only; never throws.
+   */
+  async warmConnections(stackName: string, region: string, count: number): Promise<void> {
+    try {
+      await this.ensureClientForBucket();
+      const owner = await this.ownerParam();
+      const key = this.getStateKey(stackName, region);
+      await Promise.allSettled(
+        Array.from({ length: count }, () =>
+          this.s3Client.send(
+            new HeadObjectCommand({ Bucket: this.config.bucket, ...owner, Key: key })
+          )
+        )
+      );
+    } catch {
+      // Only a warm-up: the writes it serves open their own connections.
+    }
+  }
+
+  /**
+   * Purge the noncurrent versions of the stack's journal key -- the purge
+   * {@link deleteRollbackJournal} runs, without its DeleteObject, for a
+   * journal already absent (an earlier delete whose purge did not finish
+   * leaves readable bodies behind). Never throws.
+   */
+  async purgeRollbackJournalVersions(stackName: string, region: string): Promise<void> {
+    await this.purgeNoncurrentVersions([this.rollbackJournalKey(stackName, region)], {
+      objectDescription: ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,
+    });
   }
 
   /**
@@ -1761,8 +1826,15 @@ export class S3StateBackend {
    * {@link UnknownRollbackJournalVersionError} on a newer-version journal.
    */
   async loadRollbackJournal(stackName: string, region: string): Promise<RollbackJournal | null> {
-    const body = await this.getRawObject(this.getRollbackJournalKey(stackName, region));
-    if (body === null) return null;
+    const key = this.rollbackJournalKey(stackName, region);
+    const touches = this.journalTouches.get(key) ?? 0;
+    this.journalsReadAbsent.delete(key);
+    const body = await this.getRawObject(key);
+    if (body === null) {
+      // Only when no write went out while the read was in flight.
+      if ((this.journalTouches.get(key) ?? 0) === touches) this.journalsReadAbsent.add(key);
+      return null;
+    }
     return parseRollbackJournal(body, stackName);
   }
 
@@ -2115,8 +2187,7 @@ export class S3StateBackend {
     // of them keeps the defect after the other is fixed. It never throws, so
     // this method's best-effort contract holds by construction.
     await this.purgeNoncurrentVersions([key], {
-      objectDescription:
-        'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim',
+      objectDescription: ROLLBACK_JOURNAL_OBJECT_DESCRIPTION,
     });
     return gone;
   }

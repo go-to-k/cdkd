@@ -160,6 +160,7 @@ describe('DeployEngine onDestructivePlan (go-to-k/cdkd#4705)', () => {
       'us-east-1',
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never

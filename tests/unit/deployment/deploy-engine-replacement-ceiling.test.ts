@@ -186,6 +186,7 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi.fn().mockResolvedValue(null),
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
@@ -1260,6 +1261,7 @@ describe('DeployEngine - a create-only consumer of a recovered NoEcho output', (
       REGION,
       {
         updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
         lookup: vi
           .fn()
           .mockResolvedValue({ value: '***', producerStack: 'Producer', producerRegion: REGION }),

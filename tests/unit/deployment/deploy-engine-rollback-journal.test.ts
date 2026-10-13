@@ -52,6 +52,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
     deleteRollbackJournal: ReturnType<typeof vi.fn>;
     loadRollbackJournal: ReturnType<typeof vi.fn>;
+    purgeRollbackJournalVersions: ReturnType<typeof vi.fn>;
+    rollbackJournalReadAbsent: ReturnType<typeof vi.fn>;
+    warmConnections: ReturnType<typeof vi.fn>;
     markRollbackJournalSuperseded: ReturnType<typeof vi.fn>;
     popRollbackJournalSegment: ReturnType<typeof vi.fn>;
     reduceRollbackJournalToFailedOperations: ReturnType<typeof vi.fn>;
@@ -108,6 +111,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
       deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

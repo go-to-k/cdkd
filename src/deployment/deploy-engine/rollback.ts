@@ -618,6 +618,16 @@ export async function settleJournalAfterSuccess(
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
+      // The deploy read no journal under this lock, and nothing wrote one
+      // since: no orphan to act on and nothing to delete. The key's leftover
+      // versions were purged from the start of the deploy (step 1b).
+      if (
+        this.absentJournalVersionPurge !== undefined &&
+        this.stateBackend.rollbackJournalReadAbsent(stackName, this.stackRegion)
+      ) {
+        await this.absentJournalVersionPurge;
+        return 0;
+      }
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
       // left: what the saved record holds. The deploy flow guarded it before
       // either of this method's call sites.

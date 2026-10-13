@@ -7211,13 +7211,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // round-trip drift --revert would push a CFn-invalid shape (a
       // StreamSpecification without StreamViewType is rejected). Only
       // surface the block when the stream is actually enabled.
+      // Every read below depends only on `DescribeTable`, so they run
+      // concurrently: a deploy waits for this capture after its last resource,
+      // where a serial chain was ~1.5s of a 5-resource stack's tail. Each
+      // answer is placed into `result` afterwards in the original key order.
+      let streamMembersRead: Promise<void> = Promise.resolve();
       if (table.StreamSpecification?.StreamEnabled && table.StreamSpecification.StreamViewType) {
         const streamBlock: Record<string, unknown> = {
           StreamEnabled: true,
           StreamViewType: table.StreamSpecification.StreamViewType,
         };
         result['StreamSpecification'] = streamBlock;
-        await this.readStreamMembers(
+        streamMembersRead = this.readStreamMembers(
           physicalId,
           table.LatestStreamArn,
           properties?.['StreamSpecification'],
@@ -7282,195 +7287,256 @@ export class DynamoDBTableProvider implements ResourceProvider {
         result['TableClass'] = table.TableClassSummary.TableClass;
       }
 
-      // Tags via ListTagsOfResource — needs the table ARN we just got back.
-      if (table.TableArn) {
-        try {
-          const tagsResp = await this.dynamoDBClient.send(
-            new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
-          );
-          const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-          result['Tags'] = tags;
-        } catch (err) {
-          // Tag fetch failures shouldn't tank the whole drift read; rethrow
-          // only on hard "table gone" semantics.
-          if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
-          throw err;
-        }
-      }
-
-      // PointInTimeRecoverySpecification — separate DescribeContinuousBackups
-      // call (not part of DescribeTable). Emit-when-present: only surface the
-      // key when AWS reports a PITR status so a table that never configured
-      // PITR doesn't grow a placeholder (keeps the comparator's state-keys-only
-      // top-level walk + the "AWS minimum response" key-set test green).
-      // Best-effort: a failed read omits the key rather than failing the
-      // whole drift read.
-      try {
-        const pitrResp = await this.dynamoDBClient.send(
-          new DescribeContinuousBackupsCommand({ TableName: physicalId })
-        );
-        const pitrDesc = pitrResp.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
-        const pitrStatus = pitrDesc?.PointInTimeRecoveryStatus;
-        if (pitrStatus) {
-          const pitr: Record<string, unknown> = {
-            PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
-          };
-          // RecoveryPeriodInDays is only meaningful while enabled; surface it
-          // emit-when-present so a templated value is drift-comparable.
-          if (pitrStatus === 'ENABLED' && pitrDesc?.RecoveryPeriodInDays !== undefined) {
-            pitr['RecoveryPeriodInDays'] = pitrDesc.RecoveryPeriodInDays;
-          }
-          result['PointInTimeRecoverySpecification'] = pitr;
-        }
-      } catch (err) {
-        this.logger.debug(
-          `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
-        );
-      }
-
-      // TimeToLiveSpecification — separate DescribeTimeToLive call.
-      // Race-tolerant: only surface when AWS reports `ENABLED` with an
-      // AttributeName. `DISABLED` carries no AttributeName and CFn rejects a
-      // TimeToLiveSpecification without one, so we omit it; ENABLING /
-      // DISABLING are transient and also omitted so drift doesn't fire on a
-      // momentary state.
-      try {
-        const ttlResp = await this.dynamoDBClient.send(
-          new DescribeTimeToLiveCommand({ TableName: physicalId })
-        );
-        const ttlDesc = ttlResp.TimeToLiveDescription;
-        if (ttlDesc?.TimeToLiveStatus === 'ENABLED' && ttlDesc.AttributeName) {
-          result['TimeToLiveSpecification'] = {
-            AttributeName: ttlDesc.AttributeName,
-            Enabled: true,
-          };
-        }
-      } catch (err) {
-        this.logger.debug(
-          `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
-        );
-      }
-
-      // ResourcePolicy — separate GetResourcePolicy call. Emit-when-present:
-      // only surface the key when AWS reports an attached policy, and re-shape
-      // the returned JSON string back into CFn's `{ PolicyDocument: <object> }`
-      // form so it is drift-comparable against the templated value. A table
-      // with no policy returns ResourceNotFoundException / PolicyNotFound —
-      // omit the key rather than fail the whole drift read.
-      if (table.TableArn) {
-        try {
-          const rpResp = await this.dynamoDBClient.send(
-            new GetResourcePolicyCommand({ ResourceArn: table.TableArn })
-          );
-          if (rpResp.Policy) {
-            let doc: unknown = rpResp.Policy;
-            try {
-              doc = JSON.parse(rpResp.Policy);
-            } catch {
-              // Leave as the raw string if AWS returned a non-JSON body.
-            }
-            result['ResourcePolicy'] = { PolicyDocument: doc };
-          }
-        } catch (err) {
-          if (!(err instanceof ResourceNotFoundException)) {
-            this.logger.debug(
-              `Could not read ResourcePolicy for ${physicalId}: ${describeAwsFailure(err).detail}`
-            );
-          }
-        }
-      }
-
-      // KinesisStreamSpecification — separate DescribeKinesisStreamingDestination
-      // call. Emit-when-present: only surface the key when AWS reports an ACTIVE
-      // or ENABLING destination (DISABLED entries linger in the list, so a
-      // status filter avoids a stale placeholder). Surface only the user-set
-      // fields (StreamArn + precision) so the drift comparator can match the
-      // templated value.
-      try {
-        const kResp = await this.dynamoDBClient.send(
-          new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
-        );
-        const active = (kResp.KinesisDataStreamDestinations ?? []).find(
-          (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
-        );
-        if (active?.StreamArn) {
-          const kspec: Record<string, unknown> = { StreamArn: active.StreamArn };
-          if (active.ApproximateCreationDateTimePrecision !== undefined) {
-            kspec['ApproximateCreationDateTimePrecision'] =
-              active.ApproximateCreationDateTimePrecision;
-          }
-          result['KinesisStreamSpecification'] = kspec;
-        }
-      } catch (err) {
-        this.logger.debug(
-          `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
-        );
-      }
-
-      // ContributorInsightsSpecification — separate DescribeContributorInsights
-      // call. Emit-when-present: only surface the key when AWS reports a
-      // terminal ENABLED / DISABLED status (ENABLING / DISABLING are transient
-      // and omitted so drift doesn't fire on a momentary state). Surface
-      // `Mode` only while ENABLED so a disabled table doesn't grow a CFn-invalid
-      // placeholder.
-      try {
-        const ciResp = await this.dynamoDBClient.send(
-          new DescribeContributorInsightsCommand({ TableName: physicalId })
-        );
-        const cspec = reverseMapTableContributorInsights(
-          ciResp.ContributorInsightsStatus,
-          ciResp.ContributorInsightsMode
-        );
-        if (cspec !== undefined) result['ContributorInsightsSpecification'] = cspec;
-      } catch (err) {
-        this.logger.debug(
-          `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
-        );
-      }
-
-      // Per-index ContributorInsightsSpecification (issue #1782) — the same
-      // call with `IndexName`, since `DescribeTable`'s index description has no
-      // counterpart. ONE API call per index, so it is GATED: only an index
-      // whose DESIRED entry declares a block cdkd would send is read, which is
-      // also what keeps the block out of every other entry — it sits inside an
-      // array entry whose key set is compared exactly, so an ungated
-      // `{Enabled: false}` would be one-sided drift on every index. An
-      // uninformative bag reads NOTHING (the pre-#1782 answer). A failed read
-      // omits the block, like the table-level read; a TRANSIENT status reads as
-      // its target instead (`reverseMapIndexContributorInsights` says why).
-      const emittedGsis = result['GlobalSecondaryIndexes'];
-      if (bagInformative && Array.isArray(emittedGsis)) {
-        const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
-        for (const emitted of emittedGsis as Array<Record<string, unknown>>) {
-          const indexName = emitted['IndexName'];
-          if (typeof indexName !== 'string') continue;
-          const desiredEntry = desiredByName.get(indexName);
-          if (!indexDeclaresContributorInsights(desiredEntry)) continue;
-          try {
-            const indexResp = await this.dynamoDBClient.send(
-              new DescribeContributorInsightsCommand({
-                TableName: physicalId,
-                IndexName: indexName,
-              })
-            );
-            const block = reverseMapIndexContributorInsights(
-              indexResp.ContributorInsightsStatus,
-              indexResp.ContributorInsightsMode,
-              desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
-            );
-            if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
-          } catch (err) {
-            this.logger.debug(
-              `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
-            );
-          }
-        }
+      const tableArn = table.TableArn;
+      const [tags, pitr, ttl, resourcePolicy, kinesis, contributorInsights] = await Promise.all([
+        // Tags via ListTagsOfResource — needs the table ARN we just got back.
+        tableArn ? this.readTableTags(tableArn) : Promise.resolve(undefined),
+        this.readPointInTimeRecovery(physicalId),
+        this.readTimeToLive(physicalId),
+        tableArn ? this.readTableResourcePolicy(physicalId, tableArn) : Promise.resolve(undefined),
+        this.readKinesisStreamSpecification(physicalId),
+        this.readTableContributorInsights(physicalId),
+        this.readIndexContributorInsights(physicalId, result, properties, bagInformative),
+        streamMembersRead,
+      ]);
+      // Tag fetch failures shouldn't tank the whole drift read; a table gone
+      // under ListTagsOfResource is gone.
+      if (tags === RESOURCE_NOT_FOUND) return RESOURCE_NOT_FOUND;
+      if (tags !== undefined) result['Tags'] = tags;
+      if (pitr !== undefined) result['PointInTimeRecoverySpecification'] = pitr;
+      if (ttl !== undefined) result['TimeToLiveSpecification'] = ttl;
+      if (resourcePolicy !== undefined) result['ResourcePolicy'] = resourcePolicy;
+      if (kinesis !== undefined) result['KinesisStreamSpecification'] = kinesis;
+      if (contributorInsights !== undefined) {
+        result['ContributorInsightsSpecification'] = contributorInsights;
       }
 
       return result;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;
+    }
+  }
+
+  /**
+   * `Tags` for {@link readCurrentState}. CDK's `aws:*` auto-tags are dropped
+   * by `normalizeAwsTagsToCfn`. A vanished table answers
+   * {@link RESOURCE_NOT_FOUND}; any other failure throws.
+   */
+  private async readTableTags(
+    tableArn: string
+  ): Promise<ReturnType<typeof normalizeAwsTagsToCfn> | ResourceNotFound> {
+    try {
+      const tagsResp = await this.dynamoDBClient.send(
+        new ListTagsOfResourceCommand({ ResourceArn: tableArn })
+      );
+      return normalizeAwsTagsToCfn(tagsResp.Tags);
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
+      throw err;
+    }
+  }
+
+  /**
+   * `PointInTimeRecoverySpecification` — separate DescribeContinuousBackups
+   * call (not part of DescribeTable). Emit-when-present: only surface the key
+   * when AWS reports a PITR status so a table that never configured PITR
+   * doesn't grow a placeholder (keeps the comparator's state-keys-only
+   * top-level walk + the "AWS minimum response" key-set test green).
+   * Best-effort: a failed read omits the key rather than failing the whole
+   * drift read.
+   */
+  private async readPointInTimeRecovery(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const pitrResp = await this.dynamoDBClient.send(
+        new DescribeContinuousBackupsCommand({ TableName: physicalId })
+      );
+      const pitrDesc = pitrResp.ContinuousBackupsDescription?.PointInTimeRecoveryDescription;
+      const pitrStatus = pitrDesc?.PointInTimeRecoveryStatus;
+      if (!pitrStatus) return undefined;
+      const pitr: Record<string, unknown> = {
+        PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
+      };
+      // RecoveryPeriodInDays is only meaningful while enabled; surface it
+      // emit-when-present so a templated value is drift-comparable.
+      if (pitrStatus === 'ENABLED' && pitrDesc?.RecoveryPeriodInDays !== undefined) {
+        pitr['RecoveryPeriodInDays'] = pitrDesc.RecoveryPeriodInDays;
+      }
+      return pitr;
+    } catch (err) {
+      this.logger.debug(
+        `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * `TimeToLiveSpecification` — separate DescribeTimeToLive call.
+   * Race-tolerant: only surface when AWS reports `ENABLED` with an
+   * AttributeName. `DISABLED` carries no AttributeName and CFn rejects a
+   * TimeToLiveSpecification without one, so we omit it; ENABLING / DISABLING
+   * are transient and also omitted so drift doesn't fire on a momentary state.
+   */
+  private async readTimeToLive(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    try {
+      const ttlResp = await this.dynamoDBClient.send(
+        new DescribeTimeToLiveCommand({ TableName: physicalId })
+      );
+      const ttlDesc = ttlResp.TimeToLiveDescription;
+      if (ttlDesc?.TimeToLiveStatus === 'ENABLED' && ttlDesc.AttributeName) {
+        return { AttributeName: ttlDesc.AttributeName, Enabled: true };
+      }
+      return undefined;
+    } catch (err) {
+      this.logger.debug(
+        `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * `ResourcePolicy` — separate GetResourcePolicy call. Emit-when-present:
+   * only surface the key when AWS reports an attached policy, and re-shape the
+   * returned JSON string back into CFn's `{ PolicyDocument: <object> }` form so
+   * it is drift-comparable against the templated value. A table with no policy
+   * returns ResourceNotFoundException / PolicyNotFound — omit the key rather
+   * than fail the whole drift read.
+   */
+  private async readTableResourcePolicy(
+    physicalId: string,
+    tableArn: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const rpResp = await this.dynamoDBClient.send(
+        new GetResourcePolicyCommand({ ResourceArn: tableArn })
+      );
+      if (!rpResp.Policy) return undefined;
+      let doc: unknown = rpResp.Policy;
+      try {
+        doc = JSON.parse(rpResp.Policy);
+      } catch {
+        // Leave as the raw string if AWS returned a non-JSON body.
+      }
+      return { PolicyDocument: doc };
+    } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) {
+        this.logger.debug(
+          `Could not read ResourcePolicy for ${physicalId}: ${describeAwsFailure(err).detail}`
+        );
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * `KinesisStreamSpecification` — separate DescribeKinesisStreamingDestination
+   * call. Emit-when-present: only surface the key when AWS reports an ACTIVE or
+   * ENABLING destination (DISABLED entries linger in the list, so a status
+   * filter avoids a stale placeholder). Surface only the user-set fields
+   * (StreamArn + precision) so the drift comparator can match the templated
+   * value.
+   */
+  private async readKinesisStreamSpecification(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const kResp = await this.dynamoDBClient.send(
+        new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
+      );
+      const active = (kResp.KinesisDataStreamDestinations ?? []).find(
+        (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
+      );
+      if (!active?.StreamArn) return undefined;
+      const kspec: Record<string, unknown> = { StreamArn: active.StreamArn };
+      if (active.ApproximateCreationDateTimePrecision !== undefined) {
+        kspec['ApproximateCreationDateTimePrecision'] = active.ApproximateCreationDateTimePrecision;
+      }
+      return kspec;
+    } catch (err) {
+      this.logger.debug(
+        `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * `ContributorInsightsSpecification` — separate DescribeContributorInsights
+   * call. Emit-when-present: only surface the key when AWS reports a terminal
+   * ENABLED / DISABLED status (ENABLING / DISABLING are transient and omitted
+   * so drift doesn't fire on a momentary state). Surface `Mode` only while
+   * ENABLED so a disabled table doesn't grow a CFn-invalid placeholder.
+   */
+  private async readTableContributorInsights(
+    physicalId: string
+  ): Promise<ReturnType<typeof reverseMapTableContributorInsights>> {
+    try {
+      const ciResp = await this.dynamoDBClient.send(
+        new DescribeContributorInsightsCommand({ TableName: physicalId })
+      );
+      return reverseMapTableContributorInsights(
+        ciResp.ContributorInsightsStatus,
+        ciResp.ContributorInsightsMode
+      );
+    } catch (err) {
+      this.logger.debug(
+        `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Per-index ContributorInsightsSpecification (issue #1782) — the same call
+   * with `IndexName`, since `DescribeTable`'s index description has no
+   * counterpart. ONE API call per index, so it is GATED: only an index whose
+   * DESIRED entry declares a block cdkd would send is read, which is also what
+   * keeps the block out of every other entry — it sits inside an array entry
+   * whose key set is compared exactly, so an ungated `{Enabled: false}` would
+   * be one-sided drift on every index. An uninformative bag reads NOTHING (the
+   * pre-#1782 answer). A failed read omits the block, like the table-level
+   * read; a TRANSIENT status reads as its target instead
+   * (`reverseMapIndexContributorInsights` says why). Writes into the entries
+   * of `result.GlobalSecondaryIndexes` in place.
+   */
+  private async readIndexContributorInsights(
+    physicalId: string,
+    result: Record<string, unknown>,
+    properties: Record<string, unknown> | undefined,
+    bagInformative: boolean
+  ): Promise<void> {
+    const emittedGsis = result['GlobalSecondaryIndexes'];
+    if (!bagInformative || !Array.isArray(emittedGsis)) return;
+    const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
+    // One index after another, as before: up to 20 indexes, and a throttled
+    // read drops its block from the baseline.
+    for (const emitted of emittedGsis as Array<Record<string, unknown>>) {
+      const indexName = emitted['IndexName'];
+      if (typeof indexName !== 'string') continue;
+      const desiredEntry = desiredByName.get(indexName);
+      if (!indexDeclaresContributorInsights(desiredEntry)) continue;
+      try {
+        const indexResp = await this.dynamoDBClient.send(
+          new DescribeContributorInsightsCommand({
+            TableName: physicalId,
+            IndexName: indexName,
+          })
+        );
+        const block = reverseMapIndexContributorInsights(
+          indexResp.ContributorInsightsStatus,
+          indexResp.ContributorInsightsMode,
+          desiredEntry?.[CONTRIBUTOR_INSIGHTS_KEY]
+        );
+        if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
+      } catch (err) {
+        this.logger.debug(
+          `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
+        );
+      }
     }
   }
 

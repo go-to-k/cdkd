@@ -209,6 +209,9 @@ describe('DeployEngine — nested-stack child inherits the parent secrets map (#
       getState: vi.fn().mockResolvedValue({ state: null, etag: undefined }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     };
   });
