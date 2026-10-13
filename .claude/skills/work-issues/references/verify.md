@@ -22,10 +22,12 @@ EVERY finding, nits included → rebase → integ → marker. A UNIT-test-only f
 round may overlap the parent's integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
 build rewrites the live fixture's `dist/`), no rebase or install, never the
 live fixture's directory, and stage only its own test files, since the
-integ's ledger row lands in the same tree (#4302). A lane REPORTS
-`mise exec -- markgate status integ-destroy --explain`'s line, never "integ
-not needed": comment-only edits count (#3873). Bare `markgate` can resolve to
-a stale PATH copy that dies `unknown hash "diff"` (#4477).
+integ's ledger row lands in the same tree (#4302). A round overlapping §8-d's
+probe (it needs a clean tree and restores `src` from `HEAD`) edits in scratch
+and copies in only once the parent says the tree is free. A lane REPORTS
+`mise exec -- markgate status integ-destroy --explain`'s line (bare `markgate`
+can be a stale PATH copy, #4477), never "integ not needed": comment-only edits
+count (#3873).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
@@ -183,9 +185,8 @@ stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
 
-**`/run-integ` records `integ-destroy`, a marker gate on `gh pr merge`; the
-`main` ruleset's checks are the other merge condition.**
-`/verify-pr` and `/review-pr` record nothing; run them anyway.
+**`/run-integ` records `integ-destroy`, a marker gate on `gh pr merge` beside
+the ruleset's checks**; `/verify-pr` and `/review-pr` record nothing — run them.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (go-to-k/cdkd#2383) — they are its children and
