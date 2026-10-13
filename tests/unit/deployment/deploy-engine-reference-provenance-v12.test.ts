@@ -153,6 +153,8 @@ async function deploy(opts: {
   outputs?: boolean;
   /** The reader's tag spells the token (default); off, it holds it only through `Arn`. */
   readerSpellsSecret?: boolean;
+  /** A second output spelling the token literally, beside the one reading `Arn`. */
+  literalOutput?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
   const provider = {
@@ -238,7 +240,10 @@ async function deploy(opts: {
         },
       },
       ...(opts.outputs !== false && {
-        Outputs: { QueueArn: { Value: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] } } },
+        Outputs: {
+          QueueArn: { Value: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] } },
+          ...(opts.literalOutput && { Named: { Value: REF } }),
+        },
       }),
     })
     .catch((e: unknown) => {
@@ -300,6 +305,21 @@ describe('the recording seam and the persist writer (written records)', () => {
     });
   });
 
+  it('two outputs holding one token keep their own routes (keyed by output)', async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    const run = await deploy({
+      state: first.last,
+      readerSpellsSecret: false,
+      readerDescription: 'b',
+      literalOutput: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.last?.outputReferenceProvenance).toEqual({
+      QueueArn: { [REF]: { region: 'us-east-1', versions: [V1], readVersions: [V1] } },
+      Named: { [REF]: { region: 'us-east-1', versions: [V1] } },
+    });
+  });
+
   it('a lookup response with no VersionId records the region only', async () => {
     secret.version = undefined;
     const run = await deploy({ state: undefined });
@@ -357,6 +377,28 @@ describe('the one-time migration capture (v11 -> v12)', () => {
       expect(rest).toEqual(before.resources[id]);
     }
     expect(log.warn.filter((m) => m.includes('state schema v12 migration'))).toEqual([]);
+  });
+
+  it('never records readVersions, even where the version is proven by the physical id', async () => {
+    // The reader's id holds the queue's name, so its version is proven; it
+    // read the value through `Fn::GetAtt`, which an equal reference form
+    // cannot prove fresh.
+    const run = await deploy({
+      state: v11State({ reader: { physicalId: '/p/sdin-q-1/reader' }, outputs: false }),
+      outputs: false,
+    });
+    expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1', versions: [V1] } });
+  });
+
+  it('a state read off the token-free fast path is never captured', async () => {
+    const { markTokenFreeState } = await import('../../../src/state/token-free-state.js');
+    const state = v11State({ outputs: false });
+    // Contradictory on purpose: the mark alone must decide.
+    markTokenFreeState(state);
+    const run = await deploy({ state, outputs: false });
+    expect(run.thrown).toBeUndefined();
+    expect(secret.calls).toBe(0);
+    expect(run.saves).toBe(0);
   });
 
   it('is one-time: the next deploy makes no capture lookup', async () => {
