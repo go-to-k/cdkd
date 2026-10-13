@@ -159,10 +159,11 @@ async function captureOne(
 
 /**
  * Install every finished capture onto its record when that record still names
- * the same resource and has no field yet. Returns how many it installed, so
- * the no-change path saves only when one landed. A record this deploy WROTE
- * needs no exclusion here: the persist writer replaces the field of every
- * written record with this pass's answer.
+ * the same resource. Returns how many it installed, so the no-change path
+ * saves only when one landed. Nothing gives a record the field between the
+ * kick-off (which skipped every record holding one) and here, and a record
+ * this deploy WROTE needs no exclusion: the persist writer replaces the field
+ * of every written record with this pass's answer.
  */
 export async function drainProvenanceCaptures(
   engine: DeployEngine,
@@ -181,8 +182,7 @@ export async function drainProvenanceCaptures(
     if (
       target === undefined ||
       target.physicalId !== record.physicalId ||
-      target.resourceType !== record.resourceType ||
-      hasReferenceProvenanceField(target)
+      target.resourceType !== record.resourceType
     ) {
       continue;
     }

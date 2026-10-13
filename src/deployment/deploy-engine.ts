@@ -1383,6 +1383,9 @@ export class DeployEngine {
     const previous = Object.hasOwn(this.healBaseline, logicalId)
       ? this.healBaseline[logicalId]
       : undefined;
+    // `update-in-place.ts` records the paths for every in-place write that
+    // holds pass provenance or a previous field, the only writes that reach
+    // the union; `'all'` is the conservative answer for any other.
     const createOnly = sameGeneration ? this.inPlaceCreateOnlyPaths.get(logicalId) : 'all';
     const inPlace =
       this.updateWasReplaced.get(logicalId) === false && previous !== undefined
