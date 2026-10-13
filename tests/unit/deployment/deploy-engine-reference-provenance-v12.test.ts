@@ -155,6 +155,8 @@ async function deploy(opts: {
   readerSpellsSecret?: boolean;
   /** A second output spelling the token literally, beside the one reading `Arn`. */
   literalOutput?: boolean;
+  /** The reader's provider answers its update with `effectiveProperties`. */
+  readerEffectiveProperties?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
   const provider = {
@@ -170,12 +172,18 @@ async function deploy(opts: {
           }
         : { physicalId: '/p/reader', attributes: {} };
     }),
-    update: vi.fn(async (id: string) => {
-      calls.push(`update:${id}`);
-      return id === 'SecretQueue'
-        ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
-        : { physicalId: '/p/reader', attributes: {} };
-    }),
+    update: vi.fn(
+      async (id: string, _pid: string, _type: string, props: Record<string, unknown>) => {
+        calls.push(`update:${id}`);
+        return id === 'SecretQueue'
+          ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
+          : {
+              physicalId: '/p/reader',
+              attributes: {},
+              ...(opts.readerEffectiveProperties && { effectiveProperties: { ...props } }),
+            };
+      }
+    ),
     delete: vi.fn(async (id: string) => {
       calls.push(`delete:${id}`);
     }),
@@ -353,6 +361,38 @@ describe('the recording seam and the persist writer (written records)', () => {
     // NOT pinned to V2 alone: AWS still holds V1's name.
     expect(provenance(run, 'SecretQueue')).toEqual({
       [REF]: { region: 'us-east-1', versions: [V1, V2] },
+    });
+  });
+});
+
+describe('a write through effectiveProperties (it may carry previous leaves)', () => {
+  it('takes the union for every token on an in-place update, a mutable one included', async () => {
+    const first = await deploy({ state: undefined });
+    expect(provenance(first, 'Reader')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V1], readVersions: [V1] },
+    });
+    // Same value, new VersionId: nothing is replaced, the reader is edited.
+    secret.version = V2;
+    const run = await deploy({
+      state: first.last,
+      readerDescription: 'b',
+      readerEffectiveProperties: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('update:Reader');
+    // The token sits only at mutable paths (`Tags`, `Value`), yet the bag the
+    // provider returned may hold the previous generation's leaves.
+    expect(provenance(run, 'Reader')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V1, V2], readVersions: [V2] },
+    });
+  });
+
+  it('control: the same update without effectiveProperties takes this run alone', async () => {
+    const first = await deploy({ state: undefined });
+    secret.version = V2;
+    const run = await deploy({ state: first.last, readerDescription: 'b' });
+    expect(provenance(run, 'Reader')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V2], readVersions: [V2] },
     });
   });
 });
