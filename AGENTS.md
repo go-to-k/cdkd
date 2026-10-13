@@ -102,8 +102,8 @@ site which one gave way and why:
   and skipping them is how main goes red.
 - **Cost is not a tiebreaker for verification depth** on a `src/**` change:
   tokens, wall-clock or "probably fine" never justify the weaker option; when
-  unsure take the higher tier. Run every integ `/pick-integ` surfaces, and
-  build the fixture arm over unit tests plus reasoning. Not for tooling.
+  unsure take the higher tier. Run every `/pick-integ` integ; a hard-to-reach
+  path gets a fixture arm, not unit tests plus reasoning. Not for tooling.
 - **Integration tests run through `/run-integ <name>`, never a manual
   `cdkd deploy` / `cdkd destroy`** — it is the only path that pairs deploy with
   destroy plus orphan verification and records the run. `/pick-integ` chooses.
