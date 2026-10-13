@@ -2239,7 +2239,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
   ): Promise<{ arn: string; lastModified: string | undefined } | undefined> {
     let response;
     try {
-      response = await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: functionName }));
+      response = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: functionName })
+      );
     } catch (error) {
       if (error instanceof ResourceNotFoundException) return undefined;
       throw error;

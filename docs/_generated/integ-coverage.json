@@ -4398,6 +4398,7 @@
         "infra-security",
         "intrinsic-functions",
         "lambda-esm-self-managed-kafka",
+        "lambda-fix-forward-orphan",
         "lambda-microvm-image",
         "lambda-snapstart",
         "local-invoke-dotnet",
@@ -4596,6 +4597,9 @@
         ],
         "lambda-esm-self-managed-kafka": [
           "literal"
+        ],
+        "lambda-fix-forward-orphan": [
+          "l1"
         ],
         "lambda-microvm-image": [
           "l2"
@@ -5085,6 +5089,7 @@
         "lambda-env-removal",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
+        "lambda-fix-forward-orphan",
         "lambda-layer-version-update",
         "lambda-log-retention",
         "lambda-reserved-concurrency",
@@ -5333,6 +5338,9 @@
         ],
         "lambda-event-invoke-config-update": [
           "l2"
+        ],
+        "lambda-fix-forward-orphan": [
+          "l1"
         ],
         "lambda-layer-version-update": [
           "l2"

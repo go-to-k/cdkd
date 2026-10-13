@@ -212,6 +212,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`lambda-env-removal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-env-removal/)
 - [`lambda-esm-self-managed-kafka`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-esm-self-managed-kafka/)
 - [`lambda-event-invoke-config-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-event-invoke-config-update/)
+- [`lambda-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-fix-forward-orphan/)
 - [`lambda-layer-version-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-layer-version-update/)
 - [`lambda-log-retention`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-log-retention/)
 - [`lambda-microvm-image`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-microvm-image/)
