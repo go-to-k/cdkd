@@ -6928,8 +6928,9 @@ export class S3BucketProvider implements ResourceProvider {
       //    conditional fold always fires. `rollback.ts` has
       //    the same shape.
       //  - the door verified OPEN is a LIBRARY caller constructing `AwsClients`
-      //    with no region at all. `import.ts` also builds a region-less bag; it
-      //    was not traced to a `CreateBucket` either way.
+      //    with no region at all. `import.ts` builds its bag with
+      //    `region: effectiveRegion.region` (and a second bag for the stack's
+      //    region when that differs), so it is closed the same way.
       //
       // The `as BucketLocationConstraint` cast STAYS, and issue
       // [#2322](https://github.com/go-to-k/cdkd/issues/2322) settled that
