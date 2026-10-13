@@ -88,6 +88,8 @@ import { dynamicReferenceRetryDelays } from '../../../src/deployment/intrinsic-r
 import type { StackState } from '../../../src/types/state.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
+/** A token of a service cdkd does not resolve: left as written. */
+const ODD = '{{resolve:custom-service:thing}}';
 /** A token whose lookup the double denies. */
 const DENIED = '{{resolve:secretsmanager:denied-secret:SecretString:x::}}';
 const V1 = 'a1b2c3d4-0000-1111-2222-333333333333';
@@ -169,6 +171,10 @@ async function deploy(opts: {
   /** The reader's description spells a token whose lookup is denied. */
   readerDeniedDescription?: boolean;
   dryRun?: boolean;
+  /** The reader's provider reports its update sent nothing (Cloud Control's empty patch). */
+  readerSentNothing?: boolean;
+  /** A third resource whose only token is of a service cdkd does not resolve. */
+  oddResource?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
   const provider = {
@@ -182,7 +188,7 @@ async function deploy(opts: {
               QueueUrl: URL.replace('sdin-q-1', secret.queue),
             },
           }
-        : { physicalId: '/p/reader', attributes: {} };
+        : { physicalId: id === 'Odd' ? 'odd-topic' : '/p/reader', attributes: {} };
     }),
     update: vi.fn(
       async (id: string, _pid: string, _type: string, props: Record<string, unknown>) => {
@@ -192,6 +198,7 @@ async function deploy(opts: {
           : {
               physicalId: '/p/reader',
               ...(!opts.readerUpdateNoAttributes && { attributes: {} }),
+              ...(opts.readerSentNothing && { sentNothing: true }),
               ...(opts.readerEffectiveProperties && { effectiveProperties: { ...props } }),
             };
       }
@@ -220,7 +227,9 @@ async function deploy(opts: {
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['SecretQueue'], ['Reader']]),
+      getExecutionLevels: vi
+        .fn()
+        .mockReturnValue(opts.oddResource ? [['SecretQueue', 'Odd'], ['Reader']] : [['SecretQueue'], ['Reader']]),
       getDirectDependencies: vi.fn((_g: unknown, id: string) =>
         id === 'Reader' ? ['SecretQueue'] : []
       ),
@@ -249,6 +258,9 @@ async function deploy(opts: {
             ...(opts.fifo && { FifoQueue: true }),
           },
         },
+        ...(opts.oddResource && {
+          Odd: { Type: 'AWS::SNS::Topic', Properties: { TopicName: ODD } },
+        }),
         Reader: {
           Type: 'AWS::SSM::Parameter',
           Properties: {
@@ -388,6 +400,22 @@ describe('the recording seam and the persist writer (written records)', () => {
     expect(provenance(run, 'Reader')).toEqual({
       [REF]: { region: 'us-east-1', versions: [V1, V2], readVersions: [V2] },
     });
+  });
+
+  it('a written record holding a token this pass recorded nothing for keys it {} (no later capture)', async () => {
+    const run = await deploy({ state: undefined, oddResource: true });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('create:Odd');
+    expect(provenance(run, 'Odd')).toEqual({ [ODD]: {} });
+  });
+
+  it('an update that sent nothing keeps the previous field', async () => {
+    const first = await deploy({ state: undefined });
+    secret.version = V2;
+    const run = await deploy({ state: first.last, readerDescription: 'b', readerSentNothing: true });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('update:Reader');
+    expect(provenance(run, 'Reader')).toEqual(provenance(first, 'Reader'));
   });
 
   it('the engine hands a nested child the inherited snapshot on every resolver context', () => {
