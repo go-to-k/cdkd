@@ -16,11 +16,13 @@ import { CAUSE_COMPOSERS } from '../../../scripts/check-provider-error-cause.ts'
 import {
   isMarkedNonRetryable,
   isThrottlingError,
+  isAmbiguousOutcomeError,
   isTransientServerError,
   markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
 import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 import { redactedDockerCause } from '../../../src/utils/docker-cmd.js';
+import { redactedAwsCause } from '../../../src/utils/local-aws-failure.js';
 import { AssetError, normalizeAwsError } from '../../../src/utils/error-handler.js';
 
 const SECRET = 'hunter2-composer-secret';
@@ -38,6 +40,10 @@ const COMPOSERS: Record<string, Composer> = {
   redactedDockerCause: {
     prepare: (inner) => inner,
     derive: (inner) => redactedDockerCause(inner, ['push', 'repo:tag']),
+  },
+  redactedAwsCause: {
+    prepare: (inner) => inner,
+    derive: (inner) => redactedAwsCause(inner, 'Error; 7-character message withheld'),
   },
   normalizeAwsError: {
     // Only the SDK's synthetic `Unknown` is rewritten; anything else is
@@ -130,6 +136,19 @@ describe('registered cause composers keep the classifier verdict (issue #2075)',
       });
     }
   }
+
+  it('redactedAwsCause: carries `$retryable`, so a throttle on a 503 is not an ambiguous outcome', () => {
+    const inner = Object.assign(new Error('Rate exceeded'), {
+      $metadata: { httpStatusCode: 503 },
+      $retryable: { throttling: true },
+    });
+    // Without the field the same 503 reads as transient; the case discriminates.
+    const bare = Object.assign(new Error('x'), { $metadata: { httpStatusCode: 503 } });
+    expect(isAmbiguousOutcomeError(new AssetError('w', bare))).toBe(true);
+    const cause = redactedAwsCause(inner, 'STS AssumeRole failed');
+    expect(cause?.message).toBe('STS AssumeRole failed');
+    expect(isAmbiguousOutcomeError(new AssetError('wrapped failure', cause))).toBe(false);
+  });
 
   it('maskSecretsInError: the derived cause carries no plaintext secret', () => {
     const composer = COMPOSERS['maskSecretsInError'];

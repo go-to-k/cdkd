@@ -808,5 +808,67 @@ LEFT="${LEFT}$(docker ps -a --filter "name=cdkd-local-" --format ' {{.Names}} ({
 }
 echo "    [^C after reload, old pool mid-start] OK (container removed, exit 130)"
 
+# Issue #4857: `--assume-role` naming a role that cannot be assumed. The STS
+# hop runs at boot (`buildContainerSpec`), and before the fix it had no catch,
+# so the SDK error reached `formatError` as `AccessDenied: User ...` with no
+# cdkd context. A MODELED AccessDenied is the diagnosis and is kept: the
+# operation prefix, AWS's text exactly once, an operation-only `Caused by:`.
+echo "==> --assume-role naming a role that cannot be assumed fails at boot, rendered (#4857)"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+NOT_ASSUMABLE_ROLE="cdkd-4857-not-assumable"
+NOT_ASSUMABLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${NOT_ASSUMABLE_ROLE}"
+# The premise is NoSuchEntity specifically: a missing iam:GetRole grant would
+# also fail the probe while saying nothing about whether the role exists.
+GET_ROLE_ERR="$(aws iam get-role --role-name "${NOT_ASSUMABLE_ROLE}" 2>&1 >/dev/null || true)"
+if ! echo "${GET_ROLE_ERR}" | grep -qF "NoSuchEntity"; then
+  echo "FAIL: premise broken - role ${NOT_ASSUMABLE_ROLE} is not known to be absent: ${GET_ROLE_ERR:-it exists}"
+  exit 1
+fi
+: >"${LOG_FILE}"
+${CDKD} local start-api \
+  --port "${PORT}" \
+  --container-host "${CONTAINER_HOST}" \
+  --no-pull \
+  --assume-role "${NOT_ASSUMABLE_ARN}" \
+  </dev/null >"${LOG_FILE}" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 240); do
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "${SERVER_PID}" 2>/dev/null; then
+  echo "FAIL: start-api with a non-assumable --assume-role is still running after 120s. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+BOOT_RC=0
+wait "${SERVER_PID}" || BOOT_RC=$?
+SERVER_PID=""
+[[ "${BOOT_RC}" -ne 0 ]] || {
+  echo "FAIL: start-api with a non-assumable --assume-role exited 0. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+for needle in "--assume-role: STS AssumeRole(${NOT_ASSUMABLE_ARN}) failed: AccessDenied: " \
+  "Caused by: STS AssumeRole failed"; do
+  grep -qF -- "${needle}" "${LOG_FILE}" || {
+    echo "FAIL: the boot refusal did not carry '${needle}'. Log:"
+    cat "${LOG_FILE}"
+    exit 1
+  }
+done
+DIAGNOSIS_COUNT=$(grep -cF "is not authorized to perform" "${LOG_FILE}" || true)
+[[ "${DIAGNOSIS_COUNT}" -eq 1 ]] || {
+  echo "FAIL: AWS's diagnosis printed ${DIAGNOSIS_COUNT} times, expected exactly once. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+}
+if grep -qF "message withheld" "${LOG_FILE}"; then
+  echo "FAIL: a modeled AccessDenied was withheld - it is the diagnosis and must print. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [--assume-role not assumable] OK (rendered once with its operation, operation-only Caused by)"
+
 echo ""
 echo "==> All local-start-api smoke tests passed"

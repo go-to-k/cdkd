@@ -1993,12 +1993,24 @@ const CLASSIFICATION_FIELDS = [
   'statusCode',
   '$metadata',
   '$fault',
+  '$retryable',
   '__type',
 ] as const;
 
 export function redactedDockerCause(error: unknown, args: readonly string[]): Error | undefined {
   if (!(error instanceof Error)) return undefined;
-  const cause = new Error(describeDockerFailure(error, args));
+  return redactedCause(error, describeDockerFailure(error, args));
+}
+
+/**
+ * The field-carrying half of {@link redactedDockerCause}, for any caller that
+ * has already rendered a SAFE message for `error`: a new `Error` with that
+ * message, the original's name, the {@link CLASSIFICATION_FIELDS} and the
+ * non-retryable marker. `redactedAwsCause` (go-to-k/cdkd#4857) is the other
+ * caller.
+ */
+export function redactedCause(error: Error, message: string): Error {
+  const cause = new Error(message);
   // Every read below is guarded, for the reason `capturedStreamText` and
   // `safeStringify` in this file are: this helper runs ONLY inside a `catch`,
   // so a throwing getter or a Proxy on the caught value would escape that

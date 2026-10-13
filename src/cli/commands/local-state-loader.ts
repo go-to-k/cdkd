@@ -21,6 +21,9 @@
  */
 
 import { getLogger } from '../../utils/logger.js';
+import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
+import { displayIdent } from '../../utils/display-safe.js';
+import { CdkdError, StateError } from '../../utils/error-handler.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -148,8 +151,10 @@ export async function loadStateForStack(
   try {
     stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, region);
   } catch (err) {
+    // cdkd-raw-beside-safe: `prefix` is a caller literal (`opts.logPrefix`,
+    // whose only callers pass '--from-state', or that default).
     logger.warn(
-      `${prefix}: could not resolve state bucket: ${err instanceof Error ? err.message : String(err)}. Falling back.`
+      `${prefix}: could not resolve state bucket: ${describeLocalAwsFailureForWarn(err, 'state bucket resolution')}. Falling back.`
     );
     return undefined;
   }
@@ -174,7 +179,19 @@ export async function loadStateForStack(
       ...(clientRegion !== undefined && { region: clientRegion }),
       ...(opts.profile !== undefined && { profile: opts.profile }),
     });
-    await stateBackend.verifyBucketExists();
+    try {
+      await stateBackend.verifyBucketExists();
+    } catch (err) {
+      // No caller catches this, and `verifyBucketExists`'s StateError embeds
+      // the SDK message -- the uncaught twin of the cross-stack resolver's
+      // access warn (go-to-k/cdkd#4857).
+      // cdkd-raw-beside-safe: `prefix` is a caller literal (`opts.logPrefix`,
+      // whose only callers pass '--from-state', or that default).
+      throw new StateError(
+        `${prefix}: could not access state bucket ${displayIdent(stateBucket)}: ${describeStateBucketAccessFailure(err)}.`,
+        redactedAwsCause(err, 'S3 HeadBucket (state bucket) failed')
+      );
+    }
 
     const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
     if (refs.length === 0) {
@@ -576,8 +593,10 @@ export async function buildCrossStackResolver(
       canonicalizeRegion(consumerRegion)
     );
   } catch (err) {
+    // cdkd-raw-beside-safe: `prefix` is a caller literal (`opts.logPrefix`,
+    // whose only callers pass '--from-state', or that default).
     logger.warn(
-      `${prefix}: cross-stack resolver could not resolve state bucket: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${prefix}: cross-stack resolver could not resolve state bucket: ${describeLocalAwsFailureForWarn(err, 'state bucket resolution')}. ` +
         `Fn::ImportValue / Fn::GetStackOutput env entries will warn-and-drop.`
     );
     return undefined;
@@ -609,8 +628,10 @@ export async function buildCrossStackResolver(
     await stateBackend.verifyBucketExists();
   } catch (err) {
     awsClients.destroy();
+    // cdkd-raw-beside-safe: `prefix` is a caller literal (`opts.logPrefix`,
+    // whose only callers pass '--from-state', or that default).
     logger.warn(
-      `${prefix}: cross-stack resolver could not access state bucket '${stateBucket}': ${err instanceof Error ? err.message : String(err)}. ` +
+      `${prefix}: cross-stack resolver could not access state bucket ${displayIdent(stateBucket)}: ${describeStateBucketAccessFailure(err)}. ` +
         `Fn::ImportValue / Fn::GetStackOutput env entries will warn-and-drop.`
     );
     return undefined;
@@ -837,4 +858,43 @@ export async function buildCrossStackResolver(
       awsClients.destroy();
     },
   };
+}
+
+/**
+ * Render a `verifyBucketExists` failure for a default-level warn
+ * (go-to-k/cdkd#4857).
+ *
+ * `verifyBucketExists` wraps EVERY failure in a `StateError`, so the
+ * `CdkdError` pass-through of {@link describeLocalAwsFailureForWarn} cannot be
+ * applied to it whole: only the missing-bucket arm is cdkd's own text (the
+ * `cdkd bootstrap` remedy). The other arm interpolates `normalizeAwsError`'s
+ * result, which is the SDK error itself for anything but the synthetic
+ * `Unknown` -- a credential-chain failure carrying a `credential_process`
+ * command line included. So that arm renders its CAUSE: a rewrite
+ * `normalizeAwsError` wrote (a plain `Error` that keeps the SDK error as its
+ * own `cause`) prints as-is, and anything else goes through the shared policy.
+ */
+export function describeStateBucketAccessFailure(err: unknown): string {
+  const operation = 'S3 HeadBucket (state bucket)';
+  if (!(err instanceof CdkdError) || err.cause === undefined) {
+    return describeLocalAwsFailureForWarn(err, operation);
+  }
+  const cause = err.cause;
+  if (cause.name === 'NotFound' || cause.name === 'NoSuchBucket') {
+    return describeLocalAwsFailureForWarn(err, operation);
+  }
+  // `normalizeAwsError`'s rewrite of the SDK's synthetic `Unknown`: fixed cdkd
+  // text with the `Unknown` error kept as its own cause. Matched on that inner
+  // link, the same `isUnknown` test `normalizeAwsError` applies, not on the
+  // wrapper's shape -- its non-Error arm (`new Error(safeStringify(value))`)
+  // has the same shape and carries the thrown value's text.
+  const inner = (cause as { cause?: unknown }).cause;
+  const rewritten =
+    !(cause instanceof CdkdError) &&
+    inner instanceof Error &&
+    (inner.name === 'Unknown' || inner.message === 'UnknownError');
+  if (rewritten) {
+    return describeLocalAwsFailureForWarn(new CdkdError(cause.message, 'STATE_ERROR'), operation);
+  }
+  return describeLocalAwsFailureForWarn(cause, operation);
 }

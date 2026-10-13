@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { displayIdent } from '../utils/display-safe.js';
+import { StateError } from '../utils/error-handler.js';
 
 /**
  * CDK configuration loaded from cdk.json and environment variables
@@ -652,8 +653,10 @@ export async function resolveStateBucketWithDefaultAndSource(
       return { bucket: legacyName, source: 'default-legacy', probe: legacyProbe };
     }
 
-    // Step 4: neither bucket exists.
-    throw new Error(
+    // Step 4: neither bucket exists. A `StateError` (a `CdkdError`): its text is
+    // the remedy, and the `cdkd local *` warns print cdkd-authored errors in
+    // full while withholding wire-derived ones (go-to-k/cdkd#4857).
+    throw new StateError(
       `No cdkd state bucket found for account ${accountId}. ` +
         `Looked for '${newName}' (current default) and '${legacyName}'` +
         (fallbackName === undefined ? '' : ` / '${fallbackName}'`) +

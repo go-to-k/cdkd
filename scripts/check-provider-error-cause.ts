@@ -203,7 +203,7 @@ const MIN_THREADED_CONSTRUCTIONS = 350;
  * the population drifting off composers until only the self-probe exercises
  * the arm.
  */
-const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 12;
+const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 16;
 /** Minimum size of the DERIVED error-class table. */
 const MIN_ERROR_CLASSES = 20;
 
@@ -266,6 +266,9 @@ export const CAUSE_COMPOSERS: ReadonlyMap<string, CauseComposer> = new Map([
   ['normalizeAwsError', { module: 'utils/error-handler.ts', argument: 0 }],
   // Clones every link of the chain with all own property descriptors.
   ['maskSecretsInError', { module: 'deployment/secret-redaction.ts', argument: 0 }],
+  // Replaces the message with the `cdkd local` AWS-failure rendering
+  // (go-to-k/cdkd#4857); carries the fields through `redactedCause`.
+  ['redactedAwsCause', { module: 'utils/local-aws-failure.ts', argument: 0 }],
 ]);
 
 export interface CauseExemption {

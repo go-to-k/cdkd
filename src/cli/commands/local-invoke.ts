@@ -13,7 +13,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
-import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
+import { describeLocalAwsFailureForWarn } from '../../utils/local-aws-failure.js';
 import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
 import {

@@ -187,7 +187,13 @@ describe('resolveEcsSecrets', () => {
   });
 
   it('hard-fails on access-denied access', async () => {
-    sends.secrets.mockRejectedValueOnce(new Error('AccessDenied: user not authorized'));
+    sends.secrets.mockRejectedValueOnce(
+      Object.assign(new Error('user not authorized'), {
+        name: 'AccessDeniedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
     await expect(
       resolveEcsSecrets([
         {
@@ -196,8 +202,54 @@ describe('resolveEcsSecrets', () => {
           valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo',
         },
       ])
-    ).rejects.toThrow(/AccessDenied/);
+    ).rejects.toThrow(/AccessDeniedException: user not authorized\.$/);
   });
+
+  it('keeps a modeled SSM exception message (#4857)', async () => {
+    sends.ssm.mockRejectedValueOnce(
+      Object.assign(new Error('User x is not authorized to perform: ssm:GetParameter'), {
+        name: 'AccessDeniedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    await expect(
+      resolveEcsSecrets([
+        {
+          containerName: 'app',
+          name: 'K',
+          valueFrom: 'arn:aws:ssm:us-east-1:123456789012:parameter/path/key',
+        },
+      ])
+    ).rejects.toThrow(
+      /: AccessDeniedException: User x is not authorized to perform: ssm:GetParameter\.$/
+    );
+  });
+
+  it.each([
+    ['Secrets Manager', 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo', 'secrets'],
+    ['SSM', 'arn:aws:ssm:us-east-1:123456789012:parameter/path/key', 'ssm'],
+  ] as const)(
+    'withholds a credential-chain failure from the %s refusal (#4857)',
+    async (_name, valueFrom, client) => {
+      sends[client].mockRejectedValueOnce(
+        Object.assign(
+          new Error('credential_process /usr/local/bin/get-creds --token hunter2 exited with code 1'),
+          { name: 'CredentialsProviderError', $metadata: { attempts: 1, totalRetryDelay: 0 } }
+        )
+      );
+      const err = await resolveEcsSecrets([{ containerName: 'app', name: 'K', valueFrom }]).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(EcsSecretsResolutionError);
+      const message = (err as Error).message;
+      expect(message).toContain('CredentialsProviderError; ');
+      expect(message).toContain('-character message withheld');
+      // The refusal ends its own sentence (the renderer drops one trailing period).
+      expect(message).toMatch(/logged at debug level under --verbose\.$/);
+      expect(message).not.toContain('hunter2');
+    }
+  );
 
   it('hard-fails on unknown shape', async () => {
     await expect(

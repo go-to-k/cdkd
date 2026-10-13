@@ -537,6 +537,10 @@ describe('config-loader', () => {
       );
 
       await expect(fn(undefined, 'us-east-1')).rejects.toThrow(/cdkd bootstrap/);
+      // A `StateError` (a CdkdError), so the `cdkd local *` warns that relay
+      // it print the remedy instead of withholding it (go-to-k/cdkd#4857).
+      const { StateError } = await import('../../../src/utils/error-handler.js');
+      await expect(fn(undefined, 'us-east-1')).rejects.toBeInstanceOf(StateError);
     });
 
     /**

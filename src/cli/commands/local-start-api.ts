@@ -23,7 +23,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
+import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import {
   applyRoleArnIfSet,
   assertSendableRoleArn,
@@ -31,7 +31,7 @@ import {
   isIamRoleArn,
   sendableAssumeRoleCommand,
 } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -2980,57 +2980,57 @@ export async function resolveProfileCredentials(
     ...awsClientDefaults({ profile, ignoreAssumedRole: true }),
     profile,
   });
+  // Issue [#3377](https://github.com/go-to-k/cdkd/issues/3377). The profile
+  // name is user-supplied argv and this message is terminal-bound, so it
+  // renders through `src/utils/display-safe.ts` -- and the TWO occurrences
+  // below take DIFFERENT helpers, because they are different shapes.
+  //
+  // The first is a MESSAGE: it names which `--profile` failed, so it takes
+  // `displayIdent` -- the ASCII allowlist, the length cap, and the
+  // JSON-quoted BOUNDARY that keeps an all-ASCII name from planting what
+  // reads as cdkd's own annotation inside the sentence. The hand-written
+  // `'...'` quotes are gone for the reason `displayIdent`'s rule 3 gives:
+  // it quotes conditionally, so a legitimate name renders exactly as it
+  // always did and only a spoofing one gains quotes.
+  //
+  // The second is a COMMAND WE TELL AN OPERATOR TO RUN, and `displayIdent`
+  // is NOT enough for that -- `state-file-keys.ts`'s `isPasteableIdent`
+  // exists because `displayIdent` correctly renders `--state-bucket=x`
+  // bare, every character of it being a plain identifier character, while
+  // that value is a FLAG once pasted. A profile name is in the same
+  // position here: it is the word right after `--profile`, so a name
+  // beginning `-` or `~` is an option or a home-directory expansion rather
+  // than a name. Shell-quoting is not the answer either (an option is still
+  // an option inside quotes), so the honest answer for a name failing the
+  // test is to NOT print a command whose effect we cannot predict, and to
+  // say so -- the same disposition `gc.ts` takes for an unpasteable stack
+  // name. When the test passes, the value is `[A-Za-z0-9][A-Za-z0-9~_.-]*`,
+  // which needs no quoting at all.
+  const shownProfile = displayIdent(profile);
+  // cdkd-profile-display: the true arm below is gated on `isPasteableIdent`
+  // rather than rendered through `displayIdent`, because that arm IS the
+  // pasteable command. The predicate admits only
+  // `[A-Za-z0-9][A-Za-z0-9~_.-]*` AND requires a `displayIdent` round-trip
+  // to be the identity, so a value reaching it is bare-safe by
+  // construction; sanitizing it again could only CHANGE the name the
+  // operator is told to log in to, which is the wrong-object harm the
+  // false arm exists to avoid.
+  const ssoHint = isPasteableIdent(profile)
+    ? 'run `aws sso login --profile ' + profile + '`'
+    : // The wording is precise on purpose, and two earlier drafts were not.
+      // It does NOT say the name is absent -- `shownProfile` renders it in
+      // the FIRST of the three sentences this message is now built from. And it does not call the name
+      // unpasteable: `isPasteableIdent` is ASCII-only, so a perfectly
+      // pasteable `prod-café` takes this arm too. What cdkd declines is to
+      // WRITE THE COMMAND OUT, because the predicate is what licenses
+      // putting a value on a command line bare, and outside it cdkd cannot
+      // vouch that the rendered name is the one the shell would act on.
+      'run `aws sso login` for that profile -- cdkd is not writing the command out, ' +
+      'because it cannot vouch that the name as rendered is the one your shell would act on';
   try {
     const credsProvider = sts.config.credentials;
     const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
     if (!creds || !creds.accessKeyId || !creds.secretAccessKey) {
-      // Issue [#3377](https://github.com/go-to-k/cdkd/issues/3377). The profile
-      // name is user-supplied argv and this message is terminal-bound, so it
-      // renders through `src/utils/display-safe.ts` -- and the TWO occurrences
-      // below take DIFFERENT helpers, because they are different shapes.
-      //
-      // The first is a MESSAGE: it names which `--profile` failed, so it takes
-      // `displayIdent` -- the ASCII allowlist, the length cap, and the
-      // JSON-quoted BOUNDARY that keeps an all-ASCII name from planting what
-      // reads as cdkd's own annotation inside the sentence. The hand-written
-      // `'...'` quotes are gone for the reason `displayIdent`'s rule 3 gives:
-      // it quotes conditionally, so a legitimate name renders exactly as it
-      // always did and only a spoofing one gains quotes.
-      //
-      // The second is a COMMAND WE TELL AN OPERATOR TO RUN, and `displayIdent`
-      // is NOT enough for that -- `state-file-keys.ts`'s `isPasteableIdent`
-      // exists because `displayIdent` correctly renders `--state-bucket=x`
-      // bare, every character of it being a plain identifier character, while
-      // that value is a FLAG once pasted. A profile name is in the same
-      // position here: it is the word right after `--profile`, so a name
-      // beginning `-` or `~` is an option or a home-directory expansion rather
-      // than a name. Shell-quoting is not the answer either (an option is still
-      // an option inside quotes), so the honest answer for a name failing the
-      // test is to NOT print a command whose effect we cannot predict, and to
-      // say so -- the same disposition `gc.ts` takes for an unpasteable stack
-      // name. When the test passes, the value is `[A-Za-z0-9][A-Za-z0-9~_.-]*`,
-      // which needs no quoting at all.
-      const shownProfile = displayIdent(profile);
-      // cdkd-profile-display: the true arm below is gated on `isPasteableIdent`
-      // rather than rendered through `displayIdent`, because that arm IS the
-      // pasteable command. The predicate admits only
-      // `[A-Za-z0-9][A-Za-z0-9~_.-]*` AND requires a `displayIdent` round-trip
-      // to be the identity, so a value reaching it is bare-safe by
-      // construction; sanitizing it again could only CHANGE the name the
-      // operator is told to log in to, which is the wrong-object harm the
-      // false arm exists to avoid.
-      const ssoHint = isPasteableIdent(profile)
-        ? 'run `aws sso login --profile ' + profile + '`'
-        : // The wording is precise on purpose, and two earlier drafts were not.
-          // It does NOT say the name is absent -- `shownProfile` renders it in
-          // the FIRST of the three sentences this message is now built from. And it does not call the name
-          // unpasteable: `isPasteableIdent` is ASCII-only, so a perfectly
-          // pasteable `prod-café` takes this arm too. What cdkd declines is to
-          // WRITE THE COMMAND OUT, because the predicate is what licenses
-          // putting a value on a command line bare, and outside it cdkd cannot
-          // vouch that the rendered name is the one the shell would act on.
-          'run `aws sso login` for that profile -- cdkd is not writing the command out, ' +
-          'because it cannot vouch that the name as rendered is the one your shell would act on';
       // The tail is a SENTENCE of its own rather than a `, or ...` clause hung
       // off `ssoHint`. The two arms differ in length by ~60 characters, and
       // trailing a comma-clause off the long one left a dangling
@@ -3044,10 +3044,11 @@ export async function resolveProfileCredentials(
       // second pass could only alter a value already proven bare-safe, and the
       // command would then name a profile the operator does not have.
       // `shownProfile` beside it takes `displayIdent` because it is a MESSAGE.
-      throw new Error(
+      throw new CdkdError(
         `--profile ${shownProfile}: credential provider chain resolved without usable ` +
           `credentials. For SSO profiles, ${ssoHint}. For regular profiles, check ` +
-          `\`~/.aws/credentials\` / \`~/.aws/config\`.`
+          `\`~/.aws/credentials\` / \`~/.aws/config\`.`,
+        'LOCAL_PROFILE_CREDENTIALS_UNUSABLE'
       );
     }
     return {
@@ -3055,6 +3056,22 @@ export async function resolveProfileCredentials(
       secretAccessKey: creds.secretAccessKey,
       ...(creds.sessionToken && { sessionToken: creds.sessionToken }),
     };
+  } catch (err) {
+    if (err instanceof CdkdError) throw err;
+    // No caller catches this, so a credential-resolution failure reached
+    // `formatError` raw -- a `credential_process` helper's command line
+    // included (go-to-k/cdkd#4857).
+    const rendered = describeLocalAwsFailureForWarn(err, '--profile credential resolution');
+    // The SDK's own text is withheld, which for an expired SSO session is its
+    // remedy, so the same login hint as the refusal above is given here.
+    // cdkd-raw-beside-safe: `ssoHint` is gated on `isPasteableIdent` (see its
+    // declaration), and the other arm is a literal.
+    throw new CdkdError(
+      `--profile ${shownProfile}: could not resolve the profile's credentials: ${rendered}. ` +
+        `For SSO profiles, ${ssoHint}.`,
+      'LOCAL_PROFILE_CREDENTIALS_FAILED',
+      redactedAwsCause(err, 'credential resolution failed')
+    );
   } finally {
     sts.destroy();
   }
@@ -3091,8 +3108,10 @@ export function forceExitShutdownWarning(signal: string, hostPath: string | unde
  * Issue an STS AssumeRole and return temporary credentials. Mirrors
  * `cdkd local invoke`'s helper byte-for-byte; lifted here so the
  * start-api command stays self-contained.
+ *
+ * @internal exported for unit tests (go-to-k/cdkd#4857).
  */
-async function assumeLambdaExecutionRole(
+export async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
@@ -3115,8 +3134,9 @@ async function assumeLambdaExecutionRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(
-        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`
+      throw new CdkdError(
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`,
+        'LOCAL_START_API_ASSUMEROLE_NO_CREDS'
       );
     }
     return {
@@ -3124,6 +3144,17 @@ async function assumeLambdaExecutionRole(
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
     };
+  } catch (err) {
+    if (err instanceof CdkdError) throw err;
+    // No caller catches this, so the raw SDK error reached `formatError`
+    // unsanitized -- a `credential_process` command line included
+    // (go-to-k/cdkd#4857).
+    const rendered = describeLocalAwsFailureForWarn(err, 'STS AssumeRole');
+    throw new CdkdError(
+      `--assume-role: STS AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${rendered}.`,
+      'LOCAL_START_API_ASSUMEROLE_FAILED',
+      redactedAwsCause(err, 'STS AssumeRole failed')
+    );
   } finally {
     sts.destroy();
   }

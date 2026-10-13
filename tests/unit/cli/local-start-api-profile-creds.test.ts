@@ -94,8 +94,10 @@ describe('resolveProfileCredentials (issue #654)', () => {
     credsProviderMock.mockRejectedValue(
       new Error('The SSO session associated with this profile has expired')
     );
+    // The provider's own text is withheld to its class (go-to-k/cdkd#4857), so
+    // the refusal names the login remedy itself.
     await expect(resolveProfileCredentials('expired-sso-profile')).rejects.toThrow(
-      /SSO session.*expired/
+      /--profile expired-sso-profile: could not resolve the profile's credentials: Error; \d+-character message withheld.*For SSO profiles, run `aws sso login --profile expired-sso-profile`\.$/
     );
     // STS destroyed on rejection too.
     expect(stsDestroyMock).toHaveBeenCalledOnce();

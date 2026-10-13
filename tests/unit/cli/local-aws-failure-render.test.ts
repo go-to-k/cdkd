@@ -17,7 +17,7 @@ import { getLogger } from '../../../src/utils/logger.js';
 const SECRET_CMD = '/usr/local/bin/fetch-creds --token=hunter2-not-a-real-token';
 const ARN = 'arn:aws:iam::123456789012:role/ExecRole';
 
-const sts = vi.hoisted(() => ({ fail: undefined as unknown, empty: false }));
+const sts = vi.hoisted(() => ({ fail: undefined as unknown, empty: false, credsFail: undefined as unknown }));
 
 // The fromS3 path downloads the bundle after its `--assume-role` fallback warn;
 // stop it there rather than reach S3.
@@ -36,6 +36,12 @@ vi.mock('@aws-sdk/client-sts', () => ({
         return { Account: '123456789012' };
       }),
       destroy: vi.fn(),
+      config: {
+        credentials: async () => {
+          if (sts.credsFail !== undefined) throw sts.credsFail;
+          return { accessKeyId: 'AKIA', secretAccessKey: 'secret' };
+        },
+      },
     };
   }),
   GetCallerIdentityCommand: vi.fn(function GetCallerIdentityCommand(this: unknown) {}),
@@ -43,15 +49,16 @@ vi.mock('@aws-sdk/client-sts', () => ({
 }));
 
 const { describeLocalAwsFailureForWarn } = await import(
-  '../../../src/cli/commands/local-aws-failure.js'
+  '../../../src/utils/local-aws-failure.js'
 );
 const { resolvePseudoParametersForInvoke, applyLambdaCredentialEnv } = await import(
   '../../../src/cli/commands/local-invoke.js'
 );
-const { resolvePseudoParametersForStartApi } = await import(
+const { resolvePseudoParametersForStartApi, assumeLambdaExecutionRole, resolveProfileCredentials } =
+  await import(
   '../../../src/cli/commands/local-start-api.js'
 );
-const { buildEcsImageResolutionContext } = await import(
+const { buildEcsImageResolutionContext, assumeTaskRole, resolvePlaceholderAccount } = await import(
   '../../../src/cli/commands/local-run-task.js'
 );
 const {
@@ -201,6 +208,7 @@ beforeEach(() => {
   resetAwsClientDefaults();
   sts.fail = undefined;
   sts.empty = false;
+  sts.credsFail = undefined;
   warnSpy.mockReset();
   warnSpy.mockImplementation(() => {});
   debugSpy.mockReset();
@@ -272,7 +280,7 @@ describe('describeLocalAwsFailureForWarn', () => {
   it("prints a CdkdError's own text: cdkd wrote it, so nothing is withheld", async () => {
     const { CdkdError } = await import('../../../src/utils/error-handler.js');
     const err = new CdkdError(`AssumeRole(${ARN}) returned no usable credentials.`, 'X_NO_CREDS');
-    expect(describeLocalAwsFailureForWarn(err, 'STS AssumeRole')).toBe(err.message);
+    expect(describeLocalAwsFailureForWarn(err, 'STS AssumeRole')).toBe(err.message.slice(0, -1));
     expect(debugSpy).not.toHaveBeenCalled();
   });
 
@@ -307,8 +315,15 @@ describe('describeLocalAwsFailureForWarn', () => {
       message: 'We encountered an internal error. Please try again.',
     });
     expect(describeLocalAwsFailureForWarn(err, 'STS AssumeRole')).toBe(
-      'InternalFailure: We encountered an internal error. Please try again.'
+      // One trailing period is dropped: every call site appends its own `. `.
+      'InternalFailure: We encountered an internal error. Please try again'
     );
+  });
+
+  it('leaves an ellipsis alone: only ONE trailing period is dropped', () => {
+    expect(
+      describeLocalAwsFailureForWarn(serviceError('Throttling', 'Rate exceeded...'), 'STS AssumeRole')
+    ).toBe('Throttling: Rate exceeded...');
   });
 
   it('withholds a non-Error throw too', () => {
@@ -378,5 +393,167 @@ describe.each([
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain('AssumeRole refused');
     expect(warned[0]).not.toContain('message withheld');
+  });
+});
+
+/**
+ * go-to-k/cdkd#4857: three relays that THROW rather than warn had no `catch`,
+ * so the raw SDK error reached `formatError`'s `<name>: <message>` unsanitized.
+ * Asserted on the full `formatError` output, `Caused by:` line included.
+ */
+describe.each([
+  {
+    name: 'local run-task: assumeTaskRole',
+    run: () => assumeTaskRole(ARN, 'us-east-1'),
+    needle: `--assume-task-role: STS AssumeRole(${ARN}) failed: `,
+  },
+  {
+    name: 'local run-task: resolvePlaceholderAccount',
+    run: () =>
+      resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
+        region: 'us-east-1',
+      } as never),
+    needle: "--assume-task-role: STS GetCallerIdentity failed while resolving the task role's account: ",
+  },
+  {
+    name: 'local start-api: assumeLambdaExecutionRole',
+    run: () => assumeLambdaExecutionRole(ARN, 'us-east-1'),
+    needle: `--assume-role: STS AssumeRole(${ARN}) failed: `,
+  },
+])('$name: the thrown refusal', ({ run, needle }) => {
+  it('withholds a credential-chain failure from the error and its Caused by line', async () => {
+    const { formatError } = await import('../../../src/utils/error-handler.js');
+    sts.fail = credentialProcessError();
+    const err = await run().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    const printed = formatError(err);
+    expect(printed).toContain(`${needle}CredentialsProviderError; `);
+    expect(printed).not.toContain(SECRET_CMD);
+    // Still threaded for the classifiers (go-to-k/cdkd#2075), redacted.
+    expect(((err as Error).cause as Error | undefined)?.name).toBe('CredentialsProviderError');
+    expect(lines(debugSpy).some((m) => m.includes(SECRET_CMD))).toBe(true);
+  });
+
+  it("keeps a modeled STS exception's message", async () => {
+    const { formatError } = await import('../../../src/utils/error-handler.js');
+    sts.fail = serviceError('AccessDenied', 'User x is not authorized to perform: sts:AssumeRole');
+    const err = await run().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(formatError(err)).toContain(
+      `${needle}AccessDenied: User x is not authorized to perform: sts:AssumeRole.`
+    );
+  });
+});
+
+/**
+ * The three thrown relays let cdkd's own `CdkdError` through untouched: the
+ * no-Account / no-credentials refusal must not be re-wrapped in the
+ * `... failed:` prefix (go-to-k/cdkd#4857).
+ */
+describe.each([
+  {
+    name: 'local run-task: assumeTaskRole',
+    run: () => assumeTaskRole(ARN, 'us-east-1'),
+    expected: /^CdkdError: AssumeRole\(arn:aws:iam::123456789012:role\/ExecRole\) returned no usable credentials\.$/,
+  },
+  {
+    name: 'local run-task: resolvePlaceholderAccount',
+    run: () =>
+      resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
+        region: 'us-east-1',
+      } as never),
+    expected: /^CdkdError: --assume-task-role: GetCallerIdentity returned no Account; /,
+  },
+  {
+    name: 'local start-api: assumeLambdaExecutionRole',
+    run: () => assumeLambdaExecutionRole(ARN, 'us-east-1'),
+    expected: /^CdkdError: AssumeRole\(arn:aws:iam::123456789012:role\/ExecRole\) returned no usable credentials\.$/,
+  },
+])('$name: its own refusal', ({ run, expected }) => {
+  it('passes through unwrapped', async () => {
+    const { formatError } = await import('../../../src/utils/error-handler.js');
+    sts.empty = true;
+    const err = await run().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(formatError(err)).toMatch(expected);
+  });
+});
+
+describe('local start-api: resolveProfileCredentials (go-to-k/cdkd#4857)', () => {
+  it('withholds a credential-resolution failure from the error and its Caused by line', async () => {
+    const { formatError } = await import('../../../src/utils/error-handler.js');
+    sts.credsFail = credentialProcessError();
+    const err = await resolveProfileCredentials('dev').then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    const printed = formatError(err);
+    expect(printed).toContain(
+      "--profile dev: could not resolve the profile's credentials: CredentialsProviderError; "
+    );
+    expect(printed).not.toContain(SECRET_CMD);
+    expect(((err as Error).cause as Error | undefined)?.name).toBe('CredentialsProviderError');
+    expect(lines(debugSpy).some((m) => m.includes(SECRET_CMD))).toBe(true);
+  });
+
+  it('passes its own unusable-credentials refusal through unwrapped', async () => {
+    const { formatError } = await import('../../../src/utils/error-handler.js');
+    sts.credsFail = undefined;
+    // `credentials` resolving to an empty bag: the cdkd-authored refusal.
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    vi.mocked(STSClient).mockImplementationOnce(function STSClient(this: unknown) {
+      return { destroy: vi.fn(), config: { credentials: async () => ({}) } } as never;
+    } as never);
+    const err = await resolveProfileCredentials('dev').then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(formatError(err)).toMatch(
+      /^CdkdError: --profile dev: credential provider chain resolved without usable credentials\./
+    );
+  });
+});
+
+describe('redactedAwsCause: a cdkd wrapper is unwrapped to the SDK error it holds', () => {
+  it("carries the wrapped SDK error's fields, not the wrapper's", async () => {
+    const { redactedAwsCause } = await import('../../../src/utils/local-aws-failure.js');
+    const { StateError } = await import('../../../src/utils/error-handler.js');
+    const sdk = serviceError('SlowDown', 'Please reduce your request rate.');
+    const cause = redactedAwsCause(new StateError('Failed to verify', sdk), 'op failed') as Error & {
+      $metadata?: unknown;
+    };
+    expect(cause.name).toBe('SlowDown');
+    expect(cause.$metadata).toEqual({ httpStatusCode: 403 });
+    expect(cause.message).toBe('op failed');
+  });
+
+  it("walks past normalizeAwsError's rewrite to the SDK error behind it", async () => {
+    const { redactedAwsCause } = await import('../../../src/utils/local-aws-failure.js');
+    const { StateError } = await import('../../../src/utils/error-handler.js');
+    const sdk = Object.assign(new Error('UnknownError'), {
+      name: 'Unknown',
+      $metadata: { httpStatusCode: 503 },
+    });
+    const rewrite = new Error('S3 error during HeadBucket', { cause: sdk });
+    const cause = redactedAwsCause(new StateError('Failed to verify', rewrite), 'op failed') as Error & {
+      $metadata?: unknown;
+    };
+    expect(cause.name).toBe('Unknown');
+    expect(cause.$metadata).toEqual({ httpStatusCode: 503 });
+  });
+
+  it('stops at the third link when no link carries $metadata', async () => {
+    const { redactedAwsCause } = await import('../../../src/utils/local-aws-failure.js');
+    const { StateError } = await import('../../../src/utils/error-handler.js');
+    const named = (name: string, cause?: Error): Error =>
+      Object.assign(new Error(name, cause ? { cause } : {}), { name });
+    const chain = new StateError('wrapper', named('L1', named('L2', named('L3', named('L4')))));
+    expect(redactedAwsCause(chain, 'op failed')?.name).toBe('L3');
   });
 });

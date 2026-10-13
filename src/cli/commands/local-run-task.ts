@@ -12,7 +12,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
+import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import {
@@ -21,7 +21,7 @@ import {
   assertSendableRoleArn,
   sendableAssumeRoleCommand,
 } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -617,13 +617,25 @@ export async function resolvePlaceholderAccount(
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
     if (!account) {
-      throw new Error(
+      throw new CdkdError(
         // cdkd-arn-display: the template ARN is shown only when plain (`plainIdentOr` at the role-ARN cap) and described otherwise, since this line names `--assume-task-role` (go-to-k/cdkd#4295).
         `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${plainIdentOr(arn, VALUE_NOT_SHOWN, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}. ` +
-          `Pass the ARN explicitly: --assume-task-role '<arn>'`
+          `Pass the ARN explicitly: --assume-task-role '<arn>'`,
+        'LOCAL_RUN_TASK_PLACEHOLDER_NO_ACCOUNT'
       );
     }
     return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+  } catch (err) {
+    if (err instanceof CdkdError) throw err;
+    // The raw SDK error would reach `formatError` unsanitized, and a
+    // credential-chain failure carries a `credential_process` command line
+    // (go-to-k/cdkd#4857).
+    const rendered = describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity');
+    throw new CdkdError(
+      `--assume-task-role: STS GetCallerIdentity failed while resolving the task role's account: ${rendered}.`,
+      'LOCAL_RUN_TASK_GET_CALLER_IDENTITY_FAILED',
+      redactedAwsCause(err, 'STS GetCallerIdentity failed')
+    );
   } finally {
     sts.destroy();
   }
@@ -632,8 +644,10 @@ export async function resolvePlaceholderAccount(
 /**
  * Assume `roleArn` and return temp credentials. Mirrors the same flow
  * `cdkd local invoke --assume-role` uses.
+ *
+ * @internal exported for unit tests (go-to-k/cdkd#4857).
  */
-async function assumeTaskRole(
+export async function assumeTaskRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
@@ -659,8 +673,9 @@ async function assumeTaskRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(
-        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`
+      throw new CdkdError(
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`,
+        'LOCAL_RUN_TASK_ASSUMEROLE_NO_CREDS'
       );
     }
     return {
@@ -668,6 +683,15 @@ async function assumeTaskRole(
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
     };
+  } catch (err) {
+    if (err instanceof CdkdError) throw err;
+    // See `resolvePlaceholderAccount` (go-to-k/cdkd#4857).
+    const rendered = describeLocalAwsFailureForWarn(err, 'STS AssumeRole');
+    throw new CdkdError(
+      `--assume-task-role: STS AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${rendered}.`,
+      'LOCAL_RUN_TASK_ASSUMEROLE_FAILED',
+      redactedAwsCause(err, 'STS AssumeRole failed')
+    );
   } finally {
     sts.destroy();
   }

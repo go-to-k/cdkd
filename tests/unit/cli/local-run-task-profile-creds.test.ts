@@ -93,7 +93,9 @@ describe('resolveSidecarCredentials (issue #658)', () => {
     );
     await expect(
       resolveSidecarCredentials({ profile: 'expired-sso' }, undefined)
-    ).rejects.toThrow(/SSO session.*expired/);
+    // The provider's own text is withheld to its class (go-to-k/cdkd#4857); the
+    // refusal still fails loudly and names the login remedy.
+    ).rejects.toThrow(/could not resolve the profile's credentials: Error; .*aws sso login --profile expired-sso/);
   });
 });
 

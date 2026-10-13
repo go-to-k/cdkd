@@ -1,7 +1,8 @@
-import { displayIdent, displaySafe, SECRET_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import { displayIdent, SECRET_REF_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { describeLocalAwsFailureForWarn } from '../utils/local-aws-failure.js';
 import { ownValue } from '../utils/own-keys.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
@@ -209,9 +210,7 @@ async function resolveSecretsManager(
     secretString = resp.SecretString;
   } catch (err) {
     throw new EcsSecretsResolutionError(
-      `Failed to resolve Secrets Manager secret for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
-        err instanceof Error ? err.message : String(err)
-      )}`
+      `Failed to resolve Secrets Manager secret for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.baseArn, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${describeLocalAwsFailureForWarn(err, 'SecretsManager GetSecretValue')}.`
     );
   }
   if (secretString === undefined) {
@@ -276,9 +275,7 @@ async function resolveSsm(entry: SecretEntry, shape: SsmShape, client: SSMClient
   } catch (err) {
     if (err instanceof EcsSecretsResolutionError) throw err;
     throw new EcsSecretsResolutionError(
-      `Failed to resolve SSM parameter for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${displaySafe(
-        err instanceof Error ? err.message : String(err)
-      )}`
+      `Failed to resolve SSM parameter for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayIdent(shape.name, { maxCodePoints: SECRET_REF_MAX_CODE_POINTS })}): ${describeLocalAwsFailureForWarn(err, 'SSM GetParameter')}.`
     );
   }
 }

@@ -142,7 +142,7 @@ describe('provider error-cause critic — the real tree', () => {
   });
 
   it('sees the sites threaded THROUGH a registered composer, each composer in use', () => {
-    expect(report.composerThreaded).toBeGreaterThanOrEqual(10);
+    expect(report.composerThreaded).toBeGreaterThanOrEqual(16);
     const composerFiles = new Set(
       report.sites.filter((s) => s.viaComposer).map((s) => s.file.replace(/^src\//, ''))
     );
@@ -151,10 +151,11 @@ describe('provider error-cause critic — the real tree', () => {
       'assets/docker-asset-publisher.ts', // redactedDockerCause
       'state/s3-state-backend.ts', // normalizeAwsError
       'deployment/deploy-engine/provision.ts', // maskSecretsInError
+      'local/ecr-puller.ts', // redactedAwsCause
     ]) {
       expect(composerFiles).toContain(file);
     }
-    expect(CAUSE_COMPOSERS.size).toBe(3);
+    expect(CAUSE_COMPOSERS.size).toBe(4);
     // `viaComposer` must DISCRIMINATE: the reference site threads the caught
     // value directly, and most threaded sites do not go through a composer.
     expect(report.composerThreaded).toBeLessThan(report.threaded / 4);
@@ -824,7 +825,7 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     mutate(
       dir,
       'local/ecr-puller.ts',
-      "        \"Verify the role exists and its trust policy permits the caller's identity to assume it.\",\n      err instanceof Error ? err : undefined\n",
+      "        \"Verify the role exists and its trust policy permits the caller's identity to assume it.\",\n      redactedAwsCause(err, 'STS AssumeRole failed')\n",
       "        \"Verify the role exists and its trust policy permits the caller's identity to assume it.\"\n"
     );
     const { status, stderr } = runCheck(dir);

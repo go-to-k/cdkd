@@ -1,4 +1,8 @@
-import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
+import {
+  ECRClient,
+  GetAuthorizationTokenCommand,
+  type GetAuthorizationTokenCommandOutput,
+} from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   describeDockerFailure,
@@ -14,7 +18,8 @@ export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { assertSendableRoleArn, sendableAssumeRoleCommand } from '../utils/role-arn.js';
 import { getLogger } from '../utils/logger.js';
-import { displayIdent, displaySafe, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
+import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../utils/local-aws-failure.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS } from '../utils/display-safe.js';
 import {
   ambientCredentialConfig,
   clientDefaultsFor,
@@ -332,6 +337,15 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
       }
       callerAccount = identity.Account;
       CALLER_IDENTITY_CACHE.set(callerIdentityKey, callerAccount);
+    } catch (err) {
+      if (err instanceof LocalInvokeBuildError) throw err;
+      // The cause is a REDACTED copy: `formatError` prints a cause's message on
+      // its own `Caused by:` line (go-to-k/cdkd#4857).
+      const rendered = describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity (ECR pull)');
+      throw new LocalInvokeBuildError(
+        `STS GetCallerIdentity failed while preparing the ECR pull: ${rendered}. Verify your AWS credentials.`,
+        redactedAwsCause(err, 'STS GetCallerIdentity failed')
+      );
     } finally {
       sts.destroy();
     }
@@ -496,11 +510,13 @@ async function assumeRoleForEcr(
     };
   } catch (err) {
     if (err instanceof LocalInvokeBuildError) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
+    // The cause is a REDACTED copy: `formatError` would print the raw SDK text
+    // on a `Caused by:` line below the rendered one (go-to-k/cdkd#4857).
+    const rendered = describeLocalAwsFailureForWarn(err, 'STS AssumeRole (ECR pull)');
     throw new LocalInvokeBuildError(
-      `Failed to assume role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull: ${displaySafe(reason)}. ` +
+      `Failed to assume role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull: ${rendered}. ` +
         "Verify the role exists and its trust policy permits the caller's identity to assume it.",
-      err instanceof Error ? err : undefined
+      redactedAwsCause(err, 'STS AssumeRole failed')
     );
   } finally {
     sts.destroy();
@@ -533,7 +549,17 @@ async function ecrLogin(
   const logger = getLogger().child('ecr-puller');
   logger.debug(`ECR login (account=${accountId}, region=${region}, host=${registryHost})`);
 
-  const response = await client.send(new GetAuthorizationTokenCommand({}));
+  let response: GetAuthorizationTokenCommandOutput;
+  try {
+    response = await client.send(new GetAuthorizationTokenCommand({}));
+  } catch (err) {
+    const rendered = describeLocalAwsFailureForWarn(err, 'ECR GetAuthorizationToken');
+    throw new LocalInvokeBuildError(
+      `ECR GetAuthorizationToken failed (account=${displayIdent(accountId)}, region=${displayIdent(region)}): ${rendered}. ` +
+        'Verify the credentials can call ecr:GetAuthorizationToken.',
+      redactedAwsCause(err, 'ECR GetAuthorizationToken failed')
+    );
+  }
   const authData = response.authorizationData?.[0];
   if (!authData?.authorizationToken) {
     throw new LocalInvokeBuildError('Failed to get ECR authorization token');

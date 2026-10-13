@@ -636,7 +636,8 @@ describe('loadStateForStack — globalClients lifecycle', () => {
         statePrefix: 'cdkd',
         region: 'us-east-1',
       })
-    ).rejects.toThrow('access denied');
+      // Rendered through the #4857 policy: a plain Error is withheld to its class.
+    ).rejects.toThrow(/could not access state bucket test-bucket: Error; \d+-character message withheld/);
 
     // Even on a thrown error, the finally must reset the global.
     const fresh = getAwsClients();

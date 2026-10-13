@@ -293,10 +293,12 @@ function isRoleArnSite(expression: string): boolean {
  * can be weaker than `displayIdent` at any input.
  *
  * `describeLocalAwsFailureForWarn` (go-to-k/cdkd#2300) returns its rendering
- * through `displaySafe` as the last step, so it cannot be weaker either.
+ * through `displaySafe` as the last step, so it cannot be weaker either;
+ * `describeStateBucketAccessFailure` (go-to-k/cdkd#4857) returns only through
+ * it or `displaySafe`.
  */
 const SANITIZER_CALL =
-  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed|describeLocalAwsFailureForWarn)\s*\(/;
+  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed|describeLocalAwsFailureForWarn|describeStateBucketAccessFailure)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`

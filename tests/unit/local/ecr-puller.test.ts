@@ -86,7 +86,7 @@ import {
   parseEcrUri,
   pullEcrImage,
 } from '../../../src/local/ecr-puller.js';
-import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
+import { formatError, LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../../src/utils/aws-clients.js';
 import { ECR_REGISTRY_HOST_FORMS } from '../../../src/utils/ecr-uri.js';
 
@@ -535,7 +535,11 @@ describe('pullEcrImage', () => {
   });
 
   it('--ecr-role-arn AssumeRole failure surfaces actionable LocalInvokeBuildError', async () => {
-    const stsFailure = new Error('AccessDenied: not authorized to AssumeRole');
+    const stsFailure = Object.assign(new Error('User x is not authorized to perform: sts:AssumeRole'), {
+      name: 'AccessDenied',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    });
     stsSendMock
       .mockResolvedValueOnce({ Account: '111111111111' })
       .mockRejectedValueOnce(stsFailure);
@@ -544,10 +548,117 @@ describe('pullEcrImage', () => {
       ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(LocalInvokeBuildError);
-    expect((err as Error).message).toMatch(/Failed to assume role .* for ECR pull.*AccessDenied/);
-    // go-to-k/cdkd#2075: the STS error itself is the cause, so a throttled
-    // AssumeRole stays visible to the classifiers that walk `.cause`.
-    expect((err as Error).cause).toBe(stsFailure);
+    expect((err as Error).message).toMatch(
+      /Failed to assume role .* for ECR pull: AccessDenied: User x is not authorized/
+    );
+    // go-to-k/cdkd#2075: the cause still carries what the classifiers that
+    // walk `.cause` read -- through a REDACTED copy (go-to-k/cdkd#4857).
+    const cause = (err as Error).cause as Error & { $metadata?: unknown; $fault?: unknown };
+    expect(cause.name).toBe('AccessDenied');
+    expect(cause.$metadata).toEqual({ httpStatusCode: 403 });
+    expect(cause.$fault).toBe('client');
+  });
+
+  /**
+   * go-to-k/cdkd#4857: a credential-chain failure's text (a `credential_process`
+   * helper's command line) is withheld from the THROWN message AND from the
+   * `Caused by:` line `formatError` prints under it, at all three ECR-pull
+   * relays. The failure is shaped as the SDK raises it: no `$fault`, but the
+   * retry middleware's `$metadata`.
+   */
+  it.each([
+    [
+      'STS GetCallerIdentity',
+      () => {
+        stsSendMock.mockRejectedValueOnce(
+          Object.assign(new Error('The security token included in the request is expired'), {
+            name: 'ExpiredTokenException',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 403 },
+          })
+        );
+      },
+      'STS GetCallerIdentity failed while preparing the ECR pull: ExpiredTokenException: The security token included in the request is expired. Verify',
+    ],
+    [
+      'ECR GetAuthorizationToken',
+      () => {
+        stsSendMock.mockResolvedValueOnce({ Account: '999999999999' });
+        ecrSendMock.mockRejectedValueOnce(
+          Object.assign(new Error('User x is not authorized to perform: ecr:GetAuthorizationToken'), {
+            name: 'AccessDeniedException',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 400 },
+          })
+        );
+      },
+      'ECR GetAuthorizationToken failed (account=999999999999, region=us-east-1): AccessDeniedException: User x is not authorized to perform: ecr:GetAuthorizationToken. Verify',
+    ],
+  ] as const)("%s: keeps a modeled service exception's message (#4857)", async (_name, arrange, needle) => {
+    arrange();
+    const err = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LocalInvokeBuildError);
+    expect((err as Error).message).toContain(needle);
+  });
+
+  describe('withholds credential-chain text from the error and its Caused by line (#4857)', () => {
+    const SECRET_CMD = '/usr/local/bin/get-creds --token hunter2-not-a-real-token';
+    const credentialFailure = (): Error =>
+      Object.assign(new Error(`credential_process ${SECRET_CMD} exited with code 1`), {
+        name: 'CredentialsProviderError',
+        $metadata: { attempts: 1, totalRetryDelay: 0 },
+      });
+    const authorized = {
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:pw').toString('base64') }],
+    };
+
+    it.each([
+      [
+        'STS GetCallerIdentity',
+        () => {
+          stsSendMock.mockRejectedValueOnce(credentialFailure());
+        },
+        {},
+        'STS GetCallerIdentity failed while preparing the ECR pull: CredentialsProviderError; ',
+      ],
+      [
+        'STS AssumeRole (--ecr-role-arn)',
+        () => {
+          stsSendMock
+            .mockResolvedValueOnce({ Account: '111111111111' })
+            .mockRejectedValueOnce(credentialFailure());
+        },
+        { ecrRoleArn: 'arn:aws:iam::999999999999:role/Puller' },
+        'for ECR pull: CredentialsProviderError; ',
+      ],
+      [
+        'ECR GetAuthorizationToken',
+        () => {
+          stsSendMock.mockResolvedValueOnce({ Account: '999999999999' });
+          ecrSendMock.mockRejectedValueOnce(credentialFailure());
+        },
+        {},
+        'ECR GetAuthorizationToken failed (account=999999999999, region=us-east-1): CredentialsProviderError; ',
+      ],
+    ] as const)('%s', async (_name, arrange, extra, needle) => {
+      ecrSendMock.mockResolvedValue(authorized);
+      arrange();
+      const err = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ...extra,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(LocalInvokeBuildError);
+      const printed = formatError(err);
+      expect(printed).toContain(needle);
+      expect(printed).toContain('-character message withheld, logged at debug level under --verbose');
+      expect(printed, 'the withheld text came back through the error output').not.toContain(
+        'hunter2'
+      );
+      // Still threaded for the classifiers (go-to-k/cdkd#2075).
+      expect(((err as Error).cause as Error | undefined)?.name).toBe('CredentialsProviderError');
+    });
   });
 
   it.each([
@@ -583,7 +694,7 @@ describe('pullEcrImage', () => {
     stsSendMock.mockResolvedValue({ Account: undefined });
     await expect(
       pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false })
-    ).rejects.toThrow(/STS GetCallerIdentity returned no Account/);
+    ).rejects.toThrow(/^STS GetCallerIdentity returned no Account/);
   });
 
   it('skipPull: verifies image is in local cache via docker image inspect — no STS calls', async () => {

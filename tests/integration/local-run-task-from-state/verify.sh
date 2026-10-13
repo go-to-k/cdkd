@@ -604,8 +604,67 @@ if [[ "${JSONKEY_NET_LEFTOVER}" -ne 0 ]]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Issue #4857: an STS failure on `--assume-task-role` is RENDERED, not relayed
+# raw. Before the fix `assumeTaskRole` had no catch, so `formatError` printed
+# the SDK error as `AccessDenied: User ... is not authorized ...` with no cdkd
+# context. The role below does not exist, so STS answers with a MODELED
+# AccessDenied, which the policy keeps: the operation prefix, AWS's diagnosis
+# exactly once, and a `Caused by:` line naming only the operation.
+# ---------------------------------------------------------------------------
+echo "[verify] step 7: --assume-task-role naming a role that cannot be assumed (#4857)"
+NOT_ASSUMABLE_ROLE="cdkd-4857-not-assumable"
+NOT_ASSUMABLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${NOT_ASSUMABLE_ROLE}"
+# The premise is NoSuchEntity specifically: a missing iam:GetRole grant would
+# also fail the probe while saying nothing about whether the role exists.
+GET_ROLE_ERR="$(aws iam get-role --role-name "${NOT_ASSUMABLE_ROLE}" 2>&1 >/dev/null || true)"
+if ! echo "${GET_ROLE_ERR}" | grep -qF "NoSuchEntity"; then
+  echo "[verify] FAIL: premise broken - role ${NOT_ASSUMABLE_ROLE} is not known to be absent: ${GET_ROLE_ERR:-it exists}"
+  exit 1
+fi
+set +e
+ASSUME_OUT="$(${CDKD} local run-task "${TASK_PATH_SUB}" \
+  --from-state \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --assume-task-role "${NOT_ASSUMABLE_ARN}" \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+ASSUME_RC=$?
+set -e
+echo "${ASSUME_OUT}" | tail -5
+if [ "${ASSUME_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: run-task with a non-assumable --assume-task-role exited 0"
+  exit 1
+fi
+for needle in "--assume-task-role: STS AssumeRole(${NOT_ASSUMABLE_ARN}) failed: AccessDenied: " \
+  "Caused by: STS AssumeRole failed"; do
+  if ! echo "${ASSUME_OUT}" | grep -qF -- "${needle}"; then
+    echo "[verify] FAIL: the refusal did not carry '${needle}'"
+    exit 1
+  fi
+done
+DIAGNOSIS_COUNT=$(echo "${ASSUME_OUT}" | grep -cF "is not authorized to perform" || true)
+if [ "${DIAGNOSIS_COUNT}" -ne 1 ]; then
+  echo "[verify] FAIL: AWS's diagnosis printed ${DIAGNOSIS_COUNT} times, expected exactly once"
+  exit 1
+fi
+if echo "${ASSUME_OUT}" | grep -qF "message withheld"; then
+  echo "[verify] FAIL: a modeled AccessDenied was withheld - it is the diagnosis and must print"
+  exit 1
+fi
+# The refusal fires before any container or task network exists.
+ASSUME_LEFTOVER=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+ASSUME_NET_LEFTOVER=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+if [[ "${ASSUME_LEFTOVER}" -ne 0 || "${ASSUME_NET_LEFTOVER}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${ASSUME_LEFTOVER} container(s) / ${ASSUME_NET_LEFTOVER} network(s) left after the refusal arm"
+  exit 1
+fi
+echo "[verify]   the AssumeRole failure rendered with its operation, AWS's diagnosis once, and an operation-only Caused by line"
+
 # NOTE: no explicit `cleanup` call here. It ends with `exit "${rc}"`, so calling
 # it would terminate the script before anything after it ran -- the trap is what
 # invokes it, and the state-version sweep lives inside it.
 echo ""
-echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, and zero state versions survived - all against deployed cdkd state."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, the issue #4857 --assume-task-role failure rendered once with its operation, and zero state versions survived - all against deployed cdkd state."

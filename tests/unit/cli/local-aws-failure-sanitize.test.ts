@@ -14,7 +14,7 @@ vi.mock('cdk-local/internal', () => ({
 }));
 
 const { describeLocalAwsFailureForWarn } = await import(
-  '../../../src/cli/commands/local-aws-failure.js'
+  '../../../src/utils/local-aws-failure.js'
 );
 
 describe('describeLocalAwsFailureForWarn: the final displaySafe', () => {
