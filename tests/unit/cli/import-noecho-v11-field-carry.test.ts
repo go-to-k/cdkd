@@ -85,6 +85,26 @@ describe('v11 NoEcho fields survive the record writers', () => {
     expect(reimport('cr-2', { Secret: SECRET_MASK }).noEchoAttributeNames).toBeUndefined();
   });
 
+  it('state schema v12: cdkd import carries outputReferenceProvenance with the outputs bag it carries', () => {
+    const TOKEN = '{{resolve:secretsmanager:app:SecretString:name::}}';
+    const existing: StackState = {
+      ...prior('cr-1'),
+      outputs: { Out: TOKEN },
+      outputReferenceProvenance: { Out: { [TOKEN]: { region: 'us-east-1' } } },
+    };
+    const built = buildStackState(
+      'Stack',
+      'us-east-1',
+      [{ logicalId: 'Cr', resourceType: 'Custom::Thing', outcome: 'imported', physicalId: 'cr-1', attributes: {} }],
+      new TemplateParser(),
+      template,
+      existing,
+      true
+    );
+    expect(built.outputs).toEqual({ Out: TOKEN });
+    expect(built.outputReferenceProvenance).toEqual(existing.outputReferenceProvenance);
+  });
+
   it('cdkd import does not carry noEchoLeaves: it rebuilds properties from the template', () => {
     expect(reimport('cr-1', {}).noEchoLeaves).toBeUndefined();
     expect(reimport('cr-1', {}).noEchoExactEchoLeaves).toBeUndefined();

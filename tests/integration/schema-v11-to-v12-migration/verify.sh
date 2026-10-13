@@ -470,6 +470,9 @@ if [ "${MIGRATION_LOOKUPS}" -lt 1 ]; then
   fail "v12 migration deploy: the call log shows no GetSecretValue — the capture did not run"
 fi
 pass "v12 migration deploy: ${MIGRATION_LOOKUPS} GetSecretValue call(s), the capture's included"
+# Nothing was SENT to a resource: the call log holds no SQS / SSM write.
+WRITES="$(jq -r 'keys[] | select(test("^(SQSClient|SSMClient)\\.") and (test("\\.(Get|List|Describe)") | not))' "${CALLS_DIR}/migration.json" | tr '\n' ' ')"
+assert_eq "v12 migration deploy: no SQS / SSM write command was sent (migration changed a resource = pre-fix)" "${WRITES}" ""
 if grep -qF -- "state schema v12 migration" "${DEPLOY_LOG}"; then
   redact_password <"${DEPLOY_LOG}" | tail -40 >&2
   fail "v12 migration deploy: the capture warned that a record could not be attributed"
@@ -538,8 +541,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 52 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 52 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 53 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 53 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

@@ -217,7 +217,7 @@ describe('State schema v12 — referenceProvenance / outputReferenceProvenance (
     expect((caught as Error).message).toMatch(/Upgrade cdkd/);
   });
 
-  it('saves a v12 document with the fields intact and no plaintext', async () => {
+  it('saves a v12 document with the fields intact', async () => {
     client.send.mockResolvedValueOnce({ ETag: '"new"' });
     const v12 = JSON.parse(V11_SECRET_BEARING) as StackState;
     v12.resources['Queue']!.referenceProvenance = {

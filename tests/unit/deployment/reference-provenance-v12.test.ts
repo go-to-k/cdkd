@@ -233,6 +233,26 @@ describe('the persist writer', () => {
     ).toEqual({ [SM]: {} });
   });
 
+  it('with walkWithoutPassProvenance, a token held unattributed is keyed {} (known)', () => {
+    const args = {
+      record: record({ A: SM }),
+      secrets: bag(),
+      previous: undefined,
+      inPlace: undefined,
+    };
+    expect(provenanceForWrittenRecord(args)).toBeUndefined();
+    expect(provenanceForWrittenRecord({ ...args, walkWithoutPassProvenance: true })).toEqual({
+      [SM]: {},
+    });
+    expect(
+      provenanceForWrittenRecord({
+        ...args,
+        record: record({ A: 'plain' }),
+        walkWithoutPassProvenance: true,
+      })
+    ).toBeUndefined();
+  });
+
   it('a token-free record persists no field, and costs no walk without pass provenance', () => {
     expect(
       provenanceForWrittenRecord({
@@ -352,6 +372,25 @@ describe('the persist writer', () => {
         inPlace: { createOnly: [], attributesCarried: true },
       });
       expect(field).toEqual({ [SM]: { region: 'us-east-1', versions: [V1, V2] } });
+    });
+
+    it('a token this pass did not resolve keeps its previous entry', () => {
+      const field = provenanceForWrittenRecord({
+        record: written,
+        secrets: (() => {
+          const s = bag();
+          recordReferenceResolution(s, SSM, { region: 'us-east-1', version: '2', route: 'literal' });
+          return s;
+        })(),
+        previous: {
+          ...previous,
+          referenceProvenance: { [SM]: { region: 'us-east-1', versions: [V1], readVersions: [V1] } },
+        },
+        inPlace: { createOnly: [['QueueName']], attributesCarried: false },
+      });
+      expect(field).toEqual({
+        [SM]: { region: 'us-east-1', versions: [V1], readVersions: [V1] },
+      });
     });
 
     it('two regions across the union drop the region', () => {

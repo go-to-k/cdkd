@@ -68,6 +68,11 @@ export interface ProvenanceCaptureOutcome {
  * token and has no field. The caller has already applied the token-free fast
  * path; this still skips a record with the field (`{}` included) in O(1) and
  * a token-free record in one walk.
+ *
+ * ONE record at a time, in a single background chain: the resolver's value
+ * cache then answers every later record holding a token an earlier one
+ * resolved, so the capture costs at most one lookup per distinct token per
+ * region, and it never competes with the deploy's own lookups in a burst.
  */
 export function kickOffProvenanceCapture(
   this: DeployEngine,
@@ -81,6 +86,7 @@ export function kickOffProvenanceCapture(
   }
 ): void {
   const { noChange, resources, template } = args;
+  let chain: Promise<unknown> = Promise.resolve();
   for (const logicalId of noChange) {
     const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     if (record === undefined || hasReferenceProvenanceField(record)) continue;
@@ -90,11 +96,23 @@ export function kickOffProvenanceCapture(
       ? template.Resources[logicalId]
       : undefined;
     const properties = definition?.Properties ?? {};
-    const task = captureOne(this, logicalId, record, tokens, properties, args).catch(
-      (): ProvenanceCaptureOutcome => ({ record, field: undefined })
-    );
+    const task = chain
+      .then(() => captureOne(this, logicalId, record, tokens, properties, args))
+      .catch((error: unknown): ProvenanceCaptureOutcome => {
+        // Throttling is the one retried class; anything else is definitive.
+        if (isThrottlingError(error)) return { record, field: undefined };
+        warnUnattributed(this, logicalId);
+        return { record, field: Object.fromEntries([...tokens].map((t) => [t, {}])) };
+      });
+    chain = task;
     this.provenanceCaptureTasks.set(logicalId, task);
   }
+}
+
+function warnUnattributed(engine: DeployEngine, logicalId: string): void {
+  engine.logger.warn(
+    safeMsg`Could not record where the secret reference(s) in ${logicalId} were resolved (state schema v12 migration). cdkd keeps its previous handling of them; update ${logicalId} to record it.`
+  );
 }
 
 async function captureOne(
@@ -131,9 +149,17 @@ async function captureOne(
     printingSecrets: new Map<string, string>(),
     provenanceCapture: true as const,
   };
-  // One top-level property at a time: a property that cannot resolve leaves
-  // ITS tokens unattributed and the rest are still captured.
-  for (const value of Object.values(properties)) {
+  // One top-level property at a time, and only one whose stored value holds a
+  // token: a property that cannot resolve leaves ITS tokens unattributed and
+  // the rest are still captured, and a token-free one costs nothing.
+  const stored = record.properties ?? {};
+  for (const [key, value] of Object.entries(properties)) {
+    if (
+      !Object.hasOwn(stored, key) ||
+      recordReferenceTokens({ properties: stored[key] }).size === 0
+    ) {
+      continue;
+    }
     try {
       await engine.resolver.resolve(structuredClone(value), context);
     } catch (error) {
@@ -158,11 +184,7 @@ async function captureOne(
     if (entry.region === undefined && entry.versions === undefined) unattributed = true;
     field[token] = entry;
   }
-  if (unattributed) {
-    engine.logger.warn(
-      safeMsg`Could not record where the secret reference(s) in ${logicalId} were resolved (state schema v12 migration). cdkd keeps its previous handling of them; update ${logicalId} to record it.`
-    );
-  }
+  if (unattributed) warnUnattributed(engine, logicalId);
   return { record, field };
 }
 

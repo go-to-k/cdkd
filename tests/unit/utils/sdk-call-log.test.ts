@@ -16,32 +16,36 @@ import {
 } from '../../../src/utils/sdk-call-log.js';
 
 /** A request handler that answers every request without a network. */
-function fakeHandler(status: number): { handle: () => Promise<unknown> } {
+function fakeHandler(status: number, firstStatus?: number): { handle: () => Promise<unknown> } {
+  let first = firstStatus;
   return {
-    handle: () =>
-      Promise.resolve({
+    handle: () => {
+      const code = first ?? status;
+      first = undefined;
+      return Promise.resolve({
         response: {
-          statusCode: status,
+          statusCode: code,
           headers: { 'content-type': 'text/xml' },
           body: Readable.from([
             Buffer.from(
-              status === 200
+              code === 200
                 ? '<GetCallerIdentityResponse><GetCallerIdentityResult><Account>123456789012</Account><Arn>arn:aws:iam::123456789012:user/x</Arn><UserId>X</UserId></GetCallerIdentityResult></GetCallerIdentityResponse>'
                 : '<ErrorResponse><Error><Code>AccessDenied</Code><Message>no</Message></Error></ErrorResponse>'
             ),
           ]),
         },
-      }),
+      });
+    },
   };
 }
 
-const client = (status: number): STSClient =>
+const client = (status: number, firstStatus?: number): STSClient =>
   new STSClient({
     ...awsClientDefaults(),
     region: 'us-east-1',
     credentials: { accessKeyId: 'AKIAFAKE', secretAccessKey: 'fake' },
-    requestHandler: fakeHandler(status) as never,
-    maxAttempts: 1,
+    requestHandler: fakeHandler(status, firstStatus) as never,
+    maxAttempts: firstStatus === undefined ? 1 : 3,
   });
 
 afterEach(() => {
@@ -64,5 +68,14 @@ describe('the SDK call log', () => {
       .send(new GetCallerIdentityCommand({}))
       .catch(() => undefined);
     expect(sdkCallCounts()).toEqual({ 'STSClient.GetCallerIdentityCommand': 3 });
+  });
+
+  it('a retried command counts once, and only the two names are kept', async () => {
+    process.env[SDK_CALL_LOG_ENV] = '/dev/null';
+    // A 500 first, retried by the SDK, then a success: one command.
+    await client(200, 500).send(new GetCallerIdentityCommand({}));
+    const counts = sdkCallCounts();
+    expect(counts).toEqual({ 'STSClient.GetCallerIdentityCommand': 1 });
+    expect(JSON.stringify(counts)).not.toContain('123456789012');
   });
 });

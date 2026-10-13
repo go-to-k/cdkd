@@ -1384,6 +1384,11 @@ export class DeployEngine {
     const previous = Object.hasOwn(this.healBaseline, logicalId)
       ? this.healBaseline[logicalId]
       : undefined;
+    // An update whose provider sent NOTHING (Cloud Control's empty patch,
+    // go-to-k/cdkd#4443) left AWS as the previous record describes it.
+    if (this.updatesThatSentNothing.has(logicalId) && previous !== undefined) {
+      return previous.referenceProvenance;
+    }
     // `update-in-place.ts` records the paths for every in-place write that
     // holds pass provenance or a previous field, the only writes that reach
     // the union; `'all'` is the conservative answer for any other.
@@ -1396,7 +1401,15 @@ export class DeployEngine {
               record.attributes !== undefined && record.attributes === previous.attributes,
           }
         : undefined;
-    return provenanceForWrittenRecord({ record: scrubbed, secrets, previous, inPlace });
+    return provenanceForWrittenRecord({
+      record: scrubbed,
+      secrets,
+      previous,
+      inPlace,
+      // A stack loaded off the token-free fast path walks a record only when
+      // this pass recorded provenance for it.
+      walkWithoutPassProvenance: this.provenanceBaseline?.tokenFree !== true,
+    });
   }
 
   /**

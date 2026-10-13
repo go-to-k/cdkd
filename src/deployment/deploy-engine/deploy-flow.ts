@@ -948,10 +948,12 @@ export async function doDeployWithPrefetch(
     // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
     // capture of each unchanged record that holds a token and no provenance,
     // OFF the critical path (drained with the observed captures before a
-    // save). Here, once the change map is final (a recreate target is no
-    // longer NO_CHANGE) and every pre-provisioning refusal has passed. A
-    // token-free stack never enters it; `--dry-run` saves nothing.
-    if (!this.options.dryRun && !isKnownTokenFreeState(currentStateData?.state)) {
+    // save). Started once the change map is final (a recreate target is no
+    // longer NO_CHANGE) and, on the change path, past `--require-approval`, so
+    // a refused or declined deploy spends no lookup. A token-free stack never
+    // enters it; `--dry-run` saves nothing.
+    const startProvenanceCapture = (): void => {
+      if (this.options.dryRun || isKnownTokenFreeState(currentStateData?.state)) return;
       this.kickOffProvenanceCapture({
         noChange: this.diffCalculator
           .filterByType(changes, 'NO_CHANGE')
@@ -962,11 +964,12 @@ export async function doDeployWithPrefetch(
         conditions,
         stackName,
       });
-    }
+    };
     const hasChanges = this.diffCalculator.hasChanges(changes);
 
     if (!hasChanges) {
       this.logger.info('No changes detected. Stack is up to date.');
+      startProvenanceCapture();
 
       // The diff only inspects Resources, so an Outputs-only change (a new
       // Export added because a downstream stack now references this one — its
@@ -1466,6 +1469,7 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.
     if (prompted) this.generatedNameGuard?.noteApprovalPrompted();
+    startProvenanceCapture();
     // The one intent write (review P1): past the prompt and the destructive
     // check, under the lock, before the first create (each awaits it).
     this.generatedNameGuard?.recordPlannedIntents();

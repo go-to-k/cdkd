@@ -399,6 +399,27 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     expect(h.exportIndexStore.updateForStack).toHaveBeenCalledOnce();
   });
 
+  it('state schema v12: a restored outputs bag drops the undone deploy\'s outputReferenceProvenance', async () => {
+    const TOKEN = '{{resolve:secretsmanager:app:SecretString:url::}}';
+    const withField = (): StackState => ({
+      ...childState(),
+      outputReferenceProvenance: { QueueUrl: { [TOKEN]: { region: REGION } } },
+    });
+    const restored = harness({
+      state: withField(),
+      segments: [seg('run-1', ['A'], { previousOutputs: { outputs: { QueueUrl: 'oldest' } } })],
+    });
+    await restored.run('run-1');
+    const saved = restored.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs).toEqual({ QueueUrl: 'oldest' });
+    expect(Object.hasOwn(saved, 'outputReferenceProvenance')).toBe(false);
+    // CONTROL: outputs left as they were keep the field with them.
+    const kept = harness({ state: withField(), segments: [seg('run-1', ['Q'])] });
+    await kept.run('run-1');
+    const keptState = kept.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(keptState.outputReferenceProvenance).toEqual(withField().outputReferenceProvenance);
+  });
+
   it('CONTROL: without a previousOutputs snapshot the outputs are left as they were', async () => {
     const h = harness({ segments: [seg('run-1', ['Q'])] });
 

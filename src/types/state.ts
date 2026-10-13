@@ -174,7 +174,7 @@
  *       answered and the secret's own version ids (a Secrets Manager
  *       `VersionId`, an SSM parameter `Version`), never a value or a hash.
  *       Read through `referenceProvenanceOf` / `outputReferenceProvenanceOf`
- *       (`src/deployment/secret-redaction/reference-provenance.ts`), which
+ *       (`src/deployment/reference-provenance-record.ts`), which
  *       validate each entry and read a malformed one as absent.
  *       A bump, for v10's reason: a v11 binary rewriting a record would drop
  *       the fields, and the readers that rely on them would then take a

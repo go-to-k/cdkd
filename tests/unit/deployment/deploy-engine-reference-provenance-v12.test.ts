@@ -36,9 +36,10 @@ const secret = vi.hoisted(() => ({
   mode: 'ok' as 'ok' | 'denied' | 'throttle',
   calls: 0,
 }));
-const answer = vi.hoisted(() => async (): Promise<unknown> => {
+const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
   secret.calls++;
-  if (secret.mode === 'denied') {
+  const id = (command as { input?: { SecretId?: string } } | undefined)?.input?.SecretId;
+  if (secret.mode === 'denied' || id === 'denied-secret') {
     throw Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
   }
   if (secret.mode === 'throttle') {
@@ -72,8 +73,8 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
   class FakeSecretsManagerClient {
     readonly config = { region: () => Promise.resolve('us-east-1') };
     constructor(_config?: unknown) {}
-    send(): Promise<unknown> {
-      return answer();
+    send(command: unknown): Promise<unknown> {
+      return answer(command);
     }
     destroy(): void {}
   }
@@ -87,6 +88,8 @@ import { dynamicReferenceRetryDelays } from '../../../src/deployment/intrinsic-r
 import type { StackState } from '../../../src/types/state.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
+/** A token whose lookup the double denies. */
+const DENIED = '{{resolve:secretsmanager:denied-secret:SecretString:x::}}';
 const V1 = 'a1b2c3d4-0000-1111-2222-333333333333';
 const V2 = 'b1b2c3d4-0000-1111-2222-333333333333';
 const URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/sdin-q-1';
@@ -157,6 +160,15 @@ async function deploy(opts: {
   literalOutput?: boolean;
   /** The reader's provider answers its update with `effectiveProperties`. */
   readerEffectiveProperties?: boolean;
+  /** The reader's provider answers its update with no attributes (they are carried). */
+  readerUpdateNoAttributes?: boolean;
+  /** A create-only change, so the queue is REPLACED. */
+  fifo?: boolean;
+  /** The literal output also carries an `Export.Name`. */
+  exportLiteralOutput?: boolean;
+  /** The reader's description spells a token whose lookup is denied. */
+  readerDeniedDescription?: boolean;
+  dryRun?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
   const provider = {
@@ -179,7 +191,7 @@ async function deploy(opts: {
           ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
           : {
               physicalId: '/p/reader',
-              attributes: {},
+              ...(!opts.readerUpdateNoAttributes && { attributes: {} }),
               ...(opts.readerEffectiveProperties && { effectiveProperties: { ...props } }),
             };
       }
@@ -221,7 +233,7 @@ async function deploy(opts: {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false, forceStatefulRecreation: true },
+    { dryRun: opts.dryRun === true, forceStatefulRecreation: true },
     'us-east-1'
   );
   let thrown: unknown;
@@ -234,6 +246,7 @@ async function deploy(opts: {
             QueueName: REF,
             VisibilityTimeout: opts.queueVisibility ?? 60,
             Tags: [{ Key: opts.tagKey ?? 'n', Value: REF }],
+            ...(opts.fifo && { FifoQueue: true }),
           },
         },
         Reader: {
@@ -242,7 +255,7 @@ async function deploy(opts: {
             Name: '/p/reader',
             Type: 'String',
             Value: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] },
-            Description: opts.readerDescription ?? 'a',
+            Description: opts.readerDeniedDescription ? DENIED : (opts.readerDescription ?? 'a'),
             Tags: opts.readerSpellsSecret === false ? { Name: 'plain' } : { Name: REF },
           },
         },
@@ -250,7 +263,12 @@ async function deploy(opts: {
       ...(opts.outputs !== false && {
         Outputs: {
           QueueArn: { Value: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] } },
-          ...(opts.literalOutput && { Named: { Value: REF } }),
+          ...(opts.literalOutput && {
+            Named: {
+              Value: REF,
+              ...(opts.exportLiteralOutput && { Export: { Name: 'named-export' } }),
+            },
+          }),
         },
       }),
     })
@@ -326,6 +344,65 @@ describe('the recording seam and the persist writer (written records)', () => {
       QueueArn: { [REF]: { region: 'us-east-1', versions: [V1], readVersions: [V1] } },
       Named: { [REF]: { region: 'us-east-1', versions: [V1] } },
     });
+  });
+
+  it('an Export.Name alias takes its output\'s provenance', async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    const run = await deploy({
+      state: first.last,
+      readerSpellsSecret: false,
+      readerDescription: 'b',
+      literalOutput: true,
+      exportLiteralOutput: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    const field = run.last?.outputReferenceProvenance as Record<string, unknown>;
+    expect(field['named-export']).toEqual({ [REF]: { region: 'us-east-1', versions: [V1] } });
+  });
+
+  it('a REPLACED record takes this pass alone, never the union', async () => {
+    const first = await deploy({ state: undefined });
+    // Rotated, and a create-only change: replaced under the new name.
+    secret.queue = 'sdin-q-2';
+    secret.version = V2;
+    const run = await deploy({ state: first.last, fifo: true });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('create:SecretQueue');
+    expect(provenance(run, 'SecretQueue')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V2] },
+    });
+  });
+
+  it('attributes carried on an in-place update (no fresh ones) keep both generations', async () => {
+    const first = await deploy({ state: undefined });
+    // A carried attribute holding the token, beside tokens at mutable paths only.
+    first.last!.resources['Reader']!.attributes = { Echo: REF };
+    secret.version = V2;
+    const run = await deploy({
+      state: first.last,
+      readerDescription: 'b',
+      readerUpdateNoAttributes: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.last?.resources['Reader']?.attributes).toEqual({ Echo: REF });
+    expect(provenance(run, 'Reader')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V1, V2], readVersions: [V2] },
+    });
+  });
+
+  it('the engine hands a nested child the inherited snapshot on every resolver context', () => {
+    const snapshot = new Map([[REF, { region: 'us-west-2', versions: [V1] }]]);
+    const engine = new DeployEngine(
+      {} as never,
+      {} as never,
+      {} as never,
+      new DiffCalculator(),
+      {} as never,
+      { inheritedReferenceProvenance: snapshot },
+      'us-east-1'
+    );
+    const context = engine.buildResolverContext({ template: { Resources: {} }, resources: {} }, 's');
+    expect(context.inheritedReferenceProvenance).toBe(snapshot);
   });
 
   it('a lookup response with no VersionId records the region only', async () => {
@@ -439,6 +516,44 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     expect(run.thrown).toBeUndefined();
     expect(secret.calls).toBe(0);
     expect(run.saves).toBe(0);
+  });
+
+  it('two records sharing one token cost one lookup (one record at a time, through the cache)', async () => {
+    const run = await deploy({ state: v11State({ outputs: false }), outputs: false });
+    expect(run.thrown).toBeUndefined();
+    expect(secret.calls).toBe(1);
+    expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1' } });
+  });
+
+  it('a property that cannot resolve leaves only its own tokens unattributed', async () => {
+    const run = await deploy({
+      state: v11State({
+        reader: {
+          properties: {
+            Name: '/p/reader',
+            Type: 'String',
+            Value: RECORDED_ARN,
+            Description: DENIED,
+            Tags: { Name: REF },
+          },
+        },
+        outputs: false,
+      }),
+      outputs: false,
+      readerDeniedDescription: true,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(provenance(run, 'Reader')).toEqual({
+      [DENIED]: {},
+      [REF]: { region: 'us-east-1' },
+    });
+    expect(log.warn.filter((m) => m.includes('state schema v12 migration'))).toHaveLength(1);
+  });
+
+  it('--dry-run makes no capture lookup', async () => {
+    const run = await deploy({ state: v11State({ outputs: false }), outputs: false, dryRun: true });
+    expect(run.thrown).toBeUndefined();
+    expect(secret.calls).toBe(0);
   });
 
   it('is one-time: the next deploy makes no capture lookup', async () => {

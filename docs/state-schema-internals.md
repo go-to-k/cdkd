@@ -1171,11 +1171,18 @@ No read-time migration: a v11 document is read unchanged, and the next
 `cdkd deploy` writes `version: 12`. A record that deploy writes gains the
 field from its own resolution. A record it leaves unchanged and that holds a
 token gains it through a ONE-TIME capture
-(`src/deployment/deploy-engine/provenance-capture.ts`): after the diff, in the
-background, the deploy resolves that record's template `Properties` once in a
-throwaway context and keeps the region of each token it attributes, the
+(`src/deployment/deploy-engine/provenance-capture.ts`): once the plan is final
+(and, when the deploy changes something, past `--require-approval`), in the
+background and one record at a time, the deploy resolves each of that record's
+template `Properties` whose stored value holds a token, once, in a throwaway
+context, and keeps the region of each token it attributes, the
 version only where the record's physical id contains the token's current
 value, and never `readVersions`. It sends nothing and changes no other field.
+One bit follows from that rule and is accepted: whether a captured entry has
+`versions` says whether the token's current value occurs in the record's
+physical id. For a resource named from the secret the physical id beside the
+token already shows that, and the v11 "Serving ... as recorded" warning
+prints the opposite case.
 A token it cannot attribute (access denied, a region it cannot tell, nothing
 resolved) gets `{}`, with one warning naming the record; that is final until
 the record is next written. A throttled lookup leaves the field absent, so

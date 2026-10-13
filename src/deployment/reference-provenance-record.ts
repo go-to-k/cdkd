@@ -245,7 +245,8 @@ function tokensUnderPaths(
  * - `region` kept unless the two sides name DIFFERENT ones;
  * - a token this pass did not resolve keeps its previous entry.
  *
- * O(1) when the pass recorded no provenance and the previous record had none.
+ * O(1) when the pass recorded no provenance, the previous record had none and
+ * `walkWithoutPassProvenance` is off.
  */
 export function provenanceForWrittenRecord(args: {
   /** The record as it will persist (scrubbed). */
@@ -253,10 +254,23 @@ export function provenanceForWrittenRecord(args: {
   secrets: RecordedSecretValues | undefined;
   previous: ResourceState | undefined;
   inPlace: InPlaceWrite | undefined;
+  /**
+   * Walk the record for tokens even when this pass recorded no provenance, so
+   * a token it holds unattributed is keyed `{}` (known) rather than left
+   * absent for the migration capture to retry. Off for a stack loaded off the
+   * token-free fast path, which keeps the writer O(1) there.
+   */
+  walkWithoutPassProvenance?: boolean;
 }): Record<string, ReferenceProvenance> | undefined {
   const { record, secrets, previous, inPlace } = args;
   const previousField = inPlace === undefined ? undefined : referenceProvenanceOf(previous);
-  if (!hasPassProvenance(secrets) && previousField === undefined) return undefined;
+  if (
+    !hasPassProvenance(secrets) &&
+    previousField === undefined &&
+    args.walkWithoutPassProvenance !== true
+  ) {
+    return undefined;
+  }
   const tokens = recordReferenceTokens(record);
   if (tokens.size === 0) return undefined;
   let kept: Set<string> | undefined;
