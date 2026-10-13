@@ -69,10 +69,10 @@ cross-region-concurrent-stacks	2026-10-11T21:12:45Z	PASS	216	verify.sh	PR #4809,
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-12T04:51:15Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 cross-stack-references	2026-10-09T07:58:21Z	PASS	40	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-cross-stack-secret-import	2026-10-13T05:07:45Z	PASS	516	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry (re-run on 315dc2c51 after #4842)
+cross-stack-secret-import	2026-10-13T09:55:40Z	PASS	536	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-11T15:30:01Z	PASS	170	verify.sh	rc ok, orph clean (#4738 PR #4792)
-custom-resource-noecho-nested	2026-10-13T04:31:37Z	PASS	1488	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+custom-resource-noecho-nested	2026-10-13T09:55:40Z	PASS	1388	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 custom-resource-provider	2026-10-12T02:47:47Z	PASS	697	verify.sh	PR #4814, arms A-D + phases 1-7 incl. #2353 lifecycle rule added once and kept user rules, rc ok, destroy clean, orph clean, lifecycle config restored; #2116 cooldown retry INCONCLUSIVE
 custom-resource-resolved-secret	2026-10-11T15:30:01Z	PASS	370	verify.sh	rc ok, orph clean (#4738 PR #4792)
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
@@ -92,9 +92,9 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-13T04:31:37Z	PASS	431	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+drift-revert	2026-10-13T09:55:40Z	PASS	366	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-drift-revert-vpc	2026-10-13T04:31:37Z	PASS	395	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+drift-revert-vpc	2026-10-13T09:55:40Z	PASS	401	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-05T15:21:15Z	PASS	221	verify.sh	rc ok, orph clean (#2868 PR #4588)
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -135,7 +135,7 @@ eventbridge-pipes	2026-10-11T09:33:22Z	PASS	171	verify.sh	PR #4720 (#4705) final
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-13T04:31:37Z	PASS	246	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+export	2026-10-13T09:55:40Z	PASS	230	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 export-nested-stack	2026-10-12T05:32:07Z	PASS	185	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 fallback-recreate-children	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 fifo-sqs-event-source	2026-10-11T09:33:22Z	PASS	116	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -184,7 +184,7 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-13T04:31:37Z	PASS	125	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+lambda	2026-10-13T09:55:40Z	PASS	125	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -257,11 +257,11 @@ nested-stack-3level	2026-10-12T16:40:20Z	PASS	531	verify.sh	rc ok, orph clean (P
 nested-stack-deep	2026-10-12T05:34:47Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-rollback	2026-10-12T05:37:53Z	PASS	105	verify.sh	PR #4812 head build, rc ok, orph clean
-nested-stack-secret	2026-10-13T05:07:45Z	PASS	271	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry (re-run on 315dc2c51 after #4842)
+nested-stack-secret	2026-10-13T09:55:40Z	PASS	281	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 nlb-source-nat	2026-10-11T09:33:22Z	PASS	356	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
-noecho-named-producer	2026-10-13T05:07:45Z	PASS	140	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e NoEcho-named producer keeps its own ARN copies; pre-fix arm (ARM=1) red at Phase 3 (redaction-mask refusal, #4849) (re-run on 315dc2c51 after #4842)
-noecho-parameter-masking	2026-10-13T05:07:45Z	PASS	1663	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry (re-run on 315dc2c51 after #4842)
+noecho-named-producer	2026-10-13T09:55:40Z	PASS	135	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
+noecho-parameter-masking	2026-10-13T09:55:40Z	PASS	2935	verify.sh	rc ok, orph clean; PR #4848 66a5a1890 string-declared NoEcho value arm lifted; gate-restored arm red at Phase 1 (str- frame kept, #4831) and, before the premise change, at Phase 4v
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
 orphan-getatt-takeover	2026-10-06T05:40:05Z	PASS	50	verify.sh	rc ok, orph clean (#4602 PR #4609)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
@@ -284,7 +284,7 @@ recreate-via-cc-api	2026-10-12T13:04:36Z	PASS	126	verify.sh	PR #4828, #4821 on r
 recreate-via-sdk-provider	2026-10-07T07:15:44Z	PASS	110	verify.sh	PR #4646 on #4650 (#1889); rc 0, destroy clean, orph clean
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-13T04:31:37Z	PASS	2119	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+remove-protection	2026-10-13T09:55:40Z	PASS	2141	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -298,7 +298,7 @@ retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secr
 rollback-command	2026-10-13T02:41:29Z	PASS	882	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rollback-cross-region-secret	2026-10-12T05:17:24Z	PASS	241	verify.sh	PR #4812 head build, rc ok, orph clean
 rollback-deletion-policy-snapshot	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-rollback-explicit-name-rewrite	2026-10-13T04:31:37Z	PASS	210	verify.sh	rc ok, orph clean; PR #4850 4759a4a3e producer-attribute/outputs physical-id copy carry
+rollback-explicit-name-rewrite	2026-10-13T09:55:40Z	PASS	200	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 rollback-failure-injection	2026-10-13T02:41:29Z	PASS	406	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rollback-nested-cross-region-secret	2026-10-12T05:21:55Z	PASS	265	verify.sh	PR #4812 head build, rc ok, orph clean
 rollback-replacement-retain	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
