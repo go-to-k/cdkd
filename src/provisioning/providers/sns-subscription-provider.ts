@@ -481,7 +481,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // policy against the OLD scope between them, and a failed second call
     // would leave a pair neither side asked for. Either order has that gap (a
     // scope set first is refused against the old policy's shape), so
-    // `Subscribe` sets them together.
+    // `Subscribe` sets them together. An EMPTY policy is exempt: cleared
+    // first, the subscription filters nothing between the calls. A scope the
+    // template DECLARES is still sent onto a subscription left with no policy
+    // (only raw CloudFormation spells that; CDK pairs a scope with a policy),
+    // and if SNS refuses it the deploy fails with the error, masked.
     const policy = plan.find(([name]) => name === 'FilterPolicy');
     if (
       policy !== undefined &&
