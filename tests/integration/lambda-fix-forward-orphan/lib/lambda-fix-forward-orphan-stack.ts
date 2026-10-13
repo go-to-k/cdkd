@@ -10,18 +10,21 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *
  * - The baseline holds `ExecRole` (the functions' execution role) and
  *   `BaseFn`.
- * - `WITH_ORPHANS=true` adds `OrphanA` and `OrphanC`, each declaring a
+ * - `WITH_ORPHANS=true` adds `OrphanA`, `OrphanC` and `OrphanD`, each declaring a
  *   `RecursiveLoop`. verify.sh deploys that template as a role that may
  *   create a function but may neither set its recursion config nor delete
  *   it, so each CREATE makes the function, fails on
  *   `PutFunctionRecursionConfig`, and cannot clean up: the journal records
  *   each as a proven orphan with the `<FunctionArn>@<LastModified>` its
- *   `CreateFunction` answered with.
- * - `ORPHAN_FIX_FORWARD=true` keeps both orphan logical ids under other names
- *   (`-b`), so the fix-forward deploy creates two new functions. Before it,
+ *   `CreateFunction` answered with. `OrphanD` also declares
+ *   `ReservedConcurrentExecutions` and the role allows its recursion config,
+ *   so its CREATE fails on the later `PutFunctionConcurrency`, after a
+ *   successful Put.
+ * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under another name
+ *   (`-b`), so the fix-forward deploy creates three new functions. Before it,
  *   verify.sh deletes `OrphanC`'s function and re-creates the name itself
  *   (one made outside the stack, under another `LastModified`): the
- *   fix-forward must delete `OrphanA`'s function and keep that one.
+ *   fix-forward must delete `OrphanA`'s and `OrphanD`'s functions and keep that one.
  *
  * L1 functions with explicit names and inline code (no asset to publish, so
  * the restricted role needs no asset-bucket access), using only properties
@@ -45,7 +48,12 @@ export class LambdaFixForwardOrphanStack extends cdk.Stack {
       },
     });
 
-    const fn = (logicalId: string, functionName: string, recursiveLoop: boolean): void => {
+    const fn = (
+      logicalId: string,
+      functionName: string,
+      recursiveLoop: boolean,
+      reservedConcurrency = false
+    ): void => {
       new lambda.CfnFunction(this, logicalId, {
         functionName,
         role: execRole.attrArn,
@@ -53,6 +61,7 @@ export class LambdaFixForwardOrphanStack extends cdk.Stack {
         handler: 'index.handler',
         code: { zipFile: 'exports.handler = async () => ({});' },
         ...(recursiveLoop && { recursiveLoop: 'Allow' }),
+        ...(reservedConcurrency && { reservedConcurrentExecutions: 1 }),
       });
     };
 
@@ -62,6 +71,10 @@ export class LambdaFixForwardOrphanStack extends cdk.Stack {
       const suffix = process.env.ORPHAN_FIX_FORWARD === 'true' ? '-b' : '';
       fn('OrphanA', `cdkd-lffo-a${suffix}`, true);
       fn('OrphanC', `cdkd-lffo-c${suffix}`, true);
+      // Reserved concurrency only on the failed CREATE, whose
+      // PutFunctionConcurrency is denied: the fix-forward's `-b` function
+      // drops it, so no account's unreserved floor can refuse the run.
+      fn('OrphanD', `cdkd-lffo-d${suffix}`, true, suffix === '');
     }
   }
 }

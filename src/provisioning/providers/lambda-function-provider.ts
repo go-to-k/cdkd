@@ -103,7 +103,8 @@ function isFunctionName(id: string): boolean {
  * by `CreateFunction`, is what tells the two apart: the
  * `lambda-fix-forward-orphan` fixture measures that it survives the Pending
  * to Active transition and the post-create `PutFunctionRecursionConfig`,
- * `PutRuntimeManagementConfig` and `PutFunctionConcurrency` calls, and that a
+ * `PutRuntimeManagementConfig` and (where the account allows a reservation)
+ * `PutFunctionConcurrency` calls, and that a
  * re-create under the name moves it. A code or configuration update moves it
  * too. A moved one only keeps the orphan (the settle
  * warns instead of deleting). That includes cdkd's own update: `delete`'s VPC

@@ -12,31 +12,36 @@
 # Phases:
 #   1. Baseline deploy: `ExecRole` and `BaseFn`.
 #   1b. Premise: each post-create call a CREATE makes (PutFunctionRecursionConfig,
-#      PutRuntimeManagementConfig, PutFunctionConcurrency) leaves BaseFn's
-#      `LastModified` where it was.
+#      PutRuntimeManagementConfig, PutFunctionConcurrency), changing BaseFn's
+#      value and restoring it, leaves its `LastModified` where it was.
 #   2. The failed CREATE. A role is created that may create and read a
-#      function but may neither set its recursion config nor delete it. A
+#      function but may not delete it, set its reserved concurrency, or set
+#      the recursion config of OrphanA's or OrphanC's. A
 #      `--no-rollback` deploy run as that role with WITH_ORPHANS=true creates
-#      `OrphanA`'s and `OrphanC`'s functions, fails on
-#      `PutFunctionRecursionConfig`, and the provider's own cleanup
+#      `OrphanA`'s, `OrphanC`'s and `OrphanD`'s functions, fails A and C on
+#      `PutFunctionRecursionConfig` (D as below), and the provider's own cleanup
 #      (`DeleteFunction`) is refused too. (The AccessDenied is retried as IAM
 #      propagation; each replayed CreateFunction collides with the first
 #      attempt's function, and the first attempt's created-function mark is
-#      carried to the journal.) Asserted: the deploy failed, both functions
-#      exist, no state record holds them, and the rollback journal carries
+#      carried to the journal.) `OrphanD` also declares
+#      `ReservedConcurrentExecutions`, and the role allows its
+#      PutFunctionRecursionConfig and denies PutFunctionConcurrency, so its
+#      CREATE fails on the SECOND Put, after a successful one on a still-Pending
+#      function. Asserted: the deploy failed, all three functions exist, no
+#      state record holds them, and the rollback journal carries
 #      each as a proven orphan whose identity is the ARN and `LastModified`
 #      AWS reports for it once it is Active (the premise that the Pending to
 #      Active transition does not move `LastModified`).
 #   2b. The re-used name: `OrphanC`'s function is deleted and its name created
 #      again outside the stack, with a marker tag. Asserted: it reports another
 #      identity (the premise the identity rests on).
-#   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps both
-#      orphan logical ids under other names (`-b`). Asserted: `OrphanA`'s
-#      earlier function is deleted (`deleting partially-created OrphanA`), the
-#      re-created `OrphanC` name is kept with its marker and warned about as
+#   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps every
+#      orphan logical id under other names (`-b`). Asserted: `OrphanA`'s and
+#      `OrphanD`'s earlier functions are deleted (`deleting partially-created
+#      <lid>`), the re-created `OrphanC` name is kept with its marker and warned about as
 #      another function (exit 2, the warning's code), the journal is removed,
 #      and the state records hold the new functions. Before #4606 the deploy
-#      kept `OrphanA`'s function too.
+#      kept `OrphanA`'s and `OrphanD`'s functions too.
 #   4. The re-created `OrphanC` function (this run's, no record's) is deleted
 #      by name, then `cdkd destroy`. Every function, the execution role, the
 #      state file and the restricted role are gone, and the state prefix's
@@ -119,7 +124,9 @@ FN_A="cdkd-lffo-a"
 FN_A_B="cdkd-lffo-a-b"
 FN_C="cdkd-lffo-c"
 FN_C_B="cdkd-lffo-c-b"
-ALL_FNS=("${BASE_FN}" "${FN_A}" "${FN_A_B}" "${FN_C}" "${FN_C_B}")
+FN_D="cdkd-lffo-d"
+FN_D_B="cdkd-lffo-d-b"
+ALL_FNS=("${BASE_FN}" "${FN_A}" "${FN_A_B}" "${FN_C}" "${FN_C_B}" "${FN_D}" "${FN_D_B}")
 
 DENY_ROLE="${STACK}-no-recursion"
 DENY_POLICY_NAME="create-without-configure"
@@ -251,32 +258,44 @@ echo "[verify] step 1b: premise -- the post-create calls a CREATE makes do not m
 # a CREATE that failed on a LATER post-create call has already made the
 # earlier ones (lambda-function-provider.ts, `create`: RecursiveLoop, then
 # ReservedConcurrentExecutions, then RuntimeManagementConfig). Each is called
-# here on BaseFn with its default (or reverted) value, and the token must not
-# move: one that did would keep every such orphan as "another function".
-probe_put_keeps_token() { # usage: probe_put_keeps_token <api label> aws lambda <verb> [args...]
-  local label="$1" before after
-  shift
+# here on BaseFn with a value it does NOT have (a Put repeating the current
+# value could be a no-op), the token compared, and the value restored before
+# any FAIL: one that moved LastModified would keep every such orphan as
+# "another function". (Step 2's OrphanD measures the same on a still-Pending
+# function, through a CREATE that passed PutFunctionRecursionConfig.)
+probe_put_keeps_token() { # usage: probe_put_keeps_token <api label> <change cmd> <restore cmd>  (each a single string, eval'd)
+  local label="$1" change="$2" restore="$3" before after
   before="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before ${label}" >&2; exit 1; }
-  "$@" >/dev/null
+  eval "${change}" >/dev/null
   aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
   after="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity after ${label}" >&2; exit 1; }
+  eval "${restore}" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
   if [ "${after}" != "${before}" ]; then
     echo "[verify] FAIL: premise -- ${label} moved ${BASE_FN}'s LastModified (${before} -> ${after}): an orphan whose CREATE failed after it is never proven (go-to-k/cdkd#4606's Lambda identity is then unsound for that path)" >&2
     exit 1
   fi
   echo "[verify]   ${label}: LastModified unchanged"
 }
+REC_NOW="$(aws lambda get-function-recursion-config --function-name "${BASE_FN}" --region "${REGION}" --query 'RecursiveLoop' --output text)"
+RT_NOW="$(aws lambda get-runtime-management-config --function-name "${BASE_FN}" --region "${REGION}" --query 'UpdateRuntimeOn' --output text)"
+if [ "${REC_NOW}" != "Terminate" ] || [ "${RT_NOW}" != "Auto" ]; then
+  echo "[verify] FAIL: premise -- ${BASE_FN} starts with RecursiveLoop '${REC_NOW}' / UpdateRuntimeOn '${RT_NOW}' (expected the defaults Terminate / Auto, which the probes change away from)" >&2
+  exit 1
+fi
 probe_put_keeps_token PutFunctionRecursionConfig \
-  aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Terminate --region "${REGION}"
+  'aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Allow --region "${REGION}"' \
+  'aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Terminate --region "${REGION}"'
 probe_put_keeps_token PutRuntimeManagementConfig \
-  aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}"
+  'aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on FunctionUpdate --region "${REGION}"' \
+  'aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}"'
 # A reserved concurrency of 1 may be refused on an account whose unreserved
 # floor allows none; only that refusal skips the probe, with a NOTE.
 CONC_BEFORE="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before PutFunctionConcurrency" >&2; exit 1; }
 if CONC_OUT="$(aws lambda put-function-concurrency --function-name "${BASE_FN}" \
   --reserved-concurrent-executions 1 --region "${REGION}" 2>&1)"; then
   aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
-  CONC_AFTER="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity after PutFunctionConcurrency" >&2; exit 1; }
+  CONC_AFTER="$(fn_token "${BASE_FN}")" || { aws lambda delete-function-concurrency --function-name "${BASE_FN}" --region "${REGION}"; echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity after PutFunctionConcurrency" >&2; exit 1; }
   aws lambda delete-function-concurrency --function-name "${BASE_FN}" --region "${REGION}"
   if [ "${CONC_AFTER}" != "${CONC_BEFORE}" ]; then
     echo "[verify] FAIL: premise -- PutFunctionConcurrency moved ${BASE_FN}'s LastModified (${CONC_BEFORE} -> ${CONC_AFTER}): an orphan whose CREATE failed after it is never proven (go-to-k/cdkd#4606's Lambda identity is then unsound for that path)" >&2
@@ -292,7 +311,7 @@ fi
 aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
 BASE_TOKEN="$(fn_token "${BASE_FN}")"
 
-echo "[verify] step 2: a role that may create a function but neither set its recursion config nor delete it"
+echo "[verify] step 2: a role that may create a function but not delete it nor complete its post-create calls"
 TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what this deploy calls: only read-only CloudFormation verbs and
 # sts:GetCallerIdentity (which takes no resource) are `*`; SSM is the CDK
@@ -305,9 +324,12 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # GetFunction / GetFunctionConfiguration / ListTags (reads); iam:GetRole on
 # the execution role (a read of the unchanged record).
 # PutFunctionRecursionConfig (the first post-create configuration call) is
-# denied, so each CREATE fails after Lambda made the function;
-# DeleteFunction is denied, so the provider's own cleanup cannot remove it.
-DENY_POLICY="$(node -e 'const [bucket,stack,acct,region,execRole]=process.argv.slice(1);const fns=`arn:aws:lambda:${region}:${acct}:function:cdkd-lffo-*`;const role=`arn:aws:iam::${acct}:role/${execRole}`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["lambda:CreateFunction","lambda:TagResource","lambda:GetFunction","lambda:GetFunctionConfiguration","lambda:ListTags"],Resource:fns},{Effect:"Allow",Action:["iam:PassRole","iam:GetRole"],Resource:role},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["lambda:PutFunctionRecursionConfig","lambda:DeleteFunction"],Resource:fns}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${REGION}" "${EXEC_ROLE}")"
+# denied on OrphanA's and OrphanC's names and allowed on OrphanD's;
+# PutFunctionConcurrency (the second) is denied on every name, so OrphanD's
+# CREATE passes the first Put and fails on the second. Each CREATE thus fails
+# after Lambda made the function; DeleteFunction is denied, so the provider's
+# own cleanup cannot remove it.
+DENY_POLICY="$(node -e 'const [bucket,stack,acct,region,execRole]=process.argv.slice(1);const fns=`arn:aws:lambda:${region}:${acct}:function:cdkd-lffo-*`;const role=`arn:aws:iam::${acct}:role/${execRole}`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["lambda:CreateFunction","lambda:TagResource","lambda:GetFunction","lambda:GetFunctionConfiguration","lambda:ListTags"],Resource:fns},{Effect:"Allow",Action:["lambda:PutFunctionRecursionConfig"],Resource:`arn:aws:lambda:${region}:${acct}:function:cdkd-lffo-d*`},{Effect:"Allow",Action:["iam:PassRole","iam:GetRole"],Resource:role},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["lambda:DeleteFunction","lambda:PutFunctionConcurrency"],Resource:fns},{Effect:"Deny",Action:["lambda:PutFunctionRecursionConfig"],Resource:[`arn:aws:lambda:${region}:${acct}:function:cdkd-lffo-a*`,`arn:aws:lambda:${region}:${acct}:function:cdkd-lffo-c*`]}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${REGION}" "${EXEC_ROLE}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=lambda-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1
@@ -418,7 +440,7 @@ if [ "${INJECT_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the --no-rollback deploy as ${DENY_ROLE} unexpectedly SUCCEEDED" >&2
   exit 1
 fi
-for f in "${FN_A}" "${FN_C}"; do
+for f in "${FN_A}" "${FN_C}" "${FN_D}"; do
   if gone_probe aws lambda get-function --function-name "${f}" --region "${REGION}"; then
     echo "[verify] FAIL: function ${f} does not exist after step 2 -- its CREATE failed before CreateFunction returned (output above)" >&2
     exit 1
@@ -433,8 +455,23 @@ for lid in OrphanA OrphanC; do
     exit 1
   fi
 done
+if ! printf '%s' "${INJECT_FLAT}" | grep -qF "PutFunctionConcurrency failed for OrphanD"; then
+  echo "[verify] FAIL: the step-2 deploy did not fail OrphanD on PutFunctionConcurrency (output above)" >&2
+  exit 1
+fi
+# OrphanD's first Put went through: the journaled token below is then measured
+# after a SUCCESSFUL post-create call on a function that was still Pending.
+if printf '%s' "${INJECT_FLAT}" | grep -qF "PutFunctionRecursionConfig failed for OrphanD"; then
+  echo "[verify] FAIL: the step-2 deploy failed OrphanD on PutFunctionRecursionConfig (expected it allowed, so the CREATE fails on the later PutFunctionConcurrency -- output above)" >&2
+  exit 1
+fi
+D_REC="$(aws lambda get-function-recursion-config --function-name "${FN_D}" --region "${REGION}" --query 'RecursiveLoop' --output text)"
+if [ "${D_REC}" != "Allow" ]; then
+  echo "[verify] FAIL: ${FN_D}'s RecursiveLoop reads '${D_REC}' after step 2 (expected Allow: its CREATE must pass PutFunctionRecursionConfig)" >&2
+  exit 1
+fi
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
-for lid in OrphanA OrphanC; do
+for lid in OrphanA OrphanC OrphanD; do
   if [ "$(printf '%s' "${STATE_2}" | jq --arg l "${lid}" '.resources | has($l)')" != "false" ]; then
     echo "[verify] FAIL: state records ${lid} after step 2 (expected no record for a CREATE that threw)" >&2
     exit 1
@@ -464,8 +501,9 @@ assert_journaled() { # usage: assert_journaled <logicalId> <function>
 }
 assert_journaled OrphanA "${FN_A}"
 assert_journaled OrphanC "${FN_C}"
+assert_journaled OrphanD "${FN_D}"
 C_TOKEN="$(fn_token "${FN_C}")"
-echo "[verify] step 2 ok: ${FN_A} and ${FN_C} are in AWS, journaled with their identities, with no state record"
+echo "[verify] step 2 ok: ${FN_A}, ${FN_C} and ${FN_D} are in AWS, journaled with their identities, with no state record"
 
 echo "[verify] step 2b: ${FN_C} is deleted and its name re-used outside the stack"
 aws lambda delete-function --function-name "${FN_C}" --region "${REGION}" >/dev/null
@@ -508,6 +546,8 @@ if [ "${FF_RC}" -ne 2 ]; then
 fi
 assert_gone_eventually "the earlier attempt's function ${FN_A} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
   aws lambda get-function --function-name "${FN_A}" --region "${REGION}"
+assert_gone_eventually "the earlier attempt's function ${FN_D} (failed after a successful Put) still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
+  aws lambda get-function --function-name "${FN_D}" --region "${REGION}"
 # The re-used name is someone else's now: kept, untouched.
 C_TAG="$(aws lambda list-tags --resource "${C_ARN}" --region "${REGION}" \
   --query 'Tags."cdkd-integ-marker"' --output text 2>&1)" || C_TAG="<list-tags failed: ${C_TAG}>"
@@ -517,9 +557,9 @@ if [ "${C_TAG}" != "${C_MARKER}" ] || [ "${C3_TOKEN}" != "${C2_TOKEN}" ]; then
   exit 1
 fi
 # The kept entry was warned about, so the journal goes with it.
-assert_gone "the fix-forward kept the rollback journal (expected it removed: OrphanA deleted, OrphanC warned about)" \
+assert_gone "the fix-forward kept the rollback journal (expected it removed: OrphanA and OrphanD deleted, OrphanC warned about)" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
-for f in "${FN_A_B}" "${FN_C_B}" "${BASE_FN}"; do
+for f in "${FN_A_B}" "${FN_C_B}" "${FN_D_B}" "${BASE_FN}"; do
   if gone_probe aws lambda get-function --function-name "${f}" --region "${REGION}"; then
     echo "[verify] FAIL: the record's function ${f} is missing after the fix-forward (the settle must not delete the records' functions)" >&2
     exit 1
@@ -541,25 +581,28 @@ assert_record() { # usage: assert_record <logicalId> <function>
 }
 assert_record OrphanA "${FN_A_B}"
 assert_record OrphanC "${FN_C_B}"
+assert_record OrphanD "${FN_D_B}"
 assert_record BaseFn "${BASE_FN}"
 # The assertions above decide the step on AWS's own answers. The log lines
 # below only confirm the deploy's account of it, so a reworded line fails
 # here, never silently above.
 FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanA'; then
-  echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
-  exit 1
-fi
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
-if printf '%s' "${FF_FLAT}" | grep -qF 'OrphanA (AWS::Lambda::Function), which a failed deploy'; then
-  echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
-  exit 1
-fi
+for lid in OrphanA OrphanD; do
+  if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created ${lid}"; then
+    echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's ${lid} (output above)" >&2
+    exit 1
+  fi
+  if printf '%s' "${FF_FLAT}" | grep -qF "${lid} (AWS::Lambda::Function), which a failed deploy"; then
+    echo "[verify] FAIL: the fix-forward deploy still warned about the earlier ${lid} instead of deleting it (output above)" >&2
+    exit 1
+  fi
+done
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
-# so a reword that would blind the OrphanA check fails here first.
+# so a reword that would blind the OrphanA / OrphanD check fails here first.
 if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::Lambda::Function), which a failed deploy'; then
-  echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::Lambda::Function), which a failed deploy' in the output): update the OrphanA check above" >&2
+  echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::Lambda::Function), which a failed deploy' in the output): update the OrphanA / OrphanD check above" >&2
   exit 1
 fi
 if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
@@ -570,7 +613,7 @@ if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's name now holds another function (output above)" >&2
   exit 1
 fi
-echo "[verify] step 3 ok: the fix-forward deleted ${FN_A}, kept the re-created ${FN_C} untouched, and the records hold the -b functions (rc=${FF_RC})"
+echo "[verify] step 3 ok: the fix-forward deleted ${FN_A} and ${FN_D}, kept the re-created ${FN_C} untouched, and the records hold the -b functions (rc=${FF_RC})"
 
 echo "[verify] step 4: delete the re-created ${FN_C} (this run's, no record's), then destroy"
 aws lambda delete-function --function-name "${FN_C}" --region "${REGION}" >/dev/null
