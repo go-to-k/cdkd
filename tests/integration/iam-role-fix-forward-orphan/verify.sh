@@ -290,7 +290,8 @@ unset DENY_CREDS
 # inside a subshell, so the keys never sit in a process's argv.
 as_deny_role() {
   (
-    unset AWS_PROFILE AWS_DEFAULT_PROFILE
+    # CDKD_ROLE_ARN would make the deploy AssumeRole, which this role denies.
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE CDKD_ROLE_ARN
     export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
     exec "$@"
   )
