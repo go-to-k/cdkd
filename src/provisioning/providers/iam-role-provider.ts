@@ -54,8 +54,33 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { safeMsg } from '../../utils/display-safe.js';
+
+/**
+ * An IAM role NAME (1-64 of `A-Z a-z 0-9 + = , . @ _ -`, IAM's `RoleName`
+ * pattern), the physical id this provider records. The identity answers
+ * (`isSameResource`, `resourceIdentity`) refuse anything else, an ARN
+ * included: this provider never records one.
+ */
+function isRoleName(id: string): boolean {
+  return /^[\w+=,.@-]{1,64}$/.test(id);
+}
+
+/**
+ * go-to-k/cdkd#4606 / #4655: a role's identity token is its `RoleId` (the
+ * `AROA…` unique id). IAM assigns it at `CreateRole` and never changes it; a
+ * role deleted and re-created under the same name gets another one (IAM User
+ * Guide, "IAM identifiers" → "Unique identifiers"; the
+ * `iam-role-fix-forward-orphan` fixture measures the re-create). The wiring
+ * calls a CREATE makes after `CreateRole` (policies, tags) do not touch it.
+ * `undefined` for a missing or empty one.
+ */
+function roleIdentityToken(roleId: string | undefined): string | undefined {
+  return typeof roleId === 'string' && roleId !== '' ? roleId : undefined;
+}
 
 /**
  * AWS IAM Role Provider
@@ -186,6 +211,10 @@ export class IAMRoleProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateRole returns; cleared when the
     // partial-create cleanup deleted the role, so only a left-behind one is marked.
     let leftBehind = false;
+    // go-to-k/cdkd#4606: the RoleId CreateRole answered with, carried on the
+    // mark so the journal needs no read of a role whose failure may fail that
+    // read too.
+    let createdRoleIdentity: string | undefined;
     try {
       // Serialize policy document
       const policyDocument =
@@ -222,6 +251,7 @@ export class IAMRoleProvider implements ResourceProvider {
       const createClient = await this.createClient.get();
       const response = await createClient.send(new CreateRoleCommand(createParams));
       leftBehind = true;
+      createdRoleIdentity = roleIdentityToken(response.Role?.RoleId);
 
       log.debug(`Created IAM role: ${v(roleName)}`);
 
@@ -337,8 +367,10 @@ export class IAMRoleProvider implements ResourceProvider {
           roleName,
           cause
         );
+        // With its RoleId (go-to-k/cdkd#4606), which a later settle compares
+        // before deleting the role by name.
         return leftBehind
-          ? markCreatedBeforeFailure(built, logicalId, resourceType, roleName)
+          ? markCreatedBeforeFailure(built, logicalId, resourceType, roleName, createdRoleIdentity)
           : built;
       });
     }
@@ -756,7 +788,16 @@ export class IAMRoleProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          log.debug(`Role ${v(physicalId)} does not exist, skipping deletion`);
+          if (context?.failedCreateOrphan === true) {
+            // A journaled failed-CREATE orphan already gone settles with exit
+            // 0 (go-to-k/cdkd#4606), so it is said once at info. The name is
+            // interpolated verbatim for the caller's printing bag to mask.
+            this.logger.info(
+              safeMsg`  IAM role ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+            );
+          } else {
+            log.debug(`Role ${v(physicalId)} does not exist, skipping deletion`);
+          }
           return;
         }
         throw error;
@@ -1113,6 +1154,93 @@ export class IAMRoleProvider implements ResourceProvider {
       if (err instanceof NoSuchEntityException) return undefined;
       throw err;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the role a failed CREATE journaled is the one
+   * the record under the same logical id holds (a fix-forward that created a
+   * new role there under another name).
+   *
+   * Both ids must be role NAMES (the physical id this provider records);
+   * anything else is `'unknown'`, and so are two names differing only in
+   * case: IAM treats those as one role, and this check does not decide on
+   * IAM's case rules. Equal names are `'same'` without a read: whatever role
+   * holds the name now is the record's, and deleting by that name would
+   * delete it. A role name is unique per account (case-insensitively) and a
+   * role cannot be renamed. After the region check the record's role must
+   * read back (else `'unknown'`); the journaled one is `'same'` when it reads
+   * back under the record's `RoleId`, `'different'` under another, and
+   * `'different'` when IAM reports it gone: the record's role answers to its
+   * own, other, name. Any other read failure throws, which the caller reads
+   * as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::IAM::Role') return 'unknown';
+    if (!isRoleName(journaledPhysicalId) || !isRoleName(record.physicalId)) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordRoleId = await this.readRoleIdIfExists(record.physicalId);
+    if (recordRoleId === undefined) return 'unknown';
+    const journaledRoleId = await this.readRoleIdIfExists(journaledPhysicalId);
+    if (journaledRoleId === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case; kept so the
+    // verdict rests on AWS's answer.
+    return journaledRoleId === recordRoleId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the role's `RoleId`
+   * ({@link roleIdentityToken}). A role re-created under the name answers
+   * with another one, so the settle keeps it rather than deleting it as the
+   * failed CREATE's orphan. A failed CREATE's own token comes from its
+   * CreateRole response, on the failure's mark (`markCreatedBeforeFailure`);
+   * this is the live read.
+   *
+   * `undefined` for another type, an id that is not a role name, or a client
+   * in another region than `expectedRegion` (IAM is global, but the check
+   * keeps every identity read on the stack's own client). `RESOURCE_NOT_FOUND`
+   * only on `NoSuchEntityException`; any other failure, a response naming
+   * another role, and one with no `RoleId` throw.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::IAM::Role' || !isRoleName(physicalId)) return undefined;
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const roleId = await this.readRoleIdIfExists(physicalId);
+    return roleId === undefined ? RESOURCE_NOT_FOUND : roleId;
+  }
+
+  /**
+   * The role's `RoleId`, or `undefined` when `GetRole` answers
+   * `NoSuchEntityException`. Any other failure, a response naming another
+   * role, and one with no `RoleId` throw: "could not read" never reads as
+   * "gone".
+   */
+  private async readRoleIdIfExists(roleName: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }));
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) return undefined;
+      throw error;
+    }
+    if (response.Role?.RoleName !== roleName) {
+      throw new Error('GetRole answered for another role than the one asked for');
+    }
+    const roleId = roleIdentityToken(response.Role.RoleId);
+    if (roleId === undefined) throw new Error('GetRole returned no RoleId');
+    return roleId;
   }
 
   /**

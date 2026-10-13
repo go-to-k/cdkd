@@ -4387,6 +4387,7 @@
         "iam-oidc-provider",
         "iam-propagation-stress",
         "iam-recreate-reattach",
+        "iam-role-fix-forward-orphan",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
@@ -4561,6 +4562,9 @@
         "iam-recreate-reattach": [
           "l1",
           "literal"
+        ],
+        "iam-role-fix-forward-orphan": [
+          "l1"
         ],
         "iam-role-policies-drift-clean": [
           "l2",

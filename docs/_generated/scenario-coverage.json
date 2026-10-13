@@ -1230,6 +1230,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-role-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-role-policies-drift-clean",
       "annotated": false,
       "scenarios": []
@@ -3334,6 +3339,7 @@
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
     "iam-recreate-reattach",
+    "iam-role-fix-forward-orphan",
     "iam-role-policies-drift-clean",
     "iam-role-prefixed-name-update",
     "iam-secret-derived-principals",
