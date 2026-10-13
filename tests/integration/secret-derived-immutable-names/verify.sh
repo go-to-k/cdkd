@@ -101,6 +101,14 @@
 #      its record the reference form. (The reader stored the plaintext ARN on
 #      the step-2 create, so step 4's update already takes this path; before
 #      the fix that deploy is where it failed.)
+#   5g. LOAD-BEARING (go-to-k/cdkd#4838): rotate the secret's aqueue field and
+#      respell AssembledNameQueue's token (SDIN_AQ_RESPELL=true), so the queue
+#      is REPLACED under the rotated name. AssembledQueueReader spells the
+#      original token in a tag, so the new ARN redacted to the reference it
+#      stored for the old queue and the reader was skipped, left on the deleted
+#      queue's ARN. Now its SSM value is the new queue's ARN. AqSubscription,
+#      whose create-only Endpoint reads the ARN and whose filter policy spells
+#      the token, is REPLACED onto the new queue.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -287,6 +295,11 @@ STREAM_NAME="sdin-stream-${SUFFIX}"
 RB_QUEUE_NAME="sdin-rbq-${SUFFIX}"
 # go-to-k/cdkd#4805: AssembledNameQueue, named by an Fn::Join around the secret.
 AQ_QUEUE_NAME="sdin-aq-${SUFFIX}"
+# go-to-k/cdkd#4838: the name step 5g rotates aqueue to; the queue is replaced under it.
+AQ_QUEUE_NAME_2="sdin-aq2-${SUFFIX}"
+# go-to-k/cdkd#4838: the topic AqSubscription subscribes the queue to, named per run.
+export SDIN_AQ_TOPIC_NAME="cdkd-integ-sdin-aqt-${SUFFIX}"
+AQ_TOPIC_NAME="${SDIN_AQ_TOPIC_NAME}"
 # Step 5c's log group, named from the secret (go-to-k/cdkd#3869).
 LOG_GROUP_NAME="sdin-lg-${SUFFIX}"
 GROUP_NAME="sdin-grp-${SUFFIX}"
@@ -366,6 +379,17 @@ cleanup() {
       --query QueueUrl --output text 2>/dev/null)"
     if [ -n "${LEFT_AQ_QUEUE_URL}" ] && [ "${LEFT_AQ_QUEUE_URL}" != "None" ]; then
       aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_AQ_QUEUE_URL}" >/dev/null 2>&1
+    fi
+    # The topic by its per-run name; deleting it removes AqSubscription too.
+    LEFT_AQ_TOPIC_ARN="$(aws sns list-topics --region "${REGION}" \
+      --query "Topics[?ends_with(TopicArn, ':${AQ_TOPIC_NAME}')].TopicArn | [0]" --output text 2>/dev/null)"
+    if [ -n "${LEFT_AQ_TOPIC_ARN}" ] && [ "${LEFT_AQ_TOPIC_ARN}" != "None" ]; then
+      aws sns delete-topic --region "${REGION}" --topic-arn "${LEFT_AQ_TOPIC_ARN}" >/dev/null 2>&1
+    fi
+    LEFT_AQ2_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME_2}" \
+      --query QueueUrl --output text 2>/dev/null)"
+    if [ -n "${LEFT_AQ2_QUEUE_URL}" ] && [ "${LEFT_AQ2_QUEUE_URL}" != "None" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${LEFT_AQ2_QUEUE_URL}" >/dev/null 2>&1
     fi
     # SecretNamedGroup, by its per-run name; deleting it takes MovingFilter.
     aws logs delete-log-group --region "${REGION}" --log-group-name "${LOG_GROUP_NAME}" >/dev/null 2>&1
@@ -1222,6 +1246,75 @@ else
   echo "    NOTE: the second redeploy was not a no-op (go-to-k/cdkd#4800 expects the readers to be settled)"
 fi
 
+echo "==> Step 5g: AssembledNameQueue replaced under a rotated secret; its reader spells the secret (go-to-k/cdkd#4838)"
+# Rotate the secret's aqueue field (every other field keeps step 3b's value)
+# and respell the queue's token by version stage (SDIN_AQ_RESPELL=true): a
+# create-only change, so the queue is REPLACED under the rotated name.
+# AssembledQueueReader's own tag spells the ORIGINAL token, so its bag maps
+# the rotated name to it: the new ARN redacted to the reference it stored for
+# the old queue, the no-change re-check compared equal, and the reader kept the
+# deleted queue's ARN.
+SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME_ROTATED}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME_2}" \
+  > "${SECRET_FILE}"
+aws secretsmanager put-secret-value --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
+  --secret-string "file://${SECRET_FILE}" >/dev/null
+rm -f "${SECRET_FILE}"
+set +e
+SDIN_AQ_RESPELL=true SDIN_READER_EDIT=true SDIN_MOVE_FILTER=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+ROTATE_RC=$?
+set -e
+if [ "${ROTATE_RC}" -ne 0 ]; then
+  echo "FAIL: the rotated-secret redeploy exited ${ROTATE_RC}" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: the queue was replaced, under the rotated name.
+if ! awk 'index($0, "AssembledNameQueue") && index($0, "(AWS::SQS::Queue)") && index($0, "replaced") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: premise: the redeploy's log has no 'AssembledNameQueue (AWS::SQS::Queue) replaced' line" >&2
+  log_tail
+  exit 1
+fi
+AQ2_QUEUE_URL="$(aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME_2}" \
+  --query QueueUrl --output text)"
+AQ2_ARN_LIVE="$(aws sqs get-queue-attributes --region "${REGION}" --queue-url "${AQ2_QUEUE_URL}" \
+  --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)"
+if [ "${AQ2_ARN_LIVE##*:}" != "${AQ_QUEUE_NAME_2}" ]; then
+  echo "FAIL: premise: the replacement queue's live ARN does not end with the rotated aqueue value" >&2
+  exit 1
+fi
+assert_gone "the replaced AssembledNameQueue still exists" \
+  aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}"
+# LOAD-BEARING: the reader holds the NEW queue's ARN; before the fix it was
+# skipped and kept the deleted queue's.
+expect_eq "AssembledQueueReader's SSM parameter after the replacement (go-to-k/cdkd#4838)" "${AQ2_ARN_LIVE}" \
+  "$(aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}" \
+    --query 'Parameter.Value' --output text)"
+# LOAD-BEARING: AqSubscription's create-only Endpoint read the queue's ARN,
+# so it is REPLACED onto the new queue: one subscription, to the new ARN.
+if ! awk 'index($0, "AqSubscription") && index($0, "(AWS::SNS::Subscription)") && index($0, "replaced") { found = 1 } END { exit !found }' "${DEPLOY_LOG}"; then
+  echo "FAIL: the redeploy's log has no 'AqSubscription (AWS::SNS::Subscription) replaced' line: the subscription was skipped, or updated in place (go-to-k/cdkd#4838)" >&2
+  log_tail
+  exit 1
+fi
+AQ_TOPIC_ARN="$(state_physical_id AqTopic)"
+if [ -z "${AQ_TOPIC_ARN}" ]; then
+  echo "FAIL: premise: the state records no AqTopic" >&2
+  exit 1
+fi
+expect_eq "AqTopic's subscription endpoints after the replacement (go-to-k/cdkd#4838)" "${AQ2_ARN_LIVE}" \
+  "$(aws sns list-subscriptions-by-topic --region "${REGION}" --topic-arn "${AQ_TOPIC_ARN}" \
+    --query 'Subscriptions[].Endpoint' --output text)"
+for needle_var in AQ_QUEUE_NAME AQ_QUEUE_NAME_2; do
+  if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the rotated-secret redeploy's log carries \${${needle_var}} in plaintext (go-to-k/cdkd#3869)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the reader of a queue replaced under a rotated secret got the new queue's ARN"
+
 echo "==> Step 6: destroy"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -1270,7 +1363,7 @@ if ! awk 'index($0, "Detached managed policy ") && index($0, " from role ") && i
   log_tail
   exit 1
 fi
-for needle_var in QUEUE_NAME POLICY_PATH; do
+for needle_var in QUEUE_NAME POLICY_PATH AQ_QUEUE_NAME AQ_QUEUE_NAME_2; do
   if grep -qF -- "${!needle_var}" "${DEPLOY_LOG}"; then
     HIT_LINES="$(grep -nF -- "${!needle_var}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
     echo "FAIL: the destroy log names a secret-derived name in plaintext: \${${needle_var}} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
@@ -1520,6 +1613,10 @@ assert_gone "AssembledQueueReader's SSM parameter ${AQ_PARAM_NAME} still exists 
   aws ssm get-parameter --region "${REGION}" --name "${AQ_PARAM_NAME}"
 assert_gone "AssembledNameQueue still exists after destroy" \
   aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME}"
+assert_gone "AssembledNameQueue's replacement still exists after destroy" \
+  aws sqs get-queue-url --region "${REGION}" --queue-name "${AQ_QUEUE_NAME_2}"
+assert_gone "AqTopic still exists after destroy" \
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "${AQ_TOPIC_ARN}"
 assert_gone "API ${API_ID} still exists after destroy" \
   aws apigatewayv2 get-api --region "${REGION}" --api-id "${API_ID}"
 assert_gone "managed policy ${POLICY_ARN} still exists after destroy" \

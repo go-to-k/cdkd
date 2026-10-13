@@ -790,8 +790,26 @@ export async function provisionUpdate(
   // no masked property whose template expression moved (go-to-k/cdkd#4451),
   // since `***` equals `***` whatever the edit. ONE predicate, so the two
   // skips cannot disagree on it.
+  //
+  // go-to-k/cdkd#4838: a `{{resolve:` reference does not say which value it
+  // stood for. When a resource this one reads was REPLACED in this run (a new
+  // physical id: a queue renamed after its secret rotated), a plaintext the
+  // redaction rewrote can be the NEW generation's, and the equal reference
+  // form then hides a value AWS does not hold (the reader kept the deleted
+  // queue's ARN). Such a resource is sent, never skipped, and a create-only
+  // path the redaction rewrote counts as MOVED, so a replacement it carries
+  // stands.
+  const rewrittenPaths = readsProducerReplacedThisRun.call(
+    this,
+    template,
+    logicalId,
+    stateResources
+  )
+    ? redactionRewrittenPaths(resolvedProps, desiredForSkipCheck, comparisonCoordinates)
+    : new Set<string>();
   const recordMatchesDesired =
     movedMasked.size === 0 &&
+    rewrittenPaths.size === 0 &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
@@ -1109,6 +1127,7 @@ export async function provisionUpdate(
       // whatever its two `***` say.
       const moved =
         movedMasked.has(pc.path) ||
+        rewrittenPaths.has(pc.path) ||
         keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
           keyOrderFreeJson(currentPropsAsWritten[pc.path]);
       // A propagated CEILING whose value MOVED is kept, unless the type's
@@ -1210,6 +1229,7 @@ export async function provisionUpdate(
     // replacement stands, as CloudFormation would replace.
     const movedAt = (path: string): boolean =>
       movedMasked.has(path) ||
+      rewrittenPaths.has(path) ||
       keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
         keyOrderFreeJson(currentPropsAsWritten[path]);
     replacedAnyway =
@@ -1777,4 +1797,44 @@ function recordHoldsEmbeddedReference(record: {
     return Object.values(node as Record<string, unknown>).some(walk);
   };
   return walk(record.properties) || walk(record.attributes);
+}
+
+/**
+ * The top-level properties of `resolvedProps` in which the redaction rewrote a
+ * plaintext into a reference (go-to-k/cdkd#4838). Compared after the same
+ * coordinate masking the skip check applies, so a `NoEcho` mask is no rewrite.
+ */
+function redactionRewrittenPaths(
+  resolvedProps: Record<string, unknown>,
+  desiredForSkipCheck: Record<string, unknown>,
+  comparisonCoordinates: Parameters<typeof maskAtCoordinates>[1]
+): Set<string> {
+  const masked = maskAtCoordinates({ ...resolvedProps }, comparisonCoordinates);
+  return new Set(
+    Object.keys(masked).filter(
+      (key) => keyOrderFreeJson(masked[key]) !== keyOrderFreeJson(desiredForSkipCheck[key])
+    )
+  );
+}
+
+/**
+ * Does any dependency `extractAllDependencies` reports for `logicalId` (a
+ * `Ref`, `Fn::GetAtt`, `Fn::Sub` reference or `DependsOn`) name a resource
+ * whose physical id this run changed from the one it loaded
+ * (go-to-k/cdkd#4838)? Scoped to THIS run: a reader left stale by an earlier
+ * interrupted deploy, a nested child fed by a parameter, or a cross-stack
+ * consumer is not seen (go-to-k/cdkd#4852).
+ */
+function readsProducerReplacedThisRun(
+  this: DeployEngine,
+  template: CloudFormationTemplate | undefined,
+  logicalId: string,
+  stateResources: Record<string, ResourceState>
+): boolean {
+  return (this.extractAllDependencies(template, logicalId) ?? []).some((id) => {
+    const loaded = Object.hasOwn(this.healBaseline, id) ? this.healBaseline[id] : undefined;
+    if (loaded === undefined) return false;
+    const now = Object.hasOwn(stateResources, id) ? stateResources[id] : undefined;
+    return now !== undefined && now.physicalId !== loaded.physicalId;
+  });
 }
