@@ -1,3 +1,4 @@
+import { withReplayDeletePrinting } from './replay-scope.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -256,21 +257,25 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
       op.logicalId,
       stateResources
     );
-    const readoptDelete = await newDeleteProvider.delete(
-      op.logicalId,
-      current.physicalId,
-      op.resourceType,
-      current.properties,
-      {
-        expectedRegion: ctx.region,
-        ...(readoptClaimed && { inlinePolicyClaimed: readoptClaimed }),
-        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-        // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
-        deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-        recordedAttributes: current.attributes,
-        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-        recordedNoEchoLeaves: current.noEchoLeaves,
-      }
+    const readoptDelete = await withReplayDeletePrinting(s, () =>
+      newDeleteProvider.delete(
+        op.logicalId,
+        current.physicalId,
+        op.resourceType,
+        current.properties,
+        {
+          expectedRegion: ctx.region,
+          ...(readoptClaimed && { inlinePolicyClaimed: readoptClaimed }),
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          // Issue #4029: the NEW copy's UpdateReplacePolicy governs.
+          deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+          recordedAttributes: current.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: current.noEchoLeaves,
+          // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+          maskSecrets: mask,
+        }
+      )
     );
     // Issue #1762: BEFORE the state re-point, so a skip cannot leave
     // state naming the retained OLD resource while the NEW one is still

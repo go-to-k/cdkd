@@ -25,7 +25,12 @@ import {
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { displayIdent } from '../../utils/display-safe.js';
-import { maskSecretsInText, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  createUnionSecretMasker,
+  maskSecretsInText,
+  SECRET_MASK,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 import { safe, shownLogicalId, SKIP_FINAL_SNAPSHOT_FLAG } from './messages.js';
 import { type RollbackExecutorContext, type CompletedOperation } from './types.js';
 
@@ -241,6 +246,15 @@ export function replayPrefixScope(
  * stands then, so an arm calls it again after `resolveReplayProps` has filled
  * `secrets` with the plaintext its resolved bag carries. `mask` reads the
  * latest needles and the bag by reference.
+ *
+ * `deployBag` is the failed deploy's own bag for the op's logical id, which
+ * only the in-process rollback has (`RollbackExecutorContext
+ * .logOnlyNeedlesFor`). It masks PRINTED text only — `secrets` alone
+ * positions a redaction — and it is needed because the op's `secrets`
+ * re-resolve the PREVIOUS generation, while the resource the deploy created
+ * or replaced, its physical id and the bag an arm deletes it with carry the
+ * deploy's resolution: a secret that differs between the two would otherwise
+ * print (go-to-k/cdkd#2007). Masking with both only ever masks more.
  */
 export interface OpMasker {
   readonly mask: MaskerFn;
@@ -253,8 +267,19 @@ export interface OpMasker {
 }
 
 /** See {@link OpMasker}. */
-export function createOpMasker(logger: Logger, secrets: RecordedSecretValues): OpMasker {
-  const base = createMaskedLogSinks(logger, (text) => maskSecretsInText(text, secrets));
+export function createOpMasker(
+  logger: Logger,
+  secrets: RecordedSecretValues,
+  deployBag?: RecordedSecretValues
+): OpMasker {
+  // ONE pass over both bags: bag by bag, one bag's needle can cut a longer
+  // one the other holds and print its tail (`createUnionSecretMasker`).
+  const base = createMaskedLogSinks(
+    logger,
+    deployBag === undefined
+      ? (text) => maskSecretsInText(text, secrets)
+      : createUnionSecretMasker([secrets, deployBag])
+  );
   const pairs: Array<readonly [unknown, string | undefined]> = [];
   let sinks = base;
   return {

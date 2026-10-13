@@ -72,28 +72,30 @@ import {
 import { applyNoEchoDeleteValues } from '../../deployment/noecho-delete-reresolution.js';
 
 /**
- * The DELETE path threads NO masker (issue #2178).
+ * The DELETE path's masker (go-to-k/cdkd#2007): the caller's
+ * `DeleteContext.maskSecrets`, composed with the re-resolved `NoEcho` values'
+ * own when there are any (go-to-k/cdkd#4682). Both are functions, so they run
+ * in turn rather than as one union pass, the wider one first.
  *
- * `DeleteContext` carries no masker by the `SecretMaskingContext` contract — a
- * delete's payload is a physical id rather than a resolved property bag — so
- * there is no capability to thread here.
- *
- * This is deliberately `undefined` and NOT `maskerOrIdentity(undefined)`, which
- * is what it was until the review of this change. An identity function typed
- * `MaskerFn` is a masker that fences nothing, and issue
- * [#2007](https://github.com/go-to-k/cdkd/issues/2007) records why that is
- * WORSE than no masker at all: its presence stops the next author looking. The
- * critic now REFUSES an identity-bound masker (see
- * `scripts/check-provider-secret-mask.ts`), so this spelling is the only one
- * that both compiles and states the truth — and the message site it feeds is
- * recorded in that critic's `EXEMPT` list, where it is counted and re-audited
- * on every run rather than hidden inside the masked count.
- *
- * `src/types/resource.ts` requires the capability to be THREADED before a
- * delete-path message may claim to mask; retiring this constant is that work,
- * not a rename.
+ * `undefined` when neither exists: every cdkd delete site passes a masker, so
+ * that is a direct caller passing no `DeleteContext.maskSecrets`. Never an
+ * identity function: a `MaskerFn` that fences nothing reads as a check that
+ * ran, and `scripts/check-provider-secret-mask.ts` refuses one. That arm of the
+ * payload refusal stays the critic's counted `EXEMPT` row, since the context
+ * stays optional.
  */
-const DELETE_PATH_UNMASKED = undefined;
+function deletePathMasker(
+  callerMask: MaskerFn | undefined,
+  noEchoMask: MaskerFn | undefined
+): MaskerFn | undefined {
+  if (callerMask === undefined) return noEchoMask;
+  if (noEchoMask === undefined) return callerMask;
+  // The NoEcho bag holds the resolved bag's needles too
+  // (`noecho-delete-reresolution.ts` seeds it from the deploy's bag), so it runs
+  // FIRST: a caller needle inside a longer NoEcho value would otherwise cut it
+  // and print its head and tail.
+  return (text) => callerMask(noEchoMask(text));
+}
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties DELETE arm reports
@@ -584,13 +586,12 @@ function parseLambdaPayload(
     // FINISHED message cannot recover it — `JSON.stringify` escapes `"` / `\` /
     // newlines out of existence.
     //
-    // Two arms rather than an identity default, because the DELETE path has no
-    // masker to thread (see {@link DELETE_PATH_UNMASKED}) and a per-SITE critic
+    // Two arms rather than an identity default, because the DELETE path may
+    // have no masker (see {@link deletePathMasker}) and a per-SITE critic
     // cannot say "masked on two of three paths". Splitting the message makes
     // the unmasked path its OWN site, so it is recorded in
-    // `scripts/check-provider-secret-mask.ts`'s `EXEMPT` list — counted,
-    // re-audited every run, and self-retiring the moment `DeleteContext` gains
-    // the capability — while the masked arm stays fenced: deleting its
+    // `scripts/check-provider-secret-mask.ts`'s `EXEMPT` list — counted and
+    // re-audited every run — while the masked arm stays fenced: deleting its
     // `maskDeep` wrap reds the critic.
     //
     // Exposure TODAY is nil in both arms, and saying so is the point: the only
@@ -2153,8 +2154,10 @@ export class CustomResourceProvider implements ResourceProvider {
     }
     // The re-resolved values' masker, for every message below that can carry
     // a payload value (the handler's reason, its log, an invoke error).
-    const deleteMask: MaskerFn | undefined =
-      payload === properties ? DELETE_PATH_UNMASKED : reresolved?.maskSecrets;
+    const deleteMask: MaskerFn | undefined = deletePathMasker(
+      context?.maskSecrets,
+      payload === properties ? undefined : reresolved?.maskSecrets
+    );
     const show = (text: string): string => (deleteMask === undefined ? text : deleteMask(text));
 
     // Fail-fast for re-run idempotency (issue #804): after an interrupted /
@@ -2212,9 +2215,7 @@ export class CustomResourceProvider implements ResourceProvider {
           StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(payload),
         }),
-        // `DeleteContext` carries no masker by the SecretMaskingContext
-        // contract — see DELETE_PATH_UNMASKED — except the re-resolved
-        // values' own (go-to-k/cdkd#4682).
+        // See deletePathMasker (go-to-k/cdkd#2007, go-to-k/cdkd#4682).
         deleteMask
       );
 
@@ -3210,13 +3211,11 @@ export class CustomResourceProvider implements ResourceProvider {
     } catch {
       // Payload parsing failed, try S3.
       //
-      // DISCARDING `error.message` is LOAD-BEARING here, not incidental. On the
-      // DELETE path `parseLambdaPayload` is handed no masker (see
-      // DELETE_PATH_UNMASKED and issue #2007), so its refusal message can quote
-      // a delete-bag value verbatim, and the delete bag CAN be resolved
-      // plaintext on the in-process rollback path. Logging the error object
-      // would turn today's nil exposure into a live leak. Thread the capability
-      // before widening this catch.
+      // DISCARDING `error.message` is LOAD-BEARING here, not incidental. A
+      // DELETE whose caller passed no masker hands `parseLambdaPayload` none
+      // (see deletePathMasker), so its refusal message can quote a delete-bag
+      // value verbatim. Logging the error object would make that arm a leak
+      // the day a caller with a plaintext bag forgets its masker.
       this.logger.debug(`Lambda payload parse failed for ${logicalId}, checking S3 response`);
     }
 

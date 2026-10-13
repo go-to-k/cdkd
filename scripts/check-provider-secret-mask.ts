@@ -381,16 +381,13 @@ export interface Exemption {
  *    contract, and there is no secret bag on that path to build one from — so
  *    there is nothing to mask and nothing to thread. These retire only if the
  *    import path ever gains a resolved bag.
- *  - DELETE PATH. `DeleteContext` carries no masker by the same contract, and
- *    `src/types/resource.ts` requires the capability to be THREADED (issue
- *    #2007) before a delete-path message may claim to mask. The custom-resource
- *    payload refusal has a DELETE arm and a create / update arm; the second is
- *    masked and fenced, the first is recorded HERE rather than handed a
- *    `maskerOrIdentity(undefined)` that would count toward the masked total
- *    while protecting nothing. That is what this entry buys over the spelling
- *    it replaced: the gap is COUNTED and re-audited every run instead of
- *    hiding inside the green number. It retires when `DeleteContext` gains the
- *    capability — at which point the site becomes masked and the audit fails.
+ *  - DELETE PATH, NO MASKER. Since issue #2007 `DeleteContext` carries the
+ *    masker and every cdkd delete site passes one, but the context stays
+ *    optional, so a direct caller can pass none. The custom-resource payload
+ *    refusal keeps an arm for that case; it is recorded HERE rather than
+ *    handed a `maskerOrIdentity(undefined)` that would count toward the
+ *    masked total while protecting nothing, so the unmasked arm is COUNTED and
+ *    re-audited every run instead of hiding inside the green number.
  */
 const EXEMPT: readonly Exemption[] = [
   // --- IMPORT PATH -------------------------------------------------------
@@ -425,9 +422,9 @@ const EXEMPT: readonly Exemption[] = [
     expression: 'parsed',
     count: 1,
     reason:
-      'delete path: `DeleteContext` carries no masker by the SecretMaskingContext contract, and ' +
-      'issue #2007 requires the capability to be THREADED before a delete-path message may claim ' +
-      'to mask — see DELETE_PATH_UNMASKED; the create / update arm of the same refusal IS masked',
+      'delete path with no caller masker: `DeleteContext` stays optional, so a direct caller can ' +
+      'pass no `maskSecrets` (every cdkd delete site passes one since issue #2007) — see ' +
+      'deletePathMasker; every arm with a masker IS masked',
   },
 ];
 

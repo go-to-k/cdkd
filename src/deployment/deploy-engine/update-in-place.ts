@@ -37,14 +37,18 @@ import {
   renderNameHeldElsewhere,
   replacementRequestsDifferentName,
 } from '../replacement-name-holder.js';
-import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
   isUpdateUnsupportedError,
   markNonRetryable,
 } from '../retryable-errors.js';
-import { createSecretMasker, maskSecretsInText } from '../secret-redaction.js';
+import {
+  createSecretMasker,
+  createUnionSecretMasker,
+  maskSecretsInText,
+} from '../secret-redaction.js';
 import { equalIdNamesDifferentResources } from '../type-change-guard.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
@@ -659,23 +663,31 @@ export async function updateInPlace(
         // Initialized because the catch below can leave it unassigned.
         let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
         try {
-          fallbackDeleteResult = await updateProvider.delete(
-            logicalId,
-            currentResource.physicalId,
-            resourceType,
-            currentProps,
-            {
-              expectedRegion: this.stackRegion,
-              forceDataDelete: this.options.forceStatefulRecreation === true,
-              ...(fallbackFinalSnapshotId !== undefined && {
-                finalSnapshotIdentifier: fallbackFinalSnapshotId,
-              }),
-              ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
-              recordedAttributes: currentResource.attributes,
-              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-              recordedNoEchoLeaves: currentResource.noEchoLeaves,
-              ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-            }
+          fallbackDeleteResult = await withPrintingSecrets(updateSecrets, () =>
+            updateProvider.delete(
+              logicalId,
+              currentResource.physicalId,
+              resourceType,
+              currentProps,
+              {
+                expectedRegion: this.stackRegion,
+                forceDataDelete: this.options.forceStatefulRecreation === true,
+                ...(fallbackFinalSnapshotId !== undefined && {
+                  finalSnapshotIdentifier: fallbackFinalSnapshotId,
+                }),
+                ...this.replacementDeleteContext(fallbackUpdateReplacePolicy),
+                recordedAttributes: currentResource.attributes,
+                // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+                recordedNoEchoLeaves: currentResource.noEchoLeaves,
+                ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+                // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
+                // also logs under; the physical id can be a name it derives.
+                maskSecrets: createUnionSecretMasker([
+                  updateSecrets,
+                  this.secretNameBagFor(logicalId),
+                ]),
+              }
+            )
           );
         } catch (deleteError) {
           // If old resource doesn't exist (already deleted), proceed with CREATE

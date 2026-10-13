@@ -364,12 +364,14 @@ export interface RollbackExecutorContext {
   nestedChildStack?: string | undefined;
   /**
    * The deploy's own bag for a logical id, supplied only by the IN-PROCESS
-   * rollback (`DeployEngine`), read for its LOG-ONLY needles alone
-   * (go-to-k/cdkd#1998): a `NoEcho` parameter's value the failed deploy
+   * rollback (`DeployEngine`). Its LOG-ONLY needles are carried into the op's
+   * bag (go-to-k/cdkd#1998): a `NoEcho` parameter's value the failed deploy
    * consumed. The replay re-resolves a journal that holds no parameter to
    * `Ref`, so without this a provider revert line, a thrown message or a
    * rollback event quoting the value would print it. Its map entries are NOT
-   * copied: the op's own re-resolution is what positions the redaction.
+   * copied: the op's own re-resolution is what positions the redaction. The
+   * op's PRINTING masker reads the whole bag (`createOpMasker`,
+   * go-to-k/cdkd#2007), which is also what a replay hands `delete()`.
    */
   logOnlyNeedlesFor?: ((logicalId: string) => RecordedSecretValues | undefined) | undefined;
   /**

@@ -547,6 +547,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       // "already gone" (`assertRegionMatch`).
       deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
         expectedRegion: context?.expectedRegion,
+        // go-to-k/cdkd#2007: the subscription ARN embeds the topic name, which
+        // can be secret-derived.
+        ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
       });
     } catch (error) {
       deleteThrew = true;
@@ -713,7 +716,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting SNS subscription ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the subscription ARN embeds the topic name.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    this.logger.debug(mask(`Deleting SNS subscription ${logicalId}: ${mask(physicalId)}`));
 
     // A never-confirmed subscription may be recorded under the literal
     // "PendingConfirmation" placeholder instead of a real ARN (e.g. adopted
@@ -743,7 +748,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Subscription ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(
+          mask(`Subscription ${mask(physicalId)} does not exist, skipping deletion`)
+        );
         return;
       }
 
@@ -757,13 +764,15 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       // error). No assertRegionMatch here: unlike NotFound, this error proves
       // the subscription was positively found in the client's region.
       if (isPendingConfirmationError(error)) {
-        this.logPendingConfirmationSkip(logicalId, physicalId);
+        this.logPendingConfirmationSkip(logicalId, mask(physicalId));
         return;
       }
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        mask(
+          `Failed to delete SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,

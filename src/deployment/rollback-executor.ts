@@ -46,6 +46,7 @@
  *    replays each op exactly once).
  */
 
+import { withReplayDeletePrinting } from './rollback-executor/replay-scope.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
 import {
   createSecretMasker,
@@ -477,7 +478,7 @@ async function replaySingle(
    * names a secret-derived name implies. Every rendered line, error and event
    * reason below goes through `mask`, the shared catch's included.
    */
-  const opMasker = createOpMasker(logger, secrets);
+  const opMasker = createOpMasker(logger, secrets, deployBag);
   const mask = opMasker.mask;
   /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
@@ -743,8 +744,9 @@ async function replayFailedOperationsUnbound(
      * another's text.
      */
     const secrets: RecordedSecretValues = new Map();
-    // This iteration's masker (issue #4037), `replaySingle`'s twin.
-    const opMasker = createOpMasker(logger, secrets);
+    // This iteration's masker (issue #4037), `replaySingle`'s twin, over the
+    // failed deploy's bag too (go-to-k/cdkd#2007).
+    const opMasker = createOpMasker(logger, secrets, ctx.logOnlyNeedlesFor?.(op.logicalId));
     const mask = opMasker.mask;
     // go-to-k/cdkd#3338: what a skip arm below records its event through.
     const skipScope = { ctx, stackName, result, mask };
@@ -1092,39 +1094,55 @@ async function replayFailedOperationsUnbound(
               orphanDeleteChecked || ctx.orphanDeleteProven?.has(op) === true
             );
           const deleteFailedCreate = (): ReturnType<typeof provider.delete> =>
-            provider.delete(op.logicalId, op.physicalId!, op.resourceType, op.attemptedProperties, {
-              expectedRegion: ctx.region,
-              ...(removeProtection && { removeProtection: true }),
-              ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
-              ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-              ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-              deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
-              // Issue #4157; as on the completed-CREATE arm, the record names
-              // `op.physicalId` here.
-              recordedAttributes: failedCreateRecord?.attributes,
-              // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
-              // journal records no coordinates, and its bag is masked by
-              // position, so every whole-`***` leaf of it counts (review
-              // round 9 n1): the caller decides the coordinates, and this
-              // caller has no list. Only `CustomResourceProvider` reads the
-              // field, and a custom resource reaches this arm only through a
-              // record naming the op's physical id (it never marks
-              // `createdBeforeFailure`), so this is a fail-safe, not a path
-              // a handler is known to take (review round 10).
-              recordedNoEchoLeaves: nonEmptyOrUndefined([
-                ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
-                ...(failedCreateRecord?.noEchoLeaves ?? []),
-              ]),
-              // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
-              // The bag is the journal's, secrets redacted: a provider that
-              // compares it with AWS re-resolves it through this, lazily.
-              ...(op.physicalIdRecoveredFromError === true && {
-                failedCreateOrphan: true,
-                resolveAttemptedProperties: () =>
-                  resolveReplayProps(op.attemptedProperties, resolver, secrets, ctx, op.logicalId),
-                ...(ctx.writtenThisRun !== undefined && { writtenThisRun: ctx.writtenThisRun }),
-              }),
-            });
+            withReplayDeletePrinting({ ctx, op, secrets }, () =>
+              provider.delete(
+                op.logicalId,
+                op.physicalId!,
+                op.resourceType,
+                op.attemptedProperties,
+                {
+                  expectedRegion: ctx.region,
+                  ...(removeProtection && { removeProtection: true }),
+                  ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
+                  ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+                  ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                  deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+                  // Issue #4157; as on the completed-CREATE arm, the record names
+                  // `op.physicalId` here.
+                  recordedAttributes: failedCreateRecord?.attributes,
+                  // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
+                  // journal records no coordinates, and its bag is masked by
+                  // position, so every whole-`***` leaf of it counts (review
+                  // round 9 n1): the caller decides the coordinates, and this
+                  // caller has no list. Only `CustomResourceProvider` reads the
+                  // field, and a custom resource reaches this arm only through a
+                  // record naming the op's physical id (it never marks
+                  // `createdBeforeFailure`), so this is a fail-safe, not a path
+                  // a handler is known to take (review round 10).
+                  recordedNoEchoLeaves: nonEmptyOrUndefined([
+                    ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
+                    ...(failedCreateRecord?.noEchoLeaves ?? []),
+                  ]),
+                  // go-to-k/cdkd#4612: a proven orphan, never a record's own delete.
+                  // The bag is the journal's, secrets redacted: a provider that
+                  // compares it with AWS re-resolves it through this, lazily.
+                  ...(op.physicalIdRecoveredFromError === true && {
+                    failedCreateOrphan: true,
+                    resolveAttemptedProperties: () =>
+                      resolveReplayProps(
+                        op.attemptedProperties,
+                        resolver,
+                        secrets,
+                        ctx,
+                        op.logicalId
+                      ),
+                    ...(ctx.writtenThisRun !== undefined && { writtenThisRun: ctx.writtenThisRun }),
+                  }),
+                  // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+                  maskSecrets: mask,
+                }
+              )
+            );
           const failedCreateDelete = removeProtection
             ? await runDeleteAttempt(true, deleteFailedCreate)
             : await deleteFailedCreate();

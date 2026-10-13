@@ -38,7 +38,7 @@ import {
   maskRewrittenSentName,
   replacementSentNameMoves,
 } from '../replacement-name-holder.js';
-import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
 import {
   isNameCollisionErrorFrom,
@@ -49,6 +49,7 @@ import {
   type RecordedSecretValues,
   SECRET_MASK,
   createSecretMasker,
+  createUnionSecretMasker,
   maskSecretsInError,
   maskSecretsInText,
 } from '../secret-redaction.js';
@@ -200,24 +201,29 @@ export async function replaceDeleteFirstAndRecreate(
   );
   let deleteResult: void | ResourceDeleteResult;
   try {
-    deleteResult = await oldDeleteProvider.delete(
-      logicalId,
-      currentResource.physicalId,
-      oldResourceType,
-      currentResource.properties,
-      {
-        expectedRegion: this.stackRegion,
-        // Replacement delete: `--force-stateful-recreation` is the user's
-        // explicit data-loss consent, so thread it to the provider's data
-        // guard (issue #1340).
-        forceDataDelete: this.options.forceStatefulRecreation === true,
-        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-        ...this.replacementDeleteContext(updateReplacePolicy),
-        recordedAttributes: currentResource.attributes,
-        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-        recordedNoEchoLeaves: currentResource.noEchoLeaves,
-        ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-      }
+    deleteResult = await withPrintingSecrets(secrets, () =>
+      oldDeleteProvider.delete(
+        logicalId,
+        currentResource.physicalId,
+        oldResourceType,
+        currentResource.properties,
+        {
+          expectedRegion: this.stackRegion,
+          // Replacement delete: `--force-stateful-recreation` is the user's
+          // explicit data-loss consent, so thread it to the provider's data
+          // guard (issue #1340).
+          forceDataDelete: this.options.forceStatefulRecreation === true,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...this.replacementDeleteContext(updateReplacePolicy),
+          recordedAttributes: currentResource.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: currentResource.noEchoLeaves,
+          ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+          // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
+          // also logs under; the physical id can be a name it derives.
+          maskSecrets: createUnionSecretMasker([secrets, this.secretNameBagFor(logicalId)]),
+        }
+      )
     );
   } catch (deleteError) {
     // Mirror the recreate-flagged path's wrapping: the delete is
@@ -732,23 +738,28 @@ export async function deleteReplacedAfterCreate(
     ? this.inlinePolicyClaimedFor(oldResourceType, logicalId, this.deployStateResources)
     : undefined;
   try {
-    deleteResult = await deleteProvider.delete(
-      logicalId,
-      currentResource.physicalId,
-      oldResourceType,
-      deleteProperties,
-      {
-        expectedRegion: this.stackRegion,
-        forceDataDelete: this.options.forceStatefulRecreation === true,
-        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-        ...this.replacementDeleteContext(updateReplacePolicy),
-        // Issue #4157: the identity evidence of the record deleted.
-        recordedAttributes: currentResource.attributes,
-        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-        recordedNoEchoLeaves: currentResource.noEchoLeaves,
-        ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-        ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
-      }
+    deleteResult = await withPrintingSecrets(secrets, () =>
+      deleteProvider.delete(
+        logicalId,
+        currentResource.physicalId,
+        oldResourceType,
+        deleteProperties,
+        {
+          expectedRegion: this.stackRegion,
+          forceDataDelete: this.options.forceStatefulRecreation === true,
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...this.replacementDeleteContext(updateReplacePolicy),
+          // Issue #4157: the identity evidence of the record deleted.
+          recordedAttributes: currentResource.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: currentResource.noEchoLeaves,
+          ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+          ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
+          // go-to-k/cdkd#2007: the bag the call logs under and the delete
+          // error below is masked with.
+          maskSecrets: createUnionSecretMasker([secrets, this.secretNameBagFor(logicalId)]),
+        }
+      )
     );
   } catch (deleteError) {
     const deleteMsg = maskSecretsInText(

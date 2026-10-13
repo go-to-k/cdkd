@@ -975,6 +975,25 @@ describe('ACMCertificateProvider', () => {
       expect(callsOfType(DeleteCertificateCommand)).toHaveLength(1);
     });
 
+    // go-to-k/cdkd#2007: the update's masker reaches the replacement's delete.
+    it("forwards update()'s masker into the replacement's inner delete", async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/new' });
+      mockSend.mockResolvedValueOnce({});
+      const maskSecrets = (t: string): string => t.split('example').join('***');
+      const del = vi.spyOn(provider, 'delete');
+
+      await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'new.example.com', ValidationMethod: 'DNS' },
+        { DomainName: 'example.com', ValidationMethod: 'DNS' },
+        { maskSecrets }
+      );
+
+      expect(del.mock.calls[0]![4]?.maskSecrets).toBe(maskSecrets);
+    });
+
     it('replaces on SubjectAlternativeNames change', async () => {
       const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
       mockSend.mockResolvedValueOnce({ CertificateArn: newArn });

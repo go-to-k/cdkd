@@ -1,3 +1,4 @@
+import { withReplayDeletePrinting } from './replay-scope.js';
 import { prepareCreateRollbackFinalSnapshot } from './names.js';
 import {
   safe,
@@ -270,21 +271,25 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
   const removeProtection = ctx.removeProtection === true;
   const physicalId = op.physicalId;
   const deleteCreated = (): ReturnType<typeof provider.delete> =>
-    provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
-      expectedRegion: ctx.region,
-      ...(removeProtection && { removeProtection: true }),
-      ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),
-      ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-      ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-      // Issue #4029: the classified policy, so a Cloud Control-routed
-      // RDS delete under `Delete` avoids the registry handler's snapshot.
-      deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
-      // Issue #4157. `classifyRollbackOp` reaches this arm only with a
-      // record naming `op.physicalId`.
-      recordedAttributes: stateResources[op.logicalId]?.attributes,
-      // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-      recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
-    });
+    withReplayDeletePrinting(s, () =>
+      provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
+        expectedRegion: ctx.region,
+        ...(removeProtection && { removeProtection: true }),
+        ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),
+        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+        ...(ctx.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+        // Issue #4029: the classified policy, so a Cloud Control-routed
+        // RDS delete under `Delete` avoids the registry handler's snapshot.
+        deletionPolicy: snapshotPolicy ? 'Snapshot' : 'Delete',
+        // Issue #4157. `classifyRollbackOp` reaches this arm only with a
+        // record naming `op.physicalId`.
+        recordedAttributes: stateResources[op.logicalId]?.attributes,
+        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+        recordedNoEchoLeaves: stateResources[op.logicalId]?.noEchoLeaves,
+        // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+        maskSecrets: mask,
+      })
+    );
   const createRollbackDelete = removeProtection
     ? await runDeleteAttempt(true, deleteCreated)
     : await deleteCreated();

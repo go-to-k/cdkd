@@ -1,3 +1,4 @@
+import { withReplayDeletePrinting } from './replay-scope.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { ResourceCreateResult, ResourceProvider } from '../../types/resource.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
@@ -448,6 +449,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     region: ctx.region,
     logger,
     mask,
+    ctx,
+    secrets,
   };
 
   // Deletes the NEW resource BEFORE the old one is re-created, on both routes
@@ -462,20 +465,24 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       op.provisionedBy
     );
     const deleteNewFirstRoute = resolveNewDeleteRoute();
-    const deleteNewFirst = await deleteNewFirstRoute.provider.delete(
-      op.logicalId,
-      current.physicalId,
-      op.resourceType,
-      current.properties,
-      {
-        expectedRegion: ctx.region,
-        ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
-        ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-        deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-        recordedAttributes: current.attributes,
-        // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-        recordedNoEchoLeaves: current.noEchoLeaves,
-      }
+    const deleteNewFirst = await withReplayDeletePrinting(s, () =>
+      deleteNewFirstRoute.provider.delete(
+        op.logicalId,
+        current.physicalId,
+        op.resourceType,
+        current.properties,
+        {
+          expectedRegion: ctx.region,
+          ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+          recordedAttributes: current.attributes,
+          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+          recordedNoEchoLeaves: current.noEchoLeaves,
+          // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+          maskSecrets: mask,
+        }
+      )
     );
     // Issue #1762: this delete exists to make room for the re-create, so a
     // skip means the re-create below collides — fail the op now, with the
@@ -1078,20 +1085,24 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         op.provisionedBy
       );
       const deleteNewAfterRecreateRoute = resolveNewDeleteRoute();
-      const deleteNewAfterRecreate = await deleteNewAfterRecreateRoute.provider.delete(
-        op.logicalId,
-        current.physicalId,
-        op.resourceType,
-        current.properties,
-        {
-          expectedRegion: ctx.region,
-          ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
-          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-          deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-          recordedAttributes: current.attributes,
-          // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-          recordedNoEchoLeaves: current.noEchoLeaves,
-        }
+      const deleteNewAfterRecreate = await withReplayDeletePrinting(s, () =>
+        deleteNewAfterRecreateRoute.provider.delete(
+          op.logicalId,
+          current.physicalId,
+          op.resourceType,
+          current.properties,
+          {
+            expectedRegion: ctx.region,
+            ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
+            ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+            deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+            recordedAttributes: current.attributes,
+            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+            recordedNoEchoLeaves: current.noEchoLeaves,
+            // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+            maskSecrets: mask,
+          }
+        )
       );
       // Issue #1762: the old resource is already re-created and state
       // already points at it, so the site's existing policy for a
@@ -1203,6 +1214,9 @@ interface MarkedRecreateScope {
   region: string;
   logger: ReplayOpScope['logger'];
   mask: ReplayOpScope['mask'];
+  /** The delete's printing bags ({@link withReplayDeletePrinting}). */
+  ctx: ReplayOpScope['ctx'];
+  secrets: ReplayOpScope['secrets'];
 }
 
 /**
@@ -1248,10 +1262,14 @@ async function deleteMarkedRecreate(error: unknown, s: MarkedRecreateScope): Pro
   );
   let failure: string | undefined;
   try {
-    const outcome = await s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
-      expectedRegion: s.region,
-      deletionPolicy: 'Delete',
-    });
+    const outcome = await withReplayDeletePrinting(s, () =>
+      s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
+        expectedRegion: s.region,
+        deletionPolicy: 'Delete',
+        // go-to-k/cdkd#2007: the mask `id` above is rendered with.
+        maskSecrets: s.mask,
+      })
+    );
     failure = deleteSkipReason(outcome);
   } catch (deleteError) {
     failure = deleteError instanceof Error ? deleteError.message : String(deleteError);

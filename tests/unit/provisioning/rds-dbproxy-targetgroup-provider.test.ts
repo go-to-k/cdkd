@@ -783,6 +783,26 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       });
     });
 
+    // go-to-k/cdkd#2007: an in-process rollback can hand the delete a resolved
+    // identifier, so the deregister line masks with the caller's masker.
+    it('masks a SHORT identifier in the deregister line with DeleteContext.maskSecrets', async () => {
+      const debug = getLogger().child('x').debug as ReturnType<typeof vi.fn>;
+      debug.mockClear();
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.delete(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', TargetGroupName: 'default', DBClusterIdentifiers: ['q7z'] },
+        { expectedRegion: 'us-east-1', maskSecrets: (t) => (t === 'q7z' ? '***' : t) }
+      );
+
+      const line = debug.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Deregistering'));
+      expect(line).toContain('clusters=[***]');
+      expect(line).not.toContain('q7z');
+    });
+
     it('treats DBProxyNotFoundFault as idempotent success (region matches)', async () => {
       mockSend.mockRejectedValueOnce(
         new DBProxyNotFoundFault({ message: 'DBProxy not found', $metadata: {} })
@@ -800,6 +820,26 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           { expectedRegion: 'us-east-1' }
         )
       ).resolves.not.toThrow();
+    });
+
+    it('masks a SHORT proxy name in the already-gone line with DeleteContext.maskSecrets', async () => {
+      const debug = getLogger().child('x').debug as ReturnType<typeof vi.fn>;
+      debug.mockClear();
+      mockSend.mockRejectedValueOnce(
+        new DBProxyNotFoundFault({ message: 'DBProxy not found', $metadata: {} })
+      );
+
+      await provider.delete(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        { DBProxyName: 'q7z', DBClusterIdentifiers: ['my-cluster'] },
+        { expectedRegion: 'us-east-1', maskSecrets: (t) => (t === 'q7z' ? '***' : t) }
+      );
+
+      const line = debug.mock.calls.map((c) => String(c[0])).find((l) => l.includes('already gone'));
+      expect(line).toContain('***/');
+      expect(line).not.toContain('q7z');
     });
 
     it('treats DBProxyTargetGroupNotFoundFault as idempotent success', async () => {

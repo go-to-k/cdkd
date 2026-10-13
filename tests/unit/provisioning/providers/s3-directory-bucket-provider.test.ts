@@ -50,10 +50,12 @@ vi.mock('../../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const logSpies = vi.hoisted(() => ({ debug: vi.fn(), info: vi.fn() }));
+
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
+    debug: logSpies.debug,
+    info: logSpies.info,
     warn: vi.fn(),
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
@@ -174,6 +176,91 @@ describe('S3DirectoryBucketProvider', () => {
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
       expect(names).not.toContain('ListObjectsV2Command');
       expect(names).not.toContain('DeleteObjectsCommand');
+    });
+
+    // go-to-k/cdkd#2007: the refusal names the bucket and offers a pasteable
+    // command for it; a secret-derived name must reach neither.
+    it.each([
+      ['embeds the secret', 'acct-s3cr3tvalue--use1-az4--x-s3', 's3cr3tvalue'],
+      ['IS the secret, below the substring floor', 'abc', 'abc'],
+    ])(
+      'masks a secret-derived bucket name the name %s, printing no command for it',
+      async (_label, bucketName, secret) => {
+        const notEmpty = new Error('The bucket you tried to delete is not empty');
+        notEmpty.name = 'BucketNotEmpty';
+        mockSend.mockRejectedValue(notEmpty);
+        const maskSecrets = (text: string): string =>
+          text === secret ? '***' : text.split(secret).join('***');
+
+        const error = await provider
+          .delete('DirectoryBucket', bucketName, 'AWS::S3Express::DirectoryBucket', undefined, {
+            maskSecrets,
+          })
+          .then(
+            () => undefined,
+            (e: unknown) => e as Error
+          );
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error!.message).toContain('is not empty');
+        expect(error!.message).toContain('derived from a secret');
+        expect(error!.message).not.toContain(secret);
+        expect(error!.message).not.toContain('aws s3 rm');
+      }
+    );
+
+    // go-to-k/cdkd#2007: the opted-in auto-empty and every debug line name the
+    // bucket too. A name that IS a short secret is caught only by the masker's
+    // whole-value arm, i.e. only where the provider masks the bare name.
+    it('masks a short secret bucket name on every line of an opted-in auto-empty delete', async () => {
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      mockSend
+        .mockRejectedValueOnce(notEmpty)
+        .mockResolvedValueOnce({ Contents: [{ Key: 'k' }], IsTruncated: false })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({});
+      const maskSecrets = (text: string): string => (text === 'q7z' ? '***' : text);
+
+      await provider.delete('DirectoryBucket', 'q7z', 'AWS::S3Express::DirectoryBucket', undefined, {
+        forceDataDelete: true,
+        maskSecrets,
+      });
+
+      const lines = [...logSpies.debug.mock.calls, ...logSpies.info.mock.calls].map((c) =>
+        String(c[0])
+      );
+      expect(lines.some((l) => l.includes('not empty') && l.includes('***'))).toBe(true);
+      expect(lines.some((l) => l.startsWith('Deleting S3 Express Directory Bucket'))).toBe(true);
+      expect(lines.join('\n')).not.toContain('q7z');
+    });
+
+    it('masks a short secret bucket name on the already-gone line', async () => {
+      const gone = new Error('The specified bucket does not exist');
+      gone.name = 'NoSuchBucket';
+      mockSend.mockRejectedValueOnce(gone);
+      await provider.delete('DirectoryBucket', 'q7z', 'AWS::S3Express::DirectoryBucket', undefined, {
+        maskSecrets: (text: string): string => (text === 'q7z' ? '***' : text),
+      });
+      const lines = logSpies.debug.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('does not exist'))).toBe(true);
+      expect(lines.join('\n')).not.toContain('q7z');
+    });
+
+    it('keeps naming a bucket the caller masker leaves unchanged', async () => {
+      const notEmpty = new Error('The bucket you tried to delete is not empty');
+      notEmpty.name = 'BucketNotEmpty';
+      mockSend.mockRejectedValue(notEmpty);
+
+      await expect(
+        provider.delete(
+          'DirectoryBucket',
+          'my-bucket--use1-az4--x-s3',
+          'AWS::S3Express::DirectoryBucket',
+          undefined,
+          { maskSecrets: (text) => text.split('unrelated-secret').join('***') }
+        )
+      ).rejects.toThrow(/my-bucket--use1-az4--x-s3.*aws s3 rm s3:\/\/my-bucket--use1-az4--x-s3/s);
     });
 
     it('empties bucket with objects before deleting when forceDataDelete is set', async () => {

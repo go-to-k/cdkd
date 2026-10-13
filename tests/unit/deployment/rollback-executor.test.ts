@@ -924,6 +924,7 @@ describe('replayRollback', () => {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
       recordedAttributes: {},
+      maskSecrets: expect.any(Function),
     });
     expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
     expect(result.failures).toBe(0);
@@ -1647,6 +1648,7 @@ describe('replayRollback', () => {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
       recordedAttributes: {},
+      maskSecrets: expect.any(Function),
     });
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1883,6 +1885,7 @@ describe('replayFailedOperations (#1198)', () => {
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
       recordedAttributes: {},
+      maskSecrets: expect.any(Function),
     });
     expect(state.C).toBeUndefined();
     expect(result.failures).toBe(0);
@@ -2714,6 +2717,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       expectedRegion: 'us-east-1',
       deletionPolicy: 'Delete',
       recordedAttributes: {},
+      maskSecrets: expect.any(Function),
     });
     expect(state['Res']).toBeUndefined();
   });

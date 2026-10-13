@@ -164,4 +164,35 @@ describe('cdkd destroy masks a name derived from a secret (go-to-k/cdkd#3869)', 
     expect(identifier).toMatch(/^team-secret-db/);
     expect(snapshotLine).not.toContain('team-secret-db');
   });
+
+  // go-to-k/cdkd#2007: the same bag reaches the provider as
+  // `DeleteContext.maskSecrets`, so a provider that decides what to show (the
+  // S3 Express refusal's pasteable command) sees the name as secret-derived.
+  it("hands each delete DeleteContext.maskSecrets over its printing bag", async () => {
+    const masks: Record<string, ((t: string) => string) | undefined> = {};
+    const providerDelete = vi.fn(
+      (logicalId: string, _p: string, _t: string, _props: unknown, ctx: { maskSecrets?: (t: string) => string }) => {
+        masks[logicalId] = ctx.maskSecrets;
+        return Promise.resolve(undefined);
+      }
+    );
+    const result = await runDestroyForStack('TestStack', makeState(REF), makeCtx(providerDelete));
+    expect(result.errorCount).toBe(0);
+    expect(masks['User']).toBeTypeOf('function');
+    expect(masks['User']!(USER_ID)).toBe('***');
+    expect(masks['Key']!(`user ${USER_ID}`)).toBe('user ***');
+    // Negative control: an ordinary name is left as it is.
+    const plain: Record<string, ((t: string) => string) | undefined> = {};
+    await runDestroyForStack(
+      'TestStack',
+      makeState('plain-user-name'),
+      makeCtx(
+        vi.fn((l: string, _p: string, _t: string, _x: unknown, ctx: { maskSecrets?: (t: string) => string }) => {
+          plain[l] = ctx.maskSecrets;
+          return Promise.resolve(undefined);
+        })
+      )
+    );
+    expect(plain['User']!(USER_ID)).toBe(USER_ID);
+  });
 });

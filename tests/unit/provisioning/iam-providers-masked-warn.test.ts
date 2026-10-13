@@ -293,9 +293,8 @@ describe('IAMRoleProvider (issue #2177)', () => {
   it('forwards the masker into the replacement create(), and masks the persisted orphan reason', async () => {
     answerIam();
     const provider = new IAMRoleProvider();
-    // The OLD role's delete fails with AWS quoting its name back. Stubbed
-    // rather than driven: `delete()` has no masker to receive (issue #2007),
-    // so its OWN lines are that issue's residual, not this one's.
+    // The OLD role's delete fails with AWS quoting its name back; its own
+    // lines are covered by the go-to-k/cdkd#2007 cases above.
     vi.spyOn(provider, 'delete').mockRejectedValue(new Error(`cannot read role ${OLD_SECRET}`));
     const result = await provider.update(
       'MyRole',
@@ -319,6 +318,77 @@ describe('IAMRoleProvider (issue #2177)', () => {
       RoleName: SECRET,
       AssumeRolePolicyDocument: DOC,
     });
+    expect(allLines()).toContain(SECRET);
+  });
+});
+
+describe('the IAM deletes mask with DeleteContext.maskSecrets (go-to-k/cdkd#2007)', () => {
+  /** Every cleanup step answers with something to log about. */
+  function answerDelete(): void {
+    answerIam(
+      {},
+      {
+        ListAttachedRolePoliciesCommand: { AttachedPolicies: [{ PolicyArn: SECRET_ARN }] },
+        ListRolePoliciesCommand: { PolicyNames: [SHORT] },
+        ListInstanceProfilesForRoleCommand: { InstanceProfiles: [{ InstanceProfileName: SECRET }] },
+        ListGroupsForUserCommand: { Groups: [{ GroupName: SECRET }] },
+        ListAttachedUserPoliciesCommand: { AttachedPolicies: [{ PolicyArn: SECRET_ARN }] },
+        ListUserPoliciesCommand: { PolicyNames: [SHORT] },
+        ListAccessKeysCommand: { AccessKeyMetadata: [{ AccessKeyId: 'AKIAEXAMPLEKEY' }] },
+        ListAttachedGroupPoliciesCommand: { AttachedPolicies: [{ PolicyArn: SECRET_ARN }] },
+        ListGroupPoliciesCommand: { PolicyNames: [SHORT] },
+        GetGroupCommand: { Group: {}, Users: [{ UserName: SECRET }] },
+      }
+    );
+  }
+
+  it.each([
+    ['AWS::IAM::Role', () => new IAMRoleProvider()],
+    ['AWS::IAM::User', () => new IAMUserGroupProvider()],
+    ['AWS::IAM::Group', () => new IAMUserGroupProvider()],
+  ])('%s: every delete() line, the cleanup helpers included', async (type, make) => {
+    answerDelete();
+    await make().delete('Res', SECRET, type, undefined, { maskSecrets });
+    expect(debugSpy.mock.calls.length).toBeGreaterThan(3);
+    expectTranscriptMasked();
+  });
+
+  it.each([
+    ['AWS::IAM::Role', () => new IAMRoleProvider(), 'DeleteRoleCommand'],
+    ['AWS::IAM::User', () => new IAMUserGroupProvider(), 'DeleteUserCommand'],
+    ['AWS::IAM::Group', () => new IAMUserGroupProvider(), 'DeleteGroupCommand'],
+  ])('%s: the failure wrap masks the AWS text quoting the name', async (type, make, command) => {
+    answerIam({ [command]: new Error(`${SECRET} is in use`) });
+    const error = await make()
+      .delete('Res', SECRET, type, undefined, { maskSecrets })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toContain('is in use');
+    expect(error?.message).not.toContain(SECRET);
+  });
+
+  it('a replacement update() forwards its masker into the inner delete of the OLD role', async () => {
+    answerDelete();
+    const provider = new IAMRoleProvider();
+    const del = vi.spyOn(provider, 'delete');
+    await provider.update(
+      'MyRole',
+      OLD_SECRET,
+      'AWS::IAM::Role',
+      { RoleName: SECRET, AssumeRolePolicyDocument: DOC },
+      { RoleName: OLD_SECRET, AssumeRolePolicyDocument: DOC },
+      { maskSecrets }
+    );
+    const forwarded = del.mock.calls[0]![4]?.maskSecrets;
+    expect(forwarded?.(OLD_SECRET)).toBe(SECRET_MASK);
+    expectTranscriptMasked();
+  });
+
+  it('prints the name when the caller passes no masker (`cdkd destroy`)', async () => {
+    answerDelete();
+    await new IAMRoleProvider().delete('Res', SECRET, 'AWS::IAM::Role');
     expect(allLines()).toContain(SECRET);
   });
 });

@@ -121,7 +121,10 @@ import {
   secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
-import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
+import {
+  createUnionSecretMasker,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -2111,6 +2114,10 @@ export async function runDestroyForStack(
                                 }),
                                 // go-to-k/cdkd#2115: only a whole-stack teardown.
                                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
+                                // go-to-k/cdkd#2007: the printing bag this delete
+                                // runs under, so a provider that asks whether a
+                                // name is secret-derived sees what the sink masks.
+                                maskSecrets: createUnionSecretMasker([printingBagOf(logicalId)]),
                               }
                             )
                           )

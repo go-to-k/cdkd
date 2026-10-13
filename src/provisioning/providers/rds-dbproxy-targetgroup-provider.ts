@@ -1,3 +1,4 @@
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import {
   RDSClient,
   RegisterDBProxyTargetsCommand,
@@ -970,13 +971,17 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     const dbClusterIdentifiers = targets.lists.DBClusterIdentifiers;
     const dbInstanceIdentifiers = targets.lists.DBInstanceIdentifiers;
 
-    // Unmasked: `delete()` has no masker (provider-delete-path.md), and every
-    // identifier here passed `readTargetLists` after the redacted-address skip,
-    // so none is a reference, a mask, or anything but a plain RDS identifier.
+    // Every identifier here passed `readTargetLists` after the redacted-address
+    // skip, so none is a reference or a mask, but one can be a plaintext an
+    // in-process rollback resolved: masked with the caller's masker
+    // (go-to-k/cdkd#2007).
+    const mask = maskerOrIdentity(context?.maskSecrets);
     this.logger.debug(
-      `Deregistering targets from ${dbProxyName}/${targetGroupName}: ` +
-        `clusters=[${dbClusterIdentifiers.join(',')}], ` +
-        `instances=[${dbInstanceIdentifiers.join(',')}]`
+      mask(
+        `Deregistering targets from ${mask(dbProxyName)}/${mask(targetGroupName)}: ` +
+          `clusters=[${dbClusterIdentifiers.map(mask).join(',')}], ` +
+          `instances=[${dbInstanceIdentifiers.map(mask).join(',')}]`
+      )
     );
 
     try {
@@ -1009,7 +1014,9 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(
-          `${dbProxyName}/${targetGroupName} or its target is already gone, treating as success`
+          mask(
+            `${mask(dbProxyName)}/${mask(targetGroupName)} or its target is already gone, treating as success`
+          )
         );
         return;
       }

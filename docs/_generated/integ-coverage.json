@@ -7054,6 +7054,7 @@
         "rollback-failure-injection",
         "rollback-nested-cross-region-secret",
         "rollback-replacement-retain",
+        "s3-directory-bucket",
         "s3-tables",
         "schema-v10-to-v11-migration",
         "schema-v5-to-v6-migration",
@@ -7358,6 +7359,9 @@
         "rollback-replacement-retain": [
           "l1",
           "literal"
+        ],
+        "s3-directory-bucket": [
+          "l1"
         ],
         "s3-tables": [
           "l1"

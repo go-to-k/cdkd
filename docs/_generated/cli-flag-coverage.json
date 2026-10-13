@@ -338,6 +338,7 @@
         "route53",
         "s3-analytics-inventory",
         "s3-cloudfront",
+        "s3-directory-bucket",
         "s3-event-notification",
         "s3-fix-forward-orphan",
         "s3-lifecycle",
@@ -474,6 +475,7 @@
         "rollback-nested-cross-region-secret",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
+        "s3-directory-bucket",
         "s3-fix-forward-orphan",
         "s3-lifecycle",
         "s3-retry-own-bucket",
@@ -1643,6 +1645,7 @@
         "remove-protection",
         "rollback-sqs-cooldown",
         "route53",
+        "s3-directory-bucket",
         "s3-lifecycle",
         "s3-retry-own-bucket",
         "secret-derived-immutable-names",
@@ -2363,6 +2366,8 @@
     "--wait-time-seconds",
     "--watch",
     "--ws",
-    "--zip-file"
+    "--x-s3",
+    "--zip-file",
+    "--zone-names"
   ]
 }

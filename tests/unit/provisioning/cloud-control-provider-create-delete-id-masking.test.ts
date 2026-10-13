@@ -215,6 +215,34 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       expect(allLines()).not.toContain(DERIVED);
     });
 
+    // go-to-k/cdkd#2007: the remnant's delete is handed the create's masker.
+    it("forwards the create's masker into the remnant delete", async () => {
+      mockCcSend.mockImplementation((command: unknown) => {
+        switch (commandName(command)) {
+          case 'CreateResourceCommand':
+            return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-create' } });
+          case 'GetResourceRequestStatusCommand':
+            return Promise.resolve({
+              ProgressEvent: {
+                TypeName: TYPE,
+                OperationStatus: 'FAILED',
+                Identifier: ID,
+                ErrorCode: 'GeneralServiceException',
+                StatusMessage: 'could not be stabilized',
+              },
+            });
+          default:
+            return Promise.reject(new Error('refused'));
+        }
+      });
+      const provider = new CloudControlProvider();
+      const del = vi.spyOn(provider, 'delete');
+      await caught(provider.create('MyFilter', TYPE, desired, context()));
+      const forwarded = del.mock.calls[0]?.[4]?.maskSecrets;
+      expect(forwarded).toBeTypeOf('function');
+      expect(forwarded!(SECRET)).toBe(SECRET_MASK);
+    });
+
     it('keeps an abandoned wait\'s request token and resume command whole when a short id part occurs in them', async () => {
       // `1` occurs in the token and the region; scrubbed as text, the pasteable
       // command would name another request.
@@ -393,6 +421,28 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       expect(warn).toBeDefined();
       expect(warn).toContain(`manual final snapshot of ${SECRET_MASK}`);
       expect(allLines()).not.toContain(clusterId);
+    });
+
+    // go-to-k/cdkd#2007: an in-process rollback's bag is RESOLVED, so the only
+    // evidence is a leaf the caller's masker recognises.
+    it('withholds the id when a RESOLVED bag holds a leaf the caller masker recognises', async () => {
+      mockCcSend.mockRejectedValue(new Error(`DeleteResource refused for ${DERIVED}`));
+      const provider = new CloudControlProvider();
+      const error = await caught(
+        provider.delete(
+          'MyFilter',
+          ID,
+          TYPE,
+          { LogGroupName: 'my-log-group', FilterName: SECRET },
+          { maskSecrets: createSecretMasker(new Map([[SECRET, REFERENCE]])) }
+        )
+      );
+
+      expect(error.message).not.toContain(DERIVED);
+      expect(mockDebug.mock.calls.map((c) => String(c[0]))).toContain(
+        `Deleting resource MyFilter (${TYPE}), physical ID: ${SECRET_MASK}`
+      );
+      expect(allLines()).not.toContain(DERIVED);
     });
 
     it('prints the id when the record holds no secret-derived leaf', async () => {

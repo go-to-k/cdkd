@@ -92,6 +92,7 @@ import {
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { AUTO_SCALING_TEARDOWN_MAX_RETRIES } from '../../../src/provisioning/providers/dynamodb-delete-budget.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { ElapsedBudget } from '../../../src/utils/elapsed-budget.js';
 
 const logger = getLogger() as unknown as { warn: ReturnType<typeof vi.fn> };
 
@@ -374,5 +375,351 @@ describe('the GlobalTable delete path honours Ctrl-C (#2053 / #1952)', () => {
       mockSend.mock.calls.filter((c) => c[0] instanceof DeleteTableCommand),
       'DeleteTable must NOT be issued after an interrupted replica teardown'
     ).toHaveLength(0);
+  }, 120_000);
+});
+
+// go-to-k/cdkd#2007: both gone-waits name the table, in the warning and in the
+// interrupted error, and the delete hands them its `DeleteContext.maskSecrets`.
+describe('the GlobalTable delete waits mask a secret-derived table name (go-to-k/cdkd#2007)', () => {
+  const NAME = 'secret-orders-2007';
+  const maskSecrets = (text: string): string => text.split(NAME).join('***');
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    logger.warn.mockClear();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    autoScalingRetryDelays.sleep = () => Promise.resolve();
+    deleteTableRetryDelays.sleep = () => Promise.resolve();
+    armInterruptWatchForSuite();
+    baseline = process.listeners('SIGINT');
+  });
+
+  afterEach(() => {
+    delete autoScalingRetryDelays.sleep;
+    delete deleteTableRetryDelays.sleep;
+    disarmInterruptWatchForTests();
+    delete interruptWatchTestSeam.commandOwnsInterrupts;
+  });
+
+  it('waitForTableGone: the interrupted warning', async () => {
+    let deleted = false;
+    let goneProbes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted && ++goneProbes === 1) fireInterrupt();
+        return Promise.resolve({
+          Table: {
+            TableName: NAME,
+            TableStatus: deleted ? 'DELETING' : 'ACTIVE',
+            GlobalSecondaryIndexes: [],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+    });
+
+    expect(warnLines()).toContain('interrupted while waiting for *** to disappear');
+    expect(warnLines()).not.toContain(NAME);
+  }, 120_000);
+
+  it('waitForReplicaGone: the interrupted error', async () => {
+    let replicaProbes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (++replicaProbes === 2) fireInterrupt();
+        return Promise.resolve({
+          Table: {
+            TableName: NAME,
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [],
+            Replicas: [
+              { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+              { RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const error = await new DynamoDBGlobalTableProvider()
+      .delete('Orders', NAME, GLOBAL_TABLE, {}, { maskSecrets })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(error?.message).toMatch(/interrupted by user \(SIGINT\)/);
+    expect(error?.message).not.toContain(NAME);
+  }, 120_000);
+
+  it('the pre-delete index wait: its give-up warning', async () => {
+    let deleted = false;
+    let describes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        describes += 1;
+        // The index wait's own describe fails, so it gives up the WAIT (not
+        // the delete) with a warning naming the table.
+        if (describes === 2) return Promise.reject(new Error('boom'));
+        return Promise.resolve({
+          Table: {
+            TableName: NAME,
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi', IndexStatus: 'CREATING' }],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+    });
+
+    const waitLines = warnLines()
+      .split('\n')
+      .filter((l) => l.includes('while waiting for indexes on'));
+    expect(waitLines.length).toBeGreaterThan(0);
+    expect(waitLines.join('\n')).toContain('***');
+    expect(waitLines.join('\n')).not.toContain(NAME);
+  }, 120_000);
+
+  it("the index-busy DeleteTable re-arm: the wait's give-up warning", async () => {
+    let deleted = false;
+    let deleteAttempts = 0;
+    let describes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        describes += 1;
+        // The pre-delete describe answers; the re-arm's own describe fails.
+        if (describes > 1) return Promise.reject(new Error('boom'));
+        return Promise.resolve({
+          Table: {
+            TableName: NAME,
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      if (command instanceof DeleteTableCommand) {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) {
+          return Promise.reject(
+            Object.assign(new Error('Cannot delete table while indexes are being created'), {
+              name: 'ResourceInUseException',
+            })
+          );
+        }
+        deleted = true;
+      }
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+    });
+
+    expect(deleteAttempts).toBe(2);
+    const waitLines = warnLines()
+      .split('\n')
+      .filter((l) => l.includes('while waiting for indexes on'));
+    expect(waitLines.length).toBeGreaterThan(0);
+    expect(waitLines.join('\n')).not.toContain(NAME);
+  }, 120_000);
+
+  it('hands the protection-flip ACTIVE wait and the gone wait the delete masker', async () => {
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        return Promise.resolve({
+          Table: {
+            TableName: NAME,
+            TableStatus: 'ACTIVE',
+            DeletionProtectionEnabled: true,
+            GlobalSecondaryIndexes: [],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+    const provider = new DynamoDBGlobalTableProvider();
+    const seam = provider as unknown as Record<string, (...a: unknown[]) => Promise<void>>;
+    const active = vi.spyOn(seam, 'waitForTableActiveAfterUpdate');
+    const gone = vi.spyOn(seam, 'waitForTableGone');
+
+    await provider.delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+      removeProtection: true,
+    });
+
+    expect(active.mock.calls[0]?.[4]).toBe(maskSecrets);
+    expect(gone.mock.calls[0]?.[4]).toBe(maskSecrets);
+  }, 120_000);
+
+  it('the gone wait masks the table name in its throw', async () => {
+    mockSend.mockResolvedValue({ Table: { TableName: NAME, TableStatus: 'DELETING' } });
+    const seam = new DynamoDBGlobalTableProvider() as unknown as {
+      waitForTableGone: (n: string, l: string, a: number, b: undefined, m: typeof maskSecrets) => Promise<void>;
+    };
+    const error = await seam.waitForTableGone(NAME, 'Orders', 1, undefined, maskSecrets).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(error?.message).toContain('did not disappear');
+    expect(error?.message).not.toContain(NAME);
+  }, 120_000);
+
+  it("the gone wait's cut-short warning", async () => {
+    mockSend.mockResolvedValue({ Table: { TableName: NAME, TableStatus: 'DELETING' } });
+    let now = 0;
+    const budget = new ElapsedBudget(1000, () => now);
+    now = 10_000; // spent before the wait starts, so it is cut short
+    const seam = new DynamoDBGlobalTableProvider() as unknown as {
+      waitForTableGone: (n: string, l: string, a: number, b: ElapsedBudget, m: typeof maskSecrets) => Promise<void>;
+    };
+    await seam.waitForTableGone(NAME, 'Orders', 600, budget, maskSecrets);
+    const line = warnLines()
+      .split('\n')
+      .find((l) => l.includes('cdkd stopped waiting'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain(NAME);
+  }, 120_000);
+
+  it("the delete's own protection-flip debug lines", async () => {
+    const debugLines = (): string =>
+      (logger as unknown as { debug: ReturnType<typeof vi.fn> }).debug.mock.calls
+        .map((c) => String(c[0]))
+        .join('\n');
+    (logger as unknown as { debug: ReturnType<typeof vi.fn> }).debug.mockClear();
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        return Promise.resolve({
+          Table: { TableName: NAME, TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [], Replicas: [] },
+        });
+      }
+      if (command instanceof UpdateTableCommand) {
+        return Promise.reject(new Error(`AccessDenied on ${NAME}`));
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+      removeProtection: true,
+    });
+
+    expect(debugLines()).toContain('Deleting DynamoDB GlobalTable Orders: ***');
+    expect(debugLines()).toContain('Could not disable DeletionProtectionEnabled on ***');
+    expect(
+      debugLines()
+        .split('\n')
+        .filter((l) => l.startsWith('Deleting DynamoDB') || l.includes('DeletionProtectionEnabled'))
+        .join('\n')
+    ).not.toContain(NAME);
+  }, 120_000);
+
+  it("the delete's protection-observe and ACTIVE-wait debug lines", async () => {
+    const debugSpy = (logger as unknown as { debug: ReturnType<typeof vi.fn> }).debug;
+    debugSpy.mockClear();
+    let deleted = false;
+    let describes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        describes += 1;
+        // 1: the pre-flip observation, 2: the ACTIVE wait after the flip.
+        if (describes === 1) return Promise.reject(new Error(`observe failed for ${NAME}`));
+        if (describes === 2) return Promise.reject(new Error(`wait failed for ${NAME}`));
+        return Promise.resolve({
+          Table: { TableName: NAME, TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [], Replicas: [] },
+        });
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', NAME, GLOBAL_TABLE, {}, {
+      maskSecrets,
+      removeProtection: true,
+    });
+
+    const lines = debugSpy.mock.calls.map((c) => String(c[0]));
+    const observe = lines.find((l) => l.startsWith('Could not read DeletionProtectionEnabled'));
+    const wait = lines.find((l) => l.startsWith('Could not wait for table'));
+    expect(observe).toBeDefined();
+    expect(wait).toBeDefined();
+    expect(`${observe}\n${wait}`).not.toContain(NAME);
+  }, 120_000);
+
+  // A table name that IS a short secret, below the masker's 4-character
+  // substring floor: only the per-value mask of the name catches it.
+  it("the delete's debug lines mask a SHORT secret-derived table name by value", async () => {
+    const SHORT = 'q7z';
+    const shortMask = (text: string): string => (text === SHORT ? '***' : text);
+    const debugSpy = (logger as unknown as { debug: ReturnType<typeof vi.fn> }).debug;
+    debugSpy.mockClear();
+    let deleted = false;
+    let describes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        describes += 1;
+        if (describes === 1) return Promise.reject(new Error('observe failed'));
+        if (describes === 2) return Promise.reject(new Error('wait failed'));
+        return Promise.resolve({
+          Table: { TableName: SHORT, TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [], Replicas: [] },
+        });
+      }
+      if (command instanceof DeleteTableCommand) deleted = true;
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete('Orders', SHORT, GLOBAL_TABLE, {}, {
+      maskSecrets: shortMask,
+      removeProtection: true,
+    });
+
+    const lines = debugSpy.mock.calls.map((c) => String(c[0]));
+    const picked = [
+      lines.find((l) => l.startsWith('Deleting DynamoDB GlobalTable')),
+      lines.find((l) => l.startsWith('Could not read DeletionProtectionEnabled')),
+      lines.find((l) => l.startsWith('Could not wait for table')),
+    ];
+    for (const line of picked) {
+      expect(line).toBeDefined();
+      expect(line).toContain('***');
+      expect(line).not.toContain(SHORT);
+    }
   }, 120_000);
 });

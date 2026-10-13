@@ -1059,7 +1059,7 @@ export class CloudControlProvider implements ResourceProvider {
       // cancellation or an abandoned wait can carry the identifier the
       // handler materialized, and the status text can quote it.
       idLog.addId(identifierCarriedBy(error));
-      await this.cleanupFailedCreateRemnant(error, resourceType, logicalId);
+      await this.cleanupFailedCreateRemnant(error, resourceType, logicalId, mask);
       this.handleError(error, 'CREATE', resourceType, logicalId);
     }
   }
@@ -1101,7 +1101,9 @@ export class CloudControlProvider implements ResourceProvider {
   private async cleanupFailedCreateRemnant(
     error: unknown,
     resourceType: string,
-    logicalId: string
+    logicalId: string,
+    // The create's masker, forwarded to the remnant's delete (go-to-k/cdkd#2007).
+    mask: MaskerFn
   ): Promise<void> {
     if (!(error instanceof CloudControlOperationFailedError)) return;
     if (error.ccOperation !== 'CREATE' || !error.physicalId) return;
@@ -1117,7 +1119,15 @@ export class CloudControlProvider implements ResourceProvider {
     try {
       // Reuse the provider's own delete: it polls the async operation to
       // completion and already treats NotFound as idempotent success.
-      const cleanupResult = await this.delete(logicalId, error.physicalId, resourceType);
+      const cleanupResult = await this.delete(
+        logicalId,
+        error.physicalId,
+        resourceType,
+        undefined,
+        {
+          maskSecrets: mask,
+        }
+      );
       // Issue #1778 confirmed the ACCOUNTING half of "the result is
       // uninteresting here": this is a CREATE path, so nothing it returns
       // reaches the destroy runner's deleted/skipped counters, and the only
@@ -1131,7 +1141,8 @@ export class CloudControlProvider implements ResourceProvider {
       //
       // Reachability note: the delegating branch in `delete` (the only
       // producer of a skip on this provider today) is gated on
-      // `context.removeProtection`, and this call passes no context at all, so
+      // `context.removeProtection`, and this call passes a context carrying no
+      // `removeProtection` (only the create's masker, go-to-k/cdkd#2007), so
       // the branch below is unreachable from here as the code stands. It is
       // kept because the reachability is a property of a DIFFERENT method's
       // internals, not of this call site, and the cost of being wrong about it
@@ -1158,7 +1169,8 @@ export class CloudControlProvider implements ResourceProvider {
       //    `disableInstanceApiTermination` and `disableCcProtection` — CAN let
       //    a non-`Error` escape; what makes them unreachable from HERE is that
       //    all three are gated on `context?.removeProtection === true`, and
-      //    this site's call passes NO context at all. The fourth,
+      //    this site's call passes NO `removeProtection` (its context carries
+      //    only the create's masker, go-to-k/cdkd#2007). The fourth,
       //    `ec2ClientInCcRegion` (an `AWS::EC2::Volume` only, issue #3455), is
       //    NOT gated and IS reachable from here, but it catches its own region
       //    reads and throws only a cdkd-authored `ProvisioningError`. So the gate is
@@ -1518,10 +1530,11 @@ export class CloudControlProvider implements ResourceProvider {
   /**
    * Delete a resource using Cloud Control API.
    *
-   * Runs under an {@link IdScrubLog} (go-to-k/cdkd#3869). `DeleteContext`
-   * carries no masker, so the evidence is the recorded bag alone: a
-   * `{{resolve:` reference or `***` there, which is how state keeps a secret
-   * leaf. A bag of resolved plaintext (an in-process rollback's) shows none.
+   * Runs under an {@link IdScrubLog} (go-to-k/cdkd#3869). The evidence is
+   * the bag: a `{{resolve:` reference or `***` there, which is how state keeps
+   * a secret leaf, or a plaintext leaf the caller's `DeleteContext.maskSecrets`
+   * changes, which is how an in-process rollback's resolved bag shows one
+   * (go-to-k/cdkd#2007).
    */
   async delete(
     logicalId: string,
@@ -1530,7 +1543,7 @@ export class CloudControlProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    const mask = maskerOrIdentity(undefined);
+    const mask = maskerOrIdentity(context?.maskSecrets);
     const idLog = new IdScrubLog(this.logger, mask, holdsSecretDerivedLeaf(properties, mask));
     idLog.addId(physicalId);
     const result = await inIdLogScope(idLog, () =>
@@ -4928,8 +4941,9 @@ interface IdLogSink {
  *  - a `{{resolve:` reference or `***`: a previous or delete bag is the state
  *    record, which keeps a secret leaf that way;
  *  - a value the masker recognises: a create's desired bag, a rollback
- *    revert's RESOLVED bags, and `drift --revert`'s AWS readback as the
- *    previous side, where the evidence is the CURRENT secret.
+ *    revert's RESOLVED bags, an in-process rollback's delete bag
+ *    (go-to-k/cdkd#2007), and `drift --revert`'s AWS readback as the previous
+ *    side, where the evidence is the CURRENT secret.
  *
  * Every message goes through the caller's masker FIRST, so a current secret
  * is masked whole before an id part could split it. Withheld then means every
@@ -4959,7 +4973,8 @@ class IdScrubLog implements IdLogSink {
 
   /**
    * This call's own needles only. In the one nested call (the failed-create
-   * remnant `delete()`) it is `false`, so that delete scrubs no guard
+   * remnant `delete()`, handed no bag, so its evidence is `false` whatever
+   * masker it carries) it is `false`, so that delete scrubs no guard
    * `reason`; `cleanupFailedCreateRemnant` prints no guard, and every line the
    * nested call prints reaches the outer sink through `base`.
    */

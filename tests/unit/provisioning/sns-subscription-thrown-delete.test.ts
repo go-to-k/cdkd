@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetSubscriptionAttributesCommand,
+  InvalidParameterException,
   NotFoundException,
   SubscribeCommand,
   UnsubscribeCommand,
@@ -24,9 +25,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 const warnSpy = vi.fn();
+const debugSpy = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: (...args: unknown[]) => debugSpy(...args),
     info: vi.fn(),
     warn: (...args: unknown[]) => warnSpy(...args),
     error: vi.fn(),
@@ -251,5 +253,73 @@ describe('SNSSubscriptionProvider.update: a THROWN delete (issue #1967)', () => 
     ).rejects.toThrow(/could not delete the old subscription/);
 
     expect(subscribeCalls()).toHaveLength(0);
+  });
+});
+
+// go-to-k/cdkd#2007: the replacement's inner delete gets the update's masker,
+// and the delete masks the subscription ARN (it embeds the topic name).
+describe('SNSSubscriptionProvider delete masking (go-to-k/cdkd#2007)', () => {
+  const maskSecrets = (text: string): string => text.split('my-topic').join('***');
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it("forwards update()'s masker into the replacement's inner delete", async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetSubscriptionAttributesCommand) return Promise.resolve(REPLACING_READBACK);
+      if (cmd instanceof SubscribeCommand) return Promise.resolve({ SubscriptionArn: NEW_SUB_ARN });
+      return Promise.resolve({});
+    });
+    const provider = new SNSSubscriptionProvider();
+    const del = vi.spyOn(provider, 'delete');
+
+    await provider.update('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', PROPERTIES, PROPERTIES, {
+      maskSecrets,
+    });
+
+    const forwarded = del.mock.calls[0]![4]?.maskSecrets;
+    expect(forwarded).toBeTypeOf('function');
+    expect(forwarded!(OLD_SUB_ARN)).not.toContain('my-topic');
+  });
+
+  it('masks the topic name in the failure the delete throws', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error(`${OLD_SUB_ARN} cannot be removed`), { name: 'AuthorizationError' })
+    );
+    const error = await new SNSSubscriptionProvider()
+      .delete('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', undefined, { maskSecrets })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error?.message).toContain('cannot be removed');
+    expect(error?.message).not.toContain('my-topic');
+  });
+
+  function lines(): string {
+    return [...debugSpy.mock.calls, ...warnSpy.mock.calls].map((c) => String(c[0])).join('\n');
+  }
+
+  it('masks the ARN on the deleting and already-gone lines', async () => {
+    mockSend.mockRejectedValue(new NotFoundException({ message: 'gone', $metadata: {} }));
+    await new SNSSubscriptionProvider().delete('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', undefined, {
+      maskSecrets,
+    });
+    expect(lines()).toContain('Deleting SNS subscription Sub');
+    expect(lines()).toContain('does not exist');
+    expect(lines()).not.toContain('my-topic');
+  });
+
+  it('masks the ARN on the pending-confirmation skip warning', async () => {
+    mockSend.mockRejectedValue(
+      new InvalidParameterException({
+        message: 'Cannot unsubscribe a subscription that is pending confirmation',
+        $metadata: {},
+      })
+    );
+    await new SNSSubscriptionProvider().delete('Sub', OLD_SUB_ARN, 'AWS::SNS::Subscription', undefined, {
+      maskSecrets,
+    });
+    expect(lines()).toContain('pending confirmation');
+    expect(lines()).not.toContain('my-topic');
   });
 });

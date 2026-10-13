@@ -1,3 +1,4 @@
+import { createUnionSecretMasker } from '../secret-redaction.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
@@ -201,6 +202,10 @@ Drop the record with: ${dropCommand}`
             recordedAttributes: currentResource.attributes,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
             recordedNoEchoLeaves: currentResource.noEchoLeaves,
+            // go-to-k/cdkd#2007: the record is the persisted, redacted one,
+            // so this deploy resolved nothing for it; the masker is its
+            // derived-name registry, the printing bag this delete runs under.
+            maskSecrets: createUnionSecretMasker([this.secretNameBagFor(logicalId)]),
           }
         ),
       logicalId,

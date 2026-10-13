@@ -2,6 +2,7 @@ import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
 import type { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import type { OpMasker } from './names.js';
 import type { ReplayResolvers } from './replay-secrets.js';
 import type {
@@ -40,4 +41,24 @@ export interface ReplayOpScope {
    * `replaySingle`'s shared catch for its ROLLBACK_RESOURCE_FAILED event.
    */
   createRollbackRoute: 'sdk' | 'cc-api' | undefined;
+}
+
+/**
+ * Run a replay arm's `delete()` under the op's bag and the failed deploy's
+ * (`RollbackExecutorContext.logOnlyNeedlesFor`) as PRINTING bags
+ * (go-to-k/cdkd#2007), so every line the provider logs while deleting is
+ * masked by the logger's sink, a provider that never reads
+ * `DeleteContext.maskSecrets` included. Printing only: no provider can read
+ * either bag back (`withPrintingSecrets`). The bag a rollback deletes with and
+ * the name it addresses carry the DEPLOY's resolution, while the op's bag
+ * re-resolves the previous generation, so both are bound.
+ */
+export function withReplayDeletePrinting<T>(
+  scope: Pick<ReplayOpScope, 'ctx' | 'op' | 'secrets'>,
+  fn: () => T
+): T {
+  const deployBag = scope.ctx.logOnlyNeedlesFor?.(scope.op.logicalId);
+  return withPrintingSecrets(scope.secrets, () =>
+    deployBag === undefined ? fn() : withPrintingSecrets(deployBag, fn)
+  );
 }

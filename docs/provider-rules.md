@@ -470,10 +470,11 @@ implementation. Three details are worth copying:
     `{ maskSecrets: (t) => t }` both pass. A green run means the value reached
     something declared to be the project's masker — not that it was masked.
     Thread the real capability; do not satisfy the checker.
-    Where a path genuinely has no masker to thread — `DeleteContext` carries
-    none by the `SecretMaskingContext` contract — thread the capability first,
-    or record the site in the critic's `EXEMPT` list, where it is COUNTED and
-    re-audited on every run and fails the moment the capability arrives. Do not
+    Where a path genuinely has no masker to thread — the optional context
+    absent, as from a direct `delete()` caller (every cdkd delete site passes
+    `DeleteContext.maskSecrets`) — keep that arm unmasked and record the site
+    in the critic's `EXEMPT` list, where it is COUNTED and re-audited on every
+    run. Do not
     reach for an identity default to make the check pass. A parameter's
     identity DEFAULT is a different thing and stays legitimate: it is the
     contract's back-compatible absent-means-unmasked answer, and what the
@@ -499,10 +500,11 @@ implementation. Three details are worth copying:
     — the custom-resource RESPONSE field of the same name — IS covered since
     issue [#2274](https://github.com/go-to-k/cdkd/issues/2274), through
     `noEchoAttributes` above; the two share only a spelling, so do not read one
-    as closing the other. `delete()` has no
-    masker — see `SecretMaskingContext` for why that is a statement about
-    providers rather than about the bag, and why you must thread the capability
-    BEFORE adding any delete-side log line that names a property value.
+    as closing the other. `delete()` receives the masker as
+    `DeleteContext.maskSecrets` since issue
+    [#2007](https://github.com/go-to-k/cdkd/issues/2007): a replacement's or a
+    rollback's delete bag and physical id can carry plaintext, so apply it to
+    any delete-side line that names a bag value or the physical id.
     **Mask where the message is CONSTRUCTED, not where the arm catches it, when
     the service reports rejections through an operation poller.** For an
     operation-based API (AWS Cloud Map's `Create*Namespace` / `Update*Namespace`
@@ -520,9 +522,9 @@ implementation. Three details are worth copying:
     `ErrorMessage` at construction, and it takes the masker from every
     CREATE / UPDATE caller rather than only the newly-threaded ones — an arm
     fixed by an earlier pass is not evidence that its poller was. The DELETE
-    callers stay unthreaded, which is the contract above rather than an
-    oversight: `DeleteContext` carries no masker, and their payload is a
-    physical id rather than a resolved property bag.
+    callers pass no masker to the poller: their payload is a physical id, and
+    their lines are masked by the printing bag the delete's caller binds
+    (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)).
     The reference implementation
     is `buildMfaConfigRequest` in
     [src/provisioning/providers/cognito-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/cognito-provider.ts),

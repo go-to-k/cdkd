@@ -7,11 +7,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * `parseLambdaPayload` refuses a payload that is not a cfn-response shape and
  * QUOTES THE WHOLE PARSED PAYLOAD. A handler routinely echoes its
  * `ResourceProperties` back in `Data`, and those arrive RESOLVED, so that
- * payload can carry plaintext. The site has TWO arms: the create / update paths
- * thread `maskerOrIdentity(context?.maskSecrets)`, and the DELETE path threads
- * `DELETE_PATH_UNMASKED` (`undefined`) because `DeleteContext` carries no
- * masker by the `SecretMaskingContext` contract. This file measures the MASKED
- * arm.
+ * payload can carry plaintext. The site has TWO arms: one for a caller that
+ * threads `maskSecrets` (create / update, and since go-to-k/cdkd#2007 a delete
+ * too), and an unmasked one for a delete whose caller passed none
+ * (`deletePathMasker`). This file measures the MASKED arm, on every path.
  *
  * HOW THE MESSAGE IS OBSERVED, and why it is not read off a logger or a
  * rejection. `parseLambdaPayload` is module-private and its only caller wraps
@@ -233,6 +232,97 @@ describe('CustomResourceProvider masks the invalid-payload refusal (issue #2178)
 
     expect(rendered).toContain(RAW_RENDERING);
     expect(rendered).toContain(SECRET_PLAINTEXT);
+  });
+
+  // go-to-k/cdkd#2007: an in-process rollback hands `delete()` the resolved
+  // bag, and the handler echoes it back the same way.
+  it('masks the resolved secret in the payload the delete() refusal renders', async () => {
+    wireFlow(BAD_PAYLOAD);
+
+    const rendered = await renderingsDuring(() =>
+      provider.delete('MyCR', 'phys-2178', RESOURCE_TYPE, { ServiceToken: SERVICE_TOKEN }, {
+        maskSecrets: maskSecrets(),
+      })
+    );
+
+    expect(rendered).toContain(MASKED_RENDERING);
+    expect(rendered).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  // Both maskers at once: the caller's, and the one over the NoEcho values a
+  // replacement delete re-resolved (go-to-k/cdkd#4682). Neither alone suffices.
+  it('masks both the caller secret and a re-resolved NoEcho value on a delete', async () => {
+    const NOECHO = 'customres2007-noecho-plaintext';
+    wireFlow(
+      `{"PhysicalResourceId":{"nested":{"bad":"${SECRET_PLAINTEXT}","echo":"${NOECHO}"}}}`
+    );
+
+    const rendered = await renderingsDuring(() =>
+      provider.delete(
+        'MyCR',
+        'phys-2178',
+        RESOURCE_TYPE,
+        { ServiceToken: SERVICE_TOKEN, Pw: SECRET_MASK },
+        {
+          maskSecrets: maskSecrets(),
+          recordedNoEchoLeaves: [['Pw']],
+          noEchoDeleteValues: {
+            leaves: [{ coordinate: ['Pw'], value: NOECHO }],
+            maskSecrets: (text) => text.split(NOECHO).join(SECRET_MASK),
+          },
+        }
+      )
+    );
+
+    // The refusal's own rendering: the request sent to the handler is
+    // stringified too, and legitimately carries the NoEcho value.
+    const refusal = rendered.split('\n---\n').filter((r) => r.includes('"nested"'));
+    expect(refusal.length).toBeGreaterThan(0);
+    expect(refusal.join('\n')).toContain('"echo":');
+    expect(refusal.join('\n')).not.toContain(SECRET_PLAINTEXT);
+    expect(refusal.join('\n')).not.toContain(NOECHO);
+  });
+
+  // The NoEcho masker runs FIRST: a caller needle inside a longer NoEcho value
+  // must not cut it, or the NoEcho value's head and tail print.
+  it('masks a re-resolved NoEcho value that CONTAINS a caller secret whole', async () => {
+    const NOECHO = `noechohead-${SECRET_PLAINTEXT}-noechotail`;
+    wireFlow(`{"PhysicalResourceId":{"nested":{"echo":"${NOECHO}"}}}`);
+
+    const rendered = await renderingsDuring(() =>
+      provider.delete(
+        'MyCR',
+        'phys-2178',
+        RESOURCE_TYPE,
+        { ServiceToken: SERVICE_TOKEN, Pw: SECRET_MASK },
+        {
+          maskSecrets: maskSecrets(),
+          recordedNoEchoLeaves: [['Pw']],
+          noEchoDeleteValues: {
+            leaves: [{ coordinate: ['Pw'], value: NOECHO }],
+            maskSecrets: (text) => text.split(NOECHO).join(SECRET_MASK),
+          },
+        }
+      )
+    );
+
+    const refusal = rendered
+      .split('\n---\n')
+      .filter((r) => r.includes('"nested"'))
+      .join('\n');
+    expect(refusal).toContain(`"echo":"${SECRET_MASK}"`);
+    expect(refusal).not.toContain('noechohead');
+    expect(refusal).not.toContain('noechotail');
+  });
+
+  it('leaves the delete() rendering INTACT when the caller passes no masker — the control', async () => {
+    wireFlow(BAD_PAYLOAD);
+
+    const rendered = await renderingsDuring(() =>
+      provider.delete('MyCR', 'phys-2178', RESOURCE_TYPE, { ServiceToken: SERVICE_TOKEN })
+    );
+
+    expect(rendered).toContain(RAW_RENDERING);
   });
 
   it('does not mangle a non-secret payload when a masker IS supplied', async () => {

@@ -26,6 +26,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import { generateResourceName } from '../resource-name.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -81,9 +82,12 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  *    DIFFERENT bucket, and both characters pass sanitizing and quoting
  *    unchanged. An empty name is suppressed for the same reason (`s3://` names
  *    no bucket at all).
- *  - **No `maskSecrets` is passed.** `DeleteContext` carries no masker by
- *    contract (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007) tracks
- *    the threading), and an identity masker would claim a check that never ran.
+ *  - **The caller's `DeleteContext.maskSecrets` decides whether the name may
+ *    be shown at all** (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)):
+ *    a name the masker changes is secret-derived, so the prose shows it masked
+ *    and NO command is printed for it, since `aws s3 rm s3://***` names no
+ *    bucket. Every cdkd delete site passes one (`cdkd destroy` its printing bag
+ *    of secret-derived names); absent leaves the name as is.
  *
  * The PROSE name goes through `displayIdent`, because this message is
  * persisted: a control byte or a newline in it would otherwise forge lines in
@@ -97,26 +101,36 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
  * here). A logical id containing the needle would otherwise have its non-empty
  * bucket read as gone; both classifiers skip a marked error.
  */
-function notEmptyRefusalMessage(bucketName: string): string {
+function notEmptyRefusalMessage(bucketName: string, maskSecrets: MaskerFn | undefined): string {
+  const mask = maskerOrIdentity(maskSecrets);
+  const secretDerived = mask(bucketName) !== bucketName;
   const nameable =
     bucketName !== '' &&
     !bucketName.includes('/') &&
     displaySafe(bucketName, { asciiOnly: true }) === bucketName;
-  const command = nameable
-    ? renderDisableCommand({
-        before: 'aws s3 rm',
-        identifier: `s3://${bucketName}`,
-        after: '--recursive',
-      })
-    : '';
+  // Decided on the bare NAME, where the masker's whole-value arm reaches a
+  // secret below its substring floor; the renderer only sees `s3://<name>`.
+  const command =
+    nameable && !secretDerived
+      ? renderDisableCommand({
+          before: 'aws s3 rm',
+          identifier: `s3://${bucketName}`,
+          after: '--recursive',
+        })
+      : '';
   const remedy = command
     ? `Delete all objects first (e.g. ${command}) and destroy again.`
-    : 'Delete all objects first, via the console, and destroy again: the bucket name cdkd ' +
-      'recorded cannot be reproduced safely on a command line, so any command shown here could ' +
-      'act on a different bucket or run part of the name as shell.';
-  return (
-    `bucket ${displayIdent(bucketName)} is not empty. Matching CloudFormation, cdkd does not ` +
-    `delete a non-empty directory bucket without an explicit opt-in. ${remedy}`
+    : secretDerived
+      ? 'Delete all objects first, via the console, and destroy again: the bucket name is ' +
+        'derived from a secret, so cdkd does not print it.'
+      : 'Delete all objects first, via the console, and destroy again: the bucket name cdkd ' +
+        'recorded cannot be reproduced safely on a command line, so any command shown here could ' +
+        'act on a different bucket or run part of the name as shell.';
+  // The name masked as a VALUE first, so a secret below the masker's
+  // substring floor is caught too, then the whole message.
+  return mask(
+    `bucket ${displayIdent(mask(bucketName))} is not empty. Matching CloudFormation, cdkd does not ` +
+      `delete a non-empty directory bucket without an explicit opt-in. ${remedy}`
   );
 }
 
@@ -487,14 +501,24 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting S3 Express Directory Bucket ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the physical id is the bucket name, which can be
+    // secret-derived.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    this.logger.debug(
+      mask(`Deleting S3 Express Directory Bucket ${logicalId}: ${mask(physicalId)}`)
+    );
 
     const allowAutoEmpty =
       context?.forceDataDelete === true ||
       hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
 
     try {
-      await this.deleteBucketWithEmptyRetry(logicalId, physicalId, allowAutoEmpty);
+      await this.deleteBucketWithEmptyRetry(
+        logicalId,
+        physicalId,
+        allowAutoEmpty,
+        context?.maskSecrets
+      );
     } catch (error) {
       // Bucket not found = already deleted (idempotent)
       if (
@@ -509,12 +533,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(mask(`Bucket ${mask(physicalId)} does not exist, skipping deletion`));
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        mask(
+          `Failed to delete S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -536,8 +562,10 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private async deleteBucketWithEmptyRetry(
     logicalId: string,
     bucketName: string,
-    allowAutoEmpty: boolean
+    allowAutoEmpty: boolean,
+    maskSecrets: MaskerFn | undefined
   ): Promise<void> {
+    const mask = maskerOrIdentity(maskSecrets);
     const maxAttempts = 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -551,12 +579,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         const msg = describeAwsFailure(error).detail;
         if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
           if (!allowAutoEmpty) {
-            throw markNonRetryable(new Error(notEmptyRefusalMessage(bucketName)));
+            throw markNonRetryable(new Error(notEmptyRefusalMessage(bucketName, maskSecrets)));
           }
           this.logger.info(
-            `Directory bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying (auto-delete opt-in present)...`
+            mask(
+              `Directory bucket ${mask(bucketName)} not empty (attempt ${attempt}/${maxAttempts}), emptying (auto-delete opt-in present)...`
+            )
           );
-          await this.emptyBucket(bucketName);
+          await this.emptyBucket(bucketName, mask);
           continue;
         }
         throw error;
@@ -571,7 +601,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * Empty all objects from a directory bucket.
    * Lists and deletes objects in batches of 1000.
    */
-  private async emptyBucket(bucketName: string): Promise<void> {
+  private async emptyBucket(bucketName: string, mask: MaskerFn): Promise<void> {
     let continuationToken: string | undefined;
 
     do {
@@ -597,7 +627,9 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
             },
           })
         );
-        this.logger.debug(`Deleted ${objects.length} objects from bucket ${bucketName}`);
+        this.logger.debug(
+          mask(`Deleted ${objects.length} objects from bucket ${mask(bucketName)}`)
+        );
       }
 
       continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined;

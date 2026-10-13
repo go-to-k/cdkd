@@ -189,7 +189,8 @@ function tableIdDecodeFailure(
   options?: { readonly skipping?: boolean; readonly mask?: MaskerFn }
 ): string {
   // The id is masked RAW before it joins the sentence (issue #2177): an update
-  // passes its operation's masker, and the delete path has none (#2007).
+  // passes its operation's masker, a delete its `DeleteContext.maskSecrets`
+  // (#2007).
   const shownId = options?.mask ? options.mask(physicalId) : physicalId;
   const head = compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, shownId, options);
   const longId = physicalId.indexOf('|') !== physicalId.lastIndexOf('|');
@@ -394,7 +395,8 @@ function notFoundInCatalog(
 /**
  * Human-readable name for the catalog a call addressed, for log messages. A
  * create / update passes its operation's masker, which sees the id RAW
- * (issue #2177); the delete path has none (#2007).
+ * (issue #2177). The delete path names only a catalog id it could not use (an
+ * unresolved intrinsic), which no masker would change.
  */
 function describeCatalog(catalogId: string | undefined, mask: MaskerFn = (text) => text): string {
   return catalogId === undefined
@@ -1407,7 +1409,9 @@ export class GlueProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting Glue Database ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Deleting Glue Database ${logicalId}: ${log.value(physicalId)}`);
 
     // go-to-k/cdkd#3952: a redacted CatalogId names no catalog, and the
     // NotFound arm below reads a miss as "already deleted".
@@ -1444,12 +1448,14 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(this.logger, target, 'Database', logicalId, physicalId);
+        logCatalogScopedDeleteSkip(log, target, 'Database', logicalId, log.value(physicalId));
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -1842,7 +1848,15 @@ export class GlueProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    // Each `<database>|<table>` part masked as a VALUE, so a part below the
+    // masker's substring floor is caught too.
+    const shownId = physicalId
+      .split('|')
+      .map((part) => log.value(part))
+      .join('|');
+    log.debug(`Deleting Glue Table ${logicalId}: ${shownId}`);
 
     // The bag's `DatabaseName` only DISAMBIGUATES the id; it never stands in
     // for one. An id that does not start with it and is not an exact
@@ -1851,7 +1865,10 @@ export class GlueProvider implements ResourceProvider {
     const decoded = decodeTableId(physicalId, properties);
     if (!decoded) {
       this.logger.warn(
-        tableIdDecodeFailure(logicalId, physicalId, [properties], { skipping: true })
+        tableIdDecodeFailure(logicalId, physicalId, [properties], {
+          skipping: true,
+          mask: log.mask,
+        })
       );
       // Issue #1752: report the SKIP rather than returning void. A bare
       // `return` here is indistinguishable from a completed delete, so the
@@ -1900,12 +1917,14 @@ export class GlueProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(this.logger, target, 'Table', logicalId, physicalId);
+        logCatalogScopedDeleteSkip(log, target, 'Table', logicalId, shownId);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -5008,7 +5027,10 @@ export class GlueCrawlerProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting Glue Crawler ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the crawler name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Deleting Glue Crawler ${logicalId}: ${v(physicalId)}`);
     try {
       await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
     } catch (error) {
@@ -5021,23 +5043,23 @@ export class GlueCrawlerProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Glue Crawler ${physicalId} does not exist, skipping deletion`);
+        log.debug(`Glue Crawler ${v(physicalId)} does not exist, skipping deletion`);
         return;
       }
       // A crawler that is mid-run rejects DeleteCrawler with
       // CrawlerRunningException. Stop it, wait for it to settle, then retry the
       // delete so destroy does not fail on an actively-crawling crawler.
       if (error instanceof CrawlerRunningException) {
-        this.logger.debug(
-          `Glue Crawler ${physicalId} is running; stopping before delete and retrying`
-        );
-        await this.stopCrawlerAndWait(physicalId);
+        log.debug(`Glue Crawler ${v(physicalId)} is running; stopping before delete and retrying`);
+        await this.stopCrawlerAndWait(physicalId, log);
         await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -5055,8 +5077,8 @@ export class GlueCrawlerProvider implements ResourceProvider {
    */
   private async stopCrawlerAndWait(
     physicalId: string,
-    // An update passes its masked sink (issue #2177); `delete()` has no masker
-    // to thread (#2007), so it logs through the plain logger.
+    // An update passes its masked sink (issue #2177), `delete()` one over its
+    // `DeleteContext.maskSecrets` (#2007).
     log: Pick<MaskedLogSinks, 'debug' | 'value'> = {
       debug: (message) => this.logger.debug(message),
       value: (value) => String(value),
@@ -5530,7 +5552,9 @@ export class GlueConnectionProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting Glue Connection ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the name can be secret-derived.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    log.debug(`Deleting Glue Connection ${logicalId}: ${log.value(physicalId)}`);
     // Same catalog-scoping rule as the Table / Database deletes — see
     // {@link deleteCatalogId} (issue #1675). This call already forwarded
     // `CatalogId`, but through a bare cast that would have sent an unresolved
@@ -5568,12 +5592,14 @@ export class GlueConnectionProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        logCatalogScopedDeleteSkip(this.logger, target, 'Connection', logicalId, physicalId);
+        logCatalogScopedDeleteSkip(log, target, 'Connection', logicalId, log.value(physicalId));
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,

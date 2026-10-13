@@ -1,6 +1,6 @@
 import { ProvisioningError } from '../utils/error-handler.js';
 import type { SecretPrincipalRetryMemo } from './secret-principal-resolution.js';
-import type { InlinePolicyClaimed } from '../types/resource.js';
+import type { InlinePolicyClaimed, SecretMaskingContext } from '../types/resource.js';
 import type {
   NoEchoDeleteValues,
   TemplateNoEchoReresolver,
@@ -20,8 +20,15 @@ import type {
  * use it to verify that a `NotFound` error from the AWS client is genuinely
  * "the resource is gone", and not a silent miss caused by the client
  * pointing at a different region than where the resource actually lives.
+ *
+ * `maskSecrets` (inherited from {@link SecretMaskingContext}, issue
+ * [#2007](https://github.com/go-to-k/cdkd/issues/2007)) is set by every cdkd
+ * delete site: over the bag the deploy resolved (replacement
+ * deletes), over the op's and the failed deploy's (rollback replay deletes),
+ * or over the printing bag of the record's secret-derived names (`cdkd
+ * destroy`, and a deploy's delete of a resource the template dropped).
  */
-export interface DeleteContext {
+export interface DeleteContext extends SecretMaskingContext {
   /**
    * Region recorded in the stack state when the resource was created.
    * Optional: when omitted (or set to undefined), providers preserve their

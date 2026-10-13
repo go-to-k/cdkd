@@ -690,7 +690,8 @@ describe('provider secret-mask critic — the real tree', () => {
       .map((site) => `${site.file.replace('src/provisioning/providers/', '')} ${site.expression}`)
       .sort();
     expect(exempt).toEqual([
-      // Delete path: `DeleteContext` carries no masker by the contract.
+      // Delete path: the arm for a direct caller passing no
+      // `DeleteContext.maskSecrets` (go-to-k/cdkd#2007).
       'custom-resource-provider.ts parsed',
       // Import path: `resolvePhysicalId` reads an UNRESOLVED template.
       's3-bucket-policy-provider.ts bucket',
@@ -855,8 +856,8 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
 
   it('FAILS a new site whose mask is the shared walk handed an IDENTITY', () => {
     // The REAL-CODE twin of the classifier cases, in the shape a contributor
-    // would actually introduce it: a named module-scope constant, exactly like
-    // the `DELETE_PATH_UNMASKED` already in this tree, handed to `maskDeep`.
+    // would actually introduce it: a named module-scope constant (the shape
+    // the retired `DELETE_PATH_UNMASKED` had), handed to `maskDeep`.
     // This spelling shipped ACCEPTED in the first cut of the identity rule --
     // 41 sites / 37 masked became 42 / 38 at exit 0 -- because the rule only
     // refused the name as a derivation ROOT and the callee `maskDeep` is a root

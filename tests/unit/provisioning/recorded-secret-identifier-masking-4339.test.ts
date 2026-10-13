@@ -417,8 +417,7 @@ describe('IAM ManagedPolicy: a rotated secret-derived Path replaces the policy',
         oldArn,
         'AWS::IAM::ManagedPolicy',
         undefined,
-        undefined,
-        mask
+        { maskSecrets: mask }
       )
     );
     expect(error.message).toContain('Failed to delete IAM managed policy Policy');
@@ -440,8 +439,7 @@ describe('IAM ManagedPolicy: a rotated secret-derived Path replaces the policy',
       oldArn,
       'AWS::IAM::ManagedPolicy',
       undefined,
-      undefined,
-      mask
+      { maskSecrets: mask }
     );
     const gone = lines(debugSpy).find((l) => l.includes('does not exist, skipping deletion'));
     expect(gone).toBeDefined();

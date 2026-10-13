@@ -85,15 +85,6 @@ export class IAMRoleProvider implements ResourceProvider {
     return wrapMaskedAwsError(mask, error, build);
   }
 
-  /**
-   * The sinks the DELETE path hands the cleanup helpers it shares with
-   * `create()`: `DeleteContext` carries no masker (issue #2007), so these are
-   * identity. Spelled at the call site rather than as a parameter default, so a
-   * create-path caller that forgets its own sinks is a type error.
-   */
-  private unmaskedDeleteSinks(): MaskedLogSinks {
-    return createMaskedLogSinks(this.logger, undefined);
-  }
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::IAM::Role',
@@ -553,7 +544,10 @@ export class IAMRoleProvider implements ResourceProvider {
       // longer in cdkd state.
       let orphanReason: string | undefined;
       try {
-        const deleteResult = await this.delete(logicalId, physicalId, resourceType);
+        // The OLD name can be secret-derived too (go-to-k/cdkd#2007).
+        const deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
+          maskSecrets: log.mask,
+        });
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path
         // that would have told the user the old role is still there.
@@ -742,7 +736,11 @@ export class IAMRoleProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting IAM role ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the role name can be secret-derived. One sink set for
+    // the whole delete, the cleanup helpers it shares with `update()` included.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Deleting IAM role ${logicalId}: ${v(physicalId)}`);
 
     try {
       // Check if role exists
@@ -758,29 +756,31 @@ export class IAMRoleProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`Role ${physicalId} does not exist, skipping deletion`);
+          log.debug(`Role ${v(physicalId)} does not exist, skipping deletion`);
           return;
         }
         throw error;
       }
 
       // Step 1: Detach all managed policies
-      await this.detachAllManagedPolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.detachAllManagedPolicies(physicalId, log);
 
       // Step 2: Delete all inline policies
-      await this.deleteAllInlinePolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.deleteAllInlinePolicies(physicalId, log);
 
       // Step 3: Remove role from all instance profiles
-      await this.removeFromAllInstanceProfiles(physicalId);
+      await this.removeFromAllInstanceProfiles(physicalId, log);
 
       // Step 4: Delete the role
       await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
 
-      this.logger.debug(`Successfully deleted IAM role ${logicalId}`);
+      log.debug(`Successfully deleted IAM role ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -795,7 +795,7 @@ export class IAMRoleProvider implements ResourceProvider {
   private async detachAllManagedPolicies(
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -850,7 +850,7 @@ export class IAMRoleProvider implements ResourceProvider {
   private async deleteAllInlinePolicies(
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -898,8 +898,12 @@ export class IAMRoleProvider implements ResourceProvider {
   /**
    * Remove the role from all instance profiles
    */
-  private async removeFromAllInstanceProfiles(roleName: string): Promise<void> {
-    this.logger.debug(`Removing role ${roleName} from all instance profiles`);
+  private async removeFromAllInstanceProfiles(
+    roleName: string,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const { value: v } = log;
+    log.debug(`Removing role ${v(roleName)} from all instance profiles`);
 
     try {
       const instanceProfiles = await this.iamClient.send(
@@ -908,7 +912,7 @@ export class IAMRoleProvider implements ResourceProvider {
 
       const profiles = instanceProfiles.InstanceProfiles || [];
       if (profiles.length === 0) {
-        this.logger.debug(`No instance profiles associated with role ${roleName}`);
+        log.debug(`No instance profiles associated with role ${v(roleName)}`);
         return;
       }
 
@@ -921,13 +925,13 @@ export class IAMRoleProvider implements ResourceProvider {
                 InstanceProfileName: profile.InstanceProfileName,
               })
             );
-            this.logger.debug(
-              `Removed role ${roleName} from instance profile ${profile.InstanceProfileName}`
+            log.debug(
+              `Removed role ${v(roleName)} from instance profile ${v(profile.InstanceProfileName)}`
             );
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
-              this.logger.debug(
-                `Role ${roleName} already removed from instance profile ${profile.InstanceProfileName}`
+              log.debug(
+                `Role ${v(roleName)} already removed from instance profile ${v(profile.InstanceProfileName)}`
               );
             } else {
               throw error;
@@ -936,10 +940,10 @@ export class IAMRoleProvider implements ResourceProvider {
         }
       }
 
-      this.logger.debug(`Removed role ${roleName} from ${profiles.length} instance profiles`);
+      log.debug(`Removed role ${v(roleName)} from ${profiles.length} instance profiles`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
-        this.logger.debug(`Role ${roleName} not found when removing from instance profiles`);
+        log.debug(`Role ${v(roleName)} not found when removing from instance profiles`);
         return;
       }
       throw error;

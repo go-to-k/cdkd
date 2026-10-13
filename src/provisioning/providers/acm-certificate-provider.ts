@@ -594,11 +594,13 @@ export class ACMCertificateProvider implements ResourceProvider {
       // warn-only treatment that preceded it (issue #1922).
       let orphanReason: string | undefined;
       try {
+        // go-to-k/cdkd#2007: the update's masker reaches the inner delete.
         const deleteResult = await this.delete(
           logicalId,
           physicalId,
           resourceType,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets ? { maskSecrets: context.maskSecrets } : undefined
         );
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path

@@ -481,8 +481,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           physicalId,
           resourceType,
           previousProperties,
-          undefined,
-          log.mask
+          { maskSecrets: log.mask }
         );
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path
@@ -634,13 +633,12 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
-    context?: DeleteContext,
-    // Internal, never passed by the engine: `update()`'s replacement arm hands
-    // its operation masker, which pairs the recorded name and path with the
-    // ARN (go-to-k/cdkd#4339). `DeleteContext` carries no masker yet
-    // (go-to-k/cdkd#2007), so an engine-driven delete is unmasked as before.
-    mask: MaskerFn = maskerOrIdentity(undefined)
+    context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
+    // The caller's masker (go-to-k/cdkd#2007); `update()`'s replacement arm
+    // hands its operation masker, which pairs the recorded name and path with
+    // the ARN (go-to-k/cdkd#4339).
+    const mask = maskerOrIdentity(context?.maskSecrets);
     this.logger.debug(mask(`Deleting IAM managed policy ${logicalId}: ${physicalId}`));
 
     try {

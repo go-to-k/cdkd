@@ -1,10 +1,44 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3express from 'aws-cdk-lib/aws-s3express';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 export class S3DirectoryBucketStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // go-to-k/cdkd#2007 (Phase 5): ONLY a directory bucket whose name is built
+    // from a Secrets Manager secret, `<secret>--<az id>--x-s3`. Each phase
+    // gives it an object, then deletes it through one delete site: a destroy,
+    // a rollback (S3DIR_FAIL=true adds RollbackBreaker, which SSM refuses
+    // after the bucket's create), or a deploy that drops it (S3DIR_DROP=true).
+    // That delete's not-empty refusal must not print an `aws s3 rm` for it.
+    const secretName = process.env.S3DIR_SECRET_NAME;
+    if (secretName) {
+      if (process.env.S3DIR_DROP === 'true') {
+        // Something for the dropped bucket's stack to keep.
+        new cdk.CfnWaitConditionHandle(this, 'KeepAlive');
+        return;
+      }
+      const azId = process.env.S3DIR_AZ_ID ?? 'use1-az4';
+      const secretBucket = new s3express.CfnDirectoryBucket(this, 'SecretNamedBucket', {
+        bucketName: cdk.Fn.join('', [
+          cdk.SecretValue.secretsManager(secretName).unsafeUnwrap(),
+          `--${azId}--x-s3`,
+        ]),
+        dataRedundancy: 'SingleAvailabilityZone',
+        locationName: `${this.region}c--x-s3`,
+      });
+      if (process.env.S3DIR_FAIL === 'true') {
+        const breaker = new ssm.CfnParameter(this, 'RollbackBreaker', {
+          type: 'String',
+          tier: 'Standard',
+          value: 'x'.repeat(5000),
+        });
+        breaker.addDependency(secretBucket);
+      }
+      return;
+    }
 
     // S3 Express Directory Bucket WITHOUT the auto-delete opt-in: the
     // destroy data guard (issue #1344) must refuse to delete it while it

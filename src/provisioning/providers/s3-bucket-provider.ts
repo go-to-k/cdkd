@@ -5048,8 +5048,10 @@ export class S3BucketProvider implements ResourceProvider {
    * {@link shown} masks each interpolated value RAW, the only arm a secret
    * shorter than `MIN_NEEDLE_LENGTH` reaches. A fresh object per call (its
    * prototype is `this`), like {@link noWriteProbe}, so concurrent resources on
-   * this singleton never share a masker. `delete()` does not build one: it has
-   * no masker to thread (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)).
+   * this singleton never share a masker. `delete()` does not build one: every
+   * caller holding a resolved bag runs the delete under it as a PRINTING bag
+   * (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)), so the
+   * logger's sink masks its lines.
    */
   private maskedView(sinks: MaskedLogSinks): S3BucketProvider {
     const view = Object.create(this) as S3BucketProvider;

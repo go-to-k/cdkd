@@ -339,7 +339,11 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     // The persisted bag, never the resolved one handed to the re-create.
     expect(del.mock.calls[0]![3]).toEqual({ Name: 'stream-a' });
     expect(del.mock.calls[0]![2]).toBe(TYPE);
-    expect(del.mock.calls[0]![4]).toEqual({ expectedRegion: 'us-east-1', deletionPolicy: 'Delete' });
+    expect(del.mock.calls[0]![4]).toEqual({
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+      maskSecrets: expect.any(Function),
+    });
   });
 
   // Only a record of the made resource's own type holds it.

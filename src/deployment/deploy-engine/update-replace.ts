@@ -25,14 +25,19 @@ import {
   replacementOldHoldsSentName,
   replacementRequestsDifferentName,
 } from '../replacement-name-holder.js';
-import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
   markNonRetryable,
 } from '../retryable-errors.js';
-import { createSecretMasker, maskSecretsInError, maskSecretsInText } from '../secret-redaction.js';
+import {
+  createSecretMasker,
+  createUnionSecretMasker,
+  maskSecretsInError,
+  maskSecretsInText,
+} from '../secret-redaction.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -432,23 +437,31 @@ export async function updateByReplacement(
       );
       let recreateDeleteResult: void | ResourceDeleteResult;
       try {
-        recreateDeleteResult = await oldDeleteProvider.delete(
-          logicalId,
-          currentResource.physicalId,
-          oldResourceType,
-          currentResource.properties,
-          {
-            expectedRegion: this.stackRegion,
-            forceDataDelete: this.options.forceStatefulRecreation === true,
-            ...(recreateFinalSnapshotId !== undefined && {
-              finalSnapshotIdentifier: recreateFinalSnapshotId,
-            }),
-            ...this.replacementDeleteContext(updateReplacePolicy),
-            recordedAttributes: currentResource.attributes,
-            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-            recordedNoEchoLeaves: currentResource.noEchoLeaves,
-            ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-          }
+        recreateDeleteResult = await withPrintingSecrets(updateSecrets, () =>
+          oldDeleteProvider.delete(
+            logicalId,
+            currentResource.physicalId,
+            oldResourceType,
+            currentResource.properties,
+            {
+              expectedRegion: this.stackRegion,
+              forceDataDelete: this.options.forceStatefulRecreation === true,
+              ...(recreateFinalSnapshotId !== undefined && {
+                finalSnapshotIdentifier: recreateFinalSnapshotId,
+              }),
+              ...this.replacementDeleteContext(updateReplacePolicy),
+              recordedAttributes: currentResource.attributes,
+              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+              recordedNoEchoLeaves: currentResource.noEchoLeaves,
+              ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+              // go-to-k/cdkd#2007: the bag the call logs under and the delete
+              // error below is masked with.
+              maskSecrets: createUnionSecretMasker([
+                updateSecrets,
+                this.secretNameBagFor(logicalId),
+              ]),
+            }
+          )
         );
       } catch (deleteError) {
         // Re-throw so the deploy engine's existing rollback path

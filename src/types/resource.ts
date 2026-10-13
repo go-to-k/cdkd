@@ -502,51 +502,32 @@ export type { SecretMasker } from '../deployment/secret-redaction.js';
 
 /**
  * The masked-warning capability a caller may hand a provider (issue #1932
- * item 3), shared by {@link CreateContext} and {@link UpdateContext}.
+ * item 3), shared by {@link CreateContext}, {@link UpdateContext} and, since
+ * issue [#2007](https://github.com/go-to-k/cdkd/issues/2007), `DeleteContext`.
  *
- * **Declared ONCE and inherited by both on purpose.** The gap this closes is a
- * provider echoing a RESOLVED property value into its own log line, and
- * `create()` and `update()` are handed the SAME resolved bag by the same
- * callers — so a masker present on one and absent on the other is not a
- * partial fix, it is a fix with a hole in the shape of whichever path the
- * template happens to take on a given deploy. Putting the field on a shared
- * base makes the twin structural rather than a convention two doc comments
- * have to keep agreeing about.
+ * **Declared ONCE and inherited by all three on purpose.** The gap this closes
+ * is a provider echoing a RESOLVED value into its own log line, and a masker
+ * present on one path and absent on another is not a partial fix, it is a fix
+ * with a hole in the shape of whichever path the template happens to take.
+ * Putting the field on a shared base makes the twin structural rather than a
+ * convention doc comments have to keep agreeing about.
  *
- * **`DeleteContext` does NOT extend this, and the reason is a statement about
- * PROVIDERS, not about the bag.** An earlier version of this paragraph claimed
- * every `delete()` call site hands the provider a bag read from cdkd STATE,
- * which holds the redacted `{{resolve:...}}` expression rather than the
- * plaintext. That is FALSE, and the counter-example is the IN-PROCESS rollback:
- * a CREATE writes `properties: this.propertiesToRecord(resolvedProps, result)`
- * into the in-memory `stateResources` map (`deploy-engine.ts`), and redaction
- * happens at the SAVE choke point — `redactStateForPersist` builds a NEW
- * record via `scrubResourceRecord` and never mutates the in-memory one. So the
- * map `performRollback` hands `replayRollback` holds RESOLVED PLAINTEXT, and
- * the reverse-replacement delete arms read `current.properties` straight off
- * it. A delete bag CAN carry a secret.
- *
- * What is true is the narrower claim: **no provider `delete()` interpolates a
- * property value into a log line today**, so there is nothing to mask rather
- * than a masker that would find nothing.
- *
- * **Why the capability was not added here anyway** (issue #1932 review; the
- * reasoning is correctness, not effort). The plaintext in `current.properties`
- * on that path was resolved by the DEPLOY, whose bag lives in
- * `DeployEngine.perResourceSecrets`. `RollbackExecutorContext` has no secrets
- * field, and the executor's own per-op map is built by re-resolving
- * `previousState.properties` — the PREVIOUS generation. Binding a delete-side
- * masker to that map would produce one that misses exactly the value it exists
- * to catch whenever the two generations differ (a rotated secret, or a property
- * only the new generation carries): protection that fences nothing, which is
- * worse than none because it stops the next author looking. Doing it properly
- * needs a new field on `RollbackExecutorContext` plumbed from the engine, which
- * is its own change, filed as issue #2007.
- *
- * **So the rule for the next author is a MUST, not an option:** before adding
- * any `delete()` log line that interpolates a property value, thread the
- * capability first. Do not read the absence of `maskSecrets` on
- * `DeleteContext` as evidence that a delete bag is safe to print.
+ * **A delete bag CAN carry plaintext.** A CREATE writes the RESOLVED bag into
+ * the in-memory `stateResources` map, and redaction happens only at the SAVE
+ * choke point (`redactStateForPersist` builds a NEW record), so the map an
+ * in-process rollback replays holds plaintext, and its delete arms hand it to
+ * `delete()`. A physical id can also BE a secret-derived name on every path.
+ * So the deploy engine's replacement deletes pass a masker over the bag the
+ * deploy resolved for that resource, and the rollback replay's pass one over the op's
+ * own re-resolution AND the failed deploy's bag (`RollbackExecutorContext
+ * .logOnlyNeedlesFor`): the plaintext a rollback deletes was resolved by the
+ * DEPLOY, while the op's re-resolution is of the PREVIOUS generation, and a
+ * masker over only one of them misses a rotated secret. `cdkd destroy` and a
+ * deploy's delete of a resource the template dropped resolve nothing for it,
+ * but its persisted record can still be NAMED from a secret: they pass a
+ * masker over the printing bag the delete runs under (the record's
+ * secret-derived name spellings, go-to-k/cdkd#3869). Every cdkd delete site
+ * passes one; absent means a direct caller.
  */
 export interface SecretMaskingContext {
   /**
@@ -1196,6 +1177,8 @@ export interface ResourceProvider {
    *   `NotFound` as idempotent success when the AWS client's region does not
    *   match the region the resource was deployed to. See
    *   `src/provisioning/region-check.ts` for the shared verification helper.
+   *   Also `maskSecrets` (see {@link SecretMaskingContext}), which a provider
+   *   applies to any line naming a bag value or the physical id.
    * @returns Nothing (back-compat: means the resource was deleted), or a
    *   {@link ResourceDeleteResult} when the provider needs to say it did NOT
    *   address the resource. A warn-and-continue arm that issues no AWS call

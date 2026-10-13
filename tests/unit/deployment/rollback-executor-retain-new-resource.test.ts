@@ -176,6 +176,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
         expectedRegion: 'us-east-1',
         deletionPolicy: 'Delete',
         recordedAttributes: {},
+        maskSecrets: expect.any(Function),
       });
       expect(result.warnings).toBe(0);
     });

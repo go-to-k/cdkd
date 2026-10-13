@@ -18,6 +18,7 @@ import {
   parameterInputsFor,
 } from '../../../src/deployment/masked-property-fingerprints.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -324,6 +325,189 @@ describe('DeployEngine: NoEcho values on a replacement delete (go-to-k/cdkd#4682
       expect(topicDeleteContext()).not.toHaveProperty('noEchoDeleteValues');
     }
   });
+  // go-to-k/cdkd#2007: every replacement delete hands the provider the bag
+  // this deploy resolved, as `maskSecrets` AND as the printing bag its own
+  // log lines go through; the delete of a template-removed record, which
+  // resolved nothing for it, hands neither. `KEY` sits in a property no name
+  // rule reads, so no derived-name registry (go-to-k/cdkd#3869) knows it.
+  describe('the delete masker (go-to-k/cdkd#2007)', () => {
+    const KEY = 'deploy-noecho-key-2007';
+    const params = {
+      Secret: { Type: 'String', NoEcho: true, Default: VALUE },
+      KeySecret: { Type: 'String', NoEcho: true, Default: KEY },
+    };
+    let printed: string[];
+    beforeEach(() => {
+      printed = [];
+      provider.delete!.mockImplementation((logicalId: string) => {
+        if (logicalId === 'Topic') {
+          printed.push((currentLogLineMasker() ?? ((t: string) => t))(`line ${KEY}`));
+        }
+        return Promise.resolve(undefined);
+      });
+    });
+
+    function expectMasked(): void {
+      const mask = topicDeleteContext()['maskSecrets'] as (text: string) => string;
+      expect(mask(`x ${KEY}`)).toBe(`x ${SECRET_MASK}`);
+      expect(printed).toEqual([`line ${SECRET_MASK}`]);
+    }
+
+    it('on a recreate (`--recreate-via-sdk-provider`)', async () => {
+      stateBackend.getState!.mockResolvedValue({ state: state(), etag: 'etag-old' });
+      await makeEngine(recreate).deploy(
+        STACK,
+        templateOf(
+          { ServiceToken: TOKEN_ARN, TopicName: 'old-name', KmsMasterKeyId: { Ref: 'KeySecret' } },
+          params
+        )
+      );
+      expectMasked();
+    });
+
+    it('on a replacement created before the old copy is deleted', async () => {
+      stateBackend.getState!.mockResolvedValue({
+        state: state('AWS::SNS::Topic'),
+        etag: 'etag-old',
+      });
+      await makeEngine().deploy(
+        STACK,
+        templateOf(
+          { TopicName: 'new-name', KmsMasterKeyId: { Ref: 'KeySecret' } },
+          params,
+          'AWS::SNS::Topic'
+        )
+      );
+      expectMasked();
+    });
+
+    it('on a `--replace` delete-first, after a name-idempotent create returned the old copy', async () => {
+      stateBackend.getState!.mockResolvedValue({
+        state: state('AWS::SNS::Topic'),
+        etag: 'etag-old',
+      });
+      provider.create!.mockResolvedValue({
+        physicalId: 'arn:aws:sns:us-east-1:123456789012:old-name',
+        attributes: {},
+      });
+      await makeEngine({ replace: true }).deploy(
+        STACK,
+        templateOf(
+          { TopicName: 'old-name', FifoTopic: true, KmsMasterKeyId: { Ref: 'KeySecret' } },
+          params,
+          'AWS::SNS::Topic'
+        )
+      );
+      expectMasked();
+    });
+
+    it('on the update-failure fallback replacement', async () => {
+      stateBackend.getState!.mockResolvedValue({ state: state(), etag: 'etag-old' });
+      provider.update!.mockRejectedValue(new ResourceUpdateNotSupportedError(CR, 'Topic'));
+      await makeEngine({ replace: true }).deploy(
+        STACK,
+        templateOf(
+          { ServiceToken: TOKEN_ARN, TopicName: 'changed', KmsMasterKeyId: { Ref: 'KeySecret' } },
+          params
+        )
+      );
+      expectMasked();
+    });
+
+    // A name the registry of secret-named records holds (go-to-k/cdkd#3869)
+    // but no bag of this deploy does: the old copy was named from a secret
+    // reference that has since rotated. Every replacement arm.
+    const ROTATED = 'rotated-away-name-2007';
+    const ROTATED_ARN = `arn:aws:sns:us-east-1:123456789012:${ROTATED}`;
+    function rotatedRecord(resourceType: string): StackState {
+      const recorded = state(resourceType);
+      recorded.resources['Topic']!.physicalId = ROTATED_ARN;
+      recorded.resources['Topic']!.properties = {
+        ...(resourceType === CR ? { ServiceToken: TOKEN_ARN } : {}),
+        TopicName: '{{resolve:secretsmanager:topic-name:SecretString:::}}',
+        DisplayName: SECRET_MASK,
+      };
+      return recorded;
+    }
+    it.each([
+      [
+        'a replacement created before the old copy is deleted',
+        async () => {
+          stateBackend.getState!.mockResolvedValue({
+            state: rotatedRecord('AWS::SNS::Topic'),
+            etag: 'etag-old',
+          });
+          await makeEngine().deploy(
+            STACK,
+            templateOf({ TopicName: 'new-name' }, params, 'AWS::SNS::Topic')
+          );
+        },
+      ],
+      [
+        'a `--replace` delete-first',
+        async () => {
+          stateBackend.getState!.mockResolvedValue({
+            state: rotatedRecord('AWS::SNS::Topic'),
+            etag: 'etag-old',
+          });
+          provider.create!.mockResolvedValue({ physicalId: ROTATED_ARN, attributes: {} });
+          await makeEngine({ replace: true }).deploy(
+            STACK,
+            templateOf({ TopicName: 'new-name', FifoTopic: true }, params, 'AWS::SNS::Topic')
+          );
+        },
+      ],
+      [
+        'a recreate',
+        async () => {
+          stateBackend.getState!.mockResolvedValue({ state: rotatedRecord(CR), etag: 'etag-old' });
+          await makeEngine(recreate).deploy(
+            STACK,
+            templateOf({ ServiceToken: TOKEN_ARN, TopicName: 'new-name' }, params)
+          );
+        },
+      ],
+      [
+        'the update-failure fallback replacement',
+        async () => {
+          stateBackend.getState!.mockResolvedValue({ state: rotatedRecord(CR), etag: 'etag-old' });
+          provider.update!.mockRejectedValue(new ResourceUpdateNotSupportedError(CR, 'Topic'));
+          await makeEngine({ replace: true }).deploy(
+            STACK,
+            templateOf({ ServiceToken: TOKEN_ARN, TopicName: 'changed' }, params)
+          );
+        },
+      ],
+    ])("masks the old copy's rotated secret-derived name on %s", async (_label, run) => {
+      await run();
+      const del = provider.delete!.mock.calls.filter((c) => c[0] === 'Topic');
+      expect(del.map((c) => c[1])).toEqual([ROTATED_ARN]);
+      const mask = (del[0]![4] as Record<string, unknown>)['maskSecrets'] as (t: string) => string;
+      expect(mask(`x ${ROTATED}`)).not.toContain(ROTATED);
+    });
+
+    // A template-dropped record resolves nothing this deploy, so its masker is
+    // the derived-name registry alone: the record's secret-derived name, never
+    // a value of a resource it no longer reads.
+    it("on the delete of a resource the template removed: the record's own secret-derived name only", async () => {
+      stateBackend.getState!.mockResolvedValue({
+        state: rotatedRecord('AWS::SNS::Topic'),
+        etag: 'etag-old',
+      });
+      await makeEngine().deploy(STACK, {
+        Parameters: params,
+        Resources: {
+          Other: { Type: 'AWS::SNS::Topic', Properties: { KmsMasterKeyId: { Ref: 'KeySecret' } } },
+        },
+      } as CloudFormationTemplate);
+      const mask = topicDeleteContext()['maskSecrets'] as (text: string) => string;
+      expect(mask).toBeTypeOf('function');
+      expect(mask(`x ${ROTATED}`)).not.toContain(ROTATED);
+      expect(mask(`x ${KEY}`)).toBe(`x ${KEY}`);
+      expect(printed).toEqual([`line ${KEY}`]);
+    });
+  });
+
   it('delivers the value on the update-failure fallback replacement (`--replace` after an unsupported update)', async () => {
     stateBackend.getState!.mockResolvedValue({ state: state(), etag: 'etag-old' });
     provider.update!.mockRejectedValue(new ResourceUpdateNotSupportedError(CR, 'Topic'));

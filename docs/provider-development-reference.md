@@ -85,7 +85,7 @@ second column says what goes wrong when the rule is broken.
 | --- | --- |
 | Take the region from `ambientRegion()` and credentials from `getAwsClients()` or `ambientClientDefaults()` | A multi-region deploy calls the wrong region |
 | Register only in `registerAllProviders`, and never import a provider module statically | Every command loads the SDK client at startup |
-| Pass any log line that includes a resolved property value through `context.maskSecrets`, which `create` and `update` receive | A resolved secret is printed |
+| Pass any log line that includes a resolved property value through `context.maskSecrets`, which `create`, `update` and `delete` receive | A resolved secret is printed |
 
 ## A retry loop inside a provider must honor Ctrl-C
 

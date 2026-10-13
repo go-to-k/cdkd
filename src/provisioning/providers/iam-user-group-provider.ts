@@ -305,16 +305,6 @@ export class IAMUserGroupProvider implements ResourceProvider {
     return wrapMaskedAwsError(mask, error, build);
   }
 
-  /**
-   * The sinks the DELETE path hands the cleanup helpers it shares with
-   * `create()`: `DeleteContext` carries no masker (issue #2007), so these are
-   * identity. Spelled at the call site rather than as a parameter default, so a
-   * create-path caller that forgets its own sinks is a type error.
-   */
-  private unmaskedDeleteSinks(): MaskedLogSinks {
-    return createMaskedLogSinks(this.logger, undefined);
-  }
-
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::IAM::User',
@@ -860,7 +850,11 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting IAM user ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the user name can be secret-derived. One sink set for
+    // the whole delete, the cleanup helpers it shares with `update()` included.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Deleting IAM user ${logicalId}: ${v(physicalId)}`);
 
     try {
       // Check if user exists
@@ -876,25 +870,25 @@ export class IAMUserGroupProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`User ${physicalId} does not exist, skipping deletion`);
+          log.debug(`User ${v(physicalId)} does not exist, skipping deletion`);
           return;
         }
         throw error;
       }
 
       // Step 1: Remove from all groups
-      await this.removeUserFromAllGroups(physicalId, this.unmaskedDeleteSinks());
+      await this.removeUserFromAllGroups(physicalId, log);
 
       // Step 2: Detach all managed policies
-      await this.detachAllUserPolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.detachAllUserPolicies(physicalId, log);
 
       // Step 3: Delete all inline policies
-      await this.deleteAllUserInlinePolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.deleteAllUserInlinePolicies(physicalId, log);
 
       // Step 4: Delete login profile if exists
       try {
         await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: physicalId }));
-        this.logger.debug(`Deleted login profile for user ${physicalId}`);
+        log.debug(`Deleted login profile for user ${v(physicalId)}`);
       } catch (error) {
         if (!(error instanceof NoSuchEntityException)) {
           throw error;
@@ -902,7 +896,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       // Step 5: Delete all access keys
-      await this.deleteAllAccessKeys(physicalId);
+      await this.deleteAllAccessKeys(physicalId, log);
 
       // Step 6: Delete permissions boundary if exists
       try {
@@ -918,11 +912,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // Step 7: Delete the user
       await this.iamClient.send(new DeleteUserCommand({ UserName: physicalId }));
 
-      this.logger.debug(`Successfully deleted IAM user ${logicalId}`);
+      log.debug(`Successfully deleted IAM user ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete IAM user ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete IAM user ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -948,7 +944,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async removeUserFromAllGroups(
     userName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -983,7 +979,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async deleteAllAccessKeys(userName: string): Promise<void> {
+  private async deleteAllAccessKeys(userName: string, log: MaskedLogSinks): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(new ListAccessKeysCommand({ UserName: userName }));
 
@@ -996,7 +993,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
               AccessKeyId: key.AccessKeyId,
             })
           );
-          this.logger.debug(`Deleted access key ${key.AccessKeyId} for user ${userName}`);
+          log.debug(`Deleted access key ${key.AccessKeyId} for user ${v(userName)}`);
         }
       }
     } catch (error) {
@@ -1010,7 +1007,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async detachAllUserPolicies(
     userName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -1048,7 +1045,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async deleteAllUserInlinePolicies(
     userName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -1463,22 +1460,25 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting IAM group ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: as on the user delete.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    const { value: v } = log;
+    log.debug(`Deleting IAM group ${logicalId}: ${v(physicalId)}`);
 
     try {
       // Step 1: Detach all managed policies
-      await this.detachAllGroupPolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.detachAllGroupPolicies(physicalId, log);
 
       // Step 2: Delete all inline policies
-      await this.deleteAllGroupInlinePolicies(physicalId, this.unmaskedDeleteSinks());
+      await this.deleteAllGroupInlinePolicies(physicalId, log);
 
       // Step 3: Remove all users from group
-      await this.removeAllUsersFromGroup(physicalId);
+      await this.removeAllUsersFromGroup(physicalId, log);
 
       // Step 4: Delete the group
       await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
 
-      this.logger.debug(`Successfully deleted IAM group ${logicalId}`);
+      log.debug(`Successfully deleted IAM group ${logicalId}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
         const clientRegion = await this.iamClient.config.region();
@@ -1489,12 +1489,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Group ${physicalId} does not exist, skipping deletion`);
+        log.debug(`Group ${v(physicalId)} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete IAM group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        log.mask(
+          `Failed to delete IAM group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        ),
         resourceType,
         logicalId,
         physicalId,
@@ -1506,7 +1508,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async detachAllGroupPolicies(
     groupName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
@@ -1541,7 +1543,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
-  private async removeAllUsersFromGroup(groupName: string): Promise<void> {
+  private async removeAllUsersFromGroup(groupName: string, log: MaskedLogSinks): Promise<void> {
+    const { value: v } = log;
     try {
       const response = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
 
@@ -1555,7 +1558,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
                 UserName: user.UserName,
               })
             );
-            this.logger.debug(`Removed user ${user.UserName} from group ${groupName}`);
+            log.debug(`Removed user ${v(user.UserName)} from group ${v(groupName)}`);
           } catch (error) {
             if (!(error instanceof NoSuchEntityException)) {
               throw error;
@@ -1611,7 +1614,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async deleteAllGroupInlinePolicies(
     groupName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
-    // unmasked sink; the delete path passes `unmaskedDeleteSinks()` (issue #2007).
+    // unmasked sink; the delete path passes its own (issue #2007).
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;

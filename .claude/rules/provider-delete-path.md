@@ -18,7 +18,7 @@ Region check: [layout-provisioning.md](layout-provisioning.md). Masking: [provid
 - `stackDestroy` — set only by `cdkd destroy` / `cdkd state destroy` and their nested children. `delete()` also runs for a deploy's removal, replacement and rollback, so behavior right only on a destroy (skip instead of drop, a whole-stack `state orphan` remedy) is gated on it (#4596).
 - `resolveSecretDerivedPrincipals` — a top-level or cascading DESTROY's vouch that nothing else in the run attached the same inline policy / membership, so a secret-reference principal list may be resolved against its producer regions; a RESOLVED principal without the grant is a skip, never success (the value may have rotated; `RemoveUserFromGroup` SUCCEEDS for a non-member, so membership is read first), unless this delete's own earlier attempt detached it (`retryMemo`, one per resource across the runner's retries) (#4150). A deploy (its nested-stack removal included) or rollback never sets it.
 
-A delete bag CAN carry plaintext and `delete()` has no masker: thread one before logging a property value (#2007).
+A delete bag CAN carry plaintext: use `maskSecrets` on any line naming a bag value or the physical id (#2007).
 
 ## Outcomes
 

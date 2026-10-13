@@ -1146,6 +1146,21 @@ describe('the sibling-specific Glue message sites (issue #2177)', () => {
     );
   });
 
+  // go-to-k/cdkd#2007: the delete's stop-and-retry arm logs the same lines.
+  it('Crawler: masks a SHORT name on the stop-and-retry delete() lines', async () => {
+    answerGlue({
+      DeleteCrawlerCommand: [new CrawlerRunningException({ message: 'running', $metadata: {} }), {}],
+      StopCrawlerCommand: new CrawlerNotRunningException({ message: 'not running', $metadata: {} }),
+      GetCrawlerCommand: { Crawler: { State: 'READY' } },
+    });
+    await new GlueCrawlerProvider().delete('Cr', SHORT, 'AWS::Glue::Crawler', undefined, {
+      maskSecrets,
+    });
+    expectTranscriptMasked();
+    expect(allLines()).toContain(`Glue Crawler ${SECRET_MASK} is running`);
+    expect(allLines()).toContain(`StopCrawler for ${SECRET_MASK}`);
+  });
+
   it('Crawler: masks a SHORT name on the stop-and-retry update() lines', async () => {
     answerGlue({
       UpdateCrawlerCommand: [
@@ -1462,5 +1477,56 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
     );
     expect((failure as Error).message).toContain('unable to as***e provided');
     expectStampedRetryable(failure);
+  });
+});
+
+// go-to-k/cdkd#2007: the deletes mask with `DeleteContext.maskSecrets`.
+describe('the Glue deletes mask with DeleteContext.maskSecrets (go-to-k/cdkd#2007)', () => {
+  it('Table: a SHORT name in an undecodable id, on the skip warning', async () => {
+    answerGlue();
+    const result = await new GlueProvider().delete('Tbl', SHORT, 'AWS::Glue::Table', {}, {
+      maskSecrets,
+    });
+    expect(result).toMatchObject({ outcome: 'skipped' });
+    expect(warnLines().length).toBeGreaterThan(0);
+    expectTranscriptMasked();
+  });
+
+  it('Table: both halves of the id on the already-gone line', async () => {
+    answerGlue({ DeleteTableCommand: new EntityNotFoundException({ message: 'gone', $metadata: {} }) });
+    await new GlueProvider().delete(
+      'Tbl',
+      `${SHORT}|${SHORT2}`,
+      'AWS::Glue::Table',
+      { DatabaseName: SHORT },
+      { maskSecrets }
+    );
+    expect(allLines()).toContain('does not exist');
+    expectTranscriptMasked();
+  });
+
+  it.each([
+    ['AWS::Glue::Database', () => new GlueProvider(), 'DeleteDatabaseCommand'],
+    ['AWS::Glue::Connection', () => new GlueConnectionProvider(), 'DeleteConnectionCommand'],
+    ['AWS::Glue::Crawler', () => new GlueCrawlerProvider(), 'DeleteCrawlerCommand'],
+  ])('%s: a SHORT name on the already-gone line', async (type, make, command) => {
+    answerGlue({ [command]: new EntityNotFoundException({ message: 'gone', $metadata: {} }) });
+    await make().delete('R', SHORT, type, {}, { maskSecrets });
+    expect(allLines()).toContain('does not exist');
+    expectTranscriptMasked();
+  });
+
+  it.each([
+    ['AWS::Glue::Database', () => new GlueProvider(), SECRET, 'DeleteDatabaseCommand'],
+    ['AWS::Glue::Table', () => new GlueProvider(), `${SECRET}|${SHORT}`, 'DeleteTableCommand'],
+    ['AWS::Glue::Connection', () => new GlueConnectionProvider(), SECRET, 'DeleteConnectionCommand'],
+    ['AWS::Glue::Crawler', () => new GlueCrawlerProvider(), SECRET, 'DeleteCrawlerCommand'],
+  ])('%s: the failure wrap and every line', async (type, make, id, command) => {
+    answerGlue({ [command]: awsEcho(`${SECRET} is busy`) });
+    const error = await caught(
+      make().delete('R', id, type, { DatabaseName: SECRET }, { maskSecrets })
+    );
+    expectMessageMasked(error);
+    expectTranscriptMasked();
   });
 });

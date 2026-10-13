@@ -4203,9 +4203,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // The caller's secret masker (issue #1997). The malformed-capacity warning
     // below names `MinCapacity` / `MaxCapacity` straight out of the RESOLVED
     // auto-scaling settings bag. Defaults to IDENTITY, which is what the DELETE
-    // path takes: `DeleteContext` carries no masker (see `SecretMaskingContext`
-    // in `src/types/resource.ts` and issue #2007), so a delete-path caller has
-    // nothing to pass and behaves exactly as before.
+    // path takes: its teardown passes EMPTY settings, so that warning cannot
+    // fire there and there is no value to mask.
     maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // ONE masked sink (issue #1997) — see `update()` for why both layers.
@@ -4988,7 +4987,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
-    this.logger.debug(`Deleting DynamoDB GlobalTable ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2007: the table name can be secret-derived. The name is
+    // masked as a VALUE too, so one below the substring floor is caught.
+    const deleteMask: SecretMasker = context?.maskSecrets ?? ((text: string) => text);
+    const shownTable = deleteMask(physicalId);
+    this.logger.debug(deleteMask(`Deleting DynamoDB GlobalTable ${logicalId}: ${shownTable}`));
 
     // ONE allowance for every wait below (issue #1955). Acquired before the
     // FIRST call, so the `--remove-protection` flip's ACTIVE wait is both
@@ -5035,7 +5038,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
         } catch (observeError) {
           this.logger.debug(
-            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
+            deleteMask(
+              `Could not read DeletionProtectionEnabled on ${shownTable} before disabling it: ${describeAwsFailure(observeError).detail}`
+            )
           );
         }
         await this.dynamoDBClient.send(
@@ -5061,17 +5066,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             physicalId,
             logicalId,
             GLOBAL_TABLE_ACTIVE_WAIT_ATTEMPTS,
-            budget
+            budget,
+            context?.maskSecrets
           );
         } catch (waitErr) {
           this.logger.debug(
-            `Could not wait for table ${physicalId} ACTIVE after protection flip: ${describeAwsFailure(waitErr).detail}`
+            deleteMask(
+              `Could not wait for table ${shownTable} ACTIVE after protection flip: ${describeAwsFailure(waitErr).detail}`
+            )
           );
         }
       } catch (flipError) {
         if (!(flipError instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            deleteMask(
+              `Could not disable DeletionProtectionEnabled on ${shownTable}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
       }
@@ -5162,7 +5172,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             region,
             logicalId,
             REPLICA_GONE_WAIT_ATTEMPTS,
-            budget
+            budget,
+            context?.maskSecrets
           );
         } catch (replicaErr) {
           // Table itself already gone — outer DeleteTable will handle
@@ -5279,6 +5290,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForIndexesActive(physicalId, logicalId, {
           proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
           budget,
+          ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
         });
       }
       // ...and retry when AWS refuses ANYWAY (issue #1830). The gate above is
@@ -5363,6 +5375,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
             proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
             budget,
+            ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
           }),
         // The wall-clock half of the loop's bound. `isRetryable` ANDs this with
         // the index-busy classifier, so an exhausted budget makes AWS's refusal
@@ -5383,7 +5396,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // DeleteTable is async; wait until DescribeTable returns
       // ResourceNotFoundException so siblings / verify steps observing
       // the table after destroy see it actually gone.
-      await this.waitForTableGone(physicalId, logicalId, TABLE_GONE_WAIT_ATTEMPTS, budget);
+      await this.waitForTableGone(
+        physicalId,
+        logicalId,
+        TABLE_GONE_WAIT_ATTEMPTS,
+        budget,
+        context?.maskSecrets
+      );
       this.logger.debug(`Successfully deleted DynamoDB GlobalTable ${logicalId}`);
       // TERMINAL success — the allowance has no second pass to fund, and the
       // flip record has nothing left to undo. Released together and keyed
@@ -6683,9 +6702,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // The caller's secret masker (issue #1997). Both the warning and the THROW
     // below name `tableName`, the resolved table name — and the throw matters
     // more than the warning here, because the deploy engine's CLI path logs
-    // `error.message` RAW (only its events store masks). Defaults to IDENTITY,
-    // which is what the DELETE-path caller takes: `DeleteContext` carries no
-    // masker by design (issue #2007).
+    // `error.message` RAW (only its events store masks). The DELETE-path caller
+    // passes its `DeleteContext.maskSecrets` (issue #2007); IDENTITY for a
+    // direct caller passing none.
     maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Issue #1955: on the DELETE path (`--remove-protection`) this is the FIRST
@@ -6785,7 +6804,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       budget?: ElapsedBudget;
       // The update caller's masker: the table name can be secret-derived, and
       // the wait's WARN lines name it (go-to-k/cdkd#4275). The delete callers
-      // pass none, as every delete path does (issue #2007).
+      // pass their `DeleteContext.maskSecrets` (issue #2007).
       maskSecrets?: SecretMasker;
     }
   ): Promise<void> {
@@ -6885,8 +6904,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     maxAttempts = REPLICA_GONE_WAIT_ATTEMPTS,
     budget?: ElapsedBudget,
     // The create-cleanup / update caller's masker (issue #2177): the interrupt
-    // label and the throw below name the resolved table name. Defaults to
-    // IDENTITY, which is what the DELETE caller takes (issue #2007).
+    // label and the throw below name the resolved table name. The DELETE
+    // caller passes its `DeleteContext.maskSecrets` (issue #2007); IDENTITY
+    // for a direct caller passing none.
     maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Issue #1955: on the delete path this is one of THREE stacked waits inside
@@ -6961,8 +6981,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     logicalId: string,
     maxAttempts = TABLE_GONE_WAIT_ATTEMPTS,
-    budget?: ElapsedBudget
+    budget?: ElapsedBudget,
+    // The delete caller's `DeleteContext.maskSecrets` (go-to-k/cdkd#2007): the
+    // interrupt label, both warnings and the throw name the table. IDENTITY
+    // for a direct caller passing none.
+    mask: SecretMasker = (text) => text
   ): Promise<void> {
+    const shownName = mask(tableName);
     // Issue #1955: this is the LAST term of the delete path and the one that
     // only runs on a late loop SUCCESS — which is exactly why it was the term
     // that pushed the single-region shape to ~40.4 min. It draws from the same
@@ -6974,13 +6999,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // watching", not "the delete failed". That is the same reading the
     // `cutShort` arm below already takes, and throwing would turn an accepted
     // delete into a reported FAILURE with state preserved.
-    const watch = startInterruptWatch(`DynamoDB table ${tableName} deletion wait`);
+    const watch = startInterruptWatch(mask(`DynamoDB table ${shownName} deletion wait`));
     try {
       while (wait.nextPoll()) {
         if (watch.isInterrupted()) {
           this.logger.warn(
-            `DynamoDB GlobalTable ${logicalId}: interrupted while waiting for ${tableName} to ` +
-              `disappear. AWS ACCEPTED the DeleteTable and will finish it; cdkd stopped watching.`
+            mask(
+              `DynamoDB GlobalTable ${logicalId}: interrupted while waiting for ${shownName} to ` +
+                `disappear. AWS ACCEPTED the DeleteTable and will finish it; cdkd stopped watching.`
+            )
           );
           return;
         }
@@ -7013,15 +7040,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // method has always had.
     if (wait.cutShort) {
       this.logger.warn(
-        `DynamoDB GlobalTable ${logicalId}: DeleteTable on ${tableName} was ACCEPTED by AWS but ` +
-          `cdkd stopped waiting for the table to disappear` +
-          `${wait.note()} The delete completes on AWS's side; a later ` +
-          `describe (or a re-run of this destroy) sees it gone.`
+        mask(
+          `DynamoDB GlobalTable ${logicalId}: DeleteTable on ${shownName} was ACCEPTED by AWS but ` +
+            `cdkd stopped waiting for the table to disappear` +
+            `${wait.note()} The delete completes on AWS's side; a later ` +
+            `describe (or a re-run of this destroy) sees it gone.`
+        )
       );
       return;
     }
     throw new ProvisioningError(
-      `Table ${tableName} did not disappear within ${wait.pollsRun}s${wait.note()}`,
+      mask(`Table ${shownName} did not disappear within ${wait.pollsRun}s${wait.note()}`),
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
