@@ -2,7 +2,7 @@
 # verify.sh — cdkd state schema v11 -> v12 migration round-trip integ test
 # (issues #4847 / #4852: per-reference provenance).
 #
-# A state file the last v11 binary (@go-to-k/cdkd@0.298.6) wrote holds
+# A state file the last v11 binary (@go-to-k/cdkd@0.298.7) wrote holds
 # `{{resolve:...}}` tokens and no provenance. The local v12 binary reads it
 # with no user action, reading alone does not rewrite it, and the next
 # `cdkd deploy` of the UNCHANGED stack rewrites it to `version: 12` with
@@ -91,7 +91,7 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # The LAST v11-writing cdkd release on npm when this fixture was written.
 # Phase 1 asserts it writes `version: 11` AND no provenance, so a wrong pin
 # fails loudly instead of quietly testing something else.
-V11_CDKD_VERSION="0.298.6"
+V11_CDKD_VERSION="0.298.7"
 V11_TMPDIR=""
 V11_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
