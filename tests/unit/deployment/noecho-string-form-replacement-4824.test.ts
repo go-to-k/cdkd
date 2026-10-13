@@ -205,12 +205,14 @@ describe('DeployEngine - honouring NoEcho "true" replaces nothing on an unchange
   });
 
   it.each([
-    // Pins the value-arm gate: removing it replaces the topic.
-    ['marked (another leaf already in noEchoLeaves): the value arm stays boolean-only (#4831)', true],
-    // A REGRESSION CONTROL of today's behavior, not a pin of a mechanism: it
-    // stays green with the gate removed or the witness disabled, since the
-    // record carries no `***` for the comparison to read as moved.
-    ['unmarked (no noEchoLeaves at all): regression control', false],
+    // The value arm masks the string form too (#4831 lifted the boolean-only
+    // gate), so the literal is a mask today and plaintext in the record. The
+    // migration witness confirms it (#4836): disabled at BOTH its sites (the
+    // diff's comparison and the update's skip check; either alone is covered
+    // by the other), the topic is replaced.
+    ['marked (another leaf already in noEchoLeaves): the witness confirms the literal (#4831)', true],
+    // A record no v11 binary wrote: the same witness confirms every leaf.
+    ['unmarked (no noEchoLeaves at all): the witness confirms a pre-v11 record', false],
   ])('a create-only literal EQUAL to an exact-string NoEcho value is not replaced, %s', async (_l, marked) => {
     const template = {
       Parameters: {

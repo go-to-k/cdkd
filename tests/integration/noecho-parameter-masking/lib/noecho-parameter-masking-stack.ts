@@ -22,7 +22,8 @@ import { Construct } from 'constructs';
  *   carries it; AWS holds it, and state.json holds `***` there (v11).
  * - `NoEchoStringConsumer` (go-to-k/cdkd#4824): the same, from a parameter
  *   declared `NoEcho: "true"` (the string form), so every NoEcho reader must
- *   accept that spelling too.
+ *   accept that spelling too; its value is masked as the boolean form's is
+ *   (go-to-k/cdkd#4831).
  * - `NoEchoWitnessTopic` (go-to-k/cdkd#4831): an SNS topic whose create-only
  *   `TopicName` reads `NoEchoWitnessName`, declared `NoEcho` only under
  *   `CDKD_TEST_NOECHO_WITNESS=true`; its `DisplayName` reads a boolean

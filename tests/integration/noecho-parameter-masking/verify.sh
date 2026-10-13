@@ -40,7 +40,9 @@
 #      prints a piece.
 #      NoEchoStringToken is declared with the STRING form `NoEcho: "true"`:
 #      its value is absent from the --verbose log, from state.json and from
-#      Phase 1b's `cdkd diff` (go-to-k/cdkd#4824).
+#      Phase 1b's `cdkd diff` (go-to-k/cdkd#4824), and NoEchoStringConsumer's
+#      `Resolved Fn::Sub:` line masks the whole value, as NoEchoConsumer's
+#      does (go-to-k/cdkd#4831).
 #   1b. Redeploy unchanged (#4043 Phase B): the readback finds the value AWS
 #      holds, so neither SSM parameter is updated (LastModifiedDate unchanged);
 #      `cdkd diff --fail` exits 0; `cdkd drift --json` exits 0 and reports
@@ -546,11 +548,26 @@ if [[ "${DEPLOY_OUT_P1}" == *"${STRING_TOKEN}"* ]]; then
   exit 1
 fi
 # PREMISE for the negative above: NoEchoStringConsumer's substitution logged
-# its masked line. Its value is a log-only needle, so the inert frame stays
-# (`str-***`, measured; `str-<value>` before the fix), unlike NoEchoConsumer's
-# whole `***`. Absent, its line went missing and the negative passed for free.
-if ! grep -qE 'Resolved Fn::Sub: str-\*\*\*$' <<< "${DEPLOY_OUT_P1}"; then
-  echo "FAIL: premise: the Phase 1 --verbose log carries no 'Resolved Fn::Sub: str-***' line -- NoEchoStringConsumer's substitution was not logged, or not masked as measured (go-to-k/cdkd#4824)" >&2
+# its masked line. Since go-to-k/cdkd#4831 lifted the boolean-only gate, the
+# string form's value is a fresh mask-only needle like the boolean form's, so
+# the line masks the WHOLE resolved value (`Resolved Fn::Sub: ***`, measured;
+# `str-***` while only a log-only needle, `str-<value>` before #4824). The
+# template's two Fn::Sub readers of a NoEcho value (NoEchoConsumer's `token-`
+# and this one) each log once on the fresh create, so TWO whole-mask lines are
+# required: with this one missing, the negative above would pass for free.
+SUB_READERS=$(jq -r '[.Resources[] | .Properties // {} | .. | objects | .["Fn::Sub"]? | strings
+  | select(test("\\$\\{NoEcho(String)?Token\\}"))] | length' "${SYNTH_TEMPLATE}")
+if [ "${SUB_READERS}" != "2" ]; then
+  echo "FAIL: premise: the Phase 1 template has ${SUB_READERS} Fn::Sub readers of NoEchoToken / NoEchoStringToken, expected 2 (NoEchoConsumer, NoEchoStringConsumer) -- the line count below would not discriminate" >&2
+  exit 1
+fi
+if grep -qE 'Resolved Fn::Sub: str-' <<< "${DEPLOY_OUT_P1}"; then
+  echo "FAIL: NoEchoStringConsumer's 'Resolved Fn::Sub:' line keeps its 'str-' frame -- the string-declared value is a log-only needle again, not the fresh mask-only needle the boolean form is (go-to-k/cdkd#4831)" >&2
+  exit 1
+fi
+SUB_MASKED=$(grep -cE 'Resolved Fn::Sub: \*\*\*$' <<< "${DEPLOY_OUT_P1}" || true)
+if [ "${SUB_MASKED}" -lt 2 ]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries ${SUB_MASKED} whole-mask 'Resolved Fn::Sub: ***' line(s), expected 2 -- NoEchoStringConsumer's substitution was not logged, or not masked whole (go-to-k/cdkd#4824 / #4831)" >&2
   diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi
