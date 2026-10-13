@@ -84,6 +84,8 @@ interface Kind {
   askedName: (cmd: unknown) => string | undefined;
   /** A successful read answering `name` with `id` (`undefined` = no id). */
   answer: (name: string, id: string | undefined) => unknown;
+  /** A successful read answering `name` with an EMPTY id field. */
+  answerEmptyId: (name: string) => unknown;
   isCreate: (cmd: unknown) => boolean;
   created: (name: string, id: string | undefined) => unknown;
   isAttach: (cmd: unknown) => boolean;
@@ -108,6 +110,7 @@ const USER: Kind = {
   answer: (name, id) => ({
     User: { UserName: name, Arn: `arn:aws:iam::1:user/${name}`, ...(id && { UserId: id }) },
   }),
+  answerEmptyId: (name) => ({ User: { UserName: name, UserId: '' } }),
   isCreate: (c) => c instanceof CreateUserCommand,
   created: (name, id) => ({
     User: { UserName: name, Arn: `arn:aws:iam::1:user/${name}`, UserId: id },
@@ -149,6 +152,7 @@ const GROUP: Kind = {
     Group: { GroupName: name, Arn: `arn:aws:iam::1:group/${name}`, ...(id && { GroupId: id }) },
     Users: [],
   }),
+  answerEmptyId: (name) => ({ Group: { GroupName: name, GroupId: '' }, Users: [] }),
   isCreate: (c) => c instanceof CreateGroupCommand,
   created: (name, id) => ({
     Group: { GroupName: name, Arn: `arn:aws:iam::1:group/${name}`, GroupId: id },
@@ -188,7 +192,7 @@ const denied = (op: string): Error =>
  * One name's read answer: its id, gone, an error, a response naming another
  * entity, or one naming no id.
  */
-type Entry = string | 'gone' | Error | { answeredAs: string } | 'no-id';
+type Entry = string | 'gone' | Error | { answeredAs: string } | 'no-id' | 'empty-id';
 
 /** The kind's read answers per name, exactly as asked. */
 function live(kind: Kind, entries: Record<string, Entry>): void {
@@ -199,6 +203,7 @@ function live(kind: Kind, entries: Record<string, Entry>): void {
     if (entry === undefined || entry === 'gone') throw notFound(asked);
     if (entry instanceof Error) throw entry;
     if (entry === 'no-id') return kind.answer(asked, undefined);
+    if (entry === 'empty-id') return kind.answerEmptyId(asked);
     if (typeof entry === 'object') return kind.answer(entry.answeredAs, kind.ID_B);
     return kind.answer(asked, entry);
   });
@@ -309,6 +314,11 @@ describe.each(KINDS)('IAMUserGroupProvider.isSameResource, $type (go-to-k/cdkd#4
     await expect(
       provider.isSameResource('name-a', { physicalId: 'name-b' }, K.type, CTX)
     ).rejects.toThrow(new RegExp(`no ${K.idField}`));
+    mockSend.mockReset();
+    live(K, { 'name-a': 'empty-id', 'name-b': K.ID_B });
+    await expect(
+      provider.isSameResource('name-a', { physicalId: 'name-b' }, K.type, CTX)
+    ).rejects.toThrow(new RegExp(`no ${K.idField}`));
   });
 
   it('a client in another region is unknown, with no read', async () => {
@@ -389,6 +399,14 @@ describe.each(KINDS)('IAMUserGroupProvider.resourceIdentity, $type (go-to-k/cdkd
     live(K, { 'name-a': K.ID_A });
     await expect(provider.resourceIdentity('name-a', K.type, CTX)).resolves.toBe(K.ID_A);
     expect(askedNames(K)).toEqual(['name-a']);
+    // A group read asks for one member page at most: the id is all it needs.
+    const [[sent]] = mockSend.mock.calls as Array<[unknown]>;
+    if (K.type === 'AWS::IAM::Group') {
+      expect(sent).toBeInstanceOf(GetGroupCommand);
+      expect((sent as GetGroupCommand).input).toEqual({ GroupName: 'name-a', MaxItems: 1 });
+    } else {
+      expect((sent as GetUserCommand).input).toEqual({ UserName: 'name-a' });
+    }
   });
 
   it('one re-created under the name (another id) reads another token', async () => {
@@ -415,6 +433,12 @@ describe.each(KINDS)('IAMUserGroupProvider.resourceIdentity, $type (go-to-k/cdkd
 
   it('throws on a response naming no id, or another entity', async () => {
     live(K, { 'name-a': 'no-id' });
+    await expect(provider.resourceIdentity('name-a', K.type, CTX)).rejects.toThrow(
+      new RegExp(`no ${K.idField}`)
+    );
+    // An empty id field is no id: it never reads as a token.
+    mockSend.mockReset();
+    live(K, { 'name-a': 'empty-id' });
     await expect(provider.resourceIdentity('name-a', K.type, CTX)).rejects.toThrow(
       new RegExp(`no ${K.idField}`)
     );
