@@ -197,17 +197,52 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
     expect(replaced()).toBe(false);
   });
 
-  it('resets a dropped FilterPolicyScope while a policy stays, after the policy', async () => {
+  it('replaces when a new policy meets a dropped FilterPolicyScope (the plan holds both)', async () => {
+    // The template declares only the policy; the scope resets because it left
+    // the template. Two calls would evaluate the new attribute-shaped policy
+    // against the BODY between them, and a failed second call would leave a
+    // pair neither side asked for: `Subscribe` sets the two together.
     route({
       get: () => ({
         Attributes: live({ FilterPolicy: '{"kind":["a"]}', FilterPolicyScope: 'MessageBody' }),
       }),
     });
-    await provider.update('Sub', SUB_ARN, TYPE, { ...BASE, FilterPolicy: { kind: ['b'] } }, { ...BASE });
+    const result = await provider.update(
+      'Sub',
+      SUB_ARN,
+      TYPE,
+      { ...BASE, FilterPolicy: { kind: ['b'] } },
+      { ...BASE }
+    );
+    expect(setCalls()).toEqual([]);
+    expect(replaced()).toBe(true);
+    expect(result.wasReplaced).toBe(true);
+  });
+
+  it('clears the policy in place before an explicit scope: an empty policy is no new policy', async () => {
+    route({ get: () => ({ Attributes: live({ FilterPolicy: '{"kind":["a"]}' }) }) });
+    await provider.update(
+      'Sub',
+      SUB_ARN,
+      TYPE,
+      { ...BASE, FilterPolicy: '', FilterPolicyScope: 'MessageBody' },
+      { ...BASE }
+    );
     expect(setCalls()).toEqual([
-      ['FilterPolicy', '{"kind":["b"]}'],
-      ['FilterPolicyScope', 'MessageAttributes'],
+      ['FilterPolicy', ''],
+      ['FilterPolicyScope', 'MessageBody'],
     ]);
+    expect(replaced()).toBe(false);
+  });
+
+  it('resets a dropped FilterPolicyScope alone when the policy is unchanged', async () => {
+    route({
+      get: () => ({
+        Attributes: live({ FilterPolicy: '{"kind":["a"]}', FilterPolicyScope: 'MessageBody' }),
+      }),
+    });
+    await provider.update('Sub', SUB_ARN, TYPE, { ...BASE, FilterPolicy: { kind: ['a'] } }, { ...BASE });
+    expect(setCalls()).toEqual([['FilterPolicyScope', 'MessageAttributes']]);
     expect(replaced()).toBe(false);
   });
 
@@ -364,5 +399,50 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
     expect(error.message).toMatch(/Failed to update SNS subscription Sub/);
     expect(error.message).not.toContain('s3cr3t-token-value');
     expect(replaced()).toBe(false);
+  });
+
+  describe('the replacement arm (pre-existing paths, now reached from update)', () => {
+    it("masks a secret quoted back in the Subscribe error, with the update's masker", async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetSubscriptionAttributesCommand) {
+          return Promise.resolve({ Attributes: live({ Endpoint: DLQ_ARN }) });
+        }
+        if (command instanceof UnsubscribeCommand) return Promise.resolve({});
+        if (command instanceof SubscribeCommand) {
+          return Promise.reject(new Error('Invalid parameter: FilterPolicy s3cr3t-token-value'));
+        }
+        return Promise.reject(new Error('unexpected'));
+      });
+      const error = await provider
+        .update('Sub', SUB_ARN, TYPE, { ...BASE, FilterPolicy: { k: ['s3cr3t-token-value'] } }, { ...BASE }, {
+          maskSecrets: (t: string) => t.split('s3cr3t-token-value').join('***'),
+        })
+        .then(
+          () => new Error('resolved'),
+          (e: unknown) => e as Error
+        );
+      expect(error.message).toMatch(/Failed to create SNS subscription Sub/);
+      expect(error.message).not.toContain('s3cr3t-token-value');
+      expect(sent().some((c) => c instanceof SubscribeCommand)).toBe(true);
+    });
+
+    it("hands the delete the record's region, so a NotFound in another region is refused", async () => {
+      // The client answers from us-east-1; the record says eu-west-1. A
+      // NotFound there is not proof the subscription is gone.
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetSubscriptionAttributesCommand) {
+          return Promise.resolve({ Attributes: live({ Endpoint: DLQ_ARN }) });
+        }
+        if (command instanceof UnsubscribeCommand) {
+          return Promise.reject(new NotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        if (command instanceof SubscribeCommand) return Promise.resolve({ SubscriptionArn: NEW_SUB_ARN });
+        return Promise.reject(new Error('unexpected'));
+      });
+      await expect(
+        provider.update('Sub', SUB_ARN, TYPE, { ...BASE }, { ...BASE }, { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow();
+      expect(sent().some((c) => c instanceof SubscribeCommand)).toBe(false);
+    });
   });
 });

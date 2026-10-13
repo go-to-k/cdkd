@@ -18,6 +18,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
+  CreateContext,
   UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
@@ -178,7 +179,8 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SNS subscription ${logicalId}`);
 
@@ -325,13 +327,16 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      // MASKED: `Subscribe` can quote a rejected attribute back, and a
+      // `FilterPolicy` can hold a resolved secret (the update's replacement
+      // arm reaches here too).
+      throw this.wrapMaskedAwsCallError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        `Failed to create SNS subscription ${logicalId}`,
         resourceType,
         logicalId,
-        undefined,
-        cause
+        undefined
       );
     }
   }
@@ -362,7 +367,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       properties,
       context
     );
-    if (plan === undefined) return this.replace(logicalId, physicalId, resourceType, properties);
+    if (plan === undefined) {
+      return this.replace(logicalId, physicalId, resourceType, properties, context);
+    }
     const mask = maskerOrIdentity(context?.maskSecrets);
     for (const [name, value] of plan) {
       try {
@@ -374,7 +381,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapUpdateError(
+        throw this.wrapMaskedAwsCallError(
           mask,
           error,
           `Failed to update SNS subscription ${logicalId} (attribute ${name})`,
@@ -413,9 +420,10 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    *   physical id names a subscription of another topic or endpoint);
    * - an attribute dropped from the template with no reset in
    *   {@link RESET_VALUES};
-   * - `FilterPolicy` and `FilterPolicyScope` both changing to template values,
-   *   which `Subscribe` applies together but two calls would apply one at a
-   *   time against the other's old value.
+   * - a new (non-empty) `FilterPolicy` and a `FilterPolicyScope` change in one
+   *   plan, whether the template declares the scope or dropped it: `Subscribe`
+   *   applies them together, two calls would apply one at a time against the
+   *   other's old value.
    *
    * Any other readback failure is thrown, never answered with a replacement.
    */
@@ -437,7 +445,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       current = response?.Attributes;
     } catch (error) {
       if (error instanceof NotFoundException) return undefined;
-      throw this.wrapUpdateError(
+      throw this.wrapMaskedAwsCallError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         `Failed to update SNS subscription ${logicalId}: could not read its attributes`,
@@ -468,12 +476,17 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       if (reset === undefined) return undefined;
       if (now !== reset) plan.push([name, reset]);
     }
-    const names = plan.map(([name]) => name);
+    // A new policy and a scope change in one plan, whatever the template
+    // declares (a dropped scope resets too): two calls would evaluate the new
+    // policy against the OLD scope between them, and a failed second call
+    // would leave a pair neither side asked for. Either order has that gap (a
+    // scope set first is refused against the old policy's shape), so
+    // `Subscribe` sets them together.
+    const policy = plan.find(([name]) => name === 'FilterPolicy');
     if (
-      names.includes('FilterPolicy') &&
-      names.includes('FilterPolicyScope') &&
-      properties['FilterPolicy'] !== undefined &&
-      properties['FilterPolicyScope'] !== undefined
+      policy !== undefined &&
+      policy[1] !== '' &&
+      plan.some(([name]) => name === 'FilterPolicyScope')
     ) {
       return undefined;
     }
@@ -481,18 +494,18 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   }
 
   /**
-   * An in-place update failure, quoting the AWS error's text MASKED: AWS
+   * A create / update failure, quoting the AWS error's text MASKED: AWS
    * quotes a rejected value back (a filter policy can carry a resolved
    * secret). The `cause` stays unmasked, and a message the mask changed is
    * stamped so the retry classifiers read that chain (`wrapMaskedAwsError`).
    */
-  private wrapUpdateError(
+  private wrapMaskedAwsCallError(
     mask: (text: string) => string,
     error: unknown,
     prefix: string,
     resourceType: string,
     logicalId: string,
-    physicalId: string
+    physicalId: string | undefined
   ): ProvisioningError {
     return wrapMaskedAwsError(
       mask,
@@ -516,7 +529,8 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     // Delete old subscription
     let deleteResult: void | ResourceDeleteResult = undefined;
@@ -525,7 +539,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // one rule instead of two (see the block comment on the abort).
     let deleteThrew = false;
     try {
-      deleteResult = await this.delete(logicalId, physicalId, resourceType);
+      // The record's region, so a `NotFound` in another region is not read as
+      // "already gone" (`assertRegionMatch`).
+      deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
+        expectedRegion: context?.expectedRegion,
+      });
     } catch (error) {
       deleteThrew = true;
       this.logger.warn(
@@ -666,7 +684,13 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     }
 
     // Create new subscription
-    const createResult = await this.create(logicalId, resourceType, properties);
+    // The masker only: this create is NOT a state replay (`replayingState`).
+    const createResult = await this.create(
+      logicalId,
+      resourceType,
+      properties,
+      context?.maskSecrets === undefined ? undefined : { maskSecrets: context.maskSecrets }
+    );
 
     return {
       physicalId: createResult.physicalId,
