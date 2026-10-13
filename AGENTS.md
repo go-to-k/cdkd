@@ -40,16 +40,13 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 ## Design principles
 
-Weigh every design on all of these at once. When two conflict, record at the
-site which one gave way and why:
-
-- **CloudFormation parity**: do what the AWS CDK CLI / CloudFormation does.
-- **No regression**: existing apps and state keep today's behavior.
-- **Performance**: no new AWS or S3 call on a deploy that does not need it.
-- **Security**: no new plaintext secret, oracle or exposure.
-- **Usability**: an error names the cause and the next step.
-- **Transparent migration**: a schema bump rewrites users' S3 state, which
-  nothing puts back, so it migrates automatically, always.
+**Performance is cdkd's defining value**: never slow an ordinary deploy, and
+add no AWS or S3 call a deploy does not need. Then **CloudFormation parity**:
+do what the AWS CDK CLI / CloudFormation does. The baseline of any tool also
+holds: no regression, no new plaintext secret or exposure, an error names the
+cause and the next step, and a schema bump migrates users' S3 state
+automatically (nothing puts it back). When two conflict, record at the site
+which gave way and why.
 
 ## Rules you cannot recover from
 
