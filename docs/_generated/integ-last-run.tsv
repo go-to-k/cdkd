@@ -160,6 +160,7 @@ iam-role-fix-forward-orphan	2026-10-13T20:59:29Z	PASS	106	verify.sh	rc ok, orph 
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-13T11:42:44Z	PASS	145	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
+iam-user-group-fix-forward-orphan	2026-10-13T22:59:15Z	PASS	134	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket, after §8-d probe; PR #4883 0f38dec93 (src+fixture = ebc59f508)
 import-attribute-readback	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attribute-readback-final	2026-10-11T09:33:22Z	PASS	295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
