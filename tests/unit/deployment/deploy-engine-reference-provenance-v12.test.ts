@@ -168,8 +168,8 @@ async function deploy(opts: {
   fifo?: boolean;
   /** The literal output also carries an `Export.Name`. */
   exportLiteralOutput?: boolean;
-  /** The reader's description spells a token whose lookup is denied. */
-  readerDeniedDescription?: boolean;
+  /** The reader's NAME (its first property) spells a token whose lookup is denied. */
+  readerDeniedName?: boolean;
   dryRun?: boolean;
   /** The reader's provider reports its update sent nothing (Cloud Control's empty patch). */
   readerSentNothing?: boolean;
@@ -264,10 +264,10 @@ async function deploy(opts: {
         Reader: {
           Type: 'AWS::SSM::Parameter',
           Properties: {
-            Name: '/p/reader',
+            Name: opts.readerDeniedName ? DENIED : '/p/reader',
             Type: 'String',
             Value: { 'Fn::GetAtt': ['SecretQueue', 'Arn'] },
-            Description: opts.readerDeniedDescription ? DENIED : (opts.readerDescription ?? 'a'),
+            Description: opts.readerDescription ?? 'a',
             Tags: opts.readerSpellsSecret === false ? { Name: 'plain' } : { Name: REF },
           },
         },
@@ -553,22 +553,22 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1' } });
   });
 
-  it('a property that cannot resolve leaves only its own tokens unattributed', async () => {
+  it('a property that cannot resolve leaves only its own tokens unattributed (the later ones still resolve)', async () => {
     const run = await deploy({
       state: v11State({
         reader: {
           properties: {
-            Name: '/p/reader',
+            Name: DENIED,
             Type: 'String',
             Value: RECORDED_ARN,
-            Description: DENIED,
+            Description: 'a',
             Tags: { Name: REF },
           },
         },
         outputs: false,
       }),
       outputs: false,
-      readerDeniedDescription: true,
+      readerDeniedName: true,
     });
     expect(run.thrown).toBeUndefined();
     expect(provenance(run, 'Reader')).toEqual({
