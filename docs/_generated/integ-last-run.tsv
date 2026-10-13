@@ -244,7 +244,7 @@ loggroup-never-expire-guard	2026-10-12T00:02:47Z	PASS	122	verify.sh	PR #4820 (#3
 lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-10-09T06:35:11Z	PASS	45	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-migrate-from-cfn	2026-10-13T14:12:25Z	FAIL	356	run.sh	rc 0 but leaked SSM Document CdkdMigrateSmall-TestDocument-9ncghCsfFI9Q (CFn replaced it during retire UpdateStack; hand-deleted); PR #4864 06b838511
+migrate-from-cfn	2026-10-13T18:32:25Z	PASS	251	run.sh	small; rc ok, replacement Document managed+destroyed, 1 retained copy swept, orph clean, after §8-d probe; PR #4875 b05facd61
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean

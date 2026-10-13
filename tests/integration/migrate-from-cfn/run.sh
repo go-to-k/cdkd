@@ -11,7 +11,8 @@
 #      cdkd-migrate-tmp/ empty (the large-stack path uploads a transient
 #      template; the cleanup must run in `finally`).
 #   5. `cdkd destroy --force` walks the migrated state and deletes resources.
-#   6. Assert: cdkd state empty, AWS resources gone.
+#   6. Assert: cdkd state empty, AWS resources gone — for the small stack, the
+#      replacement SSM Document the Retain update created is gone (issue #4873).
 #
 # This intentionally lives outside `/run-integ` because that skill's flow is
 # `cdkd deploy → cdkd destroy`, which doesn't model the migration path.
@@ -74,8 +75,8 @@ preflight_clean() {
     exit 1
   fi
   # No state and no stack by this name, so any `/aws/lambda/<stack>-` group is
-  # an earlier FAILED run's leftover: this runner has no cleanup trap, and its
-  # post-destroy sweep only runs on success.
+  # an earlier FAILED run's leftover: this runner's EXIT trap sweeps only
+  # TestDocuments, and its post-destroy sweep only runs on success.
   sweep_stack_lambda_log_groups "${stack}" "${REGION}"
 }
 
@@ -329,15 +330,133 @@ assert_state_history_survives() {
 
 . "${TEST_DIR}/../cr-log-groups.sh"
 
+# Issue #4873: the retirement's Retain UpdateStack REPLACES the small stack's
+# auto-named TestDocument (CloudFormation re-serializes its object Content), and
+# cdkd used to write state from the id read BEFORE that update. Its destroy then
+# deleted the superseded copy and left the live replacement behind, while every
+# other assertion here still passed. With the fix, state names the replacement,
+# and the superseded copy is the one `UpdateReplacePolicy: Retain` keeps (cdkd
+# warns about it), so after the destroy only Documents that existed when
+# `cdk deploy` finished may remain. Every listing is a DELTA against one taken
+# before the deploy, so Documents an earlier run leaked fail nothing here.
+TEST_DOCUMENT_PREFIX="CdkdMigrateSmall-TestDocument-"
+
+# Prints this account's TestDocument names, sorted, one per line. Returns
+# non-zero when the listing itself fails: an unread listing is not an empty one.
+list_test_documents() {
+  local out
+  out="$(aws ssm list-documents --region "${REGION}" --filters Key=Owner,Values=Self \
+    --query "DocumentIdentifiers[?starts_with(Name, '${TEST_DOCUMENT_PREFIX}')].Name" \
+    --output text)" || return 1
+  # Text output joins names with tabs and prints `None` for an empty page.
+  printf '%s\n' ${out} | grep -E "^${TEST_DOCUMENT_PREFIX}" | LC_ALL=C sort -u || true
+}
+
+# Lines of $2 that are not in $1 (both sorted).
+new_lines() {
+  LC_ALL=C comm -13 <(printf '%s\n' "$1" | grep . || true) <(printf '%s\n' "$2" | grep . || true)
+}
+
+# list_test_documents_settled <has-new|no-new> <reference>
+#   The listing, re-read up to 6 times 10s apart until it HAS a name outside
+#   <reference> (a just-created replacement can lag) or has NONE (a just-
+#   deleted Document can linger). Prints the last listing either way; the
+#   caller's assertion judges it. Non-zero only when a listing fails.
+list_test_documents_settled() {
+  local mode="$1" ref="$2" out extra attempt
+  for attempt in 1 2 3 4 5 6; do
+    out="$(list_test_documents)" || return 1
+    extra="$(new_lines "${ref}" "${out}")"
+    if [[ "${mode}" == has-new && -n "${extra}" ]] || [[ "${mode}" == no-new && -z "${extra}" ]]; then
+      break
+    fi
+    [[ "${attempt}" == 6 ]] || sleep 10
+  done
+  printf '%s\n' "${out}"
+}
+
+# On ANY failing exit after the baseline listing, delete the TestDocuments this
+# run created (now minus before), so a failed run leaks none. The exit status
+# is preserved; a success path has already swept in assert_no_test_document_left.
+TEST_DOCS_ARMED=0
+TEST_DOCS_BEFORE=""
+sweep_new_test_documents_on_failure() {
+  local rc="$1" now name
+  [[ "${rc}" != 0 && "${TEST_DOCS_ARMED}" == 1 ]] || return 0
+  set +e
+  now="$(list_test_documents)" || { echo "  could not list TestDocuments to sweep; check by hand" >&2; return 0; }
+  for name in $(new_lines "${TEST_DOCS_BEFORE}" "${now}"); do
+    aws ssm delete-document --region "${REGION}" --name "${name}" >/dev/null 2>&1 \
+      && echo "  swept TestDocument ${name} left by the failed run" >&2 \
+      || echo "  could not delete TestDocument ${name}; delete it by hand" >&2
+  done
+  return 0
+}
+trap 'rc=$?; sweep_new_test_documents_on_failure "${rc}"; exit "${rc}"' EXIT
+
+# assert_no_test_document_left <before> <after-deploy> <after-import> <after-destroy>
+assert_no_test_document_left() {
+  local deployed replacement survivors leaked lost name
+  deployed="$(new_lines "$1" "$2")"
+  replacement="$(new_lines "$2" "$3")"
+  survivors="$(new_lines "$1" "$4")"
+  leaked="$(new_lines "$2" "$4")"
+  # The deployed copy the Retain update superseded must still exist: the
+  # injected UpdateReplacePolicy: Retain is what keeps cdkd's own update from
+  # deleting a user's resource. Read BEFORE the sweep below removes it.
+  lost="$(new_lines "$4" "${deployed}")"
+  # Every Document this run created is deleted before any verdict: the
+  # superseded copy is retained by design, and the EXIT trap only sweeps on
+  # failure.
+  for name in ${survivors}; do
+    aws ssm delete-document --region "${REGION}" --name "${name}" >/dev/null 2>&1 \
+      || echo "  could not delete Document ${name}; delete it by hand" >&2
+  done
+  if [[ -z "${deployed}" ]]; then
+    echo "ASSERTION FAILED: no ${TEST_DOCUMENT_PREFIX}* Document appeared after 'cdk deploy'," >&2
+    echo "  so the leak check below cannot see the Document this fixture creates." >&2
+    exit 1
+  fi
+  if [[ -z "${replacement}" ]]; then
+    echo "ASSERTION FAILED: the import's Retain update created no replacement Document, so" >&2
+    echo "  this arm no longer exercises issue #4873. CloudFormation may have stopped" >&2
+    echo "  replacing an auto-named Document on that update; re-check the premise." >&2
+    exit 1
+  fi
+  if [[ -n "${leaked}" ]]; then
+    echo "ASSERTION FAILED: the replacement Document outlived 'cdkd destroy' (issue #4873):" >&2
+    printf '  %s\n' ${leaked} >&2
+    echo "  cdkd state named the copy the Retain update superseded, not the one the stack held." >&2
+    exit 1
+  fi
+  if [[ -n "${lost}" ]]; then
+    echo "ASSERTION FAILED: the Document 'cdk deploy' created was deleted, although the" >&2
+    echo "  retirement's UpdateReplacePolicy: Retain should keep a superseded copy:" >&2
+    printf '  %s\n' ${lost} >&2
+    exit 1
+  fi
+  echo "  ok: the replacement Document was managed and destroyed; $(printf '%s\n' "${survivors}" | grep -c . || true) retained copy(ies) swept"
+}
+
 run_one() {
   local stack="$1"
   preflight_clean "${stack}"
+
+  local docs_before="" docs_after_deploy="" docs_after_import="" docs_after_destroy=""
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    if ! docs_before="$(list_test_documents)"; then
+      echo "ASSERTION FAILED: [${stack}] could not list SSM Documents before the deploy." >&2
+      exit 1
+    fi
+    TEST_DOCS_BEFORE="${docs_before}"
+    TEST_DOCS_ARMED=1
+  fi
 
   log "[${stack}] cdk deploy (real CloudFormation)"
   # CdkdMigrateSmall declares a CfnParameter with NO DEFAULT (issue #2587), so
   # a value must be supplied here. That is the whole point of the fixture arm:
   # the retire flow's UpdateStack has no default to fall back on, so it fails
-  # unless `retireCloudFormationStack` forwards the parameter as
+  # unless `prepareCloudFormationStackRetirement` forwards the parameter as
   # `UsePreviousValue: true`. See the comment on the parameter in
   # lib/migrate-small-stack.ts.
   local -a deploy_params=()
@@ -346,6 +465,12 @@ run_one() {
   fi
   AWS_REGION="${REGION}" npx cdk deploy "${stack}" --require-approval never \
     "${deploy_params[@]+"${deploy_params[@]}"}"
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    if ! docs_after_deploy="$(list_test_documents)"; then
+      echo "ASSERTION FAILED: [${stack}] could not list SSM Documents after the deploy." >&2
+      exit 1
+    fi
+  fi
 
   # AWS::SQS::QueuePolicy used to need a `--resource` override here (issue
   # #361): CFn's DescribeStackResources returns the QueuePolicy's resource
@@ -373,6 +498,12 @@ run_one() {
 
   log "[${stack}] cdkd import --migrate-from-cloudformation"
   AWS_REGION="${REGION}" ${CDKD} import "${stack}" --migrate-from-cloudformation --yes
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    if ! docs_after_import="$(list_test_documents_settled has-new "${docs_after_deploy}")"; then
+      echo "ASSERTION FAILED: [${stack}] could not list SSM Documents after the import." >&2
+      exit 1
+    fi
+  fi
 
   log "[${stack}] post-migrate assertions"
   assert_state_present "${stack}"
@@ -415,13 +546,21 @@ run_one() {
 
   # Lambda creates `/aws/lambda/<stack>-CustomS3AutoDeleteObjects...` when the
   # S3 auto-delete custom resource runs, and nothing in the stack owns it, so
-  # destroy leaves it behind (#3885). Swept BEFORE the assertions: this runner
-  # has no cleanup trap, so a failing assertion would otherwise skip it.
+  # destroy leaves it behind (#3885). Swept BEFORE the assertions: the EXIT
+  # trap sweeps only TestDocuments, so a failing assertion would otherwise skip it.
   sweep_stack_lambda_log_groups "${stack}" "${REGION}"
 
   log "[${stack}] post-destroy assertions"
   assert_state_absent "${stack}"
   assert_state_history_survives "${stack}"
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    if ! docs_after_destroy="$(list_test_documents_settled no-new "${docs_after_deploy}")"; then
+      echo "ASSERTION FAILED: [${stack}] could not list SSM Documents after the destroy." >&2
+      exit 1
+    fi
+    assert_no_test_document_left "${docs_before}" "${docs_after_deploy}" \
+      "${docs_after_import}" "${docs_after_destroy}"
+  fi
 }
 
 # Build cdkd before each run so the test always exercises the worktree's

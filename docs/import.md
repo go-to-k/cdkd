@@ -96,15 +96,15 @@ You pass no physical ids, because cdkd reads them from CloudFormation.
    cdkd import MyStack --migrate-from-cloudformation
    ```
 
-   cdkd asks for confirmation twice: before it writes state, and before it
-   changes the CloudFormation stack. `--yes` answers both. CI needs `--yes`,
+   cdkd asks for confirmation twice: to write state, and to change and then
+   delete the CloudFormation stack. `--yes` answers both. CI needs `--yes`,
    because the prompts refuse to run without a terminal. The run ends with:
 
    ```text
-   ✓ State written: MyStack (us-east-1)
    [1/4] Inspecting CloudFormation stack 'MyStack'...
    [2/4] Injected DeletionPolicy=Retain and UpdateReplacePolicy=Retain.
    [3/4] Updating CloudFormation stack with Retain policies...
+   ✓ State written: MyStack (us-east-1)
    [4/4] Deleting CloudFormation stack 'MyStack' (resources retained)...
    ✓ CloudFormation stack 'MyStack' retired. AWS resources are now solely managed by cdkd.
    ```
@@ -139,22 +139,64 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
    with `DescribeStackResources`. A `--resource` value you pass takes
    precedence over CloudFormation's.
 2. cdkd adopts each resource by that physical id.
-3. cdkd writes state.
-4. cdkd updates the CloudFormation stack so that every resource has
-   `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`. This update
-   changes template metadata only.
-5. cdkd deletes the CloudFormation stack. Every resource is retained, so
+3. cdkd updates the CloudFormation stack so that every resource has
+   `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`.
+4. When that update completed, cdkd reads the ids again. If a root resource's
+   id changed, it adopts every root resource again by the new ids; a resource
+   it can no longer import stops the run before any state is written. If the
+   re-import adopts a different number of resources than you confirmed, cdkd
+   warns with both counts.
+5. cdkd writes state: the root stack first, then each nested stack. A nested
+   stack's replaced resource is adopted by its new id when that nested stack is
+   written; one it can no longer import stops the run there.
+6. cdkd deletes the CloudFormation stack. Every resource is retained, so
    CloudFormation deletes none of them.
 
-cdkd holds the stack lock from the state write through the retirement, so a
+The update in step 3 usually changes template metadata only. CloudFormation
+can still decide that it replaces a resource: an auto-named
+`AWS::SSM::Document` with object `Content` is a known case. cdkd then warns,
+naming the old and the new physical id, and state records the new resource
+that the stack now holds. `UpdateReplacePolicy: Retain` keeps the old copy and
+its data, so nothing is deleted. That copy is managed by neither tool: delete
+it yourself once you no longer need it.
+
+cdkd holds the stack lock from before the update through the retirement, so a
 concurrent `cdkd deploy` cannot run in between.
 
 ### If the migration stops partway
 
-State is written in step 3, before CloudFormation is touched. If step 4 or 5
-fails, the resources are in cdkd state and the CloudFormation stack still
-exists. Run the same command again with `--force`, which is needed because
-state now exists, or retire the CloudFormation stack by hand.
+If the run stops before step 5, cdkd has written no state.
+
+- **The update failed.** CloudFormation rolled it back, and the error says why.
+  A re-run repeats the update. When the cause is a replacement CloudFormation
+  cannot perform (a custom-named resource whose update requires replacing
+  it), the update fails the same way by hand too: give that resource no custom
+  name or a new one, or take it out of the stack, then re-run. To retire the
+  stack by hand instead: (1) update it with `DeletionPolicy: Retain` and
+  `UpdateReplacePolicy: Retain` on every resource, (2) run `cdkd import`
+  without the flag, which reads the ids from a same-named CloudFormation stack,
+  (3) delete it. The import must adopt every resource before you delete the
+  stack: check its summary.
+- **The update completed, but the run stopped after it** (a failed re-read,
+  an interrupted wait). A re-run skips the update, because the template already
+  carries the policies, so it cannot report a replacement. The error says how
+  to find replaced copies: in the stack's events, a row whose reason reads
+  `Requested update requires the creation of a new physical resource` names
+  the old physical id, which is retained and managed by neither tool.
+
+If the run stops during step 5 because a nested stack's replaced resource could
+not be imported, the root stack's state and every nested stack written before
+it are saved, the rest are not, and the CloudFormation stack is not deleted.
+Run the same command again with `--force`, which is needed because state now
+exists.
+
+If step 6 fails, cdkd state is written and correct, and every resource carries
+`DeletionPolicy: Retain`, so deleting the stack deletes no resource. The error
+gives the stack's status when cdkd knows it. Delete the stack by hand once the
+cause is resolved, for example an export that another stack still imports.
+
+If you decline the second prompt, cdkd writes the state you confirmed and
+leaves the CloudFormation stack unchanged.
 
 ### Nested stacks
 

@@ -179,13 +179,38 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import {
-  retireCloudFormationStack,
+  prepareCloudFormationStackRetirement,
+  deleteRetiredCloudFormationStack,
+  findReplacedCfnResources,
+  RetainUpdateFailedError,
+  SUPERSEDED_COPY_HINT,
+  MANUAL_RETIREMENT_ROUTE,
+  describeStackWaiterFailure,
   injectRetainPolicies,
   injectRetainPoliciesRecursive,
   getCloudFormationResourceTree,
   RecursiveRetainInjectionError,
   type CfnStackResourceTree,
 } from '../../../src/cli/commands/retire-cfn-stack.js';
+
+/**
+ * The retirement as `cdkd import --migrate-from-cloudformation` drives it:
+ * steps 1-3, then step 4 when the operator did not decline. The import writes
+ * state between the two (issue #4873); these tests cover the CFn call
+ * sequence, which the split does not change.
+ */
+async function retireCloudFormationStack(
+  options: Parameters<typeof prepareCloudFormationStackRetirement>[0]
+): ReturnType<typeof prepareCloudFormationStackRetirement> {
+  const preparation = await prepareCloudFormationStackRetirement(options);
+  if (preparation.outcome === 'ready') {
+    await deleteRetiredCloudFormationStack(options.cfnStackName, options.cfnClient);
+  }
+  return preparation;
+}
+
+const UPDATED = { outcome: 'ready', templateUpdated: true } as const;
+const NOT_UPDATED = { outcome: 'ready', templateUpdated: false } as const;
 
 interface SendCall {
   name: string;
@@ -239,6 +264,8 @@ afterEach(() => {
 
 describe('injectRetainPolicies', () => {
   it('adds DeletionPolicy and UpdateReplacePolicy on every resource', () => {
+    // UpdateReplacePolicy: Retain keeps the copy a replacing Retain update
+    // supersedes, so cdkd's own update never deletes a user's resource (#4873).
     const { body, modified } = injectRetainPolicies(TEMPLATE_NO_RETAIN, 'S');
     expect(modified).toBe(true);
     const parsed = JSON.parse(body);
@@ -246,6 +273,17 @@ describe('injectRetainPolicies', () => {
     expect(parsed.Resources.Bucket.UpdateReplacePolicy).toBe('Retain');
     expect(parsed.Resources.Func.DeletionPolicy).toBe('Retain');
     expect(parsed.Resources.Func.UpdateReplacePolicy).toBe('Retain');
+  });
+
+  it('overrides a source UpdateReplacePolicy: Delete, so the update cannot delete a replaced copy', () => {
+    const tpl = JSON.stringify({
+      Resources: {
+        Doc: { Type: 'AWS::SSM::Document', DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Delete' },
+      },
+    });
+    const { body, modified } = injectRetainPolicies(tpl, 'S');
+    expect(modified).toBe(true);
+    expect(JSON.parse(body).Resources.Doc.UpdateReplacePolicy).toBe('Retain');
   });
 
   it('reports modified=false when every resource already has both policies', () => {
@@ -345,7 +383,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'test-state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     expect(calls.map((c) => c.name)).toEqual([
       'DescribeStacks',
       'GetTemplate',
@@ -380,7 +418,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'test-state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     expect(calls.map((c) => c.name)).toEqual([
       'DescribeStacks',
       'GetTemplate',
@@ -437,7 +475,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'test-state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
     expect(updateCmd.input['Parameters']).toEqual([
       { ParameterKey: 'ResourceSuffix', UsePreviousValue: true },
@@ -481,7 +519,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'test-state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'no-template-change' });
+    expect(result).toEqual(NOT_UPDATED);
     expect(calls.map((c) => c.name)).toEqual(['DescribeStacks', 'GetTemplate', 'DeleteStack']);
     expect(waitUpdateMock).not.toHaveBeenCalled();
     expect(waitDeleteMock).toHaveBeenCalledTimes(1);
@@ -504,7 +542,9 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'test-state-bucket',
     });
 
-    expect(result.outcome).toBe('retired');
+    // No update completed, so CloudFormation replaced nothing and the caller
+    // need not re-read the ids.
+    expect(result).toEqual(NOT_UPDATED);
     // UpdateStack was attempted; waitUpdate should NOT have been called when CFn rejected.
     expect(calls.map((c) => c.name)).toEqual([
       'DescribeStacks',
@@ -628,7 +668,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
 
     // S3: PutObject then DeleteObject — both against the cdkd state bucket
     // under the canonical migrate-tmp prefix.
@@ -688,7 +728,7 @@ describe('retireCloudFormationStack', () => {
       stateBucket: 'state-bucket',
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     const put = s3SendCalls.find((c) => c.name === 'PutObject')!;
     expect(String(put.input['Key'])).toMatch(/^cdkd-migrate-tmp\/BigYamlStack\/\d+\.yaml$/);
     expect(put.input['ContentType']).toBe('application/x-yaml');
@@ -771,7 +811,7 @@ describe('retireCloudFormationStack', () => {
       yes: true,
       stateBucket: 'state-bucket',
     });
-    expect(result.outcome).toBe('retired');
+    expect(result).toEqual(UPDATED);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringMatching(/Failed to delete temporary template upload.*cdkd-migrate-tmp/)
     );
@@ -802,6 +842,15 @@ describe('retireCloudFormationStack', () => {
         stateBucket: 'state-bucket',
       })
     ).rejects.toThrow(/exceeds the CloudFormation UpdateStack TemplateURL limit \(1048576\)/);
+    // The same route, in the same order, as RetainUpdateFailedError (#4873).
+    await expect(
+      retireCloudFormationStack({
+        cfnStackName: 'HugeStack',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'state-bucket',
+      })
+    ).rejects.toThrow(MANUAL_RETIREMENT_ROUTE);
 
     // No S3 round-trips when we reject up front.
     expect(s3SendCalls).toHaveLength(0);
@@ -1399,7 +1448,7 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
       resourceTree: tree,
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     // Sequence: DescribeStacks → GetTemplate(parent) → GetTemplate(child)
     // → UpdateStack(parent) → DeleteStack(parent). No DescribeStackResources.
     expect(cfnCalls.map((c) => c.name)).toEqual([
@@ -1498,7 +1547,7 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
       // resourceTree deliberately OMITTED -- this is the case under test.
     });
 
-    expect(result).toEqual({ outcome: 'retired' });
+    expect(result).toEqual(UPDATED);
     // TWO DescribeStackResources, AND against the right targets: the parent
     // first, then the child's physical id. The COUNT says the child was
     // visited; the NAMES say it was the right child. One call would mean the
@@ -1653,5 +1702,300 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
     expect((error as { code?: string }).code).toBe('NON_INTERACTIVE_CONFIRM');
     expect(readlineQuestion).not.toHaveBeenCalled();
     expectUploadsDrained();
+  });
+});
+
+describe('prepareCloudFormationStackRetirement / deleteRetiredCloudFormationStack (issue #4873)', () => {
+  beforeEach(() => {
+    clearReplicationProbeCache();
+    waitUpdateMock.mockReset();
+    waitUpdateMock.mockResolvedValue(undefined);
+    waitDeleteMock.mockReset();
+    waitDeleteMock.mockResolvedValue(undefined);
+  });
+
+  it('stops after the Retain update: no DeleteStack until the caller asks for it', async () => {
+    // The caller writes cdkd state between the two halves, from ids it
+    // re-reads after this update; a DeleteStack here would retire the stack
+    // before that state exists.
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn' },
+      DeleteStack: {},
+    });
+    const result = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    });
+    expect(result).toEqual(UPDATED);
+    expect(calls.map((c) => c.name)).toEqual(['DescribeStacks', 'GetTemplate', 'UpdateStack']);
+    expect(waitDeleteMock).not.toHaveBeenCalled();
+
+    await deleteRetiredCloudFormationStack('S', client as never);
+    expect(calls.map((c) => c.name).at(-1)).toBe('DeleteStack');
+    expect(calls.at(-1)!.input).toEqual({ StackName: 'S' });
+    expect(waitDeleteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports templateUpdated=false only when no update completed', async () => {
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_ALL_RETAIN },
+    });
+    const result = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    });
+    expect(result).toEqual(NOT_UPDATED);
+  });
+
+  it('propagates a failed update wait instead of reporting ready', async () => {
+    // An UPDATE_ROLLBACK must stop the caller BEFORE its state write.
+    waitUpdateMock.mockRejectedValueOnce(new Error('UPDATE_ROLLBACK_COMPLETE'));
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn' },
+    });
+    await expect(
+      prepareCloudFormationStackRetirement({
+        cfnStackName: 'S',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'b',
+      })
+    ).rejects.toThrow(/UPDATE_ROLLBACK_COMPLETE/);
+  });
+
+  it('a failed wait names the retained-copy hint and the manual route', async () => {
+    waitUpdateMock.mockRejectedValueOnce(new Error('Exceeded max wait time'));
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn' },
+    });
+    const err = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(RetainUpdateFailedError);
+    expect(err!.message).toContain('Exceeded max wait time');
+    expect(err!.message).toContain('cdkd state has not been written');
+    expect(err!.message).toContain(SUPERSEDED_COPY_HINT);
+    expect(err!.message).toContain('without --migrate-from-cloudformation');
+  });
+
+  it('a rejected UpdateStack (a deterministic failure) names the manual route, not the hint', async () => {
+    // A custom-named resource CloudFormation must replace fails this way on
+    // every re-run; the old flow had written state first, this one has not.
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: () => {
+        throw new Error('custom-named resource requires replacing');
+      },
+    });
+    const err = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(RetainUpdateFailedError);
+    expect(err!.message).toContain('custom-named resource requires replacing');
+    expect(err!.message).toContain('`cdkd import` without --migrate-from-cloudformation');
+    expect(err!.message).not.toContain(SUPERSEDED_COPY_HINT);
+  });
+});
+
+describe('CloudFormation failure text never carries the waiter payload (issue #4873)', () => {
+  const SECRET = 'NoEchoDerived-SECRET-4873';
+  // What the SDK waiter throws: the whole last DescribeStacks result.
+  const waiterError = (status: string): Error =>
+    new Error(
+      JSON.stringify({
+        state: 'FAILURE',
+        reason: {
+          Stacks: [
+            {
+              StackName: 'S',
+              StackStatus: status,
+              StackStatusReason: 'The following resource(s) failed to update: [Doc].',
+              Outputs: [{ OutputKey: 'Password', OutputValue: SECRET }],
+              Parameters: [{ ParameterKey: 'P', ParameterValue: SECRET }],
+            },
+          ],
+        },
+        observedResponses: { [JSON.stringify({ Outputs: [SECRET] })]: 1 },
+      })
+    );
+
+  beforeEach(() => {
+    clearReplicationProbeCache();
+    waitUpdateMock.mockReset();
+    waitUpdateMock.mockResolvedValue(undefined);
+    waitDeleteMock.mockReset();
+    waitDeleteMock.mockResolvedValue(undefined);
+  });
+
+  it('reduces a stack waiter failure to its state, status and status reason', () => {
+    const text = describeStackWaiterFailure(waiterError('UPDATE_ROLLBACK_COMPLETE'));
+    expect(text).toBe(
+      'waiter FAILURE, stack status UPDATE_ROLLBACK_COMPLETE ' +
+        '(The following resource(s) failed to update: [Doc].)'
+    );
+    expect(describeStackWaiterFailure(new Error('not json'))).toBeUndefined();
+  });
+
+  it('a failed update wait keeps a secret Output out of the message AND the cause', async () => {
+    const raw = waiterError('UPDATE_ROLLBACK_COMPLETE');
+    waitUpdateMock.mockRejectedValueOnce(raw);
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn' },
+    });
+    const err = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(RetainUpdateFailedError);
+    expect(err!.message).toContain('UPDATE_ROLLBACK_COMPLETE');
+    expect(err!.message).not.toContain(SECRET);
+    expect(String((err!.cause as Error).message)).not.toContain(SECRET);
+    expect(String((err!.cause as Error).stack)).not.toContain(SECRET);
+  });
+
+  it('a failed delete wait keeps a secret Output out of the message', async () => {
+    waitDeleteMock.mockRejectedValueOnce(waiterError('DELETE_FAILED'));
+    const { client } = buildCfnClient({ DeleteStack: {} });
+    const err = await deleteRetiredCloudFormationStack('S', client as never).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err!.message).toContain('DELETE_FAILED');
+    expect(err!.message).toContain('was NOT confirmed deleted');
+    expect(err!.message).toContain('cdkd state is written and correct');
+    // Claims less (issue #4873 review): no re-run advice a DELETE_FAILED stack
+    // would refuse.
+    expect(err!.message).not.toContain('--force');
+    expect(err!.message).not.toContain(SECRET);
+    expect(String((err!.cause as Error).message)).not.toContain(SECRET);
+    expect(String((err!.cause as Error).stack)).not.toContain(SECRET);
+  });
+
+  it('an AWS-authored rejection names its code, not its message text', async () => {
+    const awsErr = Object.assign(new Error(`Template error: ${SECRET}`), {
+      name: 'ValidationError',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: () => {
+        throw awsErr;
+      },
+    });
+    const err = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'b',
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err!.message).toContain('ValidationError');
+    expect(err!.message).not.toContain(SECRET);
+  });
+
+  it('names the manual route Retain-first, and says a replacement CloudFormation cannot perform fails by hand too', () => {
+    const msg = new RetainUpdateFailedError('S', 'rejected', new Error('x')).message;
+    const retain = msg.indexOf('(1) UpdateStack with DeletionPolicy=Retain');
+    const adopt = msg.indexOf('(2) `cdkd import` without --migrate-from-cloudformation');
+    const del = msg.indexOf('(3) DeleteStack');
+    expect(retain).toBeGreaterThan(-1);
+    expect(adopt).toBeGreaterThan(retain);
+    expect(del).toBeGreaterThan(adopt);
+    expect(msg).toContain('the same update by hand fails too');
+    expect(msg).toContain(MANUAL_RETIREMENT_ROUTE);
+    // A --resource import is selective and would leave the rest unmanaged
+    // after DeleteStack (issue #4873 review), so the route names none.
+    expect(MANUAL_RETIREMENT_ROUTE).not.toContain('--resource');
+    expect(MANUAL_RETIREMENT_ROUTE).toContain('must adopt every resource');
+  });
+});
+
+describe('findReplacedCfnResources (issue #4873)', () => {
+  const node = (
+    stackName: string,
+    resources: [string, string][],
+    nested: [string, CfnStackResourceTree][] = []
+  ): CfnStackResourceTree => ({
+    stackName,
+    physicalId: stackName,
+    resources: new Map(resources),
+    nested: new Map(nested),
+  });
+
+  it('returns nothing when every physical id is unchanged', () => {
+    const t = node('S', [['A', 'a-1']]);
+    expect(findReplacedCfnResources(t, node('S', [['A', 'a-1']]))).toEqual([]);
+  });
+
+  it('names a replaced root resource with its old and new ids', () => {
+    const before = node('S', [
+      ['Doc', 'S-TestDocument-OLD'],
+      ['Topic', 't'],
+    ]);
+    const after = node('S', [
+      ['Doc', 'S-TestDocument-NEW'],
+      ['Topic', 't'],
+    ]);
+    expect(findReplacedCfnResources(before, after)).toEqual([
+      { nestedPath: [], logicalId: 'Doc', before: 'S-TestDocument-OLD', after: 'S-TestDocument-NEW' },
+    ]);
+  });
+
+  it('descends into nested children by logical id, recording the path', () => {
+    const before = node(
+      'S',
+      [['Child', 'arn:child']],
+      [['Child', node('arn:child', [['Doc', 'old']], [['Grand', node('arn:g', [['X', 'x1']])]])]]
+    );
+    const after = node(
+      'S',
+      [['Child', 'arn:child']],
+      [['Child', node('arn:child', [['Doc', 'new']], [['Grand', node('arn:g', [['X', 'x2']])]])]]
+    );
+    expect(findReplacedCfnResources(before, after)).toEqual([
+      { nestedPath: ['Child'], logicalId: 'Doc', before: 'old', after: 'new' },
+      { nestedPath: ['Child', 'Grand'], logicalId: 'X', before: 'x1', after: 'x2' },
+    ]);
+  });
+
+  it('ignores a row present on one side only', () => {
+    const before = node('S', [['Gone', 'g']]);
+    const after = node('S', [['Added', 'a']]);
+    expect(findReplacedCfnResources(before, after)).toEqual([]);
   });
 });

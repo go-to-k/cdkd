@@ -12,7 +12,7 @@ import { Construct } from 'constructs';
 
 /**
  * Small CloudFormation stack — its synthesized template is well under the
- * 51,200-byte UpdateStack TemplateBody limit, so retireCloudFormationStack
+ * 51,200-byte UpdateStack TemplateBody limit, so prepareCloudFormationStackRetirement
  * submits the Retain-injected template inline (no S3 round-trip).
  *
  * Resources are deliberately ones cdkd has SDK Provider support for, so the
@@ -91,10 +91,11 @@ export class MigrateSmallStack extends cdk.Stack {
     // resource requires replacing" because CFn re-serializes Content
     // internally and detects the round-trip as a Content change — and a
     // custom-named Document can't be replaced (the name would collide
-    // with itself). Real-user impact is documented in
-    // retire-cfn-stack.ts's "fall back to the manual 3-step procedure"
-    // failure model. Letting CFn auto-name keeps this test focused on
-    // the migrate flow itself rather than that downstream CFn quirk.
+    // with itself). Auto-named, the same quirk makes the retirement's
+    // Retain update REPLACE this Document, which is what run.sh's
+    // post-destroy leak check holds cdkd to (issue #4873): state must
+    // record the replacement CloudFormation left live, not the copy it
+    // superseded.
     new ssm.CfnDocument(this, 'TestDocument', {
       content: {
         schemaVersion: '2.2',
@@ -197,7 +198,7 @@ export class MigrateSmallStack extends cdk.Stack {
     // the non-ARN shape and falls back to `properties.Topics.join(',')`.
     // A CloudFormation PARAMETER WITH NO DEFAULT, and the shape is the point.
     //
-    // `retireCloudFormationStack` injects `DeletionPolicy: Retain` via
+    // `prepareCloudFormationStackRetirement` injects `DeletionPolicy: Retain` via
     // UpdateStack, and forwards the source stack's existing Parameters as
     // `UsePreviousValue: true`. Without that forwarding CloudFormation falls
     // back to defaults -- and a parameter with NO default has none, so the

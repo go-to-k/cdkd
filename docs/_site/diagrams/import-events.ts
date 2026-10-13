@@ -6,7 +6,7 @@ const importOwnership: Diagram = {
   id: 'import-ownership',
   title: 'What cdkd import does to ownership',
   description:
-    'Before an import, a CloudFormation stack (or nobody) manages the AWS resources. cdkd import reads each physical id and writes a state record for it, without changing the resource. With --migrate-from-cloudformation it then sets every resource in the CloudFormation stack to Retain and deletes that stack, which leaves the resources in place. Afterwards only cdkd state manages them, and the next cdkd deploy updates them in place.',
+    'Before an import, a CloudFormation stack (or nobody) manages the AWS resources. cdkd import reads each physical id and writes a state record for it, without changing the resource. With --migrate-from-cloudformation it first sets every resource in the CloudFormation stack to Retain and reads the ids again, since that update can replace a resource; it writes state from those ids and then deletes the stack, which leaves the resources in place. Afterwards only cdkd state manages them, and the next cdkd deploy updates them in place.',
   rows: [['before'], ['import'], ['state'], ['retire'], ['after']],
   nodes: [
     {
@@ -17,7 +17,7 @@ const importOwnership: Diagram = {
     {
       id: 'import',
       title: 'cdkd import',
-      detail: ['Reads each physical id', 'Does not change any resource'],
+      detail: ['Reads each physical id', 'Migrating: sets Retain, then re-reads the ids'],
     },
     {
       id: 'state',
@@ -29,7 +29,7 @@ const importOwnership: Diagram = {
     {
       id: 'retire',
       title: 'CloudFormation stack retired',
-      detail: ['Every resource set to Retain', 'Then DeleteStack'],
+      detail: ['Retain was set before the state write', 'DeleteStack after it'],
       note: 'Only with --migrate-from-cloudformation',
     },
     {

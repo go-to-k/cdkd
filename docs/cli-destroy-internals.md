@@ -729,24 +729,24 @@ stating precisely rather than as "nothing has happened yet", because for two of
 these something already has:
 
 - **A state lock IS held at the prompt on four of them.** `cdkd orphan`,
-  `cdkd import`, `cdkd export` (its migration and nested-tree prompts) and
+  `cdkd import` (both its state-write prompt and its CloudFormation
+  retirement prompt), `cdkd export` (its migration and nested-tree prompts) and
   `cdkd rollback` acquire the stack's lock before building the plan they are
   about to ask you to confirm. Every one of them releases it in a `finally`, so
   the refusal releases it on the way out and **no lock is leaked** — a re-run
   with the flag is not blocked by the run that refused. No lock is held at
   `cdkd drift`'s two prompts or at `cdkd export`'s rollback-journal override
   (all three acquire *after* the prompt), nor at either `cdkd state` prompt
-  (they only READ lock state), `cdkd state migrate`, or the CloudFormation
-  retirement.
-- **The CloudFormation retirement has already written, in two senses.** cdkd
-  state is written *before* it is reached at all — it is the last step of
-  `cdkd import --migrate-from-cloudformation` — so a refusal leaves the
-  resources recorded in cdkd state while the CloudFormation stack is still
-  live. Its refusal message says so, and names that command. Separately, for a
-  nested stack whose child templates exceed CloudFormation's 51,200-byte inline
-  limit, those child bodies have already been uploaded to `cdkd-migrate-tmp/`
-  in the state bucket by the time the prompt fires; they are **deleted on the
-  refusing path**, exactly as they are when you answer `n`.
+  (they only READ lock state) or `cdkd state migrate`.
+- **The CloudFormation retirement fires before the state write.** In
+  `cdkd import --migrate-from-cloudformation` it precedes both the Retain
+  update and the state write (issue #4873), so a refusal leaves cdkd state and
+  the CloudFormation stack unchanged. Its refusal message says so, and names
+  that command. For a nested stack whose child templates exceed
+  CloudFormation's 51,200-byte inline limit, those child bodies have already
+  been uploaded to `cdkd-migrate-tmp/` in the state bucket by the time the
+  prompt fires; they are **deleted on the refusing path**, exactly as they are
+  when you answer `n`.
 
 Every other prompt refuses after read-only work only — the plan it was about to
 ask you to confirm, and nothing else.

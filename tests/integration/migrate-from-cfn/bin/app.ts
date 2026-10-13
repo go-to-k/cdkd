@@ -5,7 +5,7 @@ import { MigrateLargeStack } from '../lib/migrate-large-stack.ts';
 
 const app = new cdk.App();
 
-// Two stacks, two paths through retireCloudFormationStack:
+// Two stacks, two paths through prepareCloudFormationStackRetirement:
 //   - Small stack: synthesized template fits the inline 51,200-byte
 //     UpdateStack TemplateBody limit. Exercises the original retire flow.
 //   - Large stack: synthesized template is >51,200 bytes (one Lambda with

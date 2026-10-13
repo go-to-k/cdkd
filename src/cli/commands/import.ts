@@ -78,7 +78,12 @@ import {
 } from '../../assets/asset-redirect.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import {
-  retireCloudFormationStack,
+  prepareCloudFormationStackRetirement,
+  deleteRetiredCloudFormationStack,
+  findReplacedCfnResources,
+  SUPERSEDED_COPY_HINT,
+  cfnFailureText,
+  type ReplacedCfnResource,
   getCloudFormationResourceTree,
   tryGetCloudFormationResourceMap,
   NESTED_STACK_RESOURCE_TYPE,
@@ -180,10 +185,10 @@ interface ImportOptions {
   verbose: boolean;
   context?: string[];
   /**
-   * After successfully writing cdkd state, retire the named CloudFormation
-   * stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain`
-   * on every resource via UpdateStack, then DeleteStack. AWS resources are
-   * left intact (now solely managed by cdkd). Pass `true` to use the cdkd
+   * Retire the named CloudFormation stack: inject `DeletionPolicy: Retain` +
+   * `UpdateReplacePolicy: Retain` on every resource via UpdateStack, write cdkd state from the physical ids
+   * the stack holds once that update completes, then DeleteStack. AWS
+   * resources are left intact (now solely managed by cdkd). Pass `true` to use the cdkd
    * stack name as the CFn stack name (the common case for CDK-deployed
    * stacks); pass a string to override when the CFn stack name differs.
    */
@@ -917,63 +922,70 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     }
 
     try {
-      const rows: ImportRow[] = [];
-      for (const { logicalId, resource } of resources) {
-        // Selective mode: skip resources not in overrides up front. They
-        // never hit the provider, so the summary correctly distinguishes
-        // "out of scope" from "AWS not found".
-        if (selectiveMode && !overrides.has(logicalId)) {
-          rows.push({
-            logicalId,
-            resourceType: resource.Type,
-            outcome: 'skipped-out-of-scope',
-            reason: 'not in --resource / --resource-mapping (use --auto to include)',
-          });
-          continue;
-        }
+      // The dispatch over every template resource. A closure so the Retain
+      // update below can re-run it when CloudFormation REPLACED a resource and
+      // the ids it read are stale (issue #4873).
+      const collectRows = async (): Promise<ImportRow[]> => {
+        const collected: ImportRow[] = [];
+        for (const { logicalId, resource } of resources) {
+          // Selective mode: skip resources not in overrides up front. They
+          // never hit the provider, so the summary correctly distinguishes
+          // "out of scope" from "AWS not found".
+          if (selectiveMode && !overrides.has(logicalId)) {
+            collected.push({
+              logicalId,
+              resourceType: resource.Type,
+              outcome: 'skipped-out-of-scope',
+              reason: 'not in --resource / --resource-mapping (use --auto to include)',
+            });
+            continue;
+          }
 
-        // Nested-stack short-circuit (issue #464): adopt each
-        // `AWS::CloudFormation::Stack` row with cdkd's synthesized
-        // cdkd-local ARN. `NestedStackProvider` has no `import()` (the
-        // child's state is written out-of-band below in
-        // `importNestedStackChildren`), so without this short-circuit
-        // every nested-stack row would surface as `skipped-no-impl` and
-        // the parent's `Ref <NestedStack>` resolutions would later
-        // mis-resolve at deploy time. Only fires when we have a
-        // matching child in the AWS tree — outside the migration code
-        // path the dispatch falls through to the existing
-        // `skipped-no-impl` (provider has no `import()`).
-        if (
-          resource.Type === NESTED_STACK_RESOURCE_TYPE &&
-          migrationTree &&
-          migrationTree.nested.has(logicalId) &&
-          accountIdForNestedSynth
-        ) {
-          rows.push({
-            logicalId,
-            resourceType: resource.Type,
-            outcome: 'imported',
-            physicalId: synthesizeNestedStackArn(
-              targetRegion,
-              accountIdForNestedSynth,
-              stackInfo.stackName,
-              logicalId
-            ),
-          });
-          continue;
-        }
+          // Nested-stack short-circuit (issue #464): adopt each
+          // `AWS::CloudFormation::Stack` row with cdkd's synthesized
+          // cdkd-local ARN. `NestedStackProvider` has no `import()` (the
+          // child's state is written out-of-band below in
+          // `importNestedStackChildren`), so without this short-circuit
+          // every nested-stack row would surface as `skipped-no-impl` and
+          // the parent's `Ref <NestedStack>` resolutions would later
+          // mis-resolve at deploy time. Only fires when we have a
+          // matching child in the AWS tree — outside the migration code
+          // path the dispatch falls through to the existing
+          // `skipped-no-impl` (provider has no `import()`).
+          if (
+            resource.Type === NESTED_STACK_RESOURCE_TYPE &&
+            migrationTree &&
+            migrationTree.nested.has(logicalId) &&
+            accountIdForNestedSynth
+          ) {
+            collected.push({
+              logicalId,
+              resourceType: resource.Type,
+              outcome: 'imported',
+              physicalId: synthesizeNestedStackArn(
+                targetRegion,
+                accountIdForNestedSynth,
+                stackInfo.stackName,
+                logicalId
+              ),
+            });
+            continue;
+          }
 
-        const outcome = await importOne({
-          logicalId,
-          resource,
-          stackName: stackInfo.stackName,
-          region: targetRegion,
-          providerRegistry,
-          override: overrides.get(logicalId),
-          overrides,
-        });
-        rows.push(outcome);
-      }
+          const outcome = await importOne({
+            logicalId,
+            resource,
+            stackName: stackInfo.stackName,
+            region: targetRegion,
+            providerRegistry,
+            override: overrides.get(logicalId),
+            overrides,
+          });
+          collected.push(outcome);
+        }
+        return collected;
+      };
+      let rows = await collectRows();
 
       printSummary(rows);
 
@@ -1011,28 +1023,32 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // (issue #1652) and `template` itself otherwise — identical in every
       // respect except that its asset references still name CDK bootstrap
       // storage, which is what AWS holds for the resources being adopted.
-      const stackState = buildStackState(
-        stackInfo.stackName,
-        targetRegion,
-        rows,
-        templateParser,
-        stateTemplate,
-        existingState,
-        selectiveMode
-      );
-      refuseMalformedResourceEntriesForImportSave(
-        stackState,
-        stackInfo.stackName,
-        targetRegion,
-        lockRecovery
-      );
+      const assembleStackState = (): StackState => {
+        const assembled = buildStackState(
+          stackInfo.stackName,
+          targetRegion,
+          rows,
+          templateParser,
+          stateTemplate,
+          existingState,
+          selectiveMode
+        );
+        refuseMalformedResourceEntriesForImportSave(
+          assembled,
+          stackInfo.stackName,
+          targetRegion,
+          lockRecovery
+        );
+        return assembled;
+      };
+      let stackState = assembleStackState();
 
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
         return;
       }
 
-      const importedRows = rows.filter((r) => r.outcome === 'imported');
+      let importedRows = rows.filter((r) => r.outcome === 'imported');
       if (importedRows.length === 0) {
         logger.warn('No resources were successfully imported. State will not be written.');
         return;
@@ -1063,8 +1079,154 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         }
       }
 
+      // Steps 1-3 of retiring the source CloudFormation stack run HERE, BEFORE
+      // the state write (issue #4873). The Retain update is not always
+      // metadata-only: CloudFormation can REPLACE a resource on it (an
+      // auto-named `AWS::SSM::Document` is the observed case) and repoint the
+      // stack at the new physical resource. State written from the ids read
+      // before the update named the superseded copy, so `cdkd destroy` deleted
+      // that and left the live one behind. Re-reading after the update and
+      // building state from what CloudFormation now holds means this run's
+      // state never names a superseded copy, and the injected
+      // `UpdateReplacePolicy: Retain` keeps that copy, so no crash leaves any
+      // state naming a resource the update deleted. Still
+      // inside the lock-protected `try`, so a concurrent `cdkd deploy` cannot
+      // race the CFn calls.
+      let retireCfnStack = false;
+      // Rows a replacing Retain update touched inside a nested child, keyed by
+      // the child's path; the child walk below refuses when one is lost.
+      let nestedReplaced: ReplacedCfnResource[] = [];
+      if (migrationCfnStackName) {
+        // Partial-import warning: some template resources didn't make it
+        // into cdkd state (AWS-not-found, no provider, or out-of-scope).
+        // After DeleteStack those resources keep existing in AWS but are
+        // unmanaged by both CFn (Retain causes DeleteStack to skip them)
+        // AND cdkd (never written to state). Surface that out loud so the
+        // user can either re-import or accept the orphaning intentionally.
+        // Re-issued below when a re-dispatch changes the count; each nested
+        // child warns for its own rows.
+        warnMigrationOrphans(logger, resources.length, importedRows.length);
+        const preparation = await prepareCloudFormationStackRetirement({
+          cfnStackName: migrationCfnStackName,
+          cfnClient: regionClients.cloudFormation,
+          yes: options.yes,
+          // Reuse cdkd's state bucket as transient storage for the
+          // Retain-injected template when it exceeds the 51,200-byte
+          // inline UpdateStack limit. Forward `--profile` so the
+          // upload identity matches the one that writes cdkd state.
+          stateBucket,
+          ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
+          // Pass the pre-built tree so the recursive Retain-injection
+          // walk reuses our existing DescribeStackResources calls instead
+          // of redoing them.
+          //
+          // The guard cannot currently be false: `migrationTree` is awaited
+          // unconditionally under the same `if (migrationCfnStackName)` that
+          // gates this block, so this is the site that makes
+          // `retire-cfn-stack.ts`'s "import always supplies the tree" note
+          // true. It is written conditionally anyway because the two
+          // assignments are far apart and a future early-return between
+          // them would reintroduce the undefined case silently.
+          ...(migrationTree && { resourceTree: migrationTree }),
+        });
+        // A decline keeps the pre-update behaviour: the state the operator
+        // already confirmed is written, and the stack is left alone.
+        retireCfnStack = preparation.outcome === 'ready';
+        if (preparation.outcome === 'ready' && preparation.templateUpdated && migrationTree) {
+          let updatedTree: CfnStackResourceTree;
+          try {
+            updatedTree = await getCloudFormationResourceTree(
+              migrationCfnStackName,
+              regionClients.cloudFormation
+            );
+          } catch (err) {
+            // The update COMPLETED, so a replacement may have happened, and a
+            // re-run will not see one (no update runs then): say so here.
+            throw new Error(
+              safeMsg`--migrate-from-cloudformation: the Retain-policy update completed, but ` +
+                safeMsg`re-reading the stack's resources failed: ${cfnFailureText(err)}. ` +
+                `cdkd state was not written and the CloudFormation stack was not deleted. ` +
+                SUPERSEDED_COPY_HINT
+            );
+          }
+          // Only rows this import can adopt: a root row the template holds that
+          // is not a nested-stack row (its id is cdkd's synthesized ARN anyway).
+          // Nested-child rows go to their child walk.
+          const replaced = findReplacedCfnResources(migrationTree, updatedTree).filter(
+            (r) =>
+              r.nestedPath.length > 0 ||
+              (templateLogicalIds.has(r.logicalId) &&
+                template.Resources[r.logicalId]?.Type !== NESTED_STACK_RESOURCE_TYPE)
+          );
+          // The nested-child state writes below read this tree, so they pick
+          // up a child's replaced ids with no step of their own.
+          migrationTree = updatedTree;
+          nestedReplaced = replaced.filter((r) => r.nestedPath.length > 0);
+          for (const r of replaced) {
+            const where =
+              r.nestedPath.length > 0
+                ? safeMsg`nested stack ${r.nestedPath.map((p) => logicalIdShown(p)).join(' > ')}: `
+                : '';
+            // Only a CFn-derived id is repointed. One the operator pinned with
+            // `--resource` to some OTHER value stays theirs.
+            const pinned =
+              r.nestedPath.length === 0 &&
+              overrides.has(r.logicalId) &&
+              overrides.get(r.logicalId) !== r.before;
+            if (r.nestedPath.length === 0 && overrides.get(r.logicalId) === r.before) {
+              overrides.set(r.logicalId, r.after);
+            }
+            logger.warn(
+              safeMsg`CloudFormation replaced ${where}${logicalIdShown(r.logicalId)} while applying ` +
+                safeMsg`the Retain policies: the stack now holds ${displaySafe(r.after)}` +
+                (pinned
+                  ? safeMsg`; cdkd keeps the physical id you passed with --resource, so ${displaySafe(r.after)} ` +
+                    `(kept by DeletionPolicy=Retain) is managed by neither CloudFormation nor cdkd either. `
+                  : `, which cdkd adopts. `) +
+                safeMsg`The replaced ${displaySafe(r.before)} is RETAINED and managed by neither ` +
+                `CloudFormation nor cdkd; delete it yourself once you no longer need it.`
+            );
+          }
+          if (replaced.some((r) => r.nestedPath.length === 0)) {
+            // Re-run the WHOLE dispatch, not only the replaced rows: a
+            // dependent resource's import pre-resolves `{Ref: <replaced>}`
+            // through `overrides` (`substituteOverrideRefs`), so its row is
+            // stale too.
+            rows = await collectRows();
+            printSummary(rows);
+            stackState = assembleStackState();
+            // A row the first dispatch adopted and this one lost (a new copy
+            // not yet readable, say) would be orphaned by the DeleteStack below
+            // with no warning, so refuse. Nothing is written.
+            const adoptedBefore = importedRows.map((r) => r.logicalId);
+            importedRows = rows.filter((r) => r.outcome === 'imported');
+            const adoptedNow = new Set(importedRows.map((r) => r.logicalId));
+            // Re-recorded BEFORE the refusal too: the first dispatch already
+            // wrote the superseded ids, and a later `--resource-mapping` run
+            // would pin them. A lost row drops out of the file.
+            if (options.recordResourceMapping) {
+              writeRecordedMapping(options.recordResourceMapping, rows);
+            }
+            refuseLostReplacedRows(
+              adoptedBefore.filter((id) => !adoptedNow.has(id)),
+              'cdkd state was not written and the CloudFormation stack was not deleted.'
+            );
+            if (importedRows.length !== adoptedBefore.length) {
+              // More rows than the operator confirmed: say so rather than
+              // writing a count nobody saw.
+              logger.warn(
+                safeMsg`--migrate-from-cloudformation: the re-import after the replacement adopts ` +
+                  safeMsg`${importedRows.length} resource(s); ${adoptedBefore.length} were confirmed.`
+              );
+              warnMigrationOrphans(logger, resources.length, importedRows.length);
+            }
+          }
+        }
+      }
+
       // `stackState` was assembled and re-checked above the `--dry-run` return
-      // and the prompt; from here on this run WRITES it.
+      // and the prompt (and again after a replacing Retain update); from here
+      // on this run WRITES it.
 
       // Resolve CFn intrinsics (Ref / Fn::GetAtt / Fn::Sub / ...) in every
       // freshly-imported resource's `properties` against the assembled
@@ -1195,6 +1357,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
           parentNestedTemplates: stackInfo.nestedTemplates ?? nullPrototypeRecord<string>(),
           parentTree: migrationTree,
+          nestedPath: [],
+          replaced: nestedReplaced,
           stateBackend,
           lockManager,
           providerRegistry,
@@ -1207,51 +1371,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         });
       }
 
-      // Optional: retire the source CloudFormation stack now that cdkd state
-      // is committed. Done AFTER state write so a failure here leaves the
-      // user with a working cdkd state record they can re-run against, or
-      // fall back to retiring the CFn stack manually. Stays inside the
-      // lock-protected `try` block so a concurrent `cdkd deploy` can't race
-      // the post-write CFn calls.
-      if (migrationCfnStackName) {
-        // Partial-import warning: some template resources didn't make it
-        // into cdkd state (AWS-not-found, no provider, or out-of-scope).
-        // After DeleteStack those resources keep existing in AWS but are
-        // unmanaged by both CFn (Retain causes DeleteStack to skip them)
-        // AND cdkd (never written to state). Surface that out loud so the
-        // user can either re-import or accept the orphaning intentionally.
-        const orphaned = resources.length - importedRows.length;
-        if (orphaned > 0) {
-          logger.warn(
-            `--migrate-from-cloudformation: ${orphaned} of ${resources.length} ` +
-              `template resource(s) were NOT imported into cdkd. After the ` +
-              `CloudFormation stack is retired, those resources remain in AWS ` +
-              `but are unmanaged by both CloudFormation and cdkd.`
-          );
-        }
-        await retireCloudFormationStack({
-          cfnStackName: migrationCfnStackName,
-          cfnClient: regionClients.cloudFormation,
-          yes: options.yes,
-          // Reuse cdkd's state bucket as transient storage for the
-          // Retain-injected template when it exceeds the 51,200-byte
-          // inline UpdateStack limit. Forward `--profile` so the
-          // upload identity matches the one that just wrote cdkd state.
-          stateBucket,
-          ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
-          // Pass the pre-built tree so the recursive Retain-injection
-          // walk inside `retireCloudFormationStack` reuses our existing
-          // DescribeStackResources calls instead of redoing them.
-          //
-          // The guard cannot currently be false: `migrationTree` is awaited
-          // unconditionally under the same `if (migrationCfnStackName)` that
-          // gates this block, so this is the site that makes
-          // `retire-cfn-stack.ts`'s "import always supplies the tree" note
-          // true. It is written conditionally anyway because the two
-          // assignments are ~500 lines apart and a future early-return
-          // between them would reintroduce the undefined case silently.
-          ...(migrationTree && { resourceTree: migrationTree }),
-        });
+      // Step 4 of the retirement: delete the CloudFormation stack record now
+      // that cdkd state — root and every nested child — is committed. Every
+      // resource carries DeletionPolicy=Retain, so nothing in AWS is deleted.
+      // A failure here leaves a working cdkd state record; the stack can be
+      // deleted by hand or the command re-run.
+      if (migrationCfnStackName && retireCfnStack) {
+        await deleteRetiredCloudFormationStack(migrationCfnStackName, regionClients.cloudFormation);
       }
     } finally {
       await lockManager.releaseLock(stackInfo.stackName, targetRegion).catch((err) => {
@@ -3552,6 +3678,44 @@ function resolveDiscardsNonInertSubtree(
   return keys.some((key) => resolveDiscardsNonInertSubtree(record[key], conditions, mappings));
 }
 
+/**
+ * The `--migrate-from-cloudformation` partial-import warning: after
+ * `DeleteStack` a resource that is not imported stays in AWS, managed by
+ * neither tool. `where` names a nested child; the root passes nothing.
+ */
+function warnMigrationOrphans(
+  logger: ReturnType<typeof getLogger>,
+  total: number,
+  imported: number,
+  where?: string
+): void {
+  const orphaned = total - imported;
+  if (orphaned <= 0) return;
+  logger.warn(
+    `--migrate-from-cloudformation: ${orphaned} of ${total} ` +
+      `template resource(s)${where ? safeMsg` in ${where}` : ''} were NOT imported into cdkd. After the ` +
+      `CloudFormation stack is retired, those resources remain in AWS ` +
+      `but are unmanaged by both CloudFormation and cdkd.`
+  );
+}
+
+/**
+ * Refuse when a resource the Retain update REPLACED could not be imported by
+ * its new id (issue #4873): adopting the rest and deleting the stack would
+ * leave both copies unmanaged with no warning. `written` says what this run
+ * has already saved. A re-run cannot catch this, since no update runs then.
+ */
+function refuseLostReplacedRows(lost: string[], written: string): void {
+  if (lost.length === 0) return;
+  throw new Error(
+    safeMsg`--migrate-from-cloudformation: after CloudFormation replaced resources, ` +
+      safeMsg`${lost.map((id) => logicalIdShown(id)).join(', ')} could no longer be imported. ` +
+      `${written} Re-run the same command once the new resource is readable: the re-run ` +
+      `runs no update, so it cannot tell the resource was replaced, and a resource it ` +
+      `still cannot import is left managed by neither tool after the stack is retired.`
+  );
+}
+
 function printSummary(rows: ImportRow[]): void {
   const logger = getLogger();
   const counts = {
@@ -3716,10 +3880,11 @@ export function createImportCommand(): Command {
     )
     .option(
       '--migrate-from-cloudformation [cfn-stack-name]',
-      'After cdkd state is written, retire the named CloudFormation stack ' +
-        '(deletes the CFn stack record; AWS resources are NOT deleted): ' +
-        'inject DeletionPolicy=Retain and UpdateReplacePolicy=Retain on every ' +
-        'resource via UpdateStack, then DeleteStack. cdkd takes over management. ' +
+      'Retire the named CloudFormation stack (deletes the CFn stack record; ' +
+        'AWS resources are NOT deleted): inject DeletionPolicy=Retain and ' +
+        'UpdateReplacePolicy=Retain on every ' +
+        'resource via UpdateStack, write cdkd state from the physical IDs the stack ' +
+        'holds after that update, then DeleteStack. cdkd takes over management. ' +
         'Pass without a value to use the cdkd stack name as the CFn stack name ' +
         '(the typical case for a CDK app that was previously deployed via ' +
         '`cdk deploy`); pass an explicit value when the CFn stack name differs.'
@@ -4246,6 +4411,14 @@ async function importNestedStackChildrenRecursive(args: {
   /** AssemblyReader-built `childLogicalId → local template file path` index for the parent's direct children. */
   parentNestedTemplates: Record<string, string>;
   parentTree: CfnStackResourceTree;
+  /** Nested-stack logical ids from the root down to the PARENT; `[]` at the root. */
+  nestedPath: string[];
+  /**
+   * Rows the Retain update replaced inside nested children (issue #4873). A
+   * child refuses, before its own save and before `DeleteStack`, when one of
+   * ITS rows did not import by the new id.
+   */
+  replaced: ReplacedCfnResource[];
   stateBackend: S3StateBackend;
   lockManager: LockManager;
   providerRegistry: ProviderRegistry;
@@ -4392,6 +4565,30 @@ async function importNestedStackChildrenRecursive(args: {
         rows.push(outcome);
       }
 
+      // Issue #4873: a row the Retain update replaced in THIS child must have
+      // imported by its new id. Checked before this child's save, so the
+      // parent (already saved) and earlier siblings keep their records while
+      // this child and the DeleteStack do not happen.
+      const childPath = [...args.nestedPath, childLogicalId];
+      const childImported = new Set(
+        rows.filter((r) => r.outcome === 'imported').map((r) => r.logicalId)
+      );
+      refuseLostReplacedRows(
+        args.replaced
+          .filter(
+            (r) =>
+              r.nestedPath.length === childPath.length &&
+              r.nestedPath.every((p, i) => p === childPath[i]) &&
+              childTemplateLogicalIds.has(r.logicalId) &&
+              !childImported.has(r.logicalId)
+          )
+          .map((r) => r.logicalId),
+        safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+          `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+          `was not deleted; the re-run needs --force.`
+      );
+      warnMigrationOrphans(logger, childResources.length, childImported.size, childStackName);
+
       // Build child state (auto / whole-stack mode — no pre-existing
       // selective merge for a fresh nested child). Populate the v6
       // parent-link fields so `NestedStackProvider.delete`'s child-state
@@ -4486,6 +4683,8 @@ async function importNestedStackChildrenRecursive(args: {
             childTemplatePath
           ),
           parentTree: childTreeNode,
+          nestedPath: [...args.nestedPath, childLogicalId],
+          replaced: args.replaced,
           stateBackend,
           lockManager,
           providerRegistry,

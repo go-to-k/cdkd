@@ -149,15 +149,15 @@ const SITES: readonly Site[] = [
     // Reachable from ONE command since `cdkd migrate --retire-cfn-stack` was
     // removed with its command (issue #2572), so the refusal names that one —
     // a CI user who has just been told a flag is missing still has to know
-    // which invocation to put it on. It is also the only site that fires
-    // AFTER its command's state write, so the refusal states that too —
-    // `confirmOrRefuse`'s contract is that the refusal is the only thing that
-    // user sees.
+    // which invocation to put it on. It fires BEFORE its command's state
+    // write and the Retain update (issue #4873), so the refusal says nothing
+    // was written — `confirmOrRefuse`'s contract is that the refusal is the
+    // only thing that user sees.
     names: [
       'CloudFormation stack retirement',
       '-y / --yes',
       'cdkd import --migrate-from-cloudformation',
-      'cdkd state has already been written',
+      'Nothing has been written yet',
     ],
     // The one user-visible claim of issue go-to-k/cdkd#2572: this refusal
     // named `cdkd migrate --retire-cfn-stack` as a second way through, and

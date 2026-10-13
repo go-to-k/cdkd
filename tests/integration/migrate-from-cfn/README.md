@@ -44,7 +44,19 @@ The script:
    `s3://<bucket>/cdkd-migrate-tmp/` is empty (the large path uploads a
    transient template; the cleanup must run in `finally`).
 6. Runs `cdkd destroy <stack> --force`.
-7. Asserts: cdkd state is empty.
+7. Asserts: cdkd state is empty and, for the small stack, that the
+   `CdkdMigrateSmall-TestDocument-*` replacement the retirement's Retain update
+   created is gone after the destroy, so this fails when state records the
+   superseded copy (issue #4873), and that the deployed copy it superseded
+   still exists, kept by `UpdateReplacePolicy: Retain`. It also fails when no
+   replacement appeared,
+   since the arm then exercises nothing. Every listing is compared against one
+   taken before `cdk deploy`, so Documents an earlier run leaked do not fail
+   it, and every Document this run created, including the copy
+   `UpdateReplacePolicy: Retain` keeps, is deleted before the verdict. The
+   after-import and after-destroy listings are re-read for up to a minute
+   while a just-created or just-deleted Document settles, and an EXIT trap
+   deletes this run's new Documents on any failing exit.
 
 A successful run ends with `=== ALL CHECKS PASSED ===` and zero leftover
 AWS resources.
@@ -58,6 +70,8 @@ AWS resources.
   PR #113 (the only path the small stack does NOT exercise).
 - That `cdkd destroy` can walk and delete state populated by the migration
   rather than by `cdkd deploy`.
+- That state records the physical id CloudFormation holds after the Retain
+  update, including a resource that update replaced.
 
 ## When to run
 

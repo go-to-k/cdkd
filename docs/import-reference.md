@@ -35,7 +35,7 @@ cdkd import MyStack --force --yes
 | `--auto` | off | With a mapping, also look up every resource not listed. |
 | `--dry-run` | off | Print the import plan and write no state. |
 | `--force` | off | Confirm a write that drops or overwrites existing state records. |
-| `--migrate-from-cloudformation [name]` | off | After the state write, retire the CloudFormation stack (default name: the cdkd stack name). |
+| `--migrate-from-cloudformation [name]` | off | Retire the CloudFormation stack: set Retain, write state from the ids the stack then holds, delete the stack (default name: the cdkd stack name). |
 | `--use-cdk-bootstrap-assets` | off | Keep CDK bootstrap asset destinations in a cdkd-assets region. |
 | `-y`, `--yes` | off | Skip the state-write prompt and the retirement prompt. Required in CI. |
 
@@ -214,7 +214,7 @@ CloudFormation.
 | --- | --- |
 | Up to 51,200 bytes | Submitted directly. |
 | Larger, up to 1 MB | Uploaded to the state bucket under `cdkd-migrate-tmp/` for the update, then deleted. |
-| Over 1 MB | CloudFormation cannot accept it, so cdkd fails. State is already written by then. |
+| Over 1 MB | CloudFormation cannot accept it, so cdkd fails before it writes any state. |
 
 A YAML template is supported. Shorthand intrinsic functions (`!Ref`, `!Sub`,
 `!GetAtt`) are preserved, and cdkd submits the update as YAML.

@@ -91,7 +91,14 @@ vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
     typeof import('../../../src/cli/commands/retire-cfn-stack.js')
   >('../../../src/cli/commands/retire-cfn-stack.js');
   return {
-    retireCloudFormationStack: vi.fn(async () => ({ outcome: 'retired' })),
+    prepareCloudFormationStackRetirement: vi.fn(async () => ({
+      outcome: 'ready',
+      templateUpdated: false,
+    })),
+    deleteRetiredCloudFormationStack: vi.fn(async () => undefined),
+    findReplacedCfnResources: actual.findReplacedCfnResources,
+    SUPERSEDED_COPY_HINT: actual.SUPERSEDED_COPY_HINT,
+    cfnFailureText: actual.cfnFailureText,
     getCloudFormationResourceTree: mockGetCfnResourceTree,
     tryGetCloudFormationResourceMap: vi.fn(async () => null),
     NESTED_STACK_RESOURCE_TYPE: actual.NESTED_STACK_RESOURCE_TYPE,

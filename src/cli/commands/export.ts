@@ -7624,7 +7624,7 @@ export async function selectChangeSetTemplateSource(
 /**
  * Best-effort wrapper around the `cleanup` callback returned by
  * {@link selectChangeSetTemplateSource}. Mirrors the warn-on-failure
- * pattern from `retireCloudFormationStack` so a stranded `cdkd-migrate-tmp/`
+ * pattern from `prepareCloudFormationStackRetirement` so a stranded `cdkd-migrate-tmp/`
  * object never blocks the calling command — it lives under an obviously
  * named prefix and can be reaped manually.
  */
@@ -8460,7 +8460,7 @@ export interface PerStackImportLoopResult {
  * Caller-supplied dependencies for {@link runPerStackImportLoop}. Grouped
  * into one object so the orchestrator's signature stays readable even as
  * the dependency surface grows. Mirrors the
- * `retireCloudFormationStack`-style dependency-injection shape.
+ * `prepareCloudFormationStackRetirement`-style dependency-injection shape.
  */
 export interface RunPerStackImportLoopDeps {
   cfnClient: AwsClients['cloudFormation'];

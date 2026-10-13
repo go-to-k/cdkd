@@ -84,7 +84,8 @@ vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
 }));
 
 import {
-  retireCloudFormationStack,
+  prepareCloudFormationStackRetirement,
+  deleteRetiredCloudFormationStack,
   injectRetainPoliciesRecursive,
   tryGetCloudFormationResourceMap,
   RecursiveRetainInjectionError,
@@ -149,21 +150,22 @@ describe('retire-cfn-stack (#3361)', () => {
       DeleteStack: {},
     });
 
-    const result = await retireCloudFormationStack({
+    const result = await prepareCloudFormationStackRetirement({
       cfnStackName: 'BigStack',
       cfnClient: client as never,
       yes: true,
       stateBucket: 'state-bucket',
     });
+    await deleteRetiredCloudFormationStack('BigStack', client as never);
 
-    expect(result.outcome).toBe('retired');
+    expect(result).toEqual({ outcome: 'ready', templateUpdated: true });
     expect(waitDeleteMock).toHaveBeenCalledTimes(1);
     const drainWarn = warnings().filter((w) => w.includes('Failed to delete'));
     expect(drainWarn).toHaveLength(1);
     expect(drainWarn[0]).toContain(PLACEHOLDER);
   });
 
-  it('an UpdateStack rejecting with an unconvertible value is rethrown as itself, not as a TypeError', async () => {
+  it('an UpdateStack rejecting with an unconvertible value is carried as the cause, not replaced by a TypeError', async () => {
     // The catch reads the message only to recognise CloudFormation's "No
     // updates are to be performed" and rethrows everything else. Its
     // `String(err)` threw first, so the caller received the converter's
@@ -178,14 +180,24 @@ describe('retire-cfn-stack (#3361)', () => {
       DeleteStack: {},
     });
 
-    await expect(
-      retireCloudFormationStack({
-        cfnStackName: 'S',
-        cfnClient: client as never,
-        yes: true,
-        stateBucket: 'state-bucket',
-      })
-    ).rejects.toBe(rejection);
+    // Issue #4873 wraps the rejection to carry the manual route; the original
+    // stays reachable as `cause`, and its text renders as the placeholder
+    // rather than throwing.
+    const error = await prepareCloudFormationStackRetirement({
+      cfnStackName: 'S',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'state-bucket',
+    }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).cause).toBe(rejection);
+    // A non-Error rejection is not AWS's text to print (issue #4873 review):
+    // the message names its shape and points at --verbose.
+    expect((error as Error).message).toContain('a non-Error value');
+    expect((error as Error).message).not.toContain('..');
     expect(client.send.mock.calls.map((c) => (c[0] as FakeCommand)._name)).not.toContain(
       'DeleteStack'
     );

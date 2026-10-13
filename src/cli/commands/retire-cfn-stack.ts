@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { isPasteableIdent } from '../../utils/display-safe.js';
+import { displaySafe, isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
 import { commandHole } from '../../utils/pasteable-command.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { STABLE_TERMINAL_STATUSES } from '../cfn-stack-states.js';
@@ -44,7 +44,7 @@ export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  *
  * Built once per `cdkd import --migrate-from-cloudformation` invocation
  * (and used by both the per-child state-write walk in `importCommand` and the
- * recursive Retain-injection in `retireCloudFormationStack`), so an
+ * recursive Retain-injection in `prepareCloudFormationStackRetirement`), so an
  * arbitrarily-deep nesting only costs one `DescribeStackResources` round-trip
  * per stack instead of repeating the walk per consumer.
  *
@@ -125,7 +125,7 @@ export interface RetireCloudFormationStackOptions {
    * AWS auth context used to build a region-correct S3 client for the
    * upload + delete. Pass through the same `{profile, credentials}` the
    * import command resolved at startup so the upload uses the same identity
-   * that wrote cdkd state.
+   * that writes cdkd state.
    */
   s3ClientOpts?: CfnUploadS3ClientOpts;
   /**
@@ -152,16 +152,26 @@ export interface RetireCloudFormationStackOptions {
   resourceTree?: CfnStackResourceTree;
 }
 
-export type RetireCloudFormationOutcome =
-  | { outcome: 'retired' }
+/**
+ * What {@link prepareCloudFormationStackRetirement} left behind.
+ *
+ * - `cancelled`: the operator declined; the stack is untouched and must not be
+ *   deleted.
+ * - `ready`: every resource now carries `DeletionPolicy: Retain`, so
+ *   {@link deleteRetiredCloudFormationStack} may run. `templateUpdated` says
+ *   whether an `UpdateStack` actually completed — only then can CloudFormation
+ *   have REPLACED a resource, so only then must the caller re-read the
+ *   physical ids before it writes state (issue #4873).
+ */
+export type CloudFormationRetirementPreparation =
   | { outcome: 'cancelled' }
-  | { outcome: 'no-template-change' };
+  | { outcome: 'ready'; templateUpdated: boolean };
 
 /**
  * Best-effort reaper for the transient template bodies this flow uploads to
  * the state bucket under `cdkd-migrate-tmp/`.
  *
- * ONE implementation because {@link retireCloudFormationStack} drains from
+ * ONE implementation because {@link prepareCloudFormationStackRetirement} drains from
  * four different exits — the recursive walk's `catch`, the confirmation
  * gate's decline AND its non-interactive refusal, the no-modification fast
  * path, and the post-`UpdateStack` `finally`. Each used to carry its own copy
@@ -198,9 +208,10 @@ async function drainTemplateUploads(
 }
 
 /**
- * Retire a CloudFormation stack whose resources have just been adopted into
- * cdkd state. The 4-step procedure is the one AWS recommends for handing
- * over resources between management tools without deleting them:
+ * Steps 1-3 of retiring a CloudFormation stack whose resources cdkd is about
+ * to adopt; {@link deleteRetiredCloudFormationStack} is step 4. The procedure
+ * is the one AWS recommends for handing resources between management tools
+ * without deleting them:
  *
  *   1. DescribeStacks — verify the stack is in a stable terminal state and
  *      capture its existing Capabilities so the UpdateStack call doesn't
@@ -208,9 +219,8 @@ async function drainTemplateUploads(
  *   2. GetTemplate (Original stage) — fetch the template the user submitted,
  *      then inject `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`
  *      on every resource that doesn't already have them.
- *   3. UpdateStack — the modified template is a metadata-only change, so
- *      AWS makes no actual resource modifications. We wait for completion
- *      so step 4 doesn't race the previous operation.
+ *   3. UpdateStack — usually a metadata-only change. We wait for completion
+ *      so step 4 doesn't race it.
  *   4. DeleteStack — every resource is now Retain, so CloudFormation walks
  *      the stack and skips every resource. The stack record disappears;
  *      the underlying AWS resources are left intact for cdkd to manage.
@@ -218,25 +228,35 @@ async function drainTemplateUploads(
  * Step 3 is skipped when every resource already has both policies (idempotent
  * re-runs after a partial failure don't need to round-trip an UpdateStack).
  *
+ * Step 3 is NOT always metadata-only: CloudFormation can decide the update
+ * REPLACES a resource (an auto-named `AWS::SSM::Document`, whose `Content` it
+ * re-serializes, is the observed case — issue #4873). It then repoints the
+ * stack at a new physical resource. That is why the split exists: the caller
+ * runs steps 1-3 BEFORE it builds cdkd state, re-reads the physical ids when
+ * `templateUpdated` is true, and writes state from those — so no crash at any
+ * point leaves state naming a resource CloudFormation has superseded. The
+ * injected `UpdateReplacePolicy: Retain` keeps the superseded copy (and its
+ * data): an update cdkd made must never delete a user's resource, so the
+ * caller reports that copy instead.
+ *
  * Templates over the inline 51,200-byte `TemplateBody` limit are uploaded to
  * the cdkd state bucket and submitted via `TemplateURL`; the transient
  * object is deleted in a `finally` immediately after `UpdateStack`. Only
  * templates over the 1 MB CloudFormation `TemplateURL` limit fail outright.
  *
- * Failure model: this is invoked AFTER cdkd state has been written
- * successfully, so any failure here leaves cdkd state intact and the user
- * can re-run the command — or fall back to the manual 3-step procedure if
- * the failure is structural (e.g. template over the 1 MB TemplateURL limit).
+ * Failure model: this runs before the caller writes cdkd state, so a failure
+ * here leaves no record from this run to repair; the user re-runs the command
+ * once the cause is fixed.
  */
-export async function retireCloudFormationStack(
+export async function prepareCloudFormationStackRetirement(
   options: RetireCloudFormationStackOptions
-): Promise<RetireCloudFormationOutcome> {
+): Promise<CloudFormationRetirementPreparation> {
   const logger = getLogger();
   const { cfnStackName, cfnClient, yes, stateBucket, s3ClientOpts, resourceTree } = options;
 
   if (resourceTree && resourceTree.stackName !== cfnStackName) {
     throw new Error(
-      `retireCloudFormationStack: caller-supplied resourceTree.stackName='${resourceTree.stackName}' ` +
+      `prepareCloudFormationStackRetirement: caller-supplied resourceTree.stackName='${resourceTree.stackName}' ` +
         `does not match cfnStackName='${cfnStackName}'. The tree's root must be the stack being retired.`
     );
   }
@@ -339,8 +359,8 @@ export async function retireCloudFormationStack(
     try {
       proceed = await confirmPrompt(
         `Set DeletionPolicy=Retain and UpdateReplacePolicy=Retain on every resource in ` +
-          `CloudFormation stack '${cfnStackName}', then delete the stack? ` +
-          `AWS resources will NOT be deleted (cdkd state has been written).`
+          `CloudFormation stack '${cfnStackName}', and delete the stack once cdkd state ` +
+          `is written? AWS resources will NOT be deleted.`
       );
     } finally {
       if (!proceed) {
@@ -351,12 +371,15 @@ export async function retireCloudFormationStack(
       }
     }
     if (!proceed) {
-      logger.info('CloudFormation stack retirement cancelled. cdkd state is unaffected.');
+      logger.info(
+        'CloudFormation stack retirement cancelled. The stack is unchanged and will not be deleted.'
+      );
       return { outcome: 'cancelled' };
     }
   }
 
   // ---- Step 3: UpdateStack (skipped when nothing changed) ----
+  let templateUpdated = false;
   if (!modified) {
     logger.info(`[2/4] Template already has Retain on every resource — skipping UpdateStack.`);
     // No-modification fast path can still have produced transient uploads
@@ -376,15 +399,14 @@ export async function retireCloudFormationStack(
     // over 51,200 bytes we upload to the cdkd state bucket and submit a
     // `TemplateURL` instead. Anything over the 1 MB CloudFormation
     // TemplateURL limit is structurally unsubmittable — surface a clear
-    // error so the user can finish manually (state has already been
-    // written, so no rollback is needed).
+    // error so the user can finish manually (this run has not written cdkd
+    // state yet, so no rollback is needed).
     if (newBody.length > TEMPLATE_URL_LIMIT) {
       throw new Error(
         `Modified template is ${newBody.length} bytes, exceeds the ` +
           `CloudFormation UpdateStack TemplateURL limit (${TEMPLATE_URL_LIMIT}). ` +
-          `cdkd state has already been written; retire the stack manually with ` +
-          `(1) shrink the template, then (2) UpdateStack with Retain policies, ` +
-          `(3) DeleteStack — or split the stack and retry.`
+          `cdkd state has not been written; shrink or split the template and retry. ` +
+          MANUAL_RETIREMENT_ROUTE
       );
     }
     type UpdateInput = { TemplateBody: string } | { TemplateURL: string };
@@ -446,18 +468,23 @@ export async function retireCloudFormationStack(
         // even though we believed we modified it.
         const msg = describeAwsFailure(err).detail;
         if (/No updates are to be performed/i.test(msg)) {
-          logger.info(`  CloudFormation reports no updates needed — proceeding to delete.`);
+          logger.info(`  CloudFormation reports no updates needed.`);
         } else {
-          throw err;
+          throw new RetainUpdateFailedError(cfnStackName, 'rejected', err);
         }
       }
       if (updateRan) {
-        await waitUntilStackUpdateComplete(
-          // Minutes-scale CFn operation: 10s polling is dense enough and stays
-          // within the repo-wide waiter cap (issue #1291 item 5).
-          { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
-          { StackName: cfnStackName }
-        );
+        try {
+          await waitUntilStackUpdateComplete(
+            // Minutes-scale CFn operation: 10s polling is dense enough and stays
+            // within the repo-wide waiter cap (issue #1291 item 5).
+            { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
+            { StackName: cfnStackName }
+          );
+        } catch (err) {
+          throw new RetainUpdateFailedError(cfnStackName, 'unfinished', err);
+        }
+        templateUpdated = true;
       }
     } finally {
       // Drain transient S3 uploads from BOTH the parent's > 51,200-byte
@@ -477,20 +504,169 @@ export async function retireCloudFormationStack(
     }
   }
 
-  // ---- Step 4: DeleteStack ----
-  logger.info(`[4/4] Deleting CloudFormation stack '${cfnStackName}' (resources retained)...`);
-  await cfnClient.send(new DeleteStackCommand({ StackName: cfnStackName }));
-  await waitUntilStackDeleteComplete(
-    // Minutes-scale CFn operation: 10s polling is dense enough and stays
-    // within the repo-wide waiter cap (issue #1291 item 5).
-    { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
-    { StackName: cfnStackName }
+  return { outcome: 'ready', templateUpdated };
+}
+
+/**
+ * Where to look for the copies a replacing Retain update superseded when cdkd
+ * could not compare the ids itself (issue #4873). Shared by the waiter failure
+ * here and the import's failed re-read.
+ */
+export const SUPERSEDED_COPY_HINT =
+  'If that update completes (now or later), CloudFormation may have replaced resources; ' +
+  'each superseded copy is RETAINED and managed by neither CloudFormation nor cdkd. ' +
+  "Find them in the stack's events: rows whose reason reads " +
+  '"Requested update requires the creation of a new physical resource" name the old ' +
+  'physical id. A re-run does not report them, because the template then already ' +
+  'carries the Retain policies and no update runs.';
+
+/**
+ * The route by hand, in the order that cannot record a superseded id (issue
+ * #4873): Retain first, adopt second, delete last. The import step reads ids
+ * from a same-named CloudFormation stack in auto mode (#1128).
+ */
+export const MANUAL_RETIREMENT_ROUTE =
+  'To retire the stack by hand: (1) UpdateStack with DeletionPolicy=Retain and ' +
+  'UpdateReplacePolicy=Retain on every resource, (2) `cdkd import` without ' +
+  '--migrate-from-cloudformation (it reads the physical ids from a same-named ' +
+  'CloudFormation stack), (3) DeleteStack. The import must adopt every resource ' +
+  'before you delete the stack: check its summary.';
+
+/**
+ * What a CloudFormation stack waiter's failure may say in a message (issue
+ * #4873). The SDK waiter throws `new Error(JSON.stringify(result))`, whose
+ * `reason` is the last `DescribeStacks` response — Outputs and Parameters
+ * included, so a NoEcho-derived Output would print in plaintext. Only the
+ * waiter state and the stack's `StackStatus` / `StackStatusReason` are kept,
+ * the precedent being `describeLambdaWaiterFailure` in
+ * `custom-resource-provider.ts`. `undefined` when `error` is not a waiter
+ * result.
+ */
+export function describeStackWaiterFailure(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(error.message);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || !('state' in parsed)) return undefined;
+  const result = parsed as { state?: unknown; reason?: unknown };
+  const state = typeof result.state === 'string' ? result.state : 'FAILURE';
+  const reason = result.reason;
+  const stacks =
+    typeof reason === 'object' && reason !== null && 'Stacks' in reason
+      ? (reason as { Stacks?: unknown }).Stacks
+      : undefined;
+  const stack = Array.isArray(stacks) && typeof stacks[0] === 'object' ? stacks[0] : undefined;
+  const status = typeof stack?.StackStatus === 'string' ? stack.StackStatus : undefined;
+  const statusReason =
+    typeof stack?.StackStatusReason === 'string' ? stack.StackStatusReason : undefined;
+  return (
+    `waiter ${state}` +
+    (status ? `, stack status ${status}` : typeof reason === 'string' ? `: ${reason}` : '') +
+    (statusReason ? ` (${statusReason})` : '')
   );
+}
+
+/**
+ * The text a message may carry for a CloudFormation call or waiter failure: the
+ * reduced waiter text, else `describeAwsFailure(...).summary`. The withheld
+ * detail goes to debug only. A waiter error kept as a `cause` has its own
+ * message rewritten in place too, so a render that walks the chain cannot print
+ * the payload either.
+ */
+export function cfnFailureText(error: unknown): string {
+  const waiter = describeStackWaiterFailure(error);
+  if (waiter !== undefined && error instanceof Error) {
+    try {
+      Object.defineProperty(error, 'message', {
+        value: waiter,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+      Object.defineProperty(error, 'stack', {
+        value: `${error.name}: ${waiter}`,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+    } catch {
+      // A frozen error keeps its message; the text returned below is still reduced.
+    }
+    return waiter;
+  }
+  const failure = describeAwsFailure(error);
+  if (failure.redacted)
+    getLogger().debug(safeMsg`CloudFormation failure detail: ${failure.detail}`);
+  // Callers append their own `. `; the summary's pointer already ends a sentence.
+  return failure.summary.replace(/\.+$/, '');
+}
+
+/**
+ * The Retain `UpdateStack` failed, or its wait did not see it finish, before
+ * any cdkd state was written (issue #4873). The message carries the manual
+ * route because the failure can be DETERMINISTIC — a custom-named resource
+ * CloudFormation must replace fails the same way on every re-run — and the
+ * flow that used to write state first no longer does.
+ */
+export class RetainUpdateFailedError extends Error {
+  override readonly cause?: unknown;
+  constructor(cfnStackName: string, kind: 'rejected' | 'unfinished', cause: unknown) {
+    const text = cfnFailureText(cause);
+    super(
+      safeMsg`The Retain-policy UpdateStack on CloudFormation stack ${displaySafe(cfnStackName)} ` +
+        (kind === 'rejected' ? 'was rejected' : 'did not complete') +
+        safeMsg`: ${text}. cdkd state has not been written. ` +
+        (kind === 'unfinished' ? `${SUPERSEDED_COPY_HINT} ` : '') +
+        'Re-run the same command once the cause is fixed. When the cause is a replacement ' +
+        'CloudFormation cannot perform (a custom-named resource whose update requires ' +
+        'replacing it), the same update by hand fails too: give that resource no custom ' +
+        'name or a new one, or take it out of the stack, then re-run. ' +
+        MANUAL_RETIREMENT_ROUTE
+    );
+    this.name = 'RetainUpdateFailedError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * Step 4 of the retirement {@link prepareCloudFormationStackRetirement}
+ * describes: `DeleteStack`, after the caller has written cdkd state from the
+ * physical ids CloudFormation holds once the Retain update completed. Every
+ * resource carries `DeletionPolicy: Retain` by then, so CloudFormation deletes
+ * only the stack record.
+ */
+export async function deleteRetiredCloudFormationStack(
+  cfnStackName: string,
+  cfnClient: CloudFormationClient
+): Promise<void> {
+  const logger = getLogger();
+  logger.info(`[4/4] Deleting CloudFormation stack '${cfnStackName}' (resources retained)...`);
+  try {
+    await cfnClient.send(new DeleteStackCommand({ StackName: cfnStackName }));
+    await waitUntilStackDeleteComplete(
+      // Minutes-scale CFn operation: 10s polling is dense enough and stays
+      // within the repo-wide waiter cap (issue #1291 item 5).
+      { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
+      { StackName: cfnStackName }
+    );
+  } catch (err) {
+    const error = new Error(
+      safeMsg`CloudFormation stack ${displaySafe(cfnStackName)} was NOT confirmed deleted: ` +
+        safeMsg`${cfnFailureText(err)}. cdkd state is written and correct, and every resource ` +
+        `carries DeletionPolicy=Retain, so deleting the stack deletes no resource. Delete the ` +
+        `stack by hand once its cause is resolved (for example an export another stack ` +
+        `still imports).`
+    );
+    (error as Error & { cause?: unknown }).cause = err;
+    throw error;
+  }
   logger.info(
     `✓ CloudFormation stack '${cfnStackName}' retired. AWS resources are now ` +
       `solely managed by cdkd.`
   );
-  return { outcome: modified ? 'retired' : 'no-template-change' };
 }
 
 /**
@@ -593,7 +769,7 @@ export function injectRetainPolicies(
  * resource rows? Parses + walks `Resources` once (no recursive descent),
  * tolerating parse failures by returning `false` (the caller's downstream
  * parse step will surface the same error with a richer message). Used by
- * {@link retireCloudFormationStack} to decide whether to lazily build the
+ * {@link prepareCloudFormationStackRetirement} to decide whether to lazily build the
  * recursive {@link CfnStackResourceTree} — non-nested templates skip the
  * extra `DescribeStackResources` round-trip entirely.
  */
@@ -633,6 +809,10 @@ function templateContainsNestedStackRows(templateBody: string): boolean {
  * Retain was injected on the previous recursion level — the recursive
  * Retain injection in {@link injectRetainPoliciesRecursive} relies on this
  * skip rule to behave correctly.
+ *
+ * `UpdateReplacePolicy: Retain` matters only when the Retain update REPLACES
+ * a resource (issue #4873): the superseded copy is then kept rather than
+ * deleted by an update the operator did not author, and the import reports it.
  *
  * Shared between the single-template path ({@link injectRetainPolicies}) and
  * the per-level walk inside {@link injectRetainPoliciesRecursive} so both
@@ -734,7 +914,7 @@ export async function injectRetainPoliciesRecursive(
  * Thrown by {@link injectRetainPoliciesRecursive} when the recursive walk
  * fails partway through. Carries the array of cleanup callbacks for every
  * successful transient S3 upload made BEFORE the failure so the outer
- * `finally` in `retireCloudFormationStack` can still reap them.
+ * `finally` in `prepareCloudFormationStackRetirement` can still reap them.
  *
  * Without this, a mid-walk error would lose every accumulated cleanup —
  * the error path would skip the parent's `finally` block that drains
@@ -838,9 +1018,9 @@ async function injectRetainPoliciesRecursiveInternal(
         throw new Error(
           `Modified nested-stack template for '${logicalId}' is ${childResult.body.length} ` +
             `bytes, exceeds the CloudFormation TemplateURL limit (${TEMPLATE_URL_LIMIT}). ` +
-            `cdkd state has already been written for the root parent; retire the stack ` +
-            `manually with (1) shrink the child template, then (2) UpdateStack with ` +
-            `Retain policies on the parent and each child, (3) DeleteStack on the parent.`
+            `cdkd state has not been written; shrink the child template and retry, or ` +
+            `retire the stack manually: (1) UpdateStack with Retain policies on the ` +
+            `parent and each child, (2) cdkd import, (3) DeleteStack on the parent.`
         );
       }
       const uploaded = await uploadCfnTemplate({
@@ -940,6 +1120,44 @@ async function walkCfnStackTree(
   return { stackName, physicalId, resources, nested };
 }
 
+/** One resource whose physical id differs between two reads of a stack tree. */
+export interface ReplacedCfnResource {
+  /** Nested-stack logical ids from the root down to the owning stack; `[]` for the root. */
+  nestedPath: string[];
+  logicalId: string;
+  before: string;
+  after: string;
+}
+
+/**
+ * Every resource present in BOTH trees whose physical id changed — what the
+ * Retain update replaced (issue #4873). Walks nested children matched by
+ * logical id. A row present in only one tree is not a replacement and is left
+ * to the import's own not-found handling.
+ */
+export function findReplacedCfnResources(
+  before: CfnStackResourceTree,
+  after: CfnStackResourceTree,
+  nestedPath: string[] = []
+): ReplacedCfnResource[] {
+  const replaced: ReplacedCfnResource[] = [];
+  for (const [logicalId, beforeId] of before.resources) {
+    const afterId = after.resources.get(logicalId);
+    if (afterId !== undefined && afterId !== beforeId) {
+      replaced.push({ nestedPath, logicalId, before: beforeId, after: afterId });
+    }
+  }
+  for (const [childLogicalId, beforeChild] of before.nested) {
+    const afterChild = after.nested.get(childLogicalId);
+    if (afterChild) {
+      replaced.push(
+        ...findReplacedCfnResources(beforeChild, afterChild, [...nestedPath, childLogicalId])
+      );
+    }
+  }
+  return replaced;
+}
+
 /**
  * The CloudFormation-stack retirement confirmation prompt, reached from
  * `cdkd import --migrate-from-cloudformation` (skip flag `-y` / `--yes`). Its
@@ -954,11 +1172,11 @@ async function walkCfnStackTree(
  * command itself (issue #2572); `cdkd import --migrate-from-cloudformation` is
  * now the sole way to reach this prompt.
  *
- * It also states that cdkd state has ALREADY been written. This prompt is the
- * only one of the ten that fires AFTER its command's state write, so a
- * refusal here leaves a genuine split brain — cdkd claims the resources while
- * the CloudFormation stack is still live — and the operator has to know that
- * before deciding whether to re-run or finish by hand.
+ * It also states that nothing has been written yet. The prompt fires BEFORE
+ * the command's state write and before the Retain update (issue #4873), so a
+ * refusal leaves both cdkd state and the CloudFormation stack as they were —
+ * and the operator, who sees only the refusal, needs to know a plain re-run
+ * with -y / --yes is the whole recovery.
  *
  * Exported for unit testing — internal to the command flow otherwise.
  */
@@ -969,10 +1187,8 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
       'non-interactive environment. Pass -y / --yes on ' +
       'cdkd import --migrate-from-cloudformation. ' +
       'Alternatively, run it from a real terminal. ' +
-      'NOTE cdkd state has already been written: the ' +
-      'resources are recorded in cdkd state while the CloudFormation stack is still ' +
-      'live, so re-run with -y / --yes (or retire the stack by hand) to finish the ' +
-      'migration.',
+      'Nothing has been written yet: cdkd state and the CloudFormation stack are ' +
+      'unchanged, so re-running with -y / --yes is the whole recovery.',
   });
 }
 

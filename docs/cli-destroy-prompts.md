@@ -98,7 +98,7 @@ the flag that avoids the prompt. Piping `y` in does not work.
 | `cdkd import` | `Write state for <stack> with N resource(s)?` | `-y` / `--yes` |
 | `cdkd export` | Three prompts, described below | `-y` / `--yes` |
 | `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
-| `cdkd import --migrate-from-cloudformation` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
+| `cdkd import --migrate-from-cloudformation` | `Set DeletionPolicy=Retain ... delete the stack once cdkd state is written?` | `-y` / `--yes` |
 | `cdkd state migrate` | `Copy N object(s) from <bucket> to <bucket>...?` | `-y` / `--yes` |
 | `cdkd events prune` | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
 
@@ -131,12 +131,11 @@ its migration and nested-tree prompts) and `cdkd rollback`. Each one releases
 the lock when it refuses. A re-run with the flag is therefore not blocked by
 the run that refused.
 
-**`cdkd import --migrate-from-cloudformation`.** This command writes cdkd
-state before it reaches its prompt, because retiring the CloudFormation stack
-is its last step. A refusal therefore leaves the resources recorded in cdkd
-state while the CloudFormation stack is still live. The message says so. Child
-templates the command uploaded to `cdkd-migrate-tmp/` are deleted when it
-refuses, as they are when you answer `n`.
+**`cdkd import --migrate-from-cloudformation`.** Its retirement prompt fires
+before cdkd writes state and before it changes the CloudFormation stack, so a
+refusal leaves both as they were. The message says so. Child templates the
+command uploaded to `cdkd-migrate-tmp/` are deleted when it refuses, as they
+are when you answer `n`.
 
 Every other prompt refuses after read-only work only.
 

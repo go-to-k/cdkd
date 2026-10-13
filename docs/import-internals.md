@@ -20,7 +20,9 @@ import or changing `cdkd import` itself.
 - **Reading ids.** For every nested-stack row, cdkd calls
   `DescribeStackResources(<child ARN>)` to enumerate the child's resources,
   and so on to arbitrary depth. Children at every level are fetched in
-  parallel.
+  parallel. When the Retain update below completes, cdkd walks the tree
+  again and writes every state file from that second read, since the update
+  can replace a resource in any child.
 - **Writing state.** After the root state is written, cdkd writes one
   v6-keyed state file per nested child at
   `cdkd/<parent>~<childLogicalId>/<region>/state.json`, with `parentStack` /

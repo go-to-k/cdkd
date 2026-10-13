@@ -5,7 +5,7 @@ import { Construct } from 'constructs';
 /**
  * Large CloudFormation stack — its synthesized template exceeds the
  * 51,200-byte UpdateStack TemplateBody ceiling, forcing
- * retireCloudFormationStack onto the cdkd-state-bucket TemplateURL upload
+ * prepareCloudFormationStackRetirement onto the cdkd-state-bucket TemplateURL upload
  * path added in PR #113.
  *
  * The bloat comes from a single Lambda with ~60 KB of padded inline code —
