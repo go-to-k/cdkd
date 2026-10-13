@@ -544,7 +544,11 @@ describe('the success settle with LambdaFunctionProvider (go-to-k/cdkd#4606)', (
    * `fixForward`: the fix-forward's record under the orphan's logical id holds
    * `fn-b` (this deploy's CREATE), read live as `recordEntry`.
    */
-  async function settle(liveEntry: Entry, fixForward?: { recordEntry: Entry }) {
+  async function settle(
+    liveEntry: Entry,
+    fixForward?: { recordEntry: Entry },
+    opts: { journaledIdentity: boolean } = { journaledIdentity: true }
+  ) {
     const provider = new LambdaFunctionProvider();
     const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
     live({
@@ -570,7 +574,7 @@ describe('the success settle with LambdaFunctionProvider (go-to-k/cdkd#4606)', (
               provisionedBy: 'sdk',
               physicalIdRecoveredFromError: true,
               deletionPolicy: 'Delete',
-              createdResourceIdentity: tokenOf('fn-a', T1_MS),
+              ...(opts.journaledIdentity && { createdResourceIdentity: tokenOf('fn-a', T1_MS) }),
               attemptedProperties: {},
             },
           ],
@@ -678,6 +682,23 @@ describe('the success settle with LambdaFunctionProvider (go-to-k/cdkd#4606)', (
     expect(r.del).not.toHaveBeenCalled();
     expect(r.out.unaddressed).toBe(1);
   });
+
+  // A journal an older cdkd wrote carries no identity: whatever the live reads
+  // answer, nothing proves the function under the name is the one its CREATE
+  // made, so it is kept with a warning and no DeleteFunction is sent.
+  it.each([
+    ['the fix-forward', { recordEntry: T2 }],
+    ['with no record under the id', undefined],
+  ] as const)(
+    '%s: an entry with no journaled identity (an older journal) is kept',
+    async (_label, fixForward) => {
+      const r = await settle(T1, fixForward, { journaledIdentity: false });
+      expect(r.del).not.toHaveBeenCalled();
+      expect(mockSend.mock.calls.some(([c]) => c instanceof DeleteFunctionCommand)).toBe(false);
+      expect(r.out.unaddressed).toBe(1);
+      expect(r.warned).toContain('Orphan (AWS::Lambda::Function)');
+    }
+  );
 
   it('with no record under the id: deletes it when the name still reads back under the journaled token (control)', async () => {
     const r = await settle(T1);

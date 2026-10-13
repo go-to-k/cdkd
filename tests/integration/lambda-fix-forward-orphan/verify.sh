@@ -11,6 +11,9 @@
 #
 # Phases:
 #   1. Baseline deploy: `ExecRole` and `BaseFn`.
+#   1b. Premise: each post-create call a CREATE makes (PutFunctionRecursionConfig,
+#      PutRuntimeManagementConfig, PutFunctionConcurrency) leaves BaseFn's
+#      `LastModified` where it was.
 #   2. The failed CREATE. A role is created that may create and read a
 #      function but may neither set its recursion config nor delete it. A
 #      `--no-rollback` deploy run as that role with WITH_ORPHANS=true creates
@@ -242,6 +245,51 @@ if [ -z "${EXEC_ROLE}" ]; then
 fi
 EXEC_ROLE_ARN="$(aws iam get-role --role-name "${EXEC_ROLE}" --query 'Role.Arn' --output text)"
 aws lambda wait function-active-v2 --function-name "${BASE_FN}" --region "${REGION}"
+
+echo "[verify] step 1b: premise -- the post-create calls a CREATE makes do not move LastModified"
+# The identity a failed CREATE journals is CreateFunction's LastModified, and
+# a CREATE that failed on a LATER post-create call has already made the
+# earlier ones (lambda-function-provider.ts, `create`: RecursiveLoop, then
+# ReservedConcurrentExecutions, then RuntimeManagementConfig). Each is called
+# here on BaseFn with its default (or reverted) value, and the token must not
+# move: one that did would keep every such orphan as "another function".
+probe_put_keeps_token() { # usage: probe_put_keeps_token <api label> aws lambda <verb> [args...]
+  local label="$1" before after
+  shift
+  before="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before ${label}" >&2; exit 1; }
+  "$@" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
+  after="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity after ${label}" >&2; exit 1; }
+  if [ "${after}" != "${before}" ]; then
+    echo "[verify] FAIL: premise -- ${label} moved ${BASE_FN}'s LastModified (${before} -> ${after}): an orphan whose CREATE failed after it is never proven (go-to-k/cdkd#4606's Lambda identity is then unsound for that path)" >&2
+    exit 1
+  fi
+  echo "[verify]   ${label}: LastModified unchanged"
+}
+probe_put_keeps_token PutFunctionRecursionConfig \
+  aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Terminate --region "${REGION}"
+probe_put_keeps_token PutRuntimeManagementConfig \
+  aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}"
+# A reserved concurrency of 1 may be refused on an account whose unreserved
+# floor allows none; only that refusal skips the probe, with a NOTE.
+CONC_BEFORE="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before PutFunctionConcurrency" >&2; exit 1; }
+if CONC_OUT="$(aws lambda put-function-concurrency --function-name "${BASE_FN}" \
+  --reserved-concurrent-executions 1 --region "${REGION}" 2>&1)"; then
+  aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
+  CONC_AFTER="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity after PutFunctionConcurrency" >&2; exit 1; }
+  aws lambda delete-function-concurrency --function-name "${BASE_FN}" --region "${REGION}"
+  if [ "${CONC_AFTER}" != "${CONC_BEFORE}" ]; then
+    echo "[verify] FAIL: premise -- PutFunctionConcurrency moved ${BASE_FN}'s LastModified (${CONC_BEFORE} -> ${CONC_AFTER}): an orphan whose CREATE failed after it is never proven (go-to-k/cdkd#4606's Lambda identity is then unsound for that path)" >&2
+    exit 1
+  fi
+  echo "[verify]   PutFunctionConcurrency: LastModified unchanged"
+elif printf '%s' "${CONC_OUT}" | grep -qi 'UnreservedConcurrentExecution'; then
+  echo "[verify] NOTE: PutFunctionConcurrency probe skipped -- the account's unreserved concurrency floor refuses a reservation (${CONC_OUT})"
+else
+  echo "[verify] FAIL: premise -- PutFunctionConcurrency on ${BASE_FN} failed: ${CONC_OUT}" >&2
+  exit 1
+fi
+aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
 BASE_TOKEN="$(fn_token "${BASE_FN}")"
 
 echo "[verify] step 2: a role that may create a function but neither set its recursion config nor delete it"

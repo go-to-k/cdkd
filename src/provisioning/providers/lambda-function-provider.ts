@@ -100,8 +100,12 @@ function isFunctionName(id: string): boolean {
  * go-to-k/cdkd#4606 / #4655: a function's identity token,
  * `<FunctionArn>@<LastModified epoch ms>`. The ARN is built from the name, so
  * a function re-created under the same name repeats it; `LastModified`, set
- * by `CreateFunction` and moved only by a later code or configuration update,
- * is what tells the two apart. A moved one only keeps the orphan (the settle
+ * by `CreateFunction`, is what tells the two apart: the
+ * `lambda-fix-forward-orphan` fixture measures that it survives the Pending
+ * to Active transition and the post-create `PutFunctionRecursionConfig`,
+ * `PutRuntimeManagementConfig` and `PutFunctionConcurrency` calls, and that a
+ * re-create under the name moves it. A code or configuration update moves it
+ * too. A moved one only keeps the orphan (the settle
  * warns instead of deleting). That includes cdkd's own update: `delete`'s VPC
  * pre-detach (`UpdateFunctionConfiguration`) moves it, so a VPC orphan whose
  * `DeleteFunction` then fails is never proven again and is left to delete by
