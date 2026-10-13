@@ -52,6 +52,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
+import { GetSubscriptionAttributesCommand } from '@aws-sdk/client-sns';
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -120,6 +121,13 @@ describe("the SNS replacement abort surfaces ONCE through the rollback executor'
   ])(
     'a %s skip reason surfaces after ONE attempt and is counted as one failure',
     async (_kind, reason) => {
+      // The revert moves the endpoint back (a create-only change), so the
+      // replacement path; AWS still holds the NEW endpoint.
+      send.mockImplementation((command: unknown) =>
+        Promise.resolve(
+          command instanceof GetSubscriptionAttributesCommand ? { Attributes: { ...NEW_PROPS } } : undefined
+        )
+      );
       const provider = new SNSSubscriptionProvider();
       const updateSpy = vi.spyOn(provider, 'update');
       const createSpy = vi.spyOn(provider, 'create');
@@ -139,7 +147,7 @@ describe("the SNS replacement abort surfaces ONCE through the rollback executor'
       expect(updateSpy).toHaveBeenCalledTimes(1);
       // No duplicate subscription was created on the rollback path either.
       expect(createSpy).not.toHaveBeenCalled();
-      expect(send).not.toHaveBeenCalled();
+      expect(send.mock.calls.map(([c]) => c instanceof GetSubscriptionAttributesCommand)).toEqual([true]);
 
       // The executor's best-effort handler counts it and keeps going.
       expect(result.failures).toBe(1);

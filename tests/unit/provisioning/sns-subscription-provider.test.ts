@@ -117,7 +117,11 @@ describe('SNSSubscriptionProvider', () => {
     it('carries the cached ARN through a replacement, since update delegates to create', async () => {
       // `update()` returns `createResult.attributes`, and the engine REPLACES
       // the attribute map rather than merging it — so a partial map here would
-      // erase what create recorded.
+      // erase what create recorded. AWS holds the old protocol, a create-only
+      // change, so this is the replacement path (go-to-k/cdkd#4853).
+      mockSend.mockResolvedValueOnce({
+        Attributes: { TopicArn: TOPIC_ARN, Protocol: 'email', Endpoint: QUEUE_ARN },
+      }); // GetSubscriptionAttributes
       mockSend.mockResolvedValueOnce({}); // Unsubscribe
       mockSend.mockResolvedValueOnce({ SubscriptionArn: `${TOPIC_ARN}:new-sub` });
       const result = await provider.update(
@@ -292,16 +296,20 @@ describe('SNSSubscriptionProvider', () => {
     });
   });
 
-  describe('update() re-creates the subscription', () => {
-    // Why a policy-only flip must never reach this method (issue #2809, pinned
-    // engine-side by tests/unit/deployment/deploy-engine-silent-drop-record.test.ts):
-    // there is no in-place update, so ANY call replaces the subscription.
+  describe('update() re-creates the subscription on a create-only change', () => {
+    // A mutable attribute edit is applied in place (go-to-k/cdkd#4853,
+    // sns-subscription-in-place-update-4853.test.ts); a create-only field that
+    // differs from AWS (the engine degrades it into an update when
+    // DescribeType is unavailable) still replaces, DELETE-first.
     it('update() unsubscribes the old subscription before subscribing a new one', async () => {
       const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:orders';
       const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123456789012:orders-queue';
       const OLD_ARN = `${TOPIC_ARN}:5f2c0b44-0000-4000-8000-000000000001`;
       const NEW_ARN = `${TOPIC_ARN}:9a1d7e30-0000-4000-8000-000000000002`;
       const properties = { TopicArn: TOPIC_ARN, Protocol: 'sqs', Endpoint: QUEUE_ARN };
+      mockSend.mockResolvedValueOnce({
+        Attributes: { TopicArn: TOPIC_ARN, Protocol: 'sqs', Endpoint: `${QUEUE_ARN}-old` },
+      }); // GetSubscriptionAttributes
       mockSend.mockResolvedValueOnce({}); // Unsubscribe
       mockSend.mockResolvedValueOnce({ SubscriptionArn: NEW_ARN }); // Subscribe
 
@@ -319,8 +327,8 @@ describe('SNSSubscriptionProvider', () => {
       expect(unsubscribeAt).toBeGreaterThanOrEqual(0);
       expect(subscribeAt).toBeGreaterThan(unsubscribeAt);
       expect((commands[unsubscribeAt] as UnsubscribeCommand).input.SubscriptionArn).toBe(OLD_ARN);
-      // Exactly the two primed calls, so neither primer can leak.
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      // Exactly the three primed calls, so no primer can leak.
+      expect(mockSend).toHaveBeenCalledTimes(3);
       expect(result.physicalId).toBe(NEW_ARN);
       expect(result.wasReplaced).toBe(true);
     });
