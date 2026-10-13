@@ -102,7 +102,10 @@ function isFunctionName(id: string): boolean {
  * a function re-created under the same name repeats it; `LastModified`, set
  * by `CreateFunction` and moved only by a later code or configuration update,
  * is what tells the two apart. A moved one only keeps the orphan (the settle
- * warns instead of deleting). `undefined` for a missing ARN or an unparseable
+ * warns instead of deleting). That includes cdkd's own update: `delete`'s VPC
+ * pre-detach (`UpdateFunctionConfiguration`) moves it, so a VPC orphan whose
+ * `DeleteFunction` then fails is never proven again and is left to delete by
+ * hand. `undefined` for a missing ARN or an unparseable
  * time.
  */
 function functionIdentityToken(
@@ -2197,6 +2200,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (recordFn === undefined) return 'unknown';
     const journaledFn = await this.readFunctionIfExists(journaledPhysicalId);
     if (journaledFn === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case (each ARN
+    // carries its own name); kept so the verdict rests on AWS's answer.
     return journaledFn.arn === recordFn.arn ? 'same' : 'different';
   }
 
