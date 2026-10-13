@@ -12,22 +12,21 @@
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
-**Run the integ LAST — after the final edit to any `integ-destroy`-scoped file.**
-A lane cannot touch AWS, so only the parent finds an AWS-side rejection: run a
-NEW arm once EARLY too, as soon as the lane has written it and between review
-rounds (never during a `src` fix round); that run sets no marker and is no
-§8-d proof — a new arm's first AWS contact can reject its shape (#4618).
-Sequence: dispatch reviewers → (new arm: early run) → apply
-EVERY finding, nits included → rebase → integ → marker. A UNIT-test-only fix
-round may overlap the parent's integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr` there (a
-build rewrites the live fixture's `dist/`), no rebase or install, never the
-live fixture's directory, and stage only its own test files, since the
-integ's ledger row lands in the same tree (#4302). A round overlapping §8-d's
-probe (it needs a clean tree and restores `src` from `HEAD`) edits in scratch
-and copies in only once the parent says the tree is free. A lane REPORTS
-`mise exec -- markgate status integ-destroy --explain`'s line (bare `markgate`
-can be a stale PATH copy, #4477), never "integ not needed": comment-only edits
-count (#3873).
+**Run the integ LAST — after the final edit to any `integ-destroy`-scoped
+file.** A lane cannot touch AWS, so only the parent finds an AWS-side rejection:
+run a NEW arm once EARLY too, once the lane has written it, between review
+rounds (never during a `src` fix round); that run sets no marker and is no §8-d
+proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
+dispatch reviewers → (new arm: early run) → apply EVERY finding, nits included →
+rebase → integ → marker. A UNIT-test-only fix round may overlap the parent's
+integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr`
+there (a build rewrites the live fixture's `dist/`), no rebase or install, never
+the live fixture's directory, and stage only its own test files (the integ's
+ledger row lands there, #4302). A round overlapping the §8-d probe (clean tree;
+it restores `src` from `HEAD`) edits in scratch until the parent frees it. A
+lane REPORTS `mise exec -- markgate status integ-destroy --explain`'s line,
+never "integ not needed": comment-only edits count (#3873); bare `markgate` can
+be a stale PATH copy dying `unknown hash "diff"` (#4477).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
@@ -185,8 +184,8 @@ stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
 
-**`/run-integ` records `integ-destroy`, a marker gate on `gh pr merge` beside
-the ruleset's checks**; `/verify-pr` and `/review-pr` record nothing — run them.
+**`/run-integ` records `integ-destroy`, which `gh pr merge` needs beside
+`main`'s ruleset checks**; `/verify-pr` and `/review-pr` record nothing — run them anyway.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (go-to-k/cdkd#2383) — they are its children and
