@@ -86,11 +86,14 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * cdk-local's `cdkl` defaults.
  */
 export function createLocalStartCloudFrontCommand(): Command {
-  const cmd = createCdkLocalStartCloudFrontCommand({
+  const cmd: Command = createCdkLocalStartCloudFrontCommand({
     embedConfig: getEmbedConfig(),
     extraStateProviders: cdkdExtraStateProviders,
     // `--state-bucket` is refused on this command, so there is none to pass.
-    synthesizer: cdkdHostSynthesizer(() => ({})),
+    synthesizer: cdkdHostSynthesizer(() => {
+      const { verbose, roleArn } = cmd.opts<{ verbose?: boolean; roleArn?: string }>();
+      return { verbose, roleArn };
+    }),
   });
 
   // Declared, then refused (see the module doc): keeping the declarations is

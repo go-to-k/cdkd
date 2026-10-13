@@ -68,7 +68,9 @@ export function createLocalStartAgentCoreCommand(): Command {
   const cmd: Command = createCdkLocalStartAgentCoreCommand({
     embedConfig: getEmbedConfig(),
     extraStateProviders: cdkdExtraStateProviders,
-    synthesizer: cdkdHostSynthesizer(() => cmd.opts<{ stateBucket?: string }>()),
+    synthesizer: cdkdHostSynthesizer(() =>
+      cmd.opts<{ stateBucket?: string; verbose?: boolean; roleArn?: string }>()
+    ),
   });
 
   // Layer cdkd's S3-backed state-source flags on top of cdk-local's inherited
@@ -86,7 +88,8 @@ export function createLocalStartAgentCoreCommand(): Command {
   cmd.addOption(
     new Option(
       '--state-bucket <bucket>',
-      'S3 bucket for --from-state. Falls back to CDKD_STATE_BUCKET env or cdk.json context.cdkd.stateBucket.'
+      'S3 bucket for --from-state. Falls back to CDKD_STATE_BUCKET env or cdk.json context.cdkd.stateBucket. ' +
+        'Also receives the transient upload of a CloudFormation-macro template too large to expand inline.'
     )
   );
   cmd.addOption(
