@@ -17,12 +17,21 @@
 #      ARN.
 #   3. `cdkd deploy` the producer again with the subscription EDITED (raw
 #      delivery on): the deploy re-resolves `Topic.TopicArn` from state and
-#      succeeds, the edit reaches AWS, and the topic is not replaced.
+#      succeeds (no `redaction mask` refusal), the topic's one live
+#      subscription has raw delivery on, delivers to the queue, and is the one
+#      state records. cdkd's SNS subscription provider replaces a subscription
+#      on any update, so its ARN may change; that is not what this checks.
 #   4. No object version under either stack's prefix carries the value outside
 #      a copy of the topic's ARN.
 #   5. Destroy both stacks, gone-probes, and the S3 version sweep.
 #
 # The value is generated per run and never printed outside the ARN.
+#
+# Pre-fix arm: with CDKD_TEST_NOECHO_PRODUCER_ARM=1, Phase 1's state checks
+# warn instead of failing and Phase 2 is skipped (its import would read the
+# masked export), so a binary without the go-to-k/cdkd#4849 fix reaches Phase
+# 3 and fails THERE. The arm always exits non-zero: a pass would mean it no
+# longer discriminates.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -196,27 +205,38 @@ P1_SHAPE=$(jq -c --arg arn "${TOPIC_ARN}" --arg exp "${EXPORT_NAME}" '[
   .outputs.NameOut,
   .resources.Sub.properties.TopicArn == $arn
 ]' <<< "${STATE_P1}")
+ARM="${CDKD_TEST_NOECHO_PRODUCER_ARM:-}"
+arm_or_fail() { # arm_or_fail <message>: a warning under the pre-fix arm, else FAIL
+  if [ "${ARM}" = "1" ]; then
+    echo "    ARM: $1 (continuing to Phase 3)"
+  else
+    echo "FAIL: $1" >&2
+    exit 1
+  fi
+}
 if [ "${P1_SHAPE}" != '[true,true,"***",true,true,"***",true]' ]; then
-  echo "FAIL: state.json after the first deploy does not keep the topic's ARN at its physical id, TopicArn attribute, output, export and the reader, with *** at the TopicName attribute and the value's output (got ${P1_SHAPE})" >&2
-  exit 1
+  arm_or_fail "state.json after the first deploy does not keep the topic's ARN at its physical id, TopicArn attribute, output, export and the reader, with *** at the TopicName attribute and the value's output (got ${P1_SHAPE})"
 fi
 INDEX_P1=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" - --region "${REGION}")
 assert_value_only_in_arn "the exports index" "${INDEX_P1}"
 if [[ "${INDEX_P1}" != *"\"${TOPIC_ARN}\""* ]]; then
-  echo "FAIL: the exports index does not hold the topic's ARN (it was stored masked)" >&2
-  exit 1
+  arm_or_fail "the exports index does not hold the topic's ARN (it was stored masked)"
 fi
-echo "    OK: the ARN is kept at every copy; the name attribute and the value's output hold ***"
+echo "    OK: Phase 1 state checked"
 
 # --- Phase 2 ------------------------------------------------------------------
-echo "==> Phase 2: deploy the consumer in a separate process (reads the export from the index)"
-deploy_stack "consumer deploy" "${CONSUMER}"
-if [ "$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
-  --query Parameter.Value --output text)" != "${TOPIC_ARN}" ]; then
-  echo "FAIL: the consumer's SSM parameter does not hold the imported topic ARN" >&2
-  exit 1
+if [ "${ARM}" = "1" ]; then
+  echo "==> Phase 2: skipped under the pre-fix arm"
+else
+  echo "==> Phase 2: deploy the consumer in a separate process (reads the export from the index)"
+  deploy_stack "consumer deploy" "${CONSUMER}"
+  if [ "$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
+    --query Parameter.Value --output text)" != "${TOPIC_ARN}" ]; then
+    echo "FAIL: the consumer's SSM parameter does not hold the imported topic ARN" >&2
+    exit 1
+  fi
+  echo "    OK: the consumer imported the ARN"
 fi
-echo "    OK: the consumer imported the ARN"
 
 # --- Phase 3 ------------------------------------------------------------------
 echo "==> Phase 3: edit the Fn::GetAtt Topic.TopicArn reader and redeploy the producer"
@@ -230,32 +250,57 @@ if [ "$(aws sns get-subscription-attributes --subscription-arn "${SUB_ARN}" --re
   echo "FAIL: premise: raw delivery is already on before the edit" >&2
   exit 1
 fi
-deploy_stack "second producer deploy (edited reader)" "${STACK}" CDKD_TEST_UPDATE=true
+# Not `deploy_stack`: the refusal this phase exists for must be named.
+set +e
+DEPLOY_OUT=$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --exclusively \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+DEPLOY_RC=$?
+set -e
+assert_value_only_in_arn "the edited producer deploy output" "${DEPLOY_OUT}"
+if grep -q 'redaction mask' <<< "${DEPLOY_OUT}"; then
+  echo "FAIL: the edited deploy was refused reading Topic.TopicArn from state as the redaction mask (go-to-k/cdkd#4849); exit ${DEPLOY_RC}" >&2
+  printf '%s\n' "${DEPLOY_OUT}" >&2
+  exit 1
+fi
+if [ "${DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: the edited producer deploy exited ${DEPLOY_RC}" >&2
+  printf '%s\n' "${DEPLOY_OUT}" >&2
+  exit 1
+fi
+if [ "${ARM}" = "1" ]; then
+  echo "FAIL: pre-fix arm: Phase 3 passed, so the arm no longer discriminates" >&2
+  exit 1
+fi
 STATE_P3=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
 assert_value_only_in_arn "state.json after the edited deploy" "${STATE_P3}"
 SUB_ARN_P3=$(jq -r '.resources.Sub.physicalId' <<< "${STATE_P3}")
-# Structural, not a grep of cdkd's wording: a replaced subscription gets a new
-# ARN.
-if [ "${SUB_ARN_P3}" != "${SUB_ARN}" ]; then
-  echo "FAIL: the edited deploy replaced the subscription (${SUB_ARN} -> ${SUB_ARN_P3}); raw delivery is an in-place update" >&2
+# What AWS holds on the topic: exactly one subscription (the provider replaces
+# delete-first, so a leftover would be a second one), delivering to the queue,
+# and the one state records.
+QUEUE_ARN="arn:aws:sqs:${REGION}:${ACCOUNT_ID}:${QUEUE_NAME}"
+LIVE_SUBS=$(aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
+  --output json | jq -c '[.Subscriptions[] | [.SubscriptionArn, .Protocol, .Endpoint]]')
+if [ "$(jq -c --arg sub "${SUB_ARN_P3}" --arg q "${QUEUE_ARN}" '. == [[$sub, "sqs", $q]]' <<< "${LIVE_SUBS}")" != "true" ]; then
+  echo "FAIL: the topic's live subscriptions are not exactly the recorded one, to the queue (got ${LIVE_SUBS}, state ${SUB_ARN_P3})" >&2
   exit 1
 fi
 if [ "$(aws sns get-subscription-attributes --subscription-arn "${SUB_ARN_P3}" --region "${REGION}" \
-  --query Attributes.RawMessageDelivery --output text)" != "true" ]; then
-  echo "FAIL: the edit did not reach AWS (raw delivery is not on)" >&2
+  --query 'Attributes.[RawMessageDelivery,TopicArn]' --output text)" != "true"$'\t'"${TOPIC_ARN}" ]; then
+  echo "FAIL: the edit did not reach AWS (raw delivery is not on, or the subscription is on another topic)" >&2
   exit 1
 fi
 P3_SHAPE=$(jq -c --arg arn "${TOPIC_ARN}" '[
   .resources.Topic.physicalId == $arn,
   .resources.Topic.attributes.TopicArn == $arn,
   .resources.Topic.attributes.TopicName,
-  .outputs.TopicArnOut == $arn
+  .outputs.TopicArnOut == $arn,
+  .resources.Sub.properties.TopicArn == $arn
 ]' <<< "${STATE_P3}")
-if [ "${P3_SHAPE}" != '[true,true,"***",true]' ]; then
+if [ "${P3_SHAPE}" != '[true,true,"***",true,true]' ]; then
   echo "FAIL: state.json after the edited deploy lost the ARN or the TopicName mask (got ${P3_SHAPE})" >&2
   exit 1
 fi
-echo "    OK: the edited reader redeployed; the edit reached AWS; the subscription was not replaced"
+echo "    OK: the edited reader redeployed; the edit reached AWS on the topic's one subscription"
 
 # --- Phase 4 ------------------------------------------------------------------
 echo "==> Phase 4: no object version carries the value outside the ARN"
