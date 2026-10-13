@@ -4193,6 +4193,7 @@
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-user-group-fix-forward-orphan",
         "import-attribute-readback-misc",
         "infra-security"
       ],
@@ -4206,6 +4207,9 @@
         ],
         "iam-secret-derived-principals": [
           "l2"
+        ],
+        "iam-user-group-fix-forward-orphan": [
+          "l1"
         ],
         "import-attribute-readback-misc": [
           "l1"
@@ -4767,6 +4771,7 @@
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
+        "iam-user-group-fix-forward-orphan",
         "import-attribute-readback-misc",
         "import-heal-prefix-record",
         "infra-security"
@@ -4785,6 +4790,9 @@
         "iam-secret-derived-principals": [
           "l1",
           "literal"
+        ],
+        "iam-user-group-fix-forward-orphan": [
+          "l1"
         ],
         "import-attribute-readback-misc": [
           "l1"
