@@ -1171,7 +1171,7 @@ No read-time migration: a v11 document is read unchanged, and the next
 `cdkd deploy` writes `version: 12`. A record that deploy writes gains the
 field from its own resolution. A record it leaves unchanged and that holds a
 token gains it through a ONE-TIME capture
-(`src/deployment/reference-provenance-capture.ts`): after the diff, in the
+(`src/deployment/deploy-engine/provenance-capture.ts`): after the diff, in the
 background, the deploy resolves that record's template `Properties` once in a
 throwaway context and keeps the region of each token it attributes, the
 version only where the record's physical id contains the token's current

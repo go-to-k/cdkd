@@ -89,7 +89,7 @@ import {
 } from '../../provisioning/providers/create-token-ledger.js';
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 import { isKnownTokenFreeState } from '../../state/token-free-state.js';
-import { kickOffProvenanceCapture, provenanceBaselineOf } from '../reference-provenance-capture.js';
+import { provenanceBaselineOf } from './provenance-capture.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -952,7 +952,7 @@ export async function doDeployWithPrefetch(
     // longer NO_CHANGE) and every pre-provisioning refusal has passed. A
     // token-free stack never enters it; `--dry-run` saves nothing.
     if (!this.options.dryRun && !isKnownTokenFreeState(currentStateData?.state)) {
-      kickOffProvenanceCapture(this, {
+      this.kickOffProvenanceCapture({
         noChange: this.diffCalculator
           .filterByType(changes, 'NO_CHANGE')
           .map((change) => change.logicalId),

@@ -33,19 +33,28 @@
  * entry. `provenanceCapture` suppresses the one warning the deploy's own
  * resolution of the same record already prints.
  */
-import type { DeployEngine } from './deploy-engine.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ReferenceProvenance, ResourceState, StackState } from '../types/state.js';
-import { isThrottlingError } from './retryable-errors.js';
-import { safeMsg } from '../utils/display-safe.js';
-import { MIN_NEEDLE_LENGTH } from './secret-redaction.js';
-import { type RecordedSecretValues, resolvedPlaintextOf } from './secret-redaction/pairs.js';
-import { passProvenanceFor } from './secret-redaction/reference-provenance.js';
+import type { DeployEngine } from '../deploy-engine.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { ReferenceProvenance, ResourceState, StackState } from '../../types/state.js';
+import { isThrottlingError } from '../retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { MIN_NEEDLE_LENGTH } from '../secret-redaction.js';
+import { type RecordedSecretValues, resolvedPlaintextOf } from '../secret-redaction/pairs.js';
+import { passProvenanceFor } from '../secret-redaction/reference-provenance.js';
 import {
   hasReferenceProvenanceField,
   recordReferenceTokens,
   validateReferenceProvenance,
-} from './reference-provenance-record.js';
+} from '../reference-provenance-record.js';
+
+declare module '../deploy-engine.js' {
+  interface DeployEngine {
+    /** @internal */
+    kickOffProvenanceCapture: OmitThisParameter<typeof kickOffProvenanceCapture>;
+    /** @internal */
+    drainProvenanceCaptures: OmitThisParameter<typeof drainProvenanceCaptures>;
+  }
+}
 
 /** What one record's capture produced. `field: undefined` leaves the field absent. */
 export interface ProvenanceCaptureOutcome {
@@ -61,7 +70,7 @@ export interface ProvenanceCaptureOutcome {
  * a token-free record in one walk.
  */
 export function kickOffProvenanceCapture(
-  engine: DeployEngine,
+  this: DeployEngine,
   args: {
     noChange: readonly string[];
     resources: Readonly<Record<string, ResourceState>>;
@@ -81,10 +90,10 @@ export function kickOffProvenanceCapture(
       ? template.Resources[logicalId]
       : undefined;
     const properties = definition?.Properties ?? {};
-    const task = captureOne(engine, logicalId, record, tokens, properties, args).catch(
+    const task = captureOne(this, logicalId, record, tokens, properties, args).catch(
       (): ProvenanceCaptureOutcome => ({ record, field: undefined })
     );
-    engine.provenanceCaptureTasks.set(logicalId, task);
+    this.provenanceCaptureTasks.set(logicalId, task);
   }
 }
 
@@ -166,12 +175,12 @@ async function captureOne(
  * of every written record with this pass's answer.
  */
 export async function drainProvenanceCaptures(
-  engine: DeployEngine,
+  this: DeployEngine,
   stateResources: Record<string, ResourceState>
 ): Promise<number> {
-  if (engine.provenanceCaptureTasks.size === 0) return 0;
-  const entries = [...engine.provenanceCaptureTasks.entries()];
-  engine.provenanceCaptureTasks.clear();
+  if (this.provenanceCaptureTasks.size === 0) return 0;
+  const entries = [...this.provenanceCaptureTasks.entries()];
+  this.provenanceCaptureTasks.clear();
   const outcomes = await Promise.all(entries.map(([, task]) => task));
   let installed = 0;
   for (let i = 0; i < entries.length; i++) {

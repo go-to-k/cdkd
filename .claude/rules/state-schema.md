@@ -124,7 +124,7 @@ Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-eng
 
 ## `referenceProvenance` / `outputReferenceProvenance` (v12+)
 
-Per `{{resolve:` token: resolving region, version ids (never a value), READ-route subset `readVersions`. Absent = not known (readers keep the v11 path), `{}` = known, nothing attributed. Read via `reference-provenance-record.ts` only (malformed = absent). A record WRITTEN this run takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives an update's skip). v11 records gain it once via `reference-provenance-capture.ts` (sends nothing). Token-free stacks: O(1) (`token-free-state.ts`).
+Per `{{resolve:` token: resolving region, version ids (never a value), READ-route subset `readVersions`. Absent = not known (readers keep the v11 path), `{}` = known, nothing attributed. Read via `reference-provenance-record.ts` only (malformed = absent). A record WRITTEN this run takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives an update's skip). v11 records gain it once via `provenance-capture.ts` (sends nothing). Token-free stacks: O(1) (`token-free-state.ts`).
 
 ## `observedProperties` (v3+)
 

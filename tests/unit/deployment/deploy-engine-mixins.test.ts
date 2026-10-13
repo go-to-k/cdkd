@@ -39,6 +39,7 @@ const HOSTS = [
       'deploy-engine/name-collision.ts',
       'deploy-engine/observed-capture.ts',
       'deploy-engine/outputs.ts',
+      'deploy-engine/provenance-capture.ts',
       'deploy-engine/provision.ts',
       'deploy-engine/record-shape.ts',
       'deploy-engine/replacement.ts',

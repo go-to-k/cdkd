@@ -23,7 +23,6 @@ import {
 } from '../masked-baseline-recapture.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
-import { drainProvenanceCaptures } from '../reference-provenance-capture.js';
 import {
   createUnionSecretMasker,
   markSameGenerationBag,
@@ -152,7 +151,7 @@ export async function drainObservedCaptures(
 ): Promise<number> {
   // State schema v12: the one-time provenance capture lands in the same save,
   // and counts toward it, so a no-change deploy persists what it captured.
-  const captured = await drainProvenanceCaptures(this, stateResources);
+  const captured = await this.drainProvenanceCaptures(stateResources);
   if (this.observedCaptureTasks.size === 0) return captured;
   const entries = Array.from(this.observedCaptureTasks.entries());
   this.observedCaptureTasks.clear();
