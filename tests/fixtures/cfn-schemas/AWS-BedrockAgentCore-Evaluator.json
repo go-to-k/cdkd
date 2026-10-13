@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Evaluator",
-  "generatedAt": "2026-10-08",
+  "generatedAt": "2026-10-13",
   "properties": [
     "CreatedAt",
     "Description",
@@ -66,6 +66,7 @@
       "RatingScale",
       "Reasoning",
       "ResponsesEvaluatorModelConfig",
+      "StopSequences",
       "Temperature",
       "TopP",
       "Value"
@@ -88,6 +89,7 @@
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields",
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig",
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.MaxTokens",
+      "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.StopSequences",
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.Temperature",
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.TopP",
       "Derived.ModelConfig.BedrockEvaluatorModelConfig.ModelId",
@@ -105,6 +107,7 @@
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields",
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig",
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.MaxTokens",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.StopSequences",
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.Temperature",
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.TopP",
       "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.ModelId",
@@ -201,7 +204,8 @@
     "InferenceConfiguration": {
       "MaxTokens": "scalar",
       "Temperature": "scalar",
-      "TopP": "scalar"
+      "TopP": "scalar",
+      "StopSequences": "array"
     },
     "Tag": {
       "Key": "scalar",
@@ -300,6 +304,7 @@
     "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig": "object",
     "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields": "object",
     "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig": "object",
+    "EvaluatorConfig.Derived.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.StopSequences": "array",
     "EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig": "object",
     "EvaluatorConfig.Derived.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning": "object",
     "EvaluatorConfig.LlmAsAJudge": "object",
@@ -307,6 +312,7 @@
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig": "object",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields": "object",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig": "object",
+    "EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.StopSequences": "array",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig": "object",
     "EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning": "object",
     "EvaluatorConfig.LlmAsAJudge.RatingScale": "object",
