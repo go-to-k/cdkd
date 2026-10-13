@@ -98,12 +98,10 @@ export function kickOffProvenanceCapture(
     const properties = definition?.Properties ?? {};
     const task = chain
       .then(() => captureOne(this, logicalId, record, tokens, properties, args))
-      .catch((error: unknown): ProvenanceCaptureOutcome => {
-        // Throttling is the one retried class; anything else is definitive.
-        if (isThrottlingError(error)) return { record, field: undefined };
-        warnUnattributed(this, logicalId);
-        return { record, field: Object.fromEntries([...tokens].map((t) => [t, {}])) };
-      });
+      // `captureOne` classifies every lookup failure itself (throttling
+      // absent, anything else `{}`); this keeps a rejection out of the chain
+      // and leaves the field absent, the v11 reading.
+      .catch((): ProvenanceCaptureOutcome => ({ record, field: undefined }));
     chain = task;
     this.provenanceCaptureTasks.set(logicalId, task);
   }

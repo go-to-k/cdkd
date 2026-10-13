@@ -175,6 +175,8 @@ async function deploy(opts: {
   readerSentNothing?: boolean;
   /** A third resource whose only token is of a service cdkd does not resolve. */
   oddResource?: boolean;
+  /** `--require-approval any-change`, answered NO. */
+  declineApproval?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
   const provider = {
@@ -242,7 +244,14 @@ async function deploy(opts: {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: opts.dryRun === true, forceStatefulRecreation: true },
+    {
+      dryRun: opts.dryRun === true,
+      forceStatefulRecreation: true,
+      ...(opts.declineApproval && {
+        requireApproval: 'any-change' as const,
+        approveDeployment: async () => false,
+      }),
+    },
     'us-east-1'
   );
   let thrown: unknown;
@@ -576,6 +585,36 @@ describe('the one-time migration capture (v11 -> v12)', () => {
       [REF]: { region: 'us-east-1' },
     });
     expect(log.warn.filter((m) => m.includes('state schema v12 migration'))).toHaveLength(1);
+  });
+
+  it('a deploy declined at --require-approval makes no capture lookup', async () => {
+    const run = await deploy({
+      state: v11State({ outputs: false }),
+      outputs: false,
+      queueVisibility: 30,
+      declineApproval: true,
+    });
+    expect(run.thrown).toBeDefined();
+    expect(secret.calls).toBe(0);
+    expect(log.warn.filter((m) => m.includes('state schema v12 migration'))).toEqual([]);
+  });
+
+  it('resolves only the properties whose stored value holds a token', async () => {
+    const { IntrinsicFunctionResolver } = await import(
+      '../../../src/deployment/intrinsic-function-resolver.js'
+    );
+    const spy = vi.spyOn(IntrinsicFunctionResolver.prototype, 'resolve');
+    try {
+      await deploy({ state: v11State({ outputs: false }), outputs: false });
+      const captured = spy.mock.calls.filter(
+        ([, context]) => (context as { provenanceCapture?: true }).provenanceCapture === true
+      );
+      // SecretQueue: QueueName, Tags. Reader: Value, Tags. Never Name / Type /
+      // VisibilityTimeout / Description, which hold no token.
+      expect(captured).toHaveLength(4);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('--dry-run makes no capture lookup', async () => {

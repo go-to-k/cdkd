@@ -54,4 +54,17 @@ describe('cachedCreateOnlyPropertyPaths', () => {
     expect(await cachedCreateOnlyPropertyPaths('AWS::NoSnapshot::Type')).toEqual([['Live']]);
     expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
   });
+
+  it('an IN-FLIGHT lookup is not known (it could still be cancelled into [])', async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const answered = new Promise((resolve) => {
+      release = resolve;
+    });
+    mockCloudFormationSend.mockImplementation(() => answered);
+    const pending = getCreateOnlyPropertyPaths('AWS::NoSnapshot::Type');
+    expect(cachedCreateOnlyPropertyPaths('AWS::NoSnapshot::Type')).toBeUndefined();
+    release({ Schema: JSON.stringify({ createOnlyProperties: ['/properties/Live'] }) });
+    await pending;
+    expect(await cachedCreateOnlyPropertyPaths('AWS::NoSnapshot::Type')).toEqual([['Live']]);
+  });
 });
