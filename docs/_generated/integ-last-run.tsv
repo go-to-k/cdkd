@@ -194,6 +194,7 @@ lambda-durable-replacement	2026-10-07T07:15:44Z	PASS	151	verify.sh	PR #4646 on #
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
 lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orph clean; schema-registry add + removal phases (#3861)
 lambda-event-invoke-config-update	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+lambda-fix-forward-orphan	2026-10-13T08:00:58Z	PASS	150	verify.sh	rc ok, destroy clean, orph clean; probe red at step 2 with fix reverted (#4606)
 lambda-layer-version-update	2026-10-08T06:25:38Z	PASS	75	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-10-06T02:22:44Z	PASS	852	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
