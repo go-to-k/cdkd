@@ -12,14 +12,14 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *   `BaseFn`.
  * - `WITH_ORPHANS=true` adds `OrphanA`, `OrphanC` and `OrphanD`, each declaring a
  *   `RecursiveLoop`. verify.sh deploys that template as a role that may
- *   create a function but may neither set its recursion config nor delete
- *   it, so each CREATE makes the function, fails on
- *   `PutFunctionRecursionConfig`, and cannot clean up: the journal records
- *   each as a proven orphan with the `<FunctionArn>@<LastModified>` its
- *   `CreateFunction` answered with. `OrphanD` also declares
- *   `ReservedConcurrentExecutions` and the role allows its recursion config,
- *   so its CREATE fails on the later `PutFunctionConcurrency`, after a
- *   successful Put.
+ *   create a function but may not delete it, so each CREATE makes the
+ *   function, fails on a post-create call, and cannot clean up: the journal
+ *   records each as a proven orphan with the `<FunctionArn>@<LastModified>`
+ *   its `CreateFunction` answered with. `OrphanA` and `OrphanC` fail on
+ *   `PutFunctionRecursionConfig`, which the role denies them. `OrphanD` also
+ *   declares `ReservedConcurrentExecutions`, and the role allows its
+ *   recursion config, so its CREATE fails on the later, denied
+ *   `PutFunctionConcurrency`, after a successful Put.
  * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under another name
  *   (`-b`), so the fix-forward deploy creates three new functions. Before it,
  *   verify.sh deletes `OrphanC`'s function and re-creates the name itself

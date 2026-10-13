@@ -11,9 +11,11 @@
 #
 # Phases:
 #   1. Baseline deploy: `ExecRole` and `BaseFn`.
-#   1b. Premise: each post-create call a CREATE makes (PutFunctionRecursionConfig,
-#      PutRuntimeManagementConfig, PutFunctionConcurrency), changing BaseFn's
-#      value and restoring it, leaves its `LastModified` where it was.
+#   1b. Measurement: each post-create call a CREATE makes changes BaseFn's
+#      value and restores it. PutFunctionRecursionConfig and
+#      PutFunctionConcurrency must leave `LastModified` where it was;
+#      PutRuntimeManagementConfig must move it (what `create` assumes when it
+#      drops CreateFunction's token after that call).
 #   2. The failed CREATE. A role is created that may create and read a
 #      function but may not delete it, set its reserved concurrency, or set
 #      the recursion config of OrphanA's or OrphanC's. A
@@ -253,15 +255,16 @@ fi
 EXEC_ROLE_ARN="$(aws iam get-role --role-name "${EXEC_ROLE}" --query 'Role.Arn' --output text)"
 aws lambda wait function-active-v2 --function-name "${BASE_FN}" --region "${REGION}"
 
-echo "[verify] step 1b: premise -- the post-create calls a CREATE makes do not move LastModified"
+echo "[verify] step 1b: measure which post-create calls move LastModified"
 # The identity a failed CREATE journals is CreateFunction's LastModified, and
 # a CREATE that failed on a LATER post-create call has already made the
 # earlier ones (lambda-function-provider.ts, `create`: RecursiveLoop, then
 # ReservedConcurrentExecutions, then RuntimeManagementConfig). Each is called
 # here on BaseFn with a value it does NOT have (a Put repeating the current
 # value could be a no-op), the token compared, and the value restored before
-# any FAIL: one that moved LastModified would keep every such orphan as
-# "another function". (Step 2's OrphanD measures the same on a still-Pending
+# any FAIL. Recursion config and concurrency must not move LastModified: one
+# that did would keep every orphan failing after it as "another function".
+# Runtime management config is measured to move it (below). (Step 2's OrphanD measures the same on a still-Pending
 # function, through a CREATE that passed PutFunctionRecursionConfig.)
 probe_put_keeps_token() { # usage: probe_put_keeps_token <api label> <change cmd> <restore cmd>  (each a single string, eval'd)
   local label="$1" change="$2" restore="$3" before after
@@ -286,9 +289,21 @@ fi
 probe_put_keeps_token PutFunctionRecursionConfig \
   'aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Allow --region "${REGION}"' \
   'aws lambda put-function-recursion-config --function-name "${BASE_FN}" --recursive-loop Terminate --region "${REGION}"'
-probe_put_keeps_token PutRuntimeManagementConfig \
-  'aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on FunctionUpdate --region "${REGION}"' \
-  'aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}"'
+# PutRuntimeManagementConfig is measured to MOVE LastModified, so `create`
+# drops CreateFunction's token after a successful one (a later failure then
+# journals the engine's live read). Asserted as the observed fact, so an AWS
+# change that stops moving it is noticed and the provider comment updated.
+RT_BEFORE="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: could not read ${BASE_FN}'s identity before PutRuntimeManagementConfig" >&2; exit 1; }
+aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on FunctionUpdate --region "${REGION}" >/dev/null
+aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
+RT_AFTER="$(fn_token "${BASE_FN}")" || { aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}" >/dev/null; echo "[verify] FAIL: could not read ${BASE_FN}'s identity after PutRuntimeManagementConfig" >&2; exit 1; }
+aws lambda put-runtime-management-config --function-name "${BASE_FN}" --update-runtime-on Auto --region "${REGION}" >/dev/null
+aws lambda wait function-updated-v2 --function-name "${BASE_FN}" --region "${REGION}"
+if [ "${RT_AFTER}" = "${RT_BEFORE}" ]; then
+  echo "[verify] FAIL: measurement -- PutRuntimeManagementConfig no longer moves ${BASE_FN}'s LastModified (${RT_BEFORE}): update the go-to-k/cdkd#4606 comment in lambda-function-provider.ts \`create\` (it drops CreateFunction's token after this call) and this check" >&2
+  exit 1
+fi
+echo "[verify]   PutRuntimeManagementConfig: LastModified moved (${RT_BEFORE} -> ${RT_AFTER}), as create() expects"
 # A reserved concurrency of 1 may be refused on an account whose unreserved
 # floor allows none; only that refusal skips the probe, with a NOTE.
 CONC_BEFORE="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before PutFunctionConcurrency" >&2; exit 1; }

@@ -36,6 +36,7 @@ import {
   DeleteFunctionCommand,
   GetFunctionCommand,
   PutFunctionConcurrencyCommand,
+  PutRuntimeManagementConfigCommand,
   ResourceConflictException,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
@@ -447,6 +448,67 @@ describe("the created-before-failure mark carries CreateFunction's identity (go-
     const error = await failureOf(new LambdaFunctionProvider().create('Orphan', TYPE, PROPS));
     expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('fn-a');
     expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+  });
+
+  // PutRuntimeManagementConfig is the one post-create call measured to MOVE
+  // LastModified (the lambda-fix-forward-orphan fixture's step 1b).
+  describe('RuntimeManagementConfig (go-to-k/cdkd#4606)', () => {
+    const RT_PROPS = {
+      FunctionName: 'fn-a',
+      Role: 'arn:aws:iam::123456789012:role/r',
+      Runtime: 'nodejs20.x',
+      Handler: 'index.handler',
+      Code: { ZipFile: 'exports.handler = async () => ({});' },
+      RuntimeManagementConfig: { UpdateRuntimeOn: 'FunctionUpdate' },
+    };
+
+    function awsRt(putSucceeds: boolean): void {
+      mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        if (cmd instanceof CreateFunctionCommand) {
+          return { FunctionName: 'fn-a', FunctionArn: arnOf('fn-a'), LastModified: T1 };
+        }
+        if (cmd instanceof GetFunctionCommand) {
+          return { Configuration: { FunctionName: 'fn-a', State: 'Active' } };
+        }
+        if (cmd instanceof PutRuntimeManagementConfigCommand) {
+          if (putSucceeds) return {};
+          throw denied('PutRuntimeManagementConfig');
+        }
+        if (cmd instanceof DeleteFunctionCommand) throw denied('DeleteFunction');
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+    }
+
+    it("a failed PutRuntimeManagementConfig keeps CreateFunction's token on the mark", async () => {
+      awsRt(false);
+      const error = await failureOf(new LambdaFunctionProvider().create('Orphan', TYPE, RT_PROPS));
+      expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('fn-a');
+      expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBe(
+        tokenOf('fn-a', T1_MS)
+      );
+    });
+
+    // Nothing fallible follows the call in `create` today; a failure there is
+    // forced through the success line, so a step added later cannot journal
+    // the stale token.
+    it("a failure after a successful PutRuntimeManagementConfig drops CreateFunction's token", async () => {
+      awsRt(true);
+      providerLogger.debug.mockImplementation((m: unknown) => {
+        if (String(m).includes('Successfully created')) throw new Error('a later step failed');
+      });
+      try {
+        const error = await failureOf(
+          new LambdaFunctionProvider().create('Orphan', TYPE, RT_PROPS)
+        );
+        expect(
+          mockSend.mock.calls.some(([c]) => c instanceof PutRuntimeManagementConfigCommand)
+        ).toBe(true);
+        expect(createdBeforeFailure(error, 'Orphan', TYPE)).toBe('fn-a');
+        expect(createdResourceIdentityBeforeFailure(error, 'Orphan', TYPE)).toBeUndefined();
+      } finally {
+        providerLogger.debug.mockReset();
+      }
+    });
   });
 
   it('a cleanup DeleteFunction that succeeded marks nothing, identity included', async () => {

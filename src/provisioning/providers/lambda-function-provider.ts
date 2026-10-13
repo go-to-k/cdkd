@@ -100,13 +100,14 @@ function isFunctionName(id: string): boolean {
  * go-to-k/cdkd#4606 / #4655: a function's identity token,
  * `<FunctionArn>@<LastModified epoch ms>`. The ARN is built from the name, so
  * a function re-created under the same name repeats it; `LastModified`, set
- * by `CreateFunction`, is what tells the two apart: the
- * `lambda-fix-forward-orphan` fixture measures that it survives the Pending
- * to Active transition and the post-create `PutFunctionRecursionConfig`,
- * `PutRuntimeManagementConfig` and (where the account allows a reservation)
- * `PutFunctionConcurrency` calls, and that a
- * re-create under the name moves it. A code or configuration update moves it
- * too. A moved one only keeps the orphan (the settle
+ * by `CreateFunction`, is what tells the two apart. The
+ * `lambda-fix-forward-orphan` fixture measures that a re-create under the
+ * name moves it, and that the Pending to Active transition and a successful
+ * `PutFunctionRecursionConfig` do not; it measures `PutFunctionConcurrency`
+ * where the account allows a reservation. A successful
+ * `PutRuntimeManagementConfig` DOES move it, so `create` drops the
+ * CreateFunction token after that call. A code or configuration update moves
+ * it too. A moved one only keeps the orphan (the settle
  * warns instead of deleting). That includes cdkd's own update: `delete`'s VPC
  * pre-detach (`UpdateFunctionConfiguration`) moves it, so a VPC orphan whose
  * `DeleteFunction` then fails is never proven again and is left to delete by
@@ -927,6 +928,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
               { FunctionName: functionName }
             );
             await this.putRuntimeManagementConfig(functionName, runtimeManagementConfig);
+            // go-to-k/cdkd#4606: a successful PutRuntimeManagementConfig
+            // moves `LastModified` (measured by the lambda-fix-forward-orphan
+            // fixture), so CreateFunction's token no longer names the live
+            // function. Dropped, so a failure after this point marks the name
+            // alone and the engine journals a live `resourceIdentity` read.
+            createdFunctionIdentity = undefined;
           },
           {
             apiName: 'PutRuntimeManagementConfig',
