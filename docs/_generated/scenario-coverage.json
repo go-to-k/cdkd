@@ -2235,6 +2235,13 @@
       ]
     },
     {
+      "name": "schema-v11-to-v12-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -3204,6 +3211,7 @@
       "fixtures": [
         "legacy-state-migration",
         "schema-v10-to-v11-migration",
+        "schema-v11-to-v12-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"

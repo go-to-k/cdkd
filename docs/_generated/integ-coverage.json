@@ -6712,6 +6712,7 @@
         "s3-analytics-inventory",
         "s3-lifecycle",
         "scheduler-custom-group",
+        "schema-v11-to-v12-migration",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
         "sns-inline-subscription",
@@ -6910,6 +6911,9 @@
         "scheduler-custom-group": [
           "l2"
         ],
+        "schema-v11-to-v12-migration": [
+          "l1"
+        ],
         "secret-derived-immutable-names": [
           "l1",
           "literal"
@@ -7058,6 +7062,7 @@
         "s3-directory-bucket",
         "s3-tables",
         "schema-v10-to-v11-migration",
+        "schema-v11-to-v12-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -7372,6 +7377,9 @@
           "l1"
         ],
         "schema-v10-to-v11-migration": [
+          "l1"
+        ],
+        "schema-v11-to-v12-migration": [
           "l1"
         ],
         "schema-v5-to-v6-migration": [
