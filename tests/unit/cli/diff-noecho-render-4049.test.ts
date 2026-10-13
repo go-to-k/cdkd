@@ -822,6 +822,96 @@ describe('review round: arms the first cases left open (#4049)', () => {
     expect(JSON.stringify(result.deployRefusals)).toContain('Keep-***');
     expect(JSON.stringify(result.deployRefusals)).not.toContain(NOECHO);
   });
+
+  it('masks a needle holding a space that a U+2028 stood in for (go-to-k/cdkd#2888)', async () => {
+    // The renderer turns U+2028 into a space, so a reason carrying
+    // `correct<U+2028>horse` would PRINT the needle `correct horse` that
+    // neither mask matched on the raw text.
+    const secret = 'correct horse battery';
+    const inherited: RecordedSecretValues = new Map();
+    recordLogOnlyValue(inherited, secret);
+    const { backend } = backendOf();
+    const state: StackState = {
+      ...st({ A: res({ Value: 'x' }) }),
+      orphans: [
+        {
+          logicalId: 'Keep',
+          orphanedAt: 1,
+          state: { physicalId: 'live-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+      ] as unknown as StackState['orphans'],
+    };
+    const result = await computeStackDiff(
+      state,
+      noEchoTemplate({ Value: 'x' }),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator(),
+      {
+        inheritedSecrets: inherited,
+        previewOrphanAdoption: async () => ({
+          adopted: {},
+          refusals: ['orphan Keep: physical id queue-correct\u2028horse battery is gone'],
+        }),
+      }
+    );
+    expect(result.blocking).toEqual(['orphan Keep: physical id queue-*** is gone']);
+  });
+
+  // A needle the separator substitution or the trim would ALTER, split in the
+  // reason by a strip-class character: only a mask between the strip and
+  // `stripForDisplay` sees it whole (go-to-k/cdkd#2888 orchestrator review).
+  it.each([
+    [
+      'a needle holding a space, split by a control character',
+      'hunter 2pass',
+      'orphan Keep: physical id hunter\u0001 2pass is gone',
+    ],
+    [
+      'a needle with a trailing space, split by a control character, at the end of the reason',
+      'hunter2pass ',
+      'orphan Keep: physical id hunter\u00012pass ',
+    ],
+    [
+      'a needle holding U+2028, split by a control character',
+      'hunter\u20282pass',
+      'orphan Keep: physical id hunter\u0001\u20282pass is gone',
+    ],
+  ])('masks %s', async (_label, secret, refusal) => {
+    const inherited: RecordedSecretValues = new Map();
+    recordLogOnlyValue(inherited, secret);
+    const { backend } = backendOf();
+    const state: StackState = {
+      ...st({ A: res({ Value: 'x' }) }),
+      orphans: [
+        {
+          logicalId: 'Keep',
+          orphanedAt: 1,
+          state: { physicalId: 'live-keep', resourceType: 'AWS::SQS::Queue', properties: {} },
+        },
+      ] as unknown as StackState['orphans'],
+    };
+    const result = await computeStackDiff(
+      state,
+      noEchoTemplate({ Value: 'x' }),
+      'us-east-1',
+      'S',
+      backend,
+      new DiffCalculator(),
+      {
+        inheritedSecrets: inherited,
+        previewOrphanAdoption: async () => ({
+          adopted: {},
+          refusals: [refusal],
+        }),
+      }
+    );
+    expect(result.blocking).toHaveLength(1);
+    expect(result.blocking[0]).toMatch(/^orphan Keep: physical id \*\*\*( is gone)?$/);
+    expect(result.blocking[0]).not.toContain('hunter');
+    expect(result.blocking[0]).not.toContain('2pass');
+  });
 });
 
 describe('maskDiffValue', () => {

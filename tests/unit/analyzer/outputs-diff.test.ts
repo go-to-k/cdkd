@@ -1126,6 +1126,77 @@ describe('failedOutputKeys / failuresMirrorDeploy (issue #3101)', () => {
     expect(lines.filter((l) => l.includes('\u001b'))).toEqual([]);
   });
 
+  it('turns U+2028 / U+2029 into a space on its debug lines (go-to-k/cdkd#2888)', async () => {
+    // `stripControlChars` alone keeps both separators, which a JSON or web log
+    // viewer reads as line terminators, so a debug line could still split.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        // The ERROR text quotes the missing resource back, so it carries one too.
+        'Threw\u2028Key': { Value: { 'Fn::GetAtt': ['Missing\u2029Res', 'Arn'] } },
+        'RoleId\u2029Key': { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } },
+        'Named\u2028Key': {
+          Value: 'v',
+          Export: { Name: { 'Fn::GetAtt': ['Missing\u2028Res', 'Name'] } as unknown as string },
+        },
+        'Skip\u2029Key': { Value: 'v', Condition: 'Off\u2028Cond' },
+        'Col\u2028Key': { Value: 'v' },
+        'Other\u2029Out': { Value: 'v', Export: { Name: 'Col\u2028Key' } },
+      },
+    };
+    await resolveTemplateOutputs(template, RESOLVER, { 'Off\u2028Cond': false });
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => /[\u2028\u2029]/.test(l))).toEqual([]);
+    expect(
+      lines.some((l) => l.startsWith('Diff could not resolve output Threw Key: ') && l.includes('Missing Res'))
+    ).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff left output RoleId Key unresolved'))).toBe(true);
+    expect(
+      lines.some(
+        (l) => l.startsWith('Diff could not resolve Export.Name of Named Key: ') && l.includes('Missing Res')
+      )
+    ).toBe(true);
+    expect(lines).toContain('Skipping output Skip Key — condition Off Cond is false');
+    expect(lines).toContain(
+      'Diff skipping export alias Col Key of Other Out — collides with an output name'
+    );
+  });
+
+  it('turns U+2028 / U+2029 into a space on its absent-preview and undecidable-alias lines (go-to-k/cdkd#2888)', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debug = vi.mocked(getLogger().debug);
+    debug.mockClear();
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Secret: { Value: '{{resolve:secretsmanager:db:SecretString:pw}}' },
+        'Named\u2028Key': { Value: 'v', Export: { Name: 'literal-name' } },
+        'Absent\u2029Key': { Value: 'v' },
+        'Token\u2028Key': {
+          Value: 'v',
+          Export: {
+            Name: {
+              'Fn::Join': ['-', ['x', '{{resolve:secretsmanager:db:SecretString:pw}}']],
+            } as unknown as string,
+          },
+        },
+      },
+    };
+    await resolveTemplateOutputs(template, RESOLVER, undefined, {}, new Set(['Absent\u2029Key']));
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => /[\u2028\u2029]/.test(l))).toEqual([]);
+    expect(lines.some((l) => l.startsWith('Diff previewing output Absent Key as absent'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Diff cannot decide the export alias of Named Key'))).toBe(
+      true
+    );
+    expect(lines).toContain(
+      'Diff skipping export alias of Token Key — the name carries a secret reference'
+    );
+  });
+
   it('is false when an Export.Name throws', async () => {
     const template: CloudFormationTemplate = {
       Resources: {},

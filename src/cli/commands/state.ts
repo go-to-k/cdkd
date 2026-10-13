@@ -97,7 +97,7 @@ import {
   maskedLeafCoordinatesOf,
 } from '../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
-import { stripControlChars } from '../../utils/regexp.js';
+import { stripForDisplay } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
 import { printRewriteSummary, printUnresolvable } from './orphan.js';
 import { rewriteResourceReferences } from '../../analyzer/orphan-rewriter.js';
@@ -1185,11 +1185,11 @@ async function stateResourcesCommand(
     if (options.long) {
       const lines: string[] = [];
       for (const detail of details) {
-        // Same rule and the same split as `renderStateBlock`: a KEY takes the
-        // bare strip, a record FIELD takes `formatAttributeValue`, which strips
-        // identically and survives a hand-edited non-string. These lines are
+        // Same rule and the same split as `renderStateBlock`: a KEY takes
+        // `stripForDisplay`, a record FIELD takes `formatAttributeValue`, which
+        // renders a string identically and survives a hand-edited non-string. These lines are
         // joined with `\n` too, so an unstripped field forges rows here as well.
-        lines.push(stripControlChars(detail.logicalId));
+        lines.push(stripForDisplay(detail.logicalId));
         lines.push(`  Type: ${formatAttributeValue(detail.resourceType)}`);
         lines.push(`  PhysicalID: ${formatAttributeValue(detail.physicalId)}`);
         lines.push(`  Dependencies: ${formatDependencyList(detail.dependencies)}`);
@@ -1199,7 +1199,7 @@ async function stateResourcesCommand(
         } else {
           lines.push('  Attributes:');
           for (const [k, v] of attrEntries) {
-            lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
+            lines.push(`    ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
           }
         }
         lines.push('');
@@ -1220,10 +1220,10 @@ async function stateResourcesCommand(
     // `max(raw lengths) - max(stripped lengths)`, with a gap that has nothing
     // in it. `resourceType` and `physicalId` take the field guard here rather
     // than raw interpolation, so a hand-edited non-string cannot make `.length`
-    // / `.padEnd` throw and lose the listing; `logicalId` is a map key, so the
-    // bare strip is right for it.
+    // / `.padEnd` throw and lose the listing; `logicalId` is a map key, so
+    // `stripForDisplay` is right for it.
     const rows = details.map((d) => ({
-      logicalId: stripControlChars(d.logicalId),
+      logicalId: stripForDisplay(d.logicalId),
       resourceType: formatAttributeValue(d.resourceType),
       physicalId: formatAttributeValue(d.physicalId),
     }));
@@ -1244,10 +1244,11 @@ async function stateResourcesCommand(
  *
  * Named for its first caller and used well beyond an attribute now: a state or
  * lock record is read as an unchecked cast, so a field declared `string` can
- * hold anything, and the bare strip throws on it and empties the whole render.
- * This survives that, and for an actual string it is byte-identical to the
- * strip — which is why it is the default choice for a record FIELD, and the bare
- * strip is kept only where the value is a string by construction.
+ * hold anything, and `stripForDisplay` throws on it and empties the whole
+ * render. This survives that, and for an actual string it is byte-identical to
+ * `stripForDisplay` — which is why it is the default choice for a record FIELD,
+ * and `stripForDisplay` is called directly only where the value is a string by
+ * construction.
  *
  * Scalar values render as-is; objects/arrays are JSON-encoded inline so a
  * resource block stays compact even when an attribute is structured.
@@ -1284,7 +1285,7 @@ function formatAttributeValue(value: unknown): string {
   // guard every row depends on, and `'undefined'` is a better row than a throw.
   if (value === undefined) return 'undefined';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return stripControlChars(String(value));
+    return stripForDisplay(String(value));
   }
   // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
   // function value, so stripping its result directly would throw. No record read
@@ -1306,7 +1307,7 @@ function formatAttributeValue(value: unknown): string {
   } catch {
     json = undefined;
   }
-  return json === undefined ? UNSERIALIZABLE : stripControlChars(json);
+  return json === undefined ? UNSERIALIZABLE : stripForDisplay(json);
 }
 
 /**
@@ -1863,7 +1864,8 @@ function renderStateBlock(
   // Every RECORD-derived string interpolated into a row below is stripped —
   // state here, and lock.json through `formatLockSummary`. The rule is flat on
   // purpose: `renderStateBlock` returns lines that the caller joins with `\n`,
-  // and `stripControlChars` removes U+0000-U+001F — newline included — so any
+  // and `stripForDisplay` removes U+0000-U+001F — newline included — and
+  // replaces U+2028 / U+2029, which a log viewer breaks a line on, so any
   // unstripped field can forge rows, not merely colour them. A per-field
   // argument about which ones CloudFormation constrains is what left the
   // resource logical id raw until issue #2772; the constraint is not enforced
@@ -1873,7 +1875,7 @@ function renderStateBlock(
   // GUARANTEED, not from where it came from. A record FIELD's declared type is
   // an unchecked cast, so the fields below take `formatAttributeValue`: that
   // strips identically for a string and also survives a wrong type, where the
-  // bare strip throws and empties the whole render. `stripControlChars` is kept
+  // bare strip throws and empties the whole render. `stripForDisplay` is kept
   // where the value is a string by construction — an `Object.entries` key.
   // `dependencies` and `lastModified` take their own guards, each for a second
   // reason named at its helper.
@@ -1926,7 +1928,7 @@ function renderStateBlock(
       // rewrite the surrounding terminal output. The diff's rows, the only
       // other place a stored Outputs bag is rendered, go further: their names
       // render through `secretSafeKeyDisplay`'s verdict (#4015).
-      lines.push(`  ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
+      lines.push(`  ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
     }
   }
 
@@ -1988,7 +1990,7 @@ function renderStateBlock(
       const cut = truncateCodePoints(fullDigest, SKIPPED_DIGEST_PREVIEW_LEN);
       const shownDigest =
         cut.truncated && fullDigest !== UNSERIALIZABLE ? `${cut.text}…` : fullDigest;
-      lines.push(`  ${stripControlChars(k)}: ${shownDigest}`);
+      lines.push(`  ${stripForDisplay(k)}: ${shownDigest}`);
     }
     if (withLegend) lines.push(...skippedOutputsLegend());
   }
@@ -2017,7 +2019,7 @@ function renderStateBlock(
     // record can carry anything. A case in the `state show` suite spells a
     // logical id `Skipped outputs:` for a different reason and demonstrates
     // exactly that.
-    lines.push(stripControlChars(logicalId));
+    lines.push(stripForDisplay(logicalId));
     lines.push(`  Type: ${formatAttributeValue(resource.resourceType)}`);
     // The formatter makes a corrupt id read like an ordinary one: a `null`
     // renders as the literal `null`, which the string `"null"` also does. That
@@ -2059,7 +2061,7 @@ function renderStateBlock(
         // The KEY is stripped for the same reason the Outputs key is: a
         // provider-returned attribute name and a template-authored property
         // name both reach here without passing a CloudFormation validator.
-        lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
+        lines.push(`    ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
       }
     }
 
@@ -2069,7 +2071,7 @@ function renderStateBlock(
     } else {
       lines.push('  Properties:');
       for (const [k, v] of propEntries) {
-        lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
+        lines.push(`    ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
       }
     }
   }

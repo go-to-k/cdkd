@@ -339,6 +339,27 @@ describe('renderDiffTree', () => {
     children: [],
   });
 
+  it('turns U+2028 / U+2029 into a space in the stack headers and a blocking reason (go-to-k/cdkd#2888)', () => {
+    // `stripControlChars` alone keeps both separators, which a JSON or web log
+    // viewer reads as line terminators, so a header could still split there.
+    const root = leaf('Root\u2028Stack', 'Root\u2028Stack', [
+      { logicalId: 'NewRes', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket' },
+    ]);
+    root.blocking = ['refused\u2029here'];
+    root.children = [
+      leaf('Root~Child', 'Root\u2029Child', [
+        { logicalId: 'Up', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket' },
+      ]),
+    ];
+    const lines: string[] = [];
+    renderDiffTree(root, true, (m) => lines.push(m));
+    const out = lines.join('\n');
+    expect(out).not.toMatch(/[\u2028\u2029]/);
+    expect(lines).toContain('\nStack Root Stack:');
+    expect(lines).toContain('\nNested stack: Root Child');
+    expect(lines).toContain('    ! refused here');
+  });
+
   it('says NOTHING about unreadable rows on a clean record', () => {
     // The negative the guard never had: with nothing unreadable, deleting
     // `if (unreadableTotal > 0)` prints `0 state record row(s) could not
@@ -3297,6 +3318,44 @@ describe('Outputs-only change (issue #1921)', () => {
         .filter((m) => m.includes('output(s) could not be resolved for this diff.'));
     }
 
+    it('names a failed output whose key carries U+2028 / U+2029 on one line (go-to-k/cdkd#2888)', async () => {
+      // `stripControlChars` alone keeps both separators, which a JSON or web
+      // log viewer breaks a line on; one key per list this warning names.
+      // The STACK name too, on this warning and on the suppression one.
+      vi.mocked(getLogger().warn).mockClear();
+      await computeStackDiff(
+        stateWith({ 'Stored\u2028Out': 'stored' }),
+        template({
+          'Stored\u2028Out': { Value: FAILING },
+          'New\u2029Out': { Value: FAILING },
+          Plain: { Value: 'p' },
+        }),
+        'us-east-1',
+        'Sep\u2029Stack',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      const carried = carriedOutputWarnings();
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).not.toMatch(/[\u2028\u2029]/);
+      expect(carried[0]).toMatch(/^Outputs of stack Sep Stack: 2 output\(s\)/);
+      expect(carried[0]).toContain('Compared at their stored values: Stored Out.');
+      expect(carried[0]).toContain('No stored value under their own names: New Out.');
+
+      const suppressed = captureSuppressionWarnings();
+      await computeStackDiff(
+        stateWith({ Out: 'stored' }),
+        { ...template({ Out: { Value: FAILING }, Plain2: { Value: 'p2' } }), Parameters: { Required: { Type: 'String' } } },
+        'us-east-1',
+        'Sep\u2028Stack',
+        fakeBackend({}),
+        new DiffCalculator()
+      );
+      expect(suppressed()).toHaveLength(1);
+      expect(suppressed()[0]).not.toMatch(/[\u2028\u2029]/);
+      expect(suppressed()[0]).toMatch(/^Outputs of stack Sep Stack may have changed/);
+    });
+
     it('reports a sibling ADD, and no row for a failed output that keeps its stored value', async () => {
       const suppressed = captureSuppressionWarnings();
       const { changes, outputChanges } = await diffFor(
@@ -4201,6 +4260,22 @@ describe('Outputs-only change (issue #1921)', () => {
     const out = lines.join('\n');
     expect(out).not.toContain('\u009b');
     expect(out).not.toContain('\u202e');
+  });
+
+  it('turns U+2028 / U+2029 in a rendered VALUE into a space and keeps the layout (go-to-k/cdkd#2888)', () => {
+    // `JSON.stringify` escapes neither separator, and a JSON or web log viewer
+    // breaks a line on both.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'ADD', newValue: ['a\u2028b', 'c\u2029d'], isExport: false }],
+      (m) => lines.push(m)
+    );
+    const valueLine = lines.find((l) => l.includes('new:'))!;
+    expect(valueLine).not.toMatch(/[\u2028\u2029]/);
+    expect(valueLine).toContain('"a b"');
+    expect(valueLine).toContain('"c d"');
+    // The pretty-printer's own newlines survive.
+    expect(valueLine.split('\n').length).toBeGreaterThan(1);
   });
 
   it('renders nothing for an empty Outputs delta', () => {

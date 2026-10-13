@@ -234,7 +234,7 @@ refusal here is unchanged, because `diff` still cannot decide from a stored
 string alone whether a value is plaintext.
 
 **Second, rendered values are stripped of control and bidi characters before
-display, and Outputs row names are shown only after a secret test.** An
+display (a `U+2028` / `U+2029` line or paragraph separator prints as a space), and Outputs row names are shown only after a secret test.** An
 `Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
 lookup), so unlike a CloudFormation logical ID it never passed a validator, and
 a cdkd older than the export-name refusal could store one holding a resolved

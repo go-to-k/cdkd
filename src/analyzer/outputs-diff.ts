@@ -21,7 +21,7 @@ import {
   type NoEchoPositionSources,
   type RecordedSecretValues,
 } from '../deployment/secret-redaction.js';
-import { stripControlChars } from '../utils/regexp.js';
+import { stripForDisplay } from '../utils/regexp.js';
 import { safeMsg } from '../utils/display-safe.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
 import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
@@ -902,7 +902,7 @@ export async function resolveTemplateOutputs(
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
       logger.debug(
-        `Skipping output ${stripControlChars(outputKey)} — condition ${stripControlChars(String(output.Condition))} is false`
+        `Skipping output ${stripForDisplay(outputKey)} — condition ${stripForDisplay(String(output.Condition))} is false`
       );
       // NOT a resolution failure — CFn genuinely does not create it, so the
       // deploy drops it from the bag too and a REMOVE here is CORRECT.
@@ -934,7 +934,7 @@ export async function resolveTemplateOutputs(
       )
     ) {
       logger.debug(
-        `Diff previewing output ${stripControlChars(outputKey)} as absent — the last deploy could not resolve it and its template inputs are unchanged`
+        `Diff previewing output ${stripForDisplay(outputKey)} as absent — the last deploy could not resolve it and its template inputs are unchanged`
       );
       if (outputsPass !== undefined) {
         try {
@@ -962,7 +962,7 @@ export async function resolveTemplateOutputs(
       value = await resolveValue(structuredClone(output.Value));
     } catch (error) {
       logger.debug(
-        `Diff could not resolve output ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
+        `Diff could not resolve output ${stripForDisplay(outputKey)}: ${stripForDisplay(String(error))}`
       );
       resolutionFailed = true;
       recordFailure(outputKey, output);
@@ -977,7 +977,7 @@ export async function resolveTemplateOutputs(
       // has not created yet. Not a warning — the resource section already shows
       // that CREATE.
       logger.debug(
-        `Diff left output ${stripControlChars(outputKey)} unresolved (references a pending resource)`
+        `Diff left output ${stripForDisplay(outputKey)} unresolved (references a pending resource)`
       );
       resolutionFailed = true;
       recordFailure(outputKey, output);
@@ -1035,7 +1035,7 @@ export async function resolveTemplateOutputs(
           );
         } catch (error) {
           logger.debug(
-            `Diff could not resolve Export.Name of ${stripControlChars(outputKey)}: ${stripControlChars(String(error))}`
+            `Diff could not resolve Export.Name of ${stripForDisplay(outputKey)}: ${stripForDisplay(String(error))}`
           );
           resolutionFailed = true;
           // The value resolved, so deploy records no failure for this output,
@@ -1120,7 +1120,7 @@ export async function resolveTemplateOutputs(
       // the round-6 regression this replaces, which traded one divergence
       // for two.
       logger.debug(
-        `Diff skipping export alias of ${stripControlChars(outputKey)} — the name carries a secret reference`
+        `Diff skipping export alias of ${stripForDisplay(outputKey)} — the name carries a secret reference`
       );
     } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
       // Deploy skips this alias and keeps the colliding output's own value,
@@ -1128,7 +1128,7 @@ export async function resolveTemplateOutputs(
       // resolution failure: the bag matches what deploy writes, which is the
       // point of the suppression flag, so nothing needs withholding.
       logger.debug(
-        `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
+        `Diff skipping export alias ${stripForDisplay(exportName)} of ${stripForDisplay(outputKey)} — collides with an output name`
       );
     } else {
       // Written after the loop (a LITERAL one decided there, once
@@ -1213,7 +1213,7 @@ export async function resolveTemplateOutputs(
       // records `outputKey`, whose value resolved fine and belongs in the
       // diff.
       logger.debug(
-        `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret and state does not hold that key`
+        `Diff cannot decide the export alias of ${stripForDisplay(outputKey)} — a literal name may contain a resolved secret and state does not hold that key`
       );
       failedKeys.add(exportName);
       resolutionFailed = true;

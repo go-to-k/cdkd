@@ -1,3 +1,5 @@
+import { displaySafe } from './display-safe.js';
+
 /**
  * Escape a literal string for embedding in a RegExp.
  *
@@ -39,4 +41,33 @@ export function escapeRegExp(value: string): string {
 export function stripControlChars(value: string): string {
   // eslint-disable-next-line no-control-regex
   return value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
+}
+
+/**
+ * {@link stripControlChars} for a string a human-render path PRINTS on its own
+ * line or inside cdkd's own sentence: the strip, then `displaySafe` around it
+ * (go-to-k/cdkd#2888).
+ *
+ * The strip alone keeps `U+2028` / `U+2029`, which a JSON or web log viewer
+ * reads as line terminators, so a printed name could still forge a row there.
+ * `displaySafe` replaces both with a space and trims; on the strip's output
+ * those two are all it still has to change, because every other character in
+ * its class is already gone.
+ *
+ * It DELETES exactly the strip's class and nothing more — what it adds is
+ * replaced or trimmed at an edge, never deleted from between two characters —
+ * so no new DELETION can join two halves of a split needle. The REPLACEMENT
+ * can still assemble one: `correct` + `U+2028` + `horse` reads `correct horse`.
+ * A caller printing possibly secret-bearing text therefore masks after EACH
+ * step: mask, strip, mask, `stripForDisplay`, mask. Masking only after this
+ * helper is NOT enough — the last mask then sees separator-replaced, trimmed
+ * text, so a needle that itself holds `U+2028` or edge whitespace, split in the
+ * text by a strip-class character, no longer matches anywhere.
+ *
+ * Takes a `string`, as the strip does. A value whose runtime type is not
+ * guaranteed (a record field read as an unchecked cast) needs its own guard
+ * before it reaches here; `displaySafe` alone is the answer for an `unknown`.
+ */
+export function stripForDisplay(value: string): string {
+  return displaySafe(stripControlChars(value));
 }

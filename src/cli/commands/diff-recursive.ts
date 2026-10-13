@@ -1,4 +1,4 @@
-import { stripControlChars } from '../../utils/regexp.js';
+import { stripControlChars, stripForDisplay } from '../../utils/regexp.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import {
   describeFileReadFailure,
@@ -2491,11 +2491,11 @@ export async function computeStackDiff(
         Object.prototype.hasOwnProperty.call(storedOutputs, key);
       const compared = failed.filter(isStored);
       const unstored = failed.filter((key) => !isStored(key));
-      const names = (keys: string[]): string => keys.map(stripControlChars).join(', ');
+      const names = (keys: string[]): string => keys.map(stripForDisplay).join(', ');
       const explainWithheld =
         withheld && outputChanges.some((change) => change.oldValueRedacted === true);
       logger.warn(
-        `Outputs of stack ${stripControlChars(stackName)}: ${failed.length} output(s) could not be resolved for this diff.` +
+        `Outputs of stack ${stripForDisplay(stackName)}: ${failed.length} output(s) could not be resolved for this diff.` +
           (compared.length > 0 ? ` Compared at their stored values: ${names(compared)}.` : '') +
           (unstored.length > 0
             ? ` No stored value under their own names: ${names(unstored)}.`
@@ -2529,7 +2529,7 @@ export async function computeStackDiff(
       );
       if (wouldHaveChanged.length > 0) {
         logger.warn(
-          `Outputs of stack ${stripControlChars(stackName)} may have changed, but one or more could not be resolved ` +
+          `Outputs of stack ${stripForDisplay(stackName)} may have changed, but one or more could not be resolved ` +
             `against current state — omitting the Outputs section from this diff. ` +
             (merge?.kind === 'kept'
               ? keptWholeReasonText(merge.reason)
@@ -2556,10 +2556,17 @@ export async function computeStackDiff(
   if (hasMaskableValues(printing.maskCorpus())) {
     const mask: MaskerFn = printing.mask;
     // A refusal can quote a physical id or a record value that embeds one.
-    // Masked, stripped, then masked again: the renderer strips control
-    // characters, which would otherwise reassemble a needle a control
-    // character split.
-    const maskReason = (reason: string): string => mask(stripControlChars(mask(reason)));
+    // Masked after EACH sanitizing step, because each step can assemble a
+    // needle the text before it did not hold: the strip DELETES control
+    // characters, rejoining a needle one split, and `stripForDisplay` then
+    // turns U+2028 / U+2029 into a space and trims, assembling a needle that
+    // contains a space (`correct horse`). The middle mask is the one the strip
+    // alone always had: it runs on text whose separators and edges are still
+    // the needle's own, so a needle holding U+2028 or edge whitespace still
+    // matches there. The renderer's `stripForDisplay` leaves the result
+    // unchanged (go-to-k/cdkd#2888).
+    const maskReason = (reason: string): string =>
+      mask(stripForDisplay(mask(stripControlChars(mask(reason)))));
     shownBlocking = blocking.map(maskReason);
     shownDeployRefusals = deployRefusals.map(maskReason);
     shownChanges = new Map(
@@ -4499,11 +4506,18 @@ const REDACTED_LEGACY_PLAINTEXT = '<redacted: may be legacy plaintext in state �
  * string, so the only C0 left on this path is the pretty-printer's own
  * structural newlines — stripping those collapses a multi-line value onto a
  * single line. What `JSON.stringify` passes through unchanged is the C1 range
- * and the bidi overrides, and those are what this removes.
+ * and the bidi overrides, and those are what this removes. It passes `U+2028` /
+ * `U+2029` through too, which a JSON or web log viewer breaks a line on: those
+ * become a space, as `stripForDisplay` makes them (go-to-k/cdkd#2888). Inside
+ * this payload either can only sit in a string literal, never in its layout.
  */
 function stripDisplayOnlyChars(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
+  return (
+    value
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+      .replace(/[\u2028\u2029]/g, ' ')
+  );
 }
 
 /**
@@ -4630,8 +4644,8 @@ export function renderDiffTree(
   if (hasChanges || node.blocking.length > 0) {
     logFn(
       isRoot
-        ? `\nStack ${stripControlChars(node.stackName)}:`
-        : `\nNested stack: ${stripControlChars(node.displayName)}`
+        ? `\nStack ${stripForDisplay(node.stackName)}:`
+        : `\nNested stack: ${stripForDisplay(node.displayName)}`
     );
   }
   if (hasChanges) {
@@ -4709,7 +4723,7 @@ export function renderDiffTree(
   if (node.blocking.length > 0) {
     logFn('\n  Blocking (cdkd deploy will refuse):');
     for (const reason of node.blocking) {
-      logFn(`    ! ${stripControlChars(reason)}`);
+      logFn(`    ! ${stripForDisplay(reason)}`);
     }
   }
   for (const child of node.children) {

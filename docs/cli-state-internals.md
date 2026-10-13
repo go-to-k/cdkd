@@ -22,7 +22,9 @@ it would invent a line that reads exactly like a real row.
 - Control characters are removed from every name, type, id, dependency list
   and nested-stack header. The escape byte is removed and the characters
   around it are kept, so a name carrying `ESC[31m` prints as `[31m`: the
-  sequence is broken, the name is not censored.
+  sequence is broken, the name is not censored. A line or paragraph separator
+  (`U+2028` / `U+2029`), which a JSON or web log viewer breaks a line on,
+  prints as a space, and whitespace at either end of a value is trimmed.
 - Two rows take no removal because neither needs it: the lock row's `owner`
   and `operation` are sanitized where the lock record is read, before
   `cdkd state show` sees them, and `Version` is refused where the state record

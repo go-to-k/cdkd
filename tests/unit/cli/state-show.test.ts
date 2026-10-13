@@ -491,6 +491,46 @@ describe('cdkd state show', () => {
     expect(out).not.toContain('\u001b');
   });
 
+  it('turns U+2028 / U+2029 into a space in every key and value row (go-to-k/cdkd#2888)', async () => {
+    // `stripControlChars` alone keeps both separators, which a JSON or web log
+    // viewer reads as line terminators. One per row shape this block prints
+    // through the strip: an Outputs key and value, a skipped-outputs key, a
+    // resource logical id, and an attribute and a property key and value.
+    mockListStacks.mockResolvedValue(defaultListResponse('SepStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'SepStack',
+        outputs: { 'Api\u2028Url': 'https://api\u2029.example.com' },
+        skippedOutputs: { 'Skip\u2029Key': 'c'.repeat(64) },
+        resources: {
+          'My\u2028Table': makeResource({
+            resourceType: 'AWS::DynamoDB::Table',
+            physicalId: 'tbl-1',
+            attributes: { 'A\u2028rn': 'arn\u2029value' },
+            properties: {
+              'Table\u2029Name': 'tbl\u2028name',
+              // A STRUCTURED value takes the JSON arm, and `JSON.stringify`
+              // escapes neither separator.
+              Tags: [{ Key: 'env', Value: 'pr\u2029od' }],
+            },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'SepStack']);
+    const lines = out.split('\n');
+
+    expect(out).not.toMatch(/[\u2028\u2029]/);
+    expect(lines).toContain('  Api Url: https://api .example.com');
+    expect(lines).toContain(`  Skip Key: ${'c'.repeat(12)}…`);
+    expect(lines).toContain('My Table');
+    expect(lines).toContain('    A rn: arn value');
+    expect(lines).toContain('    Table Name: tbl name');
+    expect(lines).toContain('    Tags: [{"Key":"env","Value":"pr od"}]');
+  });
+
   it('a NEWLINE in any state-derived row cannot forge a row', async () => {
     // The strip removes U+0000-U+001F, newline included, and these lines are
     // joined with a newline — so an unstripped field does not merely colour
