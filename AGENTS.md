@@ -42,11 +42,11 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 **Performance is cdkd's defining value**: never slow an ordinary deploy, and
 add no AWS or S3 call a deploy does not need. Then **CloudFormation parity**:
-do what the AWS CDK CLI / CloudFormation does. The baseline of any tool also
-holds: no regression, no new plaintext secret or exposure, an error names the
-cause and the next step, and a schema bump migrates users' S3 state
-automatically (nothing puts it back). When two conflict, record at the site
-which gave way and why.
+do what the AWS CDK CLI / CloudFormation does. On a separate axis, never
+ranked below these: no regression, no new plaintext secret or exposure, an
+error names the cause and the next step, and a schema bump migrates users' S3
+state automatically (nothing puts it back). When two conflict, record at the
+site which gave way and why.
 
 ## Rules you cannot recover from
 
