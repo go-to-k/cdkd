@@ -40,15 +40,16 @@ is no `package.json` `scripts` block. Setup and the full task list:
 
 ## Design principles
 
-Weigh every design on all of these at once; never trade one for another:
+Weigh every design on all of these at once. When two conflict, record at the
+site which one gave way and why:
 
 - **CloudFormation parity**: do what the AWS CDK CLI / CloudFormation does.
-- **No regression**: existing apps and existing state keep today's behavior.
+- **No regression**: existing apps and state keep today's behavior.
 - **Performance**: no new AWS or S3 call on a deploy that does not need it.
 - **Security**: no new plaintext secret, oracle or exposure.
 - **Usability**: an error names the cause and the next step.
-- **Transparent migration**: a schema bump migrates users' S3 state
-  automatically, with no manual step; nothing can restore it.
+- **Transparent migration**: a schema bump rewrites users' S3 state, which
+  nothing puts back, so it migrates automatically, always.
 
 ## Rules you cannot recover from
 
@@ -100,10 +101,9 @@ Weigh every design on all of these at once; never trade one for another:
   commands are not available). Recommended, not enforced — nothing blocks them,
   and skipping them is how main goes red.
 - **Cost is not a tiebreaker for verification depth** on a `src/**` change:
-  take the more thorough option, and when unsure the higher tier. Run every
-  integ `/pick-integ` surfaces, and build the fixture arm rather than shipping a
-  hard-to-reach path on unit tests plus reasoning. Not for tooling; the Tooling
-  Policy bounds that.
+  tokens, wall-clock or "probably fine" never justify the weaker option; when
+  unsure take the higher tier. Run every integ `/pick-integ` surfaces, and
+  build the fixture arm over unit tests plus reasoning. Not for tooling.
 - **Integration tests run through `/run-integ <name>`, never a manual
   `cdkd deploy` / `cdkd destroy`** — it is the only path that pairs deploy with
   destroy plus orphan verification and records the run. `/pick-integ` chooses.
