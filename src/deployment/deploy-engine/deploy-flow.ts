@@ -814,22 +814,6 @@ export async function doDeployWithPrefetch(
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
     createOnlyPrefetch.cancel();
-    // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
-    // capture of each unchanged record that holds a token and no provenance,
-    // OFF the critical path (drained with the observed captures before a
-    // save). A token-free stack never enters it; `--dry-run` saves nothing.
-    if (!this.options.dryRun && !isKnownTokenFreeState(currentStateData?.state)) {
-      kickOffProvenanceCapture(this, {
-        noChange: this.diffCalculator
-          .filterByType(changes, 'NO_CHANGE')
-          .map((change) => change.logicalId),
-        resources: currentState.resources,
-        template: effectiveTemplate,
-        parameters: parameterValues,
-        conditions,
-        stackName,
-      });
-    }
     // The re-baselined records, before anything provisions: an UPDATE row then
     // compares its provisioning-time inputs with today's, and the no-change
     // save below persists the rest.
@@ -960,6 +944,24 @@ export async function doDeployWithPrefetch(
       const gate = firstDeployStateGate;
       firstDeployStateGate = undefined;
       await gate;
+    }
+    // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
+    // capture of each unchanged record that holds a token and no provenance,
+    // OFF the critical path (drained with the observed captures before a
+    // save). Here, once the change map is final (a recreate target is no
+    // longer NO_CHANGE) and every pre-provisioning refusal has passed. A
+    // token-free stack never enters it; `--dry-run` saves nothing.
+    if (!this.options.dryRun && !isKnownTokenFreeState(currentStateData?.state)) {
+      kickOffProvenanceCapture(this, {
+        noChange: this.diffCalculator
+          .filterByType(changes, 'NO_CHANGE')
+          .map((change) => change.logicalId),
+        resources: currentState.resources,
+        template: effectiveTemplate,
+        parameters: parameterValues,
+        conditions,
+        stackName,
+      });
     }
     const hasChanges = this.diffCalculator.hasChanges(changes);
 

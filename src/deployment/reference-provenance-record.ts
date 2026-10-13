@@ -302,12 +302,10 @@ function unionWithPrevious(
     out.region = pass.region;
   }
   // Versions: the union with an UNKNOWN previous set is unknown.
+  // Beyond the cap the caller's validation drops the version arm.
   if (pass.versions !== undefined && before?.versions !== undefined) {
-    const union = [...new Set([...before.versions, ...pass.versions])].sort();
-    if (union.length <= MAX_REFERENCE_VERSIONS) {
-      out.versions = union;
-      if (pass.readVersions !== undefined) out.readVersions = [...pass.readVersions];
-    }
+    out.versions = [...new Set([...before.versions, ...pass.versions])].sort();
+    if (pass.readVersions !== undefined) out.readVersions = [...pass.readVersions];
   }
   return out;
 }

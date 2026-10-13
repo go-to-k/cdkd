@@ -38,7 +38,7 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ReferenceProvenance, ResourceState, StackState } from '../../types/state.js';
 import { isThrottlingError } from '../retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { MIN_NEEDLE_LENGTH, isSameGenerationBag } from '../secret-redaction.js';
+import { MIN_NEEDLE_LENGTH } from '../secret-redaction.js';
 import { type RecordedSecretValues, resolvedPlaintextOf } from '../secret-redaction/pairs.js';
 import { passProvenanceFor } from '../secret-redaction/reference-provenance.js';
 import {
@@ -158,11 +158,11 @@ async function captureOne(
 }
 
 /**
- * Install every finished capture onto its record when that record is still
- * one this deploy did NOT write (a written record's bag is marked
- * same-generation and takes the persist writer's answer instead), still names
- * the same resource, and has no field yet. Returns how many it installed, so
- * the no-change path saves only when one landed.
+ * Install every finished capture onto its record when that record still names
+ * the same resource and has no field yet. Returns how many it installed, so
+ * the no-change path saves only when one landed. A record this deploy WROTE
+ * needs no exclusion here: the persist writer replaces the field of every
+ * written record with this pass's answer.
  */
 export async function drainProvenanceCaptures(
   engine: DeployEngine,
@@ -180,7 +180,6 @@ export async function drainProvenanceCaptures(
     const target = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
     if (
       target === undefined ||
-      isSameGenerationBag(target.properties) ||
       target.physicalId !== record.physicalId ||
       target.resourceType !== record.resourceType ||
       hasReferenceProvenanceField(target)
