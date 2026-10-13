@@ -13,12 +13,8 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
-import {
-  displayIdent,
-  displaySafe,
-  ROLE_ARN_MAX_CODE_POINTS,
-  safeMsg,
-} from '../../utils/display-safe.js';
+import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
+import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
 import {
   displayAssemblyPath,
@@ -33,7 +29,7 @@ import {
   isIamRoleArn,
   sendableAssumeRoleCommand,
 } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -1473,8 +1469,10 @@ export async function resolvePseudoParametersForInvoke(
       sts.destroy();
     }
   } catch (err) {
+    // cdkd-raw-beside-safe: `sourceFlag` is one of two caller literals
+    // ('--from-state' / '--from-cfn-stack'), so it cannot carry anything.
     logger.warn(
-      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `${sourceFlag}: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'Substitution will be skipped; affected env entries will be dropped with per-key warnings.'
     );
   }
@@ -1647,9 +1645,8 @@ export async function applyLambdaCredentialEnv(
       if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
       logger.warn(
-        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${displaySafe(reason)}. ` +
+        `--assume-role: STS AssumeRole(${displayIdent(args.assumeRoleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) failed: ${describeLocalAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -1692,7 +1689,9 @@ async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  assertSendableRoleArn(roleArn);
+  // A `CdkdError`, so the STS-failure warn this lands in prints its remedy
+  // rather than withholding it (go-to-k/cdkd#2300).
+  assertSendableRoleArn(roleArn, (m) => new CdkdError(m, 'LOCAL_INVOKE_ASSUME_ROLE_INVALID'));
   const { STSClient } = await import('@aws-sdk/client-sts');
   // `ignoreAssumedRole` -- this resolves the execution role's credentials, injected into the container,
   // so it must be the caller's own identity, never a `--role-arn` assumed
@@ -1711,8 +1710,9 @@ async function assumeLambdaExecutionRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(
-        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`
+      throw new CdkdError(
+        `AssumeRole(${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })}) returned no usable credentials.`,
+        'LOCAL_INVOKE_ASSUMEROLE_NO_CREDS'
       );
     }
     return {

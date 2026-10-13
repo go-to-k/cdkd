@@ -291,9 +291,12 @@ function isRoleArnSite(expression: string): boolean {
  * only when `isPasteableIdent` admits it, which requires `displayIdent` to
  * return it unchanged, and print a fixed description otherwise. So neither
  * can be weaker than `displayIdent` at any input.
+ *
+ * `describeLocalAwsFailureForWarn` (go-to-k/cdkd#2300) returns its rendering
+ * through `displaySafe` as the last step, so it cannot be weaker either.
  */
 const SANITIZER_CALL =
-  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed)\s*\(/;
+  /\b(displayIdent|displaySafe|displayAwsMessage|displayAssemblyPath|plainOrDescribed|quotedOrDescribed|describeLocalAwsFailureForWarn)\s*\(/;
 
 /**
  * A local holding an ALREADY-sanitized profile, as `safeProfile` / `shownProfile`
@@ -636,11 +639,19 @@ function concatOperands(code: string): string[] {
  * condition is not a render" -- noise the next author learns to paste past. So
  * a substitution with a nested `${` yields its children instead of itself; one
  * without yields itself, braces and all.
+ *
+ * An ESCAPED `\${` is literal text, not a substitution (`\${AWS::AccountId}`
+ * in a warn naming the pseudo parameter), so it is skipped -- only when an ODD
+ * run of backslashes precedes it: `\\${x}` is a literal backslash followed by
+ * a real substitution.
  */
 function templateSubstitutions(code: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < code.length - 1; i++) {
     if (code[i] !== '$' || code[i + 1] !== '{') continue;
+    let backslashes = 0;
+    while (code[i - 1 - backslashes] === '\\') backslashes++;
+    if (backslashes % 2 === 1) continue;
     let depth = 0;
     let end = -1;
     for (let j = i + 1; j < code.length; j++) {
@@ -1464,6 +1475,19 @@ describe('every rendering of a user-supplied --profile name declares a verdict (
     // statement, where the author's own sanitizer call is the evidence that the
     // value beside it needed one too.
     expect(mixedRenderLines(['  `${arn} failed: ${err.message}`'])).toEqual([]);
+    // An ESCAPED `\${` renders nothing, so it is no raw neighbour.
+    expect(
+      mixedRenderLines(['  `needs \\${AWS::AccountId}: ${displaySafe(err.message)}`'])
+    ).toEqual([]);
+    // ...but an escaped BACKSLASH before `${` leaves the substitution real.
+    expect(
+      mixedRenderLines(['  `C:\\\\${raw}: ${displaySafe(err.message)}`'])[0]?.raw
+    ).toEqual(['raw']);
+    // `describeLocalAwsFailureForWarn` counts as a sanitizer: beside a raw
+    // operand it makes the statement mixed (go-to-k/cdkd#2300).
+    expect(
+      mixedRenderLines(["  `${raw} failed: ${describeLocalAwsFailureForWarn(err, 'X')}`"])[0]?.raw
+    ).toEqual(['raw']);
     // An annotation with a reason exempts -- and is REPORTED as exempt rather
     // than dropped, which is what lets the floor above count it.
     const annotated = mixedRenderLines([

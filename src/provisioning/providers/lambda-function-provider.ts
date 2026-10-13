@@ -69,8 +69,10 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
@@ -82,6 +84,46 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { withRemovalDefaults } from '../update-removal.js';
+
+/**
+ * A Lambda function NAME (1-64 of `a-z A-Z 0-9 _ -`), the physical id this
+ * provider records. The identity answers (`isSameResource`,
+ * `resourceIdentity`) refuse anything else: `GetFunction` also takes an ARN,
+ * a partial ARN or a qualified name, which this provider never records and
+ * would only be guessing about.
+ */
+function isFunctionName(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id);
+}
+
+/**
+ * go-to-k/cdkd#4606 / #4655: a function's identity token,
+ * `<FunctionArn>@<LastModified epoch ms>`. The ARN is built from the name, so
+ * a function re-created under the same name repeats it; `LastModified`, set
+ * by `CreateFunction`, is what tells the two apart. The
+ * `lambda-fix-forward-orphan` fixture measures that a re-create under the
+ * name moves it, and that the Pending to Active transition and a successful
+ * `PutFunctionRecursionConfig` do not; it measures `PutFunctionConcurrency`
+ * where the account allows a reservation. A successful
+ * `PutRuntimeManagementConfig` DOES move it, so `create` drops the
+ * CreateFunction token after that call. A code or configuration update moves
+ * it too. A moved one only keeps the orphan (the settle
+ * warns instead of deleting). That includes cdkd's own update: `delete`'s VPC
+ * pre-detach (`UpdateFunctionConfiguration`) moves it, so a VPC orphan whose
+ * `DeleteFunction` then fails is never proven again and is left to delete by
+ * hand. `undefined` for a missing ARN or an unparseable
+ * time.
+ */
+function functionIdentityToken(
+  arn: string | undefined,
+  lastModified: string | undefined
+): string | undefined {
+  if (typeof arn !== 'string' || arn === '') return undefined;
+  if (typeof lastModified !== 'string' || lastModified === '') return undefined;
+  const ms = Date.parse(lastModified);
+  if (Number.isNaN(ms)) return undefined;
+  return `${arn}@${ms}`;
+}
 
 /** `[raw template value, function name it became]` (see {@link lambdaOperationSinks}). */
 type NamePair = readonly [raw: unknown, name: string | undefined];
@@ -715,6 +757,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: the created function's name, and whether a post-create
     // call's atomicity cleanup deleted it, for the failed-CREATE journal mark.
     let createdFunctionName: string | undefined;
+    // go-to-k/cdkd#4606: the identity CreateFunction's response names, carried
+    // on the mark so the journal needs no read of a function whose failure
+    // may fail that read too.
+    let createdFunctionIdentity: string | undefined;
     const postCreateCleanup = { deleted: false };
     try {
       // Build tags map from CDK tag format [{Key, Value}]
@@ -773,6 +819,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       const response = await createClient.send(new CreateFunctionCommand(createParams));
       functionCreated = true;
       createdFunctionName = response.FunctionName || functionName;
+      createdFunctionIdentity = functionIdentityToken(response.FunctionArn, response.LastModified);
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -881,6 +928,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
               { FunctionName: functionName }
             );
             await this.putRuntimeManagementConfig(functionName, runtimeManagementConfig);
+            // go-to-k/cdkd#4606: a successful PutRuntimeManagementConfig
+            // moves `LastModified` (measured by the lambda-fix-forward-orphan
+            // fixture), so CreateFunction's token no longer names the live
+            // function. Dropped, so a failure after this point marks the name
+            // alone and the engine journals a live `resourceIdentity` read.
+            createdFunctionIdentity = undefined;
           },
           {
             apiName: 'PutRuntimeManagementConfig',
@@ -937,9 +990,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
           )
       );
       // go-to-k/cdkd#4583: the function is live with no state record unless a
-      // post-create call's atomicity cleanup deleted it.
+      // post-create call's atomicity cleanup deleted it. With its identity
+      // (go-to-k/cdkd#4606), which a later settle compares before deleting it
+      // by name.
       if (createdFunctionName !== undefined && !postCreateCleanup.deleted) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFunctionName);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          createdFunctionName,
+          createdFunctionIdentity
+        );
       }
       throw thrown;
     }
@@ -1551,6 +1612,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           );
           // Function is already gone — nothing more to do, including ENI wait
           // (AWS owns the cleanup at this point).
+          this.logFunctionGone(logicalId, physicalId, context);
           return;
         }
         // Best-effort: don't fail the entire delete if pre-detach errors.
@@ -1585,7 +1647,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Lambda function ${physicalId} does not exist, skipping deletion`);
+        this.logFunctionGone(logicalId, physicalId, context);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2092,6 +2154,123 @@ export class LambdaFunctionProvider implements ResourceProvider {
       }
     }
     return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  /**
+   * The not-found arm of `delete`. A journaled failed-CREATE orphan already
+   * gone settles with exit 0 (go-to-k/cdkd#4606), so it is said once at info;
+   * a record's own delete keeps the quiet debug line. The name is interpolated
+   * verbatim for the caller's printing bag to mask.
+   */
+  private logFunctionGone(
+    logicalId: string,
+    physicalId: string,
+    context: DeleteContext | undefined
+  ): void {
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        safeMsg`  Lambda function ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+      );
+    } else {
+      this.logger.debug(`Lambda function ${physicalId} does not exist, skipping deletion`);
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#4606: whether the function a failed CREATE journaled is the
+   * one the record under the same logical id holds (a fix-forward that created
+   * a new function there under another name).
+   *
+   * Both ids must be function NAMES (the physical id this provider records);
+   * an ARN or anything else is `'unknown'`, and so are two names differing
+   * only in case, which this check does not rely on Lambda to tell apart.
+   * Equal names are `'same'` without a read: whatever function holds the name
+   * now is the record's, and deleting by that name would delete it. A function
+   * name is unique per account and region and a function cannot be renamed.
+   * After the region check the record's function must read back (else
+   * `'unknown'`); the journaled one is `'same'` when it reads back under the
+   * record's `FunctionArn`, `'different'` under another, and `'different'`
+   * when AWS reports it gone: the record's function answers to its own,
+   * other, name. Any other read failure throws, which the caller reads as
+   * `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::Lambda::Function') return 'unknown';
+    if (!isFunctionName(journaledPhysicalId) || !isFunctionName(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.lambdaClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordFn = await this.readFunctionIfExists(record.physicalId);
+    if (recordFn === undefined) return 'unknown';
+    const journaledFn = await this.readFunctionIfExists(journaledPhysicalId);
+    if (journaledFn === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case (each ARN
+    // carries its own name); kept so the verdict rests on AWS's answer.
+    return journaledFn.arn === recordFn.arn ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the function's `<FunctionArn>@<LastModified
+   * epoch ms>` ({@link functionIdentityToken}). A function re-created under
+   * the name answers with another `LastModified`, so the settle keeps it
+   * rather than deleting it as the failed CREATE's orphan. A failed CREATE's
+   * own token comes from its CreateFunction response, on the failure's mark
+   * (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a function name, a client
+   * in another region than `expectedRegion`, or a response without both
+   * fields. `RESOURCE_NOT_FOUND` only on `ResourceNotFoundException`; any
+   * other failure, and a response naming another function, throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::Lambda::Function' || !isFunctionName(physicalId)) {
+      return undefined;
+    }
+    const clientRegion = await this.lambdaClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const live = await this.readFunctionIfExists(physicalId);
+    if (live === undefined) return RESOURCE_NOT_FOUND;
+    return functionIdentityToken(live.arn, live.lastModified);
+  }
+
+  /**
+   * The function's ARN and `LastModified` in the shared client's region, or
+   * `undefined` when `GetFunction` answers `ResourceNotFoundException`. Any
+   * other failure, a response naming another function, and one naming no
+   * `FunctionArn` throw: "could not read" never reads as "gone".
+   */
+  private async readFunctionIfExists(
+    functionName: string
+  ): Promise<{ arn: string; lastModified: string | undefined } | undefined> {
+    let response;
+    try {
+      response = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: functionName })
+      );
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
+    }
+    if (response.Configuration?.FunctionName !== functionName) {
+      throw new Error('GetFunction answered for another function than the one asked for');
+    }
+    const arn = response.Configuration.FunctionArn;
+    if (typeof arn !== 'string' || arn === '') {
+      throw new Error('GetFunction returned no FunctionArn');
+    }
+    return { arn, lastModified: response.Configuration.LastModified };
   }
 
   /**

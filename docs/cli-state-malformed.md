@@ -79,7 +79,8 @@ value in the record as untrusted text. A stored value therefore cannot change
 what the output appears to say:
 
 - Control characters are removed from names, types, ids and dependency lists.
-  A value cannot forge an extra output line or run a terminal escape sequence.
+  A line or paragraph separator (`U+2028` / `U+2029`) prints as a space. A
+  value cannot forge an extra output line or run a terminal escape sequence.
 - A value of the wrong type is still printed. A number prints as that number
   and an object prints as JSON. A value that cannot be serialized prints as
   `(unserializable)`.

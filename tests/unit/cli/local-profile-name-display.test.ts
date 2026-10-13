@@ -286,6 +286,19 @@ describe('local invoke-agentcore: the fallback notice sanitizes the profile name
 describe('assumeRoleFallbackWarning: both untrusted values, both twins (issue #3377)', () => {
   const ARN = 'arn:aws:iam::111122223333:role/AgentExec';
 
+  /**
+   * A MODELED STS exception, the shape whose message the fallback notice keeps
+   * (issue go-to-k/cdkd#2300): `$fault` plus `$metadata`, as every
+   * `@smithy/smithy-client` `ServiceException` carries.
+   */
+  function stsServiceError(name: string, message: string): Error {
+    return Object.assign(new Error(message), {
+      name,
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+  }
+
   it('sanitizes the PROFILE, and quotes it when the value was altered', () => {
     for (const hostile of [ESC, CSI_C1, BIDI_OVERRIDE, '\u0085', '\u2028']) {
       const line = assumeRoleFallbackWarning({
@@ -331,7 +344,8 @@ describe('assumeRoleFallbackWarning: both untrusted values, both twins (issue #3
       const line = assumeRoleFallbackWarning({
         assumeRoleArn: 'arn:aws:iam::111122223333:role/AgentExec',
         purpose: '--sigv4 signing',
-        error: new Error(
+        error: stsServiceError(
+          'ValidationError',
           `1 validation error: Value 'arn:aws:iam::111122223333:role/A${hostile}X' at 'roleArn' failed`
         ),
         profile: 'dev-sso',
@@ -345,7 +359,7 @@ describe('assumeRoleFallbackWarning: both untrusted values, both twins (issue #3
       // the reason the assume failed.
       expect(line).toContain('1 validation error');
     }
-    // A non-Error value takes the same route.
+    // A non-Error value is withheld to its class (issue go-to-k/cdkd#2300).
     expect(
       assumeRoleFallbackWarning({
         assumeRoleArn: 'arn:aws:iam::111122223333:role/AgentExec',
@@ -365,12 +379,12 @@ describe('assumeRoleFallbackWarning: both untrusted values, both twins (issue #3
       assumeRoleFallbackWarning({
         assumeRoleArn: ARN,
         purpose: '--sigv4 signing',
-        error: new Error('AccessDenied'),
+        error: stsServiceError('AccessDenied', 'not authorized to perform: sts:AssumeRole'),
         profile: 'dev-sso',
         fallbackWithoutProfile: 'shell credentials',
       })
     ).toBe(
-      `--assume-role: STS AssumeRole(${ARN}) failed for --sigv4 signing: AccessDenied. ` +
+      `--assume-role: STS AssumeRole(${ARN}) failed for --sigv4 signing: AccessDenied: not authorized to perform: sts:AssumeRole. ` +
         `Falling back to --profile dev-sso.`
     );
   });
@@ -417,7 +431,8 @@ describe('assumeRoleFallbackWarning: both untrusted values, both twins (issue #3
         fallbackWithoutProfile: 'shell credentials',
       })
     ).toBe(
-      `--assume-role: STS AssumeRole(${ARN}) failed for --sigv4 signing: plain string failure. ` +
+      `--assume-role: STS AssumeRole(${ARN}) failed for --sigv4 signing: ` +
+        `unknown; 20-character message withheld, logged at debug level under --verbose. ` +
         `Falling back to shell credentials.`
     );
     expect(

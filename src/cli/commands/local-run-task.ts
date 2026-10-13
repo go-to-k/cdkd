@@ -12,6 +12,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeLocalAwsFailureForWarn } from './local-aws-failure.js';
 import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import {
@@ -802,7 +803,7 @@ export async function buildEcsImageResolutionContext(
       });
     } catch (err) {
       logger.warn(
-        `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeLocalAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
           'Substitution will be skipped; affected env / secret entries will be dropped with per-key warnings.'
       );
     }

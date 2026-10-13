@@ -1458,6 +1458,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-layer-version-update",
       "annotated": false,
       "scenarios": []
@@ -3333,6 +3338,7 @@
     "lambda-env-removal",
     "lambda-esm-self-managed-kafka",
     "lambda-event-invoke-config-update",
+    "lambda-fix-forward-orphan",
     "lambda-layer-version-update",
     "lambda-log-retention",
     "lambda-microvm-image",

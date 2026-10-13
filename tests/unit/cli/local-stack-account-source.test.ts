@@ -281,7 +281,9 @@ describe('an STS failure is warned under the state-source flag actually in use',
       stsFailure.on = true;
       await expect(resolve(source)).resolves.toBeUndefined();
       const messages = warnSpy.mock.calls.map((c) => String(c[0]));
-      const sts = messages.filter((m) => m.includes('sts unavailable'));
+      // Keyed on the operation, not on the thrown text: a plain `Error` is withheld
+      // from the warn to its class (go-to-k/cdkd#2300).
+      const sts = messages.filter((m) => m.includes('STS GetCallerIdentity failed'));
       expect(sts).toHaveLength(1);
       expect(sts[0]?.startsWith(expected)).toBe(true);
       expect(messages.some((m) => m.startsWith(other))).toBe(false);

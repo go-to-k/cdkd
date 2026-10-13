@@ -414,6 +414,32 @@ describe('cdkd state resources', () => {
     expect(out).toContain('    ArnKey: arnvalue');
   });
 
+  it('turns U+2028 / U+2029 into a space in every row, default and --long (go-to-k/cdkd#2888)', async () => {
+    // The strip deletes C0 but keeps both separators, which a JSON or web log
+    // viewer breaks a line on — so a piped listing could still grow a row there.
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        'My\u2028Table': makeResource({
+          resourceType: 'AWS::DynamoDB::Table\u2029',
+          physicalId: 'tbl\u2028one',
+          attributes: { 'Arn\u2029Key': 'arn\u2028value' },
+        }),
+      })
+    );
+
+    const short = await runStateResources(['resources', 'StackA']);
+    expect(short).not.toMatch(/[\u2028\u2029]/);
+    expect(short).toBe('My Table  AWS::DynamoDB::Table  tbl one\n');
+
+    const long = await runStateResources(['resources', 'StackA', '--long']);
+    expect(long).not.toMatch(/[\u2028\u2029]/);
+    expect(long.split('\n')).toContain('My Table');
+    expect(long).toContain('  Type: AWS::DynamoDB::Table\n');
+    expect(long).toContain('  PhysicalID: tbl one\n');
+    expect(long).toContain('    Arn Key: arn value');
+  });
+
   it('renders structured attribute values as inline JSON under --long', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
