@@ -553,8 +553,11 @@ fi
 # the line masks the WHOLE resolved value (`Resolved Fn::Sub: ***`, measured;
 # `str-***` while only a log-only needle, `str-<value>` before #4824). The
 # template's two Fn::Sub readers of a NoEcho value (NoEchoConsumer's `token-`
-# and this one) each log once on the fresh create, so TWO whole-mask lines are
-# required: with this one missing, the negative above would pass for free.
+# and this one) each log once on the fresh create (measured), so EXACTLY one
+# whole-mask line per reader is required, and every `Resolved Fn::Sub:` line
+# must be one: a reader logged twice could otherwise stand in for this one's
+# missing line, and the negative above would pass for free. A change in how
+# often a line is logged fails here loudly.
 SUB_READERS=$(jq -r '[.Resources[] | .Properties // {} | .. | objects | .["Fn::Sub"]? | strings
   | select(test("\\$\\{NoEcho(String)?Token\\}"))] | length' "${SYNTH_TEMPLATE}")
 if [ "${SUB_READERS}" != "2" ]; then
@@ -566,8 +569,9 @@ if grep -qE 'Resolved Fn::Sub: str-' <<< "${DEPLOY_OUT_P1}"; then
   exit 1
 fi
 SUB_MASKED=$(grep -cE 'Resolved Fn::Sub: \*\*\*$' <<< "${DEPLOY_OUT_P1}" || true)
-if [ "${SUB_MASKED}" -lt 2 ]; then
-  echo "FAIL: premise: the Phase 1 --verbose log carries ${SUB_MASKED} whole-mask 'Resolved Fn::Sub: ***' line(s), expected 2 -- NoEchoStringConsumer's substitution was not logged, or not masked whole (go-to-k/cdkd#4824 / #4831)" >&2
+SUB_LINES=$(grep -c 'Resolved Fn::Sub:' <<< "${DEPLOY_OUT_P1}" || true)
+if [ "${SUB_MASKED}" != "${SUB_READERS}" ] || [ "${SUB_LINES}" != "${SUB_READERS}" ]; then
+  echo "FAIL: premise: the Phase 1 --verbose log carries ${SUB_MASKED} whole-mask 'Resolved Fn::Sub: ***' line(s) of ${SUB_LINES} 'Resolved Fn::Sub:' line(s), expected exactly ${SUB_READERS} of ${SUB_READERS} -- NoEchoStringConsumer's substitution was not logged, not masked whole, or a reader logged more than once (go-to-k/cdkd#4824 / #4831)" >&2
   diag_output "${DEPLOY_OUT_P1}"
   exit 1
 fi
