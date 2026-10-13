@@ -96,8 +96,8 @@ stand down naming the winning branch and pick another issue, unasked. Escalate
 when timestamps cannot settle it (go-to-k/cdkd#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
-Re-read the thread to the END before it. A missing branch is not absence
-(signals show LIFE only, §9); a claim has no TTL — arbitrate one you think dead.
+Re-read the thread to the END before the tie-break. A missing branch is not
+absence (signals show LIFE only, §9); no claim has a TTL: escalate a dead-looking one.
 
 **Nothing makes the tie-break's LOSER re-read**: re-read the claims before you
 PUSH; if yours is later, stand down even with code written.

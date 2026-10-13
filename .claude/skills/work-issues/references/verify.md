@@ -14,7 +14,7 @@
 
 **Run the integ LAST — after the final edit to any `integ-destroy`-scoped
 file.** A lane cannot touch AWS, so only the parent finds an AWS-side rejection:
-run a NEW arm once EARLY too, once the lane has written it, between review
+run a NEW arm EARLY too, as soon as the lane has written it, between review
 rounds (never during a `src` fix round); that run sets no marker and is no §8-d
 proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
 dispatch reviewers → (new arm: early run) → apply EVERY finding, nits included →
