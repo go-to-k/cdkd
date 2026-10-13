@@ -1893,6 +1893,10 @@ if [ "$(jq -r '.resources.NoEchoValueArmTopic.properties.TopicName' "${VA_STATE}
   echo "FAIL: premise: @go-to-k/cdkd@${VA_CDKD_VERSION} did not store NoEchoValueArmTopic as a record marked at DisplayName with the literal TopicName in plaintext" >&2
   exit 1
 fi
+if [ "$(jq -r '.resources.NoEchoValueArmReader.physicalId // "<absent>"' "${VA_STATE}")" != "${VA_READER}" ]; then
+  echo "FAIL: premise: @go-to-k/cdkd@${VA_CDKD_VERSION} did not create the TopicArn reader NoEchoValueArmReader" >&2
+  exit 1
+fi
 if gone_probe aws sns get-topic-attributes --topic-arn "${VA_ARN}" --region "${REGION}"; then
   echo "FAIL: premise: AWS holds no value-arm topic after the older binary's deploy" >&2
   exit 1
@@ -1952,6 +1956,7 @@ fi
 if ! VA_EDIT_OUT=$(CDKD_TEST_NOECHO_VALUE_ARM_EDIT=true node "${LOCAL_DIST}" deploy "${VA_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --verbose \
   --yes 2>&1); then
   if [[ "${VA_EDIT_OUT}" == *"redaction mask"* ]]; then
     echo "FAIL: the Phase 4v reader edit was refused reading NoEchoValueArmTopic.TopicArn as the redaction mask (go-to-k/cdkd#4849)" >&2
@@ -1961,11 +1966,20 @@ if ! VA_EDIT_OUT=$(CDKD_TEST_NOECHO_VALUE_ARM_EDIT=true node "${LOCAL_DIST}" dep
   diag_output "$(grep -vF -- "${VA_NAME}" <<< "${VA_EDIT_OUT}" || true)"
   exit 1
 fi
+# The one run of the reader's UPDATE path: its output must not carry the value
+# either (the resolved ARN, the update diff, a retry line).
+if [[ "${VA_EDIT_OUT}" == *"${VA_NAME}"* ]]; then
+  echo "FAIL: the Phase 4v reader edit output carries the string-declared NoEcho value in plaintext (go-to-k/cdkd#4849)" >&2
+  exit 1
+fi
 # GetParameter carries no Description; DescribeParameters carries no Value.
+# JSON output merges DescribeParameters' pages before the query (`--output text`
+# would apply it per page, and a page may come back empty).
 VA_READ_VALUE=$(aws ssm get-parameter --name "${VA_READER}" --region "${REGION}" \
   --query Parameter.Value --output text)
 VA_READ_DESC=$(aws ssm describe-parameters --region "${REGION}" \
-  --parameter-filters "Key=Name,Values=${VA_READER}" --query 'Parameters[0].Description' --output text)
+  --parameter-filters "Key=Name,Values=${VA_READER}" --query 'Parameters[].Description' --output json \
+  | jq -r 'if length == 1 then .[0] else "<\(length) matches>" end')
 if [ "${VA_READ_VALUE}" != "${VA_ARN}" ] || [ "${VA_READ_DESC}" != "edited" ]; then
   echo "FAIL: after the Phase 4v reader edit, the reader does not hold the topic's ARN with the edited description (got description '${VA_READ_DESC}') (go-to-k/cdkd#4849)" >&2
   exit 1
