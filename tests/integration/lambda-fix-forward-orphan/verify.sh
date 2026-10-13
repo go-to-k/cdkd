@@ -264,8 +264,10 @@ echo "[verify] step 1b: measure which post-create calls move LastModified"
 # value could be a no-op), the token compared, and the value restored before
 # any FAIL. Recursion config and concurrency must not move LastModified: one
 # that did would keep every orphan failing after it as "another function".
-# Runtime management config is measured to move it (below). (Step 2's OrphanD measures the same on a still-Pending
-# function, through a CREATE that passed PutFunctionRecursionConfig.)
+# Runtime management config is measured to move it (below). (Step 2's OrphanD
+# measures that a SUCCESSFUL PutFunctionRecursionConfig leaves LastModified
+# alone on a still-Pending function, through a CREATE that then failed on
+# PutFunctionConcurrency.)
 probe_put_keeps_token() { # usage: probe_put_keeps_token <api label> <change cmd> <restore cmd>  (each a single string, eval'd)
   local label="$1" change="$2" restore="$3" before after
   before="$(fn_token "${BASE_FN}")" || { echo "[verify] FAIL: premise -- could not read ${BASE_FN}'s identity before ${label}" >&2; exit 1; }
