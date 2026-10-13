@@ -22,7 +22,13 @@ import { ledgerForStack } from '../../provisioning/providers/create-token-ledger
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
@@ -74,8 +80,16 @@ async function forceUnlockCommand(
   });
   setAwsClients(awsClients);
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
 
   // Every lock this run could not delete, so the walk can finish the remaining
   // stacks and regions and STILL report failure. Reporting a failed unlock only
@@ -91,6 +105,15 @@ async function forceUnlockCommand(
     };
     const lockManager = new LockManager(awsClients.s3, stateConfig);
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+    const regionForLock = stackRegionResolver({
+      effective: effectiveRegion,
+      probe: {
+        stateExistsOwnedBy: async (name, r, regionlessOwner) =>
+          (await lockManager.isLocked(name, r)) ||
+          (await stateBackend.stateExistsOwnedBy(name, r, regionlessOwner)),
+      },
+      logger,
+    });
 
     for (const stackName of stackPatterns) {
       // Determine which region(s) to release. Order:
@@ -105,7 +128,10 @@ async function forceUnlockCommand(
         const refs = await stateBackend.listStacks();
         const matched = refs.filter((r) => r.stackName === stackName);
         if (matched.length === 0) {
-          regionsToTry = [region];
+          // No record: a lock left by a first deploy that never saved state.
+          // An inferred region yields to a lock the old us-east-1 default
+          // wrote (go-to-k/cdkd#2100), or the unlock would miss it.
+          regionsToTry = [await regionForLock(stackName)];
         } else {
           regionsToTry = matched.map((r) => r.region);
         }

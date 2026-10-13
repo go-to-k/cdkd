@@ -52,7 +52,13 @@ import type { LockRecoveryContext } from '../../state/lock-contention-message.js
 import { ExportIndexStore, type ExportIndexEntry } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import {
@@ -1250,11 +1256,22 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
 
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -1516,9 +1533,26 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // directly after it once its own scrub returns (go-to-k/cdkd#2252), so a
   // child is always visited with the parent bag it needs in hand and every
   // later step of this loop treats it as one more stack.
+  // An env-agnostic stack takes the run's region, held on state the old
+  // us-east-1 default wrote (go-to-k/cdkd#2100) so scrub rewrites the record
+  // that exists rather than finding none.
+  const regionForStack = stackRegionResolver({
+    effective: effectiveRegion,
+    probe: stateBackend,
+    logger,
+    siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
+  });
+  const stackRegions = new Map(
+    await Promise.all(
+      targetStacks.map(
+        async (stack) =>
+          [stack.stackName, await regionForStack(stack.stackName, stack.region)] as const
+      )
+    )
+  );
   const work: ScrubWorkItem[] = targetStacks.map((stack) => ({
     stackName: stack.stackName,
-    region: stack.region || region,
+    region: stackRegions.get(stack.stackName) ?? region,
     load: () => {
       // The tree is checked BEFORE the parent is scrubbed, as `cdkd deploy`
       // checks it before deploying (issue go-to-k/cdkd#3449): a cyclic or

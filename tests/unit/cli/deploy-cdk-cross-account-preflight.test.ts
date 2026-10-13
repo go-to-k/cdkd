@@ -36,10 +36,16 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => {
-    stsCtorSpy();
-    return { send: vi.fn(async () => ({ Account: '111122223333' })), destroy: vi.fn() };
-  }),
+  // Counted on `send` (the account lookup), not on construction: since
+  // go-to-k/cdkd#2100 the region resolution builds a throwaway STS client
+  // that only reads `config.region` and never sends, before any pre-flight.
+  STSClient: vi.fn().mockImplementation(() => ({
+    send: vi.fn(async () => {
+      stsCtorSpy();
+      return { Account: '111122223333' };
+    }),
+    destroy: vi.fn(),
+  })),
   GetCallerIdentityCommand: vi.fn(),
 }));
 

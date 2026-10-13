@@ -7039,6 +7039,7 @@
         "output-never-resolved-diff",
         "outputs-only-export",
         "perf-cross-backend-check",
+        "profile-region-default",
         "rds-full-stack",
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
@@ -7303,6 +7304,10 @@
           "l2"
         ],
         "perf-cross-backend-check": [
+          "l2",
+          "literal"
+        ],
+        "profile-region-default": [
           "l2",
           "literal"
         ],

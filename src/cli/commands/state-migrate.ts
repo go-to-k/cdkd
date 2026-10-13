@@ -21,7 +21,12 @@ import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-loader.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
@@ -72,7 +77,12 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
   foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal. The legacy SOURCE name is built from it, with the old
+  // default's name as a second candidate below.
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
 
   // SDK clients constructed from the user's profile/region. The bucket-region
   // S3 clients below are constructed independently to pin to each bucket's
@@ -90,8 +100,46 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
       throw new Error('STS GetCallerIdentity returned no Account id.');
     }
 
-    const legacyBucket = options.legacyBucket ?? getLegacyStateBucketName(accountId, region);
     const newBucket = options.newBucket ?? getDefaultStateBucketName(accountId);
+
+    // Probe source existence with a region-agnostic client. 301/403 both mean
+    // "exists somewhere" — we resolve the actual region next.
+    const probeRegion = 'us-east-1';
+    const probe = new S3Client({ ...ambientClientDefaults(), region: probeRegion });
+    let legacyBucket: string;
+    let sourceRegionLabel = region;
+    let sourceExists: boolean;
+    try {
+      legacyBucket = options.legacyBucket ?? getLegacyStateBucketName(accountId, region);
+      const sourceProbe = await probeBucket(probe, legacyBucket);
+      sourceExists = sourceProbe !== 'missing';
+      // A bare run whose region came from the profile: the legacy bucket a
+      // user created under the old us-east-1 default is the one to migrate
+      // when the profile region's own legacy name does not exist, or exists
+      // while the old default's holds state — the same choice
+      // `resolveStateBucketWithDefault` makes, so this migrates the bucket
+      // every other bare command reads.
+      const fallbackRegion = legacyStateBucketFallbackRegion(effectiveRegion);
+      if (options.legacyBucket === undefined && fallbackRegion !== undefined) {
+        const fallbackBucket = getLegacyStateBucketName(accountId, fallbackRegion);
+        const fallbackProbe =
+          fallbackBucket === newBucket ? 'missing' : await probeBucket(probe, fallbackBucket);
+        // `resolveStateBucketWithDefault`'s tie-break, clause for clause: a
+        // cleanly answering profile-region bucket is kept over a 403 one.
+        if (
+          fallbackProbe !== 'missing' &&
+          (!sourceExists ||
+            (!(sourceProbe === 'ok' && fallbackProbe === 'access-denied') &&
+              (await bucketHasState(probe, fallbackBucket))))
+        ) {
+          legacyBucket = fallbackBucket;
+          sourceRegionLabel = fallbackRegion;
+          sourceExists = true;
+        }
+      }
+    } finally {
+      probe.destroy();
+    }
 
     if (legacyBucket === newBucket) {
       logger.warn(
@@ -101,19 +149,9 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
     }
 
     logger.info('Migrating state bucket:');
-    logger.info(`  source:      ${legacyBucket} (resolved for --region ${region})`);
+    logger.info(`  source:      ${legacyBucket} (resolved for --region ${sourceRegionLabel})`);
     logger.info(`  destination: ${newBucket}`);
 
-    // Probe source existence with a region-agnostic client. 301/403 both mean
-    // "exists somewhere" — we resolve the actual region next.
-    const probeRegion = 'us-east-1';
-    const probe = new S3Client({ ...ambientClientDefaults(), region: probeRegion });
-    let sourceExists: boolean;
-    try {
-      sourceExists = await bucketExists(probe, legacyBucket);
-    } finally {
-      probe.destroy();
-    }
     if (!sourceExists) {
       throw new Error(
         `Source bucket '${legacyBucket}' does not exist. ` +
@@ -238,9 +276,17 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
 }
 
 async function bucketExists(s3: S3Client, bucketName: string): Promise<boolean> {
+  return (await probeBucket(s3, bucketName)) !== 'missing';
+}
+
+/** {@link bucketExists}, keeping a 403 apart from a clean answer. */
+async function probeBucket(
+  s3: S3Client,
+  bucketName: string
+): Promise<'ok' | 'access-denied' | 'missing'> {
   try {
     await s3.send(new HeadBucketCommand({ Bucket: bucketName, ...(await expectedOwnerParam(s3)) }));
-    return true;
+    return 'ok';
   } catch (error) {
     const err = error as {
       name?: string;
@@ -248,11 +294,36 @@ async function bucketExists(s3: S3Client, bucketName: string): Promise<boolean> 
     };
     const status = err.$metadata?.httpStatusCode;
     if (err.name === 'NotFound' || err.name === 'NoSuchBucket' || status === 404) {
-      return false;
+      return 'missing';
     }
     // 301 (cross-region) and 403 (no permission to head) both prove existence.
-    if (status === 301 || status === 403) return true;
+    if (status === 301) return 'ok';
+    if (status === 403) return 'access-denied';
     throw error;
+  }
+}
+
+/**
+ * Whether a legacy bucket holds any object at all. An error answers
+ * `true`, like `config-loader.ts`'s twin: the caller then keeps the bucket the
+ * old default read, which is the pre-#2100 answer.
+ */
+async function bucketHasState(s3: S3Client, bucket: string): Promise<boolean> {
+  try {
+    const resp = await s3.send(
+      new ListObjectsV2Command({
+        // go-to-k/cdkd#3313: asked on every listing; no key is read here.
+        EncodingType: LISTING_ENCODING_TYPE,
+        // Any object, not only `cdkd/`: a legacy bucket is cdkd's alone, and
+        // its records may sit under a custom `--state-prefix`.
+        Bucket: bucket,
+        MaxKeys: 1,
+        ...(await expectedOwnerParam(s3)),
+      })
+    );
+    return (resp.KeyCount ?? resp.Contents?.length ?? 0) > 0;
+  } catch {
+    return true;
   }
 }
 
@@ -473,7 +544,9 @@ export function createStateMigrateCommand(): Command {
     )
     .option(
       '--region <region>',
-      'Region of the legacy bucket to migrate. Defaults to AWS_REGION or us-east-1. ' +
+      'Region of the legacy bucket to migrate. Defaults to AWS_REGION, AWS_DEFAULT_REGION, ' +
+        "then the profile's region (the us-east-1 legacy bucket instead when that region has " +
+        'none, or when the us-east-1 one holds state), else us-east-1. ' +
         'Run once per region for multi-region setups.'
     )
     .option(

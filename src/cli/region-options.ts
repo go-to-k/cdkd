@@ -2,7 +2,8 @@ import type { Command, Option } from 'commander';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { deprecatedRegionOption, warnIfDeprecatedRegion } from './options.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../utils/display-safe.js';
+import { injectAwsRegion, injectedAwsRegionValue } from '../utils/injected-aws-region.js';
 import { plainOrDescribed } from '../utils/pasteable-command.js';
 
 /**
@@ -172,7 +173,7 @@ export interface EffectiveRegion {
  * Returning the SOURCE, not just the region, is what lets a caller tell "the
  * user asked for this region" from "we inferred it" - which is the difference
  * that decides whether the reconciliation in
- * {@link reconcileRegionWithLegacyDefault} may move the answer back.
+ * {@link stackRegionResolver} may move the answer back.
  */
 export async function resolveEffectiveRegion(options: {
   region?: string | undefined;
@@ -182,6 +183,10 @@ export async function resolveEffectiveRegion(options: {
   if (flag) return { region: flag, source: 'flag' };
 
   const awsRegion = canonicalizeRegion(process.env['AWS_REGION']);
+  // A value cdkd copied there itself is still the inference it came from.
+  if (awsRegion && awsRegion === injectedAwsRegionValue()) {
+    return { region: awsRegion, source: 'default-env' };
+  }
   if (awsRegion) return { region: awsRegion, source: 'env' };
 
   // `AWS_DEFAULT_REGION` is its OWN source, not another `env`, and the
@@ -201,6 +206,24 @@ export async function resolveEffectiveRegion(options: {
   if (fromProfile) return { region: fromProfile, source: 'profile' };
 
   return { region: LEGACY_DEFAULT_REGION, source: 'default' };
+}
+
+/**
+ * Make the AWS SDK's own region-less clients agree with a region inferred
+ * from `AWS_DEFAULT_REGION` (go-to-k/cdkd#2100).
+ *
+ * The JS SDK never reads that variable (see {@link resolveEffectiveRegion}), so
+ * a client built without a region — a provider's own client, a runner's base
+ * client — would follow the profile while cdkd keyed the state, the ARNs and
+ * `AWS::Region` by the variable: resources and state in one region, deletes
+ * in another. Copying it into `AWS_REGION`, the variable the SDK does read, is
+ * what `deploy` / `destroy` already do for `--region`. A `profile` or
+ * `default` answer needs nothing: the SDK resolves the profile itself, and
+ * with no region at all there is nothing to copy.
+ */
+export function exportInferredRegionForSdk(effective: EffectiveRegion): void {
+  if (effective.source !== 'default-env') return;
+  injectAwsRegion(effective.region);
 }
 
 /**
@@ -246,58 +269,320 @@ export interface RegionReconcileProbe {
 }
 
 /**
- * Hold an existing stack on the OLD default region instead of silently moving
- * it to the profile's.
- *
- * Issue [#2029](https://github.com/go-to-k/cdkd/issues/2029) changes what a
- * bare `cdkd deploy` targets, and that value keys the state file. Without this,
- * a user whose profile says `ap-northeast-1` and who has been deploying to
- * `us-east-1` all along would, on upgrade, have cdkd look under a key nothing
- * ever wrote — find no state, treat every resource as a CREATE, and duplicate
- * their live infrastructure while orphaning the original stack from its own
- * state file. That is worse than the bug being fixed, so the new default only
- * applies where it cannot strand anything.
- *
- * Applies ONLY when the region was INFERRED (`source: 'profile'`). A region the
- * user NAMED is obeyed as given — `--region ap-northeast-1` against a us-east-1
- * stack means "operate on ap-northeast-1", not "guess what I meant" — and a
- * `default` source is already `us-east-1`, so there is nothing to move.
- *
- * The warning is not decoration: it is the only place the user learns that the
- * default has changed underneath them and how to opt in. `--region` is named
- * explicitly because it is the escape hatch in both directions.
+ * The probe a COMMAND hands {@link stackRegionResolver}: `S3StateBackend`'s
+ * `stateExistsOwnedBy`, which gives a region-less legacy record to
+ * `regionlessOwner` only. `stateExists` would hand it to every region, so the
+ * profile region would claim it first and move a stack whose resources live
+ * in us-east-1.
  */
-export async function reconcileRegionWithLegacyDefault(input: {
-  effective: EffectiveRegion;
-  stackName: string;
-  probe: RegionReconcileProbe;
-  logger: { info: (message: string) => void; debug: (message: string) => void };
-}): Promise<string> {
-  const { effective, stackName, probe, logger } = input;
-  if (!regionNeedsReconciliation(effective)) return effective.region;
+export interface StackStateProbe {
+  stateExistsOwnedBy(stackName: string, region: string, regionlessOwner: string): Promise<boolean>;
+}
 
-  // Order matters: ask about the RESOLVED region first. A stack that already
-  // has state there is fully migrated, and probing the legacy key for it would
-  // be a wasted round trip whose only possible effect is a false hold.
-  if (await probe.stateExists(stackName, effective.region)) {
-    logger.debug(
-      `[region] '${stackName}' has state in ${effective.region} (from your AWS profile); using it.`
+/** The reconciliation's question, with a region-less legacy record owned by us-east-1. */
+function ownedByLegacyDefault(probe: StackStateProbe): RegionReconcileProbe {
+  return {
+    stateExists: (stackName, region) =>
+      probe.stateExistsOwnedBy(stackName, region, LEGACY_DEFAULT_REGION),
+  };
+}
+
+/** Where a stack's state is, from an inferred region's point of view. */
+type StackPlacement = 'resolved' | 'legacy' | 'both' | 'none';
+
+async function placeStack(
+  effective: EffectiveRegion,
+  stackName: string,
+  probe: RegionReconcileProbe
+): Promise<StackPlacement> {
+  // BOTH regions are asked. A stack with state in the inferred region only is
+  // fully migrated; one with state in both is two deployments, and the one a
+  // bare command meant before #2100 is the us-east-1 one.
+  const [inResolved, inLegacy] = await Promise.all([
+    probe.stateExists(stackName, effective.region),
+    probe.stateExists(stackName, LEGACY_DEFAULT_REGION),
+  ]);
+  if (inResolved && inLegacy) return 'both';
+  if (inResolved) return 'resolved';
+  return inLegacy ? 'legacy' : 'none';
+}
+
+/**
+ * The line a stack with state in BOTH regions gets: a bare command keeps the
+ * us-east-1 one it always used, and the user learns the other exists.
+ */
+function bothRegionsMessage(effective: EffectiveRegion, stackName: string): string {
+  return (
+    `Stack ${quoteStackName(stackName)} has state in both ${LEGACY_DEFAULT_REGION} and ` +
+    `${displayIdent(effective.region)} (which ${inferredFrom(effective)} resolves). ` +
+    `Continuing to use ${LEGACY_DEFAULT_REGION}, as a command with no region named did ` +
+    `before. Set AWS_REGION=${displayIdent(effective.region)} to work on the ` +
+    `${displayIdent(effective.region)} one, or AWS_REGION=${LEGACY_DEFAULT_REGION} to silence ` +
+    `this message.`
+  );
+}
+
+/** `AWS_DEFAULT_REGION` or the profile: what the user is told the region came from. */
+function inferredFrom(effective: EffectiveRegion): string {
+  return effective.source === 'default-env' ? 'AWS_DEFAULT_REGION' : 'your AWS profile';
+}
+
+// Names `AWS_REGION`, not `--region`: on every command that reaches a hold,
+// `--region` is deprecated, and `AWS_REGION` is the documented way to name a
+// region there. Either spelling is a NAMED region, which skips the hold.
+function holdMessage(effective: EffectiveRegion, stackName: string): string {
+  return (
+    `Stack ${quoteStackName(stackName)} has existing state in ${LEGACY_DEFAULT_REGION}, but ` +
+    `${inferredFrom(effective)} resolves ${displayIdent(effective.region)}. Continuing to use ` +
+    `${LEGACY_DEFAULT_REGION} so the existing stack is not duplicated. Set ` +
+    `AWS_REGION=${LEGACY_DEFAULT_REGION} to silence this message, or ` +
+    `AWS_REGION=${displayIdent(effective.region)} to work in ` +
+    `${displayIdent(effective.region)} instead (where this stack has no state).`
+  );
+}
+
+/** A stack name as the hold message prints it: quoted when plain, described otherwise. */
+function quoteStackName(stackName: string): string {
+  return displayIdent(stackName) === stackName
+    ? `'${stackName}'`
+    : 'a stack whose name is not a plain identifier';
+}
+
+/**
+ * One command's per-stack state-key region, reconciled once per stack name
+ * (go-to-k/cdkd#2100).
+ *
+ * A stack whose region is PINNED (a synthesized `env.region`, a
+ * `--stack-region`, a region read from a state record) passes it as `pinned`
+ * and is returned as given. An env-agnostic stack is held on the OLD default
+ * when its state is there and not in the inferred region — without that, an
+ * upgrade would look under a key nothing wrote, treat every resource as a
+ * CREATE and duplicate the user's live infrastructure. Applies ONLY to an
+ * INFERRED region ({@link regionNeedsReconciliation}); a named one is obeyed
+ * as given. Memoized, so a command that asks
+ * twice for one stack — two loops over the same stacks, or a retry — probes
+ * once and warns once, and every consumer of the answer (state key, lock key,
+ * client region, asset region) reads the SAME region.
+ *
+ * `siblings` (the app's OTHER env-agnostic stacks, for a command that
+ * synthesized the app) decides a stack with no state ANYWHERE: when some
+ * sibling is held on us-east-1 and none has moved to the inferred region, the
+ * new stack joins them. Otherwise adding a stack to an app deployed under the
+ * old default would split the app across two regions, and an `Fn::ImportValue`
+ * between them — which CDK synthesizes for env-agnostic stacks — would carry
+ * one region's ids into the other. Before #2100 the whole app was in
+ * us-east-1; the AWS CDK CLI puts the whole app in the profile's region;
+ * neither splits it.
+ */
+export function stackRegionResolver(input: {
+  effective: EffectiveRegion;
+  probe: StackStateProbe;
+  logger: { info: (message: string) => void; debug: (message: string) => void };
+  siblings?: readonly string[] | undefined;
+}): (stackName: string, pinned?: string) => Promise<string> {
+  const { effective, logger } = input;
+  const probe = ownedByLegacyDefault(input.probe);
+  const placements = new Map<string, Promise<StackPlacement>>();
+  const place = (stackName: string): Promise<StackPlacement> => {
+    let placement = placements.get(stackName);
+    if (placement === undefined) {
+      placement = placeStack(effective, stackName, probe);
+      // A failed probe is not memoized: the next ask retries rather than
+      // replaying the rejection.
+      placement.catch(() => placements.delete(stackName));
+      placements.set(stackName, placement);
+    }
+    return placement;
+  };
+  const answers = new Map<string, Promise<string>>();
+  const answer = async (stackName: string): Promise<string> => {
+    const placement = await place(stackName);
+    if (placement === 'legacy' || placement === 'both') {
+      logger.info(
+        placement === 'both'
+          ? bothRegionsMessage(effective, stackName)
+          : holdMessage(effective, stackName)
+      );
+      return LEGACY_DEFAULT_REGION;
+    }
+    if (placement === 'resolved') return effective.region;
+    const others = (input.siblings ?? []).filter((name) => name !== stackName);
+    const siblingPlacements = await Promise.all(others.map(place));
+    const heldSibling = siblingPlacements.some((p) => p === 'legacy' || p === 'both');
+    if (heldSibling && !siblingPlacements.includes('resolved')) {
+      logger.info(
+        `Stack ${quoteStackName(stackName)} has no state yet, and the other stacks of this app ` +
+          `that have state all stay in ${LEGACY_DEFAULT_REGION}, while ` +
+          `${inferredFrom(effective)} resolves ${displayIdent(effective.region)}. Using ` +
+          `${LEGACY_DEFAULT_REGION} for it too, so the app stays in one region. Set ` +
+          `AWS_REGION=${LEGACY_DEFAULT_REGION} to silence this message.`
+      );
+      return LEGACY_DEFAULT_REGION;
+    }
+    return effective.region;
+  };
+  return (stackName, pinned) => {
+    if (pinned) return Promise.resolve(pinned);
+    if (!regionNeedsReconciliation(effective)) return Promise.resolve(effective.region);
+    let result = answers.get(stackName);
+    if (result === undefined) {
+      result = answer(stackName);
+      result.catch(() => answers.delete(stackName));
+      answers.set(stackName, result);
+    }
+    return result;
+  };
+}
+
+/**
+ * A state record as the destroy runner should see it: a region-less legacy
+ * (`version: 1`) record carries the region the command resolved for it.
+ *
+ * The runner falls back to its BASE region for such a record — for its lock,
+ * its save and the clients its deletes go through. Since go-to-k/cdkd#2100 the
+ * base region is the inferred one while the record may be held on us-east-1,
+ * so without this the deletes would run in the profile's region, find
+ * nothing, and drop the record while the resources live on. Carrying the
+ * region in also makes the runner build that region's clients, which it does
+ * for any record whose region differs from the base.
+ */
+export function stateWithRegion<T extends { region?: string | undefined }>(
+  state: T,
+  region: string
+): T {
+  return state.region ? state : { ...state, region };
+}
+
+/**
+ * The second region whose LEGACY state-bucket name
+ * (`cdkd-state-{account}-{region}`) the default-bucket resolution probes.
+ *
+ * Before go-to-k/cdkd#2100 a bare command built that name from the
+ * `us-east-1` literal, so a user who bootstrapped under the old default has
+ * `cdkd-state-{account}-us-east-1`. Now that the name is built from the
+ * profile's region, that bucket must stay findable, or the upgrade turns a
+ * working setup into "No cdkd state bucket found". `undefined` when the
+ * region was named, or when it already is the legacy default.
+ */
+export function legacyStateBucketFallbackRegion(effective: EffectiveRegion): string | undefined {
+  return regionNeedsReconciliation(effective) ? LEGACY_DEFAULT_REGION : undefined;
+}
+
+/** What {@link reconcileExportIndexRegion} needs: an existence probe that downloads nothing. */
+export interface ExportIndexProbe {
+  rawObjectExists(key: string): Promise<boolean>;
+}
+
+/**
+ * The ONE exports-index file (`{prefix}/_index/{region}/exports.json`) a
+ * command reads and writes, for every stack it touches (go-to-k/cdkd#2100).
+ *
+ * Under an INFERRED region the answer is the us-east-1 file whenever it
+ * exists — the file every bare command used before #2100, so it is where a
+ * held stack's entries already are — and the inferred region's file only when
+ * there is no us-east-1 one. A NAMED region uses its own file, as before.
+ *
+ * One file per command, never one per stack: a destroy removes its stack's
+ * entries from the file it is handed, and an index hit is trusted without
+ * re-reading the producer, so producer and consumer must always share a file.
+ * Splitting it (held stacks to one file, the rest to another) let a consumer
+ * read a stale copy the producer's destroy never reached. Every entry carries
+ * its producer's own region, and a miss falls back to scanning every state
+ * record, so which file is used is a cache location, not a correctness input.
+ *
+ * HeadObject only, and a probe that fails answers the inferred region: before
+ * #2100 these commands touched the index only on a lookup, so a policy that
+ * denies the index key must not start failing a deploy here.
+ */
+export async function reconcileExportIndexRegion(input: {
+  effective: EffectiveRegion;
+  probe: ExportIndexProbe;
+  statePrefix: string;
+  logger: { debug: (message: string) => void; warn: (message: string) => void };
+}): Promise<string> {
+  const { effective, probe, statePrefix, logger } = input;
+  if (!regionNeedsReconciliation(effective)) return effective.region;
+  const indexKey = (region: string): string => `${statePrefix}/_index/${region}/exports.json`;
+  try {
+    if (!(await probe.rawObjectExists(indexKey(LEGACY_DEFAULT_REGION)))) return effective.region;
+  } catch (error) {
+    logger.warn(
+      safeMsg`[region] could not probe the exports index (${(error as { name?: string }).name ?? 'error'}); using ${effective.region}.`
     );
     return effective.region;
   }
-  if (!(await probe.stateExists(stackName, LEGACY_DEFAULT_REGION))) {
-    // Neither side has state: a first deploy. The profile's region wins, which
-    // is the whole point of the change, and nothing exists to strand.
-    return effective.region;
-  }
-
-  logger.info(
-    `Stack '${stackName}' has existing state in ${LEGACY_DEFAULT_REGION}, but your AWS profile ` +
-      `resolves ${effective.region}. Continuing to use ${LEGACY_DEFAULT_REGION} so the existing ` +
-      `stack is not duplicated. Pass '--region ${effective.region}' to target your profile's ` +
-      `region, or '--region ${LEGACY_DEFAULT_REGION}' to silence this message.`
+  logger.debug(
+    safeMsg`[region] exports index exists in ${LEGACY_DEFAULT_REGION}; using it rather than ${effective.region} (inferred).`
   );
   return LEGACY_DEFAULT_REGION;
+}
+
+/**
+ * The command's ONE exports-index store, except that removing a stack's
+ * entries also removes them from the OTHER candidate file (go-to-k/cdkd#2100).
+ *
+ * {@link reconcileExportIndexRegion}'s answer flips the moment
+ * `_index/us-east-1` first appears — one `AWS_REGION=us-east-1` run, or a
+ * teammate on an older cdkd — so a stack deployed while the profile region's
+ * file was the command's may be destroyed while the us-east-1 one is. Every
+ * destroy path removes entries through the store it was handed — a top-level
+ * destroy, a nested child's (the nested-stack provider hands the same store
+ * down, under destroy, state destroy, deploy and rollback) — and an index hit
+ * is trusted without re-reading the producer, so a copy left in the other file
+ * would answer a later consumer with a value nothing backs.
+ *
+ * Every other member is the run's store itself. The other file is only ever
+ * EDITED (`removeStackIfPresent`), never created: creating it would change
+ * which file later commands pick. One HeadObject per command (memoized), and
+ * a read and a write only when that file exists; best effort, a failure warns.
+ * A NAMED region gets `runStore` unchanged.
+ */
+export function withOtherIndexRemoval<
+  T extends { removeStack(stackName: string, region: string): Promise<void> },
+>(
+  runStore: T,
+  input: {
+    effective: EffectiveRegion;
+    runIndexRegion: string;
+    statePrefix: string;
+    probe: ExportIndexProbe;
+    createStore: (indexRegion: string) => {
+      removeStackIfPresent(stackName: string, region: string): Promise<void>;
+    };
+    logger: { warn: (message: string) => void };
+  }
+): T {
+  const { effective, runIndexRegion, statePrefix, probe, createStore, logger } = input;
+  const other = runIndexRegion === LEGACY_DEFAULT_REGION ? effective.region : LEGACY_DEFAULT_REGION;
+  if (!regionNeedsReconciliation(effective) || other === runIndexRegion) return runStore;
+  let otherStore: Promise<ReturnType<typeof createStore> | undefined> | undefined;
+  const removeFromOther = async (stackName: string, region: string): Promise<void> => {
+    try {
+      otherStore ??= probe
+        .rawObjectExists(`${statePrefix}/_index/${other}/exports.json`)
+        .then((exists) => (exists ? createStore(other) : undefined));
+      await (await otherStore)?.removeStackIfPresent(stackName, region);
+    } catch (error) {
+      otherStore = undefined;
+      logger.warn(
+        safeMsg`Could not remove ${stackName}'s entries from the ${other} exports index (${(error as { name?: string }).name ?? 'error'}); a later Fn::ImportValue may read a stale value from it.`
+      );
+    }
+  };
+  return new Proxy(runStore, {
+    get(target, prop, receiver) {
+      if (prop === 'removeStack') {
+        return async (stackName: string, region: string): Promise<void> => {
+          await target.removeStack(stackName, region);
+          await removeFromOther(stackName, region);
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === 'function'
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
 }
 
 /** The narrowest thing the marker reconciliation needs from a state backend. */
@@ -306,7 +591,7 @@ export interface MarkerReconcileProbe {
 }
 
 /**
- * The marker-key twin of {@link reconcileRegionWithLegacyDefault}.
+ * The marker-key twin of {@link stackRegionResolver}.
  *
  * `cdkd bootstrap` WRITES `cdkd-bootstrap/{region}.json`; `cdkd gc` and
  * `cdkd bootstrap --destroy` READ it. Issue

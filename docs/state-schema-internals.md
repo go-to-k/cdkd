@@ -315,8 +315,14 @@ For users who already bootstrapped under that scheme, the lookup chain in
 
 1. Probe `cdkd-state-{accountId}` (current default). If it exists, use it.
 2. If not found (`HeadBucket` returns 404 / `NoSuchBucket`), probe
-   `cdkd-state-{accountId}-{profileRegion}` (legacy default). If it exists,
-   use it and emit a deprecation warning:
+   `cdkd-state-{accountId}-{region}` (legacy default), `{region}` being the
+   command's [resolved region](cli-reference-region.md). When that region was
+   inferred (from `AWS_DEFAULT_REGION` or the profile) and is not
+   `us-east-1`, `cdkd-state-{accountId}-us-east-1` is probed as well — the
+   name a command with no region named used before. It is preferred while it
+   holds any object; the `{region}` one is used when it is missing or empty,
+   or answers `403` while the `{region}` one answers cleanly. The chosen
+   legacy bucket is used with a deprecation warning that names its region:
 
    ```text
    Using legacy state bucket name 'cdkd-state-123456789012-us-east-1'.
@@ -328,8 +334,8 @@ For users who already bootstrapped under that scheme, the lookup chain in
    copy; legacy support will be dropped in a future release.)
    ```
 
-3. If neither exists, fail with a "run cdkd bootstrap" error pointing at
-   the new name.
+3. If none exists, fail with a "run cdkd bootstrap" error naming every
+   bucket probed and pointing at the new name.
 
 The legacy fallback is **temporary**. It will be dropped in a future
 release together with the `cdkd-state-{accountId}-{region}` legacy

@@ -384,11 +384,12 @@ export class AppSyncProvider implements ResourceProvider {
    */
   private async buildAppSyncArn(suffix: string, regionOverride?: string): Promise<string> {
     // `regionOverride` is the IMPORT path's region (issue #1728 review):
-    // `import.ts` resolves it as `--region || AWS_REGION || 'us-east-1'` and
-    // keys the state record by it, which can differ from the client's own
-    // configured region (an unset `AWS_REGION` with a profile region set). The
-    // create / update paths pass nothing and keep deriving it from the client,
-    // which is the region their AWS calls actually went to.
+    // the region `import.ts` keys the state record by (its resolved region,
+    // held per stack since go-to-k/cdkd#2100). Since #2100 import builds its
+    // providers' clients for that same region, so the two agree; the override
+    // keeps the ARN tied to the record rather than to a client. The create /
+    // update paths pass nothing and keep deriving it from the client, which is
+    // the region their AWS calls actually went to.
     const region =
       regionOverride ?? this.providerRegion ?? (await this.getClient().config.region());
     // REJECTS when STS cannot name the account and `AWS_ACCOUNT_ID` is unset
@@ -607,13 +608,10 @@ export class AppSyncProvider implements ResourceProvider {
     region: string
   ): Promise<Record<string, unknown>> {
     try {
-      // The region comes from the IMPORT input, not from the client: `import.ts`
-      // resolves it as `--region || AWS_REGION || 'us-east-1'` and keys the
-      // state record by it, so deriving it from the client's own config can
-      // record an ARN naming a different region than the record it sits in.
-      // (When neither is set that resolution is itself a default, so the ARN
-      // names the same region the state key does — misregioned together rather
-      // than against each other.)
+      // The region comes from the IMPORT input, not from the client: it is the
+      // region `import.ts` keys the state record by, so the ARN always names
+      // the record's region. Since go-to-k/cdkd#2100 the providers' clients
+      // are built for that region too, so the two no longer disagree.
       //
       // `omitArnOnFailure`: an unknown account costs the ARN, not the whole
       // attribute set — `Name` / `ApiKey` come out of the physical id and are

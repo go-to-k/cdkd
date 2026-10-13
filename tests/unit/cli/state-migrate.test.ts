@@ -30,6 +30,28 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+/**
+ * The region the AWS SDK's own chain answers (go-to-k/cdkd#2100): `undefined`
+ * by default, so a bare run falls back to `us-east-1` as every case below was
+ * written against.
+ */
+const profileRegion = vi.hoisted(() => ({ value: undefined as string | undefined }));
+vi.mock('@aws-sdk/client-sts', async (importActual) => {
+  const actual = await importActual<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({
+      config: {
+        region: async (): Promise<string> => {
+          if (!profileRegion.value) throw new Error('Region is missing');
+          return profileRegion.value;
+        },
+      },
+      destroy: vi.fn(),
+    })),
+  };
+});
+
 const mockStsSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
@@ -198,6 +220,161 @@ describe('cdkd state migrate', () => {
     const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(msg).toMatch(/active lock file/);
     expect(msg).toMatch(/lock\.json/);
+  });
+
+  describe('a bare run under a non-us-east-1 profile (go-to-k/cdkd#2100)', () => {
+    const headPlan = (
+      existing: string[],
+      withState: string[] = existing,
+      listFails: string[] = [],
+      forbidden: string[] = []
+    ) =>
+      s3SendImpl.mockImplementation((cmd: { constructor: { name: string }; input?: unknown }) => {
+        const name = cmd.constructor.name;
+        const bucket = (cmd.input as { Bucket: string }).Bucket;
+        if (name === 'HeadBucketCommand' && forbidden.includes(bucket)) {
+          return Promise.reject(
+            Object.assign(new Error('Forbidden'), { name: 'Forbidden', $metadata: { httpStatusCode: 403 } })
+          );
+        }
+        if (name === 'HeadBucketCommand') {
+          if (existing.includes(bucket)) return Promise.resolve({});
+          return Promise.reject(Object.assign(new Error('NotFound'), { name: 'NotFound' }));
+        }
+        if (name === 'ListObjectsV2Command') {
+          if (listFails.includes(bucket)) return Promise.reject(new Error('throttled'));
+          return Promise.resolve(
+            withState.includes(bucket)
+              ? { KeyCount: 1, Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }
+              : { KeyCount: 0 }
+          );
+        }
+        return Promise.reject(new Error(`Unexpected S3 command: ${name}`));
+      });
+    afterEach(() => {
+      profileRegion.value = undefined;
+    });
+
+    it('migrates the legacy bucket the OLD us-east-1 default named when the profile region has none', async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(['cdkd-state-123456789012-us-east-1']);
+      await runMigrate(['migrate', '--yes', '--dry-run']);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '  source:      cdkd-state-123456789012-us-east-1 (resolved for --region us-east-1)'
+      );
+    });
+
+    it("takes the profile region's own legacy bucket when the old default's is EMPTY", async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(
+        ['cdkd-state-123456789012-ap-northeast-1', 'cdkd-state-123456789012-us-east-1'],
+        ['cdkd-state-123456789012-ap-northeast-1']
+      );
+      await runMigrate(['migrate', '--yes', '--dry-run']);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '  source:      cdkd-state-123456789012-ap-northeast-1 (resolved for --region ap-northeast-1)'
+      );
+    });
+
+    it("keeps the old default's legacy bucket when BOTH exist and it holds state", async () => {
+      // The bucket every bare command read before #2100, and the one
+      // `resolveStateBucketWithDefault` still reads: migrating the other one
+      // would leave the real state behind.
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(['cdkd-state-123456789012-ap-northeast-1', 'cdkd-state-123456789012-us-east-1']);
+      await runMigrate(['migrate', '--yes', '--dry-run']);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '  source:      cdkd-state-123456789012-us-east-1 (resolved for --region us-east-1)'
+      );
+    });
+
+    it("keeps the old default's legacy bucket when its state listing FAILS", async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(
+        ['cdkd-state-123456789012-ap-northeast-1', 'cdkd-state-123456789012-us-east-1'],
+        ['cdkd-state-123456789012-ap-northeast-1'],
+        ['cdkd-state-123456789012-us-east-1']
+      );
+      // The dry run's own full listing of the chosen source would fail too, so
+      // only the plan line is asserted.
+      await runMigrate(['migrate', '--yes', '--dry-run']).catch(() => undefined);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '  source:      cdkd-state-123456789012-us-east-1 (resolved for --region us-east-1)'
+      );
+    });
+
+    it("keeps a cleanly-answering profile-region legacy bucket over a 403 old-default name", async () => {
+      // `resolveStateBucketWithDefault`'s tie-break: a bucket that denies us
+      // could only fail closed. Its listing is denied too, as for a real one.
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(
+        ['cdkd-state-123456789012-ap-northeast-1'],
+        ['cdkd-state-123456789012-ap-northeast-1'],
+        ['cdkd-state-123456789012-us-east-1'],
+        ['cdkd-state-123456789012-us-east-1']
+      );
+      await runMigrate(['migrate', '--yes', '--dry-run']);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '  source:      cdkd-state-123456789012-ap-northeast-1 (resolved for --region ap-northeast-1)'
+      );
+    });
+
+    it('asks the old-default bucket for ANY object, not only `cdkd/` (a custom --state-prefix)', async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(['cdkd-state-123456789012-ap-northeast-1', 'cdkd-state-123456789012-us-east-1']);
+      await runMigrate(['migrate', '--yes', '--dry-run']);
+      const probeList = s3SendImpl.mock.calls
+        .map(([cmd]) => cmd as { constructor: { name: string }; input?: Record<string, unknown> })
+        .find(
+          (cmd) =>
+            cmd.constructor.name === 'ListObjectsV2Command' &&
+            cmd.input?.['Bucket'] === 'cdkd-state-123456789012-us-east-1' &&
+            cmd.input?.['MaxKeys'] === 1
+        );
+      expect(probeList).toBeDefined();
+      expect(probeList!.input).not.toHaveProperty('Prefix');
+    });
+
+    it('copies an AWS_DEFAULT_REGION answer into AWS_REGION, and migrates that region\'s legacy bucket (review L1)', async () => {
+      const saved = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
+      delete process.env['AWS_REGION'];
+      process.env['AWS_DEFAULT_REGION'] = 'eu-west-1';
+      try {
+        headPlan(['cdkd-state-123456789012-eu-west-1']);
+        await runMigrate(['migrate', '--yes', '--dry-run']);
+        expect(process.env['AWS_REGION']).toBe('eu-west-1');
+        expect(infoSpy).toHaveBeenCalledWith(
+          '  source:      cdkd-state-123456789012-eu-west-1 (resolved for --region eu-west-1)'
+        );
+      } finally {
+        if (saved.region === undefined) delete process.env['AWS_REGION'];
+        else process.env['AWS_REGION'] = saved.region;
+        if (saved.def === undefined) delete process.env['AWS_DEFAULT_REGION'];
+        else process.env['AWS_DEFAULT_REGION'] = saved.def;
+      }
+    });
+
+    it('an explicit --legacy-bucket gets no second candidate', async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(['cdkd-state-123456789012-us-east-1']);
+      await expect(
+        runMigrate(['migrate', '--legacy-bucket', 'my-old-bucket', '--yes', '--dry-run'])
+      ).rejects.toThrow();
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(
+        /Source bucket 'my-old-bucket' does not exist/
+      );
+    });
+
+    it('a NAMED region gets no second candidate', async () => {
+      profileRegion.value = 'ap-northeast-1';
+      headPlan(['cdkd-state-123456789012-us-east-1']);
+      await expect(
+        runMigrate(['migrate', '--region', 'eu-west-1', '--yes', '--dry-run'])
+      ).rejects.toThrow();
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(
+        /Source bucket 'cdkd-state-123456789012-eu-west-1' does not exist/
+      );
+    });
   });
 
   it('--dry-run stops before any mutation', async () => {

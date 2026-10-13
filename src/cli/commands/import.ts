@@ -16,7 +16,13 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
 import { AccountIdUnavailableError, withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -324,21 +330,35 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
   foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
-  // Region falls through CLI flag → env → us-east-1, the same chain as deploy.
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // Region falls through CLI flag → env → profile → us-east-1, the same chain as deploy.
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
 
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
 
   if (options.region) {
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
   }
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
 
+  // Set when the target stack's region differs from the run's (a stack held
+  // on us-east-1), destroyed with the command's clients.
+  let targetClients: AwsClients | undefined;
   try {
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
     // Every contention message this command (and its nested recursion) raises
@@ -354,8 +374,6 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     });
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
-    const providerRegistry = new ProviderRegistry();
-    registerAllProviders(providerRegistry, providerClasses);
 
     // Synth — required for import: we need logicalId/resourceType/dependencies
     // from the template. Without it, the user would have to specify everything
@@ -415,9 +433,35 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `Specify the stack name as a positional argument.`
       );
     }
-    const targetRegion = stackInfo.region || region;
+    // An env-agnostic stack takes the run's region, held on state the old
+    // us-east-1 default wrote (go-to-k/cdkd#2100) so a re-import does not
+    // write a second record beside the existing one.
+    const targetRegion = await stackRegionResolver({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      logger,
+      siblings: result.stacks.filter((s) => !s.region).map((s) => s.stackName),
+    })(stackInfo.stackName, stackInfo.region);
 
     logger.info(`Target stack: ${stackInfo.stackName} (${targetRegion})`);
+
+    // The providers look resources up in the region the state is written
+    // under (go-to-k/cdkd#2100): a stack held on us-east-1 must not search the
+    // profile's region for names built for us-east-1, nor adopt a same-named
+    // resource there. Providers capture their clients when they are
+    // registered, so the registry is built AFTER the clients are pointed.
+    if (targetRegion !== effectiveRegion.region) {
+      targetClients = new AwsClients({
+        region: targetRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      setAwsClients(targetClients);
+      process.env['AWS_REGION'] = targetRegion;
+      process.env['AWS_DEFAULT_REGION'] = targetRegion;
+    }
+    const regionClients = targetClients ?? awsClients;
+    const providerRegistry = new ProviderRegistry();
+    registerAllProviders(providerRegistry, providerClasses);
 
     // Issue #1002 PR 2 — when the target region is in cdkd-assets mode,
     // rewrite the template's asset references BEFORE anything reads it
@@ -547,7 +591,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       );
       migrationTree = await getCloudFormationResourceTree(
         migrationCfnStackName,
-        awsClients.cloudFormation
+        regionClients.cloudFormation
       );
       // Shared filter (see `mergeCfnDerivedOverrides`): non-importable rows,
       // nested-stack rows, and ids the user already supplied are all dropped.
@@ -663,7 +707,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     if (!selectiveMode && !migrationCfnStackName) {
       const cfnResources = await tryGetCloudFormationResourceMap(
         stackInfo.stackName,
-        awsClients.cloudFormation
+        regionClients.cloudFormation
       );
       if (cfnResources) {
         // Same three filters as the migration path — shared so a change to
@@ -1062,13 +1106,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         : migrationCfnStackName !== undefined
           ? await readDeployedParameters(
               migrationCfnStackName,
-              awsClients.cloudFormation,
+              regionClients.cloudFormation,
               logger,
               displaySafe(migrationCfnStackName)
             )
           : await readDeployedParameters(
               stackInfo.stackName,
-              awsClients.cloudFormation,
+              regionClients.cloudFormation,
               logger,
               displaySafe(stackInfo.stackName),
               { absentStackIsNoSource: true }
@@ -1159,7 +1203,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           accountId: accountIdForNestedSynth,
           logger,
           assetRedirect,
-          cfnClient: awsClients.cloudFormation,
+          cfnClient: regionClients.cloudFormation,
         });
       }
 
@@ -1187,7 +1231,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         }
         await retireCloudFormationStack({
           cfnStackName: migrationCfnStackName,
-          cfnClient: awsClients.cloudFormation,
+          cfnClient: regionClients.cloudFormation,
           yes: options.yes,
           // Reuse cdkd's state bucket as transient storage for the
           // Retain-injected template when it exceeds the 51,200-byte
@@ -1215,6 +1259,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       });
     }
   } finally {
+    targetClients?.destroy();
     awsClients.destroy();
   }
 }

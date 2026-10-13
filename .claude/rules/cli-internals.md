@@ -28,9 +28,8 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
   which region's asset storage to tear down. On every other command it is
   DEPRECATED but still honored: a hidden `deprecatedRegionOption` that warns
   once and IS the highest-precedence region source
-  (`options.region || AWS_REGION || 'us-east-1'`), injected into
-  `process.env.AWS_REGION` by deploy / destroy / import / export / orphan so the
-  synth subprocess inherits it. **It is NOT a no-op** — do not "clean up" a
+  (`resolveEffectiveRegion`; #2100), copied into `process.env.AWS_REGION`
+  for the synth subprocess. **It is NOT a no-op** — do not "clean up" a
   fixture's `--region`. The state-bucket S3 client still auto-detects the
   bucket's region via `GetBucketLocation`, independent of the flag.
 - **`--context` / `-c`** — repeatable `key=value`, merged over cdk.json context.

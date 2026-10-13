@@ -6,8 +6,9 @@ description: "Which AWS region a cdkd command works in, where --region is still 
 # Region resolution
 
 Choose the region with `AWS_REGION` or your AWS profile. This page gives the
-order cdkd reads those sources in, and the two places where the answer is not
-obvious: the bootstrap commands, and a region typed in upper case.
+order cdkd reads those sources in, how a region cdkd inferred keeps working
+with stacks and storage that an older cdkd created in `us-east-1`, and how
+cdkd treats a region typed in upper case.
 
 ```bash
 AWS_REGION=us-west-2 cdkd deploy MyStack
@@ -34,22 +35,81 @@ cdkd takes the first source in the list that has a value.
 
 | Commands | Order |
 | --- | --- |
-| `cdkd bootstrap`, `cdkd bootstrap --destroy`, `cdkd gc` | `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's region, `us-east-1` |
 | `cdkd local` commands | Per command. Each command's page gives its order. |
-| Every other command | `--region`, `AWS_REGION`, `us-east-1` |
+| Every other command | `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's region, `us-east-1` |
 
-The three commands in the first row share one order because they work on the
-same per-region record. `cdkd bootstrap` writes the **bootstrap marker**, a
-small file in the state bucket that records a region's asset bucket and ECR
-repository, and the other two read it.
+A stack with `env.region` set in your CDK app always uses that region. The
+order above applies to an env-agnostic stack, and to commands that are not
+about one stack, such as finding the state bucket.
 
-## An inferred region yields to existing asset storage
+The AWS SDK for JavaScript does not read `AWS_DEFAULT_REGION`. When cdkd
+takes the region from it, cdkd copies it into `AWS_REGION` for its own AWS
+calls, so they go to the same region as the state. The CDK app does not see
+that copy and gets your environment as you set it, as under the AWS CDK CLI;
+neither does a Docker image asset's own build command (`executable`). The
+`docker` commands cdkd runs itself (build, login, push) do see it.
 
-This rule applies to `cdkd bootstrap`, `cdkd bootstrap --destroy` and
-`cdkd gc` only. When cdkd took the region from your profile, and asset storage
-already exists in another region, cdkd uses the region that has the storage,
-so that a bare command does not strand it. A region you name yourself is
-always used as given.
+Earlier cdkd releases skipped `AWS_DEFAULT_REGION` and the profile on every
+command outside `cdkd bootstrap`, `cdkd bootstrap --destroy` and `cdkd gc`,
+and used `us-east-1` when neither `--region` nor `AWS_REGION` was set. The next
+section is how cdkd keeps working with what that default created.
+
+## An inferred region yields to what already exists
+
+When cdkd took the region from `AWS_DEFAULT_REGION` or your profile, and what
+it is about to read or write already exists only in `us-east-1`, cdkd keeps
+using `us-east-1`, so that a bare command does not strand it. A region you name
+yourself, with `--region` or `AWS_REGION`, is always used as given.
+
+The rule covers:
+
+- **A stack's state.** An env-agnostic stack that has state in `us-east-1` and
+  none in your profile's region stays in `us-east-1`. A stack with no state
+  anywhere goes to your profile's region, unless every other env-agnostic
+  stack of the same app that has state stays in `us-east-1` (by the rules on
+  this page): then it goes to `us-east-1` with them, so the app stays in one
+  region. A legacy
+  state record that names no region counts as `us-east-1`.
+- **A stack's lock**, for `cdkd force-unlock` on a stack with no state record.
+- **The exports index**, the file in the state bucket that `Fn::ImportValue`
+  reads first. A command uses one such file for all its stacks: the
+  `us-east-1` one whenever it exists, otherwise your profile region's.
+- **Asset storage**, for `cdkd bootstrap`, `cdkd bootstrap --destroy` and
+  `cdkd gc`. These three work on the same per-region record: `cdkd bootstrap`
+  writes the **bootstrap marker**, a small file in the state bucket that
+  records a region's asset bucket and ECR repository, and the other two read
+  it.
+- **The legacy state bucket name.** cdkd also looks for
+  `cdkd-state-<account>-us-east-1`, and uses it when the legacy bucket for
+  your profile's region does not exist, or when the `us-east-1` one holds any
+  object. One exception: when the `us-east-1` name answers `403` (another
+  owner, or a policy denies it) and the bucket for your profile's region
+  answers normally, cdkd uses the latter. `cdkd state migrate` with no
+  `--region` picks its source the same way.
+- **A stack with state in both regions.** cdkd keeps using `us-east-1`, as a
+  command with no region named did before, and prints a line naming both.
+
+For a stack:
+
+| Your profile | Existing state for the stack | cdkd uses |
+| --- | --- | --- |
+| `ap-northeast-1` | In `ap-northeast-1` | `ap-northeast-1` |
+| `eu-west-1` | Only in `us-east-1` | `us-east-1`, and says so |
+| `eu-west-1` | None anywhere | `eu-west-1` |
+
+In the second row, cdkd prints:
+
+```text
+Stack 'MyStack' has existing state in us-east-1, but your AWS profile resolves
+eu-west-1. Continuing to use us-east-1 so the existing stack is not duplicated.
+Set AWS_REGION=us-east-1 to silence this message, or AWS_REGION=eu-west-1 to
+work in eu-west-1 instead (where this stack has no state).
+```
+
+Setting `AWS_REGION=eu-west-1` for that stack does not move it. cdkd finds no
+state in `eu-west-1` and creates a second copy of the stack there.
+
+For asset storage:
 
 | Your profile | Existing asset storage | cdkd uses |
 | --- | --- | --- |

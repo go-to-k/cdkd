@@ -106,9 +106,11 @@ The same stack name deployed to two regions has two independent locks.
 ### Edge cases
 
 - **The stack has no state record.** `cdkd force-unlock MyStack` then releases
-  the lock in the region that `--region` or `AWS_REGION` names, or in
-  `us-east-1` when neither is set. The profile's own region is not consulted.
-  See [Region resolution](cli-reference-region.md).
+  the lock in the region cdkd resolves: `--region`, `AWS_REGION`,
+  `AWS_DEFAULT_REGION`, your profile's region, then `us-east-1`. When the
+  region came from `AWS_DEFAULT_REGION` or your profile and the lock exists
+  only in `us-east-1`, cdkd releases that one. See
+  [Region resolution](cli-reference-region.md#an-inferred-region-yields-to-what-already-exists).
 - **A legacy state record that names no region.** Its lock key has no region
   in it. The run without `--stack-region` releases that lock too. A run with
   `--stack-region` does not.

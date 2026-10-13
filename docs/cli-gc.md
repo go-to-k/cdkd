@@ -125,7 +125,7 @@ names. Custom names therefore work.
 
 - **A region inferred from your profile.** When asset storage already exists
   in another region, gc uses that region and says so. See
-  [An inferred region yields to existing asset storage](cli-reference-region.md#an-inferred-region-yields-to-existing-asset-storage).
+  [An inferred region yields to existing asset storage](cli-reference-region.md#an-inferred-region-yields-to-what-already-exists).
 - **An upper-cased region.** gc lower-cases the region before use. It looks
   the marker up under the lower-case key first and under the spelling you
   passed second, so `--region US-EAST-1` finds a marker written under either.

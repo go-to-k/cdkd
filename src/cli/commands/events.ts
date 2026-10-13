@@ -24,7 +24,12 @@ import {
   DEPLOYMENT_EVENTS_MAX_INDEX_RUNS,
 } from '../../state/deployment-events-store.js';
 import type { DeploymentEvent, DeploymentRunSummary } from '../../types/deployment-events.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -229,8 +234,16 @@ export async function eventsCommand(
   setAwsClients(awsClients);
 
   try {
-    const region = namedCliRegion(options.region) ?? 'us-east-1';
-    const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+    // go-to-k/cdkd#2100: the profile's region when none is named, not a
+    // `us-east-1` literal (`resolveEffectiveRegion`).
+    const effectiveRegion = await resolveEffectiveRegion(options);
+    exportInferredRegionForSdk(effectiveRegion);
+    const region = effectiveRegion.region;
+    const bucket = await resolveStateBucketWithDefault(
+      options.stateBucket,
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
+    );
     const prefix = options.statePrefix ?? 'cdkd';
     const stateBackend = new S3StateBackend(
       awsClients.s3,
@@ -445,8 +458,16 @@ export async function eventsPruneCommand(
   setAwsClients(awsClients);
 
   try {
-    const region = namedCliRegion(options.region) ?? 'us-east-1';
-    const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+    // go-to-k/cdkd#2100: the profile's region when none is named, not a
+    // `us-east-1` literal (`resolveEffectiveRegion`).
+    const effectiveRegion = await resolveEffectiveRegion(options);
+    exportInferredRegionForSdk(effectiveRegion);
+    const region = effectiveRegion.region;
+    const bucket = await resolveStateBucketWithDefault(
+      options.stateBucket,
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
+    );
     const prefix = options.statePrefix ?? 'cdkd';
     const stateBackend = new S3StateBackend(
       awsClients.s3,

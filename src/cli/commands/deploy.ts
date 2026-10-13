@@ -91,7 +91,18 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  namedCliRegion,
+  rawCliRegion,
+  reconcileExportIndexRegion,
+  regionNeedsReconciliation,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+  withOtherIndexRemoval,
+} from '../region-options.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
 import { withSkipPrefix } from '../../provisioning/resource-name.js';
 import {
@@ -239,7 +250,7 @@ async function deployCommand(
   // unconditionally would stop `AssetModeResolver` ever probing it. Same split
   // `gc.ts` / `bootstrap-destroy.ts` already keep, and the same shape as
   // `local-invoke.ts`'s `rawStackRegion`.
-  const rawBaseRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  const rawNamedRegion = rawCliRegion(options.region);
   foldRegionOption(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. The RULE to reason
@@ -298,7 +309,15 @@ async function deployCommand(
   }
   options.app = app;
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // go-to-k/cdkd#2100: the region this run operates on when a stack pins none —
+  // `--region`, `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's region, then
+  // `us-east-1` — rather than a `us-east-1` literal that outranked the profile
+  // while this command's own region-less clients followed it. An INFERRED
+  // region yields, per stack, to state the old default wrote (`regionForStack`
+  // below), so an upgrade never re-creates a stack that lives in us-east-1.
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
 
   logger.debug('Starting deployment...');
   logger.debug('Options:', options);
@@ -310,8 +329,11 @@ async function deployCommand(
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
   }
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -330,7 +352,8 @@ async function deployCommand(
     // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback).
     const resolvedStateBucket = await resolveStateBucketWithDefaultAndSource(
       options.stateBucket,
-      region
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
     );
     const stateBucket = resolvedStateBucket.bucket;
 
@@ -365,14 +388,31 @@ async function deployCommand(
     // run. Lazy-loaded — the first Fn::ImportValue resolution triggers the
     // rebuild from state.json (when index file is absent post-upgrade) or
     // a single GET (when index file already exists).
-    const exportIndexStore = new ExportIndexStore(
-      awsClients.s3,
-      stateBucket,
-      options.statePrefix,
-      region,
-      preflightStateBackend,
-      { profile: options.profile }
-    );
+    const runIndexRegion = await reconcileExportIndexRegion({
+      effective: effectiveRegion,
+      probe: preflightStateBackend,
+      statePrefix: options.statePrefix,
+      logger,
+    });
+    const newIndexStore = (indexRegion: string): ExportIndexStore =>
+      new ExportIndexStore(
+        awsClients.s3,
+        stateBucket,
+        options.statePrefix,
+        indexRegion,
+        preflightStateBackend,
+        { profile: options.profile }
+      );
+    // go-to-k/cdkd#2100: a nested child this deploy removes or replaces also
+    // leaves the OTHER candidate index file (`withOtherIndexRemoval`).
+    const exportIndexStore = withOtherIndexRemoval(newIndexStore(runIndexRegion), {
+      effective: effectiveRegion,
+      runIndexRegion,
+      statePrefix: options.statePrefix,
+      probe: preflightStateBackend,
+      createStore: newIndexStore,
+      logger,
+    });
     return { stateBucket, preflightStateBackend, exportIndexStore };
   })();
 
@@ -625,7 +665,14 @@ async function deployCommand(
         roleArnReferences,
         new Set(targetStacks.map((s) => s.stackName)),
         (name) => ({
-          region: stackByName.get(name)?.region ?? namedCliRegion(options.region),
+          // A NAMED region only, as before #2100: an inferred one (including
+          // an AWS_DEFAULT_REGION copied into AWS_REGION) is not this
+          // producer's region when the producer is held on us-east-1.
+          region:
+            stackByName.get(name)?.region ??
+            (regionNeedsReconciliation(effectiveRegion)
+              ? undefined
+              : namedCliRegion(options.region)),
           account: stackByName.get(name)?.account,
         }),
         producerLookup
@@ -636,9 +683,28 @@ async function deployCommand(
     // per stack and region: a first deploy claims its marker once its state
     // load finds no record; a destructive plan, the settle and the automatic
     // rollback read it on demand. An ordinary redeploy makes no request. A dry
-    // run writes no marker. `deployStackRegion` is the ONE function both the
-    // checks and `runStackInner` (the engine's region) use.
-    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
+    // run writes no marker. `stackRegions` below is the ONE answer both the
+    // checks and `runStackInner` (the engine's region) read.
+    const baseRegion = region;
+    // go-to-k/cdkd#2100: every target stack's region, resolved ONCE before
+    // either loop below reads it. Two loops consume it — the work-graph loop
+    // picks the ASSET region, the deploy loop the CLIENT / state-key region —
+    // and reconciling separately in each could publish a held stack's assets
+    // to the profile's region while its resources stay in us-east-1. A stack
+    // with a synthesized `env.region` is pinned and never probed.
+    const regionForStack = stackRegionResolver({
+      effective: effectiveRegion,
+      probe: preflightStateBackend,
+      logger,
+      siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
+    });
+    const stackRegions = new Map(
+      await Promise.all(
+        targetStacks.map(
+          async (s) => [s.stackName, await regionForStack(s.stackName, s.region)] as const
+        )
+      )
+    );
     const crossPrefixGuard = new CrossPrefixGuard(preflightStateBackend, {
       readOnly: options.dryRun === true,
     });
@@ -660,7 +726,7 @@ async function deployCommand(
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     const stsClient = new STSClient({
       ...awsClientDefaults(),
-      region: namedCliRegion(options.region) ?? 'us-east-1',
+      region,
     });
     const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = callerIdentity.Account!;
@@ -743,13 +809,16 @@ async function deployCommand(
       // opted in, so skipping the rewrite would deploy split-brain
       // references that the audit then rejects.
       if (stack.assetManifestPath) {
-        const assetRegion = stack.region || baseRegion;
+        const assetRegion =
+          stackRegions.get(stack.stackName) ?? deployStackRegion(stack, baseRegion);
         const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
         if (manifest) {
           // The RAW spelling travels to the marker read (its second probe is what
           // finds a key an unfolded `cdkd bootstrap` wrote); the resolver folds
           // internally and every other consumer below uses `assetRegion`.
-          const assetMode = await assetModeResolver.resolve(stack.region || rawBaseRegion);
+          const assetMode = await assetModeResolver.resolve(
+            stack.region || rawNamedRegion || assetRegion
+          );
           logger.debug(
             `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
           );
@@ -867,7 +936,8 @@ async function deployCommand(
           `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
         );
       }
-      const stackRegion = deployStackRegion(stackInfo, baseRegion);
+      const stackRegion =
+        stackRegions.get(stackInfo.stackName) ?? deployStackRegion(stackInfo, baseRegion);
 
       logger.info(
         `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`

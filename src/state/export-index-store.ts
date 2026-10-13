@@ -490,6 +490,25 @@ export class ExportIndexStore {
   }
 
   /**
+   * {@link removeStack}, except that a MISSING index file stays missing
+   * (go-to-k/cdkd#2100). `removeStack` loads through `ensureLoaded`, which
+   * REBUILDS and writes a missing file; this one only edits a file that is
+   * already there. The CLI uses it on the OTHER candidate index file of an
+   * inferred region, where creating the file would change which file later
+   * commands pick. A corrupt file is left alone too: it is not this call's to
+   * repair. Same retry / best-effort semantics as `removeStack`.
+   */
+  async removeStackIfPresent(stackName: string, producerRegion: string): Promise<void> {
+    await this.enqueueWrite('remove-if-present', async () => {
+      if (this.loadState.kind !== 'loaded') {
+        const outcome = await this.loadPersisted();
+        if (outcome.kind !== 'loaded') return true;
+      }
+      return this.applyRemoveStack(stackName, producerRegion);
+    });
+  }
+
+  /**
    * Serialize write paths within a single process. Chains every write
    * onto a tail Promise so two concurrent `updateForStack` calls don't
    * race on the same etag inside the same cdkd. The S3 If-Match retry

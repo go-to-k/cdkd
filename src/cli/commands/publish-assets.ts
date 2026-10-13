@@ -12,7 +12,15 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  rawCliRegion,
+  regionNeedsReconciliation,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
@@ -96,7 +104,7 @@ async function publishAssetsCommand(
   // Issue #2065 - fold `--region` ONCE, at the boundary; same class and same
   // split as `deploy.ts` (raw spelling kept only for the bootstrap marker's
   // second probe). Rationale in `src/cli/region-options.ts`.
-  const rawBaseRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  const rawNamedRegion = rawCliRegion(options.region);
   foldRegionOption(options);
 
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
@@ -152,7 +160,13 @@ async function publishAssetsCommand(
   }
 
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).
-  const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal — and an env-agnostic stack whose state the old
+  // default wrote publishes to us-east-1, where `cdkd deploy` keeps it
+  // (`regionForStack` below).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const baseRegion = effectiveRegion.region;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const stsClient = new STSClient({ ...ambientClientDefaults(), region: baseRegion });
   const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
@@ -167,12 +181,23 @@ async function publishAssetsCommand(
   // (design §7.1). Both the bucket resolution and the marker resolver are
   // lazy — invoked only for stacks that actually have publishable assets.
   const useCdkBootstrapAssets = resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets);
-  let markerAccess: { resolver: AssetModeResolver; dispose: () => void } | null | undefined;
+  let markerAccess:
+    | {
+        resolver: AssetModeResolver;
+        regionFor: (stackName: string) => Promise<string>;
+        dispose: () => void;
+      }
+    | null
+    | undefined;
   const getModeResolver = async (): Promise<AssetModeResolver | null> => {
     if (markerAccess !== undefined) return markerAccess?.resolver ?? null;
     let bucket: string;
     try {
-      bucket = await resolveStateBucketWithDefault(options.stateBucket, baseRegion);
+      bucket = await resolveStateBucketWithDefault(
+        options.stateBucket,
+        baseRegion,
+        legacyStateBucketFallbackRegion(effectiveRegion)
+      );
     } catch {
       logger.info(
         'No cdkd state bucket found — publishing to the asset-manifest destinations ' +
@@ -194,8 +219,26 @@ async function publishAssetsCommand(
     const resolver = new AssetModeResolver(backend, accountId, {
       ...(options.profile && { profile: options.profile }),
     });
-    markerAccess = { resolver, dispose: () => markerClients.destroy() };
+    markerAccess = {
+      resolver,
+      regionFor: stackRegionResolver({
+        effective: effectiveRegion,
+        probe: backend,
+        logger,
+        siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
+      }),
+      dispose: () => markerClients.destroy(),
+    };
     return resolver;
+  };
+  // The region an env-agnostic stack publishes to: the one `cdkd deploy`
+  // will deploy it in. Probing state needs the state bucket, so a run with
+  // none (or a region that needs no reconciliation) takes `baseRegion`.
+  const regionForStack = async (stack: { stackName: string; region?: string | undefined }) => {
+    if (stack.region) return stack.region;
+    if (!regionNeedsReconciliation(effectiveRegion)) return baseRegion;
+    await getModeResolver();
+    return markerAccess ? markerAccess.regionFor(stack.stackName) : baseRegion;
   };
 
   // 4. Per-stack: build a WorkGraph populated with asset nodes only and run it.
@@ -238,16 +281,18 @@ async function publishAssetsCommand(
         // publishable assets and its region is in cdkd-assets mode, so the
         // publish nodes below redirect to the cdkd-owned storage.
         let redirect: AssetRedirectMap | undefined;
+        const stackRegion = await regionForStack(stack);
         if (!useCdkBootstrapAssets) {
           const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
           if (manifest) {
             const modeResolver = await getModeResolver();
             if (modeResolver) {
-              const stackRegion = stack.region || baseRegion;
               // RAW spelling to the marker read only (its second probe finds a
               // key an unfolded `cdkd bootstrap` wrote); every other consumer
               // below uses the folded `stackRegion`.
-              const assetMode = await modeResolver.resolve(stack.region || rawBaseRegion);
+              const assetMode = await modeResolver.resolve(
+                stack.region || rawNamedRegion || stackRegion
+              );
               if (assetMode.mode === 'cdkd-assets') {
                 const map = buildAssetRedirectMap(
                   manifest,
@@ -266,7 +311,7 @@ async function publishAssetsCommand(
         try {
           nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
             accountId,
-            region: stack.region || baseRegion,
+            region: stackRegion,
             ...(options.profile && { profile: options.profile }),
             nodePrefix: `${stack.stackName}:`,
             ...(redirect && { redirect }),

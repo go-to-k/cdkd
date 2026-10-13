@@ -503,6 +503,49 @@ export class S3StateBackend {
   }
 
   /**
+   * {@link stateExists} for the CLI's region reconciliation
+   * (go-to-k/cdkd#2100), which must not read a region-less legacy record as
+   * "state in EVERY region".
+   *
+   * `stateExists` hands such a record to any region on purpose (it mirrors
+   * `tryGetLegacy`, issue #2550). The reconciliation asks a narrower question —
+   * WHICH region owns this stack — and for a region-less record the answer is
+   * the region the commands used for it before the question was asked:
+   * `regionlessOwner`. Without this, an inferred profile region would claim
+   * the record on its first probe and move a stack whose resources live in
+   * us-east-1.
+   */
+  async stateExistsOwnedBy(
+    stackName: string,
+    region: string,
+    regionlessOwner: string
+  ): Promise<boolean> {
+    await this.ensureClientForBucket();
+    if (await this.headObject(this.getStateKey(stackName, region))) return true;
+    const probe = await this.probeLegacyState(stackName);
+    if (probe.kind === 'no-region') return region === regionlessOwner;
+    // Fail CLOSED: "cannot read who owns it" must not become "nobody owns it",
+    // which would send the stack to the profile's region and re-create it.
+    if (probe.kind === 'unreadable') {
+      throw new Error(
+        `The legacy state record for ${this.displayName(stackName)} cannot be read ` +
+          `(${probe.reason}), so cdkd cannot tell which region it belongs to. ` +
+          `Name the region with AWS_REGION to proceed.`
+      );
+    }
+    return legacyProbeBelongsTo(probe, region);
+  }
+
+  /**
+   * Whether an object exists under `key` in the state bucket, by HeadObject:
+   * the body is never downloaded. `false` on NotFound; other errors propagate.
+   */
+  async rawObjectExists(key: string): Promise<boolean> {
+    await this.ensureClientForBucket();
+    return this.headObject(key);
+  }
+
+  /**
    * Get state for a stack, transparently falling back to the legacy key.
    *
    * Lookup order:

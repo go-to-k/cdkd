@@ -260,7 +260,7 @@ copied with the records.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--region <region>` | `AWS_REGION` / `us-east-1` | Which region's legacy bucket to migrate. |
+| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, then your profile's region (the `us-east-1` legacy bucket instead when that region has none, or when the `us-east-1` one holds state) | Which region's legacy bucket to migrate. |
 | `--legacy-bucket <name>` | derived from the account and region | Source bucket name. |
 | `--new-bucket <name>` | `cdkd-state-{accountId}` | Destination bucket name. |
 | `--dry-run` | off | Report what would be copied and change nothing. |

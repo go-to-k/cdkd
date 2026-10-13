@@ -101,7 +101,13 @@ import {
   quotedOrDescribed,
   withheldTargetClause,
 } from '../../utils/pasteable-command.js';
-import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  regionShown,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -1158,8 +1164,15 @@ async function driftCommand(
   foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -1170,8 +1183,12 @@ async function driftCommand(
   >();
 
   try {
-    const region = namedCliRegion(options.region) ?? 'us-east-1';
-    const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+    const region = effectiveRegion.region;
+    const bucket = await resolveStateBucketWithDefault(
+      options.stateBucket,
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
+    );
     const prefix = options.statePrefix;
     const stateConfig = { bucket, prefix };
     // The account flags a malformed-record refusal or warning prints on its

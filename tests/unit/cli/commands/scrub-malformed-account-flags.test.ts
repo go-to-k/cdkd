@@ -179,7 +179,7 @@ describe('cdkd scrub carries the account flags on its malformed-record pointers 
     );
     // `stateBucket` there is the resolved one, bound before the context.
     const resolved = source.indexOf(
-      'const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);'
+      'const stateBucket = await resolveStateBucketWithDefault(\n    options.stateBucket,'
     );
     expect(resolved).toBeGreaterThan(-1);
     expect(resolved).toBeLessThan(source.indexOf('const refusalRecovery: LockRecoveryContext'));

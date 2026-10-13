@@ -1,3 +1,4 @@
+import { injectedAwsRegionOverride } from '../utils/injected-aws-region.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import {
   describeDockerFailure,
@@ -329,7 +330,13 @@ export async function buildDockerImage(
 
     let result;
     try {
-      result = await spawnStreaming(cmd, args, { cwd });
+      // The user's environment, without the AWS_REGION cdkd may have copied
+      // in for its own clients (go-to-k/cdkd#2100), as the CDK app gets.
+      const regionOverride = injectedAwsRegionOverride();
+      result = await spawnStreaming(cmd, args, {
+        cwd,
+        ...(regionOverride && { env: regionOverride }),
+      });
     } catch (err) {
       // `args`, NOT `source.executable`: the composer's spawn-refusal repair
       // resolves Node's `args[N]` index against the array handed to `spawn`,

@@ -1926,6 +1926,11 @@
       "scenarios": []
     },
     {
+      "name": "profile-region-default",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "propagation-races-2",
       "annotated": true,
       "scenarios": [
@@ -3366,6 +3371,7 @@
     "orphan-getatt-takeover",
     "partial-create-handback",
     "perf-cross-backend-check",
+    "profile-region-default",
     "rds-dbinstance-backfill",
     "rds-fix-forward-orphan",
     "recreate-mixed-direction",

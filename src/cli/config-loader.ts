@@ -3,6 +3,7 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { displayIdent } from '../utils/display-safe.js';
 
 /**
  * CDK configuration loaded from cdk.json and environment variables
@@ -444,7 +445,12 @@ export function getLegacyStateBucketName(accountId: string, region: string): str
  *    name.
  *
  * `region` is the CLI's *profile* region; it is used only to construct the
- * legacy fallback name. The actual state-bucket region is resolved later by
+ * legacy fallback name. `legacyFallbackRegion` names a SECOND legacy candidate,
+ * probed only when `region`'s legacy name is absent: a bare command whose
+ * region now comes from the AWS profile passes `us-east-1` here, the region
+ * the legacy name was built from before go-to-k/cdkd#2100, so a bucket a user
+ * created under that old default is still found
+ * (`legacyStateBucketFallbackRegion` in `src/cli/region-options.ts`). The actual state-bucket region is resolved later by
  * `resolveBucketRegion`, so the caller does not need to pass the bucket's
  * real region here.
  *
@@ -457,9 +463,11 @@ export function getLegacyStateBucketName(accountId: string, region: string): str
  */
 export async function resolveStateBucketWithDefault(
   cliBucket: string | undefined,
-  region: string
+  region: string,
+  legacyFallbackRegion?: string
 ): Promise<string> {
-  return (await resolveStateBucketWithDefaultAndSource(cliBucket, region)).bucket;
+  return (await resolveStateBucketWithDefaultAndSource(cliBucket, region, legacyFallbackRegion))
+    .bucket;
 }
 
 /**
@@ -469,7 +477,8 @@ export async function resolveStateBucketWithDefault(
  */
 export async function resolveStateBucketWithDefaultAndSource(
   cliBucket: string | undefined,
-  region: string
+  region: string,
+  legacyFallbackRegion?: string
 ): Promise<ResolvedStateBucket> {
   // Step 1: explicit value short-circuits the lookup chain.
   const syncResult = resolveStateBucketWithSource(cliBucket);
@@ -507,7 +516,8 @@ export async function resolveStateBucketWithDefaultAndSource(
   const newName = getDefaultStateBucketName(accountId);
   // TODO(remove-bc-after-1.x): legacy name kept for the backwards-compat read
   // path; remove together with the fallback branch below in PR 99.
-  const legacyName = getLegacyStateBucketName(accountId, region);
+  let legacyName = getLegacyStateBucketName(accountId, region);
+  let legacyRegion = region;
 
   // Use a region-agnostic client (us-east-1) for the existence checks. S3
   // returns 301 / 404 globally for both names — we don't need the real bucket
@@ -539,16 +549,54 @@ export async function resolveStateBucketWithDefaultAndSource(
     // back-to-back S3 round trips on the deploy's critical path (issue #1283).
     // `Promise.all` handles both rejections, so a double failure cannot leak
     // an unhandled rejection; the first error still propagates unchanged.
-    const [newProbe, legacyProbe] = await Promise.all([
+    const fallbackRegion =
+      legacyFallbackRegion !== undefined && legacyFallbackRegion !== region
+        ? legacyFallbackRegion
+        : undefined;
+    const fallbackName =
+      fallbackRegion === undefined
+        ? undefined
+        : getLegacyStateBucketName(accountId, fallbackRegion);
+    const [newProbe, primaryLegacyProbe, fallbackProbe] = await Promise.all([
       probeBucket(probe, newName, probeDeps),
       probeBucket(probe, legacyName, probeDeps),
+      fallbackName === undefined ? undefined : probeBucket(probe, fallbackName, probeDeps),
     ]);
+    // The legacy candidate this resolution uses, decided only on a branch that
+    // reads it. `region`'s own name when no fallback is in play: exactly the
+    // pre-#2100 answer for a NAMED region. With a fallback (an INFERRED
+    // region), the fallback is the bucket every bare command read before
+    // #2100, so it is kept whenever it holds anything — even when `region`'s
+    // own legacy bucket exists too, since that one may be empty or a different
+    // deployment, and picking it would make every stack in the fallback look
+    // absent and get re-created. "Anything", not "anything under the state
+    // prefix": a legacy bucket is cdkd's alone, and its records may sit under
+    // a custom `--state-prefix` this resolution does not know. `region`'s
+    // bucket is used only when the fallback is missing or empty — or answers
+    // 403 while `region`'s answers cleanly, since a bucket that denies us
+    // (another owner, or a policy) could only fail closed. The remediation text
+    // below names the region of the bucket it picked, so
+    // `cdkd state migrate --region <it>` copies from the bucket actually read.
+    let legacyProbe = primaryLegacyProbe;
+    const fallbackExists = fallbackProbe !== undefined && fallbackProbe !== 'missing';
+    const chooseLegacy = async (): Promise<void> => {
+      if (!fallbackExists) return;
+      const useFallback =
+        primaryLegacyProbe === 'missing' ||
+        (!(primaryLegacyProbe === 'ok' && fallbackProbe === 'access-denied') &&
+          (await bucketHasAnyState(probe, fallbackName!, probeDeps, '')));
+      if (useFallback) {
+        legacyName = fallbackName!;
+        legacyRegion = fallbackRegion!;
+        legacyProbe = fallbackProbe;
+      }
+    };
     // A 403 still counts as "the bucket is there" for NAME resolution — we
     // just could not head it. The distinction is carried through on the
     // returned `probe` field so the deploy preflight knows whether its own
     // HeadBucket would be pure duplication (see stateBucketExistenceConfirmed).
     const newExists = newProbe !== 'missing';
-    const legacyExists = legacyProbe !== 'missing';
+    const legacyExists = primaryLegacyProbe !== 'missing' || fallbackExists;
 
     // Step 2 / 3: pick the bucket that actually has state.
     //
@@ -569,12 +617,13 @@ export async function resolveStateBucketWithDefaultAndSource(
     if (newExists && legacyExists) {
       const newHasState = await bucketHasAnyState(probe, newName, probeDeps);
       if (!newHasState) {
+        await chooseLegacy();
         const legacyHasState = await bucketHasAnyState(probe, legacyName, probeDeps);
         if (legacyHasState) {
           logger.warn(
             `Both '${newName}' (new default) and '${legacyName}' (legacy default) exist, ` +
               `but the new bucket is empty and the legacy one has state. Reading from legacy. ` +
-              `Run \`cdkd state migrate --region ${region}\` to copy the state into the new ` +
+              `Run \`cdkd state migrate --region ${displayIdent(legacyRegion)}\` to copy the state into the new ` +
               `bucket and stop seeing this warning.`
           );
           return { bucket: legacyName, source: 'default-legacy', probe: legacyProbe };
@@ -592,10 +641,11 @@ export async function resolveStateBucketWithDefaultAndSource(
 
     // TODO(remove-bc-after-1.x): drop the legacy fallback branch in PR 99.
     if (legacyExists) {
+      await chooseLegacy();
       logger.warn(
         `Using legacy state bucket name '${legacyName}'. ` +
           `The default has changed to '${newName}'. To migrate, run:\n\n` +
-          `    cdkd state migrate --region ${region}\n\n` +
+          `    cdkd state migrate --region ${displayIdent(legacyRegion)}\n\n` +
           `(add --remove-legacy to delete the legacy bucket after a successful copy; ` +
           `legacy support will be dropped in a future release.)`
       );
@@ -605,7 +655,9 @@ export async function resolveStateBucketWithDefaultAndSource(
     // Step 4: neither bucket exists.
     throw new Error(
       `No cdkd state bucket found for account ${accountId}. ` +
-        `Looked for '${newName}' (current default) and '${legacyName}' (legacy default). ` +
+        `Looked for '${newName}' (current default) and '${legacyName}'` +
+        (fallbackName === undefined ? '' : ` / '${fallbackName}'`) +
+        ` (legacy default). ` +
         `Run 'cdkd bootstrap' to create '${newName}'.`
     );
   } finally {
@@ -629,14 +681,15 @@ export async function resolveStateBucketWithDefaultAndSource(
 async function bucketHasAnyState(
   client: import('@aws-sdk/client-s3').S3Client,
   bucketName: string,
-  deps: BucketProbeDeps
+  deps: BucketProbeDeps,
+  prefix = 'cdkd/'
 ): Promise<boolean> {
   const { ListObjectsV2Command, expectedOwnerParam } = deps;
   try {
     const resp = await client.send(
       new ListObjectsV2Command({
         Bucket: bucketName,
-        Prefix: 'cdkd/',
+        ...(prefix && { Prefix: prefix }),
         MaxKeys: 1,
         // No `EncodingType` on purpose (go-to-k/cdkd#3313): this reads `KeyCount`
         // and never a KEY, so the XML CR-to-LF round-trip cannot reach anything.

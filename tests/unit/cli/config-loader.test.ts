@@ -539,6 +539,230 @@ describe('config-loader', () => {
       await expect(fn(undefined, 'us-east-1')).rejects.toThrow(/cdkd bootstrap/);
     });
 
+    /**
+     * go-to-k/cdkd#2100: a bare command's region now comes from the AWS
+     * profile, so the legacy name it builds moved from
+     * `cdkd-state-{acct}-us-east-1` to `cdkd-state-{acct}-{profile region}`.
+     * The old default's legacy bucket must stay findable as a second
+     * candidate, or an upgrade turns a working setup into "No cdkd state
+     * bucket found".
+     */
+    describe('a second legacy candidate for the old us-east-1 default (go-to-k/cdkd#2100)', () => {
+      const ACCT = '123456789012';
+      function planBuckets(
+        existing: string[],
+        withState: string[] = existing,
+        forbidden: string[] = [],
+        listFails: string[] = []
+      ) {
+        s3SendMock.mockImplementation((cmd: { constructor: { __cmd?: string }; input: { Bucket: string } }) => {
+          const kind = (cmd.constructor as unknown as { __cmd?: string }).__cmd;
+          if (kind === 'HeadBucket') {
+            if (forbidden.includes(cmd.input.Bucket)) {
+              return Promise.reject(
+                Object.assign(new Error('Forbidden'), {
+                  name: 'Forbidden',
+                  $metadata: { httpStatusCode: 403 },
+                })
+              );
+            }
+            return existing.includes(cmd.input.Bucket)
+              ? Promise.resolve({})
+              : Promise.reject(
+                  Object.assign(new Error('NotFound'), {
+                    name: 'NotFound',
+                    $metadata: { httpStatusCode: 404 },
+                  })
+                );
+          }
+          if (kind === 'ListObjectsV2') {
+            if (listFails.includes(cmd.input.Bucket)) return Promise.reject(new Error('throttled'));
+            return Promise.resolve({ KeyCount: withState.includes(cmd.input.Bucket) ? 1 : 0 });
+          }
+          return Promise.reject(new Error(`Unexpected command ${kind ?? '?'}`));
+        });
+      }
+      const headedBuckets = () =>
+        s3SendMock.mock.calls
+          .map(([cmd]) => cmd as { constructor: { __cmd?: string }; input: { Bucket: string } })
+          .filter((cmd) => cmd.constructor.__cmd === 'HeadBucket')
+          .map((cmd) => cmd.input.Bucket);
+
+      it('finds the old default legacy bucket when the profile region has none (old bucket present)', async () => {
+        loggerMock.warn.mockClear();
+        planBuckets([`cdkd-state-${ACCT}-us-east-1`]);
+        const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toMatchObject({
+          bucket: `cdkd-state-${ACCT}-us-east-1`,
+          source: 'default-legacy',
+        });
+        // The remedy names the bucket that was READ, not the profile region's.
+        const said = loggerMock.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(said).toContain('cdkd state migrate --region us-east-1');
+        expect(said).not.toContain('--region ap-northeast-1');
+      });
+
+      it('finds it when its HeadBucket is 403 too (exists, not headable)', async () => {
+        planBuckets([], [], [`cdkd-state-${ACCT}-us-east-1`]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-us-east-1`
+        );
+      });
+
+      it("keeps the old default's legacy bucket when BOTH exist and it holds state", async () => {
+        // Every bare command read this bucket before #2100. Picking the profile
+        // region's (perhaps empty) one would make each stack look absent and
+        // get re-created.
+        planBuckets([`cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-us-east-1`
+        );
+      });
+
+      it("keeps the old default's legacy bucket when its state listing FAILS (the pre-#2100 answer)", async () => {
+        planBuckets(
+          [`cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`],
+          [`cdkd-state-${ACCT}-ap-northeast-1`],
+          [],
+          [`cdkd-state-${ACCT}-us-east-1`]
+        );
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-us-east-1`
+        );
+      });
+
+      it("keeps a cleanly-answering profile-region legacy bucket over a 403 old-default name", async () => {
+        // A 403 there (another owner, or denied) could only fail closed. Its
+        // listing is denied too, as for a real 403 bucket — the case where the
+        // state check alone would pick it.
+        planBuckets(
+          [`cdkd-state-${ACCT}-ap-northeast-1`],
+          [`cdkd-state-${ACCT}-ap-northeast-1`],
+          [`cdkd-state-${ACCT}-us-east-1`],
+          [`cdkd-state-${ACCT}-us-east-1`]
+        );
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-ap-northeast-1`
+        );
+      });
+
+      it('asks the old-default legacy bucket for ANY object, not only `cdkd/` (a custom --state-prefix)', async () => {
+        planBuckets([`cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await fn(undefined, 'ap-northeast-1', 'us-east-1');
+        const lists = s3SendMock.mock.calls
+          .map(([cmd]) => cmd as { constructor: { __cmd?: string }; input: Record<string, unknown> })
+          .filter(
+            (cmd) =>
+              cmd.constructor.__cmd === 'ListObjectsV2' &&
+              cmd.input['Bucket'] === `cdkd-state-${ACCT}-us-east-1`
+          );
+        expect(lists).toHaveLength(1);
+        expect(lists[0]!.input).not.toHaveProperty('Prefix');
+      });
+
+      it('decides between the two legacy names only when the region-free bucket does not settle it', async () => {
+        // n4: a region-free bucket WITH state wins outright, so no legacy
+        // listing is spent.
+        planBuckets(
+          [`cdkd-state-${ACCT}`, `cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`],
+          [`cdkd-state-${ACCT}`, `cdkd-state-${ACCT}-us-east-1`]
+        );
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(`cdkd-state-${ACCT}`);
+        const listed = s3SendMock.mock.calls
+          .map(([cmd]) => cmd as { constructor: { __cmd?: string }; input: { Bucket: string } })
+          .filter((cmd) => cmd.constructor.__cmd === 'ListObjectsV2')
+          .map((cmd) => cmd.input.Bucket);
+        expect(listed).toEqual([`cdkd-state-${ACCT}`]);
+      });
+
+      it("takes the profile region's own legacy bucket when the old default's is EMPTY", async () => {
+        planBuckets(
+          [`cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`],
+          [`cdkd-state-${ACCT}-ap-northeast-1`]
+        );
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-ap-northeast-1`
+        );
+      });
+
+      it('reads the old default legacy bucket over an EMPTY region-free one, as for a single legacy bucket', async () => {
+        loggerMock.warn.mockClear();
+        planBuckets(
+          [`cdkd-state-${ACCT}`, `cdkd-state-${ACCT}-ap-northeast-1`, `cdkd-state-${ACCT}-us-east-1`],
+          [`cdkd-state-${ACCT}-us-east-1`]
+        );
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}-us-east-1`
+        );
+        expect(loggerMock.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'cdkd state migrate --region us-east-1'
+        );
+      });
+
+      it('still prefers the region-free default over either legacy name', async () => {
+        planBuckets([`cdkd-state-${ACCT}`, `cdkd-state-${ACCT}-us-east-1`]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+          `cdkd-state-${ACCT}`
+        );
+      });
+
+      it('names every candidate it looked for when none exists (old bucket absent)', async () => {
+        planBuckets([]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await expect(fn(undefined, 'ap-northeast-1', 'us-east-1')).rejects.toThrow(
+          `'cdkd-state-${ACCT}-ap-northeast-1' / 'cdkd-state-${ACCT}-us-east-1' (legacy default)`
+        );
+      });
+
+      it('probes no second candidate when none is passed, or it equals the region', async () => {
+        planBuckets([`cdkd-state-${ACCT}`]);
+        const { resolveStateBucketWithDefault: fn } = await import(
+          '../../../src/cli/config-loader.js'
+        );
+        await fn(undefined, 'ap-northeast-1');
+        await fn(undefined, 'us-east-1', 'us-east-1');
+        expect(headedBuckets().sort()).toEqual(
+          [
+            `cdkd-state-${ACCT}`,
+            `cdkd-state-${ACCT}`,
+            `cdkd-state-${ACCT}-ap-northeast-1`,
+            `cdkd-state-${ACCT}-us-east-1`,
+          ].sort()
+        );
+      });
+    });
+
     it('both buckets exist + new has state -> use new (legacy is probably stale)', async () => {
       planS3({
         newHead: 'ok',

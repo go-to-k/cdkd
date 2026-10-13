@@ -25,7 +25,16 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  reconcileExportIndexRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+  stateWithRegion,
+  withOtherIndexRemoval,
+} from '../region-options.js';
 import {
   CdkdError,
   NestedStackChildDirectDestroyError,
@@ -287,8 +296,19 @@ async function destroyCommand(
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // go-to-k/cdkd#2100: the profile's region when none is named, never a
+  // `us-east-1` literal. Destroy reads each stack's region from its state
+  // records; this value is only the fallback for a region-less legacy record,
+  // and that fallback is reconciled per stack (`regionForStack`) so a record
+  // the old default wrote is still found.
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
   // The account flags the state commands this command prints carry
   // (go-to-k/cdkd#4648): `--profile`, the RESOLVED bucket and the prefix, so a
   // pasted `cdkd state orphan` / `cdkd state destroy` acts on the bucket this
@@ -312,8 +332,11 @@ async function destroyCommand(
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
   }
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -368,14 +391,36 @@ async function destroyCommand(
     // entries. Strong-reference safety checks scan state.json directly
     // (NOT the index), so the index is purely a perf hint for the
     // resolver on subsequent deploys.
-    const exportIndexStore = new ExportIndexStore(
-      awsClients.s3,
-      stateBucket,
-      options.statePrefix,
-      region,
-      stateBackend,
-      { profile: options.profile }
-    );
+    const runIndexRegion = await reconcileExportIndexRegion({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      statePrefix: options.statePrefix,
+      logger,
+    });
+    const newIndexStore = (indexRegion: string): ExportIndexStore =>
+      new ExportIndexStore(
+        awsClients.s3,
+        stateBucket,
+        options.statePrefix,
+        indexRegion,
+        stateBackend,
+        { profile: options.profile }
+      );
+    // go-to-k/cdkd#2100: a destroyed stack's entries — a nested child's too —
+    // also leave the OTHER candidate index file (`withOtherIndexRemoval`).
+    const exportIndexStore = withOtherIndexRemoval(newIndexStore(runIndexRegion), {
+      effective: effectiveRegion,
+      runIndexRegion,
+      statePrefix: options.statePrefix,
+      probe: stateBackend,
+      createStore: newIndexStore,
+      logger,
+    });
+    const regionForStack = stackRegionResolver({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      logger,
+    });
     const providerRegistry = new ProviderRegistry();
 
     // Register all SDK providers
@@ -720,7 +765,9 @@ async function destroyCommand(
           // legacy state file rather than a code path v6 writers reach.
           // A future cross-region extension should mirror the multi-region
           // disambiguation logic in the per-stack loop below.
-          const refRegion = allStateRefs.find((r) => r.stackName === pattern)?.region ?? region;
+          const refRegion =
+            allStateRefs.find((r) => r.stackName === pattern)?.region ??
+            (await regionForStack(pattern));
           const stateOnlyResult = await stateBackend.getState(pattern, refRegion);
           if (stateOnlyResult?.state.parentStack) {
             const err = new NestedStackChildDirectDestroyError(
@@ -805,10 +852,22 @@ async function destroyCommand(
     // command ends (the `finally` below) -- nothing costs a round trip per
     // stack.
     if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
+    // A region-less (legacy) record falls back to a region, reconciled per
+    // stack so the old default's record is not missed (go-to-k/cdkd#2100).
+    const fallbackRegionByName = new Map<string, string>();
+    for (const name of stackNames) {
+      if ((stateRefsByName.get(name) ?? []).some((r) => !r.region)) {
+        fallbackRegionByName.set(name, await regionForStack(name));
+      }
+    }
     for (const name of stackNames) {
       const synth = appStacks.find((s) => s.stackName === name);
       if (synth?.terminationProtection === true && !options.removeProtection) continue;
-      const planned = plannedDestroyRegion(stateRefsByName.get(name) ?? [], synth?.region, region);
+      const planned = plannedDestroyRegion(
+        stateRefsByName.get(name) ?? [],
+        synth?.region,
+        fallbackRegionByName.get(name) ?? region
+      );
       if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned, 'prestart');
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {
@@ -846,7 +905,11 @@ async function destroyCommand(
           continue;
         }
       }
-      const plannedRegion = plannedDestroyRegion(refs, synthRegion, region);
+      const plannedRegion = plannedDestroyRegion(
+        refs,
+        synthRegion,
+        fallbackRegionByName.get(stackName) ?? region
+      );
       let stackTargetRegion: string;
       if (refs.length === 0) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
@@ -1000,7 +1063,7 @@ async function destroyCommand(
               },
             },
             () =>
-              runDestroyForStack(stackName, stateResult.state, {
+              runDestroyForStack(stackName, stateWithRegion(stateResult.state, stackTargetRegion), {
                 stateBackend,
                 lockManager,
                 providerRegistry,

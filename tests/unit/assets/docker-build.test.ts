@@ -271,6 +271,30 @@ describe('buildDockerImage (executable source)', () => {
     expect(opts.cwd).toBe('/cdk.out');
   });
 
+  it("does not hand the executable an AWS_REGION cdkd copied in for itself (go-to-k/cdkd#2100)", async () => {
+    const saved = process.env['AWS_REGION'];
+    const { injectAwsRegion } = await import('../../../src/utils/injected-aws-region.js');
+    delete process.env['AWS_REGION'];
+    injectAwsRegion('eu-west-1');
+    try {
+      mockSpawn.mockResolvedValueOnce({ stdout: 'tag\n', stderr: '' });
+      await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', { wrapError });
+      const opts = mockSpawn.mock.calls[0]![2] as { env?: Record<string, string | undefined> };
+      // `undefined` DELETES the key in the spawn helper's merge onto process.env.
+      expect(opts.env).toEqual({ AWS_REGION: undefined });
+    } finally {
+      if (saved === undefined) delete process.env['AWS_REGION'];
+      else process.env['AWS_REGION'] = saved;
+    }
+  });
+
+  it('passes no env override when cdkd injected nothing', async () => {
+    mockSpawn.mockResolvedValueOnce({ stdout: 'tag\n', stderr: '' });
+    await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', { wrapError });
+    const opts = mockSpawn.mock.calls[0]![2] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('env');
+  });
+
   it('runs cwd in the asset directory when both directory + executable are set', async () => {
     mockSpawn.mockResolvedValueOnce({ stdout: 'tag-from-script\n', stderr: '' });
     await buildDockerImage(

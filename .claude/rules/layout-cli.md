@@ -77,15 +77,15 @@ Index of every area: [code-layout.md](code-layout.md).
 - **src/cli/region-options.ts** - shared region normalization
   ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars
-  — the env half is what the AWS SDK's own resolution chain reads, which no fold
-  at a cdkd read site can reach. `namedCliRegion` answers "which region did the
+  — the env half is what the AWS SDK's own chain reads. `namedCliRegion` answers "which region did the
   user NAME" (`undefined` when none); `rawCliRegion` preserves the spelling for
-  the bootstrap marker's second probe alone. `adoptDeprecatedRegionFlag(cmd)`
+  the bootstrap marker's second probe alone. A region VALUE comes from
+  `resolveEffectiveRegion`, held per stack by `stackRegionResolver` (#2100).
+  `adoptDeprecatedRegionFlag(cmd)`
   serves the four `cdkd local start-*` ENGINE shims whose handler belongs to
   cdk-local: it splices cdk-local's `--region` out, adds cdkd's hidden
-  deprecated option, and folds in a `preAction` hook — the only cdkd-owned point
-  running BEFORE cdk-local builds an SDK client. `cli-region-fold.test.ts`
-  fences the shape across `src/cli/commands/`.
+  deprecated option, and folds in a `preAction` hook, which runs BEFORE
+  cdk-local builds an SDK client. `cli-region-fold.test.ts` fences it.
 - **src/cli/program.ts** - `buildProgram()` builds the whole Commander tree.
   Split from `index.ts`, whose import runs `main()`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on

@@ -547,8 +547,9 @@ export function createBootstrapCommand(): Command {
       // from `AWS_REGION` / profile.
       new Option(
         '--region <region>',
-        'AWS region to bootstrap, or to tear down with --destroy ' +
-          '(defaults to AWS_REGION env, else us-east-1)'
+        'AWS region to bootstrap, or to tear down with --destroy (defaults to AWS_REGION, ' +
+          "AWS_DEFAULT_REGION, the profile's region, else us-east-1; an inferred region keeps " +
+          'existing us-east-1 asset storage)'
       )
     )
     .action(

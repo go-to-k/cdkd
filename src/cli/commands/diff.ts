@@ -31,7 +31,13 @@ import {
 } from '../../assets/asset-redirect.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+} from '../region-options.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -268,15 +274,26 @@ async function diffCommand(
   options.app = app;
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // go-to-k/cdkd#2100: the profile's region when none is named; an
+  // env-agnostic stack's state key is reconciled per stack below.
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
 
   logger.info('Calculating diff...');
   logger.debug('Options:', options);
 
   // Initialize AWS clients with region/profile
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -358,6 +375,12 @@ async function diffCommand(
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
       region,
       ...(options.profile && { profile: options.profile }),
+    });
+    const regionForStack = stackRegionResolver({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      logger,
+      siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
     });
     const diffCalculator = new DiffCalculator();
     // The account flags each malformed-record warning prints on its
@@ -513,8 +536,9 @@ async function diffCommand(
     for (const stackInfo of targetStacks) {
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
       // Stack region drives the state key. Falls back to the CLI region only
-      // when synth couldn't determine a region (e.g. env-agnostic stacks).
-      const stackRegion = stackInfo.region || region;
+      // when synth couldn't determine a region (e.g. env-agnostic stacks), and
+      // then to state the old us-east-1 default wrote (go-to-k/cdkd#2100).
+      const stackRegion = await regionForStack(stackInfo.stackName, stackInfo.region);
       const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, stackRegion);
       if (assetRedirect) {
         const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);

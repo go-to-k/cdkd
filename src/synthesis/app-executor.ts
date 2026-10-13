@@ -1,3 +1,4 @@
+import { withoutInjectedAwsRegion } from '../utils/injected-aws-region.js';
 import { spawn } from 'node:child_process';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,8 +60,11 @@ export class AppExecutor {
     this.logger.debug('Output directory:', outputDir);
 
     // Build environment variables
+    // Minus an `AWS_REGION` cdkd injected for its own SDK clients
+    // (go-to-k/cdkd#2100): the app sees the user's environment, as under the
+    // AWS CDK CLI, and cannot pin a stack to a region the user never named.
     const env: Record<string, string> = {
-      ...process.env,
+      ...(withoutInjectedAwsRegion({ ...process.env }) as Record<string, string>),
       CDK_OUTDIR: outputDir,
     };
 

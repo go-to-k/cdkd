@@ -752,7 +752,7 @@ export async function rollbackCommand(
       ref = scoped[0]!;
     }
     const stackName = ref.stackName;
-    const region = ref.region ?? setup.region;
+    const region = ref.region ?? (await setup.regionFor(ref.stackName));
 
     // go-to-k/cdkd#4633: journal only — no providers, no AWS clients, no replay.
     if (options.dropFailed !== undefined) {
@@ -786,10 +786,10 @@ export async function rollbackCommand(
     // it would take a real, billable snapshot and then fail the delete.
     //
     // Built UNCONDITIONALLY rather than under a `region !== setup.region`
-    // guard: `setup.region` falls back to the literal 'us-east-1' when
-    // neither --region nor AWS_REGION is set, while `setup.awsClients`
-    // resolves through the SDK chain (AWS_DEFAULT_REGION, profile config), so
-    // the two can disagree while the labels match. `setAwsClients` mirrors
+    // guard: `region` can be a record's own region or one held on the old
+    // us-east-1 default (go-to-k/cdkd#2100), while `setup.awsClients`
+    // resolves through the SDK chain (profile config), so the two can
+    // disagree while the labels match. `setAwsClients` mirrors
     // what `destroy-runner.ts` does for a cross-region destroy; the original
     // set is restored in the outer finally.
     stackAwsClients = new AwsClients({

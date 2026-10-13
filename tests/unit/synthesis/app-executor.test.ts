@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 
@@ -330,5 +330,54 @@ describe('AppExecutor', () => {
       expect(env['CDK_DEFAULT_REGION']).toBeUndefined();
       expect(env['CDK_DEFAULT_ACCOUNT']).toBeUndefined();
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#2100 (review m4): cdkd copies an `AWS_DEFAULT_REGION`-inferred
+ * region into `AWS_REGION` for its own SDK clients. The CDK app child must not
+ * see that copy — an app writing `env: { region: process.env.AWS_REGION }`
+ * would pin its stacks to it and escape the hold that keeps a pre-upgrade
+ * us-east-1 stack where it lives. The AWS CDK CLI does not set it either.
+ */
+describe('AppExecutor and an AWS_REGION cdkd injected (review m4)', () => {
+  const saved = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
+  afterEach(async () => {
+          if (saved.region === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = saved.region;
+    if (saved.def === undefined) delete process.env['AWS_DEFAULT_REGION'];
+    else process.env['AWS_DEFAULT_REGION'] = saved.def;
+  });
+
+  async function childEnv(): Promise<Record<string, string>> {
+    vi.resetAllMocks();
+    const mockProc = createMockProcess();
+    vi.mocked(spawn).mockReturnValue(mockProc);
+    const promise = new AppExecutor().execute({
+      app: 'node bin/app.ts',
+      outputDir: '/tmp/cdk.out',
+      context: {},
+    });
+    mockProc.emit('close', 0);
+    await promise;
+    return (vi.mocked(spawn).mock.calls[0]![1] as unknown as { env: Record<string, string> }).env;
+  }
+
+  it('AWS_DEFAULT_REGION only: the child gets NO AWS_REGION, though cdkd itself has one', async () => {
+    const { exportInferredRegionForSdk } = await import('../../../src/cli/region-options.js');
+    delete process.env['AWS_REGION'];
+    process.env['AWS_DEFAULT_REGION'] = 'eu-west-1';
+    exportInferredRegionForSdk({ region: 'eu-west-1', source: 'default-env' });
+    expect(process.env['AWS_REGION']).toBe('eu-west-1');
+
+    const env = await childEnv();
+    expect(env).not.toHaveProperty('AWS_REGION');
+    expect(env['AWS_DEFAULT_REGION']).toBe('eu-west-1');
+  });
+
+  it("THE OTHER POLARITY: the user's own AWS_REGION reaches the child unchanged", async () => {
+    process.env['AWS_REGION'] = 'ap-southeast-2';
+    const env = await childEnv();
+    expect(env['AWS_REGION']).toBe('ap-southeast-2');
   });
 });

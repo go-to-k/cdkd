@@ -75,7 +75,16 @@ import { producerRecordKey } from '../../state/record-keys.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  reconcileExportIndexRegion,
+  resolveEffectiveRegion,
+  stackRegionResolver,
+  stateWithRegion,
+  withOtherIndexRemoval,
+} from '../region-options.js';
 import {
   resolveStateBucketWithDefault,
   resolveStateBucketWithDefaultAndSource,
@@ -582,6 +591,12 @@ export async function setupStateBackend(options: {
   lockManager: LockManager;
   awsClients: AwsClients;
   region: string;
+  /**
+   * The state-key region for a stack whose region nothing else pins (a
+   * region-less legacy record): `region`, held on state the old `us-east-1`
+   * default wrote when `region` was inferred (go-to-k/cdkd#2100).
+   */
+  regionFor: (stackName: string) => Promise<string>;
   bucket: string;
   prefix: string;
   exportIndexStore: ExportIndexStore;
@@ -598,14 +613,25 @@ export async function setupStateBackend(options: {
   foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  const region = effectiveRegion.region;
+  const bucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
   const prefix = options.statePrefix;
   const stateConfig = { bucket, prefix };
   // Pass region/profile so the backend can rebuild its S3 client if the
@@ -621,20 +647,42 @@ export async function setupStateBackend(options: {
   // sees a fully-ready backend.
   await stateBackend.verifyBucketExists();
 
-  const exportIndexStore = new ExportIndexStore(
-    awsClients.s3,
-    bucket,
-    prefix,
-    region,
-    stateBackend,
-    { profile: options.profile }
-  );
+  const runIndexRegion = await reconcileExportIndexRegion({
+    effective: effectiveRegion,
+    probe: stateBackend,
+    statePrefix: prefix,
+    logger: getLogger(),
+  });
+  const newIndexStore = (indexRegion: string): ExportIndexStore =>
+    new ExportIndexStore(
+      awsClients.s3,
+      stateConfig.bucket,
+      stateConfig.prefix,
+      indexRegion,
+      stateBackend,
+      { profile: options.profile }
+    );
+  // go-to-k/cdkd#2100: a destroyed stack's entries — a nested child's too, and
+  // under `cdkd rollback` as well — also leave the OTHER candidate index file.
+  const exportIndexStore = withOtherIndexRemoval(newIndexStore(runIndexRegion), {
+    effective: effectiveRegion,
+    runIndexRegion,
+    statePrefix: prefix,
+    probe: stateBackend,
+    createStore: newIndexStore,
+    logger: getLogger(),
+  });
 
   return {
     stateBackend,
     lockManager,
     awsClients,
     region,
+    regionFor: stackRegionResolver({
+      effective: effectiveRegion,
+      probe: stateBackend,
+      logger: getLogger(),
+    }),
     bucket,
     prefix,
     exportIndexStore,
@@ -3133,7 +3181,11 @@ async function stateDestroyCommand(
     for (const name of stackNames) {
       const refs = stateRefs.filter((r) => r.stackName === name);
       for (const ref of stateDestroyTargets(refs, options.stackRegion) ?? []) {
-        void crossPrefixCheck.cache.full(name, ref.region ?? setup.region, 'prestart');
+        void crossPrefixCheck.cache.full(
+          name,
+          ref.region ?? (await setup.regionFor(name)),
+          'prestart'
+        );
       }
     }
     for (const [stackIndex, stackName] of stackNames.entries()) {
@@ -3179,10 +3231,11 @@ async function stateDestroyCommand(
         // (go-to-k/cdkd#3179).
         logger.info(safeMsg`\nPreparing to destroy stack: ${formatStackRefSafe(ref)}`);
 
-        const stateResult = await setup.stateBackend.getState(
-          stackName,
-          ref.region ?? setup.region
-        );
+        // A region-less (legacy) record is read in the region its own body
+        // names, found by the same reconciliation every command uses
+        // (go-to-k/cdkd#2100) rather than assumed to be the run's region.
+        const refRegion = ref.region ?? (await setup.regionFor(stackName));
+        const stateResult = await setup.stateBackend.getState(stackName, refRegion);
         if (!stateResult) {
           logger.warn(
             safeMsg`No state found for stack ${displayStackName(stackName)}` +
@@ -3216,7 +3269,7 @@ async function stateDestroyCommand(
         const eventRecorder = startRunRecorder({
           backend: setup.stateBackend,
           stackName,
-          region: ref.region ?? setup.region,
+          region: refRegion,
           command: 'destroy',
         })!;
         let destroyRunResult: DeploymentRunResult = 'SUCCEEDED';
@@ -3236,7 +3289,7 @@ async function stateDestroyCommand(
                 lockManager: setup.lockManager,
                 providerRegistry,
                 parentStackName: stackName,
-                parentRegion: ref.region ?? setup.region,
+                parentRegion: refRegion,
                 accountId: 'unknown',
                 awsClients: setup.awsClients,
                 stateBucket: setup.bucket,
@@ -3261,7 +3314,7 @@ async function stateDestroyCommand(
                 },
               },
               () =>
-                runDestroyForStack(stackName, stateResult.state, {
+                runDestroyForStack(stackName, stateWithRegion(stateResult.state, refRegion), {
                   stateBackend: setup.stateBackend,
                   lockManager: setup.lockManager,
                   providerRegistry,
@@ -3735,8 +3788,16 @@ async function stateInfoCommand(options: {
   let regionCorrectedS3: S3Client | null = null;
 
   try {
-    const region = namedCliRegion(options.region) ?? 'us-east-1';
-    const resolved = await resolveStateBucketWithDefaultAndSource(options.stateBucket, region);
+    // go-to-k/cdkd#2100: the profile's region when none is named, not a
+    // `us-east-1` literal (`resolveEffectiveRegion`).
+    const effectiveRegion = await resolveEffectiveRegion(options);
+    exportInferredRegionForSdk(effectiveRegion);
+    const region = effectiveRegion.region;
+    const resolved = await resolveStateBucketWithDefaultAndSource(
+      options.stateBucket,
+      region,
+      legacyStateBucketFallbackRegion(effectiveRegion)
+    );
     const bucket = resolved.bucket;
     const prefix = options.statePrefix;
 

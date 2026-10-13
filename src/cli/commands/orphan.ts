@@ -21,7 +21,13 @@ import { buildLockContentionMessage } from '../../state/lock-contention-message.
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion, regionShown } from '../region-options.js';
+import {
+  exportInferredRegionForSdk,
+  foldRegionOption,
+  legacyStateBucketFallbackRegion,
+  regionShown,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import {
@@ -261,15 +267,26 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     }
   }
 
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+  // go-to-k/cdkd#2100: the profile's region when none is named, not a
+  // `us-east-1` literal (`resolveEffectiveRegion`).
+  const effectiveRegion = await resolveEffectiveRegion(options);
+  exportInferredRegionForSdk(effectiveRegion);
+  const region = effectiveRegion.region;
+  const stateBucket = await resolveStateBucketWithDefault(
+    options.stateBucket,
+    region,
+    legacyStateBucketFallbackRegion(effectiveRegion)
+  );
 
   if (options.region) {
     process.env['AWS_REGION'] = options.region;
     process.env['AWS_DEFAULT_REGION'] = options.region;
   }
+  // go-to-k/cdkd#2100: the resolved region, explicitly. A region-less bag
+  // follows the SDK's chain, which never reads AWS_DEFAULT_REGION, so it would
+  // disagree with a region inferred from it.
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    region: effectiveRegion.region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);

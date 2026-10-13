@@ -13,6 +13,7 @@ import {
 } from './constructable-implementation.js';
 import { installOnceLeakDetector } from './once-leak-detector.js';
 import { installStreamFence } from './stream-fence.js';
+import { resetInjectedAwsRegionForTests } from '../src/utils/injected-aws-region.js';
 
 /**
  * The unit suite must not depend on whether the DEVELOPER is behind a proxy.
@@ -42,6 +43,35 @@ for (const name of [
 ]) {
   delete process.env[name];
 }
+
+/**
+ * The same machine-independence for the REGION the AWS SDK's own chain
+ * resolves. Since go-to-k/cdkd#2100 every command handler asks that chain
+ * which region it would use when the user names none
+ * (`resolveEffectiveRegion` in `src/cli/region-options.ts`), and the chain
+ * reads the developer's `~/.aws/config` (and `~/.aws/credentials`) and,
+ * failing that, EC2 instance metadata. So a developer whose default profile
+ * says `ap-northeast-1` would run a different suite than CI, and a runner with no config would reach
+ * `169.254.169.254` (refused by the network fence below). Pointing the config
+ * file nowhere and disabling IMDS makes the chain answer "no region", which
+ * is the `us-east-1` default every test was written against; a test that
+ * needs a profile region mocks the STS client's `config.region`.
+ */
+process.env['AWS_CONFIG_FILE'] = '/nonexistent/cdkd-unit-test-aws-config';
+// The SDK merges the credentials file's profile into the region lookup too.
+process.env['AWS_SHARED_CREDENTIALS_FILE'] = '/nonexistent/cdkd-unit-test-aws-credentials';
+process.env['AWS_EC2_METADATA_DISABLED'] = 'true';
+// ...and the two variables cdkd itself reads ahead of the profile: a shell or
+// CI image exporting either would otherwise turn every bare-invocation test
+// into a named- or inferred-region one. A test that needs one sets it.
+delete process.env['AWS_REGION'];
+delete process.env['AWS_DEFAULT_REGION'];
+// The `AWS_REGION` cdkd copies in from `AWS_DEFAULT_REGION` is remembered in
+// module state (`src/utils/injected-aws-region.ts`); forget it after every
+// case, or a later case's NAMED region of the same value reads as inferred.
+afterEach(() => {
+  resetInjectedAwsRegionForTests();
+});
 
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing

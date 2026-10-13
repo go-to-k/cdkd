@@ -800,6 +800,79 @@ describe('ExportIndexStore', () => {
     });
   });
 
+  /**
+   * go-to-k/cdkd#2100 (review n11): the CLI removes a destroyed stack's
+   * entries from the OTHER candidate index file of an inferred region with
+   * this. It must never CREATE that file — `removeStack` rebuilds and writes a
+   * missing one, which would change which file later commands pick.
+   */
+  describe('removeStackIfPresent', () => {
+    it('does nothing at all when the file is missing: no rebuild, no PUT', async () => {
+      const sent: string[] = [];
+      const s3 = mockS3(async (cmd) => {
+        sent.push(cmd.constructor.name);
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
+        }
+        throw new Error('unexpected');
+      });
+      const backend = mockBackend([{ stackName: 'S', region: 'us-east-1' }]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      await store.removeStackIfPresent('S', 'us-east-1');
+
+      expect(sent.filter((c) => c !== 'GetBucketLocationCommand')).toEqual(['GetObjectCommand']);
+    });
+
+    it("removes the stack's entries from a file that exists, conditionally on its ETag", async () => {
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          Gone: { value: 'g', producerStack: 'S', producerRegion: 'ap-northeast-1' },
+          Keep: { value: 'k', producerStack: 'Other', producerRegion: 'us-east-1' },
+        },
+        lastModified: 1,
+      };
+      let put: { body: ExportIndexFile; ifMatch: unknown } | undefined;
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          const input = cmd.input as { Body: string; IfMatch?: string };
+          put = { body: JSON.parse(input.Body) as ExportIndexFile, ifMatch: input.IfMatch };
+          return { ETag: '"e2"' };
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      await store.removeStackIfPresent('S', 'ap-northeast-1');
+
+      expect(put!.body.exports['Gone']).toBeUndefined();
+      expect(put!.body.exports['Keep']).toBeDefined();
+      expect(put!.ifMatch).toBe('"e1"');
+    });
+
+    it('leaves a CORRUPT file alone rather than rebuilding it', async () => {
+      let putCount = 0;
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return { Body: { transformToString: async () => '{not json' }, ETag: '"e1"' };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') putCount++;
+        return {};
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+      await store.removeStackIfPresent('S', 'us-east-1');
+      expect(putCount).toBe(0);
+    });
+  });
+
   describe('removeStack', () => {
     it('removes all entries owned by the stack', async () => {
       const indexFile: ExportIndexFile = {

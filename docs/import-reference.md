@@ -153,10 +153,12 @@ parameter, `Fn::GetAtt`, `Fn::Select`, `AWS::StackName`, or a
 has to supply that resource.
 
 cdkd takes the account from `sts:GetCallerIdentity`. It takes the region from
-the stack's `env.region`. A stack with no fixed region uses `AWS_REGION`, then
-`us-east-1`; the deprecated `--region` flag, when passed, takes precedence
-over both. Your profile's region is not consulted, so set `AWS_REGION` when
-the resources live in another region.
+the stack's `env.region`. A stack with no fixed region uses the
+[region resolution order](cli-reference-region.md#resolution-order):
+`AWS_REGION`, `AWS_DEFAULT_REGION`, your profile's region, then `us-east-1`; the
+deprecated `--region` flag, when passed, takes precedence over all of them. A
+stack that already has state only in `us-east-1` keeps using it unless you name
+a region.
 
 When `sts:GetCallerIdentity` fails and `AWS_ACCOUNT_ID` is unset or is not a
 12-digit account id, a name that needs the account stays unresolved. If a

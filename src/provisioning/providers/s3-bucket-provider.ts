@@ -6923,8 +6923,9 @@ export class S3BucketProvider implements ResourceProvider {
       //    earlier revision of this comment: `deploy.ts` replaces the initial
       //    bag with `new AwsClients({ region: stackRegion })` before
       //    `registerAllProviders` runs, and `stackRegion` resolves through
-      //    `namedCliRegion(...) ?? 'us-east-1'`, so `region` is always DEFINED
-      //    and `AwsClients`' conditional fold always fires. `rollback.ts` has
+      //    `resolveEffectiveRegion` (go-to-k/cdkd#2100), which always returns
+      //    a canonical region, so `region` is always DEFINED and `AwsClients`'
+      //    conditional fold always fires. `rollback.ts` has
       //    the same shape.
       //  - the door verified OPEN is a LIBRARY caller constructing `AwsClients`
       //    with no region at all. `import.ts` also builds a region-less bag; it

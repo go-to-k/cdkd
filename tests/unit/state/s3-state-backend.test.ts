@@ -1358,6 +1358,87 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     });
   });
 
+  /**
+   * go-to-k/cdkd#2100: the region reconciliation's probe. `stateExists` gives a
+   * region-less legacy record to EVERY region, so an inferred profile region
+   * would claim it on its first probe and move a stack whose resources live in
+   * us-east-1. This one gives it to `regionlessOwner` only.
+   */
+  describe('stateExistsOwnedBy', () => {
+    const nf = () => Object.assign(new Error('NF'), { name: 'NotFound' });
+
+    it('gives a legacy record that names NO region to the owner region only', async () => {
+      s3Client.send.mockRejectedValueOnce(nf());
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+      await expect(backend.stateExistsOwnedBy('S', 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+        false
+      );
+      s3Client.send.mockRejectedValueOnce(nf());
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+      await expect(backend.stateExistsOwnedBy('S', 'us-east-1', 'us-east-1')).resolves.toBe(true);
+    });
+
+    it('still answers a legacy record that NAMES its region by that region', async () => {
+      s3Client.send.mockRejectedValueOnce(nf());
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'ap-northeast-1')) });
+      await expect(backend.stateExistsOwnedBy('S', 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+        true
+      );
+    });
+
+    it('FAILS CLOSED when the legacy record cannot be read', async () => {
+      // "cannot tell who owns it" must not read as "nobody owns it": that
+      // would send the stack to the profile's region and re-create it.
+      s3Client.send.mockRejectedValueOnce(nf());
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
+      );
+      await expect(backend.stateExistsOwnedBy('S', 'us-east-1', 'us-east-1')).rejects.toThrow(
+        /cannot tell which region it belongs to/
+      );
+    });
+
+    it('answers true from the region-scoped key without reading the legacy one', async () => {
+      s3Client.send.mockResolvedValueOnce({});
+      await expect(backend.stateExistsOwnedBy('S', 'ap-northeast-1', 'us-east-1')).resolves.toBe(
+        true
+      );
+      expect(s3Client.send).toHaveBeenCalledTimes(1);
+      expect(s3Client.send.mock.calls[0][0].input.Key).toBe('cdkd/S/ap-northeast-1/state.json');
+    });
+
+    it('holds a region-less legacy record on us-east-1 through the real resolver', async () => {
+      // The end-to-end shape the reconciliation sees: the legacy key only,
+      // naming no region, under an inferred profile region.
+      const { stackRegionResolver } = await import('../../../src/cli/region-options.js');
+      s3Client.send.mockImplementation(async (cmd: { input: { Key?: string } }) => {
+        if (cmd.input.Key === 'cdkd/S/state.json') return { Body: bodyOf(v1State('S')) };
+        throw nf();
+      });
+      const info = vi.fn();
+      const regionFor = stackRegionResolver({
+        effective: { region: 'ap-northeast-1', source: 'profile' },
+        probe: backend,
+        logger: { info, debug: vi.fn() },
+      });
+      await expect(regionFor('S')).resolves.toBe('us-east-1');
+      expect(String(info.mock.calls[0]?.[0])).toContain('Continuing to use us-east-1');
+    });
+  });
+
+  describe('rawObjectExists', () => {
+    it('HEADs the key and downloads nothing', async () => {
+      s3Client.send.mockResolvedValueOnce({});
+      await expect(backend.rawObjectExists('cdkd/_index/us-east-1/exports.json')).resolves.toBe(true);
+      expect(s3Client.send.mock.calls[0][0]).toBeInstanceOf(HeadObjectCommand);
+    });
+
+    it('answers false on NotFound', async () => {
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      await expect(backend.rawObjectExists('k')).resolves.toBe(false);
+    });
+  });
+
   describe('deleteState', () => {
     it('deletes the region-scoped key and sweeps the matching legacy key', async () => {
       // 1st: DeleteObject (the create-token ledger, #4438 -- first, fail-closed)
