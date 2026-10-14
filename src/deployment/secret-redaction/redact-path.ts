@@ -16,7 +16,7 @@ import {
 import { positionByCrossStackSource } from './certified-positions.js';
 import { positionByParameterPlaceholders } from './placeholder-positions.js';
 import { positionListByCrossStackSource, identityKeyFor } from './identity-keys.js';
-import { positionByInheritedParameter } from './nested-stack.js';
+import { positionByInheritedParameter, positionByParameterReread } from './nested-stack.js';
 import {
   carriesSecretMask,
   isKnownSecretExpression,
@@ -46,7 +46,9 @@ import {
  * A source leaf that is an intrinsic OBJECT has no string to copy. A
  * nested-stack child's `{Ref: <Param>}` leaf whose parameter carried an
  * inherited secret into this resource is answered first, as the diff side
- * binds that parameter ({@link positionByInheritedParameter}, issue #2349).
+ * binds that parameter ({@link positionByInheritedParameter}, issue #2349),
+ * and an `Fn::Select` / `Fn::Split` leaf over its parameters is re-read with
+ * those bindings ({@link positionByParameterReread}, issue #4731).
  * Any other goes through four positioning passes before the value scan, in
  * this order:
  *
@@ -182,6 +184,10 @@ export function redactByPath(
     // last, while the diff side scans the parent's.
     const inherited = positionByInheritedParameter(bag, source, secrets);
     if (inherited !== undefined) return inherited;
+    // Its `Fn::Select` / `Fn::Split` twin (issue #4731): such a leaf, re-read
+    // with the diff side's parameter bindings, rather than from that slot.
+    const reread = positionByParameterReread(bag, source, secrets);
+    if (reread !== undefined) return reread;
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —

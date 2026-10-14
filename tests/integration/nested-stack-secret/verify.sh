@@ -196,6 +196,7 @@ CHILD_FALLTHROUGH_PARAM="cdkd-nested-child-fallthrough-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_REV_PARAM="cdkd-nested-child-fallthroughrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_EMBED_REV_PARAM="cdkd-nested-child-fallthroughembedrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_SELECT_REV_PARAM="cdkd-nested-child-fallthroughselectrev-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_MIXED_REV_PARAM="cdkd-nested-child-fallthroughmixedrev-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -641,7 +642,7 @@ cleanup() {
              "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
              "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
-             "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" \
+             "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -1402,6 +1403,34 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4731: one resource reading the literal through Fn::Select beside the sibling
+# `FallthroughMixedReversed`: the Select/Split read of `FallConnA2` beside a read of
+# `FallSecretB2` in ONE resource. Before #4731 cdkd withdrew `FallConnA2`'s
+# literal spelling for the whole child here, so the #4644 assertions below on
+# `FallConnA2`'s own spelling went red with it; checked FIRST, so a regression
+# names this issue. The leaf is re-read with the diff side's bindings.
+echo "==> #4731: one resource reading FallConnA2 through Fn::Select beside FallSecretB2"
+assert_eq "premise: FallthroughMixedReversed's synthesized Description is a Select over a Split of FallConnA2, its Value a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughMixedReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::Select":[0,{"Fn::Split":["@",{"Ref":"FallConnA2"}]}]},{"Ref":"FallSecretB2"}]'
+LIVE_FALL2_MIXED_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE FallthroughMixedReversed Description holds the resolved text before the @" \
+  "${LIVE_FALL2_MIXED_DESC}" "postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}"
+assert_eq "the LIVE FallthroughMixedReversed Value holds the resolved fall2 secret" \
+  "$(aws ssm get-parameter --name "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" --region "${REGION}" \
+    --query 'Parameter.Value' --output text)" "${FALL2_PW_VALUE}"
+FALL2_MIXED_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughMixedReversed.properties.Description')"
+if [ "${FALL2_MIXED_STATE}" = "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}" ]; then
+  echo "FAIL: FallthroughMixedReversed.Description persisted the survivor's spelling, so FallConnA2's literal was withdrawn for the child (issue #4731)" >&2
+  exit 1
+fi
+assert_eq "FallthroughMixedReversed.Description persists the literal's own tokens" \
+  "${FALL2_MIXED_STATE}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
+assert_eq "FallthroughMixedReversed.Value persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughMixedReversed.properties.Value')" "${FALL2_EXPR_B}"
+
 # --- #4644: the two-token literal keeps its own spelling in the REVERSED order -
 # `FallthroughPairReversed` is `FallthroughPair` with the PARENT order flipped:
 # `FallConnA2` resolves first and `FallSecretB2` last, so the password's parent
@@ -1815,19 +1844,13 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 # EVERY stack-owned SSM parameter, which the two #2291 rows were missing: the
 # loop said "all six" while the stack owned eight, so a destroy that stranded
 # `HandoffPair` / `HandoffSub` passed this check. Counted from the fixture on
-# 2026-08-28 while adding the #2327 arm; nine since the #2745 arm's `PinParam`;
-# ten since the #3079 arm's `PinTwinParam`; eleven since the #3062 arm's
-# `PinJoinParam`; twelve since the #2320 arm's `HandoffMixed`; fourteen since
-# the #4446 arm's `HandoffSpans` / `HandoffSpansIf`; fifteen since the #2298
-# arm's `EmbedSecretPair`; sixteen since the #4527 arm's
-# `MultiUnknownSecretPair`; seventeen since the #2349 arm's `FallthroughPair`;
-# twenty since the #4644 arm's `FallthroughPairReversed`,
-# `FallthroughEmbedReversed` and `FallthroughSelectReversed`.
+# 2026-08-28 while adding the #2327 arm; every arm since adds its own
+# parameter here.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
          "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" "${CHILD_HANDOFF_MIXED_PARAM}" "${CHILD_PIN_PARAM}" \
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
          "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
-         "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" \
+         "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do

@@ -64,7 +64,10 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
       expect(redactInheritedParameterValue(parent, 'ConnA', CONN)).toBe(SPELLING);
       // ConnA resolves LAST, so without the withdrawal its token takes the slot.
       const selA = { 'Fn::Select': [0, [{ Ref: 'ConnA' }]] };
-      const selB = { 'Fn::Select': [0, [{ Ref: 'SecretB' }]] };
+      // An `Fn::Sub` under `Fn::Select` is no re-read (#4731's persist arm
+      // evaluates `Ref` / `Fn::Select` / `Fn::Split` / `Fn::Join` only), so
+      // the slot answers it and the withdrawal still applies.
+      const selB = { 'Fn::Select': [0, [{ 'Fn::Sub': '${SecretB}' }]] };
       const template = {
         Parameters: { ConnA: { Type: 'String' }, SecretB: { Type: 'String' } },
         Resources: mixed

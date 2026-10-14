@@ -109,6 +109,13 @@ import { Construct } from 'constructs';
  *    `Fn::Split` twin, reading ONLY `FallConnA2`: no positioner owns that
  *    shape, so the value scan answers it from the inherited-secret carry,
  *    which must hold the literal's own token rather than the survivor.
+ *  - `FallthroughMixedReversed` (child) — THE #4731 ARM. ONE resource reading
+ *    `FallConnA2` through `Fn::Select` / `Fn::Split` (its `Description`) beside
+ *    `FallSecretB2` (its `Value`). The carry holds one token per plaintext per
+ *    resource, so before #4731 this resource made cdkd withdraw `FallConnA2`'s
+ *    literal spelling for the WHOLE child: every arm above persisted the
+ *    survivor while `cdkd diff --recursive` rendered the literal. The leaf is
+ *    now re-read with the diff side's bindings.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -187,6 +194,7 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughReversedParamName: string;
       fallthroughEmbedReversedParamName: string;
       fallthroughSelectReversedParamName: string;
+      fallthroughMixedReversedParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -490,6 +498,16 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     ((fallthroughSelectReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
       'FallthroughSelectReversed'
+    );
+    // THE #4731 ARM: the Select/Split read of `FallConnA2` and a bare read of
+    // `FallSecretB2` in ONE resource, one plaintext between them.
+    const fallthroughMixedReversed = new ssm.StringParameter(this, 'FallthroughMixedReversed', {
+      parameterName: names.fallthroughMixedReversedParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: cdk.Fn.select(0, cdk.Fn.split('@', fallConn2.valueAsString)),
+    });
+    ((fallthroughMixedReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
+      'FallthroughMixedReversed'
     );
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
@@ -899,6 +917,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughReversedParamName: `cdkd-nested-child-fallthroughrev-${account}`,
         fallthroughEmbedReversedParamName: `cdkd-nested-child-fallthroughembedrev-${account}`,
         fallthroughSelectReversedParamName: `cdkd-nested-child-fallthroughselectrev-${account}`,
+        fallthroughMixedReversedParamName: `cdkd-nested-child-fallthroughmixedrev-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

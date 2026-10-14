@@ -1,4 +1,9 @@
 import { recordReferenceProvenanceEntry } from '../secret-redaction/reference-provenance.js';
+import {
+  recordInheritedParameterValue,
+  rereadParameterExpression,
+  type ParameterBinding,
+} from '../secret-redaction/nested-stack.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -155,6 +160,9 @@ export function recordInheritedParameterSecrets(
   if (inherited && recorded)
     recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
+  // Issue #4731: every parameter this resource reads, with its value, so the
+  // persist walk can re-read an `Fn::Select` / `Fn::Split` leaf over them.
+  recordInheritedParameterValue(recorded, inherited, parameterName, value);
   // Issue #2291 round 2. THIS parameter's own expression, when the parent
   // certified one, rather than the collapsed map's survivor. See the
   // "WHICH EXPRESSION" section of the doc above for why the survivor is the
@@ -256,13 +264,13 @@ function carriedExpressionFor(
 /**
  * Withdraw the rendered spelling (issue #4644) of every parameter a child
  * resource reads beside another parameter the carry would record DIFFERENTLY
- * for a plaintext both carry (issue
- * [#4731](https://github.com/go-to-k/cdkd/issues/4731)), BEFORE the child's
- * diff binding or any of its resources resolve.
+ * for a plaintext both carry, BEFORE the child's diff binding or any of its
+ * resources resolve.
  *
  * The carry holds ONE expression per plaintext per resource, so in such a
  * resource whichever parameter resolved last decides every value-scanned leaf
- * (`Fn::Select`, `Fn::Split`, an array): the other parameter's leaf persists
+ * (an `Fn::If`, an `Fn::Sub` under `Fn::Select`, a read beside a `Fn::GetAtt`):
+ * the other parameter's leaf persists
  * a token its diff side does not render, a change on every deploy. Before
  * #4644 the literal parameter carried the survivor, which the diff side bound
  * too. Withdrawing its spelling restores exactly that for the parameter
@@ -277,7 +285,11 @@ function carriedExpressionFor(
  * `Fn::Join` / `Fn::Sub` positions, is answered per parameter
  * (`positionByInheritedParameter`, the placeholder arms), so two such reads --
  * the issue's own shape -- never collide; but such a read still WRITES the
- * slot, so it collides with a slot read of the other parameter. An untaken
+ * slot, so it collides with a slot read of the other parameter. A leaf the
+ * persist walk re-reads per parameter (`Fn::Select` / `Fn::Split` over
+ * parameters, `rereadParameterExpression`, issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)) is no slot read
+ * either. An untaken
  * `Fn::If` branch counts; over-reading only withdraws more, which is the
  * pre-#4644 answer. `Outputs` count as one resource, every read a slot read.
  */
@@ -289,8 +301,8 @@ export function poisonRenderedSpellingsCollidingIn(
   if (!inherited || inherited.size === 0 || template === undefined) return;
   const names = new Set(Object.keys(parameterValues));
   if (names.size < 2) return;
-  // `[node, countBareRefs]`: an output's bare `{Ref}` is counted too, since
-  // nothing positions an output leaf per parameter.
+  // `[node, slotOnly]`: every output read is a slot read, a bare `{Ref}`
+  // included, since nothing positions an output leaf per parameter.
   const groups: Array<[unknown, boolean]> = [];
   if (template.Resources !== null && typeof template.Resources === 'object') {
     for (const resource of Object.values(template.Resources as Record<string, unknown>)) {
@@ -298,15 +310,21 @@ export function poisonRenderedSpellingsCollidingIn(
     }
   }
   if (template.Outputs !== undefined) groups.push([template.Outputs, true]);
-  const readsByGroup = groups
-    .map(([group, countBareRefs]) => parameterReadsOf(group, names, countBareRefs))
-    .filter((reads) => reads.size >= 2);
+  const bind = (name: string): { value: unknown } | undefined =>
+    Object.hasOwn(parameterValues, name) ? { value: parameterValues[name] } : undefined;
   // To a FIXED POINT: a withdrawal moves a parameter's carry to the survivor,
   // which can open a collision in another resource with a parameter still
   // carrying its own token. Each round withdraws at least one rendered name,
   // so this ends, at worst with `main`'s answer for every parameter read.
+  // The reads are re-classified each round: whether a leaf re-reads
+  // (`rereadParameterExpression`) is asked of the table as it stands.
   const withdrawn = new Set<string>();
   for (;;) {
+    const readsByGroup = groups
+      .map(([group, slotOnly]) =>
+        parameterReadsOf(group, names, slotOnly ? undefined : { bind, inherited })
+      )
+      .filter((reads) => reads.size >= 2);
     const fresh = [...collidingRenderedNames(readsByGroup, parameterValues, inherited)].filter(
       (name) => !withdrawn.has(name)
     );
@@ -385,19 +403,47 @@ const POSITIONED_INTRINSICS: ReadonlySet<string> = new Set(['Fn::Join', 'Fn::Sub
 function parameterReadsOf(
   node: unknown,
   names: ReadonlySet<string>,
-  countBareRefs: boolean
+  reread: { bind: ParameterBinding; inherited: RecordedSecretValues } | undefined
 ): Map<string, boolean> {
   const reads = new Map<string, boolean>();
   const add = (name: string, slotRead: boolean): void => {
     reads.set(name, slotRead || reads.get(name) === true);
   };
-  const visit = (value: unknown, slotRead: boolean): void => {
+  // `atLeaf`: no intrinsic on the path yet, so an intrinsic met here is a
+  // leaf source of the persist walk. One the walk re-reads per parameter
+  // (`positionByParameterReread`, issue #4731) reads every parameter it names
+  // positioned; the walk asks it with the same function.
+  const visit = (value: unknown, slotRead: boolean, atLeaf: boolean): void => {
     if (Array.isArray(value)) {
-      for (const element of value) visit(element, slotRead);
+      // An element that can resolve to `AWS::NoValue` (an `Fn::If`, or the
+      // `Ref` itself) drops out of the bag, so the persist walk's lengths
+      // differ and it value-scans the WHOLE array from the slot: every read
+      // in it is a slot read, a bare `{Ref}` and a re-read included.
+      const mayShrink = value.some(
+        (element) =>
+          element !== null &&
+          typeof element === 'object' &&
+          !Array.isArray(element) &&
+          (Object.hasOwn(element, 'Fn::If') ||
+            (element as Record<string, unknown>)['Ref'] === 'AWS::NoValue')
+      );
+      for (const element of value) {
+        visit(element, slotRead || mayShrink, atLeaf && !mayShrink);
+      }
       return;
     }
     if (value === null || typeof value !== 'object') return;
     const record = value as Record<string, unknown>;
+    const intrinsic = Object.keys(record).some((key) => key === 'Ref' || key.startsWith('Fn::'));
+    if (
+      intrinsic &&
+      atLeaf &&
+      reread !== undefined &&
+      rereadParameterExpression(record, reread.bind, reread.inherited) !== undefined
+    ) {
+      for (const name of refNamesIn(record, names)) add(name, false);
+      return;
+    }
     const ref = record['Ref'];
     if (typeof ref === 'string' && names.has(ref)) add(ref, slotRead);
     const sub = record['Fn::Sub'];
@@ -409,11 +455,33 @@ function parameterReadsOf(
       }
     }
     for (const [key, child] of Object.entries(record)) {
-      visit(child, slotRead || (key.startsWith('Fn::') && !POSITIONED_INTRINSICS.has(key)));
+      visit(
+        child,
+        slotRead || (key.startsWith('Fn::') && !POSITIONED_INTRINSICS.has(key)),
+        atLeaf && !intrinsic
+      );
     }
   };
-  visit(node, countBareRefs);
+  // An output group is all slot reads: no leaf there is re-read either.
+  visit(node, reread === undefined, true);
   return reads;
+}
+
+/** The parameter names `node` reads through `{Ref}`, at any depth. */
+function refNamesIn(node: unknown, names: ReadonlySet<string>): Set<string> {
+  const found = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const element of value) visit(element);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (typeof record['Ref'] === 'string' && names.has(record['Ref'])) found.add(record['Ref']);
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(node);
+  return found;
 }
 
 /**

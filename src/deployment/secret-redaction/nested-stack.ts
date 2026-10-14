@@ -1207,9 +1207,62 @@ export function inheritedRenderedSpan(
  */
 const inheritedParameterReads = new WeakMap<
   RecordedSecretValues,
-  { readonly parent: RecordedSecretValues; readonly names: Set<string> } | symbol
+  | {
+      readonly parent: RecordedSecretValues;
+      readonly names: Set<string>;
+      /**
+       * EVERY parameter this resource read, carrying a secret or not, with
+       * its value (issue #4731): what {@link positionByParameterReread}
+       * re-reads a leaf from. `names` stays the secret-carrying subset.
+       */
+      readonly values: Map<string, unknown>;
+    }
+  | symbol
 >();
 const POISONED_PARAMETER_READS: unique symbol = Symbol('cdkd.inherited-parameter-reads.poisoned');
+
+/** The reads record of `childSecrets` for `parentSecrets`, created if absent. */
+function parameterReadsFor(
+  childSecrets: RecordedSecretValues,
+  parentSecrets: RecordedSecretValues
+): { readonly names: Set<string>; readonly values: Map<string, unknown> } | undefined {
+  const reads = inheritedParameterReads.get(childSecrets);
+  if (reads === undefined) {
+    const created = { parent: parentSecrets, names: new Set<string>(), values: new Map() };
+    inheritedParameterReads.set(childSecrets, created);
+    return created;
+  }
+  if (typeof reads === 'symbol') return undefined;
+  if (reads.parent !== parentSecrets) {
+    inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
+    return undefined;
+  }
+  return reads;
+}
+
+/**
+ * Record that the child resource owning `childSecrets` read `parameterName`
+ * as `value` (issue [#4731](https://github.com/go-to-k/cdkd/issues/4731)),
+ * for every parameter it reads while the child inherits a non-empty bag.
+ * Two different values for one name refuse the whole record, as two parent
+ * bags do; one deploy binds one value per parameter.
+ */
+export function recordInheritedParameterValue(
+  childSecrets: RecordedSecretValues,
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  value: unknown
+): void {
+  const reads = parameterReadsFor(childSecrets, parentSecrets);
+  if (reads === undefined) return;
+  if (reads.values.has(parameterName)) {
+    if (!deepEqualJsonValue(reads.values.get(parameterName), value)) {
+      inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
+    }
+    return;
+  }
+  reads.values.set(parameterName, value);
+}
 
 /**
  * Record that the child resource owning `childSecrets` read `parameterName`
@@ -1223,20 +1276,7 @@ export function recordInheritedParameterRead(
   parentSecrets: RecordedSecretValues,
   parameterName: string
 ): void {
-  const reads = inheritedParameterReads.get(childSecrets);
-  if (reads === undefined) {
-    inheritedParameterReads.set(childSecrets, {
-      parent: parentSecrets,
-      names: new Set([parameterName]),
-    });
-    return;
-  }
-  if (typeof reads === 'symbol') return;
-  if (reads.parent !== parentSecrets) {
-    inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
-    return;
-  }
-  reads.names.add(parameterName);
+  parameterReadsFor(childSecrets, parentSecrets)?.names.add(parameterName);
 }
 
 /**
@@ -1318,6 +1358,185 @@ export function positionByInheritedParameter(
   // ...and of the answer, for a parent expression that itself spells a
   // child needle. Deep equality, not identity: the value walk rebuilds every
   // array it visits, so `!==` would refuse every list leaf.
+  if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
+  return answer;
+}
+
+/** A parameter's value as a re-read binds it, or `undefined` for no binding. */
+export type ParameterBinding = (name: string) => { readonly value: unknown } | undefined;
+
+/**
+ * The intrinsics a re-read ({@link rereadParameterExpression}) evaluates. Only
+ * a source holding `Fn::Select` or `Fn::Split` is re-read: a `{Ref}` alone, an
+ * `Fn::Join` / `Fn::Sub` over `{Ref}`s, already has a per-parameter arm.
+ */
+const REREAD_TRIGGERS: ReadonlySet<string> = new Set(['Fn::Select', 'Fn::Split']);
+const MAX_REREAD_DEPTH = 16;
+
+/**
+ * Evaluate a PURE parameter expression -- string literals, arrays, `{Ref}` to
+ * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join` -- as the
+ * resolver does (`string-functions.ts`), or `undefined` for anything else: a
+ * `{{resolve:` literal (the resolver would resolve it), a number outside a
+ * `Fn::Select` index, a non-literal index or delimiter, an index out of
+ * bounds, any other intrinsic (`Fn::If`, `Fn::Sub`, `Fn::GetAtt`, a pseudo
+ * parameter).
+ */
+function evaluatePureRead(
+  node: unknown,
+  bind: ParameterBinding,
+  depth = 0
+): { value: unknown } | undefined {
+  if (depth > MAX_REREAD_DEPTH) return undefined;
+  if (typeof node === 'string') return node.includes('{{resolve:') ? undefined : { value: node };
+  if (Array.isArray(node)) {
+    const out: unknown[] = [];
+    for (const element of node) {
+      const evaluated = evaluatePureRead(element, bind, depth + 1);
+      if (evaluated === undefined) return undefined;
+      out.push(evaluated.value);
+    }
+    return { value: out };
+  }
+  if (!isPlainObject(node)) return undefined;
+  const keys = Object.keys(node);
+  if (keys.length !== 1) return undefined;
+  const key = keys[0]!;
+  const args = node[key];
+  if (key === 'Ref') return typeof args === 'string' ? bind(args) : undefined;
+  if (!Array.isArray(args) || args.length !== 2) return undefined;
+  if (key === 'Fn::Select') {
+    // `selectIndexPosition`'s rule (`intrinsic-resolver/context.ts`), spelled
+    // here because this family imports nothing outside it; keep the two alike.
+    const index = args[0];
+    const position =
+      typeof index === 'number'
+        ? index
+        : typeof index === 'string' && /^(0|[1-9][0-9]*)$/.test(index)
+          ? Number(index)
+          : undefined;
+    if (position === undefined || !Number.isSafeInteger(position) || position < 0) return undefined;
+    const list = evaluatePureRead(args[1], bind, depth + 1);
+    if (list === undefined || !Array.isArray(list.value) || position >= list.value.length) {
+      return undefined;
+    }
+    return { value: list.value[position] };
+  }
+  const delimiter = args[0];
+  if (typeof delimiter !== 'string') return undefined;
+  if (key === 'Fn::Split') {
+    const value = evaluatePureRead(args[1], bind, depth + 1);
+    if (value === undefined || typeof value.value !== 'string') return undefined;
+    return { value: value.value.split(delimiter) };
+  }
+  if (key === 'Fn::Join') {
+    const parts = evaluatePureRead(args[1], bind, depth + 1);
+    if (parts === undefined || !Array.isArray(parts.value)) return undefined;
+    if (!parts.value.every((part) => typeof part === 'string')) return undefined;
+    return { value: parts.value.join(delimiter) };
+  }
+  return undefined;
+}
+
+/** Does `node` hold a {@link REREAD_TRIGGERS} intrinsic anywhere? */
+function holdsRereadTrigger(node: unknown, depth = 0): boolean {
+  if (depth > MAX_REREAD_DEPTH) return false;
+  if (Array.isArray(node)) return node.some((element) => holdsRereadTrigger(element, depth + 1));
+  if (!isPlainObject(node)) return false;
+  return Object.entries(node).some(
+    ([key, child]) => REREAD_TRIGGERS.has(key) || holdsRereadTrigger(child, depth + 1)
+  );
+}
+
+/**
+ * Does `spelling` render to exactly `value` through `parentSecrets`' own
+ * pairs, leaf for leaf? A string either equals the value and holds no
+ * plaintext the parent's scan would rewrite (a piece no secret reached), or
+ * passes {@link rendersLiteralTo}; a list matches element for element.
+ */
+function rendersReadTo(
+  spelling: unknown,
+  parentSecrets: RecordedSecretValues,
+  value: unknown
+): boolean {
+  if (typeof spelling === 'string' && typeof value === 'string') {
+    if (spelling === value) return redactSecretsForState(spelling, parentSecrets) === spelling;
+    return rendersLiteralTo(spelling, parentSecrets, value);
+  }
+  if (Array.isArray(spelling) && Array.isArray(value) && spelling.length === value.length) {
+    return spelling.every((element, i) => rendersReadTo(element, parentSecrets, value[i]));
+  }
+  return false;
+}
+
+/**
+ * Re-read a nested-stack child's leaf source holding `Fn::Select` /
+ * `Fn::Split` over its parameters with the bindings the DIFF side uses (issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)): `resolved` is the
+ * source evaluated with `bind`'s real values, `redacted` with each value as
+ * {@link redactInheritedParameterValue} answers it -- the function
+ * `DeployEngine.redactParametersForDiff` binds -- so `redacted` is what the
+ * diff side computes for the leaf. `undefined` unless the source is pure
+ * ({@link evaluatePureRead}) and `redacted` renders, through the parent's own
+ * pairs, to exactly `resolved` ({@link rendersReadTo}): a delimiter cutting a
+ * token, a piece left holding a plaintext, an unpaired token all refuse.
+ *
+ * Shared by the persist arm ({@link positionByParameterReread}) and the
+ * collision walk (`poisonRenderedSpellingsCollidingIn`), which reads such a
+ * leaf as answered per parameter rather than from the carry's slot.
+ */
+export function rereadParameterExpression(
+  source: unknown,
+  bind: ParameterBinding,
+  parentSecrets: RecordedSecretValues
+): { readonly resolved: unknown; readonly redacted: unknown } | undefined {
+  if (!holdsRereadTrigger(source)) return undefined;
+  const resolved = evaluatePureRead(source, bind);
+  if (resolved === undefined) return undefined;
+  const redacted = evaluatePureRead(source, (name) => {
+    const bound = bind(name);
+    return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
+  });
+  if (redacted === undefined) return undefined;
+  if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) return undefined;
+  return { resolved: resolved.value, redacted: redacted.value };
+}
+
+/**
+ * Persist a nested-stack child leaf whose source is `Fn::Select` /
+ * `Fn::Split` over its parameters as the diff side computes it (issue
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731)), or `undefined` (the
+ * caller keeps its existing arms).
+ *
+ * Such a leaf used to fall to the CHILD bag's value scan, whose one slot per
+ * plaintext holds whichever parameter this resource read LAST: in a resource
+ * reading a literal-spelled parameter (#4644) beside a same-plaintext sibling,
+ * one of the two leaves persisted the other's token, and
+ * `poisonRenderedSpellingsCollidingIn` had to withdraw the literal's spelling
+ * for the whole child. Re-reading answers each leaf from its own parameters.
+ *
+ * {@link positionByInheritedParameter}'s conditions, over the re-read: this
+ * resource's resolution read every parameter the source names (its recorded
+ * values bind the re-read; the #2087 scope), the source evaluated with them
+ * IS the leaf, the leaf carries no child-only plaintext, and the child bag
+ * would not rewrite the answer.
+ */
+export function positionByParameterReread(
+  bag: unknown,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): unknown {
+  const reads = inheritedParameterReads.get(secrets);
+  if (reads === undefined || typeof reads === 'symbol') return undefined;
+  if (typeof bag !== 'string' && !Array.isArray(bag)) return undefined;
+  const reread = rereadParameterExpression(
+    source,
+    (name) => (reads.values.has(name) ? { value: reads.values.get(name) } : undefined),
+    reads.parent
+  );
+  if (reread === undefined || !deepEqualJsonValue(reread.resolved, bag)) return undefined;
+  if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
+  const answer = reread.redacted;
   if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
   return answer;
 }

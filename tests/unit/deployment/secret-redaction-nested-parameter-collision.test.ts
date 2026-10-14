@@ -1,16 +1,17 @@
 /**
  * A child resource reading BOTH a literal-spelled parameter (issue #4644) and a
- * same-plaintext sibling keeps the pre-#4644 answer for that parameter, decided
- * from the template before anything resolves (issue
+ * same-plaintext sibling (issue
  * [#4731](https://github.com/go-to-k/cdkd/issues/4731)).
  *
  * The carry holds ONE expression per plaintext per resource, so in such a
- * resource the parameter resolved LAST decides every value-scanned leaf
- * (`Fn::Select`, `Fn::Split`, an array). With the literal's own token in the
- * slot, the sibling's leaf persisted a token its diff side did not render;
- * `poisonRenderedSpellingsCollidingIn` withdraws the literal's spelling for the
- * whole child, so the diff side, the `{Ref}` arm and the carry all fall back to
- * the survivor -- `main`'s answer.
+ * resource the parameter resolved LAST decides every value-scanned leaf. A
+ * leaf whose source is `Fn::Select` / `Fn::Split` over the child's parameters
+ * is re-read with the diff side's bindings (`positionByParameterReread`), so
+ * each leaf persists its own parameter's spelling and nothing is withdrawn.
+ * A slot read the persist walk cannot re-read (an `Fn::Sub` under
+ * `Fn::Select`, an `Fn::If`, a delimiter cutting a token) still makes
+ * `poisonRenderedSpellingsCollidingIn` withdraw the literal's spelling for the
+ * whole child -- the pre-#4644 answer.
  *
  * Drives the REAL resolver, the REAL `redactSecretsForState` and the REAL
  * `redactParametersForDiff`.
@@ -30,6 +31,11 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { poisonRenderedSpellingsCollidingIn } from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
+import {
+  positionByParameterReread,
+  recordInheritedParameterValue,
+  rereadParameterExpression,
+} from '../../../src/deployment/secret-redaction/nested-stack.js';
 import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -60,6 +66,9 @@ const PARAMETERS = { [PARAM_A]: CONN, [PARAM_B]: SHARED };
 const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
 const SEL_A = { 'Fn::Select': [0, [{ Ref: PARAM_A }]] };
 const SEL_B = { 'Fn::Select': [0, [{ Ref: PARAM_B }]] };
+/** Slot reads no re-read evaluates: an `Fn::Sub` under `Fn::Select`. */
+const SUB_SEL_A = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_A}}` }]] };
+const SUB_SEL_B = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_B}}` }]] };
 /** The evaluated `Conditions` both sides resolve `Fn::If` with. */
 const CONDITIONS = { On: true };
 
@@ -128,13 +137,13 @@ async function persistAndDesired(
   return { persisted, desired };
 }
 
-describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#4731)', () => {
+describe('a slot read no re-read answers keeps the pre-#4644 answer (#4731)', () => {
   for (const reversed of [true, false]) {
     for (const literalLast of [true, false]) {
       it(`${reversed ? 'reversed' : 'forward'} parent order, ${literalLast ? 'literal' : 'sibling'} read last`, async () => {
         const parent = parentRow(reversed);
         const survivor = reversed ? EXPR_B : EXPR_A;
-        const properties = literalLast ? { B: SEL_B, A: SEL_A } : { A: SEL_A, B: SEL_B };
+        const properties = literalLast ? { B: SUB_SEL_B, A: SUB_SEL_A } : { A: SUB_SEL_A, B: SUB_SEL_B };
         const template = childTemplate({ Mixed: properties });
         poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
 
@@ -165,7 +174,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
 
   it('withdraws for the WHOLE child, so a resource reading only the literal agrees too', async () => {
     const parent = parentRow(true);
-    const template = childTemplate({ Mixed: { A: SEL_A, B: SEL_B }, Alone: { A: SEL_A } });
+    const template = childTemplate({ Mixed: { A: SUB_SEL_A, B: SUB_SEL_B }, Alone: { A: SEL_A } });
     poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
     const { persisted, desired } = await persistAndDesired(parent, template, { A: SEL_A });
     expect(persisted).toEqual(desired);
@@ -176,7 +185,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     // Two nested-stack rows: two bags. Only the mixed child's is withdrawn.
     const mixedRow = parentRow(true);
     const plainRow = parentRow(true);
-    poisonRenderedSpellingsCollidingIn(childTemplate({ Mixed: { A: SEL_A, B: SEL_B } }), PARAMETERS, mixedRow);
+    poisonRenderedSpellingsCollidingIn(childTemplate({ Mixed: { A: SUB_SEL_A, B: SUB_SEL_B } }), PARAMETERS, mixedRow);
     const template = childTemplate({ Alone: { A: SEL_A } });
     poisonRenderedSpellingsCollidingIn(template, PARAMETERS, plainRow);
     expect(redactInheritedParameterValue(plainRow, PARAM_A, CONN)).toBe(SPELLING);
@@ -197,7 +206,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
       { 'Fn::Sub': [`x-\${${PARAM_B}}`, {}] },
     ]) {
       const parent = parentRow(true);
-      poisonRenderedSpellingsCollidingIn(childTemplate({ Mixed: { A: SEL_A, B: subRead } }), PARAMETERS, parent);
+      poisonRenderedSpellingsCollidingIn(childTemplate({ Mixed: { A: SUB_SEL_A, B: subRead } }), PARAMETERS, parent);
       expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
         `postgres://${USER_EXPR}:${EXPR_B}@host`
       );
@@ -205,7 +214,7 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
     // A literal `${!Name}` is no read.
     const parent = parentRow(true);
     poisonRenderedSpellingsCollidingIn(
-      childTemplate({ Mixed: { A: SEL_A, B: { 'Fn::Sub': `x-\${!${PARAM_B}}` } } }),
+      childTemplate({ Mixed: { A: SUB_SEL_A, B: { 'Fn::Sub': `x-\${!${PARAM_B}}` } } }),
       PARAMETERS,
       parent
     );
@@ -226,12 +235,12 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
   // A bare `{Ref}` is positioned per parameter but still WRITES the slot, so a
   // slot read of the other parameter in the same resource collides with it.
   const BARE_BESIDE_SLOT: Record<string, Record<string, unknown>> = {
-    'bare SecretB, then Select ConnA': { B: { Ref: PARAM_B }, A: SEL_A },
-    'Select ConnA, then bare SecretB': { A: SEL_A, B: { Ref: PARAM_B } },
-    'bare ConnA, then Select SecretB': { A: { Ref: PARAM_A }, B: SEL_B },
-    'Select SecretB, then bare ConnA': { B: SEL_B, A: { Ref: PARAM_A } },
-    'Select SecretB, then ConnA in a plain array': { B: SEL_B, A: [{ Ref: PARAM_A }] },
-    'Select SecretB, then ConnA in a plain object': { B: SEL_B, A: { K: { Ref: PARAM_A } } },
+    'bare SecretB, then Sub-in-Select ConnA': { B: { Ref: PARAM_B }, A: SUB_SEL_A },
+    'Sub-in-Select ConnA, then bare SecretB': { A: SUB_SEL_A, B: { Ref: PARAM_B } },
+    'bare ConnA, then Sub-in-Select SecretB': { A: { Ref: PARAM_A }, B: SUB_SEL_B },
+    'Sub-in-Select SecretB, then bare ConnA': { B: SUB_SEL_B, A: { Ref: PARAM_A } },
+    'Sub-in-Select SecretB, then ConnA in a plain array': { B: SUB_SEL_B, A: [{ Ref: PARAM_A }] },
+    'Sub-in-Select SecretB, then ConnA in a plain object': { B: SUB_SEL_B, A: { K: { Ref: PARAM_A } } },
     // An `Fn::If` branch holding an array is value-scanned, so `Fn::If` is a
     // slot read; the other side of the collision is positioned.
     'Fn::If array of SecretB, then bare ConnA': {
@@ -310,9 +319,9 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
         { Parameters: { [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B, [PARAM_D]: SPELLING_D } }
       );
       expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).toBe(SPELLING_D);
-      const selD = { 'Fn::Select': [0, [{ Ref: PARAM_D }]] };
-      const other = dFirst ? { D: selD, A: SEL_A } : { A: SEL_A, D: selD };
-      const template = childTemplate({ Mixed: { A: SEL_A, B: SEL_B }, Other: other });
+      const selD = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_D}}` }]] };
+      const other = dFirst ? { D: selD, A: SUB_SEL_A } : { A: SUB_SEL_A, D: selD };
+      const template = childTemplate({ Mixed: { A: SUB_SEL_A, B: SUB_SEL_B }, Other: other });
       poisonRenderedSpellingsCollidingIn(template, params, parent);
       expect(redactInheritedParameterValue(parent, PARAM_D, CONN_D)).toBe(
         `mysql://${USER_EXPR}:${EXPR_B}@other`
@@ -371,9 +380,330 @@ describe('a child resource reading BOTH parameters keeps the pre-#4644 answer (#
       { Parameters: { [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B, [PARAM_C]: EXPR_A } }
     );
     const template = {
-      ...childTemplate({ Mixed: { A: SEL_A, C: { 'Fn::Select': [0, [{ Ref: PARAM_C }]] } } }),
+      ...childTemplate({
+        Mixed: { A: SUB_SEL_A, C: { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_C}}` }]] } },
+      }),
     } as CloudFormationTemplate;
     poisonRenderedSpellingsCollidingIn(template, { ...PARAMETERS, [PARAM_C]: SHARED }, parent);
     expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+  });
+});
+
+describe('a child resource reading BOTH parameters through Fn::Select / Fn::Split keeps each spelling (#4731)', () => {
+  const SPLIT_A = { 'Fn::Select': [0, { 'Fn::Split': ['@', { Ref: PARAM_A }] }] };
+  const SPLIT_PIECE_A = `postgres://${USER_EXPR}:${EXPR_A}`;
+  // Both read shapes: the literal through a re-read beside the sibling bare,
+  // in an array or an object, and the sibling through a re-read beside the
+  // literal bare -- plus both through re-reads.
+  const REREAD: Record<string, Record<string, unknown>> = {
+    'Select ConnA, Select SecretB': { A: SEL_A, B: SEL_B },
+    'Select over Split ConnA, Select SecretB': { A: SPLIT_A, B: SEL_B },
+    'Select ConnA, bare SecretB': { A: SEL_A, B: { Ref: PARAM_B } },
+    'bare ConnA, Select SecretB': { A: { Ref: PARAM_A }, B: SEL_B },
+    'ConnA in a plain array, Select SecretB': { A: [{ Ref: PARAM_A }], B: SEL_B },
+    'ConnA in a plain object, Select SecretB': { A: { K: { Ref: PARAM_A } }, B: SEL_B },
+    'Fn::Join around Select ConnA, Select SecretB': {
+      A: { 'Fn::Join': ['', ['x-', SEL_A]] },
+      B: SEL_B,
+    },
+    // A plain array (no element can drop out) keeps the leaf position.
+    'ConnA Select inside a plain array, Select SecretB': { A: [SEL_A], B: SEL_B },
+    'Fn::Split ConnA (a list leaf), Select SecretB': {
+      A: { 'Fn::Split': ['@', { Ref: PARAM_A }] },
+      B: SEL_B,
+    },
+  };
+  for (const reversed of [true, false]) {
+    for (const literalLast of [true, false]) {
+      for (const [shape, shapeProperties] of Object.entries(REREAD)) {
+        it(`${reversed ? 'reversed' : 'forward'} parent order, ${literalLast ? 'literal' : 'sibling'} read last, ${shape}`, async () => {
+          const properties = literalLast
+            ? { B: shapeProperties['B'], A: shapeProperties['A'] }
+            : { A: shapeProperties['A'], B: shapeProperties['B'] };
+          const template = childTemplate({ Mixed: properties });
+          const parent = parentRow(reversed);
+          poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+          // Nothing withdrawn: the diff side binds the literal.
+          expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+          const { persisted, desired } = await persistAndDesired(parent, template, properties);
+          expect(persisted).toEqual(desired);
+          // Each leaf its OWN parameter's token, whichever resolved last.
+          expect(persisted['B']).toBe(EXPR_B);
+          const a = JSON.stringify(persisted['A']);
+          expect(a).toContain(EXPR_A);
+          expect(a).not.toContain(EXPR_B);
+          expect(JSON.stringify(persisted)).not.toContain(SHARED);
+          expect(JSON.stringify(persisted)).not.toContain(USER);
+        });
+      }
+    }
+  }
+
+  it('persists the piece the diff side computes for a Select over Split', async () => {
+    const parent = parentRow(true);
+    const properties = { A: SPLIT_A, B: SEL_B };
+    const template = childTemplate({ Mixed: properties });
+    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+    const { persisted } = await persistAndDesired(parent, template, properties);
+    expect(persisted['A']).toBe(SPLIT_PIECE_A);
+  });
+
+  // A re-read that does NOT render back to the leaf is no re-read: the
+  // collision walk counts it a slot read and withdraws, as before.
+  it('withdraws where a Split delimiter cuts a token (the re-read does not render to the leaf)', async () => {
+    const properties = { A: { 'Fn::Select': [1, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }, B: SEL_B };
+    const template = childTemplate({ Mixed: properties });
+    const parent = parentRow(true);
+    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+      `postgres://${USER_EXPR}:${EXPR_B}@host`
+    );
+    const before = parentRow(true);
+    withdrawRenderedParameterSpelling(before, PARAM_A);
+    withdrawRenderedParameterSpelling(before, PARAM_B);
+    const ours = await persistAndDesired(parent, template, properties);
+    expect(ours).toEqual(await persistAndDesired(before, template, properties));
+    expect(JSON.stringify(ours.persisted)).not.toContain(USER);
+  });
+
+  // An `Fn::If` is the persist walk's leaf, and no re-read: a Select inside
+  // it reads through the slot, so the collision walk must not count it
+  // positioned.
+  it('withdraws where the re-readable Select sits inside an Fn::If leaf', async () => {
+    const properties = { A: { 'Fn::If': ['On', SEL_A, 'z'] }, B: SEL_B };
+    const template = childTemplate({ Mixed: properties });
+    const parent = parentRow(true);
+    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+      `postgres://${USER_EXPR}:${EXPR_B}@host`
+    );
+    const before = parentRow(true);
+    withdrawRenderedParameterSpelling(before, PARAM_A);
+    withdrawRenderedParameterSpelling(before, PARAM_B);
+    const ours = await persistAndDesired(parent, template, properties);
+    expect(ours).toEqual(await persistAndDesired(before, template, properties));
+    expect(ours.persisted).toEqual(ours.desired);
+  });
+
+  // An array holding an element that can resolve to `AWS::NoValue` shrinks
+  // in the bag, so the persist walk value-scans the WHOLE array from the slot:
+  // a re-read or bare `{Ref}` inside it is a slot read, and the walk withdraws.
+  for (const [shape, inner, shrinker] of [
+    ['a re-readable Select', SEL_A, { 'Fn::If': ['Off', 'x', { Ref: 'AWS::NoValue' }] }],
+    ['a bare Ref', { Ref: PARAM_A }, { 'Fn::If': ['Off', 'x', { Ref: 'AWS::NoValue' }] }],
+    ['a re-readable Select beside a bare AWS::NoValue', SEL_A, { Ref: 'AWS::NoValue' }],
+  ] as const) {
+    for (const reversed of [true, false]) {
+      it(`withdraws for ${shape} in an array that can shrink (${reversed ? 'reversed' : 'forward'})`, async () => {
+        const properties = {
+          L: [shrinker, inner],
+          B: SEL_B,
+        };
+        const template = {
+          ...childTemplate({ Mixed: properties }),
+          Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
+        } as CloudFormationTemplate;
+        const parent = parentRow(reversed);
+        poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+        const before = parentRow(reversed);
+        withdrawRenderedParameterSpelling(before, PARAM_A);
+        withdrawRenderedParameterSpelling(before, PARAM_B);
+        expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
+          redactInheritedParameterValue(before, PARAM_A, CONN)
+        );
+        const conditions = { Off: false };
+        const run = async (row: RecordedSecretValues) => {
+          const recordedSecretValues = new Map<string, string>();
+          inheritNestedStackParameterAssociations(recordedSecretValues, row);
+          const resolvedProps = await resolver.resolve(properties, {
+            template, resources: {}, parameters: PARAMETERS, recordedSecretValues,
+            inheritedSecrets: row, conditions,
+          } as unknown as ResolverContext);
+          const engine = { options: { inheritedSecrets: row } } as unknown as DeployEngine;
+          const desired = await resolver.resolve(properties, {
+            template, resources: {}, parameters: redactParametersForDiff.call(engine, PARAMETERS),
+            skipDynamicReferences: true, conditions,
+          } as unknown as ResolverContext);
+          return { persisted: redactSecretsForState(resolvedProps, recordedSecretValues, properties), desired };
+        };
+        const ours = await run(parent);
+        expect(ours).toEqual(await run(before));
+        if (reversed) expect(ours.persisted).toEqual(ours.desired);
+        expect(JSON.stringify(ours.persisted)).not.toContain(SHARED);
+      });
+    }
+  }
+
+  // A PUBLIC parameter read beside the literal: the re-read must bind it
+  // too, so every parameter this resource reads is recorded, secret or not.
+  for (const reversed of [true, false]) {
+    it(`re-reads a leaf joining a public parameter with the literal (${reversed ? 'reversed' : 'forward'})`, async () => {
+      const PUB = 'Pub';
+      const params = { ...PARAMETERS, [PUB]: 'pub-' };
+      const properties = {
+        A: {
+          'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Join': ['', [{ Ref: PUB }, { Ref: PARAM_A }]] }] }],
+        },
+        B: SEL_B,
+      };
+      const template = {
+        Parameters: {
+          [PARAM_A]: { Type: 'String' },
+          [PARAM_B]: { Type: 'String' },
+          [PUB]: { Type: 'String' },
+        },
+        Resources: { Mixed: { Type: 'AWS::SSM::Parameter', Properties: properties } },
+      } as CloudFormationTemplate;
+      const parent = parentRow(reversed);
+      poisonRenderedSpellingsCollidingIn(template, params, parent);
+      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+      const recordedSecretValues = new Map<string, string>();
+      inheritNestedStackParameterAssociations(recordedSecretValues, parent);
+      const resolved = await resolver.resolve(properties, {
+        template,
+        resources: {},
+        parameters: params,
+        recordedSecretValues,
+        inheritedSecrets: parent,
+        conditions: CONDITIONS,
+      } as unknown as ResolverContext);
+      const persisted = redactSecretsForState(resolved, recordedSecretValues, properties);
+      const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+      const desired = await resolver.resolve(properties, {
+        template,
+        resources: {},
+        parameters: redactParametersForDiff.call(engine, params),
+        skipDynamicReferences: true,
+        conditions: CONDITIONS,
+      } as unknown as ResolverContext);
+      expect(persisted).toEqual(desired);
+      expect((persisted as Record<string, unknown>)['A']).toBe(`pub-postgres://${USER_EXPR}:${EXPR_A}`);
+      expect(JSON.stringify(persisted)).not.toContain(SHARED);
+    });
+  }
+
+  it('keeps each spelling in one Fn::Split leaf reading both parameters', async () => {
+    const properties = { L: { 'Fn::Split': [',', { 'Fn::Join': [',', [{ Ref: PARAM_A }, { Ref: PARAM_B }]] }] } };
+    const template = childTemplate({ Mixed: properties });
+    for (const reversed of [true, false]) {
+      const parent = parentRow(reversed);
+      poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+      const { persisted, desired } = await persistAndDesired(parent, template, properties);
+      expect(persisted).toEqual(desired);
+      expect(persisted['L']).toEqual([SPELLING, EXPR_B]);
+    }
+  });
+});
+
+describe('positionByParameterReread refuses what it cannot certify (#4731)', () => {
+  /** Resolve `properties` as a child resource and return its bag and resolved bag. */
+  async function resolved(
+    parent: RecordedSecretValues,
+    properties: Record<string, unknown>
+  ): Promise<{ bag: RecordedSecretValues; value: Record<string, unknown> }> {
+    const bag = new Map<string, string>();
+    inheritNestedStackParameterAssociations(bag, parent);
+    const value = (await resolver.resolve(properties, {
+      template: childTemplate({ R: properties }),
+      resources: {},
+      parameters: PARAMETERS,
+      recordedSecretValues: bag,
+      inheritedSecrets: parent,
+      conditions: CONDITIONS,
+    } as unknown as ResolverContext)) as Record<string, unknown>;
+    return { bag, value };
+  }
+
+  it('answers the certified leaf (the positive control)', async () => {
+    const parent = parentRow(true);
+    const { bag, value } = await resolved(parent, { A: SEL_A });
+    expect(positionByParameterReread(value['A'], SEL_A, bag)).toBe(SPELLING);
+  });
+
+  it('refuses a leaf the source does not evaluate to', async () => {
+    const parent = parentRow(true);
+    const { bag } = await resolved(parent, { A: SEL_A });
+    expect(positionByParameterReread(`${CONN}x`, SEL_A, bag)).toBeUndefined();
+  });
+
+  it('refuses a source naming a parameter this resource did not read', async () => {
+    const parent = parentRow(true);
+    const { bag, value } = await resolved(parent, { A: SEL_A });
+    const source = { 'Fn::Select': [0, [{ Ref: PARAM_A }, { Ref: PARAM_B }]] };
+    expect(positionByParameterReread(value['A'], source, bag)).toBeUndefined();
+  });
+
+  it('refuses a bag with no reads record', async () => {
+    const parent = parentRow(true);
+    const { value } = await resolved(parent, { A: SEL_A });
+    expect(positionByParameterReread(value['A'], SEL_A, new Map())).toBeUndefined();
+  });
+
+  it('refuses a reads record holding two values for one parameter', async () => {
+    const parent = parentRow(true);
+    const { bag, value } = await resolved(parent, { A: SEL_A });
+    recordInheritedParameterValue(bag, parent, PARAM_A, 'another-value');
+    expect(positionByParameterReread(value['A'], SEL_A, bag)).toBeUndefined();
+  });
+
+  // Two child-only plaintexts: one inside the parent's plaintext, which the
+  // answer no longer spells (only the child-only check sees it), and one in
+  // the literal text, which the answer keeps (the re-scan sees it too).
+  for (const childOnly of ['c0llide-pl4in', 'postgres']) {
+    it(`refuses a child-only plaintext in the leaf (${childOnly})`, async () => {
+      const parent = parentRow(true);
+      const { bag, value } = await resolved(parent, { A: SEL_A });
+      bag.set(childOnly, '{{resolve:secretsmanager:child-only:SecretString:x::}}');
+      expect(positionByParameterReread(value['A'], SEL_A, bag)).toBeUndefined();
+    });
+  }
+
+  it('refuses a source holding no Fn::Select / Fn::Split (another arm answers it)', async () => {
+    const parent = parentRow(true);
+    const { bag, value } = await resolved(parent, { A: SEL_A });
+    const join = { 'Fn::Join': ['', [{ Ref: PARAM_A }]] };
+    expect(positionByParameterReread(value['A'], join, bag)).toBeUndefined();
+  });
+
+  for (const [shape, source] of Object.entries({
+    'an index out of bounds': { 'Fn::Select': [1, [{ Ref: PARAM_A }]] },
+    'a non-literal index': { 'Fn::Select': [{ Ref: PARAM_A }, [{ Ref: PARAM_A }]] },
+    'a leading-zero index': { 'Fn::Select': ['00', [{ Ref: PARAM_A }]] },
+    'a {{resolve: literal': { 'Fn::Select': [0, [{ Ref: PARAM_A }, EXPR_A]] },
+    // JavaScript would split on `"null"` and so render the leaf back.
+    'a non-string delimiter': { 'Fn::Select': [0, { 'Fn::Split': [null, { Ref: PARAM_A }] }] },
+    // JavaScript would join `[[CONN]]` to `CONN`.
+    'an array part in Fn::Join': {
+      'Fn::Select': [0, [{ 'Fn::Join': ['', [[{ Ref: PARAM_A }]]] }]],
+    },
+    'an Fn::If': { 'Fn::Select': [0, [{ 'Fn::If': ['On', { Ref: PARAM_A }, 'z'] }]] },
+    'a pseudo parameter': { 'Fn::Select': [0, [{ Ref: 'AWS::Region' }]] },
+    'a two-key object': { 'Fn::Select': [0, [{ Ref: PARAM_A }]], Extra: 1 },
+  })) {
+    it(`refuses ${shape}`, async () => {
+      const parent = parentRow(true);
+      const { bag, value } = await resolved(parent, { A: SEL_A });
+      expect(positionByParameterReread(value['A'], source, bag)).toBeUndefined();
+    });
+  }
+});
+
+describe('rereadParameterExpression keeps a parent plaintext out of a piece no token reached (#4731)', () => {
+  it('refuses a piece equal to a short plaintext the binding left in place', () => {
+    // `ab` is below the substring floor, so the parent scan leaves it inside
+    // `ab:cd` (the binding), but takes it WHOLE: the piece is a plaintext.
+    const parent: RecordedSecretValues = new Map();
+    const token = '{{resolve:secretsmanager:short:SecretString:x::}}';
+    parent.set('ab', token);
+    recordResolvedPair(parent, token, 'ab');
+    const bind = (name: string): { value: unknown } | undefined =>
+      name === 'X' ? { value: 'ab:cd' } : undefined;
+    expect(redactInheritedParameterValue(parent, 'X', 'ab:cd')).toBe('ab:cd');
+    const piece = (index: number): unknown => ({
+      'Fn::Select': [index, { 'Fn::Split': [':', { Ref: 'X' }] }],
+    });
+    expect(rereadParameterExpression(piece(0), bind, parent)).toBeUndefined();
+    // The control: the other piece holds no plaintext.
+    expect(rereadParameterExpression(piece(1), bind, parent)).toEqual({ resolved: 'cd', redacted: 'cd' });
   });
 });
