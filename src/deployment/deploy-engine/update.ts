@@ -1418,6 +1418,14 @@ export async function provisionUpdate(
         ...(remaining.length > 0 && { noEchoLeaves: remaining.map((c) => [...c]) }),
       };
     }
+    // go-to-k/cdkd#4852: as on the first skip, an equal-value version move
+    // refreshes the read versions, so the next diff does not promote again.
+    if (provenanceUnchanged.length > 0) {
+      stateResources[logicalId] = withRefreshedReadVersions(
+        stateResources[logicalId] ?? currentResource,
+        provenanceUnchanged
+      );
+    }
     // Nothing was attempted, as on the skip above the refusal.
     this.attemptedResolvedProps.delete(logicalId);
     if (change.attributeChanges && change.attributeChanges.length > 0) {

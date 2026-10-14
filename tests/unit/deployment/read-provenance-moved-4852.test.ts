@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   confirmValueMoves,
   readProvenanceMovedPaths,
+  sameValueAtVersions,
 } from '../../../src/deployment/deploy-engine/read-provenance-moved.js';
 import { recordReferenceResolution } from '../../../src/deployment/secret-redaction/reference-provenance.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction/pairs.js';
@@ -152,5 +153,39 @@ describe('confirmValueMoves', () => {
       expect([...out.moved.paths]).toEqual(['Value']);
       expect(out.unchanged).toEqual([]);
     }
+  });
+
+  it('two served versions are equal only when both match the recorded value', async () => {
+    const twoServed = readProvenanceMovedPaths({
+      record: record([V1]),
+      templateProperties,
+      desiredRedacted,
+      secrets: served([
+        [V2, 'read'],
+        ['c1b2c3d4-0000-1111-2222-333333333333', 'read'],
+      ]),
+    });
+    const seen: string[] = [];
+    const out = await confirmValueMoves(twoServed, async (_t, _r, now) => {
+      seen.push(now);
+      return now === V2;
+    });
+    expect(seen.length).toBe(2);
+    expect([...out.moved.paths]).toEqual(['Value']);
+  });
+
+  it('sameValueAtVersions gives no verdict for a token with no recorded region, and reads nothing', async () => {
+    const resolver = {
+      resolveDynamicReferences: () => {
+        throw new Error('must not read');
+      },
+      resolverForRecordedRegion: () => {
+        throw new Error('must not read');
+      },
+    };
+    const entry = { token: REF, paths: new Set(['Value']), recorded: [V1], served: new Set([V2]), region: undefined };
+    expect(
+      await sameValueAtVersions(resolver as never, entry, V1, V2, { template: { Resources: {} }, resources: {} })
+    ).toBeUndefined();
   });
 });

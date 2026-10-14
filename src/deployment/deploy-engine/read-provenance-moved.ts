@@ -126,10 +126,13 @@ export async function confirmValueMoves(
   const kept: MovedToken[] = [];
   const unchanged: MovedToken[] = [];
   for (const entry of moved.tokens) {
-    const equal =
-      entry.recorded.length === 1 && entry.served.size === 1
-        ? await sameValue(entry, entry.recorded[0]!, [...entry.served][0]!)
-        : undefined;
+    // Equal only when the one recorded version's value equals the value at
+    // EVERY served version (a create-only union serves two generations).
+    let equal: boolean | undefined = entry.recorded.length === 1 ? true : undefined;
+    for (const served of entry.served) {
+      if (equal !== true) break;
+      equal = await sameValue(entry, entry.recorded[0]!, served);
+    }
     if (equal === true) unchanged.push(entry);
     else kept.push(entry);
   }
@@ -158,8 +161,11 @@ export async function sameValueAtVersions(
     provenanceSuppressed: true,
     referencePins: new Map([[entry.token, pin]]),
   });
-  const reader =
-    entry.region === undefined ? resolver : resolver.resolverForRecordedRegion(entry.region);
+  // No recorded region: the region that answered is not known, and a version
+  // id (an SSM `Version`) names a different value in another region, so no
+  // verdict (security review of go-to-k/cdkd#4892): the token counts as moved.
+  if (entry.region === undefined) return undefined;
+  const reader = resolver.resolverForRecordedRegion(entry.region);
   try {
     const now = await reader.resolveDynamicReferences(entry.token, context(served));
     const then = await reader.resolveDynamicReferences(entry.token, context(recorded));
