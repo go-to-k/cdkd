@@ -268,7 +268,7 @@ noecho-parameter-masking	2026-10-13T09:55:40Z	PASS	2935	verify.sh	rc ok, orph cl
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
 orphan-getatt-takeover	2026-10-06T05:40:05Z	PASS	50	verify.sh	rc ok, orph clean (#4602 PR #4609)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-output-never-resolved-diff	2026-10-14T09:22:27Z	FAIL	90	verify.sh	rc=1; PR #4889 f7a89df87 built-bundle pin: safeMsg tag splits 'keeping the previously persisted outputs' in dist; orph clean
+output-never-resolved-diff	2026-10-14T10:23:51Z	PASS	175	verify.sh	rc ok, orph clean; PR #4889 5fa11b8fd kept-whole warning kept one contiguous literal
 outputs-only-export	2026-10-12T05:06:49Z	PASS	121	verify.sh	PR #4812 head build, rc ok, orph clean
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 partial-create-handback	2026-10-11T09:33:22Z	PASS	426	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -288,7 +288,7 @@ recreate-via-cc-api	2026-10-13T11:42:44Z	PASS	125	verify.sh	PR #4862 (#2007) 594
 recreate-via-sdk-provider	2026-10-13T11:42:44Z	PASS	95	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-14T09:16:56Z	FAIL	2182	verify.sh	rc=1; PR #4889 f7a89df87 host DNS outage (getaddrinfo ENOTFOUND ec2/s3) mid step 4b left its own lock, step 5 lock-refused; NLB, user pool, VPC, 2 subnets, state, lock removed by hand
+remove-protection	2026-10-14T10:20:53Z	PASS	2193	verify.sh	rc ok, orph clean; PR #4889 5fa11b8fd re-run after the host DNS outage
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
