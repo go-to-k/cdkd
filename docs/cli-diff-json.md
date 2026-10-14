@@ -93,6 +93,7 @@ absent on all others.
 | --- | --- |
 | `replacementPropagated` | `[replacement propagated]` |
 | `inPlacePropagated` | `[attribute propagated]` |
+| `readProvenancePromoted` (with `inPlacePropagated`) | `[read value moved upstream]` |
 | `maskedExpressionChanged` | `[masked input or expression changed]` |
 
 Two things to know when reading these entries:

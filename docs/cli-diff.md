@@ -121,6 +121,12 @@ before. They refer to another resource, and that resource is changing.
 - `[attribute propagated]`: the property reads an attribute or the physical ID
   of a resource that is being updated. The value may or may not move. The
   deploy sends this update only if it did.
+- `[read value moved upstream]`: the property holds a value read from another
+  resource, stack output or nested-stack parameter that came from a secret, and
+  the version of the secret it was deployed with is no longer the one the
+  resource it reads records (that resource was replaced or updated in an
+  earlier deploy). The deploy sends the update when the value it reads now
+  differs.
 - `[may require replacement]`: appears on a propagated line when the property
   cannot change in place. If the value it reads moves, the deploy replaces
   this resource.
