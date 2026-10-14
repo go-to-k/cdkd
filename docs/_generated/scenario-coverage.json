@@ -1198,6 +1198,11 @@
       "scenarios": []
     },
     {
+      "name": "guardduty-detector-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "healthimaging-stateful-update-fallback",
       "annotated": false,
       "scenarios": []
@@ -3356,6 +3361,7 @@
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",
     "glue-securityconfig-replace",
+    "guardduty-detector-update",
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
     "iam-profile-policy-fix-forward-orphan",

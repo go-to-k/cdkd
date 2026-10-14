@@ -7794,6 +7794,7 @@
     "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
+    "AWS::GuardDuty::Detector",
     "AWS::HealthImaging::Datastore",
     "AWS::IAM::RolePolicy",
     "AWS::KMS::Grant",

@@ -192,6 +192,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`getatt-fallback-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/getatt-fallback-guard/)
 - [`globaltable-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/globaltable-fix-forward-orphan/)
 - [`glue-securityconfig-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/glue-securityconfig-replace/)
+- [`guardduty-detector-update`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/guardduty-detector-update/)
 - [`healthimaging-stateful-update-fallback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/healthimaging-stateful-update-fallback/)
 - [`iam-managed-policy`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-managed-policy/)
 - [`iam-profile-policy-fix-forward-orphan`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-profile-policy-fix-forward-orphan/)
