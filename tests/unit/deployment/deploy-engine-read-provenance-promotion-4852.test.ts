@@ -148,6 +148,8 @@ async function deploy(opts: {
   producers?: Record<string, StackState>;
   exportIndex?: Record<string, { value: unknown; producerStack: string; producerRegion: string }>;
   options?: Record<string, unknown>;
+  /** What a readback of a resource returns (a `NoEcho` readback). */
+  readBack?: Record<string, unknown>;
 }): Promise<Run> {
   const stackName = opts.stackName ?? 's';
   const calls: string[] = [];
@@ -175,7 +177,7 @@ async function deploy(opts: {
       calls.push(`delete:${id}`);
     }),
     getAttribute: vi.fn(),
-    readCurrentState: vi.fn().mockResolvedValue(undefined),
+    readCurrentState: vi.fn().mockResolvedValue(opts.readBack),
   };
   const saveState = vi.fn().mockResolvedValue('etag');
   const exportIndex =
@@ -492,6 +494,26 @@ describe('a version move whose value did not move (another key of a JSON secret)
     const run = await deploy({ state, template, levels: LV });
     expect(run.thrown).toBeUndefined();
     expect(run.last?.resources['Reader']?.deletionPolicy).toBe('Retain');
+    expect(run.last?.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).toEqual([V2]);
+  });
+
+  it('a reader also holding a NoEcho value AWS holds refreshes too (the second skip)', async () => {
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    const { state, template } = shape([V2]);
+    template.Parameters = { Pw: { Type: 'String', NoEcho: true } };
+    (template.Resources['Reader']!.Properties as Record<string, unknown>)['Value'] = { Ref: 'Pw' };
+    state.resources['Reader']!.properties['Value'] = '***';
+    state.resources['Reader']!.noEchoLeaves = [['Value']];
+    const run = await deploy({
+      state,
+      template,
+      levels: LV,
+      options: { parameters: { Pw: 'pw-value-123' } },
+      readBack: { Name: 'sdin-q-1', Type: 'String', Value: 'pw-value-123' },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
     expect(run.last?.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).toEqual([V2]);
   });
 
