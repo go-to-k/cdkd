@@ -968,8 +968,12 @@ export class IAMPolicyProvider implements ResourceProvider {
             `dynamic reference or its mask in state), so do not write the name into ` +
             `state.json` +
             (resolutionAttempted
-              ? `; cdkd could not resolve the reference (its region, access to it, or its ` +
-                `value), so fix that and re-run, or`
+              ? optIn?.producerRegionsIncomplete === true
+                ? `; this nested stack was destroyed without its parent, so a reference with ` +
+                  `no recorded region is not resolved (it may name the parent's region): ` +
+                  `destroy it through its top-level stack, or`
+                : `; cdkd could not resolve the reference (its region, access to it, or its ` +
+                  `value), so fix that and re-run, or`
               : `:`) +
             ` cdkd will keep skipping this record` +
             (plainKinds.length > 0

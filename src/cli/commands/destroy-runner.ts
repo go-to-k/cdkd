@@ -1673,7 +1673,7 @@ export async function runDestroyForStack(
       Object.values(state.resources ?? {}).some((r) => holdsUnprovenSecretPrincipalRecord(r))
     ) {
       logger.warn(
-        safeMsg`${stackName}: this nested child is destroyed without its parent stack, so the regions its parent reads from are unknown: a secret-derived principal record whose reference has no recorded region is skipped. To resolve it, destroy it through its parent stack.`
+        safeMsg`${stackName}: this nested child is destroyed without its parent stack, so the regions its parent reads from are unknown: a secret-derived principal record whose reference has no recorded region is skipped. To resolve it, destroy it through its parent stack (the top-level stack that holds it).`
       );
     }
 

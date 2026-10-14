@@ -13,6 +13,7 @@ const send = vi.hoisted(() => vi.fn());
 const primaryResolve = vi.hoisted(() => vi.fn());
 const guestResolve = vi.hoisted(() => vi.fn());
 const guestFor = vi.hoisted(() => vi.fn());
+const childWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -24,7 +25,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const child = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: childWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -387,6 +388,10 @@ describe('the IAM deletes thread the incomplete-evidence marker (go-to-k/cdkd#48
     expect(result).toMatchObject({ outcome: 'skipped' });
     expect(primaryResolve).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+    // The remedy is the top-level stack, not "fix that and re-run".
+    const warned = childWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('destroy it through its top-level stack');
+    expect(warned).not.toContain('so fix that and re-run');
   });
 
   it('AWS::IAM::UserToGroupAddition recorded in a region: removes the user that region names', async () => {
@@ -423,5 +428,8 @@ describe('the IAM deletes thread the incomplete-evidence marker (go-to-k/cdkd#48
     expect(result).toMatchObject({ outcome: 'skipped' });
     expect(primaryResolve).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+    const warned = childWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('destroy it through its top-level stack');
+    expect(warned).not.toContain('so fix that and re-run');
   });
 });

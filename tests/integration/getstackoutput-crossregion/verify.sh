@@ -631,6 +631,8 @@ esac
 REGION_4887="$(printf '%s' "${CHILD_STATE_4887}" | jq -r --arg t "${ROLES_4887}" '.resources.Policy4887.referenceProvenance[$t].region // empty')"
 [ "${REGION_4887}" = "${PRODUCER_REGION}" ] \
   || fail "8a: premise: the child record's provenance gives the reference region '${REGION_4887}', expected ${PRODUCER_REGION}"
+[ "$(printf '%s' "${CHILD_STATE_4887}" | jq '(.outputReads // []) + (.imports // []) | length')" = 0 ] \
+  || fail "8a: premise: the child record holds its own cross-stack reads (the arm needs a child that reads nothing itself)"
 echo "    OK: policy on the role; the child record holds the reference, recorded in ${PRODUCER_REGION}"
 
 echo "==> Phase 8b: cdkd state destroy '${CHILD_4887}' (the child on its own)"
