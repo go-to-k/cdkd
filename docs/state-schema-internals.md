@@ -1201,6 +1201,36 @@ region's stack, the rotation before the upgrade with no replacement, and a
 reader added afterwards. Replacing (or updating the name of) the resource
 records its version and clears it.
 
+**A reader left on an older version is promoted** (issue
+[#4852](https://github.com/go-to-k/cdkd/issues/4852)). A reader whose value
+came from a resource it reads keeps the reference form of that value, so it
+compares equal to its record after the resource was replaced under a rotated
+secret in an EARLIER deploy (one interrupted before the reader's update), after
+a producer stack replaced it, or after the resource was updated in place with
+a new value. The diff now promotes such a reader from records alone
+(`src/analyzer/read-provenance-promotion.ts`, once, before the replacement
+and in-place passes): when the reader's `readVersions` for a token are not a
+subset of the `versions` its UPSTREAMS record now. The upstreams are the
+same-stack records its template reads; a producer output it reads through
+`Fn::ImportValue` / `Fn::GetStackOutput` (`outputReferenceProvenance`); and,
+in a nested child, the provenance the parent row passed down (`cdkd diff
+--recursive` derives it from the parent's records, for a row the deploy
+updates). No upstream holding a version for the token is no verdict, never
+a promotion. A promoted create-only leaf is a replacement, as for a replaced
+upstream. The deploy then sends the reader only when the versions it is
+served on the read route are not a subset of its `readVersions`, and prints
+which properties it sends and why (`read-provenance-moved.ts`); a token the
+template spells is exempt, so a rotation alone still sends nothing. The read
+route records the versions the upstream's record holds, also where its pin
+could not be read. A cross-stack consumer resolves each token at the version
+and region the producer's output records (the producer's state is read once
+per deploy, and only for a consumer holding read versions, or a value holding
+a token), and the rollback replay restores a token at its record's version
+(a version that cannot be read, or whose value is under four characters,
+restores the current value with a warning). What it does not catch: a reader
+already stale before the upgrade (no `readVersions` yet), and one reader
+reading one token from two upstreams at two versions.
+
 #### Migration
 
 No read-time migration: a v11 document is read unchanged, and the next

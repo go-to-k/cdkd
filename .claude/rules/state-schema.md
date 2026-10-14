@@ -74,11 +74,11 @@ Neither field hashes a secret-derived value (a confirm oracle). The input field 
 
 `outputs` is keyed by output NAME, and an output carrying `Export:` is ADDITIONALLY aliased under its export name in the same bag (`src/deployment/outputs-export-alias.ts`).
 
-Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule, so no cross-stack reference breaks on upgrade), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
+Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
 
 ## `conditionVerdicts` (no bump)
 
-A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure reaches a secret-fed parameter). Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint and otherwise takes FALSE. Writer, reader and the fingerprint's input all live in `src/deployment/condition-verdicts.ts`: change one side there or not at all. Absent or malformed means no record (`readRecordedConditionVerdicts`). A spreading writer may carry it: none changes a definition or an input.
+A deploy's verdict for each condition `cdkd diff` cannot evaluate (its closure reaches a secret-fed parameter). Each entry's `fingerprint` hashes the condition's definitions and the parameter inputs they read, a secret-fed one as its `{{resolve:...}}` expression; the diff reuses the verdict ONLY on an equal fingerprint and otherwise takes FALSE. Writer, reader and the fingerprint's input all live in `src/deployment/condition-verdicts.ts`: change one side there or not at all. Absent or malformed means no record (`readRecordedConditionVerdicts`). Spreading writers carry it.
 
 ## `outputs`
 
@@ -124,7 +124,7 @@ Written at every deploy save by `applyNoEchoPersist` (`src/deployment/deploy-eng
 
 ## `referenceProvenance` / `outputReferenceProvenance` (v12+)
 
-Per `{{resolve:` token: region, version ids (never a value), READ-route `readVersions`. Absent = not known (readers keep the v11 path), `{}` = known. Read via `reference-provenance-record.ts` only (malformed = absent). Read (#4847) by `recorded-reference-routes.ts` (a pinned plaintext is never `recordResolvedPair`ed) and `resolverForRecordedRegion`. A record WRITTEN this run takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives skips). v11 records gain it once via `provenance-capture.ts` (sends nothing). Token-free: O(1), `token-free-state.ts`.
+Per `{{resolve:` token: region, version ids (never a value), READ-route `readVersions` (the upstream record's `versions`). Absent = not known (v11 path), `{}` = known; read via `reference-provenance-record.ts` only (malformed = absent) by `recorded-reference-routes.ts` (#4847; a pinned plaintext is never `recordResolvedPair`ed) and #4852's `read-provenance-promotion.ts` / `read-provenance-moved.ts` (`readVersions` ⊄ upstream `versions`; none = no verdict). A WRITTEN record takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives skips). v11 records gain it once (`provenance-capture.ts`). Token-free: O(1), `token-free-state.ts`.
 
 ## `observedProperties` (v3+)
 
