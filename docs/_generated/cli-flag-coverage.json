@@ -2231,6 +2231,7 @@
     "--permissions-config",
     "--plaintext",
     "--platform",
+    "--policies",
     "--policy",
     "--policy-arn",
     "--policy-document",
