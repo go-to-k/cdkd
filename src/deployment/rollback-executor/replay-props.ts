@@ -258,6 +258,21 @@ class ReplayPins {
           ? this.resolvers.forRecordedRegion(verdict.region)
           : this.resolvers.primary;
     let ok: boolean;
+    // The unpinned read first, as `readsPinnedVersion` does (security review
+    // of go-to-k/cdkd#4892): a pin equal to the current version then shares
+    // its cache entry and keeps the token's resolved pair, which positions an
+    // embedded leaf in the restored record; only a genuinely different
+    // version goes unpaired. A failure here is no verdict on the pin.
+    try {
+      await resolver.resolveDynamicReferences(token, {
+        template: { Resources: {} },
+        resources: {},
+        recordedSecretValues: new Map(),
+        provenanceSuppressed: true,
+      });
+    } catch (err) {
+      if (isDeliberateResolutionRefusal(err)) throw err;
+    }
     try {
       // A throwaway bag, and no provenance: the walk records what it serves.
       const served = await resolver.resolveDynamicReferences(token, {

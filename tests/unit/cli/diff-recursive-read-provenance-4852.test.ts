@@ -243,6 +243,8 @@ describe('cdkd diff --recursive: read-provenance promotion (#4852)', () => {
     expect(node.changes.get('Reader')?.changeType).toBe('UPDATE');
     expect(printed(node)).toContain('[read value moved upstream]');
     expect(lookups.count).toBe(0);
+    // The scan's own read of the producer serves the arm too: no second read.
+    expect(reads.filter((n) => n === 'Producer')).toEqual(['Producer']);
   });
 
   it('a row the deploy leaves NO_CHANGE runs no child engine, so its child is not promoted', async () => {

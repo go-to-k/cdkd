@@ -27,11 +27,13 @@ const secret = vi.hoisted(() => ({
   version: 'b1b2c3d4-0000-1111-2222-333333333333',
   history: {} as Record<string, string>,
   lookups: [] as string[],
+  regions: [] as string[],
 }));
-const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
+const answer = vi.hoisted(() => async (command?: unknown, region = 'us-east-1'): Promise<unknown> => {
   const input = (command as { input?: { SecretId?: string; VersionId?: string } } | undefined)
     ?.input;
   secret.lookups.push(`${String(input?.SecretId)}@${input?.VersionId ?? ''}`);
+  secret.regions.push(region);
   if (input?.VersionId !== undefined) {
     const value = secret.history[input.VersionId];
     if (value === undefined) {
@@ -41,19 +43,30 @@ const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
   }
   return { SecretString: secret.value, VersionId: secret.version };
 });
-vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
-    secretsManager: { send: answer, config: { region: () => Promise.resolve('us-east-1') } },
-  }),
-}));
+vi.mock('../../../src/utils/aws-clients.js', () => {
+  // A region-scoped client set per region, so a lookup says which region asked.
+  const clients = (region: string): Record<string, unknown> => ({
+    sts: { send: async () => ({ Account: '123456789012' }) },
+    secretsManager: {
+      send: (command: unknown) => answer(command, region),
+      config: { region: () => Promise.resolve(region) },
+    },
+    credentialConfig: {},
+    withRegion: (target: string) => clients(target),
+  });
+  return { getAwsClients: () => clients('us-east-1') };
+});
 vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   class FakeSecretsManagerClient {
-    readonly config = { region: () => Promise.resolve('us-east-1') };
-    constructor(_config?: unknown) {}
+    readonly config: { region: () => Promise<string> };
+    private readonly ctorRegion: string;
+    constructor(config?: { region?: string }) {
+      this.ctorRegion = config?.region ?? 'us-east-1';
+      this.config = { region: () => Promise.resolve(this.ctorRegion) };
+    }
     send(command: unknown): Promise<unknown> {
-      return answer(command);
+      return answer(command, this.ctorRegion);
     }
     destroy(): void {}
   }
@@ -76,12 +89,13 @@ beforeEach(() => {
   secret.version = V2;
   secret.history = { [V1]: 'previous-password', [V2]: 'current-password' };
   secret.lookups = [];
+  secret.regions = [];
   log.warn.length = 0;
 });
 
 const props = { Password: REF, Url: `https://x/${REF}/y` };
 
-function recordWith(versions: string[] | undefined): ResourceState {
+function recordWith(versions: string[] | undefined, region = 'us-east-1'): ResourceState {
   return {
     physicalId: 'db-1',
     resourceType: 'AWS::RDS::DBInstance',
@@ -89,7 +103,7 @@ function recordWith(versions: string[] | undefined): ResourceState {
     attributes: {},
     dependencies: [],
     ...(versions !== undefined && {
-      referenceProvenance: { [REF]: { region: 'us-east-1', versions } },
+      referenceProvenance: { [REF]: { region, versions } },
     }),
   };
 }
@@ -147,5 +161,14 @@ describe('rollback replay pinning (go-to-k/cdkd#4852)', () => {
     const { resolved } = await replay(recordWith([V1]));
     expect(resolved?.['Password']).toBe('current-password');
     expect(log.warn.some((m) => m.includes('shorter than four characters'))).toBe(true);
+  });
+
+  it('reads the pin once per token, in the region the record names', async () => {
+    const { resolved } = await replay(recordWith([V1], 'us-west-2'));
+    expect(resolved?.['Password']).toBe('previous-password');
+    // Two leaves hold the token: one pinned lookup, through us-west-2.
+    expect(secret.lookups.filter((l) => l === `pw@${V1}`)).toEqual([`pw@${V1}`]);
+    const pinnedAt = secret.lookups.indexOf(`pw@${V1}`);
+    expect(secret.regions[pinnedAt]).toBe('us-west-2');
   });
 });

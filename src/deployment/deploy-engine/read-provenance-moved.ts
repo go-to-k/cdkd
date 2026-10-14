@@ -18,7 +18,16 @@
  * - A record with no field, or no `readVersions` for the token, gives no
  *   verdict: the go-to-k/cdkd#4851 rule decides alone.
  */
-import { referenceProvenanceOf } from '../reference-provenance-record.js';
+import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import type { ResolverContext } from '../intrinsic-resolver/context.js';
+import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
+import type { ReferenceProvenance, ResourceState } from '../../types/state.js';
+import {
+  referenceProvenanceOf,
+  validateReferenceProvenance,
+  withReferenceProvenance,
+} from '../reference-provenance-record.js';
+import { MAX_REFERENCE_VERSIONS } from '../secret-redaction/reference-provenance.js';
 import { passReadVersionsFor } from '../secret-redaction/reference-provenance.js';
 import type { RecordedSecretValues } from '../secret-redaction/pairs.js';
 
@@ -42,10 +51,22 @@ function occurrences(value: unknown, token: string): number {
   return 0;
 }
 
-/** The moved paths, and the tokens that moved them (for the deploy's info line). */
+/** One token whose read-route versions moved, with the paths that hold it read-derived. */
+export interface MovedToken {
+  token: string;
+  paths: Set<string>;
+  /** The record's `readVersions` for the token. */
+  recorded: readonly string[];
+  /** This run's read-route versions for the token. */
+  served: ReadonlySet<string>;
+  /** The record's region for the token, when it names one. */
+  region: string | undefined;
+}
+
+/** The moved paths, and the tokens that moved them. */
 export interface ReadProvenanceMoved {
   paths: Set<string>;
-  tokens: string[];
+  tokens: MovedToken[];
 }
 
 export function readProvenanceMovedPaths(args: {
@@ -59,7 +80,7 @@ export function readProvenanceMovedPaths(args: {
   secrets: RecordedSecretValues | undefined;
 }): ReadProvenanceMoved {
   const paths = new Set<string>();
-  const tokens: string[] = [];
+  const tokens: MovedToken[] = [];
   const field = referenceProvenanceOf(args.record);
   if (field === undefined) return { paths, tokens };
   for (const [token, entry] of Object.entries(field)) {
@@ -68,19 +89,113 @@ export function readProvenanceMovedPaths(args: {
     const served = passReadVersionsFor(args.secrets, token);
     if (served === undefined) continue;
     if ([...served].every((version) => recorded.includes(version))) continue;
-    let moved = false;
+    const held = new Set<string>();
     for (const key of Object.keys(args.desiredRedacted)) {
-      const held = occurrences(args.desiredRedacted[key], token);
-      if (held === 0) continue;
+      const count = occurrences(args.desiredRedacted[key], token);
+      if (count === 0) continue;
       const spelled = Object.hasOwn(args.templateProperties, key)
         ? occurrences(args.templateProperties[key], token)
         : 0;
-      if (held > spelled) {
-        paths.add(key);
-        moved = true;
-      }
+      if (count > spelled) held.add(key);
     }
-    if (moved) tokens.push(token);
+    if (held.size === 0) continue;
+    for (const key of held) paths.add(key);
+    tokens.push({ token, paths: held, recorded, served, region: entry.region });
   }
   return { paths, tokens };
+}
+
+/**
+ * The moved tokens whose VALUE moved too (code review of go-to-k/cdkd#4892): a
+ * Secrets Manager `VersionId` changes when ANY key of a JSON secret changes,
+ * so a version move alone can leave the value a `SecretString:<key>` token
+ * reads unchanged, and sending (or REPLACING, at a create-only path) the
+ * reader would act on an equal value, which CloudFormation never does.
+ *
+ * `sameValue(token, recorded, served)` reads the token at both versions and
+ * answers whether the plaintexts are equal, or `undefined` when it cannot
+ * tell (a version no longer readable, more than one version on a side): the
+ * token then counts as moved, the fail-safe direction. Called only for a
+ * reader whose served versions already moved, so an ordinary deploy makes no
+ * extra lookup. The plaintexts are compared, never kept or printed.
+ */
+export async function confirmValueMoves(
+  moved: ReadProvenanceMoved,
+  sameValue: (token: MovedToken, recorded: string, served: string) => Promise<boolean | undefined>
+): Promise<{ moved: ReadProvenanceMoved; unchanged: MovedToken[] }> {
+  const kept: MovedToken[] = [];
+  const unchanged: MovedToken[] = [];
+  for (const entry of moved.tokens) {
+    const equal =
+      entry.recorded.length === 1 && entry.served.size === 1
+        ? await sameValue(entry, entry.recorded[0]!, [...entry.served][0]!)
+        : undefined;
+    if (equal === true) unchanged.push(entry);
+    else kept.push(entry);
+  }
+  const paths = new Set<string>();
+  for (const entry of kept) for (const key of entry.paths) paths.add(key);
+  return { moved: { paths, tokens: kept }, unchanged };
+}
+
+/**
+ * Read `entry.token` at `recorded` and at `served` (in the record's region for
+ * it, when it names one) and say whether the plaintexts are equal; `undefined`
+ * when either read fails. A throwaway bag and no provenance: nothing read here
+ * reaches state, a log or the pass. The served read is the resolver's cache.
+ */
+export async function sameValueAtVersions(
+  resolver: IntrinsicFunctionResolver,
+  entry: MovedToken,
+  recorded: string,
+  served: string,
+  base: Pick<ResolverContext, 'template' | 'resources'>
+): Promise<boolean | undefined> {
+  const context = (pin: string): ResolverContext => ({
+    template: base.template,
+    resources: base.resources,
+    recordedSecretValues: new Map(),
+    provenanceSuppressed: true,
+    referencePins: new Map([[entry.token, pin]]),
+  });
+  const reader =
+    entry.region === undefined
+      ? resolver
+      : resolver.resolverForProducerRegion(entry.region, context(served));
+  try {
+    const now = await reader.resolveDynamicReferences(entry.token, context(served));
+    const then = await reader.resolveDynamicReferences(entry.token, context(recorded));
+    if (now.includes('{{resolve:') || then.includes('{{resolve:')) return undefined;
+    return now === then;
+  } catch (err) {
+    if (isDeliberateResolutionRefusal(err)) throw err;
+    return undefined;
+  }
+}
+
+/**
+ * `record` with each `unchanged` token's `readVersions` set to the versions
+ * this run served (joined into `versions`, at most
+ * {@link MAX_REFERENCE_VERSIONS}): the reader read an equal value at them, so
+ * its record is current, and the next diff must not promote it again.
+ */
+export function withRefreshedReadVersions(
+  record: ResourceState,
+  unchanged: readonly MovedToken[]
+): ResourceState {
+  const field = referenceProvenanceOf(record);
+  if (field === undefined) return record;
+  const out: Record<string, ReferenceProvenance> = { ...field };
+  for (const { token, served } of unchanged) {
+    const before = Object.hasOwn(field, token) ? field[token] : undefined;
+    const versions = [...new Set([...(before?.versions ?? []), ...served])].sort();
+    if (versions.length > MAX_REFERENCE_VERSIONS) continue;
+    const next = validateReferenceProvenance(token, {
+      ...(before?.region !== undefined && { region: before.region }),
+      versions,
+      readVersions: [...served].sort(),
+    });
+    if (next !== undefined) out[token] = next;
+  }
+  return withReferenceProvenance(record, out);
 }

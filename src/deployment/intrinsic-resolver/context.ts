@@ -574,6 +574,8 @@ export interface CrossStackRead {
   stackName: string;
   region: string;
   outputKey: string;
+  /** The value read carries a `{{resolve:` token: only such a read can be a member. */
+  carriesToken: boolean;
   state?: import('../../types/state.js').StackState;
 }
 

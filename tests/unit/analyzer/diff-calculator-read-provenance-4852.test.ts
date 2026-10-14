@@ -63,7 +63,7 @@ function stateOf(resources: Record<string, ResourceState>): StackState {
 function fixture(
   queue: Record<string, ReferenceProvenance> | undefined,
   reader: Record<string, ReferenceProvenance> | undefined,
-  extra: { readerDescription?: string; grandReader?: boolean } = {}
+  extra: { readerDescription?: string } = {}
 ): { state: StackState; template: CloudFormationTemplate } {
   const resources: Record<string, ResourceState> = {
     Queue: record('AWS::SQS::Queue', { QueueName: REF }, queue),
@@ -73,9 +73,6 @@ function fixture(
       reader
     ),
   };
-  if (extra.grandReader) {
-    resources['Grand'] = record('AWS::SSM::Parameter', { Name: '/g', Type: 'String', Value: '/r' });
-  }
   const template: CloudFormationTemplate = {
     Resources: {
       Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
@@ -88,12 +85,6 @@ function fixture(
           Description: extra.readerDescription ?? 'a',
         },
       },
-      ...(extra.grandReader && {
-        Grand: {
-          Type: 'AWS::SSM::Parameter',
-          Properties: { Name: '/g', Type: 'String', Value: { Ref: 'Reader' } },
-        },
-      }),
     },
   };
   return { state: stateOf(resources), template };
@@ -198,6 +189,18 @@ describe('same stack', () => {
       ['Description', false],
       ['Value', true],
     ]);
+  });
+
+  it('a key the template edit already changed is not marked twice', async () => {
+    const { state, template } = fixture({ [REF]: at([V2]) }, { [REF]: at([V1], [V1]) });
+    // The reader's Value is edited AND promoted: one change for it.
+    (template.Resources['Reader']!.Properties as Record<string, unknown>)['Value'] = {
+      'Fn::Join': ['', ['x', { 'Fn::GetAtt': ['Queue', 'Arn'] }]],
+    };
+    const paths = (await diff(state, template))
+      .get('Reader')!
+      .propertyChanges!.map((pc) => pc.path);
+    expect(paths).toEqual(['Value']);
   });
 
   it('only a reading property whose recorded value holds the moved token is marked', async () => {
@@ -321,6 +324,29 @@ describe('a nested CHILD: the inherited snapshot is the upstream of a parameter'
     expect(changes.get('Reader')!.changeType).toBe('UPDATE');
   });
 
+  it('a child reader that reads no parameter does not join the snapshot (S2 stands)', async () => {
+    const state = stateOf({
+      Sibling: record('AWS::SQS::Queue', { QueueName: REF }),
+      Reader: record(
+        'AWS::SSM::Parameter',
+        { Name: '/n', Type: 'String', Value: ARN },
+        { [REF]: at([V1], [V1]) }
+      ),
+    });
+    const template: CloudFormationTemplate = {
+      Parameters: { QueueArn: { Type: 'String' } },
+      Resources: {
+        Sibling: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/n', Type: 'String', Value: { 'Fn::GetAtt': ['Sibling', 'Arn'] } },
+        },
+      },
+    };
+    const changes = await diff(state, template, { inherited: new Map([[REF, at([V2], [V2])]]) });
+    expect(changes.get('Reader')!.changeType).toBe('NO_CHANGE');
+  });
+
   it('not promoted against a snapshot at its version, nor with no snapshot', async () => {
     const same = await diff(childState, childTemplate, {
       inherited: new Map([[REF, at([V1], [V1])]]),
@@ -428,6 +454,7 @@ describe('cross-stack: the producer output provenance', () => {
     expect(changes.get('Plain')!.changeType).toBe('NO_CHANGE');
     // Once (the arm runs once, before the fixpoint), and for Reader alone.
     expect(crossStackOutputs).toHaveBeenCalledTimes(1);
+    expect(crossStackOutputs).toHaveBeenCalledWith([{ 'Fn::ImportValue': 'q-arn' }]);
   });
 
   it('a producer output at the read version, or with no provenance, promotes nothing', async () => {

@@ -143,8 +143,9 @@ async function deploy(opts: {
   const sent: Record<string, Record<string, unknown>> = {};
   const stateReads: string[] = [];
   const provider = {
-    create: vi.fn(async (id: string, type: string) => {
+    create: vi.fn(async (id: string, type: string, props: Record<string, unknown>) => {
       calls.push(`create:${id}`);
+      sent[id] = props;
       return type === 'AWS::SQS::Queue'
         ? {
             physicalId: URL_1.replace('sdin-q-1', secret.queue),
@@ -354,6 +355,8 @@ describe('an interrupted earlier deploy (the queue was replaced, its reader not)
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toContain('create:Reader');
     expect(run.calls).not.toContain('update:Reader');
+    // The replacement is created with the queue AWS has, not the deleted one.
+    expect(run.sent['Reader']?.['EventSourceArn']).toBe(PLAIN_ARN_2);
   });
 
   it('with no provenance field the reader is left as v11 left it (no promotion)', async () => {
@@ -376,6 +379,83 @@ describe('an interrupted earlier deploy (the queue was replaced, its reader not)
     const run = await deploy({ state, template, levels: LEVELS });
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual([]);
+  });
+});
+
+describe('a version move whose value did not move (another key of a JSON secret)', () => {
+  /** An SSM producer of the secret's `queue` key, read into a reader's create-only Name. */
+  const shape = (producerVersions: string[]) => {
+    const state = {
+      version: 12,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Producer: {
+          physicalId: '/p/producer',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/p/producer', Type: 'String', Value: REF, Description: 'b' },
+          attributes: { Value: REF },
+          dependencies: [],
+          referenceProvenance: { [REF]: at(producerVersions) },
+        },
+        Reader: {
+          physicalId: REF,
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: REF, Type: 'String', Value: 'x' },
+          attributes: {},
+          dependencies: ['Producer'],
+          referenceProvenance: { [REF]: at([V1], [V1]) },
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Producer: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/p/producer', Type: 'String', Value: REF, Description: 'b' },
+        },
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: { 'Fn::GetAtt': ['Producer', 'Value'] },
+            Type: 'String',
+            Value: 'x',
+          },
+        },
+      },
+    };
+    return { state, template };
+  };
+  const LV = [['Producer'], ['Reader']];
+
+  it('is neither replaced nor updated, and records the served version so it is not promoted again', async () => {
+    // V2 changed ANOTHER key: the `queue` key still reads `sdin-q-1`. The
+    // producer was updated in place at V2 by an earlier run.
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    const { state, template } = shape([V2]);
+    const run = await deploy({ state, template, levels: LV });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    expect(log.info.some((m) => m.includes('is sent'))).toBe(false);
+    const refreshed = run.last?.resources['Reader']?.referenceProvenance?.[REF];
+    expect(refreshed?.readVersions).toEqual([V2]);
+    // The next deploy promotes nothing and reads no old version.
+    secret.lookups = [];
+    const again = await deploy({ state: run.last!, template, levels: LV });
+    expect(again.calls).toEqual([]);
+    expect(secret.lookups).not.toContain(`sdin@${V1}`);
+  });
+
+  it('control: the value moved too, so the create-only reader is replaced with it', async () => {
+    rotate();
+    const { state, template } = shape([V2]);
+    const run = await deploy({ state, template, levels: LV });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('create:Reader');
+    expect(run.sent['Reader']?.['Name']).toBe('sdin-q-2');
   });
 });
 
@@ -602,6 +682,28 @@ describe('a cross-stack consumer (Fn::ImportValue)', () => {
       levels: [['Reader']],
       producers: { p: producer(URL_1, [V1]) },
       exportIndex,
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    expect(run.stateReads.filter((n) => n === 'p')).toEqual([]);
+  });
+
+  it('a reader with read versions whose cross-stack read carries no token reads no producer state', async () => {
+    const { state, template } = queueAndReader({
+      queue: { physicalId: URL_1, provenance: { [REF]: at([V1]) } },
+      reader: { provenance: { [REF]: at([V1], [V1]) } },
+    });
+    // Its Description imports a plain export (a VPC id), beside the queue read.
+    state.resources['Reader']!.properties['Description'] = 'vpc-123';
+    (template.Resources['Reader']!.Properties as Record<string, unknown>)['Description'] = {
+      'Fn::ImportValue': 'p-vpc',
+    };
+    const run = await deploy({
+      state,
+      template,
+      levels: LEVELS,
+      producers: { p: producer(URL_1, [V1]) },
+      exportIndex: { 'p-vpc': { value: 'vpc-123', producerStack: 'p', producerRegion: 'us-east-1' } },
     });
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual([]);

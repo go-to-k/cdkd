@@ -4,7 +4,10 @@
  * versions are not a subset of the record's `readVersions`.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readProvenanceMovedPaths } from '../../../src/deployment/deploy-engine/read-provenance-moved.js';
+import {
+  confirmValueMoves,
+  readProvenanceMovedPaths,
+} from '../../../src/deployment/deploy-engine/read-provenance-moved.js';
 import { recordReferenceResolution } from '../../../src/deployment/secret-redaction/reference-provenance.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction/pairs.js';
 
@@ -47,7 +50,7 @@ describe('readProvenanceMovedPaths', () => {
     });
     // `Tags` spells the token as often as it holds it: literal, exempt.
     expect([...moved.paths]).toEqual(['Value']);
-    expect(moved.tokens).toEqual([REF]);
+    expect(moved.tokens.map((t) => t.token)).toEqual([REF]);
   });
 
   it('served ⊆ recorded: nothing moved (the skip stands)', () => {
@@ -105,5 +108,49 @@ describe('readProvenanceMovedPaths', () => {
       secrets: served([[V2, 'read']]),
     });
     expect([...moved.paths]).toEqual(['Value']);
+  });
+
+  it('a read leaf nested in an object or an array is found', () => {
+    for (const [template, redacted] of [
+      [{ Variables: { Q: { 'Fn::GetAtt': ['Queue', 'Arn'] } } }, { Variables: { Q: ARN } }],
+      [[{ 'Fn::GetAtt': ['Queue', 'Arn'] }], [ARN]],
+    ] as const) {
+      const moved = readProvenanceMovedPaths({
+        record: record([V1]),
+        templateProperties: { Env: template },
+        desiredRedacted: { Env: redacted },
+        secrets: served([[V2, 'read']]),
+      });
+      expect([...moved.paths]).toEqual(['Env']);
+    }
+  });
+});
+
+describe('confirmValueMoves', () => {
+  const moved = () =>
+    readProvenanceMovedPaths({
+      record: record([V1]),
+      templateProperties,
+      desiredRedacted,
+      secrets: served([[V2, 'read']]),
+    });
+
+  it('an equal value at both versions is no move, and is reported unchanged', async () => {
+    const calls: string[][] = [];
+    const out = await confirmValueMoves(moved(), async (_t, recorded, now) => {
+      calls.push([recorded, now]);
+      return true;
+    });
+    expect(calls).toEqual([[V1, V2]]);
+    expect(out.moved.paths.size).toBe(0);
+    expect(out.unchanged.map((u) => u.token)).toEqual([REF]);
+  });
+
+  it('a different value, or one that cannot be read, stays moved', async () => {
+    for (const answer of [false, undefined]) {
+      const out = await confirmValueMoves(moved(), async () => answer);
+      expect([...out.moved.paths]).toEqual(['Value']);
+      expect(out.unchanged).toEqual([]);
+    }
   });
 });

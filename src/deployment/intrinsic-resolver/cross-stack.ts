@@ -170,6 +170,7 @@ export async function reresolveCrossStackValue(
       stackName: producerOutput.stackName,
       region: producerOutput.region || this.resolverRegion,
       outputKey: producerOutput.outputKey,
+      carriesToken: carriesDynamicReference(value),
       ...(producerOutput.state !== undefined && { state: producerOutput.state }),
     });
   }
@@ -879,19 +880,23 @@ export function recordImport(
 }
 
 /** Per engine run (keyed by its shared `recordedImports`, else the pass's bag): one read per producer. */
-const producerStateReads = new WeakMap<object, Map<string, Promise<StackState | undefined>>>();
+const producerStateReads = new WeakMap<
+  object,
+  Map<string, Promise<{ state: StackState | undefined; failed: boolean }>>
+>();
 
 /**
  * A producer stack's state, read once per `scope` (an engine run; go-to-k/cdkd#4819,
- * go-to-k/cdkd#4852); `undefined` when the read fails (`onFailure` runs once,
- * on the read that failed) or finds nothing. A producer deployed earlier in the
- * same process saved its state before the consumer's engine started. A state
- * the caller already holds is cached for the run instead of being read again.
+ * go-to-k/cdkd#4852); `undefined` when the read fails (each caller's
+ * `onFailure` runs, so every reader of a failed read can say what it lost) or
+ * finds nothing. A producer deployed earlier in the same process saved its
+ * state before the consumer's engine started. A state the caller already
+ * holds is cached for the run instead of being read again.
  *
  * Exported for the deploy's and `cdkd diff`'s read-provenance arm, which reads
  * the producer of a cross-stack consumer through this same cache.
  */
-export function readProducerStateOnce(
+export async function readProducerStateOnce(
   scope: object,
   stateBackend: Pick<NonNullable<ResolverContext['stateBackend']>, 'getState'> | undefined,
   stackName: string,
@@ -909,20 +914,22 @@ export function readProducerStateOnce(
   if (read === undefined) {
     read =
       inHand !== undefined
-        ? Promise.resolve(inHand)
+        ? Promise.resolve({ state: inHand, failed: false })
         : (async () => {
-            if (stateBackend === undefined) return undefined;
+            if (stateBackend === undefined) return { state: undefined, failed: false };
             try {
-              return (await stateBackend.getState(stackName, region))?.state ?? undefined;
+              const data = await stateBackend.getState(stackName, region);
+              return { state: data?.state ?? undefined, failed: false };
             } catch {
-              // Fail closed: no id is kept, no version pinned. The caller logs it.
-              onFailure();
-              return undefined;
+              // Fail closed: no id is kept, no version pinned.
+              return { state: undefined, failed: true };
             }
           })();
     reads.set(key, read);
   }
-  return read;
+  const { state, failed } = await read;
+  if (failed) onFailure();
+  return state;
 }
 
 /** {@link readProducerStateOnce} for a cross-stack read of `context`'s engine run. */

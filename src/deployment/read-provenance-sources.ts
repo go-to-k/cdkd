@@ -64,7 +64,8 @@ export function crossStackOutputProvenanceSource(
       const key = crossStackSourceKey(node);
       if (key === undefined) continue;
       const read = reads.get(key);
-      if (read === undefined) continue;
+      // A read whose value carried no token holds no provenance: no state read.
+      if (read === undefined || !read.carriesToken) continue;
       const state = await readProducerStateOnce(
         scope,
         stateBackend,
