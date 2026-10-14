@@ -398,6 +398,16 @@ if ! grep -qF "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener): retu
   exit 1
 fi
 echo "    ${LISTENER_LOGICAL} returned to the SDK provider on the same ARN (✓)"
+# Issue #1160: the listener now warns when a property ModifyListener keeps is
+# removed. This redeploy drops only ListenerAttributes, whose removal is
+# reset, so neither that warning nor the shared caller's may name it.
+if grep -F "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener)" <<<"${REMOVAL_PLAIN}" \
+  | grep -E 'removed from the template|absent from the state being restored' >/dev/null; then
+  echo "FAIL: #1160: the removal redeploy warned about a removed listener property it resets:"
+  grep -F "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener)" <<<"${REMOVAL_PLAIN}"
+  exit 1
+fi
+echo "    no left-in-place warning for ${LISTENER_LOGICAL}'s reset ListenerAttributes (✓)"
 
 # Pre-fix the provider passed the absent field through and ModifyTargetGroup
 # merged (port stayed 8080); post-fix the removal sends the explicit

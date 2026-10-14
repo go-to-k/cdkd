@@ -9992,6 +9992,7 @@
       "gaps": [],
       "blindSpots": [
         "computed key in canonicalizeDriftPair()",
+        "computed key in updateListener()",
         "computed key in updateLoadBalancer()",
         "computed key in updateTargetGroup()",
         "Object.keys(...) in updateLoadBalancer()"

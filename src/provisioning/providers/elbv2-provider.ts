@@ -596,6 +596,54 @@ function elbv2ArnScope(resourceType: string, physicalId: string): string | undef
 }
 
 /**
+ * Issue #1160: Listener properties whose REMOVAL `ModifyListener` does not
+ * apply. The API keeps any field it is not sent, and cdkd sends no reset:
+ * CloudFormation's behavior on these removals is unmeasured, and a reset value
+ * (`AlpnPolicy: ['None']`, `MutualAuthentication: { Mode: 'off' }`) is
+ * rejected on a listener whose protocol does not take the field. Each is
+ * named in `updateListener`'s own warning instead.
+ */
+const LISTENER_LEFT_IN_PLACE_ON_REMOVAL = [
+  'AlpnPolicy',
+  'Certificates',
+  'MutualAuthentication',
+  'Port',
+  'Protocol',
+  'SslPolicy',
+] as const;
+
+/**
+ * The protocol change after which ModifyListener itself drops `SslPolicy` and
+ * `Certificates` ("Changing the protocol from HTTPS to HTTP, or from TLS to
+ * TCP, removes the security policy and default certificate properties", the
+ * ModifyListener API reference), keyed by the previous protocol.
+ */
+const LISTENER_TLS_DOWNGRADE: ReadonlyMap<string, string> = new Map([
+  ['HTTPS', 'HTTP'],
+  ['TLS', 'TCP'],
+]);
+const CLEARED_BY_TLS_DOWNGRADE: ReadonlySet<string> = new Set(['SslPolicy', 'Certificates']);
+
+/**
+ * The ONE warning line for {@link LISTENER_LEFT_IN_PLACE_ON_REMOVAL} removals.
+ * Names are template-borne, so they go through `safeMsg`. It claims nothing
+ * about CloudFormation's behavior. A rollback revert restores an earlier
+ * state record, so there the property is one the failed deploy ADDED, and
+ * the line says that instead.
+ */
+const listenerLeftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ModifyListener keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyListener keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+};
+
+/**
  * AWS ELBv2 Provider
  *
  * Implements resource provisioning for ELBv2 resources:
@@ -684,6 +732,28 @@ export class ELBv2Provider implements ResourceProvider {
         // stack tags) routed via Cloud Control, whose update leaves a removed
         // ListenerAttributes key live (go-to-k/cdkd#2085).
         'Tags',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every Listener
+   * property, each removal handled by `update()`, so the shared caller warns
+   * about none of them. LoadBalancer and TargetGroup are not audited yet.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ElasticLoadBalancingV2::Listener',
+      new Set([
+        // Create-only (a removal replaces), or required.
+        'LoadBalancerArn',
+        'DefaultActions',
+        // Diffed, removal included: ModifyListenerAttributes / RemoveTags.
+        'ListenerAttributes',
+        'Tags',
+        // Cleared by AWS on an HTTPS -> HTTP / TLS -> TCP change, otherwise
+        // left in place and named in updateListener's own warning (no reset).
+        ...LISTENER_LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -939,8 +1009,7 @@ export class ELBv2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets,
-          context?.desiredFromAwsReadback === true
+          context
         );
       default:
         throw new ProvisioningError(
@@ -2612,12 +2681,34 @@ export class ELBv2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker,
-    fromReadback = false
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    const maskSecrets = context?.maskSecrets;
+    const fromReadback = context?.desiredFromAwsReadback === true;
     this.logger.debug(`Updating Listener ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+
+    // Issue #1160: a removed property ModifyListener is not sent stays live.
+    // Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
+    // change, which AWS drops itself. Named once, and only after the update
+    // SUCCEEDED (the shared caller's warning has the same timing). Not on
+    // `drift --revert`: its previous side is an AWS readback, so a key the
+    // desired side lacks was never removed from a template.
+    const removed = context?.removedProperties;
+    const desiredProtocol = properties['Protocol'];
+    const previousProtocol = previousProperties['Protocol'];
+    const tlsDowngrade =
+      typeof desiredProtocol === 'string' &&
+      typeof previousProtocol === 'string' &&
+      LISTENER_TLS_DOWNGRADE.get(previousProtocol) === desiredProtocol;
+    const leftInPlaceNames = LISTENER_LEFT_IN_PLACE_ON_REMOVAL.filter(
+      (key) =>
+        (removed !== undefined
+          ? removed.has(key)
+          : properties[key] === undefined && previousProperties[key] !== undefined) &&
+        !(tlsDowngrade && CLEARED_BY_TLS_DOWNGRADE.has(key))
+    );
 
     try {
       const defaultActions = this.convertActions(
@@ -2716,6 +2807,15 @@ export class ELBv2Provider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated Listener ${logicalId}`);
+      if (leftInPlaceNames.length > 0 && !fromReadback) {
+        this.logger.warn(
+          listenerLeftInPlaceWarning(
+            logicalId,
+            leftInPlaceNames,
+            context?.replayingState ? 'rollback' : 'deploy'
+          )
+        );
+      }
 
       return {
         physicalId,
