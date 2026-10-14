@@ -81,6 +81,13 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *                `--recreate-via-cc-api`; the AZ id comes from `CDKD_TEST_AZ_ID`,
  *                resolved from the account's region.
  *
+ *   badwindow -- go-to-k/cdkd#4904: `base` plus an EvaluationWindow whose
+ *                Timezone is a NUMBER, which Cloud Control's model validation
+ *                refuses. Deployed with NO flag from `base`, so the update is
+ *                auto-routed from the SDK provider and FAILS; verify.sh reads
+ *                the remedy note on that failure. Threshold stays at `base`'s,
+ *                so the property is the only change.
+ *
  * The threshold moves with the phase for the same reason the sibling
  * `cc-to-sdk-reroute` fixture varies its DisplayName: routing is decided while
  * PROVISIONING, so a deploy the differ classifies NO_CHANGE never calls the
@@ -89,6 +96,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  */
 const THRESHOLD_BY_PHASE: Record<string, number> = {
   base: 1,
+  badwindow: 1,
   drop: 2,
   rebase: 3,
   allowdrop: 4,
@@ -139,6 +147,10 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
       // fixture was written, so a failure here is cdkd's routing, not a
       // malformed property.
       alarm.addPropertyOverride('EvaluationWindow', { WallClockWindow: { Timezone: 'UTC' } });
+    }
+
+    if (phase === 'badwindow') {
+      alarm.addPropertyOverride('EvaluationWindow', { WallClockWindow: { Timezone: 12345 } });
     }
 
     if (phase === 'allowmeta') {

@@ -13,6 +13,8 @@
 #
 # Phases:
 #   1 base      -- deploy on the SDK route
+#   1b badwindow -- an auto-routed update Cloud Control refuses: the failure
+#                  names both remedies (go-to-k/cdkd#4904).
 #   2 drop      -- add EvaluationWindow with NO flag. THE ARM.
 #   3 rebase    -- --recreate-via-sdk-provider on a template without the
 #                  property. CONTROL for the identity witness: a genuine
@@ -353,6 +355,33 @@ WITNESS_BEFORE=$(aws cloudwatch list-tags-for-resource --resource-arn "${ARN0}" 
   --query "length(Tags[?Key=='cdkd-integ-witness'])" --output text)
 [ "${WITNESS_BEFORE}" = "1" ] || { echo "FAIL: identity witness not established (tags=${WITNESS_BEFORE}, expected 1)" >&2; exit 1; }
 echo "    OK: identity witness attached (1 unmanaged tag)"
+
+echo "==> Phase 1b: an auto-routed update that Cloud Control REFUSES names its remedies (#4904)"
+# The template gains EvaluationWindow with a NUMBER where the schema wants a
+# string, so the update is auto-routed from the SDK provider and Cloud Control
+# rejects it. The failure must carry cdkd's note naming both flags.
+if BAD_OUT=$(env CDKD_TEST_PHASE=badwindow \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1); then
+  printf '%s\n' "${BAD_OUT}" >&2
+  echo "FAIL: the badwindow deploy SUCCEEDED; Cloud Control accepted a numeric Timezone, so this phase reaches no failure and asserts nothing" >&2
+  exit 1
+fi
+printf '%s\n' "${BAD_OUT}" >&2
+BAD_PLAIN=$(printf '%s' "${BAD_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+# SENTINEL: the failure must be the update of THIS resource, or the note's
+# absence below would read as a cdkd defect when the deploy died elsewhere.
+grep -qE "Failed to update resource ${LOGICAL_ID}" <<<"${BAD_PLAIN}" || {
+  echo "FAIL: the badwindow deploy failed, but not on the update of ${LOGICAL_ID}; the arm below would test nothing" >&2; exit 1; }
+grep -qF -- "moved the resource from its SDK provider to Cloud Control API" <<<"${BAD_PLAIN}" || {
+  echo "FAIL: the update of ${LOGICAL_ID} failed without naming the move to Cloud Control" >&2; exit 1; }
+grep -qF -- "--recreate-via-cc-api ${LOGICAL_ID}" <<<"${BAD_PLAIN}" || {
+  echo "FAIL: the failure does not name --recreate-via-cc-api ${LOGICAL_ID}" >&2; exit 1; }
+grep -qF -- "--prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow" <<<"${BAD_PLAIN}" || {
+  echo "FAIL: the failure does not name --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow" >&2; exit 1; }
+LAYER_BAD=$(record '.provisionedBy')
+[ "${LAYER_BAD}" = "sdk" ] || { echo "FAIL: a FAILED auto-routed update moved the record to provisionedBy=${LAYER_BAD}; it must stay sdk" >&2; exit 1; }
+[ "$(record '.physicalId')" = "${P0}" ] || { echo "FAIL: the failed update changed the recorded physical id" >&2; exit 1; }
+echo "    OK: the refused update names both remedies; record still sdk at ${P0}"
 
 echo "==> Phase 2a: the plan ANNOUNCES the re-route"
 DIFF_OUT=$(env CDKD_TEST_PHASE=drop \
