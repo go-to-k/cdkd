@@ -101,6 +101,8 @@
     "AWS::Lambda::MicrovmImage",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
+    "AWS::Lambda::WebFunctionEndpoint",
+    "AWS::Lambda::WebFunctionRevision",
     "AWS::Logs::LogGroup",
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",
@@ -5698,6 +5700,30 @@
       }
     },
     {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "integs": [
+        "lambda-web-function-revision-replace"
+      ],
+      "signals": {
+        "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "integs": [
+        "lambda-web-function-revision-replace"
+      ],
+      "signals": {
+        "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigatewayv2-update-removal",
@@ -7776,8 +7802,6 @@
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
     "AWS::Lambda::WebFunction",
-    "AWS::Lambda::WebFunctionEndpoint",
-    "AWS::Lambda::WebFunctionRevision",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
     "AWS::Logs::ResourcePolicy",

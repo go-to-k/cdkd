@@ -14,9 +14,9 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 
 ## Summary
 
-- Provider classes classified: **86**
-- Declared properties: **1156** (**1154** with read evidence)
-- Fully wired classes: **84**
+- Provider classes classified: **88**
+- Declared properties: **1170** (**1168** with read evidence)
+- Fully wired classes: **86**
 - Allow-listed classes (visible, non-blocking): **2**
 - Classes with a whole-bag blind spot (recorded, never an excuse): **38**
 - **Wiring gaps (blocks CI): 0**
@@ -143,6 +143,8 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaMicrovmImageProvider` | lambda-microvm-image-provider.ts | wired | 14 | 14 |
 | `LambdaPermissionProvider` | lambda-permission-provider.ts | wired | 9 | 9 |
 | `LambdaUrlProvider` | lambda-url-provider.ts | wired | 5 | 5 |
+| `LambdaWebFunctionEndpointProvider` | lambda-web-function-endpoint-provider.ts | wired | 9 | 9 |
+| `LambdaWebFunctionRevisionProvider` | lambda-web-function-revision-provider.ts | wired | 5 | 5 |
 | `LogsLogGroupProvider` | logs-loggroup-provider.ts | wired | 9 | 9 |
 | `NeptuneProvider` | neptune-provider.ts | wired | 22 | 22 |
 | `NestedStackProvider` | nested-stack-provider.ts | allow-listed | 2 | 1 |

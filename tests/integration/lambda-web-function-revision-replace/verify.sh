@@ -10,6 +10,11 @@
 #
 # The code object lives in a versioned bucket this script owns: a new object
 # version changes the revision's create-only BuildConfig.
+#
+# go-to-k/cdkd#4926 adds SDK providers for the revision and the endpoint. The
+# previous release (Cloud Control for both) deploys v1, so the records start
+# pinned to cc-api; this build's v2 deploy must move both to the SDK route
+# (the 'sdk-coverage' sticky exemption), and v3 runs SDK to SDK.
 
 set -euo pipefail
 
@@ -58,6 +63,8 @@ CODE_BUCKET="cdkd-integ-webfn-code-${ACCOUNT}-${REGION}"
 FN_ARN="arn:aws:lambda:${REGION}:${ACCOUNT}:web-function/${FN_NAME}"
 FN_MODEL="{\"FunctionName\":\"${FN_NAME}\"}"
 WORK="$(mktemp -d)"
+OLD_CDKD_VERSION="${OLD_CDKD_VERSION:-0.299.7}"
+OLD_TMPDIR=""
 
 # Identifiers of every resource of a type under the web function.
 cc_ids() { # usage: cc_ids <type>
@@ -113,6 +120,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
   rm -rf "${WORK}"
+  if [ -n "${OLD_TMPDIR:-}" ] && [ -d "${OLD_TMPDIR}" ]; then
+    rm -rf "${OLD_TMPDIR}"
+  fi
   set -eu
 }
 trap cleanup EXIT
@@ -162,9 +172,54 @@ EOF
     --region "${REGION}" --query VersionId --output text
 }
 
-deploy() { # usage: deploy <version-id>
+deploy() { # usage: deploy <version-id> [cli.js]
   CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="$1" \
-    node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1
+    node "${2:-${LOCAL_DIST}}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1
+}
+
+# A field of a resource's state record.
+record() { # usage: record <logical-id> <jq-expression-over-the-resource-object>
+  local json
+  json="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)" || return 1
+  printf '%s' "${json}" | jq -r --arg k "$1" ".resources[\$k] | $2"
+}
+
+assert_route() { # usage: assert_route <phase> <provisionedBy>
+  local id got
+  for id in Revision Endpoint; do
+    got="$(record "${id}" '.provisionedBy')" || return 1
+    if [ "${got}" != "$2" ]; then
+      echo "FAIL: after $1, ${id} is recorded provisionedBy=${got}, expected $2" >&2
+      exit 1
+    fi
+  done
+  echo "    OK: Revision and Endpoint recorded provisionedBy=$2 after $1"
+}
+
+# A code change: the revision is replaced, its inline delete is refused while
+# the endpoint routes to it, and the retry deletes it once the endpoint moved.
+assert_replaced() { # usage: assert_replaced <phase> <deploy-output> <old-revision>
+  local out
+  # The summary lines carry ANSI colors between the words the checks match.
+  out="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"$2")"
+  if ! grep -q 'Revision (AWS::Lambda::WebFunctionRevision) replaced' <<<"${out}"; then
+    echo "FAIL: $1: the revision was not replaced -- the fixture no longer exercises #4900" >&2
+    exit 1
+  fi
+  if grep -q 'Failed to delete old resource' <<<"${out}"; then
+    echo "FAIL: $1: the old revision's delete failed for good (#4900)" >&2
+    exit 1
+  fi
+  # Sentinel: the inline delete must have been refused and retried, or the
+  # fixture passes without reaching the fix.
+  if ! grep -q 'Could not delete old Revision' <<<"${out}"; then
+    echo "FAIL: $1: the inline delete was not refused -- the retry path was not exercised" >&2
+    exit 1
+  fi
+  if ! grep -q "Old Revision ($3) deleted" <<<"${out}"; then
+    echo "FAIL: $1: no retry line deleting $3" >&2
+    exit 1
+  fi
 }
 
 # The endpoint answers with the marker of the revision it routes to.
@@ -198,54 +253,71 @@ assert_one_revision() { # usage: assert_one_revision <phase>
   printf '%s\n' "${revisions}"
 }
 
-echo "==> Phase 1: deploy v1"
+echo "==> Installing the previous release (@go-to-k/cdkd@${OLD_CDKD_VERSION})"
+OLD_TMPDIR="$(mktemp -d)"
+(cd "${OLD_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${OLD_CDKD_VERSION}" >/dev/null)
+OLD_BIN="${OLD_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
+if [ ! -f "${OLD_BIN}" ]; then
+  echo "FAIL: the previous release was not installed at ${OLD_BIN}" >&2
+  exit 1
+fi
+OLD_REPORTED="$(node "${OLD_BIN}" --version)"
+case "${OLD_REPORTED}" in
+  *"${OLD_CDKD_VERSION}"*) ;;
+  *)
+    echo "FAIL: the installed old binary reports '${OLD_REPORTED}', not ${OLD_CDKD_VERSION}" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> Phase 1: deploy v1 with the previous release (Cloud Control)"
 V1="$(upload_code v1)"
-OUT="$(deploy "${V1}")" || { echo "${OUT}"; echo "FAIL: phase 1 deploy" >&2; exit 1; }
+OUT="$(deploy "${V1}" "${OLD_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 1 deploy" >&2; exit 1; }
 echo "${OUT}"
 REV1="$(assert_one_revision 'phase 1' | tail -1)"
+assert_route 'phase 1' cc-api
 assert_serves v1
 
-echo "==> Phase 2: deploy v2 (replaces the revision)"
+echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
 V2="$(upload_code v2)"
+T0="$(date +%s)"
 OUT="$(deploy "${V2}")" || { echo "${OUT}"; echo "FAIL: phase 2 deploy" >&2; exit 1; }
 echo "${OUT}"
-# The summary lines carry ANSI colors between the words the checks match.
-OUT="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${OUT}")"
-if ! grep -q 'Revision (AWS::Lambda::WebFunctionRevision) replaced' <<<"${OUT}"; then
-  echo "FAIL: the revision was not replaced -- the fixture no longer exercises #4900" >&2
-  exit 1
-fi
-if grep -q 'Failed to delete old resource' <<<"${OUT}"; then
-  echo "FAIL: the old revision's delete failed for good (#4900)" >&2
-  exit 1
-fi
-# Sentinel: the inline delete must have been refused and retried, or the
-# fixture passes without reaching the fix.
-if ! grep -q 'Could not delete old Revision' <<<"${OUT}"; then
-  echo "FAIL: the inline delete was not refused -- the retry path was not exercised" >&2
-  exit 1
-fi
-if ! grep -q "Old Revision (${REV1}) deleted" <<<"${OUT}"; then
-  echo "FAIL: no retry line deleting ${REV1}" >&2
-  exit 1
-fi
+echo "    phase 2 deploy took $(($(date +%s) - T0)) s"
+assert_replaced 'phase 2' "${OUT}" "${REV1}"
 REV2="$(assert_one_revision 'phase 2' | tail -1)"
 [ "${REV2}" = "${REV1}" ] && { echo "FAIL: the remaining revision is the OLD one (${REV1})" >&2; exit 1; }
 assert_gone "old revision ${REV1} still exists" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV1}" --region "${REGION}"
 echo "    OK: old revision ${REV1} is gone"
+assert_route 'phase 2' sdk
 assert_serves v2
 
+echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
+V3="$(upload_code v3)"
+T0="$(date +%s)"
+OUT="$(deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 3 deploy" >&2; exit 1; }
+echo "${OUT}"
+echo "    phase 3 deploy took $(($(date +%s) - T0)) s"
+assert_replaced 'phase 3' "${OUT}" "${REV2}"
+REV3="$(assert_one_revision 'phase 3' | tail -1)"
+[ "${REV3}" = "${REV2}" ] && { echo "FAIL: the remaining revision is the OLD one (${REV2})" >&2; exit 1; }
+assert_gone "old revision ${REV2} still exists" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV2}" --region "${REGION}"
+echo "    OK: old revision ${REV2} is gone"
+assert_route 'phase 3' sdk
+assert_serves v3
+
 echo "==> Destroy"
-CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V2}" \
+CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
   node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "web function ${FN_NAME} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunction --identifier "${FN_ARN}" --region "${REGION}"
-assert_gone "revision ${REV2} still exists after destroy" \
-  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV2}" --region "${REGION}"
+assert_gone "revision ${REV3} still exists after destroy" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: web function, revisions, role and state gone"
 echo ""
-echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900)"
+echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), and revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926)"

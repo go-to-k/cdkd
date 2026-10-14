@@ -4689,6 +4689,9 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       // write vouches for every path beneath it and the write pass has
       // nothing left to find.
       'AWS::Lambda::EventSourceMapping': 0,
+      // 0 at opt-in (go-to-k/cdkd#4926): both providers hand-build every member.
+      'AWS::Lambda::WebFunctionRevision': 0,
+      'AWS::Lambda::WebFunctionEndpoint': 0,
       // The mixed-case-island slice of issue #1393 item 3, measured under the
       // FORCED pass at opt-in. FOUR of the nine are non-zero, and they do NOT
       // all mean the same thing — the reviewer of the opt-in PR checked them

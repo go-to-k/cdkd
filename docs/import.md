@@ -503,7 +503,7 @@ of the same name.
 | ELB v2 | `AWS::ElasticLoadBalancingV2::Listener` |
 | EventBridge Scheduler | `AWS::Scheduler::Schedule` |
 | IAM | `AWS::IAM::AccessKey`, `AWS::IAM::Policy`, `AWS::IAM::UserToGroupAddition` |
-| Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::MicrovmImage`, `AWS::Lambda::Permission`, `AWS::Lambda::Url` |
+| Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::MicrovmImage`, `AWS::Lambda::Permission`, `AWS::Lambda::Url`, `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::WebFunctionRevision` |
 | RDS | `AWS::RDS::DBProxyTargetGroup` |
 | Route 53 | `AWS::Route53::RecordSet` |
 | S3 | `AWS::S3::BucketPolicy` |

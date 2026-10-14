@@ -863,6 +863,7 @@ describe('real-repo coverage floors', () => {
       'AgentCoreCodeInterpreterProvider',
       'GlueSecurityConfigurationProvider',
       'LambdaLayerVersionProvider',
+      'LambdaWebFunctionRevisionProvider',
       'NestedStackProvider',
       'WaitConditionHandleProvider',
     ]);

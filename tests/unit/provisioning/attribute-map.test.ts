@@ -493,8 +493,11 @@ const FLOORS = {
 // physical-id / poll helpers (`route53` `.replace(...)`, `emr-cluster`,
 // `fsx-filesystem`, `s3-bucket` `region || 'us-east-1'`), none a recorded
 // shape. A CAP rather than a floor: growth past it means a new deep chain the
-// walk no longer sees, which is the drop to investigate.
-const DEPTH_DROPPED_CAP = 25;
+// walk no longer sees, which is the drop to investigate. Raised to 29 by
+// go-to-k/cdkd#4926: the Lambda Web Function revision / endpoint providers
+// record the response their poll helper returns, so the walk reaches that
+// helper's SDK command argument at depth 5 -- the same poll-helper class.
+const DEPTH_DROPPED_CAP = 29;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and

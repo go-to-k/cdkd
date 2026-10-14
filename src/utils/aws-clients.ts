@@ -20,6 +20,7 @@ import { RedshiftClient } from '@aws-sdk/client-redshift';
 import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
+import { LambdaWebClient } from '@aws-sdk/client-lambda-web';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 
@@ -92,6 +93,7 @@ export class AwsClients {
   private elastiCacheClient?: ElastiCacheClient;
   private acmClient?: ACMClient;
   private lambdaMicrovmsClient?: LambdaMicrovmsClient;
+  private lambdaWebClient?: LambdaWebClient;
   private config: AwsClientConfig;
 
   constructor(config: AwsClientConfig = {}) {
@@ -601,6 +603,29 @@ export class AwsClients {
   }
 
   /**
+   * Get Lambda Web client.
+   *
+   * Backs `AWS::Lambda::WebFunctionRevision` and `AWS::Lambda::WebFunctionEndpoint`.
+   * Like MicroVMs, Lambda Web Functions are their own service model
+   * (`lambda-web`), NOT `@aws-sdk/client-lambda`.
+   */
+  getLambdaWebClient(): LambdaWebClient {
+    if (!this.lambdaWebClient) {
+      this.lambdaWebClient = new LambdaWebClient({
+        ...this.clientOptions,
+      });
+    }
+    return this.lambdaWebClient;
+  }
+
+  /**
+   * Convenience getter for Lambda Web client
+   */
+  get lambdaWeb(): LambdaWebClient {
+    return this.getLambdaWebClient();
+  }
+
+  /**
    * Get CloudWatch client
    */
   getCloudWatchClient(): CloudWatchClient {
@@ -722,6 +747,7 @@ export class AwsClients {
     this.elastiCacheClient?.destroy();
     this.acmClient?.destroy();
     this.lambdaMicrovmsClient?.destroy();
+    this.lambdaWebClient?.destroy();
   }
 }
 

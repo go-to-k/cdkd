@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 86,
-    "declaredProperties": 1156,
-    "wiredProperties": 1154,
-    "wired": 84,
+    "classifiedCount": 88,
+    "declaredProperties": 1170,
+    "wiredProperties": 1168,
+    "wired": 86,
     "gap": 0,
     "allowListed": 2,
     "classesWithBlindSpots": 38
@@ -14932,6 +14932,236 @@
         "computed key in update()",
         "object spread in update()"
       ]
+    },
+    {
+      "file": "lambda-web-function-endpoint-provider.ts",
+      "className": "LambdaWebFunctionEndpointProvider",
+      "bucket": "wired",
+      "declaredCount": 9,
+      "properties": [
+        {
+          "name": "AuthType",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "Description",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "EndpointName",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "EndpointType",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "FunctionName",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "Regions",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "RevisionWeights",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "ScalingConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        },
+        {
+          "name": "ThrottleConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionEndpoint"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        }
+      ],
+      "gaps": [],
+      "blindSpots": []
+    },
+    {
+      "file": "lambda-web-function-revision-provider.ts",
+      "className": "LambdaWebFunctionRevisionProvider",
+      "bucket": "wired",
+      "declaredCount": 5,
+      "properties": [
+        {
+          "name": "BuildConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionRevision"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "buildCreateInput",
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "Description",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionRevision"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "buildCreateInput",
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "FunctionName",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionRevision"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "buildCreateInput",
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "KmsKeyArn",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionRevision"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "buildCreateInput",
+            "create",
+            "readCurrentState"
+          ]
+        },
+        {
+          "name": "ServiceConfig",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::WebFunctionRevision"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read",
+            "table-loop"
+          ],
+          "seededBy": [
+            "buildCreateInput",
+            "create",
+            "readCurrentState"
+          ]
+        }
+      ],
+      "gaps": [],
+      "blindSpots": []
     },
     {
       "file": "logs-loggroup-provider.ts",

@@ -47,6 +47,8 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     LambdaLayerVersionProvider,
     LambdaEventInvokeConfigProvider,
     LambdaMicrovmImageProvider,
+    LambdaWebFunctionRevisionProvider,
+    LambdaWebFunctionEndpointProvider,
     DynamoDBTableProvider,
     DynamoDBGlobalTableProvider,
     LogsLogGroupProvider,
@@ -148,6 +150,8 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   registry.register('AWS::Lambda::LayerVersion', new LambdaLayerVersionProvider());
   registry.register('AWS::Lambda::EventInvokeConfig', new LambdaEventInvokeConfigProvider());
   registry.register('AWS::Lambda::MicrovmImage', new LambdaMicrovmImageProvider());
+  registry.register('AWS::Lambda::WebFunctionRevision', new LambdaWebFunctionRevisionProvider());
+  registry.register('AWS::Lambda::WebFunctionEndpoint', new LambdaWebFunctionEndpointProvider());
 
   // DynamoDB
   registry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());

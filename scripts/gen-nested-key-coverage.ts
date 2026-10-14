@@ -1886,6 +1886,35 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     minNestedKeys: 30,
   },
   {
+    // go-to-k/cdkd#4926: the provider hand-builds every SDK member of
+    // `BuildConfig` / `ServiceConfig`, so a CFn member it never names would be
+    // dropped silently; the write pass fences that.
+    // Measured at opt-in: 17 audited paths, 32 written member names (49 in the test walk), 20
+    // non-empty write scopes (13 in the generator), 0 findings.
+    resourceType: 'AWS::Lambda::WebFunctionRevision',
+    providerFile: 'lambda-web-function-revision-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-lambda-web',
+    keyStyle: 'lower-first',
+    minNestedKeys: 14,
+    freshObjectMapper: true,
+    minWrittenMembers: 28,
+    minWriteScopes: 11,
+  },
+  {
+    // go-to-k/cdkd#4926: `RevisionWeights` / `ScalingConfig` /
+    // `ThrottleConfig` are hand-built, as for the revision above.
+    // Measured at opt-in: 4 audited paths, 30 written member names, 3
+    // non-empty write scopes, 0 findings.
+    resourceType: 'AWS::Lambda::WebFunctionEndpoint',
+    providerFile: 'lambda-web-function-endpoint-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-lambda-web',
+    keyStyle: 'lower-first',
+    minNestedKeys: 3,
+    freshObjectMapper: true,
+    minWrittenMembers: 25,
+    minWriteScopes: 2,
+  },
+  {
     // MIXED-CASE ISLAND slice of issue #1393 item 3 — the three clients item 1
     // named as the motivating evidence (`client-eventbridge`, `client-scheduler`,
     // `client-glue`: PascalCase models with camelCase ISLANDS). Fixture

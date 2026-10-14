@@ -1,15 +1,15 @@
 {
   "summary": {
-    "targetCount": 25,
-    "nestedKeyCount": 1435,
-    "sameSpelling": 1334,
+    "targetCount": 27,
+    "nestedKeyCount": 1456,
+    "sameSpelling": 1355,
     "providerHandled": 80,
     "allowListed": 21,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 15,
-    "shapeClean": 173,
+    "freshObjectTargets": 17,
+    "shapeClean": 175,
     "shapeHandled": 48,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
@@ -7573,6 +7573,183 @@
         "SchemaValidationConfig",
         "Tag"
       ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "providerFile": "lambda-web-function-endpoint-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-lambda-web",
+      "keyStyle": "lower-first",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 4,
+      "entries": [
+        {
+          "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+          "nestedKey": "RevisionWeights.RevisionId",
+          "topLevelProperty": "RevisionWeights",
+          "terminalKey": "RevisionId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+          "nestedKey": "RevisionWeights.Weight",
+          "topLevelProperty": "RevisionWeights",
+          "terminalKey": "Weight",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+          "nestedKey": "ScalingConfig.MaxEnvironments",
+          "topLevelProperty": "ScalingConfig",
+          "terminalKey": "MaxEnvironments",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+          "nestedKey": "ThrottleConfig.RateLimit",
+          "topLevelProperty": "ThrottleConfig",
+          "terminalKey": "RateLimit",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "providerFile": "lambda-web-function-revision-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-lambda-web",
+      "keyStyle": "lower-first",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 17,
+      "entries": [
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.CodeConfig",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "CodeConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.CodeConfig.S3Object",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "S3Object",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.CodeConfig.S3Object.Bucket",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "Bucket",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.CodeConfig.S3Object.Key",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.CodeConfig.S3Object.VersionId",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "VersionId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.RuntimeConfig",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "RuntimeConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "BuildConfig.RuntimeConfig.Runtime",
+          "topLevelProperty": "BuildConfig",
+          "terminalKey": "Runtime",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.EgressNetworkConnectorArn",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "EgressNetworkConnectorArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.EnvironmentVariables",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "EnvironmentVariables",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.ExecutionRoleArn",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "ExecutionRoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.MaxConcurrencyPerEnvironment",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "MaxConcurrencyPerEnvironment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TelemetryConfig",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "TelemetryConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TelemetryConfig.LoggingConfig",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "LoggingConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TelemetryConfig.LoggingConfig.ApplicationLogLevel",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "ApplicationLogLevel",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TelemetryConfig.LoggingConfig.LogGroup",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "LogGroup",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TelemetryConfig.LoggingConfig.SystemLogLevel",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "SystemLogLevel",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::WebFunctionRevision",
+          "nestedKey": "ServiceConfig.TimeoutSeconds",
+          "topLevelProperty": "ServiceConfig",
+          "terminalKey": "TimeoutSeconds",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 0,
+      "unmatchedDefinitions": [],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
     },

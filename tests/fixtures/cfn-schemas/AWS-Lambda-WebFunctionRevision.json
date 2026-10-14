@@ -1,0 +1,163 @@
+{
+  "resourceType": "AWS::Lambda::WebFunctionRevision",
+  "generatedAt": "2026-10-14",
+  "properties": [
+    "BuildConfig",
+    "CreatedAt",
+    "Description",
+    "FunctionArn",
+    "FunctionName",
+    "KmsKeyArn",
+    "RevisionArn",
+    "RevisionId",
+    "ServiceConfig",
+    "State",
+    "StateReason"
+  ],
+  "readOnlyProperties": [
+    "CreatedAt",
+    "FunctionArn",
+    "RevisionArn",
+    "RevisionId",
+    "State",
+    "StateReason"
+  ],
+  "createOnlyProperties": [
+    "BuildConfig",
+    "Description",
+    "FunctionName",
+    "KmsKeyArn",
+    "ServiceConfig"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "BuildConfig"
+    ],
+    [
+      "Description"
+    ],
+    [
+      "FunctionName"
+    ],
+    [
+      "KmsKeyArn"
+    ],
+    [
+      "ServiceConfig"
+    ]
+  ],
+  "primaryIdentifier": [
+    "RevisionArn"
+  ],
+  "nestedProperties": {
+    "BuildConfig": [
+      "Bucket",
+      "CodeConfig",
+      "Key",
+      "Runtime",
+      "RuntimeConfig",
+      "S3Object",
+      "VersionId"
+    ],
+    "ServiceConfig": [
+      "ApplicationLogLevel",
+      "EgressNetworkConnectorArn",
+      "EnvironmentVariables",
+      "ExecutionRoleArn",
+      "LogGroup",
+      "LoggingConfig",
+      "MaxConcurrencyPerEnvironment",
+      "SystemLogLevel",
+      "TelemetryConfig",
+      "TimeoutSeconds"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "BuildConfig": [
+      "CodeConfig",
+      "CodeConfig.S3Object",
+      "CodeConfig.S3Object.Bucket",
+      "CodeConfig.S3Object.Key",
+      "CodeConfig.S3Object.VersionId",
+      "RuntimeConfig",
+      "RuntimeConfig.Runtime"
+    ],
+    "ServiceConfig": [
+      "EgressNetworkConnectorArn",
+      "EnvironmentVariables",
+      "ExecutionRoleArn",
+      "MaxConcurrencyPerEnvironment",
+      "TelemetryConfig",
+      "TelemetryConfig.LoggingConfig",
+      "TelemetryConfig.LoggingConfig.ApplicationLogLevel",
+      "TelemetryConfig.LoggingConfig.LogGroup",
+      "TelemetryConfig.LoggingConfig.SystemLogLevel",
+      "TimeoutSeconds"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "FunctionName": "scalar",
+      "FunctionArn": "scalar",
+      "RevisionId": "scalar",
+      "RevisionArn": "scalar",
+      "Description": "scalar",
+      "KmsKeyArn": "scalar",
+      "BuildConfig": "object",
+      "ServiceConfig": "object",
+      "State": "scalar",
+      "StateReason": "scalar",
+      "CreatedAt": "scalar"
+    },
+    "S3Object": {
+      "Bucket": "scalar",
+      "Key": "scalar",
+      "VersionId": "scalar"
+    },
+    "LoggingConfig": {
+      "LogGroup": "scalar",
+      "ApplicationLogLevel": "scalar",
+      "SystemLogLevel": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "BuildConfig",
+      "FunctionName",
+      "ServiceConfig"
+    ],
+    "S3Object": [
+      "Bucket",
+      "Key"
+    ]
+  },
+  "nestedRequired": {
+    "BuildConfig": [
+      "CodeConfig",
+      "RuntimeConfig"
+    ],
+    "BuildConfig.CodeConfig": [
+      "S3Object"
+    ],
+    "BuildConfig.CodeConfig.S3Object": [
+      "Bucket",
+      "Key"
+    ],
+    "BuildConfig.RuntimeConfig": [
+      "Runtime"
+    ],
+    "ServiceConfig": [
+      "ExecutionRoleArn"
+    ]
+  },
+  "propertyShapes": {
+    "BuildConfig": "object",
+    "BuildConfig.CodeConfig": "object",
+    "BuildConfig.CodeConfig.S3Object": "object",
+    "BuildConfig.RuntimeConfig": "object",
+    "ServiceConfig": "object",
+    "ServiceConfig.EnvironmentVariables": "object",
+    "ServiceConfig.TelemetryConfig": "object",
+    "ServiceConfig.TelemetryConfig.LoggingConfig": "object"
+  }
+}

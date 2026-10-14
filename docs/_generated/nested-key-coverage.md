@@ -12,16 +12,16 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **25**
-- Nested CFn key paths audited: **1435**
-- Same spelling in SDK model: **1334**
+- Audited targets: **27**
+- Nested CFn key paths audited: **1456**
+- Same spelling in SDK model: **1355**
 - Explicitly handled in provider: **80**
 - Allow-listed pass-throughs (does NOT block CI): **21**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **15**
+- Write-evidence pass — fresh-object targets audited: **17**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **173**
+- Shape pass — bare-array pairs clean: **175**
 - Shape pass — explicitly handled in provider: **48**
 - Shape pass — allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
@@ -235,6 +235,8 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
+| `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 4 | 0 |
+| `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 17 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | no | 208 | 0 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 193 | 15 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |

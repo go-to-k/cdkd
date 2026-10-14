@@ -200,7 +200,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('15 fresh-object target(s)');
+    expect(stderr).toContain('17 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {

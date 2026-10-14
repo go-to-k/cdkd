@@ -389,6 +389,14 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     ],
   ],
   ['AWS::Lambda::Url', [['Qualifier'], ['TargetFunctionArn']]],
+  [
+    'AWS::Lambda::WebFunctionEndpoint',
+    [['EndpointName'], ['EndpointType'], ['FunctionName'], ['Regions']],
+  ],
+  [
+    'AWS::Lambda::WebFunctionRevision',
+    [['BuildConfig'], ['Description'], ['FunctionName'], ['KmsKeyArn'], ['ServiceConfig']],
+  ],
   ['AWS::Logs::LogGroup', [['LogGroupName']]],
   [
     'AWS::Neptune::DBCluster',

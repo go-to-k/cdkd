@@ -16,16 +16,21 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **135**
+- Classified types (cached schema): **137**
 - Fully enriched: **47**
 - No computed attribute (Ref == physicalId is correct): **18**
-- **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
+- **Pure-CC latent gaps (unenriched-computed, blocks CI): 2**
 - SDK-fallback gaps (informational, #614 path only): **70**
-- Types with allow-listed (not-a-gap) attributes: **84**
+- Types with allow-listed (not-a-gap) attributes: **86**
 
-## Pure-CC latent gaps
+## Pure-CC latent gaps (UNENRICHED-WITH-COMPUTED-ATTR) — BLOCKS CI
 
-None. Every computed `readOnly` attribute on a cached pure-CC type is either enriched or explicitly allow-listed.
+These computed attributes on pure-CC types are neither enriched nor allow-listed. Add an enrichment case OR an `ENRICHMENT_ALLOW_LIST` entry with a rationale.
+
+| Resource type | Unenriched computed attributes |
+| --- | --- |
+| `AWS::Lambda::WebFunctionEndpoint` | `CreatedAt`, `DomainName`, `FunctionArn`, `RegionalEndpoints`, `State`, `StateReason`, `UpdatedAt`, `UpdateStatus`, `UpdateStatusReason` |
+| `AWS::Lambda::WebFunctionRevision` | `CreatedAt`, `FunctionArn`, `RevisionId`, `State`, `StateReason` |
 
 ## SDK-fallback gaps (informational)
 
@@ -209,6 +214,8 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::MicrovmImage` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `ImageArn` (allow), `LatestActiveImageVersion` (GAP), `LatestFailedImageVersion` (GAP), `State` (GAP), `UpdatedAt` (GAP) |
 | `AWS::Lambda::Permission` | yes | enriched | `Id` (allow) |
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
+| `AWS::Lambda::WebFunctionEndpoint` | no | unenriched-computed | `CreatedAt` (GAP), `DomainName` (GAP), `EndpointArn` (allow), `FunctionArn` (GAP), `RegionalEndpoints` (GAP), `State` (GAP), `StateReason` (GAP), `UpdatedAt` (GAP), `UpdateStatus` (GAP), `UpdateStatusReason` (GAP) |
+| `AWS::Lambda::WebFunctionRevision` | no | unenriched-computed | `CreatedAt` (GAP), `FunctionArn` (GAP), `RevisionArn` (allow), `RevisionId` (GAP), `State` (GAP), `StateReason` (GAP) |
 | `AWS::Logs::LogGroup` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Neptune::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Port` (GAP), `ReadEndpoint` (GAP) |
 | `AWS::Neptune::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |

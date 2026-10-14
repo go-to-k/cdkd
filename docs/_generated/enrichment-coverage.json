@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 135,
+    "classifiedCount": 137,
     "enriched": 47,
     "noComputedAttr": 18,
-    "unenrichedGap": 0,
+    "unenrichedGap": 2,
     "sdkFallbackGap": 70,
-    "allowListedTypes": 84
+    "allowListedTypes": 86
   },
   "types": [
     {
@@ -2347,6 +2347,126 @@
         }
       ],
       "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "bucket": "unenriched-computed",
+      "sdkBacked": false,
+      "readOnlyProperties": [
+        "CreatedAt",
+        "DomainName",
+        "EndpointArn",
+        "FunctionArn",
+        "RegionalEndpoints",
+        "State",
+        "StateReason",
+        "UpdatedAt",
+        "UpdateStatus",
+        "UpdateStatusReason"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "DomainName",
+          "status": "gap"
+        },
+        {
+          "name": "EndpointArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "FunctionArn",
+          "status": "gap"
+        },
+        {
+          "name": "RegionalEndpoints",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        },
+        {
+          "name": "StateReason",
+          "status": "gap"
+        },
+        {
+          "name": "UpdatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "UpdateStatus",
+          "status": "gap"
+        },
+        {
+          "name": "UpdateStatusReason",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreatedAt",
+        "DomainName",
+        "FunctionArn",
+        "RegionalEndpoints",
+        "State",
+        "StateReason",
+        "UpdatedAt",
+        "UpdateStatus",
+        "UpdateStatusReason"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "bucket": "unenriched-computed",
+      "sdkBacked": false,
+      "readOnlyProperties": [
+        "CreatedAt",
+        "FunctionArn",
+        "RevisionArn",
+        "RevisionId",
+        "State",
+        "StateReason"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "CreatedAt",
+          "status": "gap"
+        },
+        {
+          "name": "FunctionArn",
+          "status": "gap"
+        },
+        {
+          "name": "RevisionArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "RevisionId",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        },
+        {
+          "name": "StateReason",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "CreatedAt",
+        "FunctionArn",
+        "RevisionId",
+        "State",
+        "StateReason"
+      ]
     },
     {
       "resourceType": "AWS::Logs::LogGroup",

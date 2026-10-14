@@ -26,6 +26,8 @@ export { LambdaEventSourceMappingProvider } from './providers/lambda-eventsource
 export { LambdaLayerVersionProvider } from './providers/lambda-layer-provider.js';
 export { LambdaEventInvokeConfigProvider } from './providers/lambda-event-invoke-config-provider.js';
 export { LambdaMicrovmImageProvider } from './providers/lambda-microvm-image-provider.js';
+export { LambdaWebFunctionRevisionProvider } from './providers/lambda-web-function-revision-provider.js';
+export { LambdaWebFunctionEndpointProvider } from './providers/lambda-web-function-endpoint-provider.js';
 export { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
 export { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
 export { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';

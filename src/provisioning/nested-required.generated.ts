@@ -1140,6 +1140,20 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['Tags', ['Key']],
     ]),
   ],
+  [
+    'AWS::Lambda::WebFunctionEndpoint',
+    new Map<string, readonly string[]>([['RevisionWeights', ['RevisionId', 'Weight']]]),
+  ],
+  [
+    'AWS::Lambda::WebFunctionRevision',
+    new Map<string, readonly string[]>([
+      ['BuildConfig', ['CodeConfig', 'RuntimeConfig']],
+      ['BuildConfig.CodeConfig', ['S3Object']],
+      ['BuildConfig.CodeConfig.S3Object', ['Bucket', 'Key']],
+      ['BuildConfig.RuntimeConfig', ['Runtime']],
+      ['ServiceConfig', ['ExecutionRoleArn']],
+    ]),
+  ],
   ['AWS::Logs::LogGroup', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   [
     'AWS::Neptune::DBCluster',

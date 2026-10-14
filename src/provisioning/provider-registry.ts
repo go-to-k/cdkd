@@ -315,6 +315,35 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::Lambda::WebFunctionRevision',
+    {
+      // Every revision created before its SDK provider (go-to-k/cdkd#4926) is
+      // pinned to cc-api, and the replacement a code change makes reads that
+      // record, so without this entry no existing stack would leave Cloud
+      // Control on the per-deploy path the provider exists for.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the revision ARN: the schema primaryIdentifier is ' +
+        'RevisionArn and LambdaWebFunctionRevisionProvider.create records the ' +
+        'CreateWebFunctionRevision revisionArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4926',
+      integFixture: 'lambda-web-function-revision-replace',
+    },
+  ],
+  [
+    'AWS::Lambda::WebFunctionEndpoint',
+    {
+      // The endpoint is UPDATED on every code change; see the revision above.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the endpoint ARN: the schema primaryIdentifier is ' +
+        'EndpointArn and LambdaWebFunctionEndpointProvider.create records the ' +
+        'CreateWebFunctionEndpoint endpointArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4926',
+      integFixture: 'lambda-web-function-revision-replace',
+    },
+  ],
+  [
     'AWS::ElasticLoadBalancingV2::Listener',
     {
       // Pinned to cc-api: every listener first deployed while tagged, before

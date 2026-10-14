@@ -204,6 +204,8 @@ and the rule id as the `Id` attribute. You cannot pass that stored form to
 | `AWS::BedrockAgentCore::Runtime` | The runtime ARN. |
 | `AWS::BedrockAgentCore::Evaluator` | The evaluator ARN or bare id. |
 | `AWS::Lambda::MicrovmImage` | The image ARN. |
+| `AWS::Lambda::WebFunctionRevision` | The revision ARN. |
+| `AWS::Lambda::WebFunctionEndpoint` | The endpoint ARN. |
 
 These types take the plain physical id: `AWS::SNS::Subscription`,
 `AWS::SNS::TopicPolicy`, `AWS::SQS::QueuePolicy`, `AWS::S3::BucketPolicy`,
@@ -222,6 +224,10 @@ These types take the plain physical id: `AWS::SNS::Subscription`,
 - **`AWS::BedrockAgentCore::Evaluator`**: cdkd turns a bare id into the ARN
   with `GetEvaluator`.
 - **`AWS::Lambda::MicrovmImage`**: a bare name is rejected.
+- **`AWS::Lambda::WebFunctionRevision`**: a revision has no name or tags, so
+  it is adopted only from its ARN.
+- **`AWS::Lambda::WebFunctionEndpoint`**: without `--resource`, cdkd finds
+  the endpoint from the template's `FunctionName` and `EndpointName`.
 
 ## Cloud Control API fallback
 

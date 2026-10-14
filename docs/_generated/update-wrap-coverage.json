@@ -1,8 +1,8 @@
 {
   "summary": {
-    "classifiedCount": 88,
-    "wrapped": 82,
-    "noAws": 6,
+    "classifiedCount": 90,
+    "wrapped": 83,
+    "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
     "allowListed": 0,
@@ -493,6 +493,22 @@
       "file": "lambda-url-provider.ts",
       "className": "LambdaUrlProvider",
       "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "lambda-web-function-endpoint-provider.ts",
+      "className": "LambdaWebFunctionEndpointProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "lambda-web-function-revision-provider.ts",
+      "className": "LambdaWebFunctionRevisionProvider",
+      "bucket": "no-aws",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
       "unresolvedCallees": []

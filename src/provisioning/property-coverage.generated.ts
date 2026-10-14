@@ -2441,6 +2441,60 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Lambda::WebFunctionEndpoint',
+    {
+      handled: new Set<string>([
+        'AuthType',
+        'Description',
+        'EndpointName',
+        'EndpointType',
+        'FunctionName',
+        'Regions',
+        'RevisionWeights',
+        'ScalingConfig',
+        'ThrottleConfig',
+      ]),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>([
+        'CreatedAt',
+        'DomainName',
+        'EndpointArn',
+        'FunctionArn',
+        'RegionalEndpoints',
+        'State',
+        'StateReason',
+        'UpdatedAt',
+        'UpdateStatus',
+        'UpdateStatusReason',
+      ]),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
+    'AWS::Lambda::WebFunctionRevision',
+    {
+      handled: new Set<string>([
+        'BuildConfig',
+        'Description',
+        'FunctionName',
+        'KmsKeyArn',
+        'ServiceConfig',
+      ]),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>([
+        'CreatedAt',
+        'FunctionArn',
+        'RevisionArn',
+        'RevisionId',
+        'State',
+        'StateReason',
+      ]),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::Logs::LogGroup',
     {
       handled: new Set<string>([

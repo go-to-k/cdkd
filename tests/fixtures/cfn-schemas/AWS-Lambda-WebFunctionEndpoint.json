@@ -1,0 +1,184 @@
+{
+  "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+  "generatedAt": "2026-10-14",
+  "properties": [
+    "AuthType",
+    "CreatedAt",
+    "Description",
+    "DomainName",
+    "EndpointArn",
+    "EndpointName",
+    "EndpointType",
+    "FunctionArn",
+    "FunctionName",
+    "RegionalEndpoints",
+    "Regions",
+    "RevisionWeights",
+    "ScalingConfig",
+    "State",
+    "StateReason",
+    "ThrottleConfig",
+    "UpdateStatus",
+    "UpdateStatusReason",
+    "UpdatedAt"
+  ],
+  "readOnlyProperties": [
+    "CreatedAt",
+    "DomainName",
+    "EndpointArn",
+    "FunctionArn",
+    "RegionalEndpoints",
+    "State",
+    "StateReason",
+    "UpdateStatus",
+    "UpdateStatusReason",
+    "UpdatedAt"
+  ],
+  "createOnlyProperties": [
+    "EndpointName",
+    "EndpointType",
+    "FunctionName",
+    "Regions"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "EndpointName"
+    ],
+    [
+      "EndpointType"
+    ],
+    [
+      "FunctionName"
+    ],
+    [
+      "Regions"
+    ]
+  ],
+  "primaryIdentifier": [
+    "EndpointArn"
+  ],
+  "nestedProperties": {
+    "RevisionWeights": [
+      "RevisionId",
+      "Weight"
+    ],
+    "ScalingConfig": [
+      "MaxEnvironments"
+    ],
+    "ThrottleConfig": [
+      "RateLimit"
+    ],
+    "RegionalEndpoints": [
+      "AuthType",
+      "DomainName",
+      "MaxEnvironments",
+      "RateLimit",
+      "RevisionId",
+      "RevisionWeights",
+      "ScalingConfig",
+      "State",
+      "StateReason",
+      "ThrottleConfig",
+      "UpdateStatus",
+      "UpdateStatusReason",
+      "Weight"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "RevisionWeights": [
+      "RevisionId",
+      "Weight"
+    ],
+    "ScalingConfig": [
+      "MaxEnvironments"
+    ],
+    "ThrottleConfig": [
+      "RateLimit"
+    ],
+    "RegionalEndpoints": [
+      "AuthType",
+      "DomainName",
+      "RevisionWeights",
+      "RevisionWeights.RevisionId",
+      "RevisionWeights.Weight",
+      "ScalingConfig",
+      "ScalingConfig.MaxEnvironments",
+      "State",
+      "StateReason",
+      "ThrottleConfig",
+      "ThrottleConfig.RateLimit",
+      "UpdateStatus",
+      "UpdateStatusReason"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "FunctionName": "scalar",
+      "FunctionArn": "scalar",
+      "EndpointName": "scalar",
+      "EndpointArn": "scalar",
+      "Description": "scalar",
+      "EndpointType": "scalar",
+      "AuthType": "scalar",
+      "RevisionWeights": "array",
+      "Regions": "array",
+      "ScalingConfig": "object",
+      "ThrottleConfig": "object",
+      "DomainName": "scalar",
+      "State": "scalar",
+      "StateReason": "scalar",
+      "UpdateStatus": "scalar",
+      "UpdateStatusReason": "scalar",
+      "RegionalEndpoints": "object",
+      "CreatedAt": "scalar",
+      "UpdatedAt": "scalar"
+    },
+    "RevisionWeight": {
+      "RevisionId": "scalar",
+      "Weight": "scalar"
+    },
+    "ScalingConfig": {
+      "MaxEnvironments": "scalar"
+    },
+    "ThrottleConfig": {
+      "RateLimit": "scalar"
+    },
+    "RegionalEndpoint": {
+      "DomainName": "scalar",
+      "AuthType": "scalar",
+      "RevisionWeights": "array",
+      "ScalingConfig": "object",
+      "ThrottleConfig": "object",
+      "State": "scalar",
+      "StateReason": "scalar",
+      "UpdateStatus": "scalar",
+      "UpdateStatusReason": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AuthType",
+      "EndpointName",
+      "EndpointType",
+      "FunctionName"
+    ],
+    "RevisionWeight": [
+      "RevisionId",
+      "Weight"
+    ]
+  },
+  "nestedRequired": {
+    "RevisionWeights": [
+      "RevisionId",
+      "Weight"
+    ]
+  },
+  "propertyShapes": {
+    "RegionalEndpoints": "object",
+    "Regions": "array",
+    "RevisionWeights": "array",
+    "RevisionWeights[]": "object",
+    "ScalingConfig": "object",
+    "ThrottleConfig": "object"
+  }
+}

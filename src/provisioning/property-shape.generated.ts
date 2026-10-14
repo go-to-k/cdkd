@@ -278,6 +278,14 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"Cors":"object","Cors.AllowHeaders":"array","Cors.AllowMethods":"array","Cors.AllowOrigins":"array","Cors.ExposeHeaders":"array"}',
   ],
   [
+    'AWS::Lambda::WebFunctionEndpoint',
+    '{"RegionalEndpoints":"object","Regions":"array","RevisionWeights":"array","RevisionWeights[]":"object","ScalingConfig":"object","ThrottleConfig":"object"}',
+  ],
+  [
+    'AWS::Lambda::WebFunctionRevision',
+    '{"BuildConfig":"object","BuildConfig.CodeConfig":"object","BuildConfig.CodeConfig.S3Object":"object","BuildConfig.RuntimeConfig":"object","ServiceConfig":"object","ServiceConfig.EnvironmentVariables":"object","ServiceConfig.TelemetryConfig":"object","ServiceConfig.TelemetryConfig.LoggingConfig":"object"}',
+  ],
+  [
     'AWS::Logs::LogGroup',
     '{"DataProtectionPolicy":"object","FieldIndexPolicies":"array","FieldIndexPolicies[]":"object","ResourcePolicyDocument":"object","Tags":"array","Tags[]":"object"}',
   ],

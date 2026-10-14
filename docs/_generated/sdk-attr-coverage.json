@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 135,
-    "covered": 64,
+    "classifiedCount": 137,
+    "covered": 66,
     "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0
@@ -847,6 +847,36 @@
         },
         {
           "name": "FunctionUrl",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "EndpointArn",
+          "status": "cached"
+        },
+        {
+          "name": "FunctionArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "FunctionArn",
+          "status": "cached"
+        },
+        {
+          "name": "RevisionArn",
           "status": "cached"
         }
       ],
