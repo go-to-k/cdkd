@@ -60,7 +60,7 @@ cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc o
 composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 conditions	2026-10-11T09:33:22Z	PASS	35	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 conditions-and-if	2026-10-03T00:30:21Z	PASS	80	verify.sh	rc ok, orph clean (#4471; pre-fix probe red at phase-2b diff --fail)
-conditions-update-2	2026-10-03T00:30:21Z	PASS	85	verify.sh	rc ok, orph clean (#4471)
+conditions-update-2	2026-10-14T05:21:01Z	PASS	85	verify.sh	rc ok, orph clean
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 created-before-failure-revert	2026-10-11T15:30:01Z	PASS	165	verify.sh	rc ok, orph clean; phase N pre-fix red at N3 parent state kept (#4738 PR #4792)
 cross-backend-same-stack	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -127,10 +127,10 @@ emr-cluster	2026-10-08T06:25:38Z	PASS	1247	verify.sh	PR #4697 (#4687 replayed-cr
 emr-instance-configs	2026-10-06T02:22:44Z	PASS	922	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 emr-instance-fleets	2026-10-06T02:22:44Z	PASS	1354	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-eventbridge	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+eventbridge	2026-10-14T05:21:01Z	PASS	90	verify.sh	rc ok, orph clean
 eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
-eventbridge-input-transformer	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+eventbridge-input-transformer	2026-10-14T05:21:01Z	PASS	80	verify.sh	rc ok, orph clean
 eventbridge-pipes	2026-10-11T09:33:22Z	PASS	171	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
@@ -311,7 +311,7 @@ rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean 
 route53	2026-10-11T09:33:22Z	PASS	331	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-11T09:33:22Z	PASS	325	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+s3-cloudfront	2026-10-14T05:21:01Z	PASS	270	verify.sh	rc ok, orph clean
 s3-directory-bucket	2026-10-13T11:49:55Z	PASS	165	verify.sh	PR #4862 (#2007) 594d838ab, re-run after §8-d probe (pre-fix red at Phase 5a); rc ok, destroy 0 errors, orph clean, own state bucket
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-fix-forward-orphan	2026-10-09T01:46:35Z	PASS	326	verify.sh	rc ok, orph clean; us-west-2; #4754 destroy re-checked kept E/F (E deleted, F gone), exit 0
@@ -360,7 +360,7 @@ stale-attribute-heal	2026-10-03T05:56:27Z	PASS	85	verify.sh	rc ok, orph clean (#
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-10-08T05:48:01Z	PASS	155	verify.sh	rc ok, orph clean (#4648)
 stepfunctions	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-stepfunctions-logging	2026-10-11T09:33:22Z	PASS	160	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+stepfunctions-logging	2026-10-14T05:21:01Z	PASS	215	verify.sh	rc ok, orph clean
 stepfunctions-s3-definition	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stream-delete-redeploy	2026-10-11T09:33:22Z	PASS	246	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
