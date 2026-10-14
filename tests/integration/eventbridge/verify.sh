@@ -119,6 +119,12 @@ if [ "${INCLUDE_DETAIL}" != "FULL" ]; then
   exit 1
 fi
 echo "    OK: EventBus LogConfig.Level == 'INFO' + IncludeDetail == 'FULL' on AWS (LogConfig backfill CLOSED)"
+PRE_CREATED=$(echo "${BUS}" | jq -r '.CreationTime // empty')
+PRE_DESC=$(echo "${BUS}" | jq -r '.Description // empty')
+if [ "${PRE_DESC}" != "cdkd test bus" ]; then
+  echo "FAIL: EventBus Description is '${PRE_DESC}' after create, expected 'cdkd test bus'" >&2
+  exit 1
+fi
 
 # --- Assertion: Ref on AWS::Events::Rule resolves to the rule name ----
 # (bug found by /hunt-bugs 2026-07-02: cdkd returned the rule ARN; CFn's Ref
@@ -138,7 +144,7 @@ echo "    OK: Ref on AWS::Events::Rule == '${BUS_NAME}|${RULE_NAME}' (rule name,
 # custom-bus rule must address the CUSTOM bus. Before the fix the delete
 # hit the default bus, reported "does not exist", silently no-oped, and
 # left the rule orphaned on AWS.
-echo "==> Phase 1.5: update (drop the custom-bus rule, keep the bus)"
+echo "==> Phase 1.5: update (drop the custom-bus rule, keep the bus, change its Description)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -151,11 +157,27 @@ if [ "${REMAINING_RULES}" != "0" ]; then
   aws events list-rules --event-bus-name "${BUS_NAME}" --region "${REGION}" >&2
   exit 1
 fi
-if ! aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: custom bus '${BUS_NAME}' disappeared during the rule-only update" >&2
+# stdout only: jq parses POST_BUS below, so a CLI warning must not land in it.
+if ! POST_BUS=$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"); then
+  echo "FAIL: custom bus '${BUS_NAME}' disappeared during the update (describe-event-bus failed, its error above)" >&2
   exit 1
 fi
 echo "    OK: rule deleted from the CUSTOM bus (0 rules remain, bus still exists)"
+
+# Issue #2613: the same update changes the bus Description, an in-place
+# UpdateEventBus through the provider's update() and its recorded-region guard.
+POST_DESC=$(echo "${POST_BUS}" | jq -r '.Description // empty')
+if [ "${POST_DESC}" != "cdkd test bus (updated)" ]; then
+  echo "FAIL: EventBus Description is '${POST_DESC}' after the update, expected 'cdkd test bus (updated)' (issue #2613: the bus update() did not apply)" >&2
+  echo "      raw describe-event-bus: ${POST_BUS}" >&2
+  exit 1
+fi
+POST_CREATED=$(echo "${POST_BUS}" | jq -r '.CreationTime // empty')
+if [ -z "${PRE_CREATED}" ] || [ "${POST_CREATED}" != "${PRE_CREATED}" ]; then
+  echo "FAIL: EventBus CreationTime is '${POST_CREATED}' after the update, '${PRE_CREATED}' after create (issue #2613: the Description change must update the bus in place, not replace it)" >&2
+  exit 1
+fi
+echo "    OK: EventBus Description updated in place, CreationTime unchanged (issue #2613)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

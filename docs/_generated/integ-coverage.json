@@ -4307,6 +4307,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "export",
+        "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-recreate-reattach",
         "iam-role-policies-drift-clean",
@@ -4325,6 +4326,10 @@
         ],
         "export": [
           "l2",
+          "literal"
+        ],
+        "getstackoutput-crossregion": [
+          "l1",
           "literal"
         ],
         "iam-propagation-stress": [

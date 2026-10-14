@@ -28,6 +28,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -218,9 +219,23 @@ export class StepFunctionsProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Step Functions state machine ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: a client in another region than the state record is not the one this
+    // state machine was written through, so the update would not be addressed to the machine
+    // the record names. Ahead of the definition build, whose `DefinitionS3Location` read goes
+    // through the same region. Refuse before any call; the client's region is resolved only
+    // when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

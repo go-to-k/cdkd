@@ -92,3 +92,14 @@ migration deploy records the provenance, and a reader added afterwards gets
 the right ARN. Its second queue's secret is rotated before the upgrade, so
 only its region is recordable; its reader (an output) is served as recorded,
 with the warning, and never from `us-east-1`.
+
+## Destroying a secret-derived IAM principal (issue #4879)
+
+`cdkd-gso-4847-iam-*` holds a role name, different per region; the script
+creates the role the `us-west-2` value names. `CdkdGsoConsumer4879` puts an
+inline `AWS::IAM::Policy` on it through `Fn::GetStackOutput` with
+`Region: us-west-2`, so its record holds a region-less `{{resolve:...}}`
+reference while the stack reads another region. Its destroy must exit 0 and
+remove the policy from that role, resolving the reference in the region the
+v12 record names, and never print the role name. Without the recorded region
+the destroy skipped the record as ambiguous and exited 2.

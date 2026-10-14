@@ -29,6 +29,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeBusProvider } from '../../../../src/provisioning/providers/eventbridge-bus-provider.js';
+import { UpdateEventBusCommand } from '@aws-sdk/client-eventbridge';
 
 describe('EventBridgeBusProvider import', () => {
   let provider: EventBridgeBusProvider;
@@ -78,5 +79,44 @@ describe('EventBridgeBusProvider import', () => {
 
     expect(result).toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('EventBridgeBusProvider update region guard (issue #2613)', () => {
+  let provider: EventBridgeBusProvider;
+  const desired = { Name: 'my-bus', Description: 'new' };
+  const previous = { Name: 'my-bus', Description: 'old' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new EventBridgeBusProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyBus', 'my-bus', 'AWS::Events::EventBus', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyBus .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.update('MyBus', 'my-bus', 'AWS::Events::EventBus', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateEventBusCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    ((provider as unknown as { eventBridgeClient: { config: { region: unknown } } }).eventBridgeClient).config.region = region;
+    mockSend.mockResolvedValue({});
+    await provider.update('MyBus', 'my-bus', 'AWS::Events::EventBus', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateEventBusCommand);
   });
 });

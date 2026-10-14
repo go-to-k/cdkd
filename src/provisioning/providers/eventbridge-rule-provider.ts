@@ -25,6 +25,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
@@ -438,9 +439,22 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating EventBridge rule ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the update addresses the rule by NAME and `PutRule` is an upsert, so a
+    // client in another region than the state record would rewrite a same-named rule cdkd does
+    // not manage, or create one there, and then retarget it. Refuse before any call; the
+    // client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.eventBridgeClient.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

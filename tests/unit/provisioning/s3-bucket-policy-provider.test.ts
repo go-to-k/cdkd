@@ -35,6 +35,7 @@ import {
   withPasteDir,
 } from '../utils/paste-harness.js';
 import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
+import { PutBucketPolicyCommand } from '@aws-sdk/client-s3';
 
 describe('S3BucketPolicyProvider', () => {
   let provider: S3BucketPolicyProvider;
@@ -247,5 +248,50 @@ describe('S3BucketPolicyProvider', () => {
         });
       }
     }, 120_000);
+  });
+});
+
+describe('S3BucketPolicyProvider update region guard (issue #2613)', () => {
+  let provider: S3BucketPolicyProvider;
+  const desired = {
+    Bucket: 'my-bucket',
+    PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Deny' }] },
+  };
+  const previous = {
+    Bucket: 'my-bucket',
+    PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow' }] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new S3BucketPolicyProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyBucketPolicy', 'my-bucket', 'AWS::S3::BucketPolicy', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyBucketPolicy .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.update('MyBucketPolicy', 'my-bucket', 'AWS::S3::BucketPolicy', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutBucketPolicyCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    ((provider as unknown as { s3Client: { config: { region: unknown } } }).s3Client).config.region = region;
+    mockSend.mockResolvedValue({});
+    await provider.update('MyBucketPolicy', 'my-bucket', 'AWS::S3::BucketPolicy', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutBucketPolicyCommand);
   });
 });

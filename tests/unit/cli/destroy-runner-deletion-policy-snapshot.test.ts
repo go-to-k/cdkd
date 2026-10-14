@@ -153,6 +153,34 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     });
   });
 
+  it('go-to-k/cdkd#4879: the opt-in carries the regions the deleted record\'s v12 provenance names', async () => {
+    const REF = '{{resolve:secretsmanager:n:SecretString:r::}}';
+    await runDestroyForStack(
+      'TestStack',
+      makeState({
+        Pol: res({
+          resourceType: 'AWS::IAM::Policy',
+          properties: { PolicyName: 'p', Roles: [REF] },
+          referenceProvenance: { [REF]: { region: 'us-west-2' } },
+        } as Partial<ResourceState>),
+      }),
+      makeCtx({ resolveSecretDerivedPrincipals: {} })
+    );
+    const optIn = deleteContextArg()['resolveSecretDerivedPrincipals'] as Record<string, unknown>;
+    expect(optIn['recordedRegions']).toEqual(new Map([[REF, 'us-west-2']]));
+  });
+
+  it('go-to-k/cdkd#4879: a record without provenance adds no recorded regions', async () => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Pol: res({ resourceType: 'AWS::IAM::Policy' }) }),
+      makeCtx({ resolveSecretDerivedPrincipals: {} })
+    );
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).not.toHaveProperty(
+      'recordedRegions'
+    );
+  });
+
   // go-to-k/cdkd#2115: the stack-destroy flag reaches the provider only when
   // the CALLER (cdkd destroy / state destroy, or a nested delete forwarding its
   // own) sets it — the provider tests pass it by hand, so this pins the wiring.

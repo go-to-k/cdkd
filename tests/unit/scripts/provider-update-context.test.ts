@@ -209,6 +209,8 @@ describe('provider UpdateContext fence — the real tree', () => {
       'EMRInstanceFleetConfigProvider',
       'EMRInstanceGroupConfigProvider',
       'ElastiCacheProvider',
+      'EventBridgeBusProvider',
+      'EventBridgeRuleProvider',
       'FSxFileSystemProvider',
       'GlueConnectionProvider',
       'GlueCrawlerProvider',
@@ -240,16 +242,19 @@ describe('provider UpdateContext fence — the real tree', () => {
       'RDSDBProxyTargetGroupProvider',
       'RDSProvider',
       'Route53Provider',
+      'S3BucketPolicyProvider',
       'S3BucketProvider',
       'S3VectorsProvider',
       'SNSSubscriptionProvider',
       'SNSTopicPolicyProvider',
       'SNSTopicProvider',
       'SQSQueuePolicyProvider',
+      'SQSQueueProvider',
       'SSMParameterProvider',
       'SchedulerScheduleProvider',
       'SecretsManagerSecretProvider',
       'ServiceDiscoveryProvider',
+      'StepFunctionsProvider',
     ]);
   });
 
@@ -504,49 +509,49 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
   }, SPAWN_TIMEOUT_MS);
 
   it('an OMITTING provider that gains the parameter fails with the good news', () => {
-    // Subject: `EventBridgeBusProvider`, an omitter whose file carries the
+    // Subject: `FirehoseProvider`, an omitter whose file carries the
     // five-parameter header and the import tail once each. It was
-    // `CloudWatchAlarmProvider` until that provider gained the parameter
+    // `EventBridgeBusProvider` until that provider gained the parameter
     // (issue #2613 remedy 2) and left the omitting set.
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'eventbridge-bus-provider.ts',
+      'firehose-provider.ts',
       `  ResourceNotFound,
 } from '../../types/resource.js';`,
       `  ResourceNotFound,
   UpdateContext,
 } from '../../types/resource.js';`
     );
-    mutate(dir, 'eventbridge-bus-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+    mutate(dir, 'firehose-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[newly-declaring]');
     expect(result.stderr).toContain('good news');
-    expect(result.stderr).toContain('EventBridgeBusProvider');
+    expect(result.stderr).toContain('FirehoseProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a RENAMED provider leaves a stale allow-list entry and fails', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'sqs-queue-provider.ts',
-      'export class SQSQueueProvider implements ResourceProvider {',
-      'export class SQSStandardQueueProvider implements ResourceProvider {'
+      'docdb-subnet-group-provider.ts',
+      'export class DocDBSubnetGroupProvider implements ResourceProvider {',
+      'export class DocDBClusterSubnetGroupProvider implements ResourceProvider {'
     );
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[stale-entry]');
-    expect(result.stderr).toContain('SQSQueueProvider');
+    expect(result.stderr).toContain('DocDBSubnetGroupProvider');
     // ...and the renamed class is itself an unrecorded omitter.
-    expect(result.stderr).toContain('SQSStandardQueueProvider');
+    expect(result.stderr).toContain('DocDBClusterSubnetGroupProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a 6th parameter typed `unknown` is REFUSED, not counted as declaring', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'eventbridge-bus-provider.ts',
+      'firehose-provider.ts',
       FIVE_PARAM_UPDATE,
       `  async update(
     logicalId: string,
@@ -560,7 +565,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[refusal]');
-    expect(result.stderr).toContain('EventBridgeBusProvider');
+    expect(result.stderr).toContain('FirehoseProvider');
     expect(result.stderr).toContain('not `UpdateContext`');
     // The refusal must NOT quietly reclassify it as declaring.
     expect(result.stderr).not.toContain('[newly-declaring]');

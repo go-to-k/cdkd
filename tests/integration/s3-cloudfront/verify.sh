@@ -122,6 +122,18 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# Issue #2613: how many statements of the bucket policy on $1 carry the
+# UPDATE-mode Sid. A failed read FAILs with its own line instead of aborting
+# inside the pipeline with none.
+update_sid_count() {
+  local policy
+  if ! policy=$(aws s3api get-bucket-policy --bucket "$1" --region "${REGION}" --query Policy --output text); then
+    echo "FAIL: get-bucket-policy on $1 failed (its error above)" >&2
+    exit 1
+  fi
+  echo "${policy}" | jq '[.Statement[] | select(.Sid == "CdkdUpdateDenyInsecureTransport")] | length'
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -142,6 +154,19 @@ if [ -z "${DIST_ID}" ]; then
   exit 1
 fi
 echo "    OK: deployed distribution id = ${DIST_ID}"
+
+# Issue #2613: the bucket the policy is on, read off the policy's state record
+# (its physical id is the bucket name), for the Phase 1.5 policy assertion.
+POLICY_BUCKET=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3::BucketPolicy") | .value.physicalId] | if length == 1 then .[0] else empty end')
+if [ -z "${POLICY_BUCKET}" ]; then
+  echo "FAIL: cdkd state does not hold exactly one AWS::S3::BucketPolicy record" >&2
+  exit 1
+fi
+PRE_SIDS=$(update_sid_count "${POLICY_BUCKET}")
+if [ "${PRE_SIDS}" != "0" ]; then
+  echo "FAIL: bucket policy on ${POLICY_BUCKET} already carries the UPDATE-mode statement after create (matches=${PRE_SIDS})" >&2
+  exit 1
+fi
 
 DIST_ARN=$(aws cloudfront get-distribution --id "${DIST_ID}" --region "${REGION}" \
   --query 'Distribution.ARN' --output text)
@@ -316,7 +341,7 @@ echo "    OK: reverted; CloudFront::Distribution drift blind spot CLOSED"
 # template's DistributionConfig verbatim instead of merging it over the
 # live config, so every member the template legitimately omits was absent
 # from the read-modify-write payload.
-echo "==> Phase 1.5: update (comment + geo allowlist) through the #1371 merge"
+echo "==> Phase 1.5: update (comment + geo allowlist through the #1371 merge, plus a bucket policy statement)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -364,6 +389,15 @@ if [ "${POST_OCH_COUNT}" != "1" ]; then
   exit 1
 fi
 echo "    OK: OriginCustomHeaders survived the merge update (#1373 update-wipe closed)"
+
+# Issue #2613: the same update adds a bucket policy statement, an in-place
+# PutBucketPolicy through the provider's update() and its recorded-region guard.
+POST_SIDS=$(update_sid_count "${POLICY_BUCKET}")
+if [ "${POST_SIDS}" != "1" ]; then
+  echo "FAIL: bucket policy on ${POLICY_BUCKET} does not carry the UPDATE-mode statement after Phase 1.5 (matches=${POST_SIDS}; issue #2613: the bucket policy update() did not apply)" >&2
+  exit 1
+fi
+echo "    OK: bucket policy updated in place (issue #2613)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
