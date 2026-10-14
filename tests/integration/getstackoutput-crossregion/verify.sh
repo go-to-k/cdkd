@@ -571,10 +571,7 @@ if [ "${DESTROY_4879_RC}" -ne 0 ]; then
   sed 's/^/  /' "${LOGDIR}/destroy-4879.log" >&2
   fail "7b: destroy exited ${DESTROY_4879_RC} (pre-fix: 2, the record skipped as ambiguous)"
 fi
-if aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}" >/dev/null 2>&1; then
-  fail "7b: the inline policy is still on the role after the destroy"
-fi
-assert_gone "7b: the inline policy is still on the role (or the read failed)" \
+assert_gone "7b: the inline policy is still on the role after the destroy" \
   aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}"
 assert_gone "7b: ${STACK_4879} state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_4879}"
@@ -632,6 +629,11 @@ echo "    OK: producer is gone (AWS resource in ${PRODUCER_REGION} + state)"
 # new marker after the count.
 cleanup final
 trap - EXIT INT TERM
+# go-to-k/cdkd#4879: the role is created outside any stack under a name no
+# stack-prefix sweep matches, so a failed delete must fail the run here.
+if [ "${CREATED_ROLE_4879}" = 1 ]; then
+  assert_gone "the #4879 role ${ROLE_4879} leaked after cleanup" aws iam get-role --role-name "${ROLE_4879}"
+fi
 for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
   s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
   s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"

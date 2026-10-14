@@ -165,7 +165,9 @@ describe('resolveSecretDerivedPrincipals with a recorded region (go-to-k/cdkd#48
       recorded({ [REF]: 'us-west-2' }),
       make
     );
-    expect(r?.lists).toEqual({ Roles: ["p-west-east-s"] });
+    expect(r?.lists).toEqual({ Roles: ['p-west-east-s'] });
+    expect(r?.resolvedNames['Roles']).toEqual(new Set(['p-west-east-s']));
+    expect(r?.mask('role p-west-east-s gone')).not.toContain('p-west-east-s');
   });
 
   it('a transient failure in the guest is thrown for the runner to retry, never a skip', async () => {
