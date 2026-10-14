@@ -37,6 +37,11 @@ import { maskDeep, maskerOrIdentity, type MaskerFn } from '../provisioning/maske
 import { safeMsg } from '../utils/display-safe.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import { isPlainReferenceTo } from '../deployment/recreate-target-readers.js';
+import { isKnownTokenFreeState } from '../state/token-free-state.js';
+import {
+  readProvenancePromotions,
+  type ReadProvenanceSources,
+} from './read-provenance-promotion.js';
 
 /**
  * A type's CFn-schema create-only keys as the promotion passes read them
@@ -352,7 +357,14 @@ export class DiffCalculator {
      * stores a `NoEcho` value (see {@link NoEchoCompareFn}). Absent compares
      * them as resolved.
      */
-    noEchoCompare?: NoEchoCompareFn
+    noEchoCompare?: NoEchoCompareFn,
+    /**
+     * State schema v12 (go-to-k/cdkd#4852): the domain members outside this
+     * stack's records for the read-provenance arm (a nested child's inherited
+     * snapshot, a producer output's provenance). Absent, the arm reads this
+     * stack's records only.
+     */
+    readProvenance?: ReadProvenanceSources
   ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
@@ -798,6 +810,18 @@ export class DiffCalculator {
     // decides whether another round is needed. It skips a path already
     // present, so the loop ends at the latest once every referencing property
     // carries a change.
+    // State schema v12 (go-to-k/cdkd#4852): the READ-PROVENANCE arm, ONCE and
+    // BEFORE the fixpoint, from records alone (no AWS call but a gated producer
+    // state read): a reader whose recorded `readVersions` its upstreams no
+    // longer hold is promoted, and the passes below carry the promotion on
+    // transitively. Its rows seed the create-only load below, so each
+    // synthetic change's ceiling is set once that load is in hand.
+    const provenanceChanges = await this.promoteReadProvenanceDependents(
+      changes,
+      currentState,
+      desiredTemplate,
+      readProvenance
+    );
     // The schema createOnly paths both promotion passes consult for a type the
     // registry does not classify (go-to-k/cdkd#3803), loaded once here because
     // the passes are synchronous.
@@ -808,6 +832,20 @@ export class DiffCalculator {
       freshParameters,
       forcedReplacements
     );
+    // The replacement CEILING of a read-derived create-only leaf (#4701's
+    // `isPlainReferenceTo` for the write-only exclusion), as a replacement
+    // pass sets it: the engine keeps it only when the value it is served moved.
+    for (const { change, pc, upstreams } of provenanceChanges) {
+      const templateValue = desiredTemplate.Resources[change.logicalId]?.Properties?.[pc.path];
+      pc.requiresReplacement = this.syntheticRequiresReplacement(
+        change.resourceType,
+        pc.path,
+        syntheticCreateOnlyPaths,
+        upstreams.some((id) =>
+          isPlainReferenceTo(templateValue, id, desiredTemplate.Resources[id]?.Type)
+        )
+      );
+    }
     do {
       this.promoteReplacementDependents(
         changes,
@@ -831,6 +869,61 @@ export class DiffCalculator {
     );
 
     return changes;
+  }
+
+  /**
+   * The read-provenance arm (go-to-k/cdkd#4852, `read-provenance-promotion.ts`):
+   * each promoted reader's read-derived keys gain an `inPlacePropagated`
+   * synthetic change (a `NO_CHANGE` row becomes an `UPDATE`; an `UPDATE` row
+   * is augmented, so a create-only leaf's ceiling is not hidden by an
+   * unrelated edit). The ceilings are set by the caller once the create-only
+   * paths are loaded. A token-free stack returns at once.
+   */
+  private async promoteReadProvenanceDependents(
+    changes: Map<string, ResourceChange>,
+    currentState: StackState,
+    desiredTemplate: CloudFormationTemplate,
+    sources: ReadProvenanceSources | undefined
+  ): Promise<Array<{ change: ResourceChange; pc: PropertyChange; upstreams: string[] }>> {
+    if (isKnownTokenFreeState(currentState)) return [];
+    const promotions = await readProvenancePromotions({
+      rows: changes.values(),
+      currentState,
+      desiredTemplate,
+      sources,
+      parser: this.parser,
+    });
+    const out: Array<{ change: ResourceChange; pc: PropertyChange; upstreams: string[] }> = [];
+    for (const promotion of promotions) {
+      const change = changes.get(promotion.logicalId);
+      if (change === undefined) continue;
+      const existingPaths = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
+      const synthetic: PropertyChange[] = [];
+      for (const { key, upstreams } of promotion.keys) {
+        if (existingPaths.has(key)) continue;
+        const pc: PropertyChange = {
+          path: key,
+          oldValue: change.currentProperties?.[key],
+          newValue: change.desiredProperties?.[key],
+          requiresReplacement: false,
+          inPlacePropagated: true,
+          readProvenancePromoted: true,
+        };
+        synthetic.push(pc);
+        out.push({ change, pc, upstreams });
+      }
+      if (synthetic.length === 0) continue;
+      if (change.changeType === 'NO_CHANGE') {
+        change.changeType = 'UPDATE';
+        change.propertyChanges = synthetic;
+      } else {
+        change.propertyChanges = [...(change.propertyChanges ?? []), ...synthetic];
+      }
+      this.logger.debug(
+        safeMsg`UPDATE (promoted): ${promotion.logicalId} holds a secret reference read at a version its upstream no longer records (${synthetic.map((pc) => pc.path).join(', ')})`
+      );
+    }
+    return out;
   }
 
   /**

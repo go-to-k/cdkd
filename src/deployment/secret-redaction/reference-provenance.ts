@@ -171,6 +171,21 @@ export function passProvenanceFor(
   return finalize(entry);
 }
 
+/**
+ * The READ-route versions the pass that owns `secrets` was served for `token`
+ * (go-to-k/cdkd#4852's skip term), raw: every one a read recorded, whatever
+ * the other arms say, or `undefined` when no read carried a version (a token
+ * served unresolved, or only on the literal route): no verdict.
+ */
+export function passReadVersionsFor(
+  secrets: RecordedSecretValues | undefined,
+  token: string
+): ReadonlySet<string> | undefined {
+  if (secrets === undefined) return undefined;
+  const read = passProvenanceOf.get(secrets)?.get(token)?.readVersions;
+  return read === undefined || read.size === 0 ? undefined : read;
+}
+
 function finalize(entry: PassEntry): ReferenceProvenance {
   const out: ReferenceProvenance = {};
   if (!entry.regionUnknown && entry.regions.size === 1) {

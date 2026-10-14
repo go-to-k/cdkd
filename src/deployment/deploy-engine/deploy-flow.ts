@@ -90,6 +90,8 @@ import {
 import { secretNamedRecordNeedles } from '../secret-name-needles.js';
 import { isKnownTokenFreeState } from '../../state/token-free-state.js';
 import { provenanceBaselineOf } from './provenance-capture.js';
+import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js';
+import type { CrossStackRead } from '../intrinsic-resolver/context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -723,6 +725,10 @@ export async function doDeployWithPrefetch(
     // here, while a `String` / `StringList` keeps resolving as the public
     // config state stores resolved.
     diffResolverContext.skipDynamicReferences = true;
+    // go-to-k/cdkd#4852: which producer output each cross-stack read of the
+    // diff pass read, for the read-provenance arm below.
+    const crossStackReads = new Map<string, CrossStackRead>();
+    diffResolverContext.crossStackReads = crossStackReads;
     const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
     const maskedInputSourcesForDiff = this.maskedInputSources(
       effectiveTemplate,
@@ -808,7 +814,21 @@ export async function doDeployWithPrefetch(
         conditions,
         parameterValues,
         stackName
-      )
+      ),
+      // State schema v12 (go-to-k/cdkd#4852): the read-provenance arm's
+      // members outside this stack's records. A nested child's inherited
+      // snapshot, and each producer output a consumer read, through the run's
+      // producer-state cache (the consumer's provisioning reuses the read).
+      {
+        ...(this.options.inheritedReferenceProvenance && {
+          inherited: this.options.inheritedReferenceProvenance,
+        }),
+        crossStackOutputs: crossStackOutputProvenanceSource(
+          crossStackReads,
+          this.recordedImports,
+          this.stateBackend
+        ),
+      }
     );
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the

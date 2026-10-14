@@ -1,8 +1,16 @@
 import { CdkdError } from '../../utils/error-handler.js';
-import { recordedReferenceRegions } from '../reference-provenance-record.js';
+import {
+  recordedReferenceRegions,
+  referenceProvenanceOf,
+} from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
+import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
+import { classifyRecordedSecretRegion } from '../secret-region-classification.js';
+import { getLogger } from '../../utils/logger.js';
 import {
   carriesSecretMask,
+  dynamicReferenceTokens,
+  MIN_NEEDLE_LENGTH,
   SECRET_MASK,
   type NoEchoCoordinate,
   type RecordedSecretValues,
@@ -131,19 +139,24 @@ export async function resolveReplayProps(
     resources: {},
     recordedSecretValues: secrets,
   };
+  // go-to-k/cdkd#4852: each token's recorded version, so the restore sends
+  // what the record described (after a rotation, the value AWS held before
+  // the failed update), not the current one.
+  const pins = new ReplayPins(record, resolvers, execCtx, logicalId);
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
       if (!v.includes('{{resolve:')) return v;
       // Issue #2057: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
       refuseUnprovenReplaySecret(v, path, logicalId, execCtx, recordedRegions);
+      const leafPins = await pins.forLeaf(v, recordedRegions);
       return await resolveLeafByRegion(
         v,
         path,
         logicalId,
         execCtx,
         resolvers,
-        resolverContext,
+        leafPins === undefined ? resolverContext : { ...resolverContext, referencePins: leafPins },
         recordedRegions
       );
     }
@@ -174,6 +187,104 @@ export async function resolveReplayProps(
     return v;
   };
   return (await walk(props, '')) as Record<string, unknown>;
+}
+
+/**
+ * The recorded-version pins of one replayed record (go-to-k/cdkd#4852): a
+ * token whose v12 provenance records exactly one version is restored at that
+ * version. Each pin is read once first, by the resolver the leaf walk will use
+ * (the cache then answers the walk), and is dropped, with a warning, when it
+ * cannot be read (a deprecated or deleted version: decision 3, the current
+ * value is restored as before) or when its plaintext is under
+ * {@link MIN_NEEDLE_LENGTH} (the value scan could not keep it out of the
+ * restored record, and a pinned read is never paired). A record with no
+ * field pins nothing, which is today's replay.
+ */
+class ReplayPins {
+  private readonly recorded = new Map<string, string>();
+  private readonly verdicts = new Map<string, boolean>();
+  private readonly resolvers: ReplayResolvers;
+  private readonly execCtx: RollbackExecutorContext;
+  private readonly logicalId: string;
+
+  constructor(
+    record: unknown,
+    resolvers: ReplayResolvers,
+    execCtx: RollbackExecutorContext,
+    logicalId: string
+  ) {
+    this.resolvers = resolvers;
+    this.execCtx = execCtx;
+    this.logicalId = logicalId;
+    const field = referenceProvenanceOf(record);
+    for (const [token, entry] of Object.entries(field ?? {})) {
+      if (entry.versions?.length === 1) this.recorded.set(token, entry.versions[0]!);
+    }
+  }
+
+  /** The pins usable for `leaf`'s tokens, or `undefined` for none. */
+  async forLeaf(
+    leaf: string,
+    recordedRegions: ReadonlyMap<string, string> | undefined
+  ): Promise<ReadonlyMap<string, string> | undefined> {
+    if (this.recorded.size === 0) return undefined;
+    let out: Map<string, string> | undefined;
+    for (const token of dynamicReferenceTokens(leaf)) {
+      const pin = this.recorded.get(token);
+      if (pin === undefined) continue;
+      if (!(await this.usable(token, pin, recordedRegions))) continue;
+      (out ??= new Map()).set(token, pin);
+    }
+    return out;
+  }
+
+  private async usable(
+    token: string,
+    pin: string,
+    recordedRegions: ReadonlyMap<string, string> | undefined
+  ): Promise<boolean> {
+    const known = this.verdicts.get(token);
+    if (known !== undefined) return known;
+    const verdict = classifyRecordedSecretRegion(
+      token,
+      this.execCtx.region,
+      this.execCtx.importedProducerRegions,
+      recordedRegions
+    );
+    // The walk refuses this one before it fetches anything; no read here.
+    if (verdict.kind === 'ambiguous') return false;
+    const resolver =
+      verdict.kind === 'named-region'
+        ? this.resolvers.forRegion(verdict.region)
+        : verdict.kind === 'recorded-region'
+          ? this.resolvers.forRecordedRegion(verdict.region)
+          : this.resolvers.primary;
+    let ok: boolean;
+    try {
+      // A throwaway bag, and no provenance: the walk records what it serves.
+      const served = await resolver.resolveDynamicReferences(token, {
+        template: { Resources: {} },
+        resources: {},
+        recordedSecretValues: new Map(),
+        provenanceSuppressed: true,
+        referencePins: new Map([[token, pin]]),
+      });
+      ok = served.includes('{{resolve:') || served.length >= MIN_NEEDLE_LENGTH;
+      if (!ok) {
+        getLogger().warn(
+          `Rollback of ${shownLogicalId(this.logicalId)} restores a secret reference at its current version, not the version its record names: that value is shorter than four characters, so cdkd could not keep it out of state.`
+        );
+      }
+    } catch (err) {
+      if (isDeliberateResolutionRefusal(err)) throw err;
+      getLogger().warn(
+        `Rollback of ${shownLogicalId(this.logicalId)} could not read a secret at the version its record names (it may have been deprecated or deleted); restoring the current value instead.`
+      );
+      ok = false;
+    }
+    this.verdicts.set(token, ok);
+    return ok;
+  }
 }
 
 /**

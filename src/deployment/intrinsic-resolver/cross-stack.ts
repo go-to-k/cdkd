@@ -2,7 +2,9 @@ import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.j
 import { markNonRetryable } from '../retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
-import { importableOutputKeys } from '../../types/state.js';
+import { importableOutputKeys, type StackState } from '../../types/state.js';
+import { outputReferenceProvenanceOf } from '../reference-provenance-record.js';
+import { provenanceTokenRoutes, reresolveByRecordedRoutes } from './recorded-reference-routes.js';
 import { sameRegion } from '../../utils/aws-partition.js';
 import {
   ambientCredentialConfig,
@@ -146,10 +148,31 @@ export async function reresolveCrossStackValue(
      * `carriesDynamicReference` test is false and this path falls through it.
      */
     crossAccount?: boolean;
+    /**
+     * The producer's state, when the caller already read it (the
+     * `Fn::ImportValue` scan arm, `Fn::GetStackOutput`), so no second read is
+     * made for it (go-to-k/cdkd#4852).
+     */
+    state?: StackState;
   },
   /** The producer region's log text, when the caller transformed the region (issue #3150). */
   producerRegionLogText?: string
 ): Promise<unknown> {
+  // go-to-k/cdkd#4852: a DIFF pass records which producer output this leaf
+  // read, so the read-provenance arm finds it without resolving it again.
+  if (
+    context.crossStackReads !== undefined &&
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    sourceKey !== undefined
+  ) {
+    context.crossStackReads.set(sourceKey, {
+      stackName: producerOutput.stackName,
+      region: producerOutput.region || this.resolverRegion,
+      outputKey: producerOutput.outputKey,
+      ...(producerOutput.state !== undefined && { state: producerOutput.state }),
+    });
+  }
   // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
   // HERE because this method is the one choke point every cross-stack read
   // returns through — `Fn::ImportValue` (both the index and the scan arms),
@@ -253,18 +276,12 @@ export async function reresolveCrossStackValue(
       (leaf) => !leaf.includes('{{resolve:') && !carriesSecretMask(leaf)
     );
     if (plain.length > 0) {
-      const ids = await producerPhysicalIds(
-        context.recordedImports ?? context.recordedSecretValues,
-        context.stateBackend,
-        producerOutput.stackName,
-        // An index entry can carry an empty region; the resolver reads that as
-        // its own (`resolverForProducerRegion`), and so does this read.
-        producerOutput.region || this.resolverRegion,
-        // Names the producer's coordinate only, masked, never a value.
-        () =>
+      const ids = physicalIdsOf(
+        await producerStateOnce(this.resolverRegion, context, producerOutput, () =>
           this.logger.debug(
             safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
           )
+        )
       );
       for (const leaf of plain) {
         if (ids.has(leaf)) recordPhysicalNameCopy(context.recordedSecretValues, leaf);
@@ -272,6 +289,51 @@ export async function reresolveCrossStackValue(
     }
   }
   if (!carriesDynamicReference(value)) return value;
+
+  // go-to-k/cdkd#4852: CONSUMER PINNING. A token read out of a producer's
+  // output resolves in the region and at the version the producer's
+  // `outputReferenceProvenance` records for that output, so the consumer is
+  // sent the value the producer deployed (after a rotation, the queue that
+  // exists), and its read route records that version. The producer's state is
+  // read once per engine run (shared with the physical-id read above, and
+  // never for a value carrying no token); a producer output with no provenance
+  // keeps today's path: the producer's region, the current version. Not for a
+  // read across an ACCOUNT boundary (refused upstream for a token), nor in a
+  // pass that resolves no secret, nor inside a walk already pinned, nor in
+  // the v12 migration capture (which records the current version by design,
+  // and must not add a producer read).
+  if (
+    producerOutput !== undefined &&
+    producerOutput.crossAccount !== true &&
+    context.recordedSecretValues !== undefined &&
+    context.skipDynamicReferences !== true &&
+    context.provenanceCapture !== true &&
+    context.referencePins === undefined &&
+    (producerOutput.state !== undefined || context.stateBackend !== undefined) &&
+    !carriesSecretMask(value)
+  ) {
+    const state = await producerStateOnce(this.resolverRegion, context, producerOutput, () =>
+      this.logger.debug(
+        safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its recorded secret versions; its output is resolved at the current version`
+      )
+    );
+    const routes = provenanceTokenRoutes(
+      value,
+      outputReferenceProvenanceOf(state, producerOutput.outputKey)
+    );
+    if (routes !== undefined) {
+      return await reresolveByRecordedRoutes(
+        this,
+        value,
+        producerOutput.stackName,
+        context,
+        origin,
+        sourceKey,
+        routes,
+        { region: producerRegion || undefined }
+      );
+    }
+  }
 
   const resolver = this.resolverForProducerRegion(producerRegion, context, producerRegionLogText);
   // The evidence must NOT reach a re-resolution whose ORIGIN IS ALREADY KNOWN
@@ -602,7 +664,9 @@ export async function resolveImportValue(
   // would have been logged as `Failed to read state for stack X`, the scan
   // would have continued past the record it had just matched, and the caller
   // would have been told the export exists nowhere.
-  let found: { value: unknown; refStack: string; lookupRegion: string } | undefined;
+  let found:
+    { value: unknown; refStack: string; lookupRegion: string; state: StackState }
+    | undefined;
 
   for (const ref of allStacks) {
     const { stackName: refStack, region: refRegion } = ref;
@@ -675,7 +739,7 @@ export async function resolveImportValue(
             });
         }
         this.recordImport(context, exportName, refStack, lookupRegion);
-        found = { value, refStack, lookupRegion };
+        found = { value, refStack, lookupRegion, state };
         break;
       }
     } catch (error) {
@@ -705,7 +769,12 @@ export async function resolveImportValue(
       sourceKey,
       // Issue #2274 — see the index arm above. Same bag, reached by scanning
       // state instead of the index, so the same coordinate applies.
-      { stackName: found.refStack, region: found.lookupRegion, outputKey: exportName }
+      {
+        stackName: found.refStack,
+        region: found.lookupRegion,
+        outputKey: exportName,
+        state: found.state,
+      }
     );
   }
 
@@ -813,44 +882,88 @@ export function recordImport(
 }
 
 /** Per engine run (keyed by its shared `recordedImports`, else the pass's bag): one read per producer. */
-const producerPhysicalIdReads = new WeakMap<object, Map<string, Promise<ReadonlySet<string>>>>();
+const producerStateReads = new WeakMap<object, Map<string, Promise<StackState | undefined>>>();
 
 /**
- * The physical ids of a producer stack's records (go-to-k/cdkd#4819), read
- * from its state once per `scope` (an engine run); an empty set when the read
- * fails, so nothing is kept then. A producer deployed earlier in the same
- * process saved its state before the consumer's engine started.
+ * A producer stack's state, read once per `scope` (an engine run; go-to-k/cdkd#4819,
+ * go-to-k/cdkd#4852); `undefined` when the read fails (`onFailure` runs once,
+ * on the read that failed) or finds nothing. A producer deployed earlier in the
+ * same process saved its state before the consumer's engine started. A state
+ * the caller already holds is cached for the run instead of being read again.
+ *
+ * Exported for the deploy's and `cdkd diff`'s read-provenance arm, which reads
+ * the producer of a cross-stack consumer through this same cache.
  */
-function producerPhysicalIds(
+export function readProducerStateOnce(
   scope: object,
-  stateBackend: NonNullable<ResolverContext['stateBackend']>,
+  stateBackend: Pick<NonNullable<ResolverContext['stateBackend']>, 'getState'> | undefined,
   stackName: string,
   region: string,
-  onFailure: () => void
-): Promise<ReadonlySet<string>> {
-  let reads = producerPhysicalIdReads.get(scope);
+  onFailure: () => void,
+  inHand?: StackState
+): Promise<StackState | undefined> {
+  let reads = producerStateReads.get(scope);
   if (reads === undefined) {
     reads = new Map();
-    producerPhysicalIdReads.set(scope, reads);
+    producerStateReads.set(scope, reads);
   }
   const key = JSON.stringify([stackName, region]);
   let read = reads.get(key);
   if (read === undefined) {
-    read = (async () => {
-      const ids = new Set<string>();
-      try {
-        const data = await stateBackend.getState(stackName, region);
-        for (const record of Object.values(data?.state.resources ?? {})) {
-          const id = (record as { physicalId?: unknown } | null)?.physicalId;
-          if (typeof id === 'string' && id !== '') ids.add(id);
-        }
-      } catch {
-        // Fail closed: no id, so no copy is kept. The caller logs it.
-        onFailure();
-      }
-      return ids;
-    })();
+    read =
+      inHand !== undefined
+        ? Promise.resolve(inHand)
+        : (async () => {
+            if (stateBackend === undefined) return undefined;
+            try {
+              return (await stateBackend.getState(stackName, region))?.state ?? undefined;
+            } catch {
+              // Fail closed: no id is kept, no version pinned. The caller logs it.
+              onFailure();
+              return undefined;
+            }
+          })();
     reads.set(key, read);
   }
   return read;
+}
+
+/** {@link readProducerStateOnce} for a cross-stack read of `context`'s engine run. */
+function producerStateOnce(
+  resolverRegion: string | undefined,
+  context: ResolverContext,
+  producerOutput: { stackName: string; region: string; state?: StackState },
+  onFailure: () => void
+): Promise<StackState | undefined> {
+  return readProducerStateOnce(
+    context.recordedImports ?? context.recordedSecretValues ?? context,
+    context.stateBackend,
+    producerOutput.stackName,
+    // An index entry can carry an empty region; the resolver reads that as
+    // its own (`resolverForProducerRegion`), and so does this read.
+    producerOutput.region || resolverRegion || '',
+    onFailure,
+    producerOutput.state
+  );
+}
+
+const physicalIdsByState = new WeakMap<object, ReadonlySet<string>>();
+
+/** The physical ids of `state`'s records (go-to-k/cdkd#4819), computed once per state. */
+function physicalIdsOf(state: StackState | undefined): ReadonlySet<string> {
+  if (state === undefined) return new Set();
+  let ids = physicalIdsByState.get(state);
+  if (ids === undefined) {
+    const out = new Set<string>();
+    const resources: unknown = state.resources;
+    if (resources !== null && typeof resources === 'object') {
+      for (const record of Object.values(resources)) {
+        const id = (record as { physicalId?: unknown } | null)?.physicalId;
+        if (typeof id === 'string' && id !== '') out.add(id);
+      }
+    }
+    ids = out;
+    physicalIdsByState.set(state, ids);
+  }
+  return ids;
 }

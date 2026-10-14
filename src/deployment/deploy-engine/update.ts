@@ -74,6 +74,7 @@ import {
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
+import { readProvenanceMovedPaths } from './read-provenance-moved.js';
 import {
   persistedTokenResolverContext,
   resolveRecordSecrets,
@@ -807,6 +808,25 @@ export async function provisionUpdate(
   )
     ? redactionRewrittenPaths(resolvedProps, desiredForSkipCheck, comparisonCoordinates)
     : new Set<string>();
+  // State schema v12 (go-to-k/cdkd#4852): the same, across runs. A path
+  // holding a token at a read-derived leaf, served at read-route versions the
+  // record's `readVersions` do not hold, MOVED whatever its reference form
+  // says (an interrupted earlier deploy, a nested child, a cross-stack
+  // consumer, a producer updated in place earlier). OR'd with the #4851 term.
+  const provenanceMoved = readProvenanceMovedPaths({
+    record: currentResource,
+    templateProperties: desiredProps,
+    desiredRedacted: desiredForSkipCheck,
+    secrets: updateSecrets,
+  });
+  for (const path of provenanceMoved.paths) rewrittenPaths.add(path);
+  if (provenanceMoved.paths.size > 0) {
+    // Decision 5: the deploy names why a resource was sent. The ids and the
+    // property names only, never a token or a version.
+    this.logger.info(
+      safeMsg`${logicalId} is sent: ${[...provenanceMoved.paths].sort().join(', ')} read a secret-derived value at a newer version than ${logicalId} was deployed with (its upstream changed since then)`
+    );
+  }
   const recordMatchesDesired =
     movedMasked.size === 0 &&
     rewrittenPaths.size === 0 &&

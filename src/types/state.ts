@@ -1514,4 +1514,13 @@ export interface PropertyChange {
    * renderer labels it, since `*** -> ***` reads as no change.
    */
   maskedExpressionChanged?: true;
+
+  /**
+   * Set on an `inPlacePropagated` change the READ-PROVENANCE arm added
+   * (state schema v12, go-to-k/cdkd#4852): the property holds a secret token
+   * it read from an upstream whose record no longer holds the version the
+   * reader recorded. A ceiling like every propagated change; the engine sends
+   * it only when the versions it is served moved.
+   */
+  readProvenancePromoted?: true;
 }

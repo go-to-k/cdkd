@@ -566,6 +566,17 @@ export interface RedactedAttributeRead {
 /**
  * Resolver context for intrinsic functions
  */
+/**
+ * One cross-stack read a diff pass resolved (go-to-k/cdkd#4852): the producer
+ * output it read and, when the read already held it, the producer's state.
+ */
+export interface CrossStackRead {
+  stackName: string;
+  region: string;
+  outputKey: string;
+  state?: import('../../types/state.js').StackState;
+}
+
 export interface ResolverContext {
   /** Template being processed */
   template: CloudFormationTemplate;
@@ -706,6 +717,23 @@ export interface ResolverContext {
    * token never mark its pair conflicting.
    */
   referencePins?: ReadonlyMap<string, string>;
+  /**
+   * go-to-k/cdkd#4852 (design §2.2, the read-route source): the versions the
+   * PRODUCER's record holds for each listed token, set beside
+   * {@link referencePins} by the re-resolution of a recorded value. A `read`
+   * resolution of a listed token records these, not the version its lookup
+   * returned: they differ only where the pin could not be read and today's
+   * proof served the current value, and a reader recording that version would
+   * be promoted on every later deploy against a producer that never held it.
+   */
+  recordedReadVersions?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * go-to-k/cdkd#4852: the cross-stack reads a DIFF pass resolved, keyed by the
+   * reading leaf's `crossStackSourceKey`, so the diff's read-provenance arm can
+   * find the producer output each one read without resolving it again. Set by
+   * the diff contexts only; a producer state already in hand rides along.
+   */
+  crossStackReads?: Map<string, CrossStackRead>;
   /**
    * go-to-k/cdkd#4847: record NO provenance for resolutions in this context.
    * Set on the unpinned lookup that precedes a pinned one, whose version the

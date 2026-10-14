@@ -84,16 +84,21 @@ function recordProvenanceOfResolution(
   version: string | undefined
 ): void {
   if (context === undefined || context.provenanceSuppressed === true) return;
-  const resolution = {
-    region: canonicalizeRegion(resolver.explicitRegion),
-    version,
-    route: context.provenanceRoute ?? ('literal' as const),
-  };
-  if (context.recordedSecretValues !== undefined) {
-    recordReferenceResolution(context.recordedSecretValues, token, resolution);
-  }
-  if (context.provenanceSink !== undefined) {
-    recordReferenceResolution(context.provenanceSink, token, resolution);
+  const route = context.provenanceRoute ?? ('literal' as const);
+  const region = canonicalizeRegion(resolver.explicitRegion);
+  // go-to-k/cdkd#4852 (design §2.2): a READ of a recorded value records the
+  // versions the producer's record holds. `Map.get`: a token is a key.
+  const recorded = route === 'read' ? context.recordedReadVersions?.get(token) : undefined;
+  const versions: ReadonlyArray<string | undefined> =
+    recorded !== undefined && recorded.length > 0 ? recorded : [version];
+  for (const one of versions) {
+    const resolution = { region, version: one, route };
+    if (context.recordedSecretValues !== undefined) {
+      recordReferenceResolution(context.recordedSecretValues, token, resolution);
+    }
+    if (context.provenanceSink !== undefined) {
+      recordReferenceResolution(context.provenanceSink, token, resolution);
+    }
   }
 }
 

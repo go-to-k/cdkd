@@ -709,7 +709,12 @@ export async function resolveGetStackOutput(
     // `RoleArn` makes it cross-ACCOUNT, which the coordinate cannot express,
     // so recovery is refused there rather than answered from the ambient
     // account's store.
-    { stackName, region, outputKey: outputName, ...(roleArn ? { crossAccount: true } : {}) },
+    {
+      stackName,
+      region,
+      outputKey: outputName,
+      ...(roleArn ? { crossAccount: true } : { state: stateData.state }),
+    },
     loggedRegionText
   );
 }

@@ -154,6 +154,12 @@ import {
   UNREADABLE_RESOURCES_MAP_ROW,
 } from '../../state/malformed-resources-bag.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
+import type { ReferenceProvenance } from '../../types/state.js';
+import type { CrossStackRead } from '../../deployment/intrinsic-resolver/context.js';
+import {
+  crossStackOutputProvenanceSource,
+  inheritedProvenanceForChildDiff,
+} from '../../deployment/read-provenance-sources.js';
 
 /**
  * The one spelling of the routing token for a resource leaving Cloud Control
@@ -1387,6 +1393,13 @@ export async function computeStackDiff(
      * prints and on `calculateDiff`'s refusals.
      */
     refusalRecovery?: LockRecoveryContext;
+    /**
+     * State schema v12 (go-to-k/cdkd#4852): the provenance snapshot the parent
+     * row hands this nested child on deploy, derived from the parent's records
+     * (`inheritedProvenanceForChildDiff`), so a child reader the deploy
+     * promotes is promoted here too.
+     */
+    inheritedReferenceProvenance?: ReadonlyMap<string, ReferenceProvenance>;
   } = {}
 ): Promise<StackDiffResult> {
   const {
@@ -1821,11 +1834,18 @@ export async function computeStackDiff(
   const maskForLog: MaskerFn = printing.mask;
 
   const resolveRecordingInto =
-    (bag: RecordedSecretValues, printingSecrets?: RecordedSecretValues) =>
+    (
+      bag: RecordedSecretValues,
+      printingSecrets?: RecordedSecretValues,
+      crossStackReads?: Map<string, CrossStackRead>
+    ) =>
     (value: unknown): Promise<unknown> =>
       intrinsicResolver.resolve(value, {
         recordedSecretValues: bag,
         ...(printingSecrets && { printingSecrets }),
+        // go-to-k/cdkd#4852: the resource diff's cross-stack reads, for the
+        // read-provenance arm (as the deploy's diff pass records them).
+        ...(crossStackReads && { crossStackReads }),
         secretNameNeedles: stateSecretNameNeedles(currentState.resources, diffSecrets),
         secretNameSink: derivedNames,
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
@@ -1866,7 +1886,8 @@ export async function computeStackDiff(
         skipDynamicReferences: true,
         ...(attributeHealer && { attributeHealer }),
       });
-  const resolveFn = resolveRecordingInto(diffSecrets);
+  const crossStackReads = new Map<string, CrossStackRead>();
+  const resolveFn = resolveRecordingInto(diffSecrets, undefined, crossStackReads);
   // Rollback-orphan adoption, in the deploy's position: after condition
   // pruning, before the diff. `DiffCalculator` decides CREATE by ABSENCE from
   // state, so splicing a verified record in is the whole mechanism — there is
@@ -2159,7 +2180,22 @@ export async function computeStackDiff(
       stateForDiff.resources,
       new Set([region, stackName]),
       inheritedNoEchoParameters
-    )
+    ),
+    // State schema v12 (go-to-k/cdkd#4852): the same read-provenance members
+    // the deploy's diff reads: a nested child's snapshot (derived from the
+    // parent's records, `inheritedProvenanceForChildDiff`) and each producer
+    // output a cross-stack read of this diff read (one state read per
+    // producer, and only for a reader holding read versions).
+    {
+      ...(options.inheritedReferenceProvenance && {
+        inherited: options.inheritedReferenceProvenance,
+      }),
+      crossStackOutputs: crossStackOutputProvenanceSource(
+        crossStackReads,
+        crossStackReads,
+        stateBackend
+      ),
+    }
   );
   // The deploy reads back every resource a `NoEcho` parameter feeds, since
   // state holds only `***` there; this preview cannot, so it says so once.
@@ -3314,6 +3350,8 @@ export async function buildDiffTree(args: {
    * malformed-record warning's `cdkd state show` pointer at every node.
    */
   refusalRecovery?: LockRecoveryContext;
+  /** go-to-k/cdkd#4852: as `computeStackDiff`'s; absent at the root. */
+  inheritedReferenceProvenance?: ReadonlyMap<string, ReferenceProvenance>;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -3341,6 +3379,7 @@ export async function buildDiffTree(args: {
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
     refusalRecovery,
+    inheritedReferenceProvenance,
   } = args;
   const attributeHealer = attributeHealerFor?.(stackName, region);
 
@@ -3403,6 +3442,7 @@ export async function buildDiffTree(args: {
         ...(inheritedDerivedNames && { inheritedDerivedNames }),
         ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
         ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
+        ...(inheritedReferenceProvenance && { inheritedReferenceProvenance }),
         ...(attributeHealer && { attributeHealer }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
@@ -3617,6 +3657,18 @@ export async function buildDiffTree(args: {
       rowDerivedNames,
       nodeStateNames,
     ]);
+    // go-to-k/cdkd#4852: the provenance snapshot the deploy's row would hand
+    // this child, from this node's records. Only for a row the deploy
+    // provisions: a NO_CHANGE row runs no child engine, so nothing promotes it.
+    const childReferenceProvenance = inheritedProvenanceForChildDiff({
+      row: resource,
+      rowRecord: Object.hasOwn(stateAfterAdoption.resources, logicalId)
+        ? stateAfterAdoption.resources[logicalId]
+        : undefined,
+      rowProvisioned: changes.get(logicalId)?.changeType === 'UPDATE',
+      parentRecords: stateAfterAdoption.resources,
+      parentTemplate: effectiveTemplate,
+    });
     const buildChild = (): Promise<DiffTreeNode> =>
       buildDiffTree({
         stackName: childStackName,
@@ -3648,6 +3700,7 @@ export async function buildDiffTree(args: {
           inheritedNoEchoParametersAnyVerdict: childNoEchoParametersAnyVerdict,
         }),
         ...(refusalRecovery && { refusalRecovery }),
+        ...(childReferenceProvenance && { inheritedReferenceProvenance: childReferenceProvenance }),
       });
     node.children.push(
       await (hasMaskableValues(childDerivedNames)
@@ -4448,13 +4501,17 @@ export function renderChangeLines(
             // reading intrinsic.
             // go-to-k/cdkd#4451: both sides are the mask, so the label is
             // what says this is a change at all.
+            // go-to-k/cdkd#4852: a reader promoted by its recorded secret
+            // versions (`readProvenancePromoted`) names that cause.
             const propagated = propChange.replacementPropagated
               ? ' [replacement propagated]'
-              : propChange.inPlacePropagated
-                ? ' [attribute propagated]'
-                : propChange.maskedExpressionChanged === true
-                  ? ' [masked input or expression changed]'
-                  : '';
+              : propChange.readProvenancePromoted === true
+                ? ' [read value moved upstream]'
+                : propChange.inPlacePropagated
+                  ? ' [attribute propagated]'
+                  : propChange.maskedExpressionChanged === true
+                    ? ' [masked input or expression changed]'
+                    : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,

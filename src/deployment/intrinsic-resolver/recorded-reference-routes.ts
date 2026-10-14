@@ -12,6 +12,7 @@
  * unchanged: the caller asks {@link recordedTokenRoutes} first.
  */
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import type { ReferenceProvenance } from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   hasReferenceProvenanceField,
@@ -36,6 +37,11 @@ export interface RecordedTokenRoute {
   region: string | undefined;
   /** The recorded version when it is exactly one; `undefined` takes today's generation rule. */
   pin: string | undefined;
+  /**
+   * Every recorded version (go-to-k/cdkd#4852): what a read of the token
+   * records on the read route, whichever version the lookup served.
+   */
+  versions?: readonly string[];
 }
 
 /** The distinct tokens of `value`'s string leaves, in order. */
@@ -58,16 +64,59 @@ export function recordedTokenRoutes(
   record: unknown
 ): Map<string, RecordedTokenRoute> | undefined {
   if (!hasReferenceProvenanceField(record)) return undefined;
+  return routesOf(tokensOf(value), (token) => recordedProvenanceOf(record, token));
+}
+
+/**
+ * {@link recordedTokenRoutes} over an already-validated provenance bag: a
+ * producer output's `outputReferenceProvenance[key]` (go-to-k/cdkd#4852,
+ * consumer pinning).
+ */
+export function provenanceTokenRoutes(
+  value: unknown,
+  bag: Readonly<Record<string, ReferenceProvenance>> | undefined
+): Map<string, RecordedTokenRoute> | undefined {
+  if (bag === undefined) return undefined;
+  return routesOf(tokensOf(value), (token) => (Object.hasOwn(bag, token) ? bag[token] : undefined));
+}
+
+function routesOf(
+  tokens: string[],
+  entryOf: (token: string) => ReferenceProvenance | undefined
+): Map<string, RecordedTokenRoute> | undefined {
   const routes = new Map<string, RecordedTokenRoute>();
   let recorded = false;
-  for (const token of tokensOf(value)) {
-    const entry = recordedProvenanceOf(record, token);
+  for (const token of tokens) {
+    const entry = entryOf(token);
     const region = entry?.region;
     const pin = entry?.versions?.length === 1 ? entry.versions[0] : undefined;
     if (region !== undefined || pin !== undefined) recorded = true;
-    routes.set(token, { region, pin });
+    routes.set(token, {
+      region,
+      pin,
+      ...(entry?.versions !== undefined && { versions: entry.versions }),
+    });
   }
   return recorded ? routes : undefined;
+}
+
+/**
+ * The versions `record` holds for each token of `value` that has any
+ * (go-to-k/cdkd#4852, design §2.2), for {@link ResolverContext.recordedReadVersions}
+ * on a re-resolution that takes today's path (no region and no single
+ * version recorded). `undefined` for a record without the field.
+ */
+export function recordedTokenVersions(
+  value: unknown,
+  record: unknown
+): Map<string, readonly string[]> | undefined {
+  if (!hasReferenceProvenanceField(record)) return undefined;
+  let out: Map<string, readonly string[]> | undefined;
+  for (const token of tokensOf(value)) {
+    const versions = recordedProvenanceOf(record, token)?.versions;
+    if (versions !== undefined && versions.length > 0) (out ??= new Map()).set(token, versions);
+  }
+  return out;
 }
 
 /** How the caller treats a token the record gives no arm for. */
@@ -178,8 +227,22 @@ export async function reresolveByRecordedRoutes(
     }
   }
 
+  // go-to-k/cdkd#4852 (design §2.2): the read route records the versions the
+  // record holds, also where a pin fell back to today's rule.
+  const readVersions = new Map<string, readonly string[]>();
+  for (const [token, route] of routes) {
+    if (route.versions !== undefined && route.versions.length > 0) {
+      readVersions.set(token, route.versions);
+    }
+  }
   const walkContext: ResolverContext =
-    pins.size > 0 ? { ...context, referencePins: pins } : context;
+    pins.size > 0 || readVersions.size > 0
+      ? {
+          ...context,
+          ...(pins.size > 0 && { referencePins: pins }),
+          ...(readVersions.size > 0 && { recordedReadVersions: readVersions }),
+        }
+      : context;
   const regions = new Set(tokens.map((token) => regionOf(token) ?? ''));
   if (regions.size <= 1) {
     const [only] = regions;
