@@ -575,6 +575,21 @@ describe('unwrittenCreateOnlyRefusal', () => {
     ).toContain('the record shows DeletionProtection: true. AWS refuses to delete');
   });
 
+  it('flattens every id, type and property name to one line (go-to-k/cdkd#2676)', () => {
+    for (const nested of [false, true]) {
+      const msg = unwrittenCreateOnlyRefusal({
+        logicalId: 'Db\nForged',
+        resourceType: 'AWS::RDS::DBInstance\nForged',
+        unwritten: ['DB\nName'],
+        routeDriving: ['Time\nzone'],
+        nested,
+        protectionEvidence: 'the record shows\nDeletionProtection: true',
+      });
+      expect(msg).not.toContain('\n');
+      if (!nested) expect(msg).toContain('--recreate-via-cc-api Db Forged, which deletes');
+    }
+  });
+
   it('names the stateful consent flag', () => {
     expect(unwrittenCreateOnlyRefusal({ ...base, unwritten: ['DBName'] })).toContain(
       '--force-stateful-recreation'

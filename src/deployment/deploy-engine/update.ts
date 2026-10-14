@@ -164,7 +164,7 @@ export async function provisionUpdate(
   const renderer = getLiveRenderer();
   const currentResource = existingState;
   if (!currentResource) {
-    throw new Error(`Cannot update ${logicalId}: resource not found in state`);
+    throw new Error(safeMsg`Cannot update ${logicalId}: resource not found in state`);
   }
   // Issue #2668: on a `Type` change the diff emits an UPDATE whose
   // `resourceType` is the TEMPLATE's (new) type, while the resource that
@@ -1033,7 +1033,7 @@ export async function provisionUpdate(
       return;
     }
     this.logger.debug(
-      `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
+      safeMsg`Skipping ${logicalId}: no actual changes after intrinsic function resolution`
     );
     if (counts) counts.skipped++;
     return;
@@ -1768,18 +1768,21 @@ export function unwrittenCreateOnlyRefusal(input: {
       '(--replace also works, but creates the new one first, so a resource holding a ' +
       'unique value other than its name, such as a CIDR block, collides)';
   const routed = [...routeDriving].sort((a, b) => a.localeCompare(b)).join(', ');
+  // Every id, type and property name is flattened to one line where it
+  // enters the message, `replaceFlags` and the protection note whole
+  // (go-to-k/cdkd#2676); the message has no line break of its own.
   return (
-    `${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +
+    safeMsg`${logicalId} (${resourceType}): ${list} ${one ? 'is' : 'are'} create-only, and the ` +
     `state record holds ${one ? 'it' : 'them'} although this type's SDK provider never ` +
     `writes ${one ? 'it' : 'them'}, so AWS does not. This deploy routes the resource through ` +
-    `Cloud Control (--prefer-sdk-route does not cover ${routed}), and applying a create-only ` +
+    safeMsg`Cloud Control (--prefer-sdk-route does not cover ${routed}), and applying a create-only ` +
     `property means replacing the resource, which cdkd does not do on its own. This ` +
-    `resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
+    safeMsg`resource was not changed. To replace it and apply ${list}, re-run with ${replaceFlags}; a ` +
     `stateful resource also needs --force-stateful-recreation.` +
     (protectionEvidence !== undefined
-      ? ` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : `--recreate-via-cc-api ${logicalId} or --replace`)}`
+      ? safeMsg` ${recordedProtectionNote(protectionEvidence, nested ? '--replace' : `--recreate-via-cc-api ${logicalId} or --replace`)}`
       : '') +
-    ` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
+    safeMsg` To keep dropping ${one ? 'it' : 'them'}, re-run with --prefer-sdk-route ${keep}.`
   );
 }
 

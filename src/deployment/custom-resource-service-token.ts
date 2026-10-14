@@ -63,7 +63,7 @@
 import type { PropertyChange, ResourceChange, ResourceState } from '../types/state.js';
 import { isCustomResourceType as isCustomResource } from '../provisioning/custom-resource-secure-references.js';
 import { dynamicReferenceTokens, SECRET_MASK } from './secret-redaction.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, displayStackName, safeMsg } from '../utils/display-safe.js';
 
 /** The error code both refusals raise. */
 export const SERVICE_TOKEN_CHANGE_REFUSED = 'CUSTOM_RESOURCE_SERVICE_TOKEN_CHANGED';
@@ -285,9 +285,12 @@ export function renderServiceTokenRefusal(
   stackName: string,
   mask: Mask = (text) => text
 ): string {
+  // Each row renders its id and token through `displayIdent`, so the only
+  // line breaks here are cdkd's own: the joins and the remedies' lines
+  // (go-to-k/cdkd#2676).
   const rows = refusals.map((refusal) => `  - ${rowText(refusal, mask)}`);
   return (
-    `Refusing to deploy ${stackName}: ` +
+    safeMsg`Refusing to deploy ${displayStackName(stackName)}: ` +
     (refusals.length === 1
       ? `a custom resource's ServiceToken changes`
       : `${refusals.length} custom resources' ServiceTokens change`) +

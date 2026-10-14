@@ -255,6 +255,22 @@ describe('renderServiceTokenRefusal', () => {
     expect(message).not.toContain(OLD);
   });
 
+  it('flattens a stack name, keeping only its own line breaks (go-to-k/cdkd#2676)', () => {
+    const message = renderServiceTokenRefusal(
+      [{ logicalId: 'B', resourceType: 'Custom::Thing', kind: 'unjudgeable', recorded: 'reference' }],
+      'Evil\nForged line'
+    );
+    const lines = message.split('\n');
+    // Headline, one row, the remedy, the unjudgeable remedy: a newline in the
+    // stack name would add a fifth.
+    expect(lines).toHaveLength(4);
+    // `displayStackName` quotes a non-plain name, so its boundary shows.
+    expect(lines[0]).toMatch(/^Refusing to deploy "Evil Forged line": a custom resource's/);
+    expect(lines.some((line) => line.startsWith('Forged line'))).toBe(false);
+    expect(lines[1]).toMatch(/^ {2}- B: its recorded ServiceToken is/);
+    expect(lines[3]).toMatch(/^ {2}Where the recorded ServiceToken is unreadable/);
+  });
+
   it('renders the plural headline and the unjudgeable remedy only when a row needs it', () => {
     const changed = {
       logicalId: 'A',

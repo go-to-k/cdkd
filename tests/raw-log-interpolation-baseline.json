@@ -45,7 +45,6 @@
   "src/cli/region-options.ts": 5,
   "src/cli/upload-cfn-template.ts": 1,
   "src/deployment/dag-executor.ts": 1,
-  "src/deployment/deploy-engine/update.ts": 1,
   "src/deployment/intrinsic-function-resolver.ts": 3,
   "src/deployment/intrinsic-resolver/account-drain.ts": 2,
   "src/deployment/intrinsic-resolver/cfn-fallback.ts": 2,
