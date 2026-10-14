@@ -433,6 +433,21 @@ describe('GlueProvider read-update round-trip', () => {
     expect(error.logicalId).toBe('L');
   });
 
+  it('AWS::Glue::Table — the Iceberg refusal flattens a newline in the logical id (#2676)', async () => {
+    const error = await captureRejection(
+      provider.create('L\n[ERROR] forged', 'AWS::Glue::Table', {
+        DatabaseName: 'mydb',
+        OpenTableFormatInput: {
+          IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: ICEBERG_TABLE_SPEC },
+        },
+        TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+      })
+    );
+    const firstLine = error.message.split('\n')[0]!;
+    expect(firstLine).toMatch(/^AWS::Glue::Table L \[ERROR\] forged: OpenTableFormatInput/);
+    expect(error.message).toContain('\n  Working shape');
+  });
+
   it('AWS::Glue::Table — update() WARNS about IcebergInput.IcebergTableInput but still succeeds (#1454)', async () => {
     // Deliberately asymmetric with create. Rollback replays from cdkd STATE
     // (rollback-executor calls update with previousState.properties), and a

@@ -49,6 +49,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { commandHole } from '../../utils/pasteable-command.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
 const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
@@ -1597,7 +1598,7 @@ export class S3TablesProvider implements ResourceProvider {
         // where to read it. It names the template's `aws:cdk:path` Metadata and
         // NOT `cdkd list`: that command lists STACKS, so its paths cannot
         // supply a resource target (review caught the first wording).
-        `applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone ` +
+        safeMsg`applyTableTagsDiff: GetTable returned no tableARN for ${physicalId} — table is gone ` +
           `or state is out-of-sync. Refusing to silently drop the tag update. If the table was ` +
           `deleted out-of-band, drop just this resource's record with the command below, ` +
           `filling in the construct path the CDK app gave this resource — its aws:cdk:path ` +

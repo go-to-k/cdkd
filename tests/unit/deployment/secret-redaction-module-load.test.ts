@@ -10,9 +10,9 @@
  * `import()` stays green with the cycle in place.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript-v6';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
@@ -25,25 +25,44 @@ const MODULES = readdirSync(DIR)
 /** Vitest cannot interrupt a synchronous spawn, so the spawn carries the case's timeout too. */
 const LOAD_TIMEOUT_MS = 30_000;
 
+/**
+ * The ONE module outside the directory the split imports at runtime:
+ * `display-safe.ts`, an import-free leaf (go-to-k/cdkd#2676), so copying it
+ * beside the split cannot reintroduce a cycle. The copy keeps the source
+ * layout (`<root>/deployment/secret-redaction`, `<root>/utils`) so the
+ * relative specifiers resolve unchanged.
+ */
+const LEAF_DEPENDENCIES = ['utils/display-safe.ts'];
+
+let root = '';
 let out = '';
 
+function transpileTo(source: string, target: string): void {
+  const { outputText } = ts.transpileModule(readFileSync(source, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+      verbatimModuleSyntax: true,
+    },
+  });
+  writeFileSync(target, outputText);
+}
+
 beforeAll(() => {
-  out = mkdtempSync(join(tmpdir(), 'cdkd-secret-redaction-load-'));
-  writeFileSync(join(out, 'package.json'), '{"type":"module"}');
-  for (const file of MODULES) {
-    const { outputText } = ts.transpileModule(readFileSync(join(DIR, file), 'utf8'), {
-      compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-        verbatimModuleSyntax: true,
-      },
-    });
-    writeFileSync(join(out, file.replace(/\.ts$/, '.js')), outputText);
+  root = mkdtempSync(join(tmpdir(), 'cdkd-secret-redaction-load-'));
+  writeFileSync(join(root, 'package.json'), '{"type":"module"}');
+  out = join(root, 'deployment', 'secret-redaction');
+  mkdirSync(out, { recursive: true });
+  for (const file of MODULES) transpileTo(join(DIR, file), join(out, file.replace(/\.ts$/, '.js')));
+  for (const dep of LEAF_DEPENDENCIES) {
+    const target = join(root, dep.replace(/\.ts$/, '.js'));
+    mkdirSync(dirname(target), { recursive: true });
+    transpileTo(join(import.meta.dirname, '../../../src', dep), target);
   }
 }, 30_000);
 
 afterAll(() => {
-  if (out) rmSync(out, { recursive: true, force: true });
+  if (root) rmSync(root, { recursive: true, force: true });
 });
 
 /** Load `file` alone in a fresh Node process; returns its export count. */

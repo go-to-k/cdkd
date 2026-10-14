@@ -840,7 +840,7 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
 
     it('--strict-getatt: the deploy fails naming the output and the refused attribute', async () => {
       await expect(makeEngine({ strictGetAtt: true }).deploy(STACK, roleTemplate)).rejects.toThrow(
-        /Failed to resolve output RoleIdOut: Cannot resolve Fn::GetAtt \[Role, RoleId\]/
+        /Failed to resolve output RoleIdOut \(--strict-getatt promotes[^)]*\): Cannot resolve Fn::GetAtt \[Role, RoleId\]/
       );
     });
 
@@ -866,7 +866,7 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
       it('--strict-getatt: the no-change deploy fails instead of keeping the stored value', async () => {
         await expect(
           makeEngine({ strictGetAtt: true }).deploy(STACK, roleTemplate)
-        ).rejects.toThrow(/Failed to resolve output RoleIdOut: Cannot resolve Fn::GetAtt/);
+        ).rejects.toThrow(/Failed to resolve output RoleIdOut \(--strict-getatt[^)]*\): Cannot resolve Fn::GetAtt/);
       });
 
       it('CONTROL, without the flag: the no-change merge keeps the stored value, and warns', async () => {

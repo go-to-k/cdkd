@@ -36,6 +36,7 @@ import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import { secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
@@ -349,7 +350,7 @@ export async function provisionResource(
             renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
             renderer.printAbove(() => {
               this.logger.warn(
-                `${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
+                safeMsg`${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
               );
             });
           },
@@ -461,10 +462,19 @@ export async function provisionResource(
     // was clean while the terminal printed the secret at DEFAULT verbosity.
     // Masks the CONCATENATED line, matching `maskingRetryLogger`; forwards
     // verbatim for a resource with no recorded secret.
+    //
+    // go-to-k/cdkd#2676: only what the ENGINE interpolates here is flattened
+    // (the logical id); the error's own message prints as-is, as before —
+    // this is the line a user reads a remedy command on (`Caused by:` is
+    // flattened), and a provider's message is that site's to sanitize.
+    // An UNTAGGED template on purpose: `scripts/check-docs-error-strings.ts`
+    // reads only untagged ones, and docs quote lines of this shape.
+    const shownMessage = this.maskForResource(logicalId, message);
+    const shownId = safeMsg`${logicalId}`;
     this.logger.error(
       this.maskForResource(
         logicalId,
-        `Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`
+        `Failed to ${change.changeType.toLowerCase()} ${shownId}: ${shownMessage}`
       )
     );
 
@@ -506,7 +516,7 @@ export async function provisionResource(
     // AFTER `extractDeploymentEventError` above, which masks separately via
     // `recordEvent` and would otherwise mask twice for no benefit.
     throw new ProvisioningError(
-      `Failed to ${change.changeType.toLowerCase()} resource ${logicalId}`,
+      safeMsg`Failed to ${change.changeType.toLowerCase()} resource ${logicalId}`,
       resourceType,
       logicalId,
       stateResources[logicalId]?.physicalId,

@@ -31,7 +31,7 @@ import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
@@ -51,6 +51,7 @@ import {
   createSecretMasker,
   createUnionSecretMasker,
   maskSecretsInText,
+  unionOfSecretBags,
 } from '../secret-redaction.js';
 import { equalIdNamesDifferentResources } from '../type-change-guard.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
@@ -124,7 +125,7 @@ export async function updateInPlace(
   // via `--allow-unsupported-properties`. Once a resource flips
   // to CC mid-life, it stays there (the state record's
   // `provisionedBy: 'cc-api'` written below sticks).
-  this.logger.debug(`Updating ${logicalId} (${resourceType})`);
+  this.logger.debug(safeMsg`Updating ${logicalId} (${resourceType})`);
   const updateDecision = this.providerRegistry.getProviderFor({
     resourceType,
     properties: resolvedProps,
@@ -163,18 +164,18 @@ export async function updateInPlace(
     switch (exemptMode) {
       case 'cc-broken':
         message =
-          `${logicalId} (${resourceType}): moving to the SDK provider — Cloud ` +
+          safeMsg`${logicalId} (${resourceType}): moving to the SDK provider — Cloud ` +
           `Control cannot manage this type correctly. ${preserved}, and this ` +
           `routing is not optional.`;
         break;
       case 'sdk-coverage':
         message =
-          `${logicalId} (${resourceType}): returning to the SDK provider — cdkd now ` +
+          safeMsg`${logicalId} (${resourceType}): returning to the SDK provider — cdkd now ` +
           `covers every property this resource uses. ${preserved}; pass ` +
-          `--pin-cc-api ${logicalId} to decline this for a deploy.`;
+          safeMsg`--pin-cc-api ${logicalId} to decline this for a deploy.`;
         break;
       default:
-        message = `${logicalId} (${resourceType}): moving to the SDK provider. ${preserved}.`;
+        message = safeMsg`${logicalId} (${resourceType}): moving to the SDK provider. ${preserved}.`;
     }
     this.logger.info(message);
   }
@@ -532,19 +533,19 @@ export async function updateInPlace(
         throw markNonRetryable(
           new CdkdError(
             replaceOptIn
-              ? `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
-                  `(${resourceType}) — ${renderStatefulReason(statefulReason)}. ` +
+              ? safeMsg`--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
+                  safeMsg`(${resourceType}) — ${renderStatefulReason(statefulReason)}. ` +
                   (protection
-                    ? `${recordedProtectionNote(protection, '--replace --force-stateful-recreation')} ` +
+                    ? safeMsg`${recordedProtectionNote(protection, '--replace --force-stateful-recreation')} ` +
                       `Or change the resource's definition to avoid the immutable-property change.`
                     : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
                       `change the resource definition to avoid the immutable-property change.`)
-              : `${logicalId} (${resourceType}) cannot be updated in place by the ` +
+              : safeMsg`${logicalId} (${resourceType}) cannot be updated in place by the ` +
                   `provisioning layer it routes through, so applying this change would ` +
                   `DELETE + CREATE it — but it is a stateful resource: ` +
-                  `${renderStatefulReason(statefulReason)}. ` +
+                  safeMsg`${renderStatefulReason(statefulReason)}. ` +
                   (protection
-                    ? `${recordedProtectionNote(protection, '--force-stateful-recreation')} ` +
+                    ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} ` +
                       `Or change the resource's definition to avoid the update.`
                     : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
                       `change the resource definition to avoid the update.`),
@@ -621,11 +622,11 @@ export async function updateInPlace(
       });
       this.logger.info(
         retainOldOnReplace
-          ? `UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
+          ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
               `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
           : createFirst
             ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
-            : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+            : safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
       );
       if (retainOldOnReplace) {
         // go-to-k/cdkd#4438: the kept resource holds this stack's create
@@ -720,7 +721,9 @@ export async function updateInPlace(
               deleteMsg.includes('not found') ||
               deleteMsg.includes('NotFound'))
           ) {
-            this.logger.debug(`Old resource ${logicalId} already gone, proceeding with CREATE`);
+            this.logger.debug(
+              safeMsg`Old resource ${logicalId} already gone, proceeding with CREATE`
+            );
           } else {
             throw deleteError;
           }
@@ -867,15 +870,21 @@ export async function updateInPlace(
           // which is why its sites mask per site. The MESSAGE is still
           // masked at construction here, which is what issue #2616
           // requires.
+          // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
+          // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
+          // value): a later mask sees only the flattened text and misses a needle
+          // that holds a newline.
+          const shownSecrets = unionOfSecretBags([
+            updateSecrets,
+            this.printingSecretsFor(logicalId),
+          ]);
           throw new Error(
-            maskSecretsInText(
-              `Failed to create ${logicalId} after the UPDATE-not-supported ` +
-                `replacement: the old resource (${currentResource.physicalId}) ` +
-                `is now gone. Cause: ` +
-                `${createError instanceof Error ? createError.message : String(createError)}. ` +
-                `Re-run the deploy to create it fresh.`,
-              updateSecrets
-            ),
+            // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
+            safeMsg`Failed to create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
+              safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
+              // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
+              // as-is and LAST: it can end in cdkd's own remedy command lines.
+              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(createError instanceof Error ? createError.message : String(createError), shownSecrets))}`,
             { cause: createError instanceof Error ? createError : undefined }
           );
         }
@@ -899,9 +908,9 @@ export async function updateInPlace(
         if (nameHeldElsewhere !== undefined) {
           throw markNonRetryable(
             new CdkdError(
-              `${logicalId} (${resourceType}) requires replacement because the ` +
+              safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
                 `provisioning layer cannot update it in place, but the create collided. ` +
-                `${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
+                safeMsg`${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
                 `UpdateReplacePolicy: Retain would delete this resource and still ` +
                 `collide. Choose a name no other resource holds, or delete the resource ` +
                 `holding it if it is yours.`,
@@ -932,11 +941,11 @@ export async function updateInPlace(
         // schedule on a path that cannot succeed.
         throw markNonRetryable(
           new CdkdError(
-            `${logicalId} (${resourceType}) requires replacement because the ` +
+            safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
               `provisioning layer cannot update it in place — but its physical name ` +
               `is still held by the existing resource AND ` +
               `UpdateReplacePolicy: Retain pins that resource in place. ` +
-              `${nameOrigin.descriptor}. ${nameOrigin.remedy} — with Retain, the old ` +
+              safeMsg`${nameOrigin.descriptor}. ${nameOrigin.remedy} — with Retain, the old ` +
               `resource keeps the name, so a same-name replacement can never proceed. ` +
               `Removing UpdateReplacePolicy: Retain lets cdkd delete the old resource ` +
               `first, which destroys it and any data it holds.`,
@@ -993,12 +1002,12 @@ export async function updateInPlace(
           // the create SUCCEEDED; the failure is what it returned.
           throw markNonRetryable(
             new CdkdError(
-              `${logicalId} (${resourceType}) requires replacement, but its Create ` +
+              safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create ` +
                 `API is name-idempotent: the create returned the existing resource ` +
-                `(${currentResource.physicalId}) instead of creating a new one, and ` +
+                safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
                 `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
-                `properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
-                `${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +
+                safeMsg`properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
+                safeMsg`${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +
                 `the name, so a same-name replacement can never proceed.`,
               'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
             )
@@ -1024,8 +1033,8 @@ export async function updateInPlace(
         // `--recreate-via-*` leak warning in `update-replace.ts`, which announces the
         // strictly LESS surprising version of this outcome.
         this.logger.warn(
-          `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
-            `resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
+          safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
+            safeMsg`resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
             `tracked by cdkd: it keeps running and incurring cost, and ` +
             `\`cdkd destroy\` will not remove it. Delete it yourself once you no ` +
             `longer need its data.`
@@ -1143,7 +1152,7 @@ export async function updateInPlace(
       properties: resolvedProps,
     });
     this.logger.info(
-      `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
+      safeMsg`Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
     );
   }
 
@@ -1272,7 +1281,7 @@ export async function updateInPlace(
     // never read cannot reach the record, the journal, an event or a
     // log line by any route.
     this.logger.debug(
-      `observedProperties capture SKIPPED for updated ${logicalId} (${resourceType}): 'cdkd import' refused its baseline because a template parameter was not provably deployed at its 'Default', and this deploy bound the same 'Default' — an in-place update cannot show that AWS no longer holds the deployed value. The refusal stands until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter.`
+      safeMsg`observedProperties capture SKIPPED for updated ${logicalId} (${resourceType}): 'cdkd import' refused its baseline because a template parameter was not provably deployed at its 'Default', and this deploy bound the same 'Default' — an in-place update cannot show that AWS no longer holds the deployed value. The refusal stands until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter.`
     );
   }
   const updateCaptureSiblings = keepsParameterRefusal
@@ -1327,11 +1336,13 @@ export async function updateInPlace(
       : (updatePartial ?? replacedSkip);
   if (shownPartial !== undefined) {
     this.logger.warn(
-      `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
-        updatePartialMessage(shownPartial)
+      safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
+        safeMsg`${updatePartialMessage(shownPartial)}`
     );
     if (updatePartial !== undefined) return { updatePartial };
     return;
   }
-  this.logger.info(`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`);
+  this.logger.info(
+    safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`
+  );
 }

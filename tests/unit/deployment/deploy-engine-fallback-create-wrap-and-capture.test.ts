@@ -379,6 +379,38 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       expect(err!.message).toContain('the old resource (old-pid) is now gone');
     });
 
+    // go-to-k/cdkd#2676: the wrapped message is embedded as-is (masked, not
+    // flattened), so a secret spanning two lines is masked whole.
+    it('masks a MULTI-LINE secret in the embedded message (#2676)', async () => {
+      const multiLine = 'pem-line-one-2676\npem-line-two-2676';
+      secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      createRejection = () =>
+        new Error(`ValidationException: Value '${multiLine}' at 'config' failed\n[ERROR] forged`);
+
+      const err = await invokeExpectingFailure(makeEngine());
+
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain(`Value '***' at 'config' failed\n[ERROR] forged`);
+      expect(err!.message).not.toContain('pem-line-one-2676');
+      expect(err!.message).not.toContain('pem-line-two-2676');
+      expect(err!.message).toContain('the old resource (old-pid) is now gone');
+    });
+
+    it('masks a multi-line needle only the printing bag holds (#2676)', async () => {
+      const multiLine = 'prev-noecho-one-2676\nprev-noecho-two-2676';
+      createRejection = () => new Error(`Handler failed: '${multiLine}' is still referenced`);
+      const engine = makeEngine();
+      (engine as unknown as { printingSecretsFor: () => Map<string, string> }).printingSecretsFor =
+        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']]);
+
+      const err = await invokeExpectingFailure(engine);
+
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain(`Handler failed: '***' is still referenced`);
+      expect(err!.message).not.toContain('prev-noecho-one-2676');
+      expect(err!.message).not.toContain('prev-noecho-two-2676');
+    });
+
     it('wraps a NAME COLLISION on the delete-first arm too — the Retain translation stays Retain-only', async () => {
       // The pre-#2616 comment reasoned that only `Retain` owes a translation
       // because only `Retain` makes the path create-FIRST. True for the

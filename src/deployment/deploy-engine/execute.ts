@@ -28,7 +28,7 @@ import {
   skippedOutputsCarriedFrom,
 } from '../../types/state.js';
 import { cyan, red } from '../../utils/colors.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
 import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
@@ -153,10 +153,10 @@ export async function executeDeployment(
           { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
         );
         if (migrate) pendingMigration = false;
-        this.logger.debug(`State saved after ${logicalId}`);
+        this.logger.debug(safeMsg`State saved after ${logicalId}`);
       } catch (error) {
         this.logger.warn(
-          `Failed to save state after ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          safeMsg`Failed to save state after ${logicalId}: ${asIsMessage(error instanceof Error ? error.message : String(error))}`
         );
       }
     });
@@ -199,7 +199,7 @@ export async function executeDeployment(
 
     if (createUpdateIds.length > 0) {
       this.logger.info(
-        `${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
+        safeMsg`${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
       );
 
       const createUpdateExecutor = new DagExecutor<ResourceChange>();
@@ -581,7 +581,7 @@ export async function executeDeployment(
 
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {
-      this.logger.info(`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
+      this.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
       const deleteDeps = this.buildDeletionDependencies(deleteChanges, currentState);
       const deleteExecutor = new DagExecutor<ResourceChange>();
@@ -864,7 +864,7 @@ export async function executeDeployment(
       this.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
     } catch (saveError) {
       this.logger.warn(
-        `Failed to save partial state before rollback: ${saveError instanceof Error ? saveError.message : String(saveError)}`
+        safeMsg`Failed to save partial state before rollback: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
       );
     }
 
@@ -924,7 +924,7 @@ export async function executeDeployment(
         initialDeploy
       );
       this.logger.info(
-        `Partial state saved (${Object.keys(newResources).length} resources). ` +
+        safeMsg`Partial state saved (${Object.keys(newResources).length} resources). ` +
           "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
       );
       throw error;
@@ -1069,7 +1069,7 @@ export async function executeDeployment(
     } catch (saveError) {
       // ETag mismatch from per-resource saves — force overwrite with fresh ETag
       this.logger.debug(
-        `Retrying state save after rollback (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
+        safeMsg`Retrying state save after rollback (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
       );
       try {
         const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
@@ -1117,7 +1117,7 @@ export async function executeDeployment(
         }
       } catch (retryError) {
         this.logger.warn(
-          `Failed to save state after rollback: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+          safeMsg`Failed to save state after rollback: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))}`
         );
       }
     }
@@ -1304,7 +1304,7 @@ export async function persistStateAfterOutputFailure(
     this.logger.debug('State saved after output resolution failure');
   } catch (saveError) {
     this.logger.debug(
-      `Retrying state save after output resolution failure (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
+      safeMsg`Retrying state save after output resolution failure (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
     );
     try {
       const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
@@ -1320,7 +1320,7 @@ export async function persistStateAfterOutputFailure(
       this.logger.debug('State saved after output resolution failure (retry succeeded)');
     } catch (retryError) {
       this.logger.warn(
-        `Failed to save state after output resolution failure: ${retryError instanceof Error ? retryError.message : String(retryError)} — resources were provisioned but not recorded; run deploy again to reconcile.`
+        safeMsg`Failed to save state after output resolution failure: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))} — resources were provisioned but not recorded; run deploy again to reconcile.`
       );
     }
   }

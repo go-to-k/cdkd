@@ -235,6 +235,16 @@ describe('CodeCommit rename-retry probe verifies the repository id (#4042)', () 
       ).message;
     };
 
+    // go-to-k/cdkd#2676: the refusal's only newlines are cdkd's own — a logical
+    // id's newline is flattened.
+    it('flattens a newline in the logical id, keeping only its own two line breaks (#2676)', async () => {
+      const message = await refusalFor('Repo\n[ERROR] forged', 'r-new');
+      const lines = message.split('\n');
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toMatch(/^CodeCommit Repository Repo \[ERROR\] forged no longer exists/);
+      expect(lines[1]).toBe('Re-adopt with:');
+    });
+
     it('names a valid name the stricter isPasteableIdent would refuse (a leading `_`)', async () => {
       // `_repo` is a legal CodeCommit name; the mid-word `=` joining the pair
       // is literal, so the measured predicate admits `Repo=_repo`.

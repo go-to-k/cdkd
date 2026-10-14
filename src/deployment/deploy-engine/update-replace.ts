@@ -16,7 +16,7 @@ import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/r
 import { type ResourceChange, type ResourceState } from '../../types/state.js';
 import { acceptedCreateOnlyDropsField } from './record-shape.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
-import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { reportDeleteGuards } from '../delete-guard-scope.js';
@@ -37,6 +37,7 @@ import {
   createUnionSecretMasker,
   maskSecretsInError,
   maskSecretsInText,
+  unionOfSecretBags,
 } from '../secret-redaction.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
@@ -182,11 +183,10 @@ export async function updateByReplacement(
       );
       throw markNonRetryable(
         new CdkdError(
-          `${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ` +
-            `${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
-            `${renderStatefulReason(statefulReason)}. ` +
+          safeMsg`${logicalId} (${oldResourceType}) requires replacement (immutable property changed: ${immutableProps}${typeChanged ? `, to ${resourceType}` : ''}) but it is a stateful resource — ` +
+            safeMsg`${renderStatefulReason(statefulReason)}. ` +
             (protection
-              ? `${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
+              ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} Or change ` +
                 `the resource's definition to avoid the immutable-property change.`
               : `Re-run with --force-stateful-recreation to confirm the data loss, or change the ` +
                 `resource definition to avoid the immutable-property change.`),
@@ -208,9 +208,9 @@ export async function updateByReplacement(
     if (noCcRoute !== undefined) {
       throw markNonRetryable(
         new CdkdError(
-          `--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
-            `Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
-            `Drop ${logicalId} from --recreate-via-cc-api.`,
+          safeMsg`--recreate-via-cc-api cannot recreate ${logicalId} (${resourceType}): Cloud ` +
+            safeMsg`Control API cannot create this type (${noCcRoute}). Nothing was deleted. ` +
+            safeMsg`Drop ${logicalId} from --recreate-via-cc-api.`,
           'RECREATE_TARGETS_INVALID'
         )
       );
@@ -221,9 +221,9 @@ export async function updateByReplacement(
     if (ccBroken !== undefined) {
       throw markNonRetryable(
         new CdkdError(
-          `--recreate-via-cc-api cannot move ${logicalId} (${resourceType}) to Cloud ` +
-            `Control: ${ccBroken}, so cdkd keeps it on its SDK provider. Nothing was ` +
-            `deleted. Drop ${logicalId} from --recreate-via-cc-api.`,
+          safeMsg`--recreate-via-cc-api cannot move ${logicalId} (${resourceType}) to Cloud ` +
+            safeMsg`Control: ${ccBroken}, so cdkd keeps it on its SDK provider. Nothing was ` +
+            safeMsg`deleted. Drop ${logicalId} from --recreate-via-cc-api.`,
           'RECREATE_TARGETS_INVALID'
         )
       );
@@ -244,7 +244,7 @@ export async function updateByReplacement(
       .join(', ')}`;
   }
   this.logger.info(
-    `Replacing ${logicalId} (${typeChanged ? `${oldResourceType} -> ${resourceType}` : resourceType}) - ${replacementReason}`
+    safeMsg`Replacing ${logicalId} (${typeChanged ? `${oldResourceType} -> ${resourceType}` : resourceType}) - ${replacementReason}`
   );
 
   // The new (replacement) resource gets a fresh routing decision —
@@ -414,15 +414,15 @@ export async function updateByReplacement(
       // go-to-k/cdkd#4438: as on the create-first arm above.
       await noteRetainedResource(oldResourceType, logicalId);
       this.logger.warn(
-        `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
-          `leak the old physical resource (${currentResource.physicalId}). The new ` +
+        safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
+          safeMsg`leak the old physical resource (${currentResource.physicalId}). The new ` +
           `resource shares the same name where applicable; if the type ` +
           `has user-supplied names (e.g. functionName, bucketName), the create will ` +
           `deterministically collide with the retained orphan.`
       );
     } else {
       this.logger.info(
-        `  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
+        safeMsg`  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
       );
       // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
       // old resource before the recreate's delete. OUTSIDE the try
@@ -475,13 +475,18 @@ export async function updateByReplacement(
         // chain carries no plaintext the message would not; the message is
         // masked at construction like the delete-first fallback's twin in
         // `replacement.ts`.
+        // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
+        // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
+        // value): a later mask sees only the flattened text and misses a needle
+        // that holds a newline.
+        const shownSecrets = unionOfSecretBags([updateSecrets, this.printingSecretsFor(logicalId)]);
         throw new Error(
-          maskSecretsInText(
-            `Failed to destroy old resource ${logicalId} (${currentResource.physicalId}) ` +
-              `during ${recreateFlagName}: ` +
-              `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
-            updateSecrets
-          ),
+          // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
+          safeMsg`Failed to destroy old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
+            safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
+            // go-to-k/cdkd#2676: the wrapped error's (masked) message is
+            // embedded as-is and LAST: it can end in cdkd's own remedy lines.
+            safeMsg`${asIsMessage(maskSecretsInText(deleteError instanceof Error ? deleteError.message : String(deleteError), shownSecrets))}`,
           {
             cause:
               deleteError instanceof Error
@@ -510,11 +515,11 @@ export async function updateByReplacement(
           )
         );
       }
-      this.logger.info(`  ${green('✓')} Old resource deleted`);
+      this.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
       this.oldDeletedBeforeCreate.add(logicalId);
     }
 
-    this.logger.info(`  Creating new ${logicalId}...`);
+    this.logger.info(safeMsg`  Creating new ${logicalId}...`);
     // Delete-then-create just released the old resource's name, so
     // the re-create can hit a late name release ("already exists"
     // from an async delete) or the SQS 60s same-name cooldown
@@ -582,8 +587,8 @@ export async function updateByReplacement(
       createResult.physicalId === currentResource.physicalId
     ) {
       throw new CdkdError(
-        `${logicalId} (${resourceType}) recreate returned the existing resource ` +
-          `(${currentResource.physicalId}) instead of creating a new one — its Create ` +
+        safeMsg`${logicalId} (${resourceType}) recreate returned the existing resource ` +
+          safeMsg`(${currentResource.physicalId}) instead of creating a new one — its Create ` +
           `API is name-idempotent — and UpdateReplacePolicy: Retain means the old ` +
           `resource was never destroyed, so the new properties were not applied. ` +
           `Rename the resource in your CDK code (or remove the explicit physical ` +
@@ -595,7 +600,7 @@ export async function updateByReplacement(
     // Property-driven replacement: create-then-destroy (CFn
     // safe-replacement order — keeps the old alive if CREATE
     // fails so the deploy can roll back to it cleanly).
-    this.logger.info(`  Creating new ${logicalId}...`);
+    this.logger.info(safeMsg`  Creating new ${logicalId}...`);
     // go-to-k/cdkd#4411: a resource stored inside a parent that was just
     // destroyed and re-created is already gone, exactly as after the
     // delete-first fallback: nothing to delete, and an equal physical id
@@ -682,8 +687,8 @@ export async function updateByReplacement(
         // recreate retry classifier treats as retryable.
         throw markNonRetryable(
           new CdkdError(
-            `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-              `attempt collided: ${createMsg}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+            safeMsg`${logicalId} (${resourceType}) requires replacement, but the create-first ` +
+              safeMsg`attempt collided: ${createMsg}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
               (this.options.replace === true
                 ? ` — so --replace was NOT applied and nothing was deleted.`
                 : updateReplacePolicy === 'Retain'
@@ -771,23 +776,23 @@ export async function updateByReplacement(
       }
       if (updateReplacePolicy === 'Retain') {
         throw new CdkdError(
-          `${logicalId} (${resourceType}) requires replacement, but its physical name ` +
+          safeMsg`${logicalId} (${resourceType}) requires replacement, but its physical name ` +
             `is still held by the existing resource AND UpdateReplacePolicy: Retain ` +
-            `pins that resource in place. ${nameOrigin.descriptor}. ` +
-            `${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
+            safeMsg`pins that resource in place. ${nameOrigin.descriptor}. ` +
+            safeMsg`${nameOrigin.remedy} — with Retain, the old resource keeps the name, so a ` +
             `same-name replacement can never proceed.`,
           'NAMED_REPLACEMENT_COLLISION'
         );
       }
       if (this.options.replace !== true) {
         throw new CdkdError(
-          `${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-            `attempt collided with the existing resource: ${createMsg}. ` +
-            `${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
+          safeMsg`${logicalId} (${resourceType}) requires replacement, but the create-first ` +
+            safeMsg`attempt collided with the existing resource: ${createMsg}. ` +
+            safeMsg`${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
             `order (create the new resource before deleting the old) cannot reuse the ` +
             `occupied name — CloudFormation refuses this shape with "cannot update a ` +
             `stack when a custom-named resource requires replacing". ` +
-            `${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
+            safeMsg`${nameOrigin.remedy}, or re-run with \`cdkd deploy --replace\` to delete ` +
             `the old resource FIRST and recreate it under the same name (the resource ` +
             `is briefly unavailable while it is recreated).`,
           'NAMED_REPLACEMENT_COLLISION'
@@ -803,7 +808,7 @@ export async function updateByReplacement(
       // being told it was theirs (issue #1636).
       this.logger.info(
         `  Create-first collided with the existing resource's name and --replace is ` +
-          `set — deleting old ${logicalId} (${currentResource.physicalId}) first...`
+          safeMsg`set — deleting old ${logicalId} (${currentResource.physicalId}) first...`
       );
       deletedOldFirst = true;
       createResult = await this.replaceDeleteFirstAndRecreate(
@@ -851,11 +856,11 @@ export async function updateByReplacement(
       );
       if (updateReplacePolicy === 'Retain') {
         throw new CdkdError(
-          `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
+          safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
             `name-idempotent: the create-first attempt returned the existing resource ` +
-            `(${currentResource.physicalId}) instead of creating a new one, and ` +
+            safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
             `UpdateReplacePolicy: Retain pins that resource in place. ` +
-            `${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
+            safeMsg`${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
             `Retain, the old resource keeps the name, so a same-name replacement can ` +
             `never proceed.`,
           'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
@@ -863,12 +868,12 @@ export async function updateByReplacement(
       }
       if (this.options.replace !== true) {
         throw new CdkdError(
-          `${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
+          safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
             `name-idempotent: the create-first attempt returned the EXISTING resource ` +
-            `(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
+            safeMsg`(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
             `the "old" resource would silently destroy the resource the deploy just ` +
-            `reported as created. ${idempotentNameOrigin.descriptor}; ` +
-            `${idempotentNameOrigin.remedy}, or re-run with ` +
+            safeMsg`reported as created. ${idempotentNameOrigin.descriptor}; ` +
+            safeMsg`${idempotentNameOrigin.remedy}, or re-run with ` +
             `\`cdkd deploy --replace\` to delete the old resource FIRST and recreate ` +
             `it under the same name (the resource is briefly unavailable while it is ` +
             `recreated). Note: this branch is also reached when the old resource was ` +
@@ -883,8 +888,8 @@ export async function updateByReplacement(
       // re-create applies the new properties for real.
       this.logger.info(
         `  Create-first returned the existing resource (name-idempotent Create API) ` +
-          `and --replace is set — deleting old ${logicalId} ` +
-          `(${currentResource.physicalId}) first...`
+          safeMsg`and --replace is set — deleting old ${logicalId} ` +
+          safeMsg`(${currentResource.physicalId}) first...`
       );
       deletedOldFirst = true;
       createResult = await this.replaceDeleteFirstAndRecreate(
@@ -912,10 +917,10 @@ export async function updateByReplacement(
       // go-to-k/cdkd#4438: as on the `--recreate-via-*` arms above.
       await noteRetainedResource(oldResourceType, logicalId);
       this.logger.info(
-        `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+        safeMsg`  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
       );
     } else {
-      this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+      this.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
       // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
       // old resource before the post-replacement cleanup delete.
       // Two failure classes, deliberately handled differently:
@@ -945,8 +950,8 @@ export async function updateByReplacement(
         }
         snapshotBlockedDelete = true;
         this.logger.warn(
-          `  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
-            `failed: ${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}. ` +
+          safeMsg`  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
+            safeMsg`failed: ${asIsMessage(snapshotError instanceof Error ? snapshotError.message : String(snapshotError))}. ` +
             `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot) — delete it ` +
             `manually once you have a snapshot; it is no longer tracked in state.`
         );
@@ -1034,9 +1039,9 @@ export async function updateByReplacement(
   // (`provisionResource` turns the row into a partial update), so the line
   // says so instead of a clean `replaced`.
   const replacedSkip = this.replacedDeleteSkips.get(logicalId);
-  const replacedLine = `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`;
+  const replacedLine = safeMsg`${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`;
   if (replacedSkip !== undefined) {
-    this.logger.warn(replacedLine + ' ' + updatePartialMessage(replacedSkip));
+    this.logger.warn(safeMsg`${replacedLine} ${updatePartialMessage(replacedSkip)}`);
     return;
   }
   this.logger.info(replacedLine);

@@ -156,7 +156,7 @@ if [ -z "${PHYS_ID_1}" ] || [ "${OUTPUT_ID}" != "${PHYS_ID_1}" ]; then
   exit 1
 fi
 echo "    OK: GetAtt Id output resolves to the physical id (${PHYS_ID_1})"
-# The current schema renamed the attribute to AnomalyDetectorId (#4668): it must
+# AWS has also published the attribute as AnomalyDetectorId (#4668): it must
 # resolve from the cached attributes too, to the same value.
 OUTPUT_ADID=$(printf '%s' "${STATE}" | python3 -c "import json,sys; s=json.load(sys.stdin); print(s['outputs'].get('AnomalyDetectorId',''))")
 if [ "${OUTPUT_ADID}" != "${PHYS_ID_1}" ]; then

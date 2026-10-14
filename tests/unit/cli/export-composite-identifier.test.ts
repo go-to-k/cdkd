@@ -1710,7 +1710,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
   it('blocks an AnomalyDetector up front, even with --skip-import-support-preflight: its physicalId is not the registry identifier (#4668)', async () => {
     // The registry now declares a full handler set, so neither pre-flight
     // fires; without the refusal the single-key path sends cdkd's descriptor
-    // as `AnomalyDetectorId`.
+    // as the registry identifier (spelled `AnomalyDetectorId` in this stub).
     const state = stateWith({
       Detector: {
         resourceType: 'AWS::CloudWatch::AnomalyDetector',
@@ -1743,7 +1743,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.logicalId).toBe('Detector');
     expect(plan.blocked[0]!.reason).toMatch(/cdkd cannot export AWS::CloudWatch::AnomalyDetector/);
-    expect(plan.blocked[0]!.reason).toMatch(/not the registry's AnomalyDetectorId/);
+    expect(plan.blocked[0]!.reason).toMatch(/not the registry's primaryIdentifier/);
   });
 
   it('takes the plain single-key path when the registry still reports the OLD `ApiId` identifier', async () => {

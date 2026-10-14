@@ -15,7 +15,7 @@ import {
   hasAddressablePhysicalId,
   withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -66,7 +66,7 @@ export async function provisionDelete(
   const renderer = getLiveRenderer();
   const currentResource = existingState;
   if (!currentResource) {
-    throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
+    throw new Error(safeMsg`Cannot delete ${logicalId}: resource not found in state`);
   }
 
   // Honor `DeletionPolicy: Retain` / `RetainExceptOnCreate`.
@@ -82,7 +82,7 @@ export async function provisionDelete(
     currentResource.deletionPolicy ?? template?.Resources?.[logicalId]?.DeletionPolicy;
   if (shouldRetainResource(deletionPolicy)) {
     this.logger.info(
-      `Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
+      safeMsg`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
     );
     delete stateResources[logicalId];
     // go-to-k/cdkd#4438: the kept resource still holds this stack's create
@@ -177,7 +177,7 @@ Drop the record with: ${dropCommand}`
   });
   const deleteProvider = deleteRoute.provider;
 
-  this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
+  this.logger.debug(safeMsg`Deleting ${logicalId} (${resourceType})`);
   // Issue #1762: what the provider actually DID. `undefined` (the
   // back-compat `void` return) means "deleted"; a `'skipped'` outcome
   // means the resource was NOT deleted and may still be alive.
@@ -249,7 +249,9 @@ Drop the record with: ${dropCommand}`
         msg.includes('NotFoundException') ||
         msg.includes('ResourceNotFoundException'))
     ) {
-      this.logger.debug(`Resource ${logicalId} already deleted (${msg}), removing from state`);
+      this.logger.debug(
+        safeMsg`Resource ${logicalId} already deleted (${asIsMessage(msg)}), removing from state`
+      );
     } else {
       throw deleteError;
     }
@@ -276,7 +278,7 @@ Drop the record with: ${dropCommand}`
     const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
     renderer.removeTask(logicalId);
     this.logger.info(
-      `${skipPrefix}${formatResourceLine(
+      safeMsg`${skipPrefix}${formatResourceLine(
         'skipped',
         logicalId,
         resourceType,
@@ -311,12 +313,12 @@ Drop the record with: ${dropCommand}`
       opts: { plainIdent: true },
     };
     this.logger.warn(
-      deleteSkippedMessage(
+      safeMsg`${deleteSkippedMessage(
         logicalId,
         currentResource.physicalId,
         deleteSkipped,
         'while removing it from the template'
-      ) +
+      )}` +
         `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
         `delete. Repair the record first (for a nested stack it is the CHILD's own ` +
         `state, whose other resources may already be gone), or delete the resource by ` +
@@ -343,15 +345,15 @@ Drop the record with: ${dropCommand}`
         // orphan the resources another region's record points at. M2 of
         // the go-to-k/cdkd#3499 review.
         // The run's account flags ride on both commands (go-to-k/cdkd#4648).
-        (accountClause === '' ? '' : ` ${accountClause}`) +
-        `\nInspect it with: ${
+        (accountClause === '' ? '' : safeMsg` ${accountClause}`) +
+        safeMsg`\nInspect it with: ${
           pasteableCommand('cdkd state show', [
             stackArg,
             { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
             ...account,
           ]).command
         }` +
-        `\nDrop the record with: ${
+        safeMsg`\nDrop the record with: ${
           pasteableCommand('cdkd state orphan', [
             stackArg,
             { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
@@ -386,6 +388,8 @@ Drop the record with: ${dropCommand}`
   if (progress) progress.current++;
   const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  this.logger.info(`${deletePrefix}${formatResourceLine('deleted', logicalId, resourceType)}`);
+  this.logger.info(
+    safeMsg`${deletePrefix}${formatResourceLine('deleted', logicalId, resourceType)}`
+  );
   return;
 }

@@ -329,7 +329,9 @@ export async function provisionCreate(
   if (progress) progress.current++;
   const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  this.logger.info(`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`);
+  this.logger.info(
+    safeMsg`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`
+  );
   return;
 }
 

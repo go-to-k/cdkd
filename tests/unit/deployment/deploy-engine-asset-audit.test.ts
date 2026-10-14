@@ -177,6 +177,23 @@ describe('DeployEngine — post-resolution asset-reference audit (#1002 PR 2)', 
     expect(provider.create).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#2676: the per-resource ERROR line prints the audit's refusal
+  // as-is, so its finding list keeps one row per finding (each value inside a
+  // row flattened).
+  it('keeps the finding list on its own rows on the ERROR line (#2676)', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const errorFn = vi.mocked(getLogger().error);
+    errorFn.mockClear();
+    const engine = makeEngine(true);
+    await invokeCreate(engine, { Code: { S3Bucket: CDK_BUCKET, S3Key: 'aaaa1111.zip' } });
+
+    const failLine = errorFn.mock.calls
+      .map(([m]) => String(m))
+      .find((m) => m.startsWith('Failed to create Fn:'));
+    expect(failLine).toBeDefined();
+    expect(failLine).toContain(`:\n  - Code.S3Bucket: still references '${CDK_BUCKET}'\n`);
+  });
+
   it('passes cleanly rewritten properties through to the provider', async () => {
     const engine = makeEngine(true);
     const err = await invokeCreate(engine, {

@@ -27,7 +27,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ['AWS::AppSync::ApiKey', [['ApiId']]],
   ['AWS::AppSync::DataSource', [['ApiId'], ['Name']]],
   ['AWS::AppSync::GraphQLApi', []],
-  ['AWS::AppSync::GraphQLSchema', [['ApiId']]],
+  ['AWS::AppSync::GraphQLSchema', []],
   ['AWS::AppSync::Resolver', [['ApiId'], ['FieldName'], ['TypeName']]],
   ['AWS::AutoScaling::AutoScalingGroup', [['AutoScalingGroupName'], ['InstanceId']]],
   ['AWS::BedrockAgentCore::Browser', []],
@@ -37,7 +37,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     [['EvaluatorConfig', 'Derived', 'BaseEvaluatorId'], ['EvaluatorName']],
   ],
   ['AWS::BedrockAgentCore::Runtime', [['AgentRuntimeName']]],
-  ['AWS::Budgets::Budget', [['NotificationsWithSubscribers']]],
+  ['AWS::Budgets::Budget', [['Budget', 'BudgetName'], ['NotificationsWithSubscribers']]],
   [
     'AWS::CertificateManager::Certificate',
     [
@@ -493,7 +493,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ],
   ['AWS::RDS::DBProxyTargetGroup', [['DBProxyName'], ['TargetGroupName']]],
   ['AWS::RDS::DBSubnetGroup', [['DBSubnetGroupName']]],
-  ['AWS::Route53::HostedZone', [['Name']]],
+  ['AWS::Route53::HostedZone', [['DelegationSetId'], ['Name']]],
   ['AWS::Route53::RecordSet', [['HostedZoneId'], ['HostedZoneName']]],
   ['AWS::S3::Bucket', [['BucketName'], ['BucketNamePrefix'], ['BucketNamespace']]],
   ['AWS::S3::BucketPolicy', [['Bucket']]],

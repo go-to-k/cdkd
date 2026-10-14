@@ -5,6 +5,7 @@ import {
 } from '../../analyzer/implicit-delete-deps.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import { DagExecutor } from '../dag-executor.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -112,7 +113,7 @@ export function addImplicitDeleteDependencies(
         if (!dependedBy.get(id)!.has(depId)) {
           dependedBy.get(id)!.add(depId);
           this.logger.debug(
-            `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${id} (${resource.resourceType})`
+            safeMsg`Implicit delete dependency: ${depId} (${depType}) must be deleted before ${id} (${resource.resourceType})`
           );
         }
       }
@@ -134,7 +135,7 @@ export function addImplicitDeleteDependencies(
     if (!dependedBy.get(after)!.has(before)) {
       dependedBy.get(after)!.add(before);
       this.logger.debug(
-        `Implicit delete dependency: ${before} (${scoped[before]?.resourceType}) must be deleted before ${after} (${scoped[after]?.resourceType})`
+        safeMsg`Implicit delete dependency: ${before} (${scoped[before]?.resourceType}) must be deleted before ${after} (${scoped[after]?.resourceType})`
       );
     }
   }

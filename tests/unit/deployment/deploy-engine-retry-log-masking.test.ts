@@ -187,7 +187,10 @@ describe('DeployEngine - the retry give-up summary is masked (issue #2038)', () 
     EnabledMfas: { __resolveSecret: [SECRET_PLAINTEXT, SECRET_EXPR] },
   };
 
-  async function deployWithFailingCreate(message: string): Promise<void> {
+  async function deployWithFailingCreate(
+    message: string,
+    props: Record<string, unknown> = secretProps
+  ): Promise<void> {
     mockProvider.create!.mockRejectedValue(
       Object.assign(new Error(message), {
         name: 'InternalFailure',
@@ -202,13 +205,13 @@ describe('DeployEngine - the retry give-up summary is masked (issue #2038)', () 
             logicalId: 'Pool',
             changeType: 'CREATE',
             resourceType: RESOURCE_TYPE,
-            desiredProperties: secretProps,
+            desiredProperties: props,
           },
         ],
       ])
     );
     const template: CloudFormationTemplate = {
-      Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } },
+      Resources: { Pool: { Type: RESOURCE_TYPE, Properties: props } },
     };
     await makeEngine()
       .deploy(stackName, template)
@@ -300,6 +303,59 @@ describe('DeployEngine - the retry give-up summary is masked (issue #2038)', () 
     expect(cause.name).toBe('InternalFailure');
     expect(cause.$metadata?.requestId).toBe('req-abc');
     expect(cause).toBeInstanceOf(Error);
+  });
+
+  // go-to-k/cdkd#2676: the error's own message prints as-is on this line (as on
+  // main), so a secret that spans two lines — a PEM body an AWS error quotes
+  // back — is masked on the RAW text, before anything could flatten it.
+  it('masks a multi-line secret in the ERROR line (#2676)', async () => {
+    const multiLineSecret = 'pem-line-one-7c1d\npem-line-two-7c1d';
+    await deployWithFailingCreate(`Value '${multiLineSecret}' at 'clientSecret' failed`, {
+      UserPoolName: 'pool',
+      EnabledMfas: { __resolveSecret: [multiLineSecret, SECRET_EXPR] },
+    });
+
+    const failLine = errors.find((m) => m.startsWith('Failed to create Pool'));
+    expect(failLine).toBeDefined();
+    expect(failLine).toContain(SECRET_MASK);
+    expect(failLine).not.toContain('pem-line-one-7c1d');
+    expect(failLine).not.toContain('pem-line-two-7c1d');
+  });
+
+  // go-to-k/cdkd#2676: a REAL provider refusal — Glue's pre-flight Iceberg
+  // refusal, thrown before any AWS call — reaches the ERROR line with its
+  // indented paragraphs on their own lines.
+  it("keeps Glue's Iceberg refusal on its own lines on the ERROR line (#2676)", async () => {
+    const { GlueProvider } = await import('../../../src/provisioning/providers/glue-provider.js');
+    const glue = new GlueProvider();
+    mockProvider.create!.mockImplementation(
+      (logicalId: string, type: string, props: Record<string, unknown>) =>
+        glue.create(logicalId, type, props)
+    );
+    const props = {
+      DatabaseName: 'mydb',
+      OpenTableFormatInput: {
+        IcebergInput: { MetadataOperation: 'CREATE', IcebergTableInput: { Location: 's3://b/p' } },
+      },
+      TableInput: { Name: 'events_iceberg', TableType: 'EXTERNAL_TABLE' },
+    };
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Pool',
+          { logicalId: 'Pool', changeType: 'CREATE', resourceType: 'AWS::Glue::Table', desiredProperties: props },
+        ],
+      ])
+    );
+    await makeEngine()
+      .deploy(stackName, { Resources: { Pool: { Type: 'AWS::Glue::Table', Properties: props } } })
+      .catch(() => {});
+
+    const failLine = errors.find((m) => m.startsWith('Failed to create Pool:'));
+    expect(failLine).toBeDefined();
+    expect(failLine).toContain('AWS::Glue::Table Pool: OpenTableFormatInput.IcebergInput.IcebergTableInput');
+    expect(failLine).toContain('\n  Measured against AWS:');
+    expect(failLine).toContain('\n  Working shape');
   });
 
   it('leaves the ERROR line untouched for a non-secret message (no blanket redaction)', async () => {

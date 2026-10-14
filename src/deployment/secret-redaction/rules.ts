@@ -1,3 +1,5 @@
+import { SAFE_MSG_ALTERED_CHAR, safeMsg } from '../../utils/display-safe.js';
+
 /**
  * A resolved secret value shorter than this is NOT used as a redaction needle:
  * a 1-2 character plaintext (e.g. a secret whose JSON key holds `"0"`) would
@@ -15,6 +17,44 @@
  * in this module changes with the export.
  */
 export const MIN_NEEDLE_LENGTH = 4;
+
+/**
+ * The PRINTING needles for `values` (go-to-k/cdkd#2676): each value long enough
+ * to scan for, plus — for a value carrying a character `safeMsg` rewrites (a
+ * newline, a tab, a control or bidi character) — the spelling `safeMsg` gives
+ * it. A log line is built with `safeMsg` at its call site and masked at the
+ * logger sink AFTER that, so a multi-line secret reaches the sink only in its
+ * flattened spelling. Printing only: a persist-side detector must never match
+ * a spelling the persisted value does not hold. The flattened spelling is
+ * memoised per value, so a bag pays for it once.
+ */
+export function printingNeedles(values: Iterable<string>): string[] {
+  const out = new Set<string>();
+  for (const value of values) {
+    if (value.length < MIN_NEEDLE_LENGTH) continue;
+    out.add(value);
+    const flat = flattenedSpelling(value);
+    // `trim()`: a value made mostly of what `safeMsg` rewrites (whitespace,
+    // control characters) flattens to a run of spaces, which as a needle
+    // would mask every such run in a line.
+    if (flat !== undefined && flat.trim().length >= MIN_NEEDLE_LENGTH) out.add(flat);
+  }
+  return [...out];
+}
+
+const FLATTENED_MEMO_CAP = 4096;
+const flattenedMemo = new Map<string, string>();
+
+function flattenedSpelling(value: string): string | undefined {
+  if (!SAFE_MSG_ALTERED_CHAR.test(value)) return undefined;
+  let flat = flattenedMemo.get(value);
+  if (flat === undefined) {
+    flat = safeMsg`${value}`;
+    if (flattenedMemo.size >= FLATTENED_MEMO_CAP) flattenedMemo.clear();
+    flattenedMemo.set(value, flat);
+  }
+  return flat === value ? undefined : flat;
+}
 
 export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

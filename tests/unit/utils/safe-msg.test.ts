@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { safeMsg, terminalSafe } from '../../../src/utils/display-safe.js';
+import { asIsMessage, safeMsg, terminalSafe } from '../../../src/utils/display-safe.js';
 import { bold, cyan, dim, gray, green, red, yellow } from '../../../src/utils/colors.js';
 import { ConsoleLogger } from '../../../src/utils/logger.js';
 
@@ -106,5 +106,19 @@ describe('ConsoleLogger sink (go-to-k/cdkd#3479)', () => {
   it('strips terminal control from a raw message and keeps its line structure', () => {
     new ConsoleLogger('info', false).info(`Stack: ${`x${ESC}[1A${ESC}[2K`}\nnext`);
     expect(infoSpy).toHaveBeenCalledWith('Stack: x\nnext');
+  });
+});
+
+describe('asIsMessage (go-to-k/cdkd#2676)', () => {
+  it('inserts an embedded error message unflattened, beside values that are flattened', () => {
+    const embedded = 'refused.\nRe-import with: cdkd import stack';
+    expect(safeMsg`Failed for ${'id\nforged'}: ${asIsMessage(embedded)}`).toBe(
+      'Failed for id forged: refused.\nRe-import with: cdkd import stack'
+    );
+  });
+
+  it('leaves terminal control to the sink, which still strips it from the line', () => {
+    const line = safeMsg`x: ${asIsMessage(`a${ESC}[2Kb`)}`;
+    expect(terminalSafe(line)).toBe('x: ab');
   });
 });

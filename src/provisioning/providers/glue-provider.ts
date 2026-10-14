@@ -3994,7 +3994,8 @@ function icebergTableInputRefusalMessage(
           `Glue's update-only UpdateOpenTableFormatInput shape, so it forwards nothing here and ` +
           `only warns. A CREATE of this table would be refused outright.`;
   return (
-    `AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ${lead}\n` +
+    safeMsg`AWS::Glue::Table ${logicalId}: OpenTableFormatInput.IcebergInput.${key} ` +
+    `${lead}\n` +
     `  Measured against AWS: glue:CreateTable — the API cdkd ` +
     `calls — rejects every Iceberg table spec ("Location information cannot be null while ` +
     `creating an iceberg table" without a TableInput.StorageDescriptor, "Table metadata ` +

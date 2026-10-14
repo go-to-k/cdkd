@@ -299,6 +299,9 @@
     "AWS::RDS::DBProxyEndpoint": [
       "EndpointNetworkType"
     ],
+    "AWS::Route53::HostedZone": [
+      "DelegationSetId"
+    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "BucketNamePrefix",

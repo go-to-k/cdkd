@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLSchema",
-  "generatedAt": "2026-08-13",
+  "generatedAt": "2026-10-14",
   "properties": [
     "ApiId",
     "Definition",
@@ -10,23 +10,17 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": [
-    "ApiId"
-  ],
-  "createOnlyPropertyPaths": [
-    [
-      "ApiId"
-    ]
-  ],
+  "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
   "primaryIdentifier": [
     "Id"
   ],
   "definitionShapes": {
     "#top": {
+      "ApiId": "scalar",
       "Id": "scalar",
       "Definition": "scalar",
-      "DefinitionS3Location": "scalar",
-      "ApiId": "scalar"
+      "DefinitionS3Location": "scalar"
     }
   },
   "definitionRequired": {

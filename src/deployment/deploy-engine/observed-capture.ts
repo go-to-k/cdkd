@@ -14,7 +14,7 @@ import {
   hasReasonlessBaselineRefusal,
 } from '../../types/state.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import {
   isMaskedBaselineRecaptureCandidate,
   persistedTokenResolverContext,
@@ -112,9 +112,8 @@ export function kickOffObservedCapture(
           this.fingerprintNoEchoValues,
         ]);
         this.logger.debug(
-          mask(
-            `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
-          )
+          // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
+          safeMsg`observedProperties capture for ${mask(logicalId)} (${mask(resourceType)}) failed: ${asIsMessage(mask(err instanceof Error ? err.message : String(err)))} — drift will fall back to template properties for this resource until the next successful deploy.`
         );
         return undefined;
       }
@@ -413,12 +412,12 @@ export function stampReasonlessParameterRefusals(
   if (namesParameter?.failedClosed !== undefined) {
     // The cause CLASS only: never a template value or an error's text.
     this.logger.debug(
-      `The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every observed-baseline refusal recorded without a reason is treated as an unverifiable-parameter refusal (${stamped} stamped).`
+      safeMsg`The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every observed-baseline refusal recorded without a reason is treated as an unverifiable-parameter refusal (${stamped} stamped).`
     );
   }
   if (stamped > 0) {
     this.logger.debug(
-      `${stamped} resource(s) carry an observed-baseline refusal recorded without a reason by an older cdkd, and their template definition reads a template parameter: treated as an unverifiable-parameter refusal (kept until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter).`
+      safeMsg`${stamped} resource(s) carry an observed-baseline refusal recorded without a reason by an older cdkd, and their template definition reads a template parameter: treated as an unverifiable-parameter refusal (kept until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter).`
     );
   }
 }
@@ -503,7 +502,7 @@ export function kickOffAutoRefreshObservedProperties(
   }
   if (refused > 0) {
     this.logger.debug(
-      `observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused: their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
+      safeMsg`observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused: their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
     );
   }
   if (candidates.length === 0 && masked.length === 0) return;
@@ -605,7 +604,7 @@ export function kickOffAutoRefreshObservedProperties(
 
   if (toRefresh > 0) {
     this.logger.warn(
-      `cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
+      safeMsg`cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
     );
   }
 

@@ -9,6 +9,7 @@ import {
 import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state.js';
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { markSameGenerationBag } from '../secret-redaction.js';
 import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
 
@@ -45,9 +46,13 @@ export function auditResolvedAssetReferences(
   if (!redirect) return;
   const findings = findUnrewrittenAssetReferences(resolvedProps, redirect);
   if (findings.length === 0) return;
-  const detail = findings.map((f) => `  - ${f.path}: still references '${f.source}'`).join('\n');
+  // One line per finding, each value flattened (go-to-k/cdkd#2676); the joins
+  // and the list's own newlines are cdkd's.
+  const detail = findings
+    .map((f) => safeMsg`  - ${f.path}: still references '${f.source}'`)
+    .join('\n');
   throw new ProvisioningError(
-    `Unrewritten asset reference on '${logicalId}' (${resourceType}): this region uses ` +
+    safeMsg`Unrewritten asset reference on '${logicalId}' (${resourceType}): this region uses ` +
       `cdkd-owned asset storage, but the following resolved properties still point at the ` +
       `CDK bootstrap storage that 'cdk gc' may garbage-collect:\n${detail}\n` +
       `This is a template shape cdkd's asset-reference rewrite did not cover — deploying it ` +

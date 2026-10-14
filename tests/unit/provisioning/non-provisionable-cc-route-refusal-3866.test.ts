@@ -77,6 +77,9 @@ describe('NON_PROVISIONABLE SDK types refuse the Cloud Control auto-route (#3866
         expect(message).toContain('ProvisioningType: NON_PROVISIONABLE');
         expect(message).toContain(`  - ${property}: `);
         expect(message).toContain(`--prefer-sdk-route ${resourceType}:${property}`);
+        // go-to-k/cdkd#2676: one property per row; the type and property name
+        // are flattened, the list's own newlines kept.
+        expect(message).toContain(`:\n  - ${property}: `);
       });
 
       it('the pre-flight property check refuses too, before any resource is provisioned', () => {

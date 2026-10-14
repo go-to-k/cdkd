@@ -1,6 +1,6 @@
 import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import { logOnlyValuesOf, hasMaskableValues } from './log-only.js';
-import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
+import { MIN_NEEDLE_LENGTH, maskMatchSpans, printingNeedles } from './rules.js';
 
 /**
  * Replace every recorded secret value inside `text` with {@link SECRET_MASK}.
@@ -25,12 +25,19 @@ import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
  */
 export function maskSecretsInText(text: string, secrets: RecordedSecretValues): string {
   const logOnly = logOnlyValuesOf.get(secrets);
-  if (logOnly === undefined || logOnly.size === 0) return maskRecordedSecretsInText(text, secrets);
+  const noLogOnly = logOnly === undefined || logOnly.size === 0;
+  if (secrets.size === 0 && noLogOnly) return text;
   // Whole-value first, then the substring scan over BOTH populations at once:
   // the union of every match span, so neither kind leaves a tail of a needle
-  // it overlaps (go-to-k/cdkd#3869).
-  if (text !== '' && (secrets.has(text) || logOnly.has(text))) return SECRET_MASK;
-  return maskMatchSpans(text, substringNeedles([...secrets.keys(), ...logOnly]), SECRET_MASK);
+  // it overlaps (go-to-k/cdkd#3869). The scan also matches each needle's
+  // `safeMsg`-flattened spelling, since a printed line may already be
+  // flattened when it is masked (go-to-k/cdkd#2676); the detector below does not.
+  if (text !== '' && (secrets.has(text) || logOnly?.has(text) === true)) return SECRET_MASK;
+  return maskMatchSpans(
+    text,
+    printingNeedles(noLogOnly ? secrets.keys() : [...secrets.keys(), ...logOnly]),
+    SECRET_MASK
+  );
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   unionOfSecretBags,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
+import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
 type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
@@ -192,14 +193,17 @@ export function handleOutputResolutionFailure(
     // identity, unmasked, and `markNonRetryable` marks `Error` instances
     // only, so such a value carries no marker this code could have put on
     // it — threading it would buy nothing and could carry plaintext.
+    // go-to-k/cdkd#2676: `detail` is an error's (masked) message, which can
+    // end in cdkd's own remedy command lines (`maskedRecordRemedyFor`), so it
+    // is embedded as-is and LAST, after the flag note.
     throw new Error(
-      `Failed to resolve output ${outputKey}: ${detail} ` +
+      safeMsg`Failed to resolve output ${outputKey} ` +
         `(--strict-getatt promotes output resolution failures to deploy errors; ` +
-        `drop the flag to skip the output instead)`,
+        safeMsg`drop the flag to skip the output instead): ${asIsMessage(detail)}`,
       cause instanceof Error || typeof cause === 'string' ? { cause } : {}
     );
   }
-  this.logger.warn(`Failed to resolve output ${outputKey}: ${detail}`);
+  this.logger.warn(safeMsg`Failed to resolve output ${outputKey}: ${asIsMessage(detail)}`);
   outputs[outputKey] = undefined;
 }
 
@@ -362,11 +366,12 @@ export async function resolveOutputs(
     // retry can clear a mask in state.
     throw markNonRetryable(
       new Error(
-        `Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
+        safeMsg`Cannot resolve ${added.map((read) => read.display).join(', ')} for output ${outputKey}: cdkd's recorded state ` +
           `holds only the redaction mask there, so this output would publish a value cdkd ` +
           `cannot confirm (for most such types the resource's raw physical id) instead of the ` +
           `value CloudFormation's Ref returns — a possibly wrong value ` +
           `that a consuming stack's Fn::ImportValue would accept and send to AWS. The output ` +
+          // LAST and untagged: the remedy ends in labelled command lines.
           `is not published. ${DeployEngine.maskedRecordRemedyFor(added, context.resources)}`
       )
     );
@@ -428,7 +433,9 @@ export async function resolveOutputs(
       // side's `filterResourcesByCondition` (issue #1028; unknown condition
       // names are kept, matching that helper's semantics).
       if (isOutputSuppressedByCondition(output, conditions)) {
-        this.logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
+        this.logger.debug(
+          safeMsg`Skipping output ${outputKey} — condition ${output.Condition} is false`
+        );
         continue;
       }
       // THIS OUTPUT'S OWN BAG, and the isolation is what makes the guard
