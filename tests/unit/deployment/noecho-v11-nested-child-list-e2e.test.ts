@@ -73,6 +73,9 @@ const REGION = 'us-east-1';
 const LIST = 'alpha-piece-r11,bravo-piece-r11';
 const SHORT_LIST = 'ab,cd';
 const PORT = '5432';
+// The port is a bare number, so it is matched only where no digit borders it:
+// a save's `lastModified` timestamp can carry the same four digits.
+const STANDALONE_PORT = new RegExp(`(?<![0-9])${PORT}(?![0-9])`);
 
 const tempDirs: string[] = [];
 
@@ -251,9 +254,10 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
     expect(child.resources['PortReader']!.properties['DelaySeconds']).toBe('***');
     expect(child.resources['PortReader']!.noEchoLeaves).toEqual([['DelaySeconds']]);
     const everySave = JSON.stringify(saves.mock.calls);
-    for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"', '5432']) {
+    for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"']) {
       expect(everySave).not.toContain(needle);
     }
+    expect(everySave).not.toMatch(STANDALONE_PORT);
   });
 
   it('an unchanged second deploy sends nothing to the child resources and persists no value (review round 12)', async () => {
@@ -270,9 +274,10 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
     expect(vi.mocked(leaf.create)).not.toHaveBeenCalled();
     expect(vi.mocked(leaf.update)).not.toHaveBeenCalled();
     const everySave = JSON.stringify(saves.mock.calls);
-    for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"', '5432']) {
+    for (const needle of ['alpha-piece-r11', 'bravo-piece-r11', '"cd"', '"ab"']) {
       expect(everySave).not.toContain(needle);
     }
+    expect(everySave).not.toMatch(STANDALONE_PORT);
     expect(states.get(CHILD)!.resources['ListReader']!.properties['Value']).toBe('***');
   });
 });
