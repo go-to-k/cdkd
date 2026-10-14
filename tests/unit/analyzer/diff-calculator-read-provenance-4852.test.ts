@@ -200,6 +200,41 @@ describe('same stack', () => {
     ]);
   });
 
+  it('only a reading property whose recorded value holds the moved token is marked', async () => {
+    const state = stateOf({
+      Queue: record('AWS::SQS::Queue', { QueueName: REF }, { [REF]: at([V2]) }),
+      Other: record('AWS::SNS::Topic', { TopicName: 'other' }),
+      Reader: record(
+        'AWS::SSM::Parameter',
+        { Name: '/r', Type: 'String', Value: ARN, Description: 'Other-id' },
+        { [REF]: at([V1], [V1]) }
+      ),
+    });
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Queue: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF } },
+        Other: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'other' } },
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/r',
+            Type: 'String',
+            Value: { 'Fn::GetAtt': ['Queue', 'Arn'] },
+            Description: { 'Fn::GetAtt': ['Other', 'Id'] },
+          },
+        },
+      },
+    };
+    const changes = await new DiffCalculator().calculateDiff(state, template, async (value) =>
+      value !== null && typeof value === 'object'
+        ? JSON.stringify(value).includes('Queue')
+          ? ARN
+          : 'Other-id'
+        : value
+    );
+    expect(changes.get('Reader')!.propertyChanges!.map((pc) => pc.path)).toEqual(['Value']);
+  });
+
   it('a create-only read-derived leaf is a REPLACEMENT ceiling, and its readers follow', async () => {
     // `AWS::SSM::Parameter.Name` is create-only (registry); here it reads the queue.
     const state = stateOf({

@@ -299,18 +299,15 @@ export async function reresolveCrossStackValue(
   // never for a value carrying no token); a producer output with no provenance
   // keeps today's path: the producer's region, the current version. Not for a
   // read across an ACCOUNT boundary (refused upstream for a token), nor in a
-  // pass that resolves no secret, nor inside a walk already pinned, nor in
-  // the v12 migration capture (which records the current version by design,
-  // and must not add a producer read).
+  // pass that resolves no secret, nor in the v12 migration capture (which
+  // records the current version by design, and must not add a producer read).
+  // The re-resolution below names no producer output, so it never re-enters.
   if (
     producerOutput !== undefined &&
     producerOutput.crossAccount !== true &&
     context.recordedSecretValues !== undefined &&
     context.skipDynamicReferences !== true &&
-    context.provenanceCapture !== true &&
-    context.referencePins === undefined &&
-    (producerOutput.state !== undefined || context.stateBackend !== undefined) &&
-    !carriesSecretMask(value)
+    context.provenanceCapture !== true
   ) {
     const state = await producerStateOnce(this.resolverRegion, context, producerOutput, () =>
       this.logger.debug(

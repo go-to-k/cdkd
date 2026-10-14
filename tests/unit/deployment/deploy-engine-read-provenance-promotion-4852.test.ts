@@ -797,4 +797,22 @@ describe('the read-route source (design §2.2)', () => {
     const entry = run.last?.resources['Reader']?.referenceProvenance?.[REF];
     expect(entry?.readVersions).toEqual([V1]);
   });
+
+  it('an upstream holding two generations (no pin, no region) passes both to the read route', async () => {
+    // A create-only token on a queue updated in place after a rotation holds
+    // two generations; today's proof serves the current value (V2 still names
+    // the queue: another JSON key changed).
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    const { state, template } = queueAndReader({
+      queue: { physicalId: URL_1, provenance: { [REF]: { versions: [V1, V2] } } },
+      reader: { provenance: { [REF]: at([V1], [V1]) }, spellsSecret: false },
+    });
+    (template.Resources['Reader']!.Properties as Record<string, unknown>)['Description'] = 'b';
+    const run = await deploy({ state, template, levels: LEVELS });
+    expect(run.thrown).toBeUndefined();
+    expect(run.sent['Reader']?.['Value']).toBe(PLAIN_ARN_1);
+    const entry = run.last?.resources['Reader']?.referenceProvenance?.[REF];
+    expect(entry?.readVersions).toEqual([V1, V2]);
+  });
 });

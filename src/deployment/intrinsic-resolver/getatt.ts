@@ -403,15 +403,10 @@ export async function resolveGetAtt(
             { region: childRegion }
           );
         }
-        // go-to-k/cdkd#4852 (design §2.2): the versions the row records.
-        const readVersions =
-          context.recordedSecretValues === undefined || carriesSecretMask(flatValue)
-            ? undefined
-            : recordedTokenVersions(flatValue, resource);
         return await this.reresolveCrossStackValue(
           flatValue,
           childRegion,
-          readVersions === undefined ? context : { ...context, recordedReadVersions: readVersions },
+          context,
           nestedOrigin,
           nestedSourceKey
         );
