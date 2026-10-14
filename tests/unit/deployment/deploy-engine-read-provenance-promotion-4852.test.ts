@@ -395,7 +395,7 @@ describe('an interrupted earlier deploy (the queue was replaced, its reader not)
 
 describe('a version move whose value did not move (another key of a JSON secret)', () => {
   /** An SSM producer of the secret's `queue` key, read into a reader's create-only Name. */
-  const shape = (producerVersions: string[], region = 'us-east-1', deletionPolicy?: string) => {
+  const shape = (producerVersions: string[], region = 'us-east-1', deletionPolicy?: 'Retain') => {
     const state = {
       version: 12,
       stackName: 's',
