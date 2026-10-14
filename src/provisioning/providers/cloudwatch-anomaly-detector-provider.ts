@@ -34,10 +34,10 @@ import {
 } from '../redacted-delete-address.js';
 
 /**
- * The registry schema's read-only primaryIdentifier, under both of its names:
- * `AnomalyDetectorId` (current schema) and `Id` (the earlier one, still what
- * an aws-cdk-lib `attrId` emits). Both are cdkd's deterministic physical id
- * (issue #4668).
+ * The registry schema's read-only primaryIdentifier, under both of the names
+ * AWS has published it as: `Id` (what an aws-cdk-lib `attrId` emits) and
+ * `AnomalyDetectorId`. AWS has renamed it in both directions (#4668, #4902),
+ * so both stay. Both are cdkd's deterministic physical id.
  */
 const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
 
@@ -53,7 +53,8 @@ const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
  * descriptor (the single-metric tuple or the metric-math query set), and
  * `DeleteAnomalyDetector` takes the same descriptor. There is no
  * server-generated identifier in the API cdkd calls; the registry schema's
- * read-only `AnomalyDetectorId` (formerly `Id`) primaryIdentifier is minted
+ * read-only primaryIdentifier (`Id`, published for a while as
+ * `AnomalyDetectorId`) is minted
  * only by the Cloud Control handlers, which cdkd does not use for this type
  * (`cdkd drift` deny-lists its CC read for that reason, #4668). cdkd therefore
  * derives a DETERMINISTIC physical id from the descriptor (see
@@ -281,7 +282,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
   /**
    * Resolve a `Fn::GetAtt` attribute. The registry schema exposes a single
-   * read-only attribute, `AnomalyDetectorId` (formerly `Id`) — cdkd's
+   * read-only attribute, `Id` (also published as `AnomalyDetectorId`) — cdkd's
    * deterministic physical id.
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- the id is derived locally; no AWS call needed

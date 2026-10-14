@@ -1743,7 +1743,7 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.logicalId).toBe('Detector');
     expect(plan.blocked[0]!.reason).toMatch(/cdkd cannot export AWS::CloudWatch::AnomalyDetector/);
-    expect(plan.blocked[0]!.reason).toMatch(/not the registry's AnomalyDetectorId/);
+    expect(plan.blocked[0]!.reason).toMatch(/not the registry's primaryIdentifier/);
   });
 
   it('takes the plain single-key path when the registry still reports the OLD `ApiId` identifier', async () => {

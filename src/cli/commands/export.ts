@@ -6153,14 +6153,15 @@ export function cfnRefusesImportDespiteRegistry(resourceType: string): string | 
  * and for which cdkd records nothing that is. The single-key path would send
  * the physicalId as the identifier and CreateChangeSet fails after the lock.
  * `AWS::CloudWatch::AnomalyDetector`'s SDK provider derives a metric
- * descriptor; Cloud Control's `AnomalyDetectorId` is an opaque
+ * descriptor; Cloud Control's `Id` (published for a while as
+ * `AnomalyDetectorId`) is an opaque
  * `<hash>-<Stat>-<period>-<...>` value the CloudWatch API never returns
  * (issue #4668).
  */
 const PHYSICAL_ID_NOT_IMPORT_IDENTIFIER: ReadonlyMap<string, string> = new Map([
   [
     'AWS::CloudWatch::AnomalyDetector',
-    "its physicalId is a metric descriptor cdkd derives, not the registry's AnomalyDetectorId, " +
+    "its physicalId is a metric descriptor cdkd derives, not the registry's primaryIdentifier, " +
       'and the CloudWatch API does not return that identifier',
   ],
 ]);
