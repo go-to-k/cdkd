@@ -245,6 +245,35 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     );
   });
 
+  // go-to-k/cdkd#2676: the refusal's message is EMBEDDED in the output-failure
+  // line, and it ends in cdkd's own labelled re-import command. An embedded
+  // error message is masked but not flattened, so the command stays on its own
+  // last line — in the default warn and in the strict throw alike.
+  it('keeps the re-import command on its own last line in the default warn (#2676)', async () => {
+    await makeEngine(SECRET_MASK).deploy(stackName, TEMPLATE);
+
+    const line = warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.startsWith('Failed to resolve output TableRef:'));
+    expect(line).toBeDefined();
+    const lines = line!.split('\n');
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.at(-1)).toMatch(/^Re-import with: cdkd import .*--resource 'Tbl=<physicalId>'/);
+  });
+
+  it('keeps the re-import command on its own last line in the strict throw (#2676)', async () => {
+    const error = await makeEngine(SECRET_MASK, true)
+      .deploy(stackName, TEMPLATE)
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(error).toBeInstanceOf(Error);
+    const lines = error!.message.split('\n');
+    expect(lines[0]).toMatch(/^Failed to resolve output TableRef \(--strict-getatt promotes/);
+    expect(lines.at(-1)).toMatch(/^Re-import with: cdkd import .*--resource 'Tbl=<physicalId>'/);
+  });
+
   it('publishes the recovered NAME when the record is not masked (scope control)', async () => {
     // The other direction. Without this, a refusal that fired on every
     // `Ref`-valued output would pass every case above while breaking every

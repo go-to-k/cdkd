@@ -416,6 +416,28 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     );
   });
 
+  // go-to-k/cdkd#2676: the per-resource ERROR line — where a user reads the
+  // remedy, as `Caused by:` is flattened — prints the refusal as-is, so it
+  // still ends on the command, on its own line.
+  it('the ERROR line still ends on the adopt command, on its own line (#2676)', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const errorFn = vi.mocked(getLogger().error);
+    errorFn.mockClear();
+    h.importResult = { physicalId: '/aws/lambda/MyStack-Fn' };
+
+    await create(makeEngine(h), 'AWS::Logs::LogGroup', { LogGroupName: '/aws/lambda/MyStack-Fn' });
+
+    const failLine = errorFn.mock.calls
+      .map(([m]) => String(m))
+      .find((m) => m.startsWith('Failed to create Res:'));
+    expect(failLine).toBeDefined();
+    const lines = failLine!.split('\n');
+    expect(lines.at(-2)).toMatch(/^CONFIRM IT IS YOURS FIRST: another stack or app may own/);
+    expect(lines.at(-1)).toBe(
+      "Adopt with: cdkd import MyStack --resource 'Res=/aws/lambda/MyStack-Fn'"
+    );
+  });
+
   it('withholds the adopt command for S3, whose lookup also finds another account’s bucket', async () => {
     h.importResult = { physicalId: 'their-bucket' };
 

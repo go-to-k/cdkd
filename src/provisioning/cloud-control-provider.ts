@@ -3195,7 +3195,7 @@ export class CloudControlProvider implements ResourceProvider {
           : 'its state record still holds the PREVIOUS properties, so the record may no longer describe the live resource';
 
     const error = new CloudControlWaitAbandonedError(
-      `${operation} of ${logicalId} was accepted by Cloud Control API, but cdkd stopped waiting for it ` +
+      safeMsg`${operation} of ${logicalId} was accepted by Cloud Control API, but cdkd stopped waiting for it ` +
         // The identifier clause goes BEFORE the command, never after it: glued
         // on afterwards it rendered on the SAME line as the pasteable command,
         // so a template-chosen identifier sat inside what reads as a shell
@@ -3203,7 +3203,7 @@ export class CloudControlProvider implements ResourceProvider {
         // `replacement-protection-advice.ts` requires, with no quote and no
         // suppress. Putting it ahead means the command is the last thing on
         // its line and nothing user-chosen follows it.
-        `(${reason}${causeText}). The operation may still be running in AWS, and ${consequence}.` +
+        safeMsg`(${reason}${causeText}). The operation may still be running in AWS, and ${consequence}.` +
         `${identifierClause} Check what it did with:\n  ${await this.buildResumeCommand(requestToken)}`,
       resourceType,
       logicalId,

@@ -1,6 +1,6 @@
 import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
 import { sideSetOf, wholeStringLeavesOf, type WalkedContainers } from './mask-only.js';
-import { MIN_NEEDLE_LENGTH, maskMatchSpans } from './rules.js';
+import { MIN_NEEDLE_LENGTH, maskMatchSpans, printingNeedles } from './rules.js';
 import { type SecretMasker } from './mask-errors.js';
 
 /**
@@ -447,7 +447,8 @@ export function createUnionSecretMasker(
         for (const plaintext of bag.keys()) needles.add(plaintext);
         for (const plaintext of logOnlyValuesOf.get(bag) ?? []) needles.add(plaintext);
       }
-      scanned = [...needles].filter((needle) => needle.length >= MIN_NEEDLE_LENGTH);
+      // With each needle's `safeMsg`-flattened spelling (go-to-k/cdkd#2676).
+      scanned = printingNeedles(needles);
       stamp = now;
     }
     // {@link maskSecretsInText}'s two arms over the union: a whole text equal

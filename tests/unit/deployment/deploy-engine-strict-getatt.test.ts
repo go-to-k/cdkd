@@ -213,7 +213,7 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
   it('strict mode: an unresolvable Output fails the deploy with an actionable error', async () => {
     const engine = makeEngine(true);
     await expect(engine.deploy(stackName, template)).rejects.toThrow(
-      /Failed to resolve output Bad: cannot construct attribute.*--strict-getatt/s
+      /Failed to resolve output Bad \(--strict-getatt[^)]*\): cannot construct attribute/s
     );
   });
 

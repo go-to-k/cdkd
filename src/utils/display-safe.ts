@@ -258,11 +258,21 @@ export function terminalSafe(text: string): string {
   return replaceUnsafe(text, TERMINAL_UNSAFE);
 }
 
+/** The brand {@link asIsMessage} wraps a value in; see there. */
+class AsIsMessage {
+  readonly text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
 /**
  * Tagged template for a log or error message: the literal parts are cdkd's
  * own and render verbatim (newlines included), every interpolated value is
  * flattened to one line. A value cannot then forge a row, however many
  * newlines the template itself uses.
+ * The one exception is a value wrapped in {@link asIsMessage}: an embedded
+ * error message, inserted as-is.
  *
  * No trim, unlike `displaySafe`: a message's spacing is the template's, and a
  * value's own padding is visible text rather than a boundary question. A value
@@ -272,9 +282,29 @@ export function terminalSafe(text: string): string {
 export function safeMsg(strings: TemplateStringsArray, ...values: unknown[]): string {
   let out = strings[0] ?? '';
   values.forEach((value, i) => {
-    out += replaceUnsafe(toDisplayText(value), TERMINAL_UNSAFE_OR_LINE_BREAK) + strings[i + 1];
+    out +=
+      (value instanceof AsIsMessage
+        ? value.text
+        : replaceUnsafe(toDisplayText(value), TERMINAL_UNSAFE_OR_LINE_BREAK)) + strings[i + 1];
   });
   return out;
+}
+
+/**
+ * An ERROR's message embedded in a wrapping message, for {@link safeMsg} to
+ * insert UNFLATTENED (go-to-k/cdkd#2676). An error message can end in cdkd's
+ * own remedy command lines, which flattening squashes onto one line; main
+ * printed it as-is, and the rule is to keep doing so. Only the values cdkd
+ * interpolates directly (ids, types, names, reasons) are flattened.
+ *
+ * Nothing here masks: a caller that masks the message does so first, and the
+ * rest rely on the logger sink's printing masker, as on main. The sink also
+ * strips terminal control from the whole line (`terminalSafe`). Never
+ * wrap an id or a name in this: it exists so an embedded message is a
+ * visible, greppable exception inside the template rather than a raw `+`.
+ */
+export function asIsMessage(text: string): AsIsMessage {
+  return new AsIsMessage(text);
 }
 
 /**

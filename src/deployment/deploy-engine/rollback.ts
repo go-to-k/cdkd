@@ -4,7 +4,13 @@ import { getCdkdVersion } from '../../state/deployment-events-store.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
-import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import {
+  asIsMessage,
+  displayIdent,
+  displaySafe,
+  displayStackName,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import { pasteableCommand, quotedOrDescribed } from '../../utils/pasteable-command.js';
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import {
@@ -267,8 +273,9 @@ export async function adoptRollbackOrphans(
 
   if (plan.refusals.length > 0) {
     throw new Error(
-      `Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
-        `safely re-adopt:\n  ${plan.refusals.map((r) => maskSecretsInText(r, named)).join('\n  ')}`
+      safeMsg`Deploy refused — cdkd left ${plan.refusals.length} resource(s) in AWS that it cannot ` +
+        'safely re-adopt:' +
+        plan.refusals.map((r) => safeMsg`\n  ${maskSecretsInText(r, named)}`).join('')
     );
   }
 
@@ -278,8 +285,8 @@ export async function adoptRollbackOrphans(
     adoptedFrom.set(logicalId, records.findLast((r) => r.logicalId === logicalId)?.state);
     currentState.resources[logicalId] = record;
     this.logger.info(
-      `Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
-        `by an earlier rollback as ${displaySafe(maskSecretsInText(record.physicalId, named))}`
+      safeMsg`Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
+        safeMsg`by an earlier rollback as ${displaySafe(maskSecretsInText(record.physicalId, named))}`
     );
   }
   // Assigned unconditionally when there WERE records, so an adopted or
@@ -728,7 +735,7 @@ export async function deleteRollbackJournalBestEffort(
     deleted = await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
   } catch (err) {
     this.logger.debug(
-      safeMsg`Failed to delete rollback journal for ${stackName}: ${err instanceof Error ? err.message : String(err)}`
+      safeMsg`Failed to delete rollback journal for ${displayStackName(stackName)}: ${err instanceof Error ? err.message : String(err)}`
     );
     deleted = false;
   }
@@ -743,7 +750,7 @@ export async function deleteRollbackJournalBestEffort(
     );
   } catch (markErr) {
     this.logger.debug(
-      safeMsg`Failed to record superseded logical ids on the rollback journal for ${stackName}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
+      safeMsg`Failed to record superseded logical ids on the rollback journal for ${displayStackName(stackName)}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
     );
   }
   return false;
@@ -785,7 +792,7 @@ export async function settleJournalAfterCleanRollback(
       await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
     } catch (err) {
       this.logger.debug(
-        `Failed to pop the rollback journal segment after the clean rollback: ${err instanceof Error ? err.message : String(err)}`
+        safeMsg`Failed to pop the rollback journal segment after the clean rollback: ${asIsMessage(err instanceof Error ? err.message : String(err))}`
       );
       return false;
     }
@@ -814,7 +821,7 @@ export async function settleJournalAfterCleanRollback(
   this.logger.info(
     `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
       `record was kept — if it was left partially applied, revert it.` +
-      `\nRevert it with: ${
+      safeMsg`\nRevert it with: ${
         pasteableCommand('cdkd rollback', [
           { value: stackName, hole: 'stack' },
           { literal: '--revert-failed' },
@@ -998,11 +1005,11 @@ export async function writeRollbackJournalSegment(
       }),
     };
     await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
-    this.logger.debug(`Rollback journal segment written (${reason})`);
+    this.logger.debug(safeMsg`Rollback journal segment written (${reason})`);
     return true;
   } catch (journalError) {
     this.logger.warn(
-      `Failed to write rollback journal: ${journalError instanceof Error ? journalError.message : String(journalError)}. ` +
+      safeMsg`Failed to write rollback journal: ${asIsMessage(journalError instanceof Error ? journalError.message : String(journalError))}. ` +
         `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
     );
     return false;

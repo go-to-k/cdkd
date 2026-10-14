@@ -28,6 +28,7 @@ import {
   buildSecureReferenceMessage,
   findSecureReferencePaths,
 } from './custom-resource-secure-references.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * The provisioning layer that owns a particular resource: SDK Provider
@@ -710,11 +711,13 @@ export class ProviderRegistry {
     drops: ReadonlyArray<{ property: string; rationale: string }>,
     reason: string
   ): string {
-    const details = drops.map((d) => `  - ${d.property}: ${d.rationale}`).join('\n');
-    const overrideHint = drops.map((d) => `${resourceType}:${d.property}`).join(',');
+    // go-to-k/cdkd#2676: every value flattened (a property name and the type
+    // come from the template); the list's own newlines are cdkd's.
+    const details = drops.map((d) => safeMsg`  - ${d.property}: ${d.rationale}`).join('\n');
+    const overrideHint = drops.map((d) => safeMsg`${resourceType}:${d.property}`).join(',');
     return (
-      `${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
-      `this type cannot fall back to Cloud Control API (${reason}):\n` +
+      safeMsg`${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
+      safeMsg`this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
       `Remove the properties, or force the SDK provider path and accept the drop via ` +
       `--prefer-sdk-route ${overrideHint} ` +
@@ -1101,11 +1104,12 @@ export class ProviderRegistry {
         const unroutable = this.ccRouteUnavailableReason(resourceType);
         if (unroutable !== undefined) {
           throw new Error(
-            `${logicalId}: ${this.buildUnroutableSilentDropMessage(
-              resourceType,
-              drops.filter((d) => autoRouted.includes(d.property)),
-              unroutable
-            )}`
+            safeMsg`${logicalId}: ` +
+              this.buildUnroutableSilentDropMessage(
+                resourceType,
+                drops.filter((d) => autoRouted.includes(d.property)),
+                unroutable
+              )
           );
         }
         const propList = autoRouted.join(', ');

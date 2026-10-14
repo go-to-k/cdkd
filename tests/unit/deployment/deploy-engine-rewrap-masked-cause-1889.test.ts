@@ -348,5 +348,86 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
       expect(isMarkedNonRetryable(cause)).toBe(true);
       expect(cause.$metadata).toEqual({ httpStatusCode: 400, requestId: 'req-test' });
     });
+
+    // go-to-k/cdkd#2676: the wrapped message is embedded as-is (masked, not
+    // flattened), so a secret spanning two lines (a PEM body an AWS error
+    // quotes back) is masked whole.
+    it('masks a MULTI-LINE secret in the embedded message (#2676)', async () => {
+      const multiLine = 'pem-line-one-2676\npem-line-two-2676';
+      secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      deleteRejection = () =>
+        markNonRetryable(
+          awsSdkError(`ValidationException: Value '${multiLine}' failed\n[ERROR] forged`)
+        );
+
+      const wrap = await provisionExpectingWrap(
+        withoutBoundaryMask(makeEngine('recreate')),
+        'recreate'
+      );
+
+      expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
+      expect(wrap.message).toContain(`Value '***' failed\n[ERROR] forged`);
+      expect(wrap.message).not.toContain('pem-line-one-2676');
+      expect(wrap.message).not.toContain('pem-line-two-2676');
+    });
+
+    // go-to-k/cdkd#2676: the wrapped error's message is embedded as-is and
+    // last, so a wrapped cdkd refusal keeps its remedy command on its own line.
+    it('keeps a wrapped refusal\'s command line as the last line of the wrap (#2676)', async () => {
+      deleteRejection = () =>
+        markNonRetryable(
+          new Error(
+            "Pipe refused the delete.\nRe-adopt with:\ncdkd import '<stack>' --resource 'Pipe=my-pipe'"
+          )
+        );
+
+      const wrap = await provisionExpectingWrap(
+        withoutBoundaryMask(makeEngine('recreate')),
+        'recreate'
+      );
+
+      const lines = wrap.message.split('\n');
+      expect(lines[0]).toMatch(/^Failed to destroy old resource Pipe \(my-pipe\) during/);
+      expect(lines.at(-2)).toBe('Re-adopt with:');
+      expect(lines.at(-1)).toBe("cdkd import '<stack>' --resource 'Pipe=my-pipe'");
+    });
+
+    // go-to-k/cdkd#2676 review: a needle only the PRINTING bag holds (a
+    // secret-derived name, #4741's previous NoEcho value) used to be masked
+    // by `provisionResource`'s boundary mask on the raw text. The wrap now
+    // flattens at construction, so it must mask with that bag itself.
+    it('masks a multi-line needle held only by the printing bag (#2676)', async () => {
+      const multiLine = 'prev-noecho-one-2676\nprev-noecho-two-2676';
+      deleteRejection = () =>
+        markNonRetryable(awsSdkError(`Handler failed: '${multiLine}' is still referenced`));
+      const engine = makeEngine('recreate');
+      (engine as unknown as { printingSecretsFor: () => Map<string, string> }).printingSecretsFor =
+        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']]);
+
+      const wrap = await provisionExpectingWrap(engine, 'recreate');
+
+      expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
+      expect(wrap.message).toContain(`Handler failed: '***' is still referenced`);
+      expect(wrap.message).not.toContain('prev-noecho-one-2676');
+      expect(wrap.message).not.toContain('prev-noecho-two-2676');
+    });
+  });
+
+  describe('replacement.ts: the --replace re-create wrap masks its embedded message (#2676)', () => {
+    it('masks a multi-line secret in the re-create failure', async () => {
+      const multiLine = 'pem-line-one-2676\npem-line-two-2676';
+      secretsToRecord = [[multiLine, '{{resolve:secretsmanager:db:SecretString:pw}}']];
+      createFailures.push(
+        collision(),
+        awsSdkError(`ValidationException: Value '${multiLine}' at 'Source' failed`, 'ValidationException')
+      );
+
+      const wrap = await provisionExpectingWrap(withoutBoundaryMask(makeEngine('replace')), 'replace');
+
+      expect(wrap.message).toContain('Failed to re-create Pipe after the --replace');
+      expect(wrap.message).toContain(`Value '***' at 'Source' failed`);
+      expect(wrap.message).not.toContain('pem-line-one-2676');
+      expect(wrap.message).not.toContain('pem-line-two-2676');
+    });
   });
 });

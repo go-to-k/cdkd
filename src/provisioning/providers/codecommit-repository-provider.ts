@@ -994,7 +994,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     // The id alone identifies the repository, whatever name it now holds.
     if (holder?.repositoryId !== undefined && known.includes(holder.repositoryId)) return;
     const intro =
-      `CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
+      safeMsg`CodeCommit Repository ${logicalId} no longer exists under the name cdkd recorded, and ` +
       `the repository holding the desired RepositoryName is not this resource's`;
     if (known.length > 0) {
       throw this.wrapNotThisRepositoryError(logicalId, resourceType, oldName, 'desired-name');
@@ -1064,7 +1064,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
           pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command;
     return markNonRetryable(
       new ProvisioningError(
-        `CodeCommit Repository ${logicalId}: ${remedy}`,
+        safeMsg`CodeCommit Repository ${logicalId}: ` + remedy,
         resourceType,
         logicalId,
         physicalId
@@ -1244,7 +1244,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     if (liveId === recordedId) return undefined;
     throw markNonRetryable(
       new ProvisioningError(
-        `CodeCommit Repository ${logicalId}: the repository holding the name cdkd recorded for ` +
+        safeMsg`CodeCommit Repository ${logicalId}: the repository holding the name cdkd recorded for ` +
           `this resource is not this resource's (its repository id is not the one cdkd holds; ` +
           `the recorded repository was deleted or renamed outside cdkd) — cdkd did not delete ` +
           `it. Leave that repository alone. If cdkd still records this resource under that ` +

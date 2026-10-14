@@ -1,7 +1,7 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import type { ResourceState } from '../../types/state.js';
-import { displaySafe } from '../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
 import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
 import { readRecordAttributes } from '../read-only-attribute-healer.js';
@@ -139,7 +139,7 @@ export async function readStaleAttributes(
     });
   }
   this.logger.debug(
-    `Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(attributes).length} attribute(s) read`
+    safeMsg`Re-read the attributes of ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)}) from AWS — its state record lacked one a Fn::GetAtt asked for: ${Object.keys(attributes).length} attribute(s) read`
   );
   return outcome;
 }

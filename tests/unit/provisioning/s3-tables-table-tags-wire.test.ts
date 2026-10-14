@@ -156,6 +156,22 @@ describe('S3TablesProvider — AWS::S3Tables::Table Tags wire (#609 backfill)', 
       expect(call.input.tags).toEqual({ env: 'prod' });
     });
 
+    // go-to-k/cdkd#2676: the physical id is flattened, so the refusal ends on
+    // the `Clean up with:` command, on its own line, with no other newline.
+    it('a GetTable with no tableARN refuses, ending on the cleanup command (#2676)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const err = (await provider
+        .update('L', PHYSICAL_ID, 'AWS::S3Tables::Table', { Tags: [{ Key: 'env', Value: 'prod' }] }, {})
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        ))!;
+      expect(err.message).toContain('GetTable returned no tableARN');
+      const lines = err.message.split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[1]).toBe("Clean up with: cdkd orphan '<constructPath>'");
+    });
+
     it('removal-only → UntagResource (only, with GetTable ARN lookup first)', async () => {
       mockSend.mockResolvedValueOnce({ tableARN: TABLE_ARN });
       mockSend.mockResolvedValueOnce({});

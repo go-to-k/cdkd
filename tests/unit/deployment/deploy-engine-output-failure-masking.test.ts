@@ -393,7 +393,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
 
     expect(thrown).toBeInstanceOf(Error);
     const error = thrown as Error & { cause?: unknown };
-    expect(error.message).toMatch(/Failed to resolve output Leak: .*--strict-getatt/s);
+    expect(error.message).toMatch(/Failed to resolve output Leak \(--strict-getatt promotes.*\): /s);
     expect(error.message).toContain('***');
     expect(error.message).not.toContain(LEAKED);
     // The cause is a `maskSecretsInError` clone of the resolver's error: the
@@ -469,7 +469,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       thrown = error;
     }
     const error = thrown as Error & { cause?: unknown };
-    expect(error.message).toMatch(/^Failed to resolve output Leak: \[object Object\] \(--strict-getatt/);
+    expect(error.message).toMatch(/^Failed to resolve output Leak \(--strict-getatt[^)]*\): \[object Object\]$/);
     expect(error).not.toHaveProperty('cause');
     // The line above is STRUCTURAL: a mutant attaching the raw object under a
     // different key would leak and still satisfy it. Its two siblings carry a
@@ -495,7 +495,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
     }
     const error = thrown as Error & { cause?: unknown };
     expect(error).toBeInstanceOf(Error);
-    expect(error.message).toMatch(/^Failed to resolve output Pub: Dynamic reference: key '\*\*\*' not found in secret 's' \(--strict-getatt/);
+    expect(error.message).toMatch(/^Failed to resolve output Pub \(--strict-getatt[^)]*\): Dynamic reference: key '\*\*\*' not found in secret 's'$/);
     expect(error.message).not.toContain(LEAKED);
     expect((error.cause as Error).message).toBe("Dynamic reference: key '***' not found in secret 's'");
     expect(isMarkedNonRetryable(error)).toBe(true);
@@ -549,7 +549,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       thrown = error;
     }
     const error = thrown as Error & { cause?: unknown };
-    expect(error.message).toMatch(/^Failed to resolve output Leak: raw failure mentioning \*\*\* \(--strict-getatt/);
+    expect(error.message).toMatch(/^Failed to resolve output Leak \(--strict-getatt[^)]*\): raw failure mentioning \*\*\*$/);
     expect(error.message).not.toContain(LEAKED);
     expect(error.cause).toBe('raw failure mentioning ***');
     expect(lastThrown.value).toBeUndefined(); // the `__leak_raw__` sentinel throws without recording
@@ -672,8 +672,9 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       expect(error.message).toContain('***');
       expect(error.message).not.toContain(PASSWORD);
       expect(error.message).toBe(
-        `Failed to resolve output Leak: ${ASSEMBLED_REFUSAL} ` +
-          '(--strict-getatt promotes output resolution failures to deploy errors; drop the flag to skip the output instead)'
+        'Failed to resolve output Leak ' +
+          '(--strict-getatt promotes output resolution failures to deploy errors; drop the flag to skip the output instead): ' +
+          ASSEMBLED_REFUSAL
       );
       // The cause is the issue #4266 refusal (the assembled id is refused
       // before its lookup, so only the `Pw` variable's lookup ran), cloned
@@ -698,7 +699,7 @@ describe('DeployEngine - an output resolution failure is reported MASKED (issue 
       // DIRECT cause — the masked strict message. With the cause masked as an
       // object, a renderer that walked the whole chain would print `***` too.
       const wrapped = formatError(new CdkdError('Nested stack child deploy failed', 'NESTED_STACK_FAILED', error));
-      expect(wrapped).toContain('Caused by: Failed to resolve output Leak: ');
+      expect(wrapped).toContain('Caused by: Failed to resolve output Leak (--strict-getatt promotes');
       expect(wrapped).toContain('***');
       expect(wrapped).not.toContain(PASSWORD);
     });

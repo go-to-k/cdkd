@@ -20,7 +20,7 @@ import type {
 import type { ResourceState } from '../../types/state.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { green } from '../../utils/colors.js';
-import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
 import { reportDeleteGuards } from '../delete-guard-scope.js';
@@ -52,6 +52,7 @@ import {
   createUnionSecretMasker,
   maskSecretsInError,
   maskSecretsInText,
+  unionOfSecretBags,
 } from '../secret-redaction.js';
 
 declare module '../deploy-engine.js' {
@@ -252,13 +253,20 @@ export async function replaceDeleteFirstAndRecreate(
     // same bag as the message, for the message mask's reason: a bare cause
     // would carry, in the chain `formatError` prints, the plaintext the
     // message mask removed, held off only by the downstream reader.
+    // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
+    // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
+    // value): a later mask sees only the flattened text and misses a needle
+    // that holds a newline.
+    const shownSecrets = unionOfSecretBags([secrets, this.printingSecretsFor(logicalId)]);
     throw new Error(
-      maskSecretsInText(
-        `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
-          `during the --replace delete-first fallback: ` +
-          `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
-        secrets
-      ),
+      // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
+      // flattened newline inside a secret would no longer match its needle.
+      safeMsg`Failed to delete old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
+        safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
+        `during the --replace delete-first fallback: ` +
+        // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
+        // as-is and LAST: it can end in cdkd's own remedy command lines.
+        safeMsg`${asIsMessage(maskSecretsInText(deleteError instanceof Error ? deleteError.message : String(deleteError), shownSecrets))}`,
       { cause: deleteError instanceof Error ? maskSecretsInError(deleteError, secrets) : undefined }
     );
   }
@@ -285,9 +293,9 @@ export async function replaceDeleteFirstAndRecreate(
       )
     );
   }
-  this.logger.info(`  ${green('✓')} Old resource deleted`);
+  this.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
   this.oldDeletedBeforeCreate.add(logicalId);
-  this.logger.info(`  Re-creating ${logicalId}...`);
+  this.logger.info(safeMsg`  Re-creating ${logicalId}...`);
   try {
     // Some providers return from delete() before the name is
     // actually released (async deletes: Step Functions, Kinesis,
@@ -353,14 +361,17 @@ export async function replaceDeleteFirstAndRecreate(
     // here and the DAG executor re-classifies the throw (the retry loop is
     // the `withRetry` above, already exhausted), so chaining cannot revive a
     // retry off the cause's text.
+    // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
+    // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
+    // value): a later mask sees only the flattened text and misses a needle
+    // that holds a newline.
+    const shownSecrets = unionOfSecretBags([secrets, this.printingSecretsFor(logicalId)]);
     throw new Error(
-      maskSecretsInText(
-        `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
-          `already deleted the old resource (${currentResource.physicalId}): ` +
-          `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
-          `Re-run the deploy to create it fresh.`,
-        secrets
-      ),
+      safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
+        safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}). ` +
+        // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
+        // as-is and LAST: it can end in cdkd's own remedy command lines.
+        safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(recreateError instanceof Error ? recreateError.message : String(recreateError), shownSecrets))}`,
       {
         cause:
           recreateError instanceof Error ? maskSecretsInError(recreateError, secrets) : undefined,
@@ -792,7 +803,7 @@ export async function deleteReplacedAfterCreate(
       `the replaced ${oldResourceType} (${currentResource.physicalId}) was not deleted (${skipReason}) and is no longer tracked by cdkd`
     );
     this.logger.warn(
-      `  ⚠ ${deleteSkippedMessage(
+      safeMsg`  ⚠ ${deleteSkippedMessage(
         logicalId,
         currentResource.physicalId,
         skipReason,
@@ -804,6 +815,6 @@ export async function deleteReplacedAfterCreate(
       )}. Delete it manually — it is no longer tracked in state.`
     );
   } else if (!deleteFailed) {
-    this.logger.info(`  ${green('✓')} Old resource deleted`);
+    this.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
   }
 }

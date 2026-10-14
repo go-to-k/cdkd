@@ -868,7 +868,7 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     const quiet = withBad({ Value: '__undefined__' });
     const rejection = engine.deploy(stackName, quiet);
     await expect(rejection).rejects.toThrow(
-      /Failed to resolve output Bad: the value resolved to nothing \(--strict-getatt/
+      /Failed to resolve output Bad \(--strict-getatt[^)]*\): the value resolved to nothing/
     );
     // The same failure save as a thrown failure: resources are this run's,
     // the bag and its record the previous deploy's.

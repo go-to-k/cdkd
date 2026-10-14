@@ -29,7 +29,7 @@ import {
   orphansCarriedFrom,
 } from '../../types/state.js';
 import { green, red, yellow } from '../../utils/colors.js';
-import { displayStackName, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
@@ -114,7 +114,7 @@ export async function doDeployWithPrefetch(
   createOnlyPrefetch: CreateOnlyPrefetch
 ): Promise<DeployResult> {
   const startTime = Date.now();
-  this.logger.debug(`Starting deployment for stack: ${stackName}`);
+  this.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
 
   // Live progress renderer: shows in-flight resources as a multi-line area
   // at the bottom of the terminal. Self-disables on non-TTY and when
@@ -292,7 +292,7 @@ export async function doDeployWithPrefetch(
     const migrationPending = currentStateData?.migrationPending ?? false;
 
     this.logger.debug(
-      `Loaded current state: ${Object.keys(currentState.resources).length} resources`
+      safeMsg`Loaded current state: ${Object.keys(currentState.resources).length} resources`
     );
 
     // 1a-pre. Pre-provisioning gate. Runs before the journal note, the
@@ -375,24 +375,24 @@ export async function doDeployWithPrefetch(
           journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
         this.logger.info(
           failedOnly
-            ? `A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
+            ? safeMsg`A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
                 `The failed resource may be partially applied — revert it, or continue ` +
-                `deploying to fix forward (${
+                safeMsg`deploying to fix forward (${
                   // Issue #3754: a nested child's journal is cleared by its
                   // TOP-LEVEL stack's success, not by its own.
                   this.options.parentStackInfo
                     ? 'a successful deploy of the top-level stack clears this note'
                     : 'a successful deploy clears this note'
                 }).` +
-                `\nRevert it with: ${
+                safeMsg`\nRevert it with: ${
                   pasteableCommand('cdkd rollback', [
                     { value: stackName, hole: 'stack' },
                     { literal: '--revert-failed' },
                   ]).command
                 }`
-            : `A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
+            : safeMsg`A previous deploy of ${displayStackName(stackName)} failed or was interrupted. Revert it, ` +
                 `or continue deploying to fix forward.` +
-                `\nRevert it with: ${
+                safeMsg`\nRevert it with: ${
                   pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
                 }`
         );
@@ -420,7 +420,9 @@ export async function doDeployWithPrefetch(
 
     // 2. Template parsing is handled by DagBuilder (dependency analysis) and
     // IntrinsicResolver (intrinsic function resolution) in later steps
-    this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
+    this.logger.debug(
+      safeMsg`Template has ${Object.keys(template.Resources || {}).length} resources`
+    );
 
     // Issue #2740: the source the skipped-outputs digests are taken from,
     // snapshotted HERE — before `resolveParameters`, `evaluateConditions`
@@ -458,7 +460,7 @@ export async function doDeployWithPrefetch(
       }
     );
     this.logger.debug(
-      `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
+      safeMsg`Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
     );
     // Issue #4731: before the diff binding and any resource resolution, so
     // both read one answer per parameter whatever order resources resolve in.
@@ -519,7 +521,7 @@ export async function doDeployWithPrefetch(
     );
     const conditions = await this.resolver.evaluateConditions(context);
     this.logger.debug(
-      `Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
+      safeMsg`Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
     );
     // CloudFormation rejects an Output whose Value evaluates to
     // AWS::NoValue before it creates anything (issue #4077), so refuse it
@@ -680,7 +682,7 @@ export async function doDeployWithPrefetch(
     // 4. Build dependency graph
     const dag = this.dagBuilder.buildGraph(effectiveTemplate);
     const executionLevels = this.dagBuilder.getExecutionLevels(dag);
-    this.logger.debug(`Dependency graph: ${executionLevels.length} execution levels`);
+    this.logger.debug(safeMsg`Dependency graph: ${executionLevels.length} execution levels`);
 
     // 5. Calculate diff
     // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
@@ -1144,13 +1146,12 @@ export async function doDeployWithPrefetch(
         // point) — the #2740 record still names it.
         if (merge?.kind === 'kept' && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
           this.logger.warn(
-            'Outputs changed but one or more could not be resolved; keeping the previously ' +
-              `persisted outputs. ${keptWholeReasonText(merge.reason)} ` +
+            safeMsg`Outputs changed but one or more could not be resolved; keeping the previously persisted outputs. ${keptWholeReasonText(merge.reason)} ` +
               'A downstream Fn::ImportValue may fail until the next deploy.'
           );
         } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
           this.logger.debug(
-            `Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
+            safeMsg`Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
               'carried export aliases included, that could not be resolved (no-change path)'
           );
         }
@@ -1330,7 +1331,7 @@ export async function doDeployWithPrefetch(
             }
           } catch (saveError) {
             this.logger.warn(
-              `Failed to persist no-change state update: ${saveError instanceof Error ? saveError.message : String(saveError)} — drift baseline / outputs will be re-resolved on next deploy.`
+              safeMsg`Failed to persist no-change state update: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))} — drift baseline / outputs will be re-resolved on next deploy.`
             );
           }
         }
@@ -1381,7 +1382,7 @@ export async function doDeployWithPrefetch(
     const deleteChanges = this.diffCalculator.filterByType(changes, 'DELETE');
 
     this.logger.info(
-      `Changes: ${green(createChanges.length)} to create, ${yellow(updateChanges.length)} to update, ${red(deleteChanges.length)} to delete`
+      safeMsg`Changes: ${green(createChanges.length)} to create, ${yellow(updateChanges.length)} to update, ${red(deleteChanges.length)} to delete`
     );
 
     if (this.options.dryRun) {
@@ -1581,7 +1582,7 @@ export async function doDeployWithPrefetch(
       ),
       flushKeptForReadoption(this),
     ]);
-    this.logger.debug(`State saved (ETag: ${newEtag})`);
+    this.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
@@ -1773,7 +1774,7 @@ export async function doDeployWithPrefetch(
       this.logger.debug('Lock released');
     } catch (lockError) {
       this.logger.warn(
-        `Failed to release lock: ${lockError instanceof Error ? lockError.message : String(lockError)}`
+        safeMsg`Failed to release lock: ${asIsMessage(lockError instanceof Error ? lockError.message : String(lockError))}`
       );
     }
   }

@@ -180,6 +180,9 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       expect((error as CloudControlWaitAbandonedError).requestToken).toBe('tok-create');
       expect(error.message).toContain('tok-create');
       expect(error.message).not.toContain(DERIVED);
+      // go-to-k/cdkd#2676: its one newline is cdkd's own, before the resume
+      // command; the values it interpolates are flattened.
+      expect(error.message.split('\n')).toHaveLength(2);
       expect(String((error as CloudControlWaitAbandonedError).lastSeenIdentifier)).not.toContain(
         DERIVED
       );

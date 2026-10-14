@@ -62,9 +62,9 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     expect(
       DEPLOY_ENGINE,
       'deploy-engine.ts no longer builds the per-resource failure line as ' +
-        '`Failed to ${change.changeType.toLowerCase()} ${logicalId}` — update the ' +
+        '`Failed to ${change.changeType.toLowerCase()} ${shownId}` — update the ' +
         "sentinel in tests/integration/backup/verify.sh's Phase 1b"
-    ).toContain('`Failed to ${change.changeType.toLowerCase()} ${logicalId}:');
+    ).toContain('`Failed to ${change.changeType.toLowerCase()} ${shownId}:');
     expect(VERIFY_SH).toContain("grep -qE 'Failed to (update|create|delete) Vault'");
   });
 
