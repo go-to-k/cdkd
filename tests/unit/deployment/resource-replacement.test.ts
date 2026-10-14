@@ -384,8 +384,8 @@ describe('DeployEngine - Resource Replacement', () => {
     // Create should have succeeded
     expect(mockProvider.create).toHaveBeenCalledTimes(1);
 
-    // Delete was attempted but failed
-    expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+    // Delete was attempted inline, retried once after the DAG (go-to-k/cdkd#4900), and failed both times
+    expect(mockProvider.delete).toHaveBeenCalledTimes(2);
 
     // State should still be saved with the new physicalId
     // saveState is now (stackName, region, state, options) — state is index 2.

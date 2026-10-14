@@ -24,6 +24,7 @@ import {
   withReferenceProvenance,
 } from './reference-provenance-record.js';
 import type { ProvenanceCaptureOutcome } from './deploy-engine/provenance-capture.js';
+import type { DeferredReplacedDelete } from './deploy-engine/replacement.js';
 import * as provenanceCaptureMixin from './deploy-engine/provenance-capture.js';
 import {
   type ChildTemplateLoader,
@@ -581,6 +582,13 @@ export class DeployEngine {
   /** @internal */
   replacedDeleteSkips = new Map<string, string>();
   /**
+   * go-to-k/cdkd#4900: a replacement's failed delete of its OLD resource,
+   * per logical id, retried once after the DAG. Defined only while
+   * `executeDeployment` runs; a delete outside it warns at once.
+   */
+  /** @internal */
+  deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
+  /**
    * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
    * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
    * when its name came from a secret (`noteSecretNamedRecord` in
@@ -1066,6 +1074,7 @@ export class DeployEngine {
     this.noEchoExactEchoes = new Map();
     this.noEchoAttributeReads = new Map();
     this.replacedDeleteSkips = new Map();
+    this.deferredReplacedDeletes = undefined;
     this.secretNameNeedles = new Map();
     this.perResourceTemplateProps = new Map();
     this.constructPathTemplate = undefined;
@@ -1855,6 +1864,8 @@ DeployEngine.prototype.typeChangeNameQuestion = replacementMixin.typeChangeNameQ
 DeployEngine.prototype.checkedReplacementNameChange = replacementMixin.checkedReplacementNameChange;
 DeployEngine.prototype.createFirstThenDeleteOld = replacementMixin.createFirstThenDeleteOld;
 DeployEngine.prototype.deleteReplacedAfterCreate = replacementMixin.deleteReplacedAfterCreate;
+DeployEngine.prototype.retryDeferredReplacedDeletes = replacementMixin.retryDeferredReplacedDeletes;
+DeployEngine.prototype.warnUnretriedReplacedDeletes = replacementMixin.warnUnretriedReplacedDeletes;
 
 DeployEngine.prototype.diffLogMasker = maskingMixin.diffLogMasker;
 DeployEngine.prototype.freshNoEchoParameters = maskingMixin.freshNoEchoParameters;

@@ -441,8 +441,9 @@ is not empty.`, and the Cloud Control delete fails the same way. cdkd's own
 delete for a namespace issues a bare `DeleteNamespace` and enumerates no
 tables, so a namespace rename (a replacement a plain `cdkd deploy` reaches with
 no flag) cannot take a table with it. The replacement creates the new
-namespace first; if the old one still holds tables, its delete is refused and
-cdkd warns `Failed to delete old resource` and carries on. The old namespace
+namespace first; if the old one still holds tables, its delete is refused, and
+the retry cdkd makes after the rest of the deploy (go-to-k/cdkd#4900) is too,
+so cdkd warns `Failed to delete old resource` and carries on. The old namespace
 and its tables stay in AWS, no longer tracked in state, for you to move or
 delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`
 when the create collides) fails at that delete instead — unless the template

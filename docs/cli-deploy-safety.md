@@ -342,7 +342,9 @@ The outcome depends on whether the replacement deletes first or creates first.
   it retries after a name collision, or after a create that returned the
   existing resource.
 - **Create first: the deploy completes with a warning** that the old resource
-  could not be deleted. This order is used by a property-driven replacement.
+  could not be deleted. cdkd retries a failed delete once, after the rest of
+  the deploy. That clears a refusal from a dependent that still used the old
+  resource, but not protection. This order is used by a property-driven replacement.
   The delete-first cases above also use it when the template renames the
   resource. The old resource and its data stay in AWS, no longer tracked by
   cdkd. Delete it yourself once protection is off.

@@ -4424,6 +4424,7 @@
         "lambda-fix-forward-orphan",
         "lambda-microvm-image",
         "lambda-snapstart",
+        "lambda-web-function-revision-replace",
         "local-invoke-dotnet",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
@@ -4635,6 +4636,9 @@
         ],
         "lambda-snapstart": [
           "literal"
+        ],
+        "lambda-web-function-revision-replace": [
+          "l2"
         ],
         "local-invoke-dotnet": [
           "l2"
@@ -7767,6 +7771,9 @@
     "AWS::Lambda::CapacityProvider",
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
+    "AWS::Lambda::WebFunction",
+    "AWS::Lambda::WebFunctionEndpoint",
+    "AWS::Lambda::WebFunctionRevision",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
     "AWS::Logs::ResourcePolicy",

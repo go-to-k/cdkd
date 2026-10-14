@@ -185,6 +185,7 @@ export async function executeDeployment(
     (logicalId) => startedUpdates.has(logicalId) && !settledUpdates.has(logicalId),
     () => [...inFlightWrites.values()].map(({ write }) => write)
   );
+  this.deferredReplacedDeletes = new Map();
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -662,7 +663,13 @@ export async function executeDeployment(
         throw new InterruptedError(this.interruptCause ?? 'user');
       }
     }
+
+    // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
+    // still-unupdated dependent refused inside the DAG.
+    if (this.interrupted) this.warnUnretriedReplacedDeletes('interrupted');
+    else await this.retryDeferredReplacedDeletes(stackName, actualCounts);
   } catch (error) {
+    this.warnUnretriedReplacedDeletes(this.interruptCause === 'user' ? 'interrupted' : 'failed');
     // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
     // (no prior state loaded). Captured BEFORE the partial-state save below,
     // which reassigns `currentEtag`. Recorded on the journal segment so

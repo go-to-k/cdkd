@@ -1515,6 +1515,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-web-function-revision-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "launchtemplate-asg-inplace",
       "annotated": false,
       "scenarios": []
@@ -3374,6 +3379,7 @@
     "lambda-log-retention",
     "lambda-microvm-image",
     "lambda-reserved-concurrency",
+    "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "list-parameters",
     "local-start-agentcore",

@@ -294,6 +294,10 @@ export async function provisionResource(
                 updatePartial = `${updatePartial}; ${replacedSkip}`;
               }
             }
+            // go-to-k/cdkd#4900: a deferred delete of this row's old resource
+            // that the retry skips must not count the row partial twice.
+            const deferred = this.deferredReplacedDeletes?.get(logicalId);
+            if (deferred !== undefined && updatePartial !== undefined) deferred.rowPartial = true;
             nestedChildUnaddressed = unaddressed;
           } finally {
             // The ONE emission site for the deploy path's guard rows, in a

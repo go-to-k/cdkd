@@ -1,5 +1,5 @@
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
-import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
+import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -23,7 +23,11 @@ import { green } from '../../utils/colors.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
-import { reportDeleteGuards } from '../delete-guard-scope.js';
+import {
+  type ReportedDeleteGuard,
+  collectDeleteGuards,
+  reportDeleteGuards,
+} from '../delete-guard-scope.js';
 import { isStandaloneInlinePolicyType } from '../inline-policy-claims.js';
 import {
   type ReplacementNameChange,
@@ -40,6 +44,7 @@ import {
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
+import { withStackRecords } from '../stack-records-scope.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
@@ -71,6 +76,10 @@ declare module '../deploy-engine.js' {
     createFirstThenDeleteOld: OmitThisParameter<typeof createFirstThenDeleteOld>;
     /** @internal */
     deleteReplacedAfterCreate: OmitThisParameter<typeof deleteReplacedAfterCreate>;
+    /** @internal */
+    retryDeferredReplacedDeletes: OmitThisParameter<typeof retryDeferredReplacedDeletes>;
+    /** @internal */
+    warnUnretriedReplacedDeletes: OmitThisParameter<typeof warnUnretriedReplacedDeletes>;
   }
 }
 
@@ -735,7 +744,9 @@ export async function deleteReplacedAfterCreate(
   /** The layer `deleteProvider` was routed to, for a guard row (issue #2422). */
   deleteProvisionedBy: 'sdk' | 'cc-api' | undefined,
   /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
-  noEchoDeleteValues?: NoEchoDeleteValues
+  noEchoDeleteValues?: NoEchoDeleteValues,
+  /** go-to-k/cdkd#4900: the post-DAG retry, which warns rather than defers. */
+  isRetry = false
 ): Promise<void> {
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
@@ -778,6 +789,38 @@ export async function deleteReplacedAfterCreate(
       secrets
     );
     deleteFailed = true;
+    // go-to-k/cdkd#4900: a resource this deploy has yet to update may still
+    // use the old one (an endpoint on a replaced revision refuses its
+    // delete), so the first failure inside a deploy's DAG is retried once
+    // after the rest of the deploy, as CloudFormation's cleanup phase
+    // deletes old resources only after every update.
+    const deferred = this.deferredReplacedDeletes;
+    if (!isRetry && deferred !== undefined) {
+      this.logger.info(
+        safeMsg`  Could not delete old ${logicalId} (${currentResource.physicalId}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
+      );
+      deferred.set(logicalId, {
+        physicalId: currentResource.physicalId,
+        resourceType: oldResourceType,
+        provisionedBy: deleteProvisionedBy,
+        failureMessage: deleteMsg,
+        retry: () =>
+          this.deleteReplacedAfterCreate(
+            logicalId,
+            oldResourceType,
+            currentResource,
+            deleteProvider,
+            deleteProperties,
+            finalSnapshotIdentifier,
+            updateReplacePolicy,
+            secrets,
+            deleteProvisionedBy,
+            noEchoDeleteValues,
+            true
+          ),
+      });
+      return;
+    }
     // Always a warning, a not-found included: an "already gone" read off the
     // MESSAGE cannot be made safe (go-to-k/cdkd#3236) — a logical id like
     // `PageNotFound`, or a delete failing on a KMS key or role "not found"
@@ -815,6 +858,138 @@ export async function deleteReplacedAfterCreate(
       )}. Delete it manually — it is no longer tracked in state.`
     );
   } else if (!deleteFailed) {
-    this.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
+    this.logger.info(
+      isRetry
+        ? safeMsg`  ${green('✓')} Old ${logicalId} (${currentResource.physicalId}) deleted`
+        : safeMsg`  ${green('✓')} Old resource deleted`
+    );
+  }
+}
+
+/**
+ * A replaced resource's delete that failed inside the DAG, kept for one retry
+ * after it (go-to-k/cdkd#4900). `failureMessage` is already masked with the
+ * row's resolved secrets; the lines naming it also mask the row's
+ * derived-name registry, bound around each print.
+ */
+export interface DeferredReplacedDelete {
+  physicalId: string;
+  resourceType: string;
+  provisionedBy: 'sdk' | 'cc-api' | undefined;
+  failureMessage: string;
+  /** Set by `provisionResource` when the row already ended partial. */
+  rowPartial?: boolean;
+  retry: () => Promise<void>;
+}
+
+/**
+ * Retries every deferred delete once the deploy's creates, updates and
+ * deletes have all completed (go-to-k/cdkd#4900). Each retry runs under the
+ * scopes its row's inline delete had: the row's printing registry, the
+ * stack's records, and a delete-guard sink emitted as the row's. A retry that
+ * fails warns exactly as the inline delete did; a skip makes the row a
+ * partial update, as it would have inline. At most `--concurrency` at once.
+ */
+export async function retryDeferredReplacedDeletes(
+  this: DeployEngine,
+  stackName: string,
+  counts: { updated: number; updatePartial: number }
+): Promise<void> {
+  const deferred = this.deferredReplacedDeletes;
+  this.deferredReplacedDeletes = undefined;
+  if (deferred === undefined || deferred.size === 0) return;
+  this.logger.info(safeMsg`Retrying the delete of ${deferred.size} replaced resource(s)`);
+  const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
+    const guards: ReportedDeleteGuard[] = [];
+    try {
+      await withPrintingSecrets(this.secretNameBagFor(logicalId), () =>
+        withStackRecords(this.stackRecordsView, () =>
+          collectDeleteGuards(guards, async () => {
+            this.logger.info(safeMsg`  Deleting old ${logicalId} (${entry.physicalId})...`);
+            try {
+              await entry.retry();
+            } catch {
+              // `deleteReplacedAfterCreate` catches the provider's own error;
+              // anything else must not strand the entries still queued. Its
+              // text is not shown: nothing masked it.
+              this.logger.warn(
+                safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): the retry failed unexpectedly`
+              );
+            }
+          })
+        )
+      );
+    } finally {
+      // As `provisionResource` emits the row's guards (issue #2422).
+      for (const guard of guards) {
+        this.recordEvent({
+          eventType: 'RESOURCE_GUARD_INDETERMINATE',
+          stackName,
+          operation: 'DELETE',
+          logicalId,
+          resourceType: guard.resourceType,
+          ...(guard.provisionedBy && { provisionedBy: guard.provisionedBy }),
+          ...(guard.physicalId && {
+            physicalId: maskSecretsInText(
+              guard.physicalId,
+              this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+            ),
+          }),
+          guard: guard.guard,
+          reason: guard.reason,
+        });
+      }
+    }
+    const skip = this.replacedDeleteSkips.get(logicalId);
+    if (skip === undefined) return;
+    this.replacedDeleteSkips.delete(logicalId);
+    // As `provisionResource` turns an inline skip into the row's partial
+    // update: counted once, and the survivor named in its own event.
+    if (entry.rowPartial !== true) {
+      counts.updated = Math.max(0, counts.updated - 1);
+      counts.updatePartial++;
+    }
+    this.recordEvent({
+      eventType: 'RESOURCE_SKIPPED',
+      stackName,
+      operation: 'UPDATE',
+      logicalId,
+      resourceType: entry.resourceType,
+      ...(entry.provisionedBy && { provisionedBy: entry.provisionedBy }),
+      physicalId: entry.physicalId,
+      reason: skip,
+    });
+  };
+  const queue = [...deferred];
+  const workers = Math.max(1, Math.min(this.options.concurrency ?? 1, queue.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+        await retryOne(...next);
+      }
+    })
+  );
+}
+
+/**
+ * The deploy failed or was interrupted before the retry: each deferred delete
+ * gets the warning its inline failure would have printed (go-to-k/cdkd#4900).
+ */
+export function warnUnretriedReplacedDeletes(
+  this: DeployEngine,
+  why: 'failed' | 'interrupted'
+): void {
+  const deferred = this.deferredReplacedDeletes;
+  this.deferredReplacedDeletes = undefined;
+  const note =
+    why === 'failed'
+      ? 'not retried: the deploy failed first'
+      : 'not retried: the deploy was interrupted';
+  for (const [logicalId, entry] of deferred ?? []) {
+    withPrintingSecrets(this.secretNameBagFor(logicalId), () =>
+      this.logger.warn(
+        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${note})`
+      )
+    );
   }
 }
