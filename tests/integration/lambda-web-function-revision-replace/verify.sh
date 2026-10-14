@@ -276,6 +276,7 @@ OUT="$(deploy "${V1}" "${OLD_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 1 dep
 echo "${OUT}"
 REV1="$(assert_one_revision 'phase 1' | tail -1)"
 assert_route 'phase 1' cc-api
+EP1="$(record Endpoint '.physicalId')"
 assert_serves v1
 
 echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
@@ -291,6 +292,14 @@ assert_gone "old revision ${REV1} still exists" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV1}" --region "${REGION}"
 echo "    OK: old revision ${REV1} is gone"
 assert_route 'phase 2' sdk
+# The witness that the SDK provider addresses the endpoint Cloud Control
+# created (provisioning-sticky-routing.md): the update kept the AWS-minted ARN.
+EP2="$(record Endpoint '.physicalId')"
+if [ "${EP2}" != "${EP1}" ]; then
+  echo "FAIL: the endpoint was recreated on the route change (${EP1} -> ${EP2})" >&2
+  exit 1
+fi
+echo "    OK: endpoint ${EP1} kept across the route change"
 assert_serves v2
 
 echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
