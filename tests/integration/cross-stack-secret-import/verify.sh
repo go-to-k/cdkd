@@ -155,13 +155,19 @@
 #                      CONTROL (11e): rotate `pqueue` WITHOUT redeploying the
 #                      producer and deploy the consumer alone: nothing is
 #                      updated and the reader keeps the recorded queue's ARN.
+#                      PINNING (11e-ii): still without a producer deploy, edit
+#                      the reader (CSSI_PROMO_EDIT=true): it is sent the
+#                      producer's RECORDED version (the queue that exists), not
+#                      one resolved from the rotated value.
 #                      THE FIX (11f): flip the queue to FIFO (the rotated name
 #                      ends `.fifo`), a create-only change that REPLACES it while
 #                      the exported reference spelling stays the same, deploying
 #                      the producer alone; then the consumer alone. It is
 #                      promoted and sent (its `is sent` info line), and its live
 #                      value is the new queue's ARN. Before, it equalled its
-#                      record and kept the deleted queue's ARN.
+#                      record and kept the deleted queue's ARN. Its record then
+#                      holds the output's new versions, and one more consumer
+#                      deploy sends it nothing (steady state).
 #  11. TEARDOWN     — down the chain (each destroy is refused while the stack
 #                     below still names the export in its state.imports[]), 0
 #                     errors, state keys gone, both SSM parameters gone, and the
@@ -2225,6 +2231,30 @@ cssi_out_has() { # usage: cssi_out_has <logical id> <(type)> <verb> -> 0 when on
   awk -v a="$1" -v b="$2" -v c="$3" 'index($0, a) && index($0, b) && index($0, c) { found = 1 } END { exit !found }' \
     <<< "${CSSI_OUT}"
 }
+cssi_capture() { # usage: cssi_capture <VAR> <what> <command...>: a failed or EMPTY read fails the run naming it
+  # errexit does not reach a read inside `[ "$(...)" ]` or `jq --argjson`, so
+  # every read is captured here first.
+  local var="$1" what="$2" out
+  shift 2
+  if ! out="$("$@")" || [ -z "${out}" ]; then
+    fail "could not read ${what} (the read failed or returned nothing)"
+  fi
+  printf -v "${var}" '%s' "${out}"
+}
+cssi_assert_not_sent() { # usage: cssi_assert_not_sent <which> <fail text>: CSSI_OUT neither updates nor sends PromoImportReader
+  # Here-strings, not `printf | grep -q`: grep exits at the first match, and the
+  # SIGPIPE under pipefail would turn a MATCH into "no match". Sentinel: the
+  # deploy banner names the stack, so the output was captured; 11f asserts the
+  # same 'updated' line PRESENT.
+  if ! grep -qF -- "${CONSUMER}" <<< "${CSSI_OUT}"; then
+    fail "the $1 deploy's output does not name ${CONSUMER} - the output was not captured, so the absences would be vacuous"
+  fi
+  if cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated" \
+    || grep -qF -- "PromoImportReader is sent: " <<< "${CSSI_OUT}"; then
+    diag "${CSSI_OUT}"
+    fail "$2"
+  fi
+}
 cssi_queue_arn() { # usage: cssi_queue_arn <queue name> (a strict capture: a failed read aborts)
   local url
   url="$(aws sqs get-queue-url --queue-name "$1" --region "${REGION}" --query QueueUrl --output text)" || return 1
@@ -2261,22 +2291,24 @@ if ! cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated"; then
   diag "${CSSI_OUT}"
   fail "premise: the step 11d settle deploy has no 'PromoImportReader (AWS::SSM::Parameter) updated' line (the reader was not written, or the wording drifted)"
 fi
-PROMO_ARN_1="$(cssi_queue_arn "${PROMO_QUEUE_NAME}")"
+cssi_capture PROMO_ARN_1 "PromoQueue's live ARN" cssi_queue_arn "${PROMO_QUEUE_NAME}"
 if [ "${PROMO_ARN_1##*:}" != "${PROMO_QUEUE_NAME}" ]; then
   fail "premise: PromoQueue's live ARN does not end with the secret's pqueue value"
 fi
-if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
+if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
   fail "premise: PromoImportReader's SSM value is not PromoQueue's ARN after the settle deploy"
 fi
-PROMO_EXPORTED="$(cssi_exported_value)"
+cssi_capture PROMO_EXPORTED "the producer's stored ${PROMO_OUTPUT}" cssi_exported_value
 case "${PROMO_EXPORTED}" in
   arn:*"${PROMO_TOKEN}") ;;
   *) fail "premise: the producer's stored ${PROMO_OUTPUT} is not PromoQueue's ARN in its pqueue {{resolve: spelling" ;;
 esac
-PROMO_READ_1="$(cssi_reader_read_versions)"
-PROMO_OUT_1="$(cssi_output_versions)"
-if [ "$(jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_1}" \
-  '($a | length) > 0 and (($a - $b) | length) == 0')" != "true" ]; then
+cssi_capture PROMO_READ_1 "PromoImportReader's recorded readVersions" cssi_reader_read_versions
+cssi_capture PROMO_OUT_1 "${PROMO_OUTPUT}'s recorded versions" cssi_output_versions
+cssi_capture PROMO_VERDICT "the readVersions-within-versions verdict" \
+  jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_1}" '($a | length) > 0 and (($a - $b) | length) == 0'
+if [ "${PROMO_VERDICT}" != "true" ]; then
   fail "premise: PromoImportReader's record holds no readVersions for the pqueue token within ${PROMO_OUTPUT}'s versions (read ${PROMO_READ_1}, output ${PROMO_OUT_1}): state schema v12's read provenance is not recorded, so nothing below can be promoted"
 fi
 pass "11d: PromoImportReader recorded the producer output version it read"
@@ -2288,25 +2320,42 @@ echo "==> Step 11e (go-to-k/cdkd#4852 CONTROL): a rotation alone sends the consu
 # neither promoted nor re-pointed (CloudFormation parity).
 cssi_put_secret "${PROMO_QUEUE_NAME_2}"
 cssi_deploy "${CONSUMER}" "step 11e consumer"
-# Sentinel for the absences below: the deploy banner names the stack, so the
-# output was captured; the arm in 11f asserts the same 'updated' line PRESENT.
-# Here-strings, not `printf | grep -q`: grep exits at the first match, and the
-# SIGPIPE under pipefail would turn a MATCH into "no match".
-if ! grep -qF -- "${CONSUMER}" <<< "${CSSI_OUT}"; then
-  fail "the step 11e consumer deploy's output does not name ${CONSUMER} - the output was not captured, so the absences below would be vacuous"
-fi
-if cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated" \
-  || grep -qF -- "PromoImportReader is sent: " <<< "${CSSI_OUT}"; then
-  diag "${CSSI_OUT}"
-  fail "the rotation alone UPDATED PromoImportReader: a consumer whose producer did not change was sent (go-to-k/cdkd#4852 CloudFormation parity)"
-fi
-if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+cssi_assert_not_sent "step 11e consumer" \
+  "the rotation alone UPDATED PromoImportReader: a consumer whose producer did not change was sent (go-to-k/cdkd#4852 CloudFormation parity)"
+cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
+if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
   fail "PromoImportReader's SSM value moved after a rotation alone (it should still be the producer's recorded queue's ARN)"
 fi
-if [ "$(cssi_reader_read_versions)" != "${PROMO_READ_1}" ]; then
-  fail "PromoImportReader's recorded readVersions moved after a rotation alone (it was rewritten)"
+cssi_capture PROMO_GOT "PromoImportReader's recorded readVersions" cssi_reader_read_versions
+if [ "${PROMO_GOT}" != "${PROMO_READ_1}" ]; then
+  fail "PromoImportReader's recorded readVersions moved after a rotation alone (read ${PROMO_GOT}, was ${PROMO_READ_1})"
 fi
 pass "11e: a rotation alone neither promoted nor updated PromoImportReader"
+
+echo ""
+echo "==> Step 11e-ii (go-to-k/cdkd#4852 CONSUMER PINNING): an edited consumer is resolved at the producer's recorded version"
+# Still no producer deploy since the rotation. CSSI_PROMO_EDIT=true edits the
+# reader's Description, so it IS sent, and its imported value must be the one
+# the producer recorded (the queue that exists), not one resolved from the
+# rotated pqueue (a queue nobody created).
+CSSI_ENV+=(CSSI_PROMO_EDIT=true)
+cssi_deploy "${CONSUMER}" "step 11e-ii consumer edit"
+if ! cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated"; then
+  diag "${CSSI_OUT}"
+  fail "premise: the step 11e-ii consumer edit has no 'PromoImportReader (AWS::SSM::Parameter) updated' line (the reader was not sent, so its value says nothing about pinning)"
+fi
+cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
+if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
+  fail "consumer pinning: PromoImportReader was sent the rotated value, not the producer's recorded version (go-to-k/cdkd#4852)"
+fi
+# The read route records the PRODUCER's version, not the rotated current one:
+# a reader recording a version its producer does not hold would be promoted on
+# every later deploy.
+cssi_capture PROMO_GOT "PromoImportReader's recorded readVersions" cssi_reader_read_versions
+if [ "${PROMO_GOT}" != "${PROMO_READ_1}" ]; then
+  fail "consumer pinning: PromoImportReader's recorded readVersions after the edit (${PROMO_GOT}) are not the producer's recorded version (${PROMO_READ_1}) (go-to-k/cdkd#4852)"
+fi
+pass "11e-ii: the edited consumer was sent the producer's recorded queue's ARN and recorded that version"
 
 echo ""
 echo "==> Step 11f (go-to-k/cdkd#4852 THE FIX): the producer replaces its queue; the consumer, deployed alone, is sent the new one"
@@ -2322,7 +2371,7 @@ fi
 # SQS may answer for a deleted queue for up to 60 seconds.
 wait_gone 14 "premise: the replaced PromoQueue still exists 70s after the producer deploy" \
   aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME}" --region "${REGION}"
-PROMO_ARN_2="$(cssi_queue_arn "${PROMO_QUEUE_NAME_2}")"
+cssi_capture PROMO_ARN_2 "the replacement PromoQueue's live ARN" cssi_queue_arn "${PROMO_QUEUE_NAME_2}"
 if [ "${PROMO_ARN_2##*:}" != "${PROMO_QUEUE_NAME_2}" ]; then
   fail "premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value"
 fi
@@ -2330,20 +2379,23 @@ fi
 # NO_CHANGE: the exported value is the SAME reference string as before; the
 # consumer's record still holds the version it read; the producer output's
 # record no longer holds it; and AWS still holds the deleted queue's ARN.
-if [ "$(cssi_exported_value)" != "${PROMO_EXPORTED}" ]; then
+cssi_capture PROMO_GOT "the producer's stored ${PROMO_OUTPUT}" cssi_exported_value
+if [ "${PROMO_GOT}" != "${PROMO_EXPORTED}" ]; then
   fail "premise: the producer's stored ${PROMO_OUTPUT} changed spelling across the replacement, so the consumer would be updated by a plain diff"
 fi
-PROMO_OUT_2="$(cssi_output_versions)"
-if [ "$(jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_2}" \
-  '($a | length) > 0 and ($b | length) > 0 and (($a - $b) | length) > 0')" != "true" ]; then
+cssi_capture PROMO_OUT_2 "${PROMO_OUTPUT}'s recorded versions" cssi_output_versions
+cssi_capture PROMO_VERDICT "the read-version-moved verdict" \
+  jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_2}" '($a | length) > 0 and ($b | length) > 0 and (($a - $b) | length) > 0'
+if [ "${PROMO_VERDICT}" != "true" ]; then
   fail "premise: ${PROMO_OUTPUT}'s record still holds the version PromoImportReader read, or none (read ${PROMO_READ_1}, output ${PROMO_OUT_2}), so no promotion is expected"
 fi
-if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
+if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
   fail "premise: PromoImportReader's SSM value is not the deleted queue's ARN after the producer-only deploy"
 fi
 cssi_deploy "${CONSUMER}" "step 11f consumer"
 # LOAD-BEARING (the red line): the consumer holds the replacement's ARN.
-PROMO_LIVE="$(cssi_reader_value)"
+cssi_capture PROMO_LIVE "PromoImportReader's live SSM value" cssi_reader_value
 if [ "${PROMO_LIVE}" != "${PROMO_ARN_2}" ]; then
   if [ "${PROMO_LIVE}" = "${PROMO_ARN_1}" ]; then PROMO_HELD="the deleted queue's ARN"; else PROMO_HELD="neither queue's ARN"; fi
   diag "${CSSI_OUT}"
@@ -2357,7 +2409,18 @@ if ! grep -qF -- "PromoImportReader is sent: Value read a secret-derived value a
   diag "${CSSI_OUT}"
   fail "the step 11f consumer deploy has no 'PromoImportReader is sent: Value read a secret-derived value ...' info line (go-to-k/cdkd#4852 decision 5, or the wording drifted)"
 fi
+# The sent reader records the version it was sent at: the producer output's
+# NEW versions, so the next deploy finds nothing moved.
+cssi_capture PROMO_READ_2 "PromoImportReader's recorded readVersions" cssi_reader_read_versions
+if [ "${PROMO_READ_2}" != "${PROMO_OUT_2}" ]; then
+  fail "PromoImportReader's recorded readVersions after it was sent (${PROMO_READ_2}) are not ${PROMO_OUTPUT}'s new versions (${PROMO_OUT_2}) (go-to-k/cdkd#4852)"
+fi
 pass "11f: the consumer was promoted and sent the replacement queue's ARN"
+# Steady state: the same flags once more must not send it again.
+cssi_deploy "${CONSUMER}" "step 11f steady-state consumer"
+cssi_assert_not_sent "step 11f steady-state consumer" \
+  "PromoImportReader was promoted again on the next deploy (go-to-k/cdkd#4852): nothing upstream moved since it was sent"
+pass "11f: the steady-state consumer deploy left PromoImportReader alone"
 
 # --- Assertion 11: TEARDOWN ------------------------------------------------
 echo ""

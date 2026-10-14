@@ -135,6 +135,8 @@
 #      the producer is updated in place at the new version, the reader is
 #      left NO_CHANGE by that run. The unchanged redeploy sends the reader,
 #      which then holds the rotated value.
+#      After each of 5h-5j, one more deploy with the same flags must neither
+#      update nor send the promoted resources (steady state).
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -1454,6 +1456,40 @@ promo_queue_arn() { # usage: promo_queue_arn <queue name> (a strict capture: a f
 promo_param_value() { # usage: promo_param_value <parameter name> (a strict capture)
   aws ssm get-parameter --region "${REGION}" --name "$1" --query Parameter.Value --output text
 }
+promo_capture() { # usage: promo_capture <VAR> <what> <command...>: a failed or EMPTY read fails the run naming it
+  # errexit does not reach a read inside `[ "$(...)" ]` or `jq --argjson`, so every
+  # read is captured here first (a value never printed: only <what> is named).
+  local var="$1" what="$2" out
+  shift 2
+  if ! out="$("$@")" || [ -z "${out}" ]; then
+    echo "FAIL: could not read ${what} (the read failed or returned nothing)" >&2
+    exit 1
+  fi
+  printf -v "${var}" '%s' "${out}"
+}
+promo_assert_settled() { # usage: promo_assert_settled <which> <logical id>|<(type)>...
+  # One more deploy with the same flags: a promoted reader whose record was
+  # rewritten at the version it was sent must be settled, never sent again.
+  local which="$1" pair id type
+  shift
+  promo_deploy
+  promo_expect_deployed "${which} steady-state"
+  # Sentinel: the log was captured (the absences below are about this deploy).
+  if ! grep -qF -- "${STACK}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the ${which} steady-state deploy's log does not name ${STACK} - the output was not captured" >&2
+    exit 1
+  fi
+  for pair in "$@"; do
+    id="${pair%%|*}"
+    type="${pair#*|}"
+    if promo_log_has "${id}" "${type}" "updated" || grep -qF -- "${id} is sent: " "${DEPLOY_LOG}"; then
+      echo "FAIL: ${id} was promoted again on the next deploy (go-to-k/cdkd#4852): the ${which} steady-state deploy updated or sent it although nothing upstream moved since it was sent" >&2
+      log_tail
+      exit 1
+    fi
+  done
+  echo "    OK: the ${which} steady-state deploy left $* alone"
+}
 promo_wait_queue_gone() { # usage: promo_wait_queue_gone <what> <queue name>: SQS may answer for a deleted queue for up to 60 seconds
   local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
@@ -1484,25 +1520,27 @@ if ! promo_log_has "PromoReader" "(AWS::SSM::Parameter)" "updated"; then
   log_tail
   exit 1
 fi
-PQ_ARN_1="$(promo_queue_arn "${PQ_NAME}")"
+promo_capture PQ_ARN_1 "PQ_ARN_1 (promo_queue_arn)" promo_queue_arn "${PQ_NAME}"
 if [ "${PQ_ARN_1##*:}" != "${PQ_NAME}" ]; then
   echo "FAIL: premise: PromoQueue's live ARN does not end with the secret's pqueue value" >&2
   exit 1
 fi
-if [ "$(promo_param_value "${SDIN_PH_PARAM_NAME}")" != "${PQ_ARN_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PH_PARAM_NAME}" promo_param_value "${SDIN_PH_PARAM_NAME}"
+if [ "${PROMO_GOT}" != "${PQ_ARN_1}" ]; then
   echo "FAIL: premise: PromoReader's SSM value is not PromoQueue's ARN after the settle deploy" >&2
   exit 1
 fi
-PQ_ARN_RECORDED="$(state_attribute PromoQueue Arn)"
+promo_capture PQ_ARN_RECORDED "PQ_ARN_RECORDED (state_attribute)" state_attribute PromoQueue Arn
 case "${PQ_ARN_RECORDED}" in
   arn:*"${PQ_TOKEN}") ;;
   *) echo "FAIL: premise: PromoQueue's recorded Arn does not end with its pqueue {{resolve: token" >&2; exit 1 ;;
 esac
 # PREMISE (vacuity): the reader recorded the version it READ, and the queue
 # holds it, so nothing is promoted yet.
-PH_READ_1="$(promo_versions "${STATE_KEY}" PromoReader "${PQ_TOKEN}" readVersions)"
-PH_UP_1="$(promo_versions "${STATE_KEY}" PromoQueue "${PQ_TOKEN}" versions)"
-if [ "$(promo_subset "${PH_READ_1}" "${PH_UP_1}")" != "true" ]; then
+promo_capture PH_READ_1 "PH_READ_1 (promo_versions)" promo_versions "${STATE_KEY}" PromoReader "${PQ_TOKEN}" readVersions
+promo_capture PH_UP_1 "PH_UP_1 (promo_versions)" promo_versions "${STATE_KEY}" PromoQueue "${PQ_TOKEN}" versions
+promo_capture PROMO_VERDICT "the promo_subset verdict" promo_subset "${PH_READ_1}" "${PH_UP_1}"
+if [ "${PROMO_VERDICT}" != "true" ]; then
   echo "FAIL: premise: PromoReader's record holds no readVersions for the pqueue token within PromoQueue's versions (read ${PH_READ_1}, queue ${PH_UP_1}): state schema v12's read provenance is not recorded, so nothing below can be promoted" >&2
   exit 1
 fi
@@ -1531,7 +1569,7 @@ if ! grep -qF -- "Failed to update SSM parameter PromoReader" "${DEPLOY_LOG}"; t
 fi
 promo_assert_masked "step 5h fault deploy" PQ_NAME PQ_NAME_2
 promo_wait_queue_gone "the replaced PromoQueue" "${PQ_NAME}"
-PQ_ARN_2="$(promo_queue_arn "${PQ_NAME_2}")"
+promo_capture PQ_ARN_2 "PQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${PQ_NAME_2}"
 if [ "${PQ_ARN_2##*:}" != "${PQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value" >&2
   exit 1
@@ -1541,16 +1579,19 @@ fi
 # template spelling did not change); the reader's record still holds the
 # version it read; the queue's record no longer holds it; and AWS still holds
 # the deleted queue's ARN in the reader.
+promo_capture PROMO_GOT "PromoQueue's recorded Arn" state_attribute PromoQueue Arn
 expect_eq "premise: PromoQueue's recorded Arn after its replacement (the same reference spelling)" \
-  "${PQ_ARN_RECORDED}" "$(state_attribute PromoQueue Arn)"
-PH_READ_2="$(promo_versions "${STATE_KEY}" PromoReader "${PQ_TOKEN}" readVersions)"
-PH_UP_2="$(promo_versions "${STATE_KEY}" PromoQueue "${PQ_TOKEN}" versions)"
+  "${PQ_ARN_RECORDED}" "${PROMO_GOT}"
+promo_capture PH_READ_2 "PH_READ_2 (promo_versions)" promo_versions "${STATE_KEY}" PromoReader "${PQ_TOKEN}" readVersions
+promo_capture PH_UP_2 "PH_UP_2 (promo_versions)" promo_versions "${STATE_KEY}" PromoQueue "${PQ_TOKEN}" versions
 expect_eq "premise: PromoReader's recorded readVersions after its failed update (unchanged)" "${PH_READ_1}" "${PH_READ_2}"
-if [ "$(promo_moved "${PH_READ_2}" "${PH_UP_2}")" != "true" ]; then
+promo_capture PROMO_VERDICT "the promo_moved verdict" promo_moved "${PH_READ_2}" "${PH_UP_2}"
+if [ "${PROMO_VERDICT}" != "true" ]; then
   echo "FAIL: premise: the replaced PromoQueue's record still holds the version PromoReader read (read ${PH_READ_2}, queue ${PH_UP_2}), so no promotion is expected" >&2
   exit 1
 fi
-if [ "$(promo_param_value "${SDIN_PH_PARAM_NAME}")" != "${PQ_ARN_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PH_PARAM_NAME}" promo_param_value "${SDIN_PH_PARAM_NAME}"
+if [ "${PROMO_GOT}" != "${PQ_ARN_1}" ]; then
   echo "FAIL: premise: PromoReader's SSM value is not the deleted queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
   exit 1
 fi
@@ -1569,7 +1610,7 @@ promo_assert_masked "step 5h cdkd diff" PQ_NAME PQ_NAME_2
 promo_deploy
 promo_expect_deployed "step 5h redeploy"
 # LOAD-BEARING (the red line): the reader was sent the replacement's ARN.
-PH_LIVE="$(promo_param_value "${SDIN_PH_PARAM_NAME}")"
+promo_capture PH_LIVE "PH_LIVE (promo_param_value)" promo_param_value "${SDIN_PH_PARAM_NAME}"
 if [ "${PH_LIVE}" != "${PQ_ARN_2}" ]; then
   if [ "${PH_LIVE}" = "${PQ_ARN_1}" ]; then PH_HELD="the deleted queue's ARN"; else PH_HELD="neither queue's ARN"; fi
   echo "FAIL: reader NO_CHANGE: PromoReader's SSM value is ${PH_HELD} after the redeploy, not the replacement PromoQueue's (go-to-k/cdkd#4852)" >&2
@@ -1587,6 +1628,7 @@ if ! grep -qF -- "PromoReader is sent: Value read a secret-derived value at a ne
 fi
 promo_assert_masked "step 5h redeploy" PQ_NAME PQ_NAME_2
 echo "    OK: the interrupted reader was promoted and sent the replacement queue's ARN"
+promo_assert_settled "step 5h" "PromoReader|(AWS::SSM::Parameter)"
 
 echo "==> Step 5i: a nested child reader left on a replaced queue is sent through its row (go-to-k/cdkd#4852)"
 NQ_TOKEN="$(promo_token nqueue)"
@@ -1601,27 +1643,29 @@ if ! promo_log_has "PromoChild" "(AWS::CloudFormation::Stack)" "updated"; then
   log_tail
   exit 1
 fi
-NQ_ARN_1="$(promo_queue_arn "${NQ_NAME}")"
+promo_capture NQ_ARN_1 "NQ_ARN_1 (promo_queue_arn)" promo_queue_arn "${NQ_NAME}"
 if [ "${NQ_ARN_1##*:}" != "${NQ_NAME}" ]; then
   echo "FAIL: premise: NestQueue's live ARN does not end with the secret's nqueue value" >&2
   exit 1
 fi
-if [ "$(promo_param_value "${SDIN_PI_PARAM_NAME}")" != "${NQ_ARN_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PI_PARAM_NAME}" promo_param_value "${SDIN_PI_PARAM_NAME}"
+if [ "${PROMO_GOT}" != "${NQ_ARN_1}" ]; then
   echo "FAIL: premise: PromoChildReader's SSM value is not NestQueue's ARN after the settle deploy" >&2
   exit 1
 fi
-NQ_ARN_RECORDED="$(state_attribute NestQueue Arn)"
+promo_capture NQ_ARN_RECORDED "NQ_ARN_RECORDED (state_attribute)" state_attribute NestQueue Arn
 case "${NQ_ARN_RECORDED}" in
   arn:*"${NQ_TOKEN}") ;;
   *) echo "FAIL: premise: NestQueue's recorded Arn does not end with its nqueue {{resolve: token" >&2; exit 1 ;;
 esac
 # PREMISE (vacuity): the row and the child reader each recorded the version
 # they read, and NestQueue holds it.
-PI_ROW_READ_1="$(promo_versions "${STATE_KEY}" PromoChild "${NQ_TOKEN}" readVersions)"
-PI_CHILD_READ_1="$(promo_versions "${PROMO_CHILD_STATE_KEY}" PromoChildReader "${NQ_TOKEN}" readVersions)"
-PI_UP_1="$(promo_versions "${STATE_KEY}" NestQueue "${NQ_TOKEN}" versions)"
+promo_capture PI_ROW_READ_1 "PI_ROW_READ_1 (promo_versions)" promo_versions "${STATE_KEY}" PromoChild "${NQ_TOKEN}" readVersions
+promo_capture PI_CHILD_READ_1 "PI_CHILD_READ_1 (promo_versions)" promo_versions "${PROMO_CHILD_STATE_KEY}" PromoChildReader "${NQ_TOKEN}" readVersions
+promo_capture PI_UP_1 "PI_UP_1 (promo_versions)" promo_versions "${STATE_KEY}" NestQueue "${NQ_TOKEN}" versions
 for pair in "PromoChild|${PI_ROW_READ_1}" "PromoChildReader|${PI_CHILD_READ_1}"; do
-  if [ "$(promo_subset "${pair#*|}" "${PI_UP_1}")" != "true" ]; then
+  promo_capture PROMO_VERDICT "the promo_subset verdict" promo_subset "${pair#*|}" "${PI_UP_1}"
+  if [ "${PROMO_VERDICT}" != "true" ]; then
     echo "FAIL: premise: ${pair%%|*}'s record holds no readVersions for the nqueue token within NestQueue's versions (read ${pair#*|}, queue ${PI_UP_1})" >&2
     exit 1
   fi
@@ -1648,23 +1692,26 @@ if ! grep -qF -- "Failed to update SSM parameter PromoChildReader" "${DEPLOY_LOG
 fi
 promo_assert_masked "step 5i fault deploy" NQ_NAME NQ_NAME_2
 promo_wait_queue_gone "the replaced NestQueue" "${NQ_NAME}"
-NQ_ARN_2="$(promo_queue_arn "${NQ_NAME_2}")"
+promo_capture NQ_ARN_2 "NQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${NQ_NAME_2}"
 if [ "${NQ_ARN_2##*:}" != "${NQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement NestQueue's live ARN does not end with the rotated nqueue value" >&2
   exit 1
 fi
+promo_capture PROMO_GOT "NestQueue's recorded Arn" state_attribute NestQueue Arn
 expect_eq "premise: NestQueue's recorded Arn after its replacement (the same reference spelling)" \
-  "${NQ_ARN_RECORDED}" "$(state_attribute NestQueue Arn)"
-PI_ROW_READ_2="$(promo_versions "${STATE_KEY}" PromoChild "${NQ_TOKEN}" readVersions)"
-PI_CHILD_READ_2="$(promo_versions "${PROMO_CHILD_STATE_KEY}" PromoChildReader "${NQ_TOKEN}" readVersions)"
-PI_UP_2="$(promo_versions "${STATE_KEY}" NestQueue "${NQ_TOKEN}" versions)"
+  "${NQ_ARN_RECORDED}" "${PROMO_GOT}"
+promo_capture PI_ROW_READ_2 "PI_ROW_READ_2 (promo_versions)" promo_versions "${STATE_KEY}" PromoChild "${NQ_TOKEN}" readVersions
+promo_capture PI_CHILD_READ_2 "PI_CHILD_READ_2 (promo_versions)" promo_versions "${PROMO_CHILD_STATE_KEY}" PromoChildReader "${NQ_TOKEN}" readVersions
+promo_capture PI_UP_2 "PI_UP_2 (promo_versions)" promo_versions "${STATE_KEY}" NestQueue "${NQ_TOKEN}" versions
 expect_eq "premise: PromoChild's recorded readVersions after the failed child (unchanged)" "${PI_ROW_READ_1}" "${PI_ROW_READ_2}"
 expect_eq "premise: PromoChildReader's recorded readVersions after its failed update (unchanged)" "${PI_CHILD_READ_1}" "${PI_CHILD_READ_2}"
-if [ "$(promo_moved "${PI_ROW_READ_2}" "${PI_UP_2}")" != "true" ]; then
+promo_capture PROMO_VERDICT "the promo_moved verdict" promo_moved "${PI_ROW_READ_2}" "${PI_UP_2}"
+if [ "${PROMO_VERDICT}" != "true" ]; then
   echo "FAIL: premise: the replaced NestQueue's record still holds the version PromoChild read (read ${PI_ROW_READ_2}, queue ${PI_UP_2}), so no promotion is expected" >&2
   exit 1
 fi
-if [ "$(promo_param_value "${SDIN_PI_PARAM_NAME}")" != "${NQ_ARN_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PI_PARAM_NAME}" promo_param_value "${SDIN_PI_PARAM_NAME}"
+if [ "${PROMO_GOT}" != "${NQ_ARN_1}" ]; then
   echo "FAIL: premise: PromoChildReader's SSM value is not the deleted queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
   exit 1
 fi
@@ -1682,7 +1729,7 @@ promo_assert_masked "step 5i cdkd diff --recursive" NQ_NAME NQ_NAME_2
 promo_deploy
 promo_expect_deployed "step 5i redeploy"
 # LOAD-BEARING (the red line): the child reader holds the replacement's ARN.
-PI_LIVE="$(promo_param_value "${SDIN_PI_PARAM_NAME}")"
+promo_capture PI_LIVE "PI_LIVE (promo_param_value)" promo_param_value "${SDIN_PI_PARAM_NAME}"
 if [ "${PI_LIVE}" != "${NQ_ARN_2}" ]; then
   if [ "${PI_LIVE}" = "${NQ_ARN_1}" ]; then PI_HELD="the deleted queue's ARN"; else PI_HELD="neither queue's ARN"; fi
   echo "FAIL: child reader NO_CHANGE: PromoChildReader holds ${PI_HELD} after the redeploy, not the replacement NestQueue's (go-to-k/cdkd#4852)" >&2
@@ -1708,6 +1755,7 @@ if ! grep -qF -- "PromoChild is sent: Parameters read a secret-derived value at 
 fi
 promo_assert_masked "step 5i redeploy" NQ_NAME NQ_NAME_2
 echo "    OK: the row and its child reader were promoted and the child holds the replacement queue's ARN"
+promo_assert_settled "step 5i" "PromoChild|(AWS::CloudFormation::Stack)" "PromoChildReader|(AWS::SSM::Parameter)"
 
 echo "==> Step 5j: a reader of a producer updated in place in an EARLIER run is sent (go-to-k/cdkd#4852)"
 PJ_TOKEN="$(promo_token pjvalue)"
@@ -1723,13 +1771,15 @@ if ! promo_log_has "PromoValueReader" "(AWS::SSM::Parameter)" "updated"; then
   exit 1
 fi
 # Compared, never printed: these are the secret's values.
-if [ "$(promo_param_value "${SDIN_PJ_READER_NAME}")" != "${PJ_VALUE_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PJ_READER_NAME}" promo_param_value "${SDIN_PJ_READER_NAME}"
+if [ "${PROMO_GOT}" != "${PJ_VALUE_1}" ]; then
   echo "FAIL: premise: PromoValueReader's SSM value is not the secret's pjvalue after the settle deploy" >&2
   exit 1
 fi
-PJ_READ_1="$(promo_versions "${STATE_KEY}" PromoValueReader "${PJ_TOKEN}" readVersions)"
-PJ_UP_1="$(promo_versions "${STATE_KEY}" PromoValueProducer "${PJ_TOKEN}" versions)"
-if [ "$(promo_subset "${PJ_READ_1}" "${PJ_UP_1}")" != "true" ]; then
+promo_capture PJ_READ_1 "PJ_READ_1 (promo_versions)" promo_versions "${STATE_KEY}" PromoValueReader "${PJ_TOKEN}" readVersions
+promo_capture PJ_UP_1 "PJ_UP_1 (promo_versions)" promo_versions "${STATE_KEY}" PromoValueProducer "${PJ_TOKEN}" versions
+promo_capture PROMO_VERDICT "the promo_subset verdict" promo_subset "${PJ_READ_1}" "${PJ_UP_1}"
+if [ "${PROMO_VERDICT}" != "true" ]; then
   echo "FAIL: premise: PromoValueReader's record holds no readVersions for the pjvalue token within PromoValueProducer's versions (read ${PJ_READ_1}, producer ${PJ_UP_1})" >&2
   exit 1
 fi
@@ -1755,17 +1805,20 @@ if promo_log_has "PromoValueReader" "(AWS::SSM::Parameter)" "updated"; then
   exit 1
 fi
 promo_assert_masked "step 5j producer-edit deploy" PJ_VALUE_1 PJ_VALUE_2
-if [ "$(promo_param_value "${SDIN_PJ_PRODUCER_NAME}")" != "${PJ_VALUE_2}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PJ_PRODUCER_NAME}" promo_param_value "${SDIN_PJ_PRODUCER_NAME}"
+if [ "${PROMO_GOT}" != "${PJ_VALUE_2}" ]; then
   echo "FAIL: premise: PromoValueProducer's SSM value is not the rotated pjvalue after its in-place update (the update did not resolve its Value at the new version)" >&2
   exit 1
 fi
-if [ "$(promo_param_value "${SDIN_PJ_READER_NAME}")" != "${PJ_VALUE_1}" ]; then
+promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PJ_READER_NAME}" promo_param_value "${SDIN_PJ_READER_NAME}"
+if [ "${PROMO_GOT}" != "${PJ_VALUE_1}" ]; then
   echo "FAIL: premise: PromoValueReader's SSM value is not the pre-rotation pjvalue after the producer edit (it was not left stale)" >&2
   exit 1
 fi
-PJ_READ_2="$(promo_versions "${STATE_KEY}" PromoValueReader "${PJ_TOKEN}" readVersions)"
-PJ_UP_2="$(promo_versions "${STATE_KEY}" PromoValueProducer "${PJ_TOKEN}" versions)"
-if [ "$(promo_moved "${PJ_READ_2}" "${PJ_UP_2}")" != "true" ]; then
+promo_capture PJ_READ_2 "PJ_READ_2 (promo_versions)" promo_versions "${STATE_KEY}" PromoValueReader "${PJ_TOKEN}" readVersions
+promo_capture PJ_UP_2 "PJ_UP_2 (promo_versions)" promo_versions "${STATE_KEY}" PromoValueProducer "${PJ_TOKEN}" versions
+promo_capture PROMO_VERDICT "the promo_moved verdict" promo_moved "${PJ_READ_2}" "${PJ_UP_2}"
+if [ "${PROMO_VERDICT}" != "true" ]; then
   echo "FAIL: premise: PromoValueProducer's record still holds the version PromoValueReader read (read ${PJ_READ_2}, producer ${PJ_UP_2}), so no promotion is expected" >&2
   exit 1
 fi
@@ -1774,7 +1827,7 @@ echo "    OK: the producer was updated in place at the rotated version and its r
 promo_deploy
 promo_expect_deployed "step 5j unchanged redeploy"
 # LOAD-BEARING (the red line): compared, never printed.
-PJ_LIVE="$(promo_param_value "${SDIN_PJ_READER_NAME}")"
+promo_capture PJ_LIVE "PJ_LIVE (promo_param_value)" promo_param_value "${SDIN_PJ_READER_NAME}"
 if [ "${PJ_LIVE}" != "${PJ_VALUE_2}" ]; then
   if [ "${PJ_LIVE}" = "${PJ_VALUE_1}" ]; then PJ_HELD="the pre-rotation value"; else PJ_HELD="neither pjvalue"; fi
   echo "FAIL: reader NO_CHANGE: PromoValueReader holds ${PJ_HELD} after the unchanged redeploy, not the value its producer holds now (go-to-k/cdkd#4852)" >&2
@@ -1788,6 +1841,7 @@ if ! grep -qF -- "PromoValueReader is sent: Value read a secret-derived value at
 fi
 promo_assert_masked "step 5j redeploy" PJ_VALUE_1 PJ_VALUE_2
 echo "    OK: the reader of a producer updated in an earlier run was promoted and holds the rotated value"
+promo_assert_settled "step 5j" "PromoValueReader|(AWS::SSM::Parameter)"
 
 echo "==> Step 6: destroy"
 set +e

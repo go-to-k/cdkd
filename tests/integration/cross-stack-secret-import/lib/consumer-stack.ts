@@ -125,10 +125,14 @@ export class ConsumerStack extends cdk.Stack {
         name: PROMO_PARAMETER_NAME,
         type: 'String',
         value: cdk.Fn.importValue(PROMO_QUEUE_ARN_EXPORT_NAME),
+        // CSSI_PROMO_EDIT=true (step 11e's pinning arm) edits it again after a
+        // rotation the producer has not been redeployed for.
         description:
-          process.env.CSSI_PROMO_SETTLE === 'true'
-            ? 'cdkd integ: promo import reader settled'
-            : 'cdkd integ: promo import reader initial',
+          process.env.CSSI_PROMO_EDIT === 'true'
+            ? 'cdkd integ: promo import reader edited'
+            : process.env.CSSI_PROMO_SETTLE === 'true'
+              ? 'cdkd integ: promo import reader settled'
+              : 'cdkd integ: promo import reader initial',
       });
       promoReader.overrideLogicalId('PromoImportReader');
     }
