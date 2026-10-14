@@ -7,6 +7,7 @@ import { type ResolverContext } from '../intrinsic-function-resolver.js';
 import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
 import { classifyRecordedSecretRegion } from '../secret-region-classification.js';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   carriesSecretMask,
   dynamicReferenceTokens,
@@ -272,13 +273,13 @@ class ReplayPins {
       ok = served.includes('{{resolve:') || served.length >= MIN_NEEDLE_LENGTH;
       if (!ok) {
         getLogger().warn(
-          `Rollback of ${shownLogicalId(this.logicalId)} restores a secret reference at its current version, not the version its record names: that value is shorter than four characters, so cdkd could not keep it out of state.`
+          safeMsg`Rollback of ${this.logicalId} restores a secret reference at its current version, not the version its record names: that value is shorter than four characters, so cdkd could not keep it out of state.`
         );
       }
     } catch (err) {
       if (isDeliberateResolutionRefusal(err)) throw err;
       getLogger().warn(
-        `Rollback of ${shownLogicalId(this.logicalId)} could not read a secret at the version its record names (it may have been deprecated or deleted); restoring the current value instead.`
+        safeMsg`Rollback of ${this.logicalId} could not read a secret at the version its record names (it may have been deprecated or deleted); restoring the current value instead.`
       );
       ok = false;
     }
