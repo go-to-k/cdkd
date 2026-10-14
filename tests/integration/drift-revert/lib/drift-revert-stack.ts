@@ -8,6 +8,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * Drift-revert E2E test stack.
@@ -57,6 +58,10 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *    their observed baselines and reverts an out-of-band change, which must
  *    land on the prefixed resources rather than replace them under the bare
  *    template name.
+ *  - An Advanced-tier SSM Parameter declaring `Policies: '[]'` (issue #4884).
+ *    verify.sh attaches a NoChangeNotification policy out of band; the
+ *    declared, captured-empty baseline makes it drift, and `--revert` must
+ *    clear it (PutParameter keeps policies when `Policies` is omitted).
  */
 export class DriftRevertStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -192,6 +197,18 @@ export class DriftRevertStack extends cdk.Stack {
       description: 'integ-stage-original',
     });
     httpStage.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Issue #4884: `Policies` is DECLARED (empty), so its captured-empty
+    // baseline is compared; an undeclared one is skipped, as CloudFormation
+    // compares declared properties only. The name is fixed so verify.sh can
+    // attach and read the policy. Advanced tier: a policy needs it.
+    new ssm.CfnParameter(this, 'DriftPoliciesParameter', {
+      name: '/cdkd-drift-revert/policies-4884',
+      type: 'String',
+      value: 'integ-policies-4884',
+      tier: 'Advanced',
+      policies: '[]',
+    });
 
     new cdk.CfnOutput(this, 'BucketName', {
       value: bucket.bucketName,
