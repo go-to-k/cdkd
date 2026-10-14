@@ -164,32 +164,54 @@ describe('confirmValueMoves', () => {
       templateProperties,
       desiredRedacted,
       secrets: served([
-        [V2, 'read'],
         ['c1b2c3d4-0000-1111-2222-333333333333', 'read'],
+        [V2, 'read'],
       ]),
     });
     const seen: string[] = [];
+    // The FIRST served version differs: a later equal one must not undo that.
     const out = await confirmValueMoves(twoServed, async (_t, _r, now) => {
       seen.push(now);
       return now === V2;
     });
-    expect(seen.length).toBe(2);
+    expect(seen).toEqual(['c1b2c3d4-0000-1111-2222-333333333333']);
+    expect([...out.moved.paths]).toEqual(['Value']);
+  });
+
+  it('two recorded versions give no value verdict (no read)', async () => {
+    const twoRecorded = readProvenanceMovedPaths({
+      record: record([V1, 'c1b2c3d4-0000-1111-2222-333333333333']),
+      templateProperties,
+      desiredRedacted,
+      secrets: served([[V2, 'read']]),
+    });
+    let calls = 0;
+    const out = await confirmValueMoves(twoRecorded, async () => {
+      calls++;
+      return true;
+    });
+    expect(calls).toBe(0);
     expect([...out.moved.paths]).toEqual(['Value']);
   });
 
   it('sameValueAtVersions gives no verdict for a token with no recorded region, and reads nothing', async () => {
+    // Every read would answer the same plaintext, so a read would say "equal".
+    let reads = 0;
     const resolver = {
-      resolveDynamicReferences: () => {
-        throw new Error('must not read');
+      resolveDynamicReferences: async () => {
+        reads++;
+        return 'same-plaintext';
       },
-      resolverForRecordedRegion: () => {
-        throw new Error('must not read');
+      resolverForRecordedRegion() {
+        reads++;
+        return this;
       },
     };
     const entry = { token: REF, paths: new Set(['Value']), recorded: [V1], served: new Set([V2]), region: undefined };
     expect(
       await sameValueAtVersions(resolver as never, entry, V1, V2, { template: { Resources: {} }, resources: {} })
     ).toBeUndefined();
+    expect(reads).toBe(0);
   });
 
   it('withRefreshedReadVersions leaves a token whose union would pass the cap of 8', () => {
