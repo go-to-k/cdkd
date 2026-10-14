@@ -159,13 +159,13 @@ describe('resolveSecretDerivedPrincipals with a recorded region (go-to-k/cdkd#48
       leaf === REF ? Promise.resolve('west') : Promise.reject(new Error('whole leaf'))
     );
     const r = await resolveSecretDerivedPrincipals(
-      { Roles: [`${REF}-${OTHER}`] },
+      { Roles: [`p-${REF}-${OTHER}-s`] },
       'us-east-1',
       [],
       recorded({ [REF]: 'us-west-2' }),
       make
     );
-    expect(r?.lists).toEqual({ Roles: ['west-east'] });
+    expect(r?.lists).toEqual({ Roles: ["p-west-east-s"] });
   });
 
   it('a transient failure in the guest is thrown for the runner to retry, never a skip', async () => {
