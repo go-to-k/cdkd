@@ -92,9 +92,9 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-14T05:43:41Z	PASS	336	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
+drift-revert	2026-10-14T06:12:27Z	PASS	391	verify.sh	rc ok, orph clean; PR #4886 6fde7aa20 revert removes an out-of-band SSM parameter policy with [{}]; pre-fix arm red at 5c (policy kept)
 drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-drift-revert-vpc	2026-10-14T05:43:41Z	PASS	406	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
+drift-revert-vpc	2026-10-14T06:12:27Z	PASS	356	verify.sh	rc ok, orph clean; PR #4886 6fde7aa20 drift --revert path
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-14T02:37:11Z	PASS	250	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
