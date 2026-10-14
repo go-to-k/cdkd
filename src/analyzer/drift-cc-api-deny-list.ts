@@ -51,10 +51,10 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
 
   // AWS::CloudWatch::AnomalyDetector: the SDK provider's physicalId is a
   // descriptor cdkd derives (`<Namespace>:<MetricName>:<Stat>[:dims]` or
-  // `math:<hash>`), not the primaryIdentifier (`Id`, published for a while as
-  // `AnomalyDetectorId`) Cloud Control addresses the type by, so `GetResource` refuses it with a ValidationException on every
-  // run — a permanent read failure (exit 2) rather than "drift unknown"
-  // (issue #4668).
+  // `math:<hash>`), not the primaryIdentifier (`Id`, published for a while
+  // as `AnomalyDetectorId`) Cloud Control addresses the type by, so
+  // `GetResource` refuses it with a ValidationException on every run — a
+  // permanent read failure (exit 2) rather than "drift unknown" (#4668).
   'AWS::CloudWatch::AnomalyDetector':
     "the physicalId is a cdkd-derived metric descriptor, not the primaryIdentifier Cloud Control's GetResource requires",
 

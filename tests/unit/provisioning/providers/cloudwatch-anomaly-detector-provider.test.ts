@@ -359,7 +359,7 @@ describe('CloudWatchAnomalyDetectorProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    // The current schema's name for the same primaryIdentifier (go-to-k/cdkd#4668).
+    // AWS has also published the same primaryIdentifier as AnomalyDetectorId (#4668).
     it('resolves AnomalyDetectorId to the physical id without an AWS call', async () => {
       await expect(
         provider.getAttribute('the-id', TYPE, 'AnomalyDetectorId', 'Detector')
