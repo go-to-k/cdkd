@@ -82,6 +82,8 @@ export function isPlainRecord(value: unknown): value is Record<string, unknown> 
 export const LAMBDA_WEB_POLL_INTERVAL_MS = 500;
 /** Ten minutes of polling before a wait gives up. */
 export const LAMBDA_WEB_MAX_POLL_ATTEMPTS = 1200;
+/** Polls (5 s) on which a not-found right after a create is read as not yet visible. */
+export const READ_AFTER_CREATE_GRACE_POLLS = 10;
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

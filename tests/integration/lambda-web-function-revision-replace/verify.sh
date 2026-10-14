@@ -173,7 +173,7 @@ EOF
 }
 
 deploy() { # usage: deploy <version-id> [cli.js]
-  CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="$1" \
+  ENDPOINT_NAME="${ENDPOINT_NAME:-prod}" CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="$1" \
     node "${2:-${LOCAL_DIST}}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1
 }
 
@@ -317,16 +317,44 @@ echo "    OK: old revision ${REV2} is gone"
 assert_route 'phase 3' sdk
 assert_serves v3
 
+echo "==> Phase 4: rename the endpoint (SDK create of the new one, SDK delete of the old one)"
+T0="$(date +%s)"
+OUT="$(ENDPOINT_NAME=live deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 4 deploy" >&2; exit 1; }
+echo "${OUT}"
+echo "    phase 4 deploy took $(($(date +%s) - T0)) s"
+EP4="$(record Endpoint '.physicalId')"
+case "${EP4}" in
+  */endpoint/live) ;;
+  *) echo "FAIL: the endpoint record is ${EP4}, expected the renamed endpoint/live" >&2; exit 1 ;;
+esac
+assert_gone "old endpoint ${EP1} still exists after the rename" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${EP1}" --region "${REGION}"
+echo "    OK: old endpoint ${EP1} is gone"
+assert_route 'phase 4' sdk
+assert_serves v3
+
+echo "==> Phase 5: cdkd drift reports no drift on the SDK-recorded revision and endpoint"
+DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
+  echo "${DRIFT_OUT}"
+  echo "FAIL: cdkd drift reported drift (or failed) right after a deploy" >&2
+  exit 1
+}
+echo "${DRIFT_OUT}"
+echo "    OK: no drift"
+
 echo "==> Destroy"
-CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
+ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
   node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "web function ${FN_NAME} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunction --identifier "${FN_ARN}" --region "${REGION}"
+assert_gone "endpoint ${EP4} still exists after destroy" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${EP4}" --region "${REGION}"
 assert_gone "revision ${REV3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: web function, revisions, role and state gone"
+echo "    OK: web function, endpoint, revisions, role and state gone"
 echo ""
 echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), and revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926)"

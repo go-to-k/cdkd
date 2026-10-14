@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatedAt": "2026-09-04T22:38:29.272Z",
   "summary": {
-    "tier1Count": 135,
+    "tier1Count": 137,
     "tier2Count": 1468,
     "tier3Count": 268,
-    "totalCount": 1871
+    "totalCount": 1873
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -109,6 +109,8 @@
     "AWS::Lambda::MicrovmImage",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
+    "AWS::Lambda::WebFunctionEndpoint",
+    "AWS::Lambda::WebFunctionRevision",
     "AWS::Logs::LogGroup",
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",

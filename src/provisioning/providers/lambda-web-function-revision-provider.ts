@@ -1,5 +1,6 @@
 import {
   LambdaWebClient,
+  ListWebFunctionRevisionsCommand,
   CreateWebFunctionRevisionCommand,
   GetWebFunctionRevisionCommand,
   DeleteWebFunctionRevisionCommand,
@@ -10,7 +11,24 @@ import {
   type LoggingConfig,
   type CreateWebFunctionRevisionRequest,
   type GetWebFunctionRevisionResponse,
+  type CreateWebFunctionRevisionResponse,
 } from '@aws-sdk/client-lambda-web';
+import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  AmbiguousCreateLatch,
+  RecentIdSet,
+  isInsideWindow,
+  replayedSendWindow,
+  withoutServerErrorRetries,
+  type AmbiguousCreateWindow,
+} from './ambiguous-create.js';
+import {
+  collectOrphanIds,
+  orphanCommandRegionArg,
+  reportPossibleOrphans,
+} from './orphan-report.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -43,6 +61,25 @@ import {
 } from './lambda-web-function-arns.js';
 
 /**
+ * Retry-safety state for `CreateWebFunctionRevision`, which mints the revision
+ * id and carries no idempotency token: a replay of a create AWS completed adds
+ * a SECOND revision under the function, in no state record and holding a copy
+ * of the revision's environment variables. Same handling as
+ * `PublishLayerVersion` (issue #2080): no 5xx replay on the create client, and
+ * a report of the candidates after an ambiguous attempt. Module-scoped: a
+ * provider instance is per registry, and one process can build several.
+ */
+const createRevisionLatch = new AmbiguousCreateLatch('lambda-web:CreateWebFunctionRevision');
+/** Revision ARNs this process created and recorded, never reported as orphan candidates. */
+const revisionsCreatedByThisProcess = new RecentIdSet();
+
+/** Reset the module-scoped retry-safety state. TEST-ONLY. */
+export function resetWebFunctionRevisionCreateRetryStateForTests(): void {
+  createRevisionLatch.resetForTests();
+  revisionsCreatedByThisProcess.resetForTests();
+}
+
+/**
  * AWS Lambda Web Function Revision Provider (go-to-k/cdkd#4926)
  *
  * Implements `AWS::Lambda::WebFunctionRevision` through the dedicated
@@ -72,6 +109,7 @@ import {
  */
 export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
   private client: LambdaWebClient;
+  private createClient: Promise<LambdaWebClient> | undefined;
   private logger = getLogger().child('LambdaWebFunctionRevisionProvider');
 
   constructor() {
@@ -111,14 +149,37 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(safeMsg`Creating Lambda web function revision ${logicalId}`);
     const input = this.buildCreateInput(logicalId, resourceType, properties, context);
+    // Built per call; never cached on the provider, which serves concurrent resources.
+    const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
 
     let createdArn: string | undefined;
     try {
-      const response = await this.client.send(new CreateWebFunctionRevisionCommand(input));
+      // After an earlier ambiguous attempt, name the revision it may have
+      // created before a second create is sent. Detection only.
+      const orphanWindow = createRevisionLatch.take(logicalId);
+      if (orphanWindow !== undefined) {
+        await this.reportPossibleRevisionOrphans(logicalId, orphanWindow, log, input.functionName!);
+      }
+      const createClient = await this.getCreateClient();
+      const attemptStartMs = Date.now();
+      let response: CreateWebFunctionRevisionResponse;
+      try {
+        response = await createClient.send(new CreateWebFunctionRevisionCommand(input));
+      } catch (error) {
+        createRevisionLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
+        throw error;
+      }
       createdArn = response.revisionArn;
+      if (createdArn) revisionsCreatedByThisProcess.add(createdArn);
+      // The SDK replayed the create inside its `send`, so an earlier attempt
+      // may have made one too (issue #4687). Detection only.
+      const replayWindow = replayedSendWindow(response, attemptStartMs);
+      if (replayWindow !== undefined) {
+        await this.reportPossibleRevisionOrphans(logicalId, replayWindow, log, input.functionName!);
+      }
       if (!createdArn || !response.revisionId) {
         throw new ProvisioningError(
-          `CreateWebFunctionRevision succeeded but returned no revision ARN for ${logicalId}`,
+          `CreateWebFunctionRevision succeeded but returned no revision ARN for ${logicalIdShown(logicalId)}`,
           resourceType,
           logicalId
         );
@@ -132,6 +193,69 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
       if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
       throw thrown;
     }
+  }
+
+  /**
+   * The client `CreateWebFunctionRevision` goes through: SDK retries on, except
+   * a 5xx (`withoutServerErrorRetries`), in the shared client's region. The
+   * PROMISE is cached, so two creates on a cold provider build one client; a
+   * rejected region read is not cached, so the next create retries it.
+   */
+  private getCreateClient(): Promise<LambdaWebClient> {
+    this.createClient ??= this.client.config.region().then(
+      (region) =>
+        withoutServerErrorRetries(new LambdaWebClient({ ...ambientClientDefaults(), region })),
+      (error: unknown) => {
+        this.createClient = undefined;
+        throw error;
+      }
+    );
+    return this.createClient;
+  }
+
+  /**
+   * List the revisions of `functionName` an earlier ambiguous create may have
+   * made -- created inside its window and not recorded by this process -- and
+   * warn, with a read and then a delete command to run only after confirming.
+   * The commands go through Cloud Control, which every AWS CLI carries.
+   */
+  private async reportPossibleRevisionOrphans(
+    logicalId: string,
+    window: AmbiguousCreateWindow,
+    log: MaskedLogSinks,
+    functionName: string
+  ): Promise<void> {
+    const aws = pasteableAwsCommand(log.mask);
+    const regionArg = await orphanCommandRegionArg(this.client, aws);
+    await reportPossibleOrphans(logicalId, window, log, {
+      action: 'CreateWebFunctionRevision',
+      service: 'Lambda',
+      listAction: 'ListWebFunctionRevisions',
+      subject: `a revision of web function ${log.value(functionName)}`,
+      noun: 'revision(s)',
+      list: () =>
+        collectOrphanIds(
+          async (token) => {
+            const page = await this.client.send(
+              new ListWebFunctionRevisionsCommand({
+                functionName,
+                ...(token && { nextToken: token }),
+              })
+            );
+            return { items: page.revisions ?? [], next: page.nextToken };
+          },
+          (item) =>
+            item.revisionArn &&
+            isInsideWindow(item.createdAt, window) &&
+            !revisionsCreatedByThisProcess.has(item.revisionArn)
+              ? item.revisionArn
+              : undefined
+        ),
+      inspect: (id) =>
+        aws`aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier ${id}${regionArg}`.render(),
+      remove: (id) =>
+        aws`aws cloudcontrol delete-resource --type-name AWS::Lambda::WebFunctionRevision --identifier ${id}${regionArg}`.render(),
+    });
   }
 
   async update(
@@ -305,7 +429,7 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
   ): CreateWebFunctionRevisionRequest {
     const fail = (message: string): never => {
       throw new ProvisioningError(
-        `${message} for Lambda web function revision ${logicalId}`,
+        `${message} for Lambda web function revision ${logicalIdShown(logicalId)}`,
         resourceType,
         logicalId
       );
@@ -388,10 +512,15 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
     }
     const env = service['EnvironmentVariables'];
     if (env !== undefined) {
-      if (!isPlainRecord(env) || Object.values(env).some((v) => typeof v !== 'string')) {
+      if (isPlainRecord(env) && Object.values(env).every((v) => typeof v === 'string')) {
+        out.environmentVariables = { ...(env as Record<string, string>) };
+      } else if (context?.replayingState) {
+        this.logger.warn(
+          safeMsg`ServiceConfig.EnvironmentVariables must be an object of string values; omitting it while replaying a state record`
+        );
+      } else {
         fail('ServiceConfig.EnvironmentVariables must be an object of string values');
       }
-      out.environmentVariables = { ...(env as Record<string, string>) };
     }
     const telemetry = service['TelemetryConfig'];
     if (isPlainRecord(telemetry)) {

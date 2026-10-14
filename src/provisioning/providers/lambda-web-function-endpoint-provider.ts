@@ -40,6 +40,7 @@ import {
   sleep,
   LAMBDA_WEB_POLL_INTERVAL_MS,
   LAMBDA_WEB_MAX_POLL_ATTEMPTS,
+  READ_AFTER_CREATE_GRACE_POLLS,
 } from './lambda-web-function-arns.js';
 
 /**
@@ -181,7 +182,7 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
       createdArn = response.endpointArn;
       if (!createdArn) {
         throw new ProvisioningError(
-          `CreateWebFunctionEndpoint succeeded but returned no endpoint ARN for ${logicalId}`,
+          `CreateWebFunctionEndpoint succeeded but returned no endpoint ARN for ${logicalIdShown(logicalId)}`,
           resourceType,
           logicalId
         );
@@ -247,6 +248,15 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
     const weights = readRevisionWeights(properties['RevisionWeights'], fail);
     if (weights !== undefined) {
       input.revisionWeights = weights.map((w) => ({ revisionId: w.RevisionId, weight: w.Weight }));
+    } else if (!lenient) {
+      // Measured: AWS refuses an endpoint without weights ("The revisionWeights
+      // must be specified when the autoDeploymentMode is Disabled", and
+      // CloudFormation exposes no AutoDeploymentMode). The API keeps weights it
+      // is not sent, so a template that drops them would deploy "successfully"
+      // with traffic still on the old revisions.
+      fail(
+        'RevisionWeights is required; AWS keeps routing to the current revisions when it is removed'
+      );
     }
     // Absent is sent cleared (`{}`); a malformed block skipped under `lenient`
     // is not sent, which leaves the live one as it is.
@@ -279,7 +289,8 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
         parts.functionArn,
         parts.childId,
         logicalId,
-        'update'
+        'update',
+        input.revisionWeights
       );
       return { physicalId, wasReplaced: false, attributes: buildAttributes(settled) };
     } catch (error) {
@@ -494,16 +505,37 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
     return { present: true, n };
   }
 
+  /**
+   * Poll until the endpoint is `Active` with no update in progress. After an
+   * update that moved the weights, also until the endpoint REPORTS those
+   * weights, so a read taken before `UpdateStatus` turned `InProgress` cannot
+   * end the wait early. A not-found on the first polls after a create is a
+   * read-after-create gap, not a deleted endpoint.
+   */
   private async waitForSettled(
     functionName: string,
     endpointName: string,
     logicalId: string,
-    operation: 'create' | 'update'
+    operation: 'create' | 'update',
+    sentWeights?: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }>
   ): Promise<GetWebFunctionEndpointResponse> {
     for (let attempt = 1; attempt <= LAMBDA_WEB_MAX_POLL_ATTEMPTS; attempt++) {
-      const resp = await this.client.send(
-        new GetWebFunctionEndpointCommand({ functionName, endpointName })
-      );
+      let resp: GetWebFunctionEndpointResponse;
+      try {
+        resp = await this.client.send(
+          new GetWebFunctionEndpointCommand({ functionName, endpointName })
+        );
+      } catch (error) {
+        if (
+          operation === 'create' &&
+          attempt <= READ_AFTER_CREATE_GRACE_POLLS &&
+          error instanceof ResourceNotFoundException
+        ) {
+          await sleep(LAMBDA_WEB_POLL_INTERVAL_MS);
+          continue;
+        }
+        throw error;
+      }
       if (resp.state === 'Failed') {
         throw new Error(
           `Lambda web function endpoint ${logicalIdShown(logicalId)} entered Failed: ${resp.stateReason ?? 'no reason given'}`
@@ -514,7 +546,13 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
           `Lambda web function endpoint ${logicalIdShown(logicalId)} ${operation} failed: ${resp.updateStatusReason ?? 'no reason given'}`
         );
       }
-      if (resp.state === 'Active' && resp.updateStatus !== 'InProgress') return resp;
+      if (
+        resp.state === 'Active' &&
+        resp.updateStatus !== 'InProgress' &&
+        (sentWeights === undefined || sameWeights(sentWeights, resp.revisionWeights))
+      ) {
+        return resp;
+      }
       await sleep(LAMBDA_WEB_POLL_INTERVAL_MS);
     }
     throw new Error(
@@ -581,6 +619,19 @@ function readRevisionWeights(
     if (weight === undefined) return fail(`RevisionWeights[${i}].Weight must be an integer`);
     return { RevisionId: entry['RevisionId'], Weight: weight };
   });
+}
+
+/** Order-insensitive equality of two weight lists. */
+function sameWeights(
+  a: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }>,
+  b: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }> | undefined
+): boolean {
+  if (b === undefined || a.length !== b.length) return false;
+  const key = (w: { revisionId?: string | undefined; weight?: number | undefined }): string =>
+    `${w.revisionId ?? ''}=${w.weight ?? ''}`;
+  const left = a.map(key).sort();
+  const right = b.map(key).sort();
+  return left.every((k, i) => k === right[i]);
 }
 
 function buildAttributes(resp: {

@@ -7,6 +7,7 @@ import {
   GetWebFunctionEndpointCommand,
   UpdateWebFunctionEndpointCommand,
   DeleteWebFunctionEndpointCommand,
+  ListWebFunctionRevisionsCommand,
   ResourceNotFoundException,
   ConflictException,
 } from '@aws-sdk/client-lambda-web';
@@ -22,6 +23,17 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
   }),
 }));
+
+// The revision create goes through its own client (no 5xx replay), built from
+// the SDK package rather than getAwsClients(); route it to the same mock.
+vi.mock('@aws-sdk/client-lambda-web', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-lambda-web')>();
+  class LambdaWebClient {
+    send = (cmd: unknown) => mockSend(cmd);
+    config = { region: () => Promise.resolve(clientRegion) };
+  }
+  return { ...actual, LambdaWebClient };
+});
 
 const warn = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => {
@@ -41,7 +53,10 @@ vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async
   sleep: () => Promise.resolve(),
 }));
 
-import { LambdaWebFunctionRevisionProvider } from '../../../src/provisioning/providers/lambda-web-function-revision-provider.js';
+import {
+  LambdaWebFunctionRevisionProvider,
+  resetWebFunctionRevisionCreateRetryStateForTests,
+} from '../../../src/provisioning/providers/lambda-web-function-revision-provider.js';
 import { LambdaWebFunctionEndpointProvider } from '../../../src/provisioning/providers/lambda-web-function-endpoint-provider.js';
 import {
   parseWebFunctionChildArn,
@@ -80,6 +95,7 @@ function respond(map: Map<string, unknown[]>): void {
 }
 
 beforeEach(() => {
+  resetWebFunctionRevisionCreateRetryStateForTests();
   mockSend.mockReset();
   warn.mockReset();
   clientRegion = 'us-east-1';
@@ -344,6 +360,7 @@ describe('LambdaWebFunctionEndpointProvider', () => {
     domainName: 'x.lambda-web.us-east-1.on.aws',
     state: 'Active',
     updateStatus: 'Successful',
+    revisionWeights: [{ revisionId: 'rev-abc12', weight: 100 }],
   };
 
   it('create sends the SDK shape and waits for Active', async () => {
@@ -374,7 +391,15 @@ describe('LambdaWebFunctionEndpointProvider', () => {
     respond(
       new Map<string, unknown[]>([
         ['UpdateWebFunctionEndpointCommand', [{}]],
-        ['GetWebFunctionEndpointCommand', [{ ...active, updateStatus: 'InProgress' }, active]],
+        [
+          'GetWebFunctionEndpointCommand',
+          [
+            // A read taken before the update turned InProgress: old weights, Successful.
+            active,
+            { ...active, updateStatus: 'InProgress' },
+            { ...active, revisionWeights: [{ revisionId: 'rev-new', weight: 100 }] },
+          ],
+        ],
       ])
     );
     const next = { ...props, RevisionWeights: [{ RevisionId: 'rev-new', Weight: 100 }] };
@@ -388,7 +413,8 @@ describe('LambdaWebFunctionEndpointProvider', () => {
       scalingConfig: { maxEnvironments: 5 },
       throttleConfig: { rateLimit: 100 },
     });
-    expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(2);
+    // Not on the first read: it still reported the OLD weights.
+    expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(3);
   });
 
   it('update sends a removed Description / ScalingConfig / ThrottleConfig cleared', async () => {
@@ -519,5 +545,218 @@ describe('LambdaWebFunctionEndpointProvider', () => {
       ScalingConfig: {},
       ThrottleConfig: { RateLimit: 100 },
     });
+  });
+});
+
+describe('LambdaWebFunctionRevisionProvider — guards, attributes and ambiguous creates', () => {
+  const provider = new LambdaWebFunctionRevisionProvider();
+  const base = {
+    FunctionName: FN_ARN,
+    BuildConfig: {
+      CodeConfig: { S3Object: { Bucket: 'code-bucket', Key: 'app.zip' } },
+      RuntimeConfig: { Runtime: 'nodejs24.x' },
+    },
+    ServiceConfig: { ExecutionRoleArn: ROLE },
+  };
+  const created = new Map<string, unknown[]>([
+    ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+    ['GetWebFunctionRevisionCommand', [{ state: 'Active', revisionArn: REV_ARN }]],
+  ]);
+
+  it('create forwards KmsKeyArn', async () => {
+    respond(created);
+    await provider.create('Rev', REV_TYPE, { ...base, KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k' });
+    expect(callsOf(CreateWebFunctionRevisionCommand)[0]!.input['kmsKeyArn']).toBe(
+      'arn:aws:kms:us-east-1:123456789012:key/k'
+    );
+  });
+
+  it.each([
+    ['FunctionName', { ...base, FunctionName: '' }, 'FunctionName must be a non-empty string'],
+    ['BuildConfig', { ...base, BuildConfig: 'x' }, 'BuildConfig must be an object'],
+    [
+      'S3Object',
+      { ...base, BuildConfig: { CodeConfig: {}, RuntimeConfig: { Runtime: 'nodejs24.x' } } },
+      'S3Object.Bucket and .Key are required strings',
+    ],
+    [
+      'Runtime',
+      { ...base, BuildConfig: { CodeConfig: base.BuildConfig.CodeConfig, RuntimeConfig: {} } },
+      'RuntimeConfig.Runtime is a required string',
+    ],
+  ])('create refuses a malformed %s before any call', async (_name, properties, message) => {
+    await expect(provider.create('Rev', REV_TYPE, properties)).rejects.toThrow(message);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('create refuses non-string EnvironmentVariables, and omits them with a warning on a replay', async () => {
+    const bad = { ...base, ServiceConfig: { ExecutionRoleArn: ROLE, EnvironmentVariables: { A: 1 } } };
+    await expect(provider.create('Rev', REV_TYPE, bad)).rejects.toThrow(
+      'ServiceConfig.EnvironmentVariables must be an object of string values'
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+    respond(created);
+    await provider.create('Rev', REV_TYPE, bad, { replayingState: true });
+    expect(callsOf(CreateWebFunctionRevisionCommand)[0]!.input['serviceConfig']).toEqual({
+      executionRoleArn: ROLE,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('omitting it while replaying'));
+  });
+
+  it('getAttribute reads RevisionId / FunctionArn off the ARN and State from AWS', async () => {
+    await expect(provider.getAttribute(REV_ARN, REV_TYPE, 'RevisionId')).resolves.toBe('rev-abc12');
+    await expect(provider.getAttribute(REV_ARN, REV_TYPE, 'FunctionArn')).resolves.toBe(FN_ARN);
+    await expect(provider.getAttribute(REV_ARN, REV_TYPE, 'RevisionArn')).resolves.toBe(REV_ARN);
+    expect(mockSend).not.toHaveBeenCalled();
+    respond(new Map<string, unknown[]>([['GetWebFunctionRevisionCommand', [{ state: 'Active' }]]]));
+    await expect(provider.getAttribute(REV_ARN, REV_TYPE, 'State')).resolves.toBe('Active');
+  });
+
+  it('delete keeps polling until the revision reads as gone', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['DeleteWebFunctionRevisionCommand', [{}]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active' }, notFound()]],
+      ])
+    );
+    await provider.delete('Rev', REV_ARN, REV_TYPE);
+    expect(callsOf(GetWebFunctionRevisionCommand)).toHaveLength(2);
+  });
+
+  it('after an ambiguous (5xx) create, the next create first lists the revisions it may have made', async () => {
+    const serverError = Object.assign(new Error('internal error'), {
+      name: 'InternalServerException',
+      $metadata: { httpStatusCode: 500 },
+      $fault: 'server',
+    });
+    respond(new Map<string, unknown[]>([['CreateWebFunctionRevisionCommand', [serverError]]]));
+    await expect(provider.create('Rev', REV_TYPE, base)).rejects.toThrow('internal error');
+
+    mockSend.mockClear();
+    const orphan = `${FN_ARN}/revision/rev-orphan`;
+    respond(
+      new Map<string, unknown[]>([
+        ['ListWebFunctionRevisionsCommand', [{ revisions: [{ revisionArn: orphan, createdAt: new Date() }] }]],
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active', revisionArn: REV_ARN }]],
+      ])
+    );
+    await provider.create('Rev', REV_TYPE, base);
+    const order = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(order.indexOf('ListWebFunctionRevisionsCommand')).toBeLessThan(
+      order.indexOf('CreateWebFunctionRevisionCommand')
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rev-orphan'));
+  });
+
+  it('a plain create lists nothing', async () => {
+    respond(created);
+    await provider.create('Rev', REV_TYPE, base);
+    expect(callsOf(ListWebFunctionRevisionsCommand)).toHaveLength(0);
+  });
+});
+
+describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures', () => {
+  const provider = new LambdaWebFunctionEndpointProvider();
+  const base = {
+    FunctionName: FN_ARN,
+    EndpointName: 'prod',
+    EndpointType: 'HomeRegion',
+    AuthType: 'IamAuth',
+    RevisionWeights: [{ RevisionId: 'rev-abc12', Weight: 100 }],
+  };
+  const active = {
+    endpointArn: EP_ARN,
+    state: 'Active',
+    updateStatus: 'Successful',
+    revisionWeights: [{ revisionId: 'rev-abc12', weight: 100 }],
+  };
+
+  it('create fails with the endpoint ARN attached when it ends Failed, and marks nothing when the create call fails', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+        ['GetWebFunctionEndpointCommand', [{ state: 'Failed', stateReason: 'no capacity' }]],
+      ])
+    );
+    const failed = await provider.create('Ep', EP_TYPE, base).catch((e: unknown) => e);
+    expect(String(failed)).toContain('entered Failed: no capacity');
+    expect(createdBeforeFailure(failed, 'Ep', EP_TYPE)).toBe(EP_ARN);
+
+    respond(new Map<string, unknown[]>([['CreateWebFunctionEndpointCommand', [new Error('denied')]]]));
+    const refused = await provider.create('Ep', EP_TYPE, base).catch((e: unknown) => e);
+    expect(createdBeforeFailure(refused, 'Ep', EP_TYPE)).toBeUndefined();
+  });
+
+  it('create reads a not-found right after the create as not yet visible', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+        ['GetWebFunctionEndpointCommand', [notFound(), active]],
+      ])
+    );
+    await expect(provider.create('Ep', EP_TYPE, base)).resolves.toMatchObject({ physicalId: EP_ARN });
+  });
+
+  it.each([
+    ['AuthType', { ...base, AuthType: undefined }, 'AuthType must be a non-empty string'],
+    ['Regions', { ...base, Regions: 'us-east-1' }, 'Regions must be a list of strings'],
+    ['ThrottleConfig', { ...base, ThrottleConfig: { RateLimit: 'fast' } }, 'ThrottleConfig.RateLimit must be an integer'],
+  ])('create refuses a malformed %s before any call', async (_name, properties, message) => {
+    await expect(provider.create('Ep', EP_TYPE, properties)).rejects.toThrow(message);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('update refuses a template that drops RevisionWeights, and leaves them unsent on a state-borne bag', async () => {
+    const { RevisionWeights: _w, ...noWeights } = base;
+    await expect(provider.update('Ep', EP_ARN, EP_TYPE, noWeights, base)).rejects.toThrow(
+      'RevisionWeights is required'
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+    respond(
+      new Map<string, unknown[]>([
+        ['UpdateWebFunctionEndpointCommand', [{}]],
+        ['GetWebFunctionEndpointCommand', [active]],
+      ])
+    );
+    await provider.update('Ep', EP_ARN, EP_TYPE, noWeights, base, { desiredFromAwsReadback: true });
+    expect(callsOf(UpdateWebFunctionEndpointCommand)[0]!.input).not.toHaveProperty('revisionWeights');
+  });
+
+  it('update warns instead of refusing a malformed block under drift --revert', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['UpdateWebFunctionEndpointCommand', [{}]],
+        ['GetWebFunctionEndpointCommand', [active]],
+      ])
+    );
+    await provider.update('Ep', EP_ARN, EP_TYPE, { ...base, ScalingConfig: 'big' }, base, {
+      desiredFromAwsReadback: true,
+    });
+    expect(callsOf(UpdateWebFunctionEndpointCommand)[0]!.input).not.toHaveProperty('scalingConfig');
+  });
+
+  it('update and delete refuse a recorded id that is not an endpoint ARN, without a call', async () => {
+    await expect(provider.update('Ep', REV_ARN, EP_TYPE, base, base)).rejects.toThrow('is not an endpoint ARN');
+    await expect(provider.delete('Ep', 'prod', EP_TYPE)).rejects.toThrow('is not an endpoint ARN');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('import adopts an endpoint ARN override and refuses a bare name', async () => {
+    respond(new Map<string, unknown[]>([['GetWebFunctionEndpointCommand', [active]]]));
+    await expect(
+      provider.import({ logicalId: 'Ep', resourceType: EP_TYPE, knownPhysicalId: EP_ARN } as never)
+    ).resolves.toMatchObject({ physicalId: EP_ARN });
+    expect(callsOf(GetWebFunctionEndpointCommand)[0]!.input).toEqual({ functionName: FN_ARN, endpointName: 'prod' });
+    await expect(
+      provider.import({ logicalId: 'Ep', resourceType: EP_TYPE, knownPhysicalId: 'prod' } as never)
+    ).rejects.toThrow('must be a Lambda web function endpoint ARN');
+  });
+
+  it('getAttribute reads FunctionArn off the ARN and DomainName from AWS', async () => {
+    await expect(provider.getAttribute(EP_ARN, EP_TYPE, 'FunctionArn')).resolves.toBe(FN_ARN);
+    expect(mockSend).not.toHaveBeenCalled();
+    respond(new Map<string, unknown[]>([['GetWebFunctionEndpointCommand', [{ domainName: 'd.on.aws' }]]]));
+    await expect(provider.getAttribute(EP_ARN, EP_TYPE, 'DomainName')).resolves.toBe('d.on.aws');
   });
 });

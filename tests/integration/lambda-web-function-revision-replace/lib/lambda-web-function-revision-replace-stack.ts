@@ -56,7 +56,9 @@ export class LambdaWebFunctionRevisionReplaceStack extends cdk.Stack {
 
     const endpoint = new lambda.CfnWebFunctionEndpoint(this, 'Endpoint', {
       functionName: fn.ref,
-      endpointName: 'prod',
+      // go-to-k/cdkd#4926: a later phase renames it, replacing the endpoint on the
+      // SDK route (create the new one, delete the old one).
+      endpointName: process.env['ENDPOINT_NAME'] ?? 'prod',
       endpointType: 'HomeRegion',
       authType: 'ApplicationManaged',
       revisionWeights: [{ revisionId: revision.attrRevisionId, weight: 100 }],

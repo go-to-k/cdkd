@@ -4,8 +4,8 @@
     "classifiedCount": 137,
     "enriched": 47,
     "noComputedAttr": 18,
-    "unenrichedGap": 2,
-    "sdkFallbackGap": 70,
+    "unenrichedGap": 0,
+    "sdkFallbackGap": 72,
     "allowListedTypes": 86
   },
   "types": [
@@ -2350,8 +2350,8 @@
     },
     {
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
-      "bucket": "unenriched-computed",
-      "sdkBacked": false,
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
       "readOnlyProperties": [
         "CreatedAt",
         "DomainName",
@@ -2422,8 +2422,8 @@
     },
     {
       "resourceType": "AWS::Lambda::WebFunctionRevision",
-      "bucket": "unenriched-computed",
-      "sdkBacked": false,
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
       "readOnlyProperties": [
         "CreatedAt",
         "FunctionArn",
