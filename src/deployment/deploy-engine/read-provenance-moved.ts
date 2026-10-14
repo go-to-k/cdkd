@@ -159,9 +159,7 @@ export async function sameValueAtVersions(
     referencePins: new Map([[entry.token, pin]]),
   });
   const reader =
-    entry.region === undefined
-      ? resolver
-      : resolver.resolverForProducerRegion(entry.region, context(served));
+    entry.region === undefined ? resolver : resolver.resolverForRecordedRegion(entry.region);
   try {
     const now = await reader.resolveDynamicReferences(entry.token, context(served));
     const then = await reader.resolveDynamicReferences(entry.token, context(recorded));
