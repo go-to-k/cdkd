@@ -255,3 +255,44 @@ export class GsoConsumer4879Stack extends cdk.Stack {
     ]);
   }
 }
+
+/** go-to-k/cdkd#4887: the inline policy `CdkdGsoNested4887`'s nested child puts on that role. */
+export const GSO_4887_POLICY_NAME = 'cdkd-gso-4887-inline';
+
+/**
+ * go-to-k/cdkd#4887: a nested child whose inline policy names the role through
+ * a PARAMETER, which the parent fills from the us-west-2 output. The child's
+ * own state records no cross-region read; its record's v12 provenance names
+ * the region the parent resolved the reference in.
+ */
+class Gso4887Child extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props?: cdk.NestedStackProps) {
+    super(scope, id, props);
+    // The `<parent>~Child` state key verify.sh destroys on its own.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+    const roleName = new cdk.CfnParameter(this, 'RoleName', { type: 'String' });
+    roleName.overrideLogicalId('RoleName');
+    new iam.CfnPolicy(this, 'Policy4887', {
+      policyName: GSO_4887_POLICY_NAME,
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'logs:DescribeLogGroups', Resource: '*' }],
+      },
+      roles: [roleName.valueAsString],
+    }).overrideLogicalId('Policy4887');
+  }
+}
+
+export class GsoNested4887Stack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    const child = new Gso4887Child(this, 'Child');
+    (child.nestedStackResource as cdk.CfnResource).addPropertyOverride('Parameters.RoleName', {
+      'Fn::GetStackOutput': {
+        StackName: PRODUCER_STACK_NAME,
+        OutputName: 'RoleName4879',
+        Region: PRODUCER_REGION,
+      },
+    });
+  }
+}

@@ -5,6 +5,7 @@ import {
   GsoConsumerStack,
   GsoConsumerPreStack,
   GsoConsumer4879Stack,
+  GsoNested4887Stack,
   PRODUCER_STACK_NAME,
   PRODUCER_REGION,
   CONSUMER_REGION,
@@ -37,5 +38,12 @@ new GsoConsumerPreStack(app, 'CdkdGsoConsumerPre', {
 // go-to-k/cdkd#4879: a destroy of a secret-derived principal list read cross-region.
 new GsoConsumer4879Stack(app, 'CdkdGsoConsumer4879', {
   description: 'cdkd cross-region Fn::GetStackOutput integ: IAM policy on a secret-named role (us-east-1)',
+  env: { region: CONSUMER_REGION },
+});
+
+// go-to-k/cdkd#4887: the same principal list in a nested child, fed through a
+// parameter, destroyed on its own.
+new GsoNested4887Stack(app, 'CdkdGsoNested4887', {
+  description: 'cdkd cross-region Fn::GetStackOutput integ: nested IAM policy on a secret-named role (us-east-1)',
   env: { region: CONSUMER_REGION },
 });

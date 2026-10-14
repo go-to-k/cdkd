@@ -103,3 +103,14 @@ reference while the stack reads another region. Its destroy must exit 0 and
 remove the policy from that role, resolving the reference in the region the
 v12 record names, and never print the role name. Without the recorded region
 the destroy skipped the record as ambiguous and exited 2.
+
+## The same principal in a nested child destroyed on its own (issue #4887)
+
+`CdkdGsoNested4887` hands the `us-west-2` role-name output to its nested child
+`Child` as a parameter, and the child puts a second inline policy on the same
+role through it. The child's own state records no cross-region read, but its
+record's v12 provenance names `us-west-2`. `cdkd state destroy
+'CdkdGsoNested4887~Child'` must exit 0 and remove the policy from that role,
+resolving the reference in the recorded region, without the hint to destroy
+through the parent. Before the fix, a child destroyed on its own resolved
+nothing: it skipped the record and exited 2.

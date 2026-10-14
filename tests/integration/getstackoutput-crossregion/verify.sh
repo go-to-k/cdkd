@@ -58,6 +58,19 @@
 # Pre-fix red line: "7b: destroy exited 2" and "7b: the inline policy is still
 # on the role" (the record was skipped as ambiguous).
 #
+# go-to-k/cdkd#4887 arm (the same principal list in a NESTED CHILD destroyed
+# on its own). CdkdGsoNested4887 (us-east-1) passes the us-west-2 role-name
+# output to its child `Child` as a PARAMETER; the child's inline policy names
+# the role through it. The child's own state records no cross-region read, and
+# its record's v12 provenance names us-west-2.
+#   8a. Deploy it; premise: the policy is on the role, the child record holds
+#       the region-less reference with recorded region us-west-2.
+#   8b. `cdkd state destroy 'CdkdGsoNested4887~Child'`: exit 0, the policy is
+#       gone from the role, the child state is gone, no role name printed.
+#   8c. Destroy the parent: exit 0, its state is gone.
+# Pre-fix red line: "8b: state destroy of the child exited 2" (the child,
+# destroyed on its own, was given no resolution opt-in and skipped the record).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (account-scoped, e.g. cdkd-state-{accountId})
 #   AWS_REGION   — informational; this test pins explicit per-stack regions
@@ -148,6 +161,16 @@ STATE_PREFIX_4879="$(s3_stack_prefix "${STACK_4879}" "${CONSUMER_REGION}")"
 ROLE_4879="cdkd-gso-4879-role-${SUFFIX}"
 POLICY_4879="cdkd-gso-4879-inline"
 CREATED_ROLE_4879=0
+# go-to-k/cdkd#4887 arm: the #4879 role and secret, under a second policy.
+STACK_4887="CdkdGsoNested4887"
+CHILD_4887="${STACK_4887}~Child"
+STATE_KEY_4887="cdkd/${STACK_4887}/${CONSUMER_REGION}/state.json"
+LOCK_KEY_4887="cdkd/${STACK_4887}/${CONSUMER_REGION}/lock.json"
+CHILD_STATE_KEY_4887="cdkd/${CHILD_4887}/${CONSUMER_REGION}/state.json"
+CHILD_LOCK_KEY_4887="cdkd/${CHILD_4887}/${CONSUMER_REGION}/lock.json"
+STATE_PREFIX_4887="$(s3_stack_prefix "${STACK_4887}" "${CONSUMER_REGION}")"
+CHILD_STATE_PREFIX_4887="$(s3_stack_prefix "${CHILD_4887}" "${CONSUMER_REGION}")"
+POLICY_4887="cdkd-gso-4887-inline"
 CTX=(-c "gso4847Suffix=${SUFFIX}")
 LOGDIR="$(mktemp -d)"
 
@@ -183,15 +206,21 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${PRE_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK_4879}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK_4887}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${CHILD_4887}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
   fi
   # go-to-k/cdkd#4879: the role is this run's (created below, its name carries
   # the suffix); a skipped destroy leaves the inline policy on it.
   if [ "${CREATED_ROLE_4879}" = 1 ]; then
     aws iam delete-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}" >/dev/null 2>&1 || true
+    aws iam delete-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4887}" >/dev/null 2>&1 || true
     aws iam delete-role --role-name "${ROLE_4879}" >/dev/null 2>&1 || true
   fi
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_4879}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY_4879}" >/dev/null 2>&1 || true
+  for k in "${STATE_KEY_4887}" "${LOCK_KEY_4887}" "${CHILD_STATE_KEY_4887}" "${CHILD_LOCK_KEY_4887}"; do
+    aws s3 rm "s3://${STATE_BUCKET}/${k}" >/dev/null 2>&1 || true
+  done
   for p in "${READER_PARAM_NAME}" "${READER_PRE_PARAM_NAME}" "${FAIL_PARAM_NAME}"; do
     aws ssm delete-parameter --name "${p}" --region "${CONSUMER_REGION}" >/dev/null 2>&1 || true
   done
@@ -211,7 +240,8 @@ cleanup() {
   if [ -n "${V11_TMPDIR}" ] && [ -d "${V11_TMPDIR}" ]; then rm -rf "${V11_TMPDIR}"; fi
   # Noncurrent only: the current objects are what a failed run is debugged
   # from; the final teardown below takes every version.
-  for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
+  for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}" \
+    "${STATE_PREFIX_4887}" "${CHILD_STATE_PREFIX_4887}"; do
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${prefix}" noncurrent || true
   done
   if [ "${1:-}" = "final" ]; then rm -rf "${LOGDIR}"; fi
@@ -582,6 +612,57 @@ if grep -qF "${ROLE_4879}" "${LOGDIR}/destroy-4879.log"; then
 fi
 echo "    OK: destroy exited 0, the policy is gone from the role, no role name printed"
 
+# --- Phase 8 (go-to-k/cdkd#4887): the same, in a nested child destroyed alone ---
+echo "==> Phase 8a: deploy ${STACK_4887} (its nested child puts an inline policy on the role, named through a parameter)"
+node "${LOCAL_DIST}" deploy "${STACK_4887}" "${CTX[@]}" \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  || fail "8a: the deploy of ${STACK_4887} failed"
+aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4887}" >/dev/null \
+  || fail "8a: premise: the nested child's inline policy is not on the role the us-west-2 value names"
+CHILD_STATE_4887="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY_4887}" -)" \
+  || fail "8a: could not read the ${CHILD_4887} state"
+[ "$(printf '%s' "${CHILD_STATE_4887}" | jq -r '.parentStack // empty')" = "${STACK_4887}" ] \
+  || fail "8a: premise: the child record does not name ${STACK_4887} as its parent"
+ROLES_4887="$(printf '%s' "${CHILD_STATE_4887}" | jq -r '.resources.Policy4887.properties.Roles[0] // empty')"
+case "${ROLES_4887}" in
+  "{{resolve:secretsmanager:${SECRET_IAM}:"*) ;;
+  *) fail "8a: premise: the child record's Roles is not the region-less reference (got '${ROLES_4887}')" ;;
+esac
+REGION_4887="$(printf '%s' "${CHILD_STATE_4887}" | jq -r --arg t "${ROLES_4887}" '.resources.Policy4887.referenceProvenance[$t].region // empty')"
+[ "${REGION_4887}" = "${PRODUCER_REGION}" ] \
+  || fail "8a: premise: the child record's provenance gives the reference region '${REGION_4887}', expected ${PRODUCER_REGION}"
+echo "    OK: policy on the role; the child record holds the reference, recorded in ${PRODUCER_REGION}"
+
+echo "==> Phase 8b: cdkd state destroy '${CHILD_4887}' (the child on its own)"
+DESTROY_4887_RC=0
+node "${LOCAL_DIST}" state destroy "${CHILD_4887}" --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --yes >"${LOGDIR}/destroy-4887.log" 2>&1 || DESTROY_4887_RC=$?
+if [ "${DESTROY_4887_RC}" -ne 0 ]; then
+  sed 's/^/  /' "${LOGDIR}/destroy-4887.log" >&2
+  fail "8b: state destroy of the child exited ${DESTROY_4887_RC} (pre-fix: 2, the record skipped without its parent)"
+fi
+assert_gone "8b: the nested child's inline policy is still on the role after its destroy" \
+  aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4887}"
+assert_gone "8b: ${CHILD_4887} state file still exists after its destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY_4887}"
+grep -q 'resolved to the principals the secret names NOW' "${LOGDIR}/destroy-4887.log" \
+  || fail "8b: no resolution warning in the destroy log (the policy was not removed by resolving the reference)"
+if grep -qF 'destroy it through its parent stack' "${LOGDIR}/destroy-4887.log"; then
+  fail "8b: the destroy printed the parent-stack hint for a reference its record places in a region"
+fi
+if grep -qF "${ROLE_4879}" "${LOGDIR}/destroy-4887.log"; then
+  fail "8b: the destroy log prints the secret-derived role name"
+fi
+echo "    OK: the child's destroy exited 0, the policy is gone from the role, no role name printed"
+
+echo "==> Phase 8c: destroy ${STACK_4887} (its child is already gone)"
+node "${LOCAL_DIST}" destroy "${STACK_4887}" --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --force \
+  || fail "8c: the destroy of ${STACK_4887} failed"
+assert_gone "8c: ${STACK_4887} state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_4887}"
+echo "    OK: ${STACK_4887} is gone"
+
 # --- Phase 4: destroy both, assert clean in BOTH regions ---------------
 echo "==> Phase 4a: destroy CONSUMER ${CONSUMER_STACK} (${CONSUMER_REGION})"
 node "${LOCAL_DIST}" destroy "${CONSUMER_STACK}" \
@@ -629,7 +710,8 @@ echo "    OK: producer is gone (AWS resource in ${PRODUCER_REGION} + state)"
 # new marker after the count.
 cleanup final
 trap - EXIT INT TERM
-for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
+for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}" \
+  "${STATE_PREFIX_4887}" "${CHILD_STATE_PREFIX_4887}"; do
   s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
   s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"
 done
