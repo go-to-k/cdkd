@@ -8,9 +8,10 @@ Control, which applies the JSON patch on top of its read model. For a detector
 that model always carries both `DataSources` and the full `Features` list, and
 `UpdateDetector` refuses them together (`both data sources and features were
 provided`, `EKS_RUNTIME_MONITORING and RUNTIME_MONITORING cannot be provided in
-the same request`). Before the fix an update that left the two keys as read
-failed (a scalar-only change, or a `Features` change), whichever of them the
-template declared. For each key the patch has no op on, the fix
+the same request`). Before the fix a scalar-only update failed, because the
+read-back `Features` holds both runtime features, and a `Features` update
+failed, because the read-back `DataSources` rode along, whichever of the two
+keys the template declared. For each key the patch has no op on, the fix
 appends `add /<key>` with the declared value, or `remove /<key>` when the
 template does not declare it, to a non-empty patch.
 

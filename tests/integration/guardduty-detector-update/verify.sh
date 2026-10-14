@@ -3,8 +3,9 @@
 #
 # AWS::GuardDuty::Detector has no SDK provider, so cdkd updates it through
 # Cloud Control, which applies the patch on top of its read model. That model
-# carries DataSources and the full Features list, both of which UpdateDetector
-# refuses beside the declared Features; before the fix every update failed.
+# carries DataSources and the full Features list. Before the fix a scalar-only
+# update failed (the read-back Features holds both runtime features), and so
+# did a Features update (the read-back DataSources rode along).
 #
 # Phases:
 #   1. Deploy a detector declaring only RDS_LOGIN_EVENTS. Require RDS_DATA_RISK
