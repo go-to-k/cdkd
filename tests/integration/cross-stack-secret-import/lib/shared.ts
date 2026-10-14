@@ -80,6 +80,20 @@ export function integQueueName(): string {
 export const QUEUE_URL_EXPORT_NAME = 'CdkdCrossStackSecretQueueUrl';
 
 /**
+ * go-to-k/cdkd#4852 (steps 11d-11f, only under `CSSI_PROMO=true`): the JSON key
+ * that NAMES the producer's `PromoQueue`. `verify.sh` adds it to the secret
+ * with `put-secret-value` and rotates it; the producer's template never
+ * declares it, so every earlier step's secret and templates are unchanged.
+ */
+export const SECRET_PROMO_QUEUE_FIELD = 'pqueue';
+
+/** `Output.Export.Name` of `PromoQueue`'s ARN, which the consumer's `PromoImportReader` imports. */
+export const PROMO_QUEUE_ARN_EXPORT_NAME = 'CdkdCrossStackPromoQueueArn';
+
+/** The SSM parameter `PromoImportReader` writes the imported ARN into. */
+export const PROMO_PARAMETER_NAME = '/cdkd-integ/cross-stack-secret-import/promo-import-reader';
+
+/**
  * `Output.Export.Name` on the CONSUMER, which RE-EXPORTS the value it imported
  * from the producer (issue
  * [#2146](https://github.com/go-to-k/cdkd/issues/2146)).

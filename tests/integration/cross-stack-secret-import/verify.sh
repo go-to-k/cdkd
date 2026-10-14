@@ -146,6 +146,22 @@
 #                      message must NOT be the `declared` verdict — that would
 #                      mean the middle template grew an expression and this phase
 #                      had silently become a duplicate of assertion 9.
+#  10d. READ        — go-to-k/cdkd#4852 (steps 11d-11f), after every scrub step
+#      PROVENANCE      so none of their counts see it. CSSI_PROMO=true adds the
+#                      producer's PromoQueue, named from the secret's `pqueue`
+#                      key (put by this script), with its ARN exported, and the
+#                      consumer's PromoImportReader importing it; a settle
+#                      deploy records the producer version the reader read.
+#                      CONTROL (11e): rotate `pqueue` WITHOUT redeploying the
+#                      producer and deploy the consumer alone: nothing is
+#                      updated and the reader keeps the recorded queue's ARN.
+#                      THE FIX (11f): flip the queue to FIFO (the rotated name
+#                      ends `.fifo`), a create-only change that REPLACES it while
+#                      the exported reference spelling stays the same, deploying
+#                      the producer alone; then the consumer alone. It is
+#                      promoted and sent (its `is sent` info line), and its live
+#                      value is the new queue's ARN. Before, it equalled its
+#                      record and kept the deleted queue's ARN.
 #  11. TEARDOWN     — down the chain (each destroy is refused while the stack
 #                     below still names the export in its state.imports[]), 0
 #                     errors, state keys gone, both SSM parameters gone, and the
@@ -276,6 +292,17 @@ export CDKD_INTEG_RUN_ID="${RUN_ID}"
 EXPECTED_PLAINTEXT="integ-1934-${RUN_ID}"
 # The secret's `queue` value, which NAMES the producer's queue (go-to-k/cdkd#4819).
 QUEUE_NAME="integ-1934q-${RUN_ID}"
+# go-to-k/cdkd#4852 (steps 11d-11f): the secret's `pqueue` values, which NAME
+# the producer's PromoQueue before and after the rotation (`.fifo`, because the
+# queue turns FIFO to be replaced). Under the `integ-1934q-` prefix, so the
+# sweep's queue loop deletes them too, and neither contains QUEUE_NAME.
+PROMO_QUEUE_NAME="integ-1934q-pr-${RUN_ID}"
+PROMO_QUEUE_NAME_2="integ-1934q-pr2-${RUN_ID}.fifo"
+# Mirrors `lib/shared.ts`.
+PROMO_PARAMETER_NAME="/cdkd-integ/cross-stack-secret-import/promo-import-reader"
+PROMO_EXPORT_NAME="CdkdCrossStackPromoQueueArn"
+PROMO_OUTPUT="PromoQueueArnOutput"
+PROMO_TOKEN="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pqueue::}}"
 
 # Resolve the built CLI without a `cd` into dist/ that fails cryptically when
 # dist/ is unbuilt -- the friendly guard below reports it instead.
@@ -354,6 +381,7 @@ sweep() {
     # window and would block the next run's create.
     aws ssm delete-parameter --name "${PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
     aws ssm delete-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
+    aws ssm delete-parameter --name "${PROMO_PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
     # By the fixture's own name PREFIX, not this run's name: a SIGKILLed
     # earlier run's queue carries another run id (go-to-k/cdkd#4819).
     for left_queue_url in $(aws sqs list-queues --queue-name-prefix integ-1934q- --region "${REGION}" \
@@ -431,6 +459,8 @@ wait_gone 6 "the SSM parameter exists before the run - a stale value could stand
   aws ssm get-parameter --name "${PARAMETER_NAME}" --region "${REGION}"
 wait_gone 6 "the chained SSM parameter exists before the run - a stale value could stand in for the chained one" \
   aws ssm get-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}"
+wait_gone 6 "the promo SSM parameter exists before the run - a stale value could stand in for the imported one (go-to-k/cdkd#4852)" \
+  aws ssm get-parameter --name "${PROMO_PARAMETER_NAME}" --region "${REGION}"
 wait_gone 6 "the fixture secret exists before the run" \
   aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
 pass "clean slate"
@@ -2159,6 +2189,176 @@ INDEX_AFTER_SCRUB_RAW=""
 INDEX_RESTORED_RAW=""
 pass "11c: ${REEXPORT_NAME} restored to the value its own deploy wrote"
 
+# --- Steps 11d-11f: read-provenance promotion across stacks (go-to-k/cdkd#4852)
+# After every scrub step, so none of their record counts see the arm's
+# resources. CSSI_PROMO=true adds the producer's PromoQueue (named from the
+# secret's `pqueue` key) with its exported ARN, and the consumer's
+# PromoImportReader importing it; each flag stays set once added (a flag
+# dropped from a later deploy would DELETE what it adds).
+CSSI_ENV=(CSSI_PROMO=true)
+cssi_put_secret() { # usage: cssi_put_secret <pqueue value>: a new secret version, password and queue unchanged
+  local secret_file
+  secret_file="$(mktemp -t cross-stack-secret-import-secret.XXXXXX)"
+  # From a file, not argv, so the value never shows in the host's process list.
+  printf '{"password":"%s","queue":"%s","pqueue":"%s"}' "${EXPECTED_PLAINTEXT}" "${QUEUE_NAME}" "$1" > "${secret_file}"
+  if ! aws secretsmanager put-secret-value --secret-id "${SECRET_NAME}" --region "${REGION}" \
+    --secret-string "file://${secret_file}" >/dev/null; then
+    rm -f "${secret_file}"
+    fail "could not put a new version of ${SECRET_NAME}"
+  fi
+  rm -f "${secret_file}"
+}
+cssi_deploy() { # usage: cssi_deploy <stack> <which>: deploys the stack ALONE -> CSSI_OUT; fails on a non-zero exit
+  set +e
+  CSSI_OUT=$(env "${CSSI_ENV[@]}" node "${LOCAL_DIST}" deploy "$1" --exclusively \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+  CSSI_RC=$?
+  set -e
+  assert_no_plaintext "the $2 deploy's output" "${CSSI_OUT}"
+  if [ "${CSSI_RC}" -ne 0 ]; then
+    diag "${CSSI_OUT}"
+    fail "the $2 deploy exited ${CSSI_RC} (expected 0)"
+  fi
+}
+cssi_out_has() { # usage: cssi_out_has <logical id> <(type)> <verb> -> 0 when one CSSI_OUT line holds all three
+  # Three separate index() checks: the resource line puts colour codes between them.
+  awk -v a="$1" -v b="$2" -v c="$3" 'index($0, a) && index($0, b) && index($0, c) { found = 1 } END { exit !found }' \
+    <<< "${CSSI_OUT}"
+}
+cssi_queue_arn() { # usage: cssi_queue_arn <queue name> (a strict capture: a failed read aborts)
+  local url
+  url="$(aws sqs get-queue-url --queue-name "$1" --region "${REGION}" --query QueueUrl --output text)" || return 1
+  aws sqs get-queue-attributes --queue-url "${url}" --region "${REGION}" \
+    --attribute-names QueueArn --query 'Attributes.QueueArn' --output text
+}
+cssi_reader_value() { # (a strict capture)
+  aws ssm get-parameter --name "${PROMO_PARAMETER_NAME}" --region "${REGION}" --query 'Parameter.Value' --output text
+}
+cssi_reader_read_versions() { # -> PromoImportReader's recorded readVersions for the pqueue token, [] when absent
+  aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - \
+    | jq -c --arg t "${PROMO_TOKEN}" '((.resources.PromoImportReader.referenceProvenance // {})[$t] // {}).readVersions // []'
+}
+cssi_output_versions() { # -> the producer's recorded versions of the pqueue token in PromoQueueArnOutput, [] when absent
+  aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+    | jq -c --arg o "${PROMO_OUTPUT}" --arg t "${PROMO_TOKEN}" \
+      '(((.outputReferenceProvenance // {})[$o] // {})[$t] // {}).versions // []'
+}
+cssi_exported_value() { # -> the producer's stored PromoQueueArnOutput
+  aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+    | jq -r --arg o "${PROMO_OUTPUT}" '.outputs[$o] // empty'
+}
+
+echo ""
+echo "==> Step 11d (go-to-k/cdkd#4852 PREMISE): PromoImportReader records the producer version it read"
+cssi_put_secret "${PROMO_QUEUE_NAME}"
+cssi_deploy "${PRODUCER}" "step 11d producer"
+cssi_deploy "${CONSUMER}" "step 11d consumer"
+# A settle deploy: the reader is written while the producer is unchanged, so
+# its record takes the version of the producer output it read.
+CSSI_ENV+=(CSSI_PROMO_SETTLE=true)
+cssi_deploy "${CONSUMER}" "step 11d consumer settle"
+if ! cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated"; then
+  diag "${CSSI_OUT}"
+  fail "premise: the step 11d settle deploy has no 'PromoImportReader (AWS::SSM::Parameter) updated' line (the reader was not written, or the wording drifted)"
+fi
+PROMO_ARN_1="$(cssi_queue_arn "${PROMO_QUEUE_NAME}")"
+if [ "${PROMO_ARN_1##*:}" != "${PROMO_QUEUE_NAME}" ]; then
+  fail "premise: PromoQueue's live ARN does not end with the secret's pqueue value"
+fi
+if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+  fail "premise: PromoImportReader's SSM value is not PromoQueue's ARN after the settle deploy"
+fi
+PROMO_EXPORTED="$(cssi_exported_value)"
+case "${PROMO_EXPORTED}" in
+  arn:*"${PROMO_TOKEN}") ;;
+  *) fail "premise: the producer's stored ${PROMO_OUTPUT} is not PromoQueue's ARN in its pqueue {{resolve: spelling" ;;
+esac
+PROMO_READ_1="$(cssi_reader_read_versions)"
+PROMO_OUT_1="$(cssi_output_versions)"
+if [ "$(jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_1}" \
+  '($a | length) > 0 and (($a - $b) | length) == 0')" != "true" ]; then
+  fail "premise: PromoImportReader's record holds no readVersions for the pqueue token within ${PROMO_OUTPUT}'s versions (read ${PROMO_READ_1}, output ${PROMO_OUT_1}): state schema v12's read provenance is not recorded, so nothing below can be promoted"
+fi
+pass "11d: PromoImportReader recorded the producer output version it read"
+
+echo ""
+echo "==> Step 11e (go-to-k/cdkd#4852 CONTROL): a rotation alone sends the consumer nothing"
+# pqueue now names another queue, but the producer was not redeployed: its
+# PromoQueue and output still record the earlier version, so the consumer is
+# neither promoted nor re-pointed (CloudFormation parity).
+cssi_put_secret "${PROMO_QUEUE_NAME_2}"
+cssi_deploy "${CONSUMER}" "step 11e consumer"
+# Sentinel for the absences below: the deploy banner names the stack, so the
+# output was captured; the arm in 11f asserts the same 'updated' line PRESENT.
+# Here-strings, not `printf | grep -q`: grep exits at the first match, and the
+# SIGPIPE under pipefail would turn a MATCH into "no match".
+if ! grep -qF -- "${CONSUMER}" <<< "${CSSI_OUT}"; then
+  fail "the step 11e consumer deploy's output does not name ${CONSUMER} - the output was not captured, so the absences below would be vacuous"
+fi
+if cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated" \
+  || grep -qF -- "PromoImportReader is sent: " <<< "${CSSI_OUT}"; then
+  diag "${CSSI_OUT}"
+  fail "the rotation alone UPDATED PromoImportReader: a consumer whose producer did not change was sent (go-to-k/cdkd#4852 CloudFormation parity)"
+fi
+if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+  fail "PromoImportReader's SSM value moved after a rotation alone (it should still be the producer's recorded queue's ARN)"
+fi
+if [ "$(cssi_reader_read_versions)" != "${PROMO_READ_1}" ]; then
+  fail "PromoImportReader's recorded readVersions moved after a rotation alone (it was rewritten)"
+fi
+pass "11e: a rotation alone neither promoted nor updated PromoImportReader"
+
+echo ""
+echo "==> Step 11f (go-to-k/cdkd#4852 THE FIX): the producer replaces its queue; the consumer, deployed alone, is sent the new one"
+# FIFO flip: a create-only change, so PromoQueue is REPLACED under the rotated
+# `.fifo` name, while its template and the exported reference spelling stay
+# the same. The producer is deployed ALONE.
+CSSI_ENV+=(CSSI_PROMO_FIFO=true)
+cssi_deploy "${PRODUCER}" "step 11f producer"
+if ! cssi_out_has "PromoQueue" "(AWS::SQS::Queue)" "replaced"; then
+  diag "${CSSI_OUT}"
+  fail "premise: the step 11f producer deploy has no 'PromoQueue (AWS::SQS::Queue) replaced' line"
+fi
+# SQS may answer for a deleted queue for up to 60 seconds.
+wait_gone 14 "premise: the replaced PromoQueue still exists 70s after the producer deploy" \
+  aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME}" --region "${REGION}"
+PROMO_ARN_2="$(cssi_queue_arn "${PROMO_QUEUE_NAME_2}")"
+if [ "${PROMO_ARN_2##*:}" != "${PROMO_QUEUE_NAME_2}" ]; then
+  fail "premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value"
+fi
+# PREMISES (vacuity), each one a reason the pre-fix diff calls the consumer
+# NO_CHANGE: the exported value is the SAME reference string as before; the
+# consumer's record still holds the version it read; the producer output's
+# record no longer holds it; and AWS still holds the deleted queue's ARN.
+if [ "$(cssi_exported_value)" != "${PROMO_EXPORTED}" ]; then
+  fail "premise: the producer's stored ${PROMO_OUTPUT} changed spelling across the replacement, so the consumer would be updated by a plain diff"
+fi
+PROMO_OUT_2="$(cssi_output_versions)"
+if [ "$(jq -n -r --argjson a "${PROMO_READ_1}" --argjson b "${PROMO_OUT_2}" \
+  '($a | length) > 0 and ($b | length) > 0 and (($a - $b) | length) > 0')" != "true" ]; then
+  fail "premise: ${PROMO_OUTPUT}'s record still holds the version PromoImportReader read, or none (read ${PROMO_READ_1}, output ${PROMO_OUT_2}), so no promotion is expected"
+fi
+if [ "$(cssi_reader_value)" != "${PROMO_ARN_1}" ]; then
+  fail "premise: PromoImportReader's SSM value is not the deleted queue's ARN after the producer-only deploy"
+fi
+cssi_deploy "${CONSUMER}" "step 11f consumer"
+# LOAD-BEARING (the red line): the consumer holds the replacement's ARN.
+PROMO_LIVE="$(cssi_reader_value)"
+if [ "${PROMO_LIVE}" != "${PROMO_ARN_2}" ]; then
+  if [ "${PROMO_LIVE}" = "${PROMO_ARN_1}" ]; then PROMO_HELD="the deleted queue's ARN"; else PROMO_HELD="neither queue's ARN"; fi
+  diag "${CSSI_OUT}"
+  fail "consumer NO_CHANGE: PromoImportReader holds ${PROMO_HELD} after the consumer-only deploy, not the replacement PromoQueue's (go-to-k/cdkd#4852)"
+fi
+if ! cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated"; then
+  diag "${CSSI_OUT}"
+  fail "the step 11f consumer deploy has no 'PromoImportReader (AWS::SSM::Parameter) updated' line"
+fi
+if ! grep -qF -- "PromoImportReader is sent: Value read a secret-derived value at a newer version than PromoImportReader was deployed with" <<< "${CSSI_OUT}"; then
+  diag "${CSSI_OUT}"
+  fail "the step 11f consumer deploy has no 'PromoImportReader is sent: Value read a secret-derived value ...' info line (go-to-k/cdkd#4852 decision 5, or the wording drifted)"
+fi
+pass "11f: the consumer was promoted and sent the replacement queue's ARN"
+
 # --- Assertion 11: TEARDOWN ------------------------------------------------
 echo ""
 echo "==> Step 12 (assertion 11): destroy ChainConsumer, then Consumer, then Producer"
@@ -2190,6 +2390,12 @@ wait_gone 6 "the chained-value SSM parameter still exists after destroy" \
 # pending-deletion secret holding the name. Only a FORCE delete makes it 404.
 wait_gone 6 "the secret-named queue still exists after destroy" \
   aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
+# go-to-k/cdkd#4852 (steps 11d-11f): the consumer's reader and the producer's
+# replacement queue (the replaced one was asserted gone in 11f).
+wait_gone 6 "the promo SSM parameter still exists after destroy" \
+  aws ssm get-parameter --name "${PROMO_PARAMETER_NAME}" --region "${REGION}"
+wait_gone 14 "the replacement PromoQueue still exists after destroy" \
+  aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME_2}" --region "${REGION}"
 wait_gone 6 "the fixture secret still exists (or is only pending deletion) after destroy - it must be force-deleted, not scheduled" \
   aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
 
@@ -2211,6 +2417,11 @@ else
     | jq -r --arg k "${REEXPORT_NAME}" 'if ((.exports // {}) | has($k)) then "yes" else "no" end')
   if [ "${REEXPORT_STILL_INDEXED}" != "no" ]; then
     fail "the exports index still carries ${REEXPORT_NAME} after the middle stack was destroyed"
+  fi
+  PROMO_STILL_INDEXED=$(printf '%s' "${INDEX_AFTER}" \
+    | jq -r --arg k "${PROMO_EXPORT_NAME}" 'if ((.exports // {}) | has($k)) then "yes" else "no" end')
+  if [ "${PROMO_STILL_INDEXED}" != "no" ]; then
+    fail "the exports index still carries ${PROMO_EXPORT_NAME} after the producer was destroyed"
   fi
   assert_no_plaintext "the exports index after teardown" "${INDEX_AFTER}"
 fi

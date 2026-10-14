@@ -6,9 +6,11 @@ import {
   CONDITIONAL_EXPORT_NAME,
   CONDITIONAL_PLAIN_VALUE,
   EXPORT_NAME,
+  PROMO_QUEUE_ARN_EXPORT_NAME,
   QUEUE_URL_EXPORT_NAME,
   SECRET_JSON_FIELD,
   SECRET_NAME,
+  SECRET_PROMO_QUEUE_FIELD,
   SECRET_QUEUE_FIELD,
   TAKEN_CONDITIONAL_DECOY_VALUE,
   TAKEN_CONDITIONAL_EXPORT_NAME,
@@ -76,6 +78,28 @@ export class ProducerStack extends cdk.Stack {
       exportName: QUEUE_URL_EXPORT_NAME,
       description: 'The secret-named queue URL, read by the consumer (issue 4819).',
     });
+
+    // go-to-k/cdkd#4852 (steps 11d-11f): a queue named from the secret's
+    // `pqueue` key, whose ARN is exported for the consumer's PromoImportReader.
+    // CSSI_PROMO_FIFO=true makes it FIFO, a create-only change: `verify.sh` has
+    // rotated `pqueue` to a `.fifo` name by then, so the queue is REPLACED under
+    // the rotated name while the template and the exported reference spelling
+    // stay the same.
+    if (process.env.CSSI_PROMO === 'true') {
+      const promoQueue = new sqs.CfnQueue(this, 'PromoQueue', {
+        queueName: cdk.SecretValue.secretsManager(SECRET_NAME, {
+          jsonField: SECRET_PROMO_QUEUE_FIELD,
+        }).unsafeUnwrap(),
+        ...(process.env.CSSI_PROMO_FIFO === 'true' && { fifoQueue: true }),
+      });
+      promoQueue.overrideLogicalId('PromoQueue');
+      promoQueue.addDependency(secret.node.defaultChild as cdk.CfnResource);
+      new cdk.CfnOutput(this, 'PromoQueueArnOutput', {
+        value: promoQueue.attrArn,
+        exportName: PROMO_QUEUE_ARN_EXPORT_NAME,
+        description: 'The pqueue-named queue ARN, read by the consumer (issue 4852).',
+      });
+    }
 
     new cdk.CfnOutput(this, 'CrossStackSecretArnOutput', {
       value: secret.secretArn,

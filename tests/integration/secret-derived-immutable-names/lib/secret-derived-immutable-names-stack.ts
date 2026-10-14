@@ -66,6 +66,40 @@ class QueueReaderChild extends cdk.NestedStack {
   }
 }
 
+/** An SSM `AllowedPattern` no value this fixture writes can meet. */
+const NEVER_MATCHES = '^cdkd-integ-never-matches$';
+
+/**
+ * `PromoChild` (go-to-k/cdkd#4852, step 5i): stores the parent-passed ARN of
+ * NestQueue, a queue named from the secret, and spells the secret's `nqueue`
+ * field in a tag. SDIN_PI_FAULT=true sets an AllowedPattern the ARN cannot
+ * meet, so the child's update fails and the parent row with it.
+ */
+class PromoReaderChild extends cdk.NestedStack {
+  constructor(scope: Construct, id: string, props: cdk.NestedStackProps & { secretName: string }) {
+    super(scope, id, props);
+    // Pinned so the child's cdkd state key is `<parent>~PromoChild`.
+    (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('PromoChild');
+    const queueArn = new cdk.CfnParameter(this, 'QueueArn', { type: 'String' });
+    queueArn.overrideLogicalId('QueueArn');
+    const reader = new ssm.CfnParameter(this, 'PromoChildReader', {
+      // Named per run by `verify.sh`, so its cleanup can delete it by name.
+      name: process.env.SDIN_PI_PARAM_NAME ?? '/cdkd-integ/sdin-unset/promo-child-reader',
+      type: 'String',
+      value: queueArn.valueAsString,
+      // SDIN_PI_SETTLE=true edits the reader while NestQueue is NO_CHANGE, so
+      // its record takes the version it read through the parameter.
+      description:
+        process.env.SDIN_PI_SETTLE === 'true' ? 'cdkd integ: promo child settled' : 'cdkd integ: promo child initial',
+      tags: {
+        NqName: cdk.SecretValue.secretsManager(props.secretName, { jsonField: 'nqueue' }).unsafeUnwrap(),
+      },
+      ...(process.env.SDIN_PI_FAULT === 'true' && { allowedPattern: NEVER_MATCHES }),
+    });
+    reader.overrideLogicalId('PromoChildReader');
+  }
+}
+
 /**
  * Immutable NAMES taken from a Secrets Manager secret, updated in place
  * (go-to-k/cdkd#4264, go-to-k/cdkd#4275).
@@ -155,6 +189,23 @@ class QueueReaderChild extends cdk.NestedStack {
  * rollback then restores the policy, whose record holds the queue's URL in
  * plaintext, while the replay resolved the queue name from its literal
  * reference (go-to-k/cdkd#4801).
+ *
+ * READ PROVENANCE (go-to-k/cdkd#4852, steps 5h-5j), each arm's resources
+ * created only from its own step on, by a flag every later deploy keeps:
+ *   - SDIN_PH=true: `PromoQueue`, named from the secret's `pqueue` field, and
+ *     `PromoReader` (AWS::SSM::Parameter) storing its ARN and spelling the
+ *     field in a tag. SDIN_PH_FIFO=true makes the queue FIFO, a create-only
+ *     change: the rotated `pqueue` ends in `.fifo`, so the queue is REPLACED
+ *     under the rotated name while its template spelling stays the same.
+ *     SDIN_PH_FAULT=true sets an AllowedPattern the reader's value cannot meet.
+ *   - SDIN_PI=true: `NestQueue` (the `nqueue` field) and the nested
+ *     `PromoChild`, whose `PromoChildReader` stores the ARN its row passes
+ *     (SDIN_PI_FIFO / SDIN_PI_FAULT as above).
+ *   - SDIN_PJ=true: `PromoValueProducer` (AWS::SSM::Parameter) whose Value is
+ *     the `pjvalue` field, and `PromoValueReader` storing its `Fn::GetAtt
+ *     Value`. SDIN_PJ_EDIT=true edits the producer's Description only.
+ *   Each *_SETTLE flag edits its reader's Description, so the reader is
+ *   written while its upstream is NO_CHANGE and records the version it read.
  *
  * UPDATE (CDKD_TEST_UPDATE=true) changes only the Stages' `Description`, the
  * Service's `EnableECSManagedTags` (it has no description), the Policy's
@@ -500,5 +551,64 @@ export class SecretDerivedImmutableNamesStack extends cdk.Stack {
         { metricName: 'SdinMovingFilterHits', metricNamespace: 'CdkdIntegSdin', metricValue: '1' },
       ],
     });
+
+    // go-to-k/cdkd#4852 step 5h: a reader left on an older generation by an
+    // INTERRUPTED deploy. The queue is replaced under a rotated name (FIFO
+    // flip) and the reader's update fails; the next deploy must send it.
+    if (process.env.SDIN_PH === 'true') {
+      const promoQueue = new sqs.CfnQueue(this, 'PromoQueue', {
+        queueName: fromSecret('pqueue'),
+        ...(process.env.SDIN_PH_FIFO === 'true' && { fifoQueue: true }),
+      });
+      promoQueue.overrideLogicalId('PromoQueue');
+      const promoReader = new ssm.CfnParameter(this, 'PromoReader', {
+        // Named per run by `verify.sh`, so its cleanup can delete it by name.
+        name: process.env.SDIN_PH_PARAM_NAME ?? '/cdkd-integ/sdin-unset/promo-reader',
+        type: 'String',
+        value: promoQueue.attrArn,
+        description:
+          process.env.SDIN_PH_SETTLE === 'true' ? 'cdkd integ: promo reader settled' : 'cdkd integ: promo reader initial',
+        tags: { PqName: fromSecret('pqueue') },
+        ...(process.env.SDIN_PH_FAULT === 'true' && { allowedPattern: NEVER_MATCHES }),
+      });
+      promoReader.overrideLogicalId('PromoReader');
+    }
+
+    // go-to-k/cdkd#4852 step 5i: the same through a nested stack, whose row
+    // passes NestQueue's ARN to the child's reader.
+    if (process.env.SDIN_PI === 'true') {
+      const nestQueue = new sqs.CfnQueue(this, 'NestQueue', {
+        queueName: fromSecret('nqueue'),
+        ...(process.env.SDIN_PI_FIFO === 'true' && { fifoQueue: true }),
+      });
+      nestQueue.overrideLogicalId('NestQueue');
+      new PromoReaderChild(this, 'PromoChild', {
+        parameters: { QueueArn: nestQueue.attrArn },
+        secretName,
+      });
+    }
+
+    // go-to-k/cdkd#4852 step 5j: a producer updated IN PLACE in an earlier
+    // run after a rotation, its reader left NO_CHANGE by that run.
+    if (process.env.SDIN_PJ === 'true') {
+      const producer = new ssm.CfnParameter(this, 'PromoValueProducer', {
+        // Named per run by `verify.sh`, so its cleanup can delete it by name.
+        name: process.env.SDIN_PJ_PRODUCER_NAME ?? '/cdkd-integ/sdin-unset/promo-value-producer',
+        type: 'String',
+        value: fromSecret('pjvalue'),
+        description:
+          process.env.SDIN_PJ_EDIT === 'true' ? 'cdkd integ: producer edited' : 'cdkd integ: producer initial',
+      });
+      producer.overrideLogicalId('PromoValueProducer');
+      const valueReader = new ssm.CfnParameter(this, 'PromoValueReader', {
+        name: process.env.SDIN_PJ_READER_NAME ?? '/cdkd-integ/sdin-unset/promo-value-reader',
+        type: 'String',
+        value: producer.attrValue,
+        description:
+          process.env.SDIN_PJ_SETTLE === 'true' ? 'cdkd integ: value reader settled' : 'cdkd integ: value reader initial',
+        tags: { PjValue: fromSecret('pjvalue') },
+      });
+      valueReader.overrideLogicalId('PromoValueReader');
+    }
   }
 }
