@@ -73,6 +73,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
+import { withGuardDutyDetectorReadBackOps } from './guardduty-detector-patch.js';
 import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
 import { isSecretDerivedValue, maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 import {
@@ -1427,6 +1428,10 @@ export class CloudControlProvider implements ResourceProvider {
           };
         }
       }
+
+      // go-to-k/cdkd#4910: a GuardDuty detector's read model carries keys
+      // UpdateDetector refuses beside the declared ones; see the helper.
+      patch = withGuardDutyDetectorReadBackOps(resourceType, patch, cleanProperties);
 
       // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
       // patch value can be a resolved secret (a Cloud-Control-routed
