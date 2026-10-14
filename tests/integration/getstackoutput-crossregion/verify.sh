@@ -629,15 +629,16 @@ echo "    OK: producer is gone (AWS resource in ${PRODUCER_REGION} + state)"
 # new marker after the count.
 cleanup final
 trap - EXIT INT TERM
+for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
+  s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"
+done
+# After the sweep, so a failure here still leaves the state history swept.
 # go-to-k/cdkd#4879: the role is created outside any stack under a name no
 # stack-prefix sweep matches, so a failed delete must fail the run here.
 if [ "${CREATED_ROLE_4879}" = 1 ]; then
   assert_gone "the #4879 role ${ROLE_4879} leaked after cleanup" aws iam get-role --role-name "${ROLE_4879}"
 fi
-for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
-  s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
-  s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"
-done
 
 echo ""
 echo "==> getstackoutput-crossregion test passed (cross-region Fn::GetStackOutput resolved correctly + both regions clean)"
