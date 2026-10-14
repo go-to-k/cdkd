@@ -79,6 +79,7 @@ import {
   redactRollbackRecord,
 } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { resolvedPlaintextOf } from '../../../src/deployment/secret-redaction/pairs.js';
 
 const REF = '{{resolve:secretsmanager:pw}}';
 const V1 = 'a1b2c3d4-0000-1111-2222-333333333333';
@@ -152,7 +153,10 @@ describe('rollback replay pinning (go-to-k/cdkd#4852)', () => {
     delete secret.history[V1];
     const { resolved } = await replay(recordWith([V1]));
     expect(resolved?.['Password']).toBe('current-password');
-    expect(log.warn.some((m) => m.includes('could not read a secret at the version'))).toBe(true);
+    // Once, though two leaves hold the token: the verdict is kept per token.
+    expect(log.warn.filter((m) => m.includes('could not read a secret at the version'))).toHaveLength(
+      1
+    );
     expect(log.warn.join('\n')).not.toContain('password');
   });
 
@@ -170,5 +174,12 @@ describe('rollback replay pinning (go-to-k/cdkd#4852)', () => {
     expect(secret.lookups.filter((l) => l === `pw@${V1}`)).toEqual([`pw@${V1}`]);
     const pinnedAt = secret.lookups.indexOf(`pw@${V1}`);
     expect(secret.regions[pinnedAt]).toBe('us-west-2');
+  });
+
+  it('a pin equal to the current version keeps the token\'s resolved pair', async () => {
+    // The pair positions an embedded leaf in the restored record; a value read
+    // at another version never gets one.
+    const { secrets } = await replay(recordWith([V2]));
+    expect(resolvedPlaintextOf(secrets, REF)).toBe('current-password');
   });
 });
