@@ -68,8 +68,8 @@ provider, the recreate would change nothing. cdkd refuses the flag before it
 touches anything.
 
 The in-place move fails when Cloud Control cannot address the resource by the
-ID the SDK provider stored. The deploy reports that failure, and the recreate
-is the way through.
+ID the SDK provider stored. The deploy reports that failure, names the flag
+with the logical ID, and the recreate is the way through.
 
 For a `NoEcho` parameter, state holds only `***` in place of the value
 ([State Store](state-management.md)). The deploy warns that it cannot

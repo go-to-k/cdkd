@@ -95,6 +95,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **cc-import-identifier.ts** - Completes the bare CloudFormation id `CloudControlProvider.import()` receives into the `|`-joined Cloud Control identifier for a COMPOSITE `primaryIdentifier`, read from the live schema (issue [#3672](https://github.com/go-to-k/cdkd/issues/3672)). The completed value is also what gets RECORDED. It REFUSES rather than guesses when the template cannot supply exactly the other fields.
 
+- **cc-autoroute-update-remedy.ts** - The note appended to an UPDATE this deploy moved from the SDK provider to Cloud Control (#4904). It names the cause CONDITIONALLY, since the failure may be anything, and must carry no phrase `isNotFoundMessage` or the retryable table matches.
+
 - **slow-cc-operation-timeouts.ts** - Per-(resourceType, operation) wall-clock timeout FLOORS, and the SINGLE source for the CC poll cap and both outer deadlines, so they cannot drift.
 
 - **resource-timeout-registry.ts** - Registry of the resolved `--resource-timeout` input: per-type override > explicit global > `undefined`. **The compile-time 30m default deliberately does NOT leak in**: only an explicit user value may lift an inner waiter's floor.

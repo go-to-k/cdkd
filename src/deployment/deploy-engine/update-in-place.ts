@@ -5,6 +5,7 @@ import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../provisioning/provider-registry.js';
+import { ccAutoRouteUpdateFailureRemedy } from '../../provisioning/cc-autoroute-update-remedy.js';
 import {
   recordedProtectionEvidence,
   recordedProtectionNote,
@@ -1121,6 +1122,22 @@ export async function updateInPlace(
       // be separable by a later edit.
       captureProvider = replProvider;
     } else {
+      // go-to-k/cdkd#4904: this deploy moved an SDK-recorded resource to
+      // Cloud Control, which addresses it by the SDK provider's physical id.
+      // Name that move and both ways through; the cause stays conditional.
+      if (
+        currentResource.provisionedBy !== 'cc-api' &&
+        updateDecision.ccRouteReason !== undefined &&
+        updateError instanceof Error &&
+        !isInterruptedWaitError(updateError) &&
+        !isWaitAbandonedError(updateError)
+      ) {
+        updateError.message += ccAutoRouteUpdateFailureRemedy(
+          logicalId,
+          resourceType,
+          updateDecision.ccRouteReason.properties
+        );
+      }
       throw updateError;
     }
   }
