@@ -1,8 +1,5 @@
 import { CdkdError } from '../../utils/error-handler.js';
-import {
-  recordedReferenceRegions,
-  referenceProvenanceOf,
-} from '../reference-provenance-record.js';
+import { recordedReferenceRegions, referenceProvenanceOf } from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
 import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
 import { classifyRecordedSecretRegion } from '../secret-region-classification.js';

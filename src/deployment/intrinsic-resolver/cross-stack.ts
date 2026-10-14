@@ -662,7 +662,7 @@ export async function resolveImportValue(
   // would have continued past the record it had just matched, and the caller
   // would have been told the export exists nowhere.
   let found:
-    { value: unknown; refStack: string; lookupRegion: string; state: StackState }
+    | { value: unknown; refStack: string; lookupRegion: string; state: StackState }
     | undefined;
 
   for (const ref of allStacks) {

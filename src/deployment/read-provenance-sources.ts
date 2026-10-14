@@ -30,7 +30,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Every `Fn::ImportValue` / `Fn::GetStackOutput` node of `value`. */
-function crossStackNodes(value: unknown, into: Record<string, unknown>[] = []): Record<string, unknown>[] {
+function crossStackNodes(
+  value: unknown,
+  into: Record<string, unknown>[] = []
+): Record<string, unknown>[] {
   if (Array.isArray(value)) {
     for (const item of value) crossStackNodes(item, into);
     return into;
@@ -107,7 +110,9 @@ export function inheritedProvenanceForChildDiff(args: {
   const own = referenceProvenanceOf(rowRecord);
   const parser = new TemplateParser();
   const upstreams = [
-    ...parser.extractReferences(isPlainObject(row.Properties) ? row.Properties['Parameters'] : undefined),
+    ...parser.extractReferences(
+      isPlainObject(row.Properties) ? row.Properties['Parameters'] : undefined
+    ),
   ].filter((id) => Object.hasOwn(parentTemplate.Resources, id) && Object.hasOwn(parentRecords, id));
   const out = new Map<string, ReferenceProvenance>();
   for (const token of tokens) {

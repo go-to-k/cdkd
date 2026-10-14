@@ -160,14 +160,14 @@ describe('same stack', () => {
   });
 
   it('S2: an upstream with no version for the token is no verdict', async () => {
-    for (const queue of [undefined, {}, { [REF]: { region: 'us-east-1' } }]) {
+    for (const queue of [undefined, {}, { [REF]: { region: "us-east-1" } }] as Array<Record<string, ReferenceProvenance> | undefined>) {
       const { state, template } = fixture(queue, { [REF]: at([V1], [V1]) });
       expect((await diff(state, template)).get('Reader')!.changeType).toBe('NO_CHANGE');
     }
   });
 
   it('a reader with no field, or no readVersions, diffs as v11', async () => {
-    for (const reader of [undefined, {}, { [REF]: at([V1]) }]) {
+    for (const reader of [undefined, {}, { [REF]: at([V1]) }] as Array<Record<string, ReferenceProvenance> | undefined>) {
       const { state, template } = fixture({ [REF]: at([V2]) }, reader);
       expect((await diff(state, template)).get('Reader')!.changeType).toBe('NO_CHANGE');
     }

@@ -45,7 +45,9 @@ export interface ReadProvenanceSources {
    * `readVersions` whose template reads across stacks, and never otherwise:
    * it may read the producer's state (go-to-k/cdkd#4852 performance budget).
    */
-  crossStackOutputs?: (value: unknown) => Promise<ReadonlyArray<Record<string, ReferenceProvenance>>>;
+  crossStackOutputs?: (
+    value: unknown
+  ) => Promise<ReadonlyArray<Record<string, ReferenceProvenance>>>;
 }
 
 /** One property of a promoted reader, with the same-stack resources it reads. */
