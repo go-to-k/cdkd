@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -72,14 +73,24 @@ const CONSUMER_PARAM_NAME = '/cdkd/getstackoutput-crossregion/consumer';
  * record holds `arn:aws:sqs:us-east-1:<acct>:{{resolve:...}}`. The suffix (a
  * context value verify.sh passes) keeps every run's queue names unique.
  */
-export function gso4847SecretNames(scope: Construct): { main: string; pre: string; rot: string } {
+export function gso4847SecretNames(scope: Construct): {
+  main: string;
+  pre: string;
+  rot: string;
+  iam: string;
+} {
   const suffix = (scope.node.tryGetContext('gso4847Suffix') as string | undefined) ?? 'local';
   return {
     main: `cdkd-gso-4847-${suffix}`,
     pre: `cdkd-gso-4847-pre-${suffix}`,
     rot: `cdkd-gso-4847-rot-${suffix}`,
+    // go-to-k/cdkd#4879: a ROLE name (`{"role": ...}`), same-name-two-values too.
+    iam: `cdkd-gso-4847-iam-${suffix}`,
   };
 }
+
+/** go-to-k/cdkd#4879: the inline policy `CdkdGsoConsumer4879` puts on that role. */
+export const GSO_4879_POLICY_NAME = 'cdkd-gso-4879-inline';
 const queueNameRef = (secretName: string): string =>
   `{{resolve:secretsmanager:${secretName}:SecretString:queue}}`;
 
@@ -126,6 +137,9 @@ export class GsoProducerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'QueueName', { value: queueNameRef(names.main) });
     new cdk.CfnOutput(this, 'QueueNamePre', { value: queueNameRef(names.pre) });
     new cdk.CfnOutput(this, 'QueueNameRot', { value: queueNameRef(names.rot) });
+    new cdk.CfnOutput(this, 'RoleName4879', {
+      value: `{{resolve:secretsmanager:${names.iam}:SecretString:role}}`,
+    });
   }
 }
 
@@ -208,5 +222,36 @@ export class GsoConsumerPreStack extends cdk.Stack {
       });
       new cdk.CfnOutput(this, 'RotatedArn', { value: rotated.attrArn });
     }
+  }
+}
+
+/**
+ * go-to-k/cdkd#4879 arm (us-east-1): an inline `AWS::IAM::Policy` whose
+ * `Roles` names a role through the producer's `RoleName4879` output, read
+ * with `Region: us-west-2`. Its record holds the region-less
+ * `{{resolve:...}}` reference, and the stack reads another region, so a
+ * destroy without the v12 recorded region skips it as ambiguous (exit 2, the
+ * policy left on the role). Its own stack, so the main consumer's drift and
+ * scrub phases are unchanged.
+ */
+export class GsoConsumer4879Stack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    const policy = new iam.CfnPolicy(this, 'Policy4879', {
+      policyName: GSO_4879_POLICY_NAME,
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'logs:DescribeLogGroups', Resource: '*' }],
+      },
+    });
+    policy.addPropertyOverride('Roles', [
+      {
+        'Fn::GetStackOutput': {
+          StackName: PRODUCER_STACK_NAME,
+          OutputName: 'RoleName4879',
+          Region: PRODUCER_REGION,
+        },
+      },
+    ]);
   }
 }
