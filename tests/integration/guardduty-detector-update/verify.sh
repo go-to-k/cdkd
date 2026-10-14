@@ -92,12 +92,15 @@ detector_tag() {
 }
 aws_partition() { case "${REGION}" in cn-*) echo aws-cn ;; us-gov-*) echo aws-us-gov ;; *) echo aws ;; esac; }
 
-# "Name=Status" of every feature the template never declares, sorted, one line.
+# "Name=Status" of every feature on detector $1 except RDS_LOGIN_EVENTS and the
+# names in $2 (a JMESPath condition suffix, e.g. " && Name!='EKS_AUDIT_LOGS'"),
+# sorted, tab-separated on one line.
 omitted_features() {
   aws guardduty get-detector --detector-id "$1" --region "${REGION}" \
-    --query "sort_by(Features[?Name!='RDS_LOGIN_EVENTS' && Name!='EKS_AUDIT_LOGS'], &Name)[].join('=', [Name, Status])" \
+    --query "sort_by(Features[?Name!='RDS_LOGIN_EVENTS'${2:-}], &Name)[].join('=', [Name, Status])" \
     --output text
 }
+NOT_EKS_AUDIT=" && Name!='EKS_AUDIT_LOGS'"
 
 # get-detector field ($2 is a JMESPath query) on detector $1.
 detector_field() {
@@ -155,6 +158,8 @@ cleanup
 
 # Assert the in-place invariants every update phase shares.
 #   $1 phase label
+#   $2 the omitted-feature baseline to compare against
+#   $3 the omitted_features exclusion matching that baseline
 assert_updated_in_place() {
   local ids rds omitted
   ids="$(detector_ids)"
@@ -165,9 +170,9 @@ assert_updated_in_place() {
   if [ "${rds}" != "ENABLED" ]; then
     echo "FAIL: $1: RDS_DATA_RISK changed from ENABLED to '${rds}'" >&2; exit 1
   fi
-  omitted="$(omitted_features "${DETECTOR_ID}")"
-  if [ "${omitted}" != "${OMITTED_FEATURES}" ]; then
-    echo "FAIL: $1: features the template omits changed: was '${OMITTED_FEATURES}', now '${omitted}'" >&2; exit 1
+  omitted="$(omitted_features "${DETECTOR_ID}" "$3")"
+  if [ "${omitted}" != "$2" ]; then
+    echo "FAIL: $1: features the template omits changed: was '$2', now '${omitted}'" >&2; exit 1
   fi
   if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
     echo "FAIL: $1: cdkd drift is not clean after the update" >&2; exit 1
@@ -191,20 +196,25 @@ RDS_DATA_RISK_STATUS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='RDS_LO
 if [ "${RDS_DATA_RISK_STATUS}" != "ENABLED" ]; then
   echo "FAIL: premise: expected GuardDuty to enable RDS_DATA_RISK on create, got '${RDS_DATA_RISK_STATUS}'" >&2; exit 1
 fi
-OMITTED_FEATURES="$(omitted_features "${DETECTOR_ID}")"
-case "${OMITTED_FEATURES}" in
-  *RUNTIME_MONITORING=*) ;;
-  *) echo "FAIL: premise: expected the read model to list omitted features, got '${OMITTED_FEATURES}'" >&2; exit 1 ;;
-esac
+# Phase 2 omits every feature but RDS_LOGIN_EVENTS; Phase 3 also declares
+# EKS_AUDIT_LOGS, so its baseline leaves that one out.
+OMITTED_P2="$(omitted_features "${DETECTOR_ID}")"
+OMITTED_P3="$(omitted_features "${DETECTOR_ID}" "${NOT_EKS_AUDIT}")"
+# Both runtime features must be in the read model: that pair is what
+# UpdateDetector refuses on a scalar-only patch.
+if [[ $'\t'"${OMITTED_P2}"$'\t' != *$'\t'EKS_RUNTIME_MONITORING=* ]] \
+  || [[ $'\t'"${OMITTED_P2}"$'\t' != *$'\t'RUNTIME_MONITORING=* ]]; then
+  echo "FAIL: premise: expected both EKS_RUNTIME_MONITORING and RUNTIME_MONITORING in the read model, got '${OMITTED_P2}'" >&2; exit 1
+fi
 F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
 if [ "${F}" = "ONE_HOUR" ]; then
   echo "FAIL: premise: FindingPublishingFrequency is already ONE_HOUR before Phase 2" >&2; exit 1
 fi
 EKS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='EKS_AUDIT_LOGS'] | [0].Status")"
-if [ "${EKS}" = "DISABLED" ]; then
-  echo "FAIL: premise: EKS_AUDIT_LOGS is already DISABLED before Phase 3" >&2; exit 1
+if [ "${EKS}" != "ENABLED" ]; then
+  echo "FAIL: premise: expected EKS_AUDIT_LOGS ENABLED before Phase 3 sets it DISABLED, got '${EKS}'" >&2; exit 1
 fi
-echo "    detector created; RDS_DATA_RISK=${RDS_DATA_RISK_STATUS}; omitted: ${OMITTED_FEATURES}"
+echo "    detector created; RDS_DATA_RISK=${RDS_DATA_RISK_STATUS}; omitted: ${OMITTED_P2}"
 
 # --- Phase 2: scalar-only update -----------------------------------------
 echo "==> Phase 2: re-deploy with FindingPublishingFrequency: ONE_HOUR"
@@ -215,7 +225,7 @@ F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
 if [ "${F}" != "ONE_HOUR" ]; then
   echo "FAIL: Phase 2: FindingPublishingFrequency is '${F}', expected ONE_HOUR" >&2; exit 1
 fi
-assert_updated_in_place "Phase 2"
+assert_updated_in_place "Phase 2" "${OMITTED_P2}" ""
 echo "    scalar update applied in place"
 
 # --- Phase 3: Features update --------------------------------------------
@@ -231,7 +241,7 @@ F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
 if [ "${F}" != "ONE_HOUR" ]; then
   echo "FAIL: Phase 3: FindingPublishingFrequency is '${F}', expected ONE_HOUR" >&2; exit 1
 fi
-assert_updated_in_place "Phase 3"
+assert_updated_in_place "Phase 3" "${OMITTED_P3}" "${NOT_EKS_AUDIT}"
 echo "    Features update applied in place"
 
 # --- Phase 4: destroy --------------------------------------------------
