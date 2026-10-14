@@ -24,9 +24,9 @@ const DETECTOR_TYPE = 'AWS::GuardDuty::Detector';
  * an existing member (RFC 6902), and the read model always carries both keys —
  * after an update too — so neither op can miss its target.
  *
- * A feature setting the template does not mention keeps its AWS value:
- * `UpdateDetector` leaves an omitted feature or additional configuration as it
- * is (measured on `RDS_LOGIN_EVENTS`' `RDS_DATA_RISK`).
+ * Settings the template does not mention keep their AWS value: measured for
+ * the features the template omits and for `RDS_DATA_RISK`, which GuardDuty
+ * enables under `RDS_LOGIN_EVENTS` (the `guardduty-detector-update` fixture).
  *
  * Every other type, the legacy `DataSources`-only shape, and an empty patch
  * are returned unchanged (same array).
@@ -40,8 +40,8 @@ export function withGuardDutyDetectorReadBackOps(
   if (!Array.isArray(desired['Features'])) return patch;
   if (Object.prototype.hasOwnProperty.call(desired, 'DataSources')) return patch;
 
-  const touches = (key: string): boolean =>
-    patch.some((op) => op.path === `/${key}` || op.path.startsWith(`/${key}/`));
+  // The generator emits top-level ops only (`json-patch-generator.ts`).
+  const touches = (key: string): boolean => patch.some((op) => op.path === `/${key}`);
 
   const extra: JsonPatchOp[] = [];
   if (!touches('Features')) {

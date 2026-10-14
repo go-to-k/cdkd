@@ -7,11 +7,12 @@
 # refuses beside the declared Features; before the fix every update failed.
 #
 # Phases:
-#   1. Deploy a detector declaring only RDS_LOGIN_EVENTS. Record its id and the
-#      RDS_DATA_RISK status GuardDuty set.
+#   1. Deploy a detector declaring only RDS_LOGIN_EVENTS. Require RDS_DATA_RISK
+#      ENABLED (GuardDuty's default, so a reset to DISABLED is visible) and
+#      record the status of every feature the template omits.
 #   2. Re-deploy with CDKD_TEST_UPDATE=scalar (FindingPublishingFrequency only).
-#      Assert ONE_HOUR reached AWS, the id is unchanged, RDS_DATA_RISK is
-#      unchanged, and `cdkd drift` is clean.
+#      Assert ONE_HOUR reached AWS, the id is unchanged, RDS_DATA_RISK is still
+#      ENABLED, the omitted features are unchanged, and `cdkd drift` is clean.
 #   3. Re-deploy with CDKD_TEST_UPDATE=scalar,features (adds EKS_AUDIT_LOGS:
 #      DISABLED). Same assertions, plus EKS_AUDIT_LOGS is DISABLED.
 #   4. Destroy; assert the detector and the state file are gone.
@@ -91,6 +92,13 @@ detector_tag() {
 }
 aws_partition() { case "${REGION}" in cn-*) echo aws-cn ;; us-gov-*) echo aws-us-gov ;; *) echo aws ;; esac; }
 
+# "Name=Status" of every feature the template never declares, sorted, one line.
+omitted_features() {
+  aws guardduty get-detector --detector-id "$1" --region "${REGION}" \
+    --query "sort_by(Features[?Name!='RDS_LOGIN_EVENTS' && Name!='EKS_AUDIT_LOGS'], &Name)[].join('=', [Name, Status])" \
+    --output text
+}
+
 # get-detector field ($2 is a JMESPath query) on detector $1.
 detector_field() {
   aws guardduty get-detector --detector-id "$1" --region "${REGION}" --query "$2" --output text
@@ -148,14 +156,18 @@ cleanup
 # Assert the in-place invariants every update phase shares.
 #   $1 phase label
 assert_updated_in_place() {
-  local ids rds
+  local ids rds omitted
   ids="$(detector_ids)"
   if [ "${ids}" != "${DETECTOR_ID}" ]; then
     echo "FAIL: $1: expected only detector ${DETECTOR_ID}, got '${ids}' (replaced?)" >&2; exit 1
   fi
   rds="$(detector_field "${DETECTOR_ID}" "Features[?Name=='RDS_LOGIN_EVENTS'] | [0].AdditionalConfiguration[?Name=='RDS_DATA_RISK'] | [0].Status")"
-  if [ "${rds}" != "${RDS_DATA_RISK_STATUS}" ]; then
-    echo "FAIL: $1: RDS_DATA_RISK changed from ${RDS_DATA_RISK_STATUS} to '${rds}'" >&2; exit 1
+  if [ "${rds}" != "ENABLED" ]; then
+    echo "FAIL: $1: RDS_DATA_RISK changed from ENABLED to '${rds}'" >&2; exit 1
+  fi
+  omitted="$(omitted_features "${DETECTOR_ID}")"
+  if [ "${omitted}" != "${OMITTED_FEATURES}" ]; then
+    echo "FAIL: $1: features the template omits changed: was '${OMITTED_FEATURES}', now '${omitted}'" >&2; exit 1
   fi
   if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
     echo "FAIL: $1: cdkd drift is not clean after the update" >&2; exit 1
@@ -176,9 +188,13 @@ if [ "${TAG}" != "${TAG_VALUE}" ]; then
   echo "FAIL: the detector after Phase 1 does not carry the fixture tag" >&2; exit 1
 fi
 RDS_DATA_RISK_STATUS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='RDS_LOGIN_EVENTS'] | [0].AdditionalConfiguration[?Name=='RDS_DATA_RISK'] | [0].Status")"
-case "${RDS_DATA_RISK_STATUS}" in
-  ENABLED|DISABLED) ;;
-  *) echo "FAIL: expected an RDS_DATA_RISK status after Phase 1, got '${RDS_DATA_RISK_STATUS}'" >&2; exit 1 ;;
+if [ "${RDS_DATA_RISK_STATUS}" != "ENABLED" ]; then
+  echo "FAIL: premise: expected GuardDuty to enable RDS_DATA_RISK on create, got '${RDS_DATA_RISK_STATUS}'" >&2; exit 1
+fi
+OMITTED_FEATURES="$(omitted_features "${DETECTOR_ID}")"
+case "${OMITTED_FEATURES}" in
+  *RUNTIME_MONITORING=*) ;;
+  *) echo "FAIL: premise: expected the read model to list omitted features, got '${OMITTED_FEATURES}'" >&2; exit 1 ;;
 esac
 F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
 if [ "${F}" = "ONE_HOUR" ]; then
@@ -188,7 +204,7 @@ EKS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='EKS_AUDIT_LOGS'] | [0].
 if [ "${EKS}" = "DISABLED" ]; then
   echo "FAIL: premise: EKS_AUDIT_LOGS is already DISABLED before Phase 3" >&2; exit 1
 fi
-echo "    detector created; RDS_DATA_RISK=${RDS_DATA_RISK_STATUS}"
+echo "    detector created; RDS_DATA_RISK=${RDS_DATA_RISK_STATUS}; omitted: ${OMITTED_FEATURES}"
 
 # --- Phase 2: scalar-only update -----------------------------------------
 echo "==> Phase 2: re-deploy with FindingPublishingFrequency: ONE_HOUR"

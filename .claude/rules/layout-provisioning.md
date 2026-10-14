@@ -71,7 +71,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
 
-- **guardduty-detector-patch.ts** - `CloudControlProvider.update` overrides a GuardDuty detector's read-back `Features` / `DataSources`, which `UpdateDetector` refuses ([#4910](https://github.com/go-to-k/cdkd/issues/4910)).
+- **guardduty-detector-patch.ts** - `CloudControlProvider.update` overrides a GuardDuty detector's read-back `Features` / `DataSources`, which `UpdateDetector` refuses, on a non-empty patch when the template declares a `Features` list and no `DataSources` ([#4910](https://github.com/go-to-k/cdkd/issues/4910)).
 
 - **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; issue [#3872](https://github.com/go-to-k/cdkd/issues/3872)). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 
