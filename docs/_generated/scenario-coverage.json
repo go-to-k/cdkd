@@ -1778,6 +1778,11 @@
       "scenarios": []
     },
     {
+      "name": "logs-loggroup-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lost-child-after-failed-deploy",
       "annotated": false,
       "scenarios": []
@@ -3390,6 +3395,7 @@
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
+    "logs-loggroup-fix-forward-orphan",
     "lost-child-after-failed-deploy",
     "neptune-fix-forward-orphan",
     "nested-required-preflight",

@@ -5721,6 +5721,7 @@
         "loggroup-class-guard",
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
+        "logs-loggroup-fix-forward-orphan",
         "monitoring",
         "perf-cross-backend-check",
         "remove-protection",
@@ -5805,6 +5806,9 @@
         "loggroup-never-expire-guard": [
           "l1",
           "l2"
+        ],
+        "logs-loggroup-fix-forward-orphan": [
+          "l1"
         ],
         "monitoring": [
           "l2"

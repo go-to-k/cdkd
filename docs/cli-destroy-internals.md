@@ -175,7 +175,8 @@ steps are:
   is never reused (an EC2 instance, a load balancer), or a live read returns the
   identity the journal recorded — and no other stack's state record holds it
   now (a later `cdkd import` may have adopted it). One it cannot prove (a
-  CloudWatch Logs log group whose name another group may have taken since), or one
+  CloudWatch Logs log group deleted by hand and re-created under its name since,
+  which reports another creation time), or one
   another stack holds or whose holders cannot be read, keeps its protection,
   with a warning. Without the flag, a protected one's delete is refused and the
   journal keeps it for a re-run; one that is unproven or another stack holds is

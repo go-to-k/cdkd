@@ -64,10 +64,24 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+
+const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
+
+/**
+ * A log group NAME (1-512 of `A-Z a-z 0-9 . - _ / #`, CloudWatch Logs'
+ * `logGroupName` pattern): the physical id this provider records. The
+ * identity answers (`isSameResource`, `resourceIdentity`) refuse anything
+ * else, an ARN included: this provider never records one.
+ */
+function isLogGroupName(id: string): boolean {
+  return /^[A-Za-z0-9._/#-]{1,512}$/.test(id);
+}
 
 /**
  * Whether a raw `RetentionInDays` is CloudFormation's spelling of "no
@@ -1417,7 +1431,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Log group ${physicalId} does not exist, skipping deletion`);
+        this.logGoneOnDelete(logicalId, physicalId, context);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1429,6 +1443,141 @@ export class LogsLogGroupProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The not-found arm of `delete`. A journaled failed-CREATE orphan already
+   * gone settles with exit 0 (go-to-k/cdkd#4606), so it is said once at info;
+   * the name is interpolated verbatim for the caller's printing bag to mask.
+   */
+  private logGoneOnDelete(
+    logicalId: string,
+    physicalId: string,
+    context: DeleteContext | undefined
+  ): void {
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        safeMsg`  Log group ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+      );
+    } else {
+      this.logger.debug(`Log group ${physicalId} does not exist, skipping deletion`);
+    }
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the log group a failed CREATE journaled is the
+   * one the record under the same logical id holds (a fix-forward that
+   * created a new one there under another name).
+   *
+   * Only `AWS::Logs::LogGroup`; both ids must be log group NAMES (the
+   * physical id this provider records), else `'unknown'`, and so are two
+   * names differing only in case: this check does not decide on CloudWatch
+   * Logs' case rules. Equal names are `'same'` without a read: whatever holds
+   * the name now is the record's, and deleting by that name would delete it.
+   * A log group name is unique per account and region and cannot be changed.
+   * After the region check the record's log group must read back (else
+   * `'unknown'`); the journaled one is `'same'` when it reads back under the
+   * record's ARN, `'different'` under another, and `'different'` when it is
+   * not listed: the record's log group answers to its own, other, name. Any
+   * other read failure throws, which the caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== LOG_GROUP_TYPE) return 'unknown';
+    if (!isLogGroupName(journaledPhysicalId) || !isLogGroupName(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.logsClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordGroup = await this.readIdentityIfExists(record.physicalId);
+    if (recordGroup === undefined) return 'unknown';
+    const journaledGroup = await this.readIdentityIfExists(journaledPhysicalId);
+    if (journaledGroup === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case (the ARN ends
+    // in the name); kept so the verdict rests on AWS's answer.
+    return journaledGroup.arn === recordGroup.arn ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the log group's ARN and creation time,
+   * `<logGroupArn>@<creationTime epoch ms>`. The ARN is built from the name,
+   * so a log group re-created under the name repeats it; the creation time
+   * is what tells the two apart (the `logs-loggroup-fix-forward-orphan`
+   * fixture measures the re-create). `CreateLogGroup` answers with neither,
+   * so a failed CREATE's token is this read, which the engine makes when it
+   * journals the failure; no ordinary deploy pays for it.
+   *
+   * `undefined` for another type, an id that is not a log group name, a
+   * client in another region than `expectedRegion`, and a response without
+   * both fields. `RESOURCE_NOT_FOUND` when `DescribeLogGroups` does not list
+   * the exact name (or answers `ResourceNotFoundException`); any other
+   * failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== LOG_GROUP_TYPE || !isLogGroupName(physicalId)) return undefined;
+    const clientRegion = await this.logsClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const group = await this.readIdentityIfExists(physicalId);
+    if (group === undefined) return RESOURCE_NOT_FOUND;
+    if (group.creationTime === undefined) return undefined;
+    return `${group.arn}@${group.creationTime}`;
+  }
+
+  /**
+   * The log group's `logGroupArn` and `creationTime` from `DescribeLogGroups`
+   * (by prefix, the exact name picked out: the response is ASCII-sorted, so
+   * the exact name sorts first among every name it prefixes and one page
+   * answers), or `undefined` when the exact name is not listed or AWS answers
+   * `ResourceNotFoundException`. Any other failure, a first page without the
+   * name that has more pages, and a listed group with no ARN throw: "could
+   * not read" never reads as "gone". A `creationTime` that
+   * is not a positive integer reads as absent.
+   */
+  private async readIdentityIfExists(
+    name: string
+  ): Promise<{ arn: string; creationTime: number | undefined } | undefined> {
+    let found;
+    try {
+      const response = await this.logsClient.send(
+        new DescribeLogGroupsCommand({ logGroupNamePrefix: name })
+      );
+      found = response.logGroups?.find((g) => g.logGroupName === name);
+      // A later page could still hold the name if AWS ever stopped sorting
+      // it first: only a complete answer reads as "not listed".
+      if (found === undefined && response.nextToken) {
+        throw new Error(
+          'CloudWatch Logs did not list the log group on a first page that has more pages'
+        );
+      }
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) return undefined;
+      throw error;
+    }
+    if (found === undefined) return undefined;
+    const arn = found.logGroupArn;
+    if (typeof arn !== 'string' || arn === '') {
+      throw new Error('CloudWatch Logs returned no logGroupArn');
+    }
+    const created = found.creationTime;
+    return {
+      arn,
+      creationTime:
+        typeof created === 'number' && Number.isSafeInteger(created) && created > 0
+          ? created
+          : undefined,
+    };
   }
 
   /**
