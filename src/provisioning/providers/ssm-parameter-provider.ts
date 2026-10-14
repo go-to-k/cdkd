@@ -585,7 +585,7 @@ export class SSMParameterProvider implements ResourceProvider {
       } else if (
         context?.desiredFromAwsReadback === true &&
         !['[]', undefined].includes(ssmPoliciesParameter(previousProperties['Policies'])) &&
-        templateDeclaresNoPolicies(context.recordedProperties)
+        context.declaredEmptyProperties?.has('Policies') === true
       ) {
         // go-to-k/cdkd#4884: PutParameter keeps a parameter's policies until it
         // is sent new ones or an empty one, so omitting `Policies` would leave
@@ -1071,24 +1071,6 @@ export class SSMParameterProvider implements ResourceProvider {
  * Manager user guide spells it ("Assigning parameter policies").
  */
 export const SSM_CLEAR_POLICIES = '[{}]';
-
-/**
- * Whether the record's template side declares `Policies` and declares none
- * (`'[]'`, `''`, `[]`). An undeclared `Policies` captured empty is never
- * compared by `cdkd drift`, so it never reaches a revert.
- */
-function templateDeclaresNoPolicies(recorded: Record<string, unknown> | undefined): boolean {
-  const declared = recorded?.['Policies'];
-  if (Array.isArray(declared)) return declared.length === 0;
-  if (typeof declared !== 'string') return false;
-  if (declared.trim() === '') return true;
-  try {
-    const parsed: unknown = JSON.parse(declared);
-    return Array.isArray(parsed) && parsed.length === 0;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * `PutParameter`'s `Policies`, which is a JSON STRING (CloudFormation's
