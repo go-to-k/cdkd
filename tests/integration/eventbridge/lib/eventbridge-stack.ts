@@ -26,6 +26,10 @@ export class EventBridgeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // UPDATE phase: see the rule below (issue #955) and the bus Description
+    // (issue #2613).
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
     // Create custom EventBridge event bus
     // logConfig exercises the #609 LogConfig backfill — rides on
     // CreateEventBus/UpdateEventBus directly, NO separate control-plane
@@ -37,6 +41,10 @@ export class EventBridgeStack extends cdk.Stack {
         level: events.Level.INFO,
         includeDetail: events.IncludeDetail.FULL,
       },
+      // Issue #2613: a changed Description is an in-place UpdateEventBus, so
+      // the UPDATE phase reaches the bus provider's update() and its
+      // recorded-region guard, not only the rule delete.
+      description: isUpdate ? 'cdkd test bus (updated)' : 'cdkd test bus',
     });
 
     // Create Lambda function with inline code as the rule target
@@ -64,7 +72,6 @@ def handler(event, context):
     // re-deploy exercises the standalone diff-driven delete of a custom-bus
     // rule — the path that silently no-oped against the default bus and
     // orphaned the rule before the fix.
-    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
     if (!isUpdate) {
       // Create EventBridge rule on the custom bus with an event pattern

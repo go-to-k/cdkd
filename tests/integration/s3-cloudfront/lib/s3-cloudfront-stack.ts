@@ -43,6 +43,22 @@ export class S3CloudFrontStack extends cdk.Stack {
       })
     );
 
+    // UPDATE mode (CDKD_TEST_UPDATE=true, see below) adds a statement, an
+    // in-place PutBucketPolicy through the bucket policy provider's update()
+    // and its recorded-region guard (issue #2613).
+    if (process.env.CDKD_TEST_UPDATE === 'true') {
+      bucket.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: 'CdkdUpdateDenyInsecureTransport',
+          effect: iam.Effect.DENY,
+          actions: ['s3:*'],
+          resources: [bucket.bucketArn, bucket.arnForObjects('*')],
+          principals: [new iam.AnyPrincipal()],
+          conditions: { Bool: { 'aws:SecureTransport': 'false' } },
+        })
+      );
+    }
+
     // Primary S3-via-OAI origin, plus an OriginGroup with an HTTP fallback so
     // the distribution carries an `AWS::CloudFront::Distribution.OriginGroups`
     // block — exercises CloudFrontDistributionProvider drift normalization of
