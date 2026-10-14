@@ -768,11 +768,24 @@ describe('NestedStackProvider', () => {
     // ONLY from this delete's own context. A deploy's nested-stack removal
     // passes a context without it, so the child resolves nothing.
     it.each([
-      ['a deploy-reached removal (no opt-in on the delete context)', {}, false],
+      ['a deploy-reached removal (no opt-in on the delete context)', {}, undefined],
       [
         'a destroy (opted in)',
         { resolveSecretDerivedPrincipals: { importedProducerRegions: ['us-west-2'] } },
-        true,
+        { inheritedProducerRegions: ['us-west-2'] },
+      ],
+      // go-to-k/cdkd#4887: a child destroyed on its own does not know its
+      // parent's regions, so its grandchild must not read the child's own
+      // regions as complete evidence.
+      [
+        'a destroy whose evidence is incomplete (a child destroyed on its own)',
+        {
+          resolveSecretDerivedPrincipals: {
+            importedProducerRegions: ['us-west-2'],
+            producerRegionsIncomplete: true,
+          },
+        },
+        { inheritedProducerRegions: ['us-west-2'], producerRegionsIncomplete: true },
       ],
     ])('%s: forwards the opt-in only when its own context carries it', async (_what, deleteCtx, forwarded) => {
       const provider = new NestedStackProvider();
@@ -786,11 +799,10 @@ describe('NestedStackProvider', () => {
         )
       );
       expect(destroyCalls.length).toBe(1);
-      if (forwarded) {
-        // The parent's producer regions go down with it.
-        expect(destroyCalls[0]!.destroyCtx['resolveSecretDerivedPrincipals']).toEqual({
-          inheritedProducerRegions: ['us-west-2'],
-        });
+      if (forwarded !== undefined) {
+        // The parent's producer regions go down with it, and so does an
+        // incomplete-evidence marker.
+        expect(destroyCalls[0]!.destroyCtx['resolveSecretDerivedPrincipals']).toEqual(forwarded);
       } else {
         expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('resolveSecretDerivedPrincipals');
       }

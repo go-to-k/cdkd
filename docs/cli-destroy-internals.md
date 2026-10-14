@@ -389,8 +389,11 @@ The custom-resource handler causes attempted the delete. The per-resource
     or membership it holds from elsewhere. cdkd cannot tell that apart.
 
   A nested child destroyed on its own (`cdkd state destroy '<parent>~<child>'`)
-  does not see the regions its parent reads from, so it resolves nothing and
-  skips such a record: destroy it through the parent. One case the evidence
+  does not see the regions its parent reads from. It still resolves a
+  reference its state record places in a region (recorded since state schema
+  v12), in that region, but skips a record holding any other region-less
+  reference, which may name its parent's region: destroy it through the
+  parent. Its own nested children inherit the same limit. One case the evidence
   cannot cover: a stack whose cross-stack read records an earlier cdkd version
   already dropped in a partial destroy. There, a region-less reference is
   resolved against a same-named secret in the stack's own region, and a

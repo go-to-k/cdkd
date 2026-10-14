@@ -3,8 +3,11 @@ import type { ResolverContext } from '../deployment/intrinsic-function-resolver.
 import {
   classifyRecordedSecretRegion,
   producerRegionsFromState,
+  regionLessSecretName,
   type RecordedSecretRegionVerdict,
 } from '../deployment/secret-region-classification.js';
+import type { ProducerRegionEvidence } from '../deployment/producer-regions-scope.js';
+import { recordedReferenceRegions } from '../deployment/reference-provenance-record.js';
 import {
   createSecretMasker,
   dynamicReferenceTokens,
@@ -67,6 +70,19 @@ function resolvableVerdict(verdict: RecordedSecretRegionVerdict): boolean {
 }
 
 /**
+ * A region-less secret token no record places in a region
+ * (go-to-k/cdkd#4887): with a nested child's parent regions unknown, its
+ * `local` verdict may be the parent's region, so it is never resolved. The
+ * twin of the replay's `refuseUnprovenReplaySecret`.
+ */
+function unprovenRegionLessToken(
+  token: string,
+  recordedRegions: ReadonlyMap<string, string> | undefined
+): boolean {
+  return regionLessSecretName(token) !== undefined && recordedRegions?.get(token) === undefined;
+}
+
+/**
  * Resolve a secret-derived principal list a DELETE has to address
  * (go-to-k/cdkd#4150). State keeps a principal name that came from a secret as
  * its `{{resolve:...}}` expression, which names no principal, and a delete has
@@ -83,7 +99,9 @@ function resolvableVerdict(verdict: RecordedSecretRegionVerdict): boolean {
  * go-to-k/cdkd#4879), which resolves there through the stack resolver's
  * producer-region guest, as the rollback replay and `cdkd drift` do. Without
  * a recorded region, a region-less spelling beside a cross-region import is
- * `ambiguous` and is not guessed. The
+ * `ambiguous` and is not guessed. With INCOMPLETE evidence (a nested child
+ * destroyed on its own, go-to-k/cdkd#4887), a region-less token without a
+ * recorded region is not resolved at all: it may be the parent's. The
  * plaintext is recorded into a map of this call's own, and the returned masker
  * masks it; the caller masks every printed NAME on its own (the whole-value
  * arm, which a name under `MIN_NEEDLE_LENGTH` needs). An AWS error message
@@ -110,15 +128,22 @@ function resolvableVerdict(verdict: RecordedSecretRegionVerdict): boolean {
 export async function resolveSecretDerivedPrincipals<K extends string>(
   values: Record<K, unknown>,
   region: string | undefined,
-  importedProducerRegions: readonly string[],
+  producerRegions: readonly string[] | ProducerRegionEvidence,
   recordedRegions: ReadonlyMap<string, string> | undefined,
   makeResolver: (region: string) => SecretPrincipalResolver = (r) =>
     new IntrinsicFunctionResolver(r)
 ): Promise<ResolvedSecretPrincipals<K> | undefined> {
   if (!region) return undefined;
   const stackRegion = region;
+  const evidence: ProducerRegionEvidence =
+    'complete' in producerRegions
+      ? producerRegions
+      : { regions: producerRegions as readonly string[], complete: true };
   const verdictOf = (token: string): RecordedSecretRegionVerdict =>
-    classifyRecordedSecretRegion(token, stackRegion, importedProducerRegions, recordedRegions);
+    classifyRecordedSecretRegion(token, stackRegion, evidence.regions, recordedRegions);
+  const resolvable = (token: string): boolean =>
+    resolvableVerdict(verdictOf(token)) &&
+    (evidence.complete || !unprovenRegionLessToken(token, recordedRegions));
   // Every entry checked BEFORE any resolution: a value that will be refused
   // anyway sends no request to Secrets Manager / SSM.
   const entries = {} as Record<K, string[]>;
@@ -132,7 +157,7 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
           !entry.includes(SECRET_MASK) &&
           (!entry.includes('{{resolve:') ||
             (dynamicReferenceTokens(entry).length > 0 &&
-              dynamicReferenceTokens(entry).every((t) => resolvableVerdict(verdictOf(t)))))
+              dynamicReferenceTokens(entry).every(resolvable)))
       )
     ) {
       return undefined;
@@ -282,7 +307,28 @@ export function destroyProducerRegions(
  * `local` where the first run read `ambiguous`).
  */
 export function holdsSecretDerivedPrincipalRecord(resource: unknown): boolean {
-  if (typeof resource !== 'object' || resource === null) return false;
+  return resolvablePrincipalLists(resource).length > 0;
+}
+
+/**
+ * Whether such a record holds a region-less secret reference its v12
+ * provenance places in no region (go-to-k/cdkd#4887): the one a nested child
+ * destroyed on its own cannot resolve, since its parent's regions are unknown.
+ */
+export function holdsUnprovenSecretPrincipalRecord(resource: unknown): boolean {
+  const lists = resolvablePrincipalLists(resource);
+  if (lists.length === 0) return false;
+  const recorded = recordedReferenceRegions(resource);
+  return lists.some((list) =>
+    list.some((entry) =>
+      dynamicReferenceTokens(entry).some((t) => unprovenRegionLessToken(t, recorded))
+    )
+  );
+}
+
+/** The principal lists of `resource` that {@link isResolvableSecretPrincipalList} accepts. */
+function resolvablePrincipalLists(resource: unknown): string[][] {
+  if (typeof resource !== 'object' || resource === null) return [];
   const { resourceType, properties } = resource as { resourceType?: unknown; properties?: unknown };
   const keys =
     typeof resourceType === 'string' &&
@@ -293,5 +339,7 @@ export function holdsSecretDerivedPrincipalRecord(resource: unknown): boolean {
     typeof properties === 'object' && properties !== null
       ? (properties as Record<string, unknown>)
       : {};
-  return keys.some((key) => isResolvableSecretPrincipalList(props[key]));
+  return keys
+    .map((key) => props[key])
+    .filter((value): value is string[] => isResolvableSecretPrincipalList(value));
 }

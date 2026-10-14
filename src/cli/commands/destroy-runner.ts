@@ -82,6 +82,7 @@ import { recordedReferenceRegions } from '../../deployment/reference-provenance-
 import {
   destroyProducerRegions,
   holdsSecretDerivedPrincipalRecord,
+  holdsUnprovenSecretPrincipalRecord,
 } from '../../provisioning/secret-principal-resolution.js';
 import {
   isMarkedNonRetryable,
@@ -226,9 +227,14 @@ export interface DestroyRunnerContext {
    * `cdkd destroy` / `cdkd state destroy` (and a cascading nested destroy)
    * only; never set by a deploy's nested-stack removal (go-to-k/cdkd#4150,
    * `DeleteContext.resolveSecretDerivedPrincipals`). A nested child carries
-   * the parent's producer regions, which its own state does not record.
+   * the parent's producer regions, which its own state does not record, and
+   * `producerRegionsIncomplete` when its parent's own evidence was (a parent
+   * destroyed on its own, go-to-k/cdkd#4887).
    */
-  resolveSecretDerivedPrincipals?: { inheritedProducerRegions?: readonly string[] };
+  resolveSecretDerivedPrincipals?: {
+    inheritedProducerRegions?: readonly string[];
+    producerRegionsIncomplete?: boolean;
+  };
 
   /**
    * go-to-k/cdkd#4705: refuse when the bucket also records this stack and
@@ -1598,6 +1604,7 @@ export async function runDestroyForStack(
   // `try` below, not here: the lock is held by now, and its warning writes to
   // stderr, which can EPIPE — a throw before that `try` would strand the lock.
   let secretPrincipalRegions: string[] | undefined;
+  let secretPrincipalRegionsIncomplete = false;
   const buildDestroySnapshot = (): StackState => {
     // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
     // keep the persisted shape identical to a freshly-deployed stack that
@@ -1648,20 +1655,25 @@ export async function runDestroyForStack(
   try {
     // A nested child destroyed ON ITS OWN (`cdkd state destroy
     // '<parent>~<child>'`) has no parent to hand down the regions its parent
-    // reads from, so its evidence is incomplete: it resolves nothing (skips).
+    // reads from, so its evidence is incomplete (go-to-k/cdkd#4887): a
+    // reference its record places in a region still resolves there, and every
+    // other region-less one is skipped. A parent whose own evidence was
+    // incomplete hands the marker down.
+    const optIn = ctx.resolveSecretDerivedPrincipals;
     secretPrincipalRegions =
-      ctx.resolveSecretDerivedPrincipals !== undefined &&
-      (state.parentStack === undefined ||
-        ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions !== undefined)
-        ? destroyProducerRegions(state, ctx.resolveSecretDerivedPrincipals.inheritedProducerRegions)
+      optIn !== undefined
+        ? destroyProducerRegions(state, optIn.inheritedProducerRegions)
         : undefined;
+    secretPrincipalRegionsIncomplete =
+      optIn !== undefined &&
+      (optIn.producerRegionsIncomplete === true ||
+        (state.parentStack !== undefined && optIn.inheritedProducerRegions === undefined));
     if (
-      ctx.resolveSecretDerivedPrincipals !== undefined &&
-      secretPrincipalRegions === undefined &&
-      Object.values(state.resources ?? {}).some((r) => holdsSecretDerivedPrincipalRecord(r))
+      secretPrincipalRegionsIncomplete &&
+      Object.values(state.resources ?? {}).some((r) => holdsUnprovenSecretPrincipalRecord(r))
     ) {
       logger.warn(
-        safeMsg`${stackName}: this nested child's secret-derived principal records resolve when destroyed through its parent stack; destroyed on its own they are skipped.`
+        safeMsg`${stackName}: this nested child is destroyed without its parent stack, so the regions its parent reads from are unknown: a secret-derived principal record whose reference has no recorded region is skipped. To resolve it, destroy it through its parent stack.`
       );
     }
 
@@ -2081,6 +2093,7 @@ export async function runDestroyForStack(
               secretPrincipalRegions !== undefined
                 ? {
                     importedProducerRegions: secretPrincipalRegions,
+                    ...(secretPrincipalRegionsIncomplete && { producerRegionsIncomplete: true }),
                     retryMemo: { detached: new Set<string>() },
                     ...(recordedRegions !== undefined && { recordedRegions }),
                   }

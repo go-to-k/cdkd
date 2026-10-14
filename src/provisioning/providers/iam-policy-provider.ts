@@ -925,7 +925,10 @@ export class IAMPolicyProvider implements ResourceProvider {
         (await resolveSecretDerivedPrincipals(
           values,
           context?.expectedRegion,
-          optIn.importedProducerRegions,
+          {
+            regions: optIn.importedProducerRegions,
+            complete: optIn.producerRegionsIncomplete !== true,
+          },
           optIn.recordedRegions
         ));
       if (resolved && memo) memo.resolved = resolved;

@@ -626,11 +626,16 @@ export class NestedStackProvider implements ResourceProvider {
         // never does (its template-removal DELETE runs after every CREATE).
         // The parent's producer regions go down with it: a child receives a
         // parent's cross-region value only as a Parameter, which its own
-        // state does not record as a read.
+        // state does not record as a read. go-to-k/cdkd#4887: so does the
+        // marker that those regions miss an ancestor's (this child was
+        // destroyed on its own), or the grandchild would read them as complete.
         ...(deleteContext?.resolveSecretDerivedPrincipals !== undefined && {
           resolveSecretDerivedPrincipals: {
             inheritedProducerRegions:
               deleteContext.resolveSecretDerivedPrincipals.importedProducerRegions,
+            ...(deleteContext.resolveSecretDerivedPrincipals.producerRegionsIncomplete === true && {
+              producerRegionsIncomplete: true,
+            }),
           },
         }),
         // go-to-k/cdkd#2115: likewise forwarded ONLY from this delete's own

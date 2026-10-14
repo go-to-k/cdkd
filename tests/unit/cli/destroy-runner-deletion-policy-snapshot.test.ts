@@ -264,50 +264,109 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     expect(second).toBe(first);
   });
 
-  it('a nested child destroyed ON ITS OWN (no inherited regions) resolves nothing; through its parent it does', async () => {
+  // go-to-k/cdkd#4887: a nested child destroyed ON ITS OWN does not know the
+  // regions its parent reads from. It is still opted in, marked incomplete, so
+  // a token its v12 record places in a region resolves there and every other
+  // region-less token keeps the skip (the hint names the remedy).
+  it('a nested child destroyed ON ITS OWN is opted in with incomplete evidence; through its parent it is complete', async () => {
+    const REF = '{{resolve:secretsmanager:n:SecretString:r::}}';
     const child = {
       ...makeState({
         Q: res({
           resourceType: 'AWS::IAM::Policy',
-          properties: { PolicyName: 'p', Roles: ['{{resolve:secretsmanager:n:SecretString:r::}}'] },
+          properties: { PolicyName: 'p', Roles: [REF] },
         }),
       }),
+      outputReads: [{ sourceStack: 'Producer', sourceRegion: 'us-west-2', outputKey: 'K' }],
       parentStack: 'Parent',
     } as unknown as StackState;
-    const hint = "this nested child's secret-derived principal records resolve when destroyed through its parent stack";
+    const hint = 'destroy it through its parent stack';
     const hinted = () => runnerWarn.mock.calls.some((c) => String(c[0]).includes(hint));
+    const reset = () => {
+      vi.clearAllMocks();
+      mockSaveState.mockResolvedValue('"etag"');
+      mockProviderDelete.mockResolvedValue(undefined);
+    };
     await runDestroyForStack('Parent~Child', child, makeCtx({ resolveSecretDerivedPrincipals: {} }));
-    expect(deleteContextArg()).not.toHaveProperty('resolveSecretDerivedPrincipals');
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toEqual({
+      importedProducerRegions: ['us-west-2'],
+      producerRegionsIncomplete: true,
+      retryMemo: { detached: new Set() },
+    });
     expect(hinted()).toBe(true);
+    // Every region-less token recorded in a region: opted in, and no hint.
+    reset();
+    const recordedChild = {
+      ...child,
+      resources: {
+        Q: res({
+          resourceType: 'AWS::IAM::Policy',
+          properties: { PolicyName: 'p', Roles: [REF] },
+          referenceProvenance: { [REF]: { region: 'us-west-2' } },
+        } as Partial<ResourceState>),
+      },
+    } as unknown as StackState;
+    await runDestroyForStack('Parent~Child', recordedChild, makeCtx({ resolveSecretDerivedPrincipals: {} }));
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toMatchObject({
+      producerRegionsIncomplete: true,
+      recordedRegions: new Map([[REF, 'us-west-2']]),
+    });
+    expect(hinted()).toBe(false);
     // No opt-in (a deploy's nested removal): no hint, even with the record.
-    vi.clearAllMocks();
-    mockSaveState.mockResolvedValue('"etag"');
-    mockProviderDelete.mockResolvedValue(undefined);
+    reset();
     await runDestroyForStack('Parent~Child', child, makeCtx());
+    expect(deleteContextArg()).not.toHaveProperty('resolveSecretDerivedPrincipals');
     expect(hinted()).toBe(false);
     // No such record: no hint.
-    vi.clearAllMocks();
-    mockSaveState.mockResolvedValue('"etag"');
-    mockProviderDelete.mockResolvedValue(undefined);
+    reset();
     await runDestroyForStack(
       'Parent~Child',
       { ...makeState({ Q: res({ resourceType: 'AWS::SQS::Queue' }) }), parentStack: 'Parent' } as unknown as StackState,
       makeCtx({ resolveSecretDerivedPrincipals: {} })
     );
     expect(hinted()).toBe(false);
-    vi.clearAllMocks();
-    mockSaveState.mockResolvedValue('"etag"');
-    mockProviderDelete.mockResolvedValue(undefined);
+    // Through the parent: complete evidence, no marker, no hint.
+    reset();
     await runDestroyForStack(
       'Parent~Child',
       child,
       makeCtx({ resolveSecretDerivedPrincipals: { inheritedProducerRegions: [] } })
     );
-    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toMatchObject({
-      importedProducerRegions: [],
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toEqual({
+      importedProducerRegions: ['us-west-2'],
+      retryMemo: { detached: new Set() },
     });
-    // Through the parent: no hint.
     expect(hinted()).toBe(false);
+    // Through a parent that was itself destroyed on its own: the marker is
+    // inherited, never read as complete.
+    reset();
+    await runDestroyForStack(
+      'Parent~Child~Grandchild',
+      child,
+      makeCtx({
+        resolveSecretDerivedPrincipals: {
+          inheritedProducerRegions: ['eu-west-1'],
+          producerRegionsIncomplete: true,
+        },
+      })
+    );
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).toEqual({
+      importedProducerRegions: ['us-west-2', 'eu-west-1'],
+      producerRegionsIncomplete: true,
+      retryMemo: { detached: new Set() },
+    });
+    expect(hinted()).toBe(true);
+  });
+
+  it('go-to-k/cdkd#4887: a top-level stack with no parent is never marked incomplete', async () => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Q: res({ resourceType: 'AWS::SQS::Queue' }) }),
+      makeCtx({ resolveSecretDerivedPrincipals: {} })
+    );
+    expect(deleteContextArg()['resolveSecretDerivedPrincipals']).not.toHaveProperty(
+      'producerRegionsIncomplete'
+    );
   });
 
   it('without the runner option the DeleteContext carries no opt-in', async () => {
