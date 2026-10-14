@@ -421,3 +421,29 @@ export function classifyReplaySecretRegion(
   if (foreignProducerRegions.length === 0) return { kind: 'local' };
   return { kind: 'ambiguous', secretName, foreignProducerRegions };
 }
+
+/**
+ * {@link classifyReplaySecretRegion}'s verdict, or the region a v12 record
+ * says resolved the token (go-to-k/cdkd#4847): `recorded-region` for another
+ * region, `local` for this one. Region-less tokens only: an ARN names its own
+ * region, which binds (issue #1957). A recorded region is never `ambiguous`,
+ * so it also settles what missing evidence would otherwise refuse.
+ */
+export type RecordedSecretRegionVerdict =
+  | ReplaySecretRegionVerdict
+  | { kind: 'recorded-region'; region: string };
+
+export function classifyRecordedSecretRegion(
+  expression: string,
+  consumerRegion: string,
+  importedProducerRegions: readonly string[] | undefined,
+  recordedRegions: ReadonlyMap<string, string> | undefined
+): RecordedSecretRegionVerdict {
+  const recorded = recordedRegions?.get(expression);
+  if (recorded === undefined || regionLessSecretName(expression) === undefined) {
+    return classifyReplaySecretRegion(expression, consumerRegion, importedProducerRegions);
+  }
+  return canonicalizeRegion(recorded) === canonicalizeRegion(consumerRegion)
+    ? { kind: 'local' }
+    : { kind: 'recorded-region', region: recorded };
+}

@@ -181,9 +181,11 @@ tags `dynamic-reference-resolution` + `getstackoutput-cross-region`, issue
 via `Fn::GetStackOutput`, so the consumer's state persists the PRODUCER's
 region-less spelling of that expression while `outputReads[].sourceRegion`
 records where it came from. A failing `--no-rollback` deploy then forces
-`cdkd rollback --force`, which must exit 2 with
+`cdkd rollback --force`. On a record written before state schema v12 (the
+fixture strips the provenance in S3 to make one) it must exit 2 with
 `ROLLBACK_SECRET_REGION_AMBIGUOUS` rather than re-resolving the reference
-locally. The discriminator is that the SAME parameter NAME is seeded in BOTH
+locally; on a v12 record, which names the producer region, it must exit 0 and
+restore the producer region's value (issue #4847). The discriminator is that the SAME parameter NAME is seeded in BOTH
 regions with DIFFERENT values, both asserted to really be `SecureString` first:
 without that the run cannot tell a correct resolution from a wrong one, and the
 assertion the fixture exists for is that the live parameter still holds the

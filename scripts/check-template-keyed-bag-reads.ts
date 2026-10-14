@@ -99,6 +99,7 @@ export const SCANNED_FILES: readonly string[] = [
   'src/deployment/intrinsic-resolver/params-conditions.ts',
   'src/deployment/intrinsic-resolver/parameter-secrets.ts',
   'src/deployment/intrinsic-resolver/refs.ts',
+  'src/deployment/intrinsic-resolver/recorded-reference-routes.ts',
   'src/deployment/intrinsic-resolver/clients.ts',
   'src/deployment/intrinsic-resolver/dynamic-refs.ts',
   'src/deployment/intrinsic-resolver/dynamic-ref-lookups.ts',

@@ -84,7 +84,8 @@ count. Other stacks in the same run are still read.
 ### `refused`: a secret reference with no region
 
 State holds a reference to a secret, and cdkd could not tell which region the
-secret lives in. Resolving it in the wrong region would compare against a
+secret lives in: the reference names no region, and its record predates state
+schema v12 (a record written since says which region resolved it). Resolving it in the wrong region would compare against a
 different secret of the same name, so cdkd declines. The resource's secret
 properties are not compared, and its other properties are.
 
@@ -92,7 +93,8 @@ properties are not compared, and its other properties are.
     ! Database (AWS::RDS::DBInstance) — cdkd refused to resolve a dynamic reference its state records (spell the reference as a full ARN, which names its region)
 ```
 
-Write the reference in your CDK code as a full ARN, which includes the region.
+Write the reference in your CDK code as a full ARN, which includes the region,
+or redeploy the resource so its record states the region.
 
 This cause also appears on a nested stack when the state record of one of its
 parent stacks is missing or unreadable. A value the parent read from another

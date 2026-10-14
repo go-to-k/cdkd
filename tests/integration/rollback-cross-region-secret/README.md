@@ -27,6 +27,27 @@ resource — silently, on the recovery path. The fix refuses the replay instead,
 because nothing on hand can establish where a region-less expression came from
 ("a named region binds; never substitute a guess", issue #1957).
 
+## v12 records and pre-v12 records
+
+Since state schema v12 ([#4847](https://github.com/go-to-k/cdkd/issues/4847))
+each record also carries `referenceProvenance`: per token, the region that
+resolved it. The rollback replay, `cdkd drift` and `cdkd scrub` resolve a
+region-less token in that recorded region, so on a record a v12 binary wrote
+the producer's reference is resolved in `us-west-2` and nothing refuses. A
+record without the field (written before v12) keeps the old reading, and the
+refusal is still the behaviour for it.
+
+`verify.sh` therefore covers both. The positive phases run on the records as
+this binary writes them, and each names its pre-#4847 red line (the refusal).
+The refusal phases run after the script rewrites the consumer's `state.json`
+in S3 with every `referenceProvenance` / `outputReferenceProvenance` removed
+— premise first (the field is there), then write, then read back (gone, every
+token kept) — which is exactly a pre-v12 record. Which record to strip, and
+when, follows from what the replay reads: the desired side is the journal's
+`previousState`, copied from the state before the failing deploy (arm A strips
+before that deploy), and the previous side is the record the failing deploy
+writes (arm B strips after it).
+
 ## Why the two regions must hold DIFFERENT values
 
 The same SecureString NAME is seeded in `us-west-2` and `us-east-1` with
@@ -101,13 +122,26 @@ Two stacks in one CDK app, pinned to different regions via `env.region`:
      NAME, not by logical id) holds the region-LESS expression and neither
      plaintext,
    - `state.outputReads[]` records `sourceRegion: us-west-2` — the evidence the
-     fix keys on, asserted before phase 4 relies on it.
-3. Deploy the consumer v2 (`MARKER_VALUE=v2 INJECT_FAIL=true --no-rollback`);
-   assert it FAILED, a journal exists, the journal carries exactly one `UPDATE`
-   op for the echo parameter whose journaled previous `Value` is the region-less
-   expression, and the v2 UPDATE really landed (`Description` is `v2`).
-   Without that op the rollback would have nothing to replay and phase 4 would
-   pass vacuously.
+     refusals key on.
+   - 2p: the `SecretEcho` record names `us-west-2` for the token and
+     `LocalSecretEcho` (the same token string, resolved by the consumer
+     itself) names `us-east-1`.
+   - **v12 records** — 2e: `cdkd drift` exits 0 with `SecretEcho` compared and
+     clean; 2f: `cdkd scrub` exits 0 without a region refusal; 2g: with Value
+     and Description tampered, drift reports both, and `drift --revert` exits 0
+     and writes the producer region's value.
+   - 2s strips the consumer's provenance. **Pre-v12 records** — 2b/2b2/2c:
+     drift marks `SecretEcho` `notCompared` and exits 2, and `--revert`
+     refuses (`refused to re-resolve`), writes nothing and exits 2; 2d:
+     `cdkd scrub` refuses the region-ambiguous literal and leaves state
+     byte-identical, while the producer scrubs normally.
+3. Deploy the consumer v2 (`MARKER_VALUE=v2 INJECT_FAIL=true --no-rollback`)
+   from the still-stripped state; assert it FAILED, a journal exists, the
+   journal carries exactly one `UPDATE` op for the echo parameter whose
+   journaled previous `Value` is the region-less expression and whose
+   `previousState` carries no provenance, and the v2 UPDATE really landed
+   (`Description` is `v2`). Without that op the rollback would have nothing to
+   replay and phase 4 would pass vacuously.
 4. `cdkd rollback --force`; assert
    - exit code **2** (partial — one op refused, journal kept),
    - the refusal names the reference and BOTH regions,
@@ -116,8 +150,11 @@ Two stacks in one CDK app, pinned to different regions via `env.region`:
      producer region's value, and is not the consumer region's,
    - the revert did not apply (`Description` is still `v2`) and the journal is
      preserved for a re-run.
-5. Destroy the consumer, resetting it to a stack that has never read across a
-   region.
+5. Destroy the consumer. 5b — **arm A on v12 records**: deploy v1, fail v2
+   (the journaled `previousState` names `us-west-2`), and `cdkd rollback`
+   exits 0, restores the v1 `Description` with the producer region's value
+   live, and drops the journal. 5c destroys the consumer again, so arm B
+   starts from a stack that has never read across a region.
 6. **ARM B — the reachable case.** Deploy the consumer with `WITH_XREGION`
    unset, so its `Value` is a plain local literal and `state.outputReads` is
    empty (asserted). Then run ONE deploy that both INTRODUCES the cross-region
@@ -129,9 +166,12 @@ Two stacks in one CDK app, pinned to different regions via `env.region`:
      fix it came back empty: every non-success save wrote the PRE-deploy
      snapshot, and a rollback journal exists ONLY after a failed deploy, so the
      refusal had no evidence to fire on precisely when it mattered,
-   - `cdkd rollback --force` exits 2 and refuses, and the live value is
-     unchanged (neither reverted to the literal nor overwritten with the
-     consumer region's secret).
+   - 6s strips the record that deploy wrote (the token is on the replay's
+     previous side here), and `cdkd rollback --force` exits 2 and refuses,
+     and the live value is unchanged (neither reverted to the literal nor
+     overwritten with the consumer region's secret),
+   - 6d puts the provenance back and replays the SAME journal: `cdkd rollback`
+     exits 0 and restores the literal.
 7. Destroy both stacks, delete the seeded parameters in both regions, and
    assert every AWS resource, both state files, and the injected queue (which
    must never have been created) are gone — with tri-state gone probes, so a
@@ -141,11 +181,12 @@ Two stacks in one CDK app, pinned to different regions via `env.region`:
 
 They fail on different defects, and arm A cannot substitute for arm B.
 
-Arm A (phases 2-4) establishes the cross-region read with a **successful**
-deploy and only then fails one, so the producer region is already on record
-when the rollback runs. It proves the refusal mechanism works. Pre-fix it fails
-at the value assertion: the rollback "succeeds" and overwrites the live
-parameter with the consumer region's secret.
+Arm A (phases 2-4, and 5b on v12 records) establishes the cross-region read
+with a **successful** deploy and only then fails one, so the producer region is
+already on record when the rollback runs. It proves the refusal mechanism
+works on a pre-v12 record. Pre-#2057 it fails at the value assertion: the
+rollback "succeeds" and overwrites the live parameter with the consumer
+region's secret.
 
 Arm B (phase 6) introduces the read **in the failing deploy itself**, which is
 the shape a real first cross-region deploy takes. A green arm A coexisted with

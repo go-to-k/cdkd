@@ -62,7 +62,11 @@ export async function resolveSecretsManagerReference(
   // State schema v12 (go-to-k/cdkd#4847 / #4852): receives the response's
   // `VersionId`, the version the value was read at. Read off the response this
   // lookup already makes; never sent anywhere.
-  versionOut?: { version?: string }
+  versionOut?: { version?: string },
+  // go-to-k/cdkd#4847: read this version id of the secret instead of the
+  // stage / version the token names. Only `VersionId` is sent: a version that
+  // has lost the token's stage would refuse a request naming both.
+  pinVersion?: string
 ): Promise<string> {
   // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
   // Remove the "secretsmanager:" prefix
@@ -117,7 +121,10 @@ export async function resolveSecretsManagerReference(
   }
 
   // Empty strings should be treated as undefined (handles trailing :: in references)
-  if (!versionStage) {
+  if (pinVersion !== undefined) {
+    versionStage = '';
+    versionId = pinVersion;
+  } else if (!versionStage) {
     versionStage = 'AWSCURRENT';
   }
 
@@ -305,7 +312,10 @@ export async function resolveSSMReference(
   context: ResolverContext | undefined,
   // As in `resolveSecretsManagerReference` (issue #3150), and required for
   // the same reason.
-  nameLogText: (name: string) => string
+  nameLogText: (name: string) => string,
+  // go-to-k/cdkd#4847: read this `Version` of the parameter. Any `:version` /
+  // `:label` selector the token's name carries is replaced by it.
+  pinVersion?: string
 ): Promise<{
   value: string;
   secure: boolean;
@@ -313,7 +323,11 @@ export async function resolveSSMReference(
   /** State schema v12: the parameter's `Version` off the same response, when it carries one. */
   version?: string;
 }> {
-  const parameterName = parts.slice(1).join(':');
+  const namedParameter = parts.slice(1).join(':');
+  const parameterName =
+    pinVersion === undefined
+      ? namedParameter
+      : `${withoutSsmSelector(namedParameter)}:${pinVersion}`;
 
   if (!parameterName) {
     // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
@@ -323,10 +337,15 @@ export async function resolveSSMReference(
   // MASKED PER RAW VALUE — see `resolveSecretsManagerReference`'s twin
   // comment for why the raw form and not the assembled message (issue
   // [#2827](https://github.com/go-to-k/cdkd/issues/2827)).
-  const loggedParameterName = this.displayMasked(nameLogText(parameterName), context);
+  // The name as the TOKEN spells it, also for a pinned read: version ids
+  // reach debug lines only (go-to-k/cdkd#4847), and the request's own name
+  // is masked to this spelling in any error.
+  const loggedParameterName = this.displayMasked(nameLogText(namedParameter), context);
 
   // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
-  this.logger.debug(`Resolving dynamic reference: ${service}:${loggedParameterName}`);
+  this.logger.debug(
+    `Resolving dynamic reference: ${service}:${loggedParameterName}${pinVersion === undefined ? '' : ` (version ${pinVersion})`}`
+  );
 
   // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
   // method reports back. A region-B `SecureString` classified against a
@@ -379,7 +398,7 @@ export async function resolveSSMReference(
   if (
     secure &&
     paramType !== 'SecureString' &&
-    !this.warnedUnrecognizedSsmTypes.has(injectiveKey(parameterName, String(paramType)))
+    !this.warnedUnrecognizedSsmTypes.has(injectiveKey(namedParameter, String(paramType)))
   ) {
     // Reached only if AWS stops returning `Type`, or returns one cdkd does not
     // know. The value is treated as a secret (see above), which is safe but
@@ -393,7 +412,7 @@ export async function resolveSSMReference(
     // NUL. Encoded so the set does not depend on that, since what it would
     // cost is the SECOND warning about a parameter silently persisting as
     // its expression.
-    this.warnedUnrecognizedSsmTypes.add(injectiveKey(parameterName, String(paramType)));
+    this.warnedUnrecognizedSsmTypes.add(injectiveKey(namedParameter, String(paramType)));
     // Through the builder (issue #3441): this arm is reached precisely
     // because the `Type` matched NONE of the names cdkd knows, so its text is
     // unconstrained — being a type name answers the secret question, not
@@ -421,4 +440,17 @@ export async function resolveSSMReference(
     ...(typeof paramVersion === 'number' &&
       Number.isSafeInteger(paramVersion) && { version: String(paramVersion) }),
   };
+}
+
+/**
+ * An SSM parameter name without its `:version` / `:label` selector
+ * (go-to-k/cdkd#4847). A parameter name holds no `:` of its own, so the
+ * selector is whatever follows the first `:` after the name begins: after
+ * `:parameter/` for the ARN form, anywhere for a bare name.
+ */
+export function withoutSsmSelector(parameterName: string): string {
+  const arnName = parameterName.startsWith('arn:') ? parameterName.indexOf(':parameter/') : -1;
+  const nameStart = arnName < 0 ? 0 : arnName + ':parameter/'.length;
+  const selector = parameterName.indexOf(':', nameStart);
+  return selector < 0 ? parameterName : parameterName.slice(0, selector);
 }

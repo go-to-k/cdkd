@@ -162,6 +162,57 @@ export function recordedProvenanceOf(
   return validateReferenceProvenance(token, field[token]);
 }
 
+/**
+ * The region `record`'s provenance gives each token, validated (go-to-k/cdkd#4847):
+ * what the rollback replay, `cdkd drift` and `cdkd scrub` resolve a recorded
+ * token in. `undefined` when no token has one, so a record without the field
+ * costs nothing.
+ */
+export function recordedReferenceRegions(record: unknown): ReadonlyMap<string, string> | undefined {
+  const field = referenceProvenanceOf(record);
+  return field === undefined ? undefined : regionsOf(field);
+}
+
+/** {@link recordedReferenceRegions} for output `outputKey` of `state`. */
+export function recordedOutputReferenceRegions(
+  state: unknown,
+  outputKey: string
+): ReadonlyMap<string, string> | undefined {
+  const field = outputReferenceProvenanceOf(state, outputKey);
+  return field === undefined ? undefined : regionsOf(field);
+}
+
+function regionsOf(
+  field: Record<string, ReferenceProvenance>
+): ReadonlyMap<string, string> | undefined {
+  let out: Map<string, string> | undefined;
+  for (const [token, entry] of Object.entries(field)) {
+    if (entry.region === undefined) continue;
+    (out ??= new Map()).set(token, entry.region);
+  }
+  return out;
+}
+
+/**
+ * `record` with its `referenceProvenance` keys cut to the tokens it still
+ * holds (go-to-k/cdkd#4847): `cdkd scrub` rewrites a record onto today's
+ * template, which can drop a token. Never adds a key: a token the record
+ * gained has no entry, as scrub resolves nothing it could attribute.
+ */
+export function keepHeldTokenProvenance<T extends ResourceState>(record: T): T {
+  if (!hasReferenceProvenanceField(record)) return record;
+  const field = record.referenceProvenance as unknown;
+  if (!isPlainObject(field)) return record;
+  const held = recordReferenceTokens(record);
+  const keys = Object.keys(field);
+  if (keys.every((token) => held.has(token))) return record;
+  const kept: Record<string, ReferenceProvenance> = {};
+  for (const token of keys) {
+    if (held.has(token)) kept[token] = field[token] as ReferenceProvenance;
+  }
+  return { ...record, referenceProvenance: kept };
+}
+
 /** Does `record` carry the field at all (`{}` included)? What the migration capture skips on. */
 export function hasReferenceProvenanceField(record: unknown): boolean {
   return (

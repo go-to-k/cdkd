@@ -1165,6 +1165,42 @@ dropped), and `readVersions` is this run's. A stack whose `state.json` holds
 no token and no provenance field is recognised from the raw body at load
 (`src/state/token-free-state.ts`) and does none of this work.
 
+**How it is read** (issue [#4847](https://github.com/go-to-k/cdkd/issues/4847)).
+A value served out of a record (a `Fn::GetAtt` / `Ref` of a resource the
+deploy leaves unchanged, or a nested stack's `Outputs.<Key>`) is re-resolved
+per token through two independent arms
+(`src/deployment/intrinsic-resolver/recorded-reference-routes.ts`):
+
+- **region**: the recorded region; without one, the v11 proofs (the
+  producer's template spells the token, or the deploy's producer-region
+  evidence names no other region);
+- **version**: a single recorded version is read by a PINNED lookup (Secrets
+  Manager `VersionId` alone; SSM `name:<version>`, any selector the token
+  carries replaced). Without one, or when the pinned read fails (a deprecated
+  or deleted version, with a warning), the v11 physical-id proof runs in the
+  chosen region.
+
+The unpinned lookup runs first and the pinned one reuses it when the versions
+match, so a pin equal to the current version costs no call. A value read at
+another version is recorded as a redaction needle but never as the token's
+resolved pair, which keeps the token's own literal leaves positionable. The
+rollback replay, `cdkd drift` (at the current version) and `cdkd scrub` use
+the recorded region of a region-less token instead of refusing it as
+ambiguous, through the stack resolver's producer-region guest; `cdkd scrub`
+keeps a rewritten record's entries for the tokens it still holds only.
+
+**Known residual: a secret rotated before the upgrade.** A resource deployed
+before v12 whose secret was rotated before the first v12 deploy, and never
+replaced since, keeps the name of the old value. The one-time capture cannot
+match the current value to its physical id, so it records the region only;
+a reader of the resource's recorded attribute added later then fails the
+physical-id proof in that region and is served the recorded reference with
+the "cannot confirm the secret still holds the value" warning, as before v12.
+It takes all of these together: a pre-v12 stack, a value read from another
+region's stack, the rotation before the upgrade with no replacement, and a
+reader added afterwards. Replacing (or updating the name of) the resource
+records its version and clears it.
+
 #### Migration
 
 No read-time migration: a v11 document is read unchanged, and the next

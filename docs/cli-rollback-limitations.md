@@ -158,10 +158,12 @@ command when that resource is a
 - **`cdkd rollback` without a stack name** does not offer a nested stack's
   journal separately when its parent has one.
 - **A secret reference that names no region.** A reference written as a name
-  carries no region; an ARN does. Such a reference is refused when a stack
-  above the nested stack reads a value from another region, and always in a
-  direct rollback of the nested stack. The operation fails and the journal is
-  kept. Set the property yourself, or write the reference as a full ARN.
+  carries no region; an ARN does. A record a deploy wrote since state schema
+  v12 also says which region resolved it, and the rollback resolves it there.
+  Without that, such a reference is refused when a stack above the nested
+  stack reads a value from another region, and always in a direct rollback of
+  the nested stack. The operation fails and the journal is kept. Set the
+  property yourself, or write the reference as a full ARN.
 
 ## Names of re-created resources
 

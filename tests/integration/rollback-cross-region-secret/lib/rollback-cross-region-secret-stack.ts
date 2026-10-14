@@ -63,10 +63,13 @@ import { Construct } from 'constructs';
  *       `--no-rollback` leaves a journal behind for `cdkd rollback`. Same
  *       injection idiom as `tests/integration/rollback-command`.
  *
- * WHAT THE ROLLBACK MUST DO. Refuse the replay of `SecretEcho` (exit 2,
- * journal preserved) and leave the live parameter holding the PRODUCER's
- * value. Pre-fix it "succeeds" and overwrites that parameter with the
- * CONSUMER region's secret — which is the assertion verify.sh keys on.
+ * WHAT THE ROLLBACK MUST DO. On a record a v12 binary wrote, whose
+ * `referenceProvenance` names us-west-2 for the token (go-to-k/cdkd#4847),
+ * resolve it there and complete. On a record without that field (the pre-v12
+ * shape, which verify.sh produces by stripping it), refuse the replay of
+ * `SecretEcho` (exit 2, journal preserved). Either way the live parameter
+ * never holds the CONSUMER region's secret; pre-#2057 the rollback
+ * "succeeded" by writing exactly that.
  */
 
 export const PRODUCER_STACK_NAME = 'CdkdRbXregionProducer';
@@ -96,7 +99,9 @@ export const CONSUMER_ECHO_PARAM_NAME = '/cdkd/rollback-xregion/echo';
  * This parameter closes that: it lives in the CONSUMER (whose state records
  * `outputReads[].sourceRegion = us-west-2`) and its value is the region-LESS
  * expression, so the pre-pass classifies a real token against real foreign
- * evidence and must REFUSE rather than resolve it locally.
+ * evidence and must REFUSE rather than resolve it locally -- when its record
+ * names no region (pre-v12). A v12 record names us-east-1, the region that
+ * resolved it, and scrub resolves it there (go-to-k/cdkd#4847).
  */
 export const CONSUMER_LOCAL_SECRET_PARAM_NAME = '/cdkd/rollback-xregion/local-secret';
 /**

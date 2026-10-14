@@ -140,7 +140,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // see the `revert` arm's note for the full reason; it is kept because
   // `resolveReplayProps` DECLARES `| undefined` unconditionally.
   const resolvedPrevProps =
-    (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
+    (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId, prev)) ?? {};
   // Issue #2274: this bag is about to be CREATED with. Refuse before the
   // AWS call rather than after, so nothing is half-applied. A mask only at
   // the coordinates a NoEcho source served gets its own remedy

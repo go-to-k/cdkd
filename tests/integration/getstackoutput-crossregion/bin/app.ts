@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import {
   GsoProducerStack,
   GsoConsumerStack,
+  GsoConsumerPreStack,
   PRODUCER_STACK_NAME,
   PRODUCER_REGION,
   CONSUMER_REGION,
@@ -23,5 +24,11 @@ new GsoProducerStack(app, PRODUCER_STACK_NAME, {
 // the producer's output from us-west-2 (cross-region, same account).
 new GsoConsumerStack(app, 'CdkdGsoConsumer', {
   description: 'cdkd cross-region Fn::GetStackOutput integ consumer (us-east-1)',
+  env: { region: CONSUMER_REGION },
+});
+
+// go-to-k/cdkd#4847: a consumer first deployed by the last v11 binary.
+new GsoConsumerPreStack(app, 'CdkdGsoConsumerPre', {
+  description: 'cdkd cross-region Fn::GetStackOutput integ consumer deployed before v12 (us-east-1)',
   env: { region: CONSUMER_REGION },
 });

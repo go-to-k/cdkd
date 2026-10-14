@@ -140,6 +140,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import { AwsClients, setAwsClients, resetAwsClients } from '../../../../src/utils/aws-clients.js';
 import { resetAccountInfoCache } from '../../../../src/deployment/intrinsic-function-resolver.js';
 import { clearRecordedSecretExpressions } from '../../../../src/deployment/secret-redaction.js';
+import { isRecordedSecretExpression } from '../../../../src/deployment/secret-redaction/mask-only.js';
 import { scrubStack } from '../../../../src/cli/commands/scrub.js';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
@@ -1452,5 +1453,127 @@ describe('cdkd scrub counts a deferred reference that goes UNRESOLVED (issue #21
     // The producer region was asked, the consumer region never was.
     expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
     expect(res).toMatchObject({ unverifiableLeaves: 1, recordsChanged: 0 });
+  });
+});
+
+describe('a region the record recorded is the region scrub resolves in (go-to-k/cdkd#4847)', () => {
+  const GONE = '{{resolve:secretsmanager:gone:SecretString:x}}';
+  function recorded(
+    region: unknown,
+    stored = IRELAND_PASSWORD,
+    extra: Record<string, unknown> = {}
+  ): StackState {
+    const state = makeLeakyState(stored, 'imports');
+    state.resources['Db']!.referenceProvenance = { [NAME_EXPR]: { region }, ...extra } as never;
+    return state;
+  }
+
+  it('a region-less reference the record names the producer region for: resolved THERE, and that plaintext scrubbed', async () => {
+    useState(recorded(PRODUCER_REGION));
+    await scrub(NAME_EXPR);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.resources['Db']!.properties['MasterUserPassword']).toBe(NAME_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(IRELAND_PASSWORD);
+    // Through the producer-region GUEST: no process-wide verdict is pinned for
+    // a region-less key from another region.
+    expect(isRecordedSecretExpression(NAME_EXPR)).toBe(false);
+  });
+
+  it('an orphan record: resolved in its recorded region, and its provenance keys cut to the tokens it holds', async () => {
+    const state = makeLeakyState('benign-stored-value', 'imports');
+    state.orphans = [
+      {
+        logicalId: 'OldDb',
+        orphanedAt: 0,
+        state: {
+          physicalId: 'old-db',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { MasterUserPassword: NAME_EXPR },
+          attributes: { Echo: IRELAND_PASSWORD },
+          referenceProvenance: { [NAME_EXPR]: { region: PRODUCER_REGION }, [GONE]: {} },
+        } as never,
+      },
+    ];
+    useState(state);
+    await scrub('no-reference-here');
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(JSON.stringify(saved)).not.toContain(IRELAND_PASSWORD);
+    expect(saved.orphans![0]!.state.referenceProvenance).toEqual({
+      [NAME_EXPR]: { region: PRODUCER_REGION },
+    });
+  });
+
+  it("the record names the stack's OWN region: resolved locally, although a foreign read is on record", async () => {
+    useState(recorded(CONSUMER_REGION, TOKYO_PASSWORD));
+    await scrub(NAME_EXPR);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([CONSUMER_REGION]);
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(JSON.stringify(saved)).not.toContain(TOKYO_PASSWORD);
+  });
+
+  it("a recorded-local token with no foreign read whose lookup fails is a counted finding, not a refusal", async () => {
+    const state = makeLeakyState(TOKYO_PASSWORD, 'none');
+    state.resources['Db']!.referenceProvenance = {
+      [NAME_EXPR]: { region: CONSUMER_REGION },
+    } as never;
+    useState(state);
+    prime(CONSUMER_REGION, 'GetSecretValueCommand', new Error('AccessDeniedException: denied'));
+    const res = await scrub(NAME_EXPR);
+    expect(res).toMatchObject({ unverifiableLeaves: 1 });
+  });
+
+  it('an ARN-form token keeps the region its ARN names, whatever its record says', async () => {
+    const state = makeLeakyState(IRELAND_PASSWORD, 'imports');
+    state.resources['Db']!.referenceProvenance = {
+      [PRODUCER_ARN_EXPR]: { region: SECOND_PRODUCER_REGION },
+    } as never;
+    useState(state);
+    await scrub(PRODUCER_ARN_EXPR);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+  });
+
+  it("a recorded region's failed lookup is reported against the region its state record names", async () => {
+    useState(recorded(PRODUCER_REGION));
+    prime(PRODUCER_REGION, 'GetSecretValueCommand', new Error('AccessDeniedException: denied'));
+    await expect(scrub(NAME_EXPR)).rejects.toThrow(/the region its state record names/);
+  });
+
+  it("an ARN-form token's failed lookup is reported against the region its ARN names", async () => {
+    const state = makeLeakyState(IRELAND_PASSWORD, 'imports');
+    state.resources['Db']!.referenceProvenance = {
+      [PRODUCER_ARN_EXPR]: { region: SECOND_PRODUCER_REGION },
+    } as never;
+    useState(state);
+    prime(PRODUCER_REGION, 'GetSecretValueCommand', new Error('AccessDeniedException: denied'));
+    await expect(scrub(PRODUCER_ARN_EXPR)).rejects.toThrow(/the region its ARN names/);
+  });
+
+  it('an invalid recorded region is ignored: the refusal stands', async () => {
+    useState(recorded(PRODUCER_REGION.toUpperCase()));
+    await expect(scrub(NAME_EXPR)).rejects.toThrow(/carries no region of its own/);
+    expect(secretSends).toHaveLength(0);
+  });
+
+  it('a rewritten record keeps provenance for the tokens it still holds only, and invents none', async () => {
+    useState(recorded(PRODUCER_REGION, IRELAND_PASSWORD, { [GONE]: {} }));
+    await scrub(NAME_EXPR);
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.resources['Db']!.referenceProvenance).toEqual({
+      [NAME_EXPR]: { region: PRODUCER_REGION },
+    });
+  });
+
+  it("an output's recorded region (outputReferenceProvenance) is used for its value", async () => {
+    const state = makeLeakyState('benign-stored-value', 'imports', 'admin', {
+      DbSecret: IRELAND_PASSWORD,
+    });
+    state.outputReferenceProvenance = { DbSecret: { [NAME_EXPR]: { region: PRODUCER_REGION } } };
+    useState(state);
+    await scrub('no-reference-here', { DbSecret: { Value: NAME_EXPR } });
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.outputs['DbSecret']).toBe(NAME_EXPR);
   });
 });

@@ -16,6 +16,7 @@ import { hasOwnKey, hasPlainPrototype } from '../../utils/own-keys.js';
 // `ReplayResolvers` below calls the classifier; `rollback-executor.ts`
 // re-exports it under its historical address.
 import {
+  classifyRecordedSecretRegion,
   classifyReplaySecretRegion,
   regionLessSecretName,
 } from '../secret-region-classification.js';
@@ -93,6 +94,16 @@ export class ReplayResolvers {
     this.pinned.set(target, scoped);
     return scoped;
   }
+
+  /**
+   * The resolver for a region-LESS token a v12 record says `region` resolved
+   * (go-to-k/cdkd#4847): the primary's producer-region GUEST, which pins no
+   * verdict in the process-global store a region-less key shares across
+   * regions (the reason {@link forRegion}'s plain siblings serve ARN keys only).
+   */
+  forRecordedRegion(region: string): IntrinsicFunctionResolver {
+    return this.primary.resolverForRecordedRegion(region);
+  }
 }
 
 /**
@@ -156,10 +167,13 @@ export function refuseUnprovenReplaySecret(
   leaf: string,
   propertyPath: string,
   logicalId: string,
-  execCtx: RollbackExecutorContext
+  execCtx: RollbackExecutorContext,
+  // go-to-k/cdkd#4847: a token the record names a region for is not unproven.
+  recordedRegions?: ReadonlyMap<string, string>
 ): void {
   if (execCtx.producerRegionsIncomplete !== true) return;
   for (const token of dynamicReferenceTokens(leaf)) {
+    if (recordedRegions?.has(token) === true) continue;
     const verdict = classifyReplaySecretRegion(
       token,
       execCtx.region,
@@ -241,7 +255,9 @@ export async function resolveLeafByRegion(
   logicalId: string,
   execCtx: RollbackExecutorContext,
   resolvers: ReplayResolvers,
-  resolverContext: ResolverContext
+  resolverContext: ResolverContext,
+  // go-to-k/cdkd#4847: the region the record's v12 provenance gives each token.
+  recordedRegions?: ReadonlyMap<string, string>
 ): Promise<string> {
   // ONE spelling of the token scan, shared with `secret-redaction.ts` (issue
   // #1936): a private regex here would answer a different question from the one
@@ -251,7 +267,12 @@ export async function resolveLeafByRegion(
     (token) =>
       [
         token,
-        classifyReplaySecretRegion(token, execCtx.region, execCtx.importedProducerRegions),
+        classifyRecordedSecretRegion(
+          token,
+          execCtx.region,
+          execCtx.importedProducerRegions,
+          recordedRegions
+        ),
       ] as const
   );
 
@@ -268,7 +289,11 @@ export async function resolveLeafByRegion(
     }
   }
 
-  if (!verdicts.some(([, verdict]) => verdict.kind === 'named-region')) {
+  if (
+    !verdicts.some(
+      ([, verdict]) => verdict.kind === 'named-region' || verdict.kind === 'recorded-region'
+    )
+  ) {
     return await resolvers.primary.resolveDynamicReferences(leaf, resolverContext);
   }
 
@@ -295,7 +320,11 @@ export async function resolveLeafByRegion(
     }
     out += leaf.slice(cursor, at);
     const resolver =
-      verdict.kind === 'named-region' ? resolvers.forRegion(verdict.region) : resolvers.primary;
+      verdict.kind === 'named-region'
+        ? resolvers.forRegion(verdict.region)
+        : verdict.kind === 'recorded-region'
+          ? resolvers.forRecordedRegion(verdict.region)
+          : resolvers.primary;
     out += await resolver.resolveDynamicReferences(token, resolverContext);
     cursor = at + token.length;
   }

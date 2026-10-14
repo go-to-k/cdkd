@@ -201,3 +201,38 @@ describe('SSMParameterProvider import', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
+
+describe('the Policies a read-back bag carries reach PutParameter as a JSON string (go-to-k/cdkd#4847 integ)', () => {
+  const expiration = {
+    Type: 'Expiration',
+    Version: '1.0',
+    Attributes: { Timestamp: '2030-01-01T00:00:00.000Z' },
+  };
+
+  it.each([
+    ['the no-policies placeholder []', [], undefined],
+    ['a parsed policy list', [expiration], JSON.stringify([expiration])],
+    ["a template's JSON string", JSON.stringify([expiration]), JSON.stringify([expiration])],
+  ])('%s', async (_label, policies, expected) => {
+    mockSend.mockResolvedValue({});
+    const provider = new SSMParameterProvider();
+    const observed = {
+      Name: PARAM_NAME,
+      Type: 'String',
+      Value: 'bar',
+      Description: '',
+      AllowedPattern: '',
+      Policies: policies,
+    };
+    await provider.update('P', PARAM_NAME, RESOURCE_TYPE, observed, { ...observed, Value: 'old' });
+    const put = mockSend.mock.calls
+      .map((c) => c[0] as unknown)
+      .find((c): c is PutParameterCommand => c instanceof PutParameterCommand)!;
+    // Every PutParameter scalar is a string (AWS refuses a list there).
+    for (const key of ['Value', 'Description', 'AllowedPattern', 'Policies'] as const) {
+      const v = put.input[key];
+      expect(v === undefined || typeof v === 'string', key).toBe(true);
+    }
+    expect(put.input.Policies).toBe(expected);
+  });
+});

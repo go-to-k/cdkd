@@ -218,6 +218,10 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import { resetAwsClients } from '../../../src/utils/aws-clients.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import {
+  clearRecordedSecretExpressions,
+  isRecordedSecretExpression,
+} from '../../../src/deployment/secret-redaction/mask-only.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const CONSUMER_REGION = 'ap-northeast-1';
@@ -2007,5 +2011,157 @@ describe("cdkd drift on a NESTED child classifies with its ancestors' producer r
     const parsed = JSON.parse(output) as StackDriftJson[];
     expect(parsed[0]!.notCompared.map((c) => c.logicalId)).toEqual(['Fn']);
     expect(output).not.toContain('producerRegions');
+  });
+});
+
+describe('cdkd drift resolves a recorded region in that region (go-to-k/cdkd#4847)', () => {
+  function recordedLambda(region: unknown): ResourceState {
+    return { ...lambdaResource(NAME_EXPR), referenceProvenance: { [NAME_EXPR]: { region } } as never };
+  }
+
+  it('--revert: the region the record names answers, where the evidence alone refuses', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: recordedLambda(PRODUCER_REGION) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(new Set(secretCtorRegions())).toEqual(new Set([PRODUCER_REGION]));
+    const sent = update.mock.calls[0]![3] as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(IRELAND_PASSWORD);
+  });
+
+  it('detection: the baseline AND the record properties resolve in the recorded region, clean', async () => {
+    clearRecordedSecretExpressions();
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: recordedLambda(PRODUCER_REGION) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    expect(new Set(secretCtorRegions())).toEqual(new Set([PRODUCER_REGION]));
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.drifted).toEqual([]);
+    expect(parsed[0]!.clean.map((c) => c.logicalId)).toEqual(['Fn']);
+    expect(output).not.toContain(IRELAND_PASSWORD);
+    // Through the producer-region GUEST, which pins no process-wide verdict
+    // for a region-less key (a plain sibling would).
+    expect(isRecordedSecretExpression(NAME_EXPR)).toBe(false);
+  });
+
+  it('--revert of an SSM parameter through the REAL provider update: every PutParameter scalar is a string', async () => {
+    // The getstackoutput / rollback-cross-region-secret integ shape: an
+    // SSM parameter whose Value is a cross-region reference, its observed
+    // baseline holding `readCurrentState`'s `Policies: []` placeholder. Before
+    // this was reachable (the refusal), nothing replayed such a bag; the array
+    // made AWS refuse the update ("Start of list found where not expected").
+    const { SSMParameterProvider } = await import(
+      '../../../src/provisioning/providers/ssm-parameter-provider.js'
+    );
+    const bag = {
+      Name: '/echo',
+      Type: 'String',
+      Value: NAME_EXPR,
+      Description: 'v1',
+      AllowedPattern: '',
+      Policies: [] as unknown[],
+    };
+    const record = {
+      physicalId: '/echo',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: { Name: '/echo', Type: 'String', Value: NAME_EXPR, Description: 'v1' },
+      observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+      referenceProvenance: { [NAME_EXPR]: { region: PRODUCER_REGION } },
+    } as unknown as ResourceState;
+    prime(CONSUMER_REGION, 'PutParameterCommand', { Version: 2 });
+    prime(CONSUMER_REGION, 'GetCallerIdentityCommand', { Account: '111122223333' });
+    const real = new SSMParameterProvider();
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Echo: record }, [PRODUCER_REGION]));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ ...bag, Value: 'tampered', Description: 'tampered' }),
+      update: (...args: Parameters<typeof real.update>) => real.update(...args),
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    const put = ssmSends.find((s) => s.command === 'PutParameterCommand');
+    expect(put).toBeDefined();
+    const input = put!.input as Record<string, unknown>;
+    for (const key of ['Value', 'Description', 'AllowedPattern', 'Policies']) {
+      expect(input[key] === undefined || typeof input[key] === 'string', key).toBe(true);
+    }
+    expect(input['Value']).toBe(IRELAND_PASSWORD);
+    expect(input['Policies']).toBeUndefined();
+  });
+
+  it('--revert of a PLAIN SSM parameter (no reference, no provenance) sends no Policies list either', async () => {
+    // Not specific to v12: every parameter's observed baseline carries the
+    // `Policies: []` placeholder, so any SSM revert reached the same refusal.
+    const { SSMParameterProvider } = await import(
+      '../../../src/provisioning/providers/ssm-parameter-provider.js'
+    );
+    const bag = {
+      Name: '/plain',
+      Type: 'String',
+      Value: 'v1-value',
+      Description: 'v1',
+      AllowedPattern: '',
+      Policies: [] as unknown[],
+    };
+    prime(CONSUMER_REGION, 'PutParameterCommand', { Version: 2 });
+    const real = new SSMParameterProvider();
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        {
+          Plain: {
+            physicalId: '/plain',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Name: '/plain', Type: 'String', Value: 'v1-value', Description: 'v1' },
+            observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+          } as unknown as ResourceState,
+        },
+        []
+      )
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ ...bag, Value: 'tampered' }),
+      update: (...args: Parameters<typeof real.update>) => real.update(...args),
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    const put = ssmSends.find((s) => s.command === 'PutParameterCommand');
+    expect((put!.input as Record<string, unknown>)['Policies']).toBeUndefined();
+    expect((put!.input as Record<string, unknown>)['Value']).toBe('v1-value');
+  });
+
+  it("an invalid recorded region is ignored: today's refusal", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: recordedLambda('Eu-West-1') }, [PRODUCER_REGION]));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
   });
 });

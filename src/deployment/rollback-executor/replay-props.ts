@@ -1,4 +1,5 @@
 import { CdkdError } from '../../utils/error-handler.js';
+import { recordedReferenceRegions } from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
 import {
   carriesSecretMask,
@@ -115,9 +116,16 @@ export async function resolveReplayProps(
   resolvers: ReplayResolvers,
   secrets: RecordedSecretValues,
   execCtx: RollbackExecutorContext,
-  logicalId: string
+  logicalId: string,
+  /**
+   * go-to-k/cdkd#4847: the record `props` came from. A token its v12
+   * provenance names a region for resolves in that region, where today's
+   * classification would refuse it or answer from this stack's own.
+   */
+  record?: unknown
 ): Promise<Record<string, unknown> | undefined> {
   if (props === undefined) return undefined;
+  const recordedRegions = recordedReferenceRegions(record);
   const resolverContext: ResolverContext = {
     template: { Resources: {} },
     resources: {},
@@ -128,8 +136,16 @@ export async function resolveReplayProps(
       if (!v.includes('{{resolve:')) return v;
       // Issue #2057: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
-      refuseUnprovenReplaySecret(v, path, logicalId, execCtx);
-      return await resolveLeafByRegion(v, path, logicalId, execCtx, resolvers, resolverContext);
+      refuseUnprovenReplaySecret(v, path, logicalId, execCtx, recordedRegions);
+      return await resolveLeafByRegion(
+        v,
+        path,
+        logicalId,
+        execCtx,
+        resolvers,
+        resolverContext,
+        recordedRegions
+      );
     }
     if (Array.isArray(v)) {
       const out: unknown[] = new Array(v.length) as unknown[];

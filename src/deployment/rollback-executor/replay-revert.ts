@@ -440,7 +440,8 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       resolver,
       secrets,
       ctx,
-      op.logicalId
+      op.logicalId,
+      previousState
     ),
     baseline: previousState,
     live: current,
@@ -461,7 +462,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     `  Rollback: Restoring ${safe(op.logicalId)} (${safe(op.resourceType)}) to previous state`
   );
   const currentProps = noEcho.onPreviousSide(
-    await resolveReplayProps(current.properties, resolver, secrets, ctx, op.logicalId)
+    await resolveReplayProps(current.properties, resolver, secrets, ctx, op.logicalId, current)
   );
   // Issue #2291, the UPDATE twin of the reverse-replacement re-create
   // arm's recording, whose note says why a CHILD engine seeded from this

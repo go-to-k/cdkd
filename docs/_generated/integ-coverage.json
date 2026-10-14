@@ -6691,6 +6691,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "import-retain-destroy",
@@ -6813,6 +6814,9 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "getstackoutput-crossregion": [
+          "l1"
         ],
         "iam-propagation-stress": [
           "l2"

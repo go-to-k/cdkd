@@ -696,6 +696,23 @@ export interface ResolverContext {
    */
   provenanceCapture?: true;
   /**
+   * go-to-k/cdkd#4847: the version each listed token is PINNED to, set only
+   * by the re-resolution of a recorded value (`reresolveRecordedReferences`,
+   * a nested `Outputs.<Key>`) from the record's `referenceProvenance`. A pin
+   * equal to the version this resolver already cached reuses that entry; any
+   * other pin is looked up at that version, cached under a key carrying it,
+   * and its plaintext is paired ({@link recordResolvedPair}) only when it
+   * equals what this pass recorded for the token, so two generations of one
+   * token never mark its pair conflicting.
+   */
+  referencePins?: ReadonlyMap<string, string>;
+  /**
+   * go-to-k/cdkd#4847: record NO provenance for resolutions in this context.
+   * Set on the unpinned lookup that precedes a pinned one, whose version the
+   * served value does not carry.
+   */
+  provenanceSuppressed?: true;
+  /**
    * A PRINT-ONLY corpus of LOG-ONLY needles (go-to-k/cdkd#4043): read by the
    * render mask of this resolver's own lines ({@link maskSecretsRaw}) and by
    * nothing that detects, records into {@link recordedSecretValues} or

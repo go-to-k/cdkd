@@ -139,6 +139,10 @@ import {
   resolveLeafByRegion,
 } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  clearRecordedSecretExpressions,
+  isRecordedSecretExpression,
+} from '../../../src/deployment/secret-redaction/mask-only.js';
 
 const CONSUMER_REGION = 'ap-northeast-1';
 const PRODUCER_REGION = 'eu-west-1';
@@ -1276,5 +1280,146 @@ describe("both replay entries bind their evidence for a nested row's provider ca
     await replayFailedOperations(failedOps, state, 'Top~Child', ctx);
 
     expect(seen).toEqual([{ regions: [PRODUCER_REGION], complete: false }]);
+  });
+});
+
+describe('the replay resolves a recorded region in that region (go-to-k/cdkd#4847)', () => {
+  const RECORDED = { [NAME_EXPR]: { region: PRODUCER_REGION } };
+
+  it('revert: both bags resolve in the recorded region, where the evidence alone refuses', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const { ops, state } = revertScenario(NAME_EXPR);
+    ops[0]!.previousState = { ...ops[0]!.previousState!, referenceProvenance: RECORDED };
+    state['Idp'] = { ...state['Idp']!, referenceProvenance: RECORDED };
+    clearRecordedSecretExpressions();
+
+    const result = await replayRollback(ops, state, 'Consumer', ctx);
+
+    expect(result.failures).toBe(0);
+    // Through the producer-region GUEST: no process-wide verdict for a
+    // region-less key from another region.
+    expect(isRecordedSecretExpression(NAME_EXPR)).toBe(false);
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    const call = update.mock.calls[0]!;
+    expect(JSON.stringify(call)).toContain(IRELAND_PASSWORD);
+    expect(JSON.stringify(call)).not.toContain(TOKYO_PASSWORD);
+  });
+
+  it('reverse-replacement: the re-CREATE bag resolves in the recorded region', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-OLD', attributes: {} });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeCtx({ create, delete: del }, [PRODUCER_REGION]);
+    const prev = res({
+      physicalId: 'phys-OLD',
+      properties: { ProviderDetails: { client_secret: NAME_EXPR } },
+      referenceProvenance: RECORDED,
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-NEW',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'phys-NEW',
+        properties: { ProviderDetails: { client_secret: 'unrelated' } },
+      }),
+    };
+
+    await replayRollback(ops, state, 'Consumer', ctx);
+
+    expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
+    expect(JSON.stringify(create.mock.calls[0])).toContain(IRELAND_PASSWORD);
+  });
+
+  it('a nested child with unknown parent regions: a recorded region is not refused as unproven', () => {
+    const ctx = { ...makeCtx({}), producerRegionsIncomplete: true } as RollbackExecutorContext;
+    expect(() => refuseUnprovenReplaySecret(NAME_EXPR, 'P', 'Idp', ctx)).toThrow();
+    expect(() =>
+      refuseUnprovenReplaySecret(NAME_EXPR, 'P', 'Idp', ctx, new Map([[NAME_EXPR, PRODUCER_REGION]]))
+    ).not.toThrow();
+  });
+
+  it('--revert-failed: the desired bag (previousState) and the current bag resolve in their recorded region', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: res({
+          properties: { ProviderDetails: { client_secret: NAME_EXPR } },
+          referenceProvenance: RECORDED,
+        }),
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        properties: { ProviderDetails: { client_id: 'x', client_secret: NAME_EXPR } },
+        referenceProvenance: RECORDED,
+      }),
+    };
+
+    const result = await replayFailedOperations(failedOps, state, 'Consumer', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(new Set(secretSends.map((s) => s.ctorRegion))).toEqual(new Set([PRODUCER_REGION]));
+    expect(JSON.stringify(update.mock.calls[0])).not.toContain(TOKYO_PASSWORD);
+  });
+
+  it('--revert-failed: the ATTEMPTED bag takes no record (the current record does not describe it)', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const failedOps: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: res({ properties: { ProviderDetails: { client_secret: 'literal-prev' } } }),
+        attemptedProperties: { ProviderDetails: { client_secret: NAME_EXPR } },
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        properties: { ProviderDetails: { client_secret: NAME_EXPR } },
+        referenceProvenance: RECORDED,
+      }),
+    };
+
+    const result = await replayFailedOperations(failedOps, state, 'Consumer', ctx);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
+  });
+
+  it('the guest answers: no process-wide verdict pinned for a region-less key', async () => {
+    clearRecordedSecretExpressions();
+    const resolvers = new ReplayResolvers(CONSUMER_REGION);
+    expect(resolvers.forRecordedRegion(PRODUCER_REGION).producerRegionGuest).toBe(true);
+    expect(resolvers.forRecordedRegion(CONSUMER_REGION)).toBe(resolvers.primary);
+  });
+
+  it("an invalid recorded region is ignored: today's refusal", async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const ctx = makeCtx({ update }, [PRODUCER_REGION]);
+    const { ops, state } = revertScenario(NAME_EXPR);
+    const bad = { [NAME_EXPR]: { region: 'eu-west-1; rm' } };
+    ops[0]!.previousState = { ...ops[0]!.previousState!, referenceProvenance: bad };
+    state['Idp'] = { ...state['Idp']!, referenceProvenance: bad };
+
+    const result = await replayRollback(ops, state, 'Consumer', ctx);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(secretSends).toHaveLength(0);
+    expect(result.failures).toBe(1);
   });
 });

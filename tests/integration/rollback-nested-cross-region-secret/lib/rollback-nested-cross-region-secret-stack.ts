@@ -40,9 +40,12 @@ import { Construct } from 'constructs';
  *       the same injection INSIDE the child, depending on `SecretEcho`, so the
  *       child engine's own automatic rollback reverts the echo.
  *
- * WHAT THE ROLLBACK MUST DO. Refuse the child's replay of `SecretEcho` and
- * leave the live parameter holding the PRODUCER region's value. Pre-fix it
- * overwrites it with the CONSUMER region's secret.
+ * WHAT THE ROLLBACK MUST DO. On records a v12 binary wrote, whose
+ * `referenceProvenance` names us-west-2 for the parent-supplied token
+ * (go-to-k/cdkd#4847), resolve it there and complete. On records without that
+ * field (the pre-v12 shape, which verify.sh produces by stripping it), refuse
+ * the child's replay of `SecretEcho`. Either way the live parameter never
+ * holds the CONSUMER region's secret; pre-#4174 the replay wrote exactly that.
  */
 
 export const PRODUCER_STACK_NAME = 'CdkdRbNestedXregionProducer';

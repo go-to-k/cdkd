@@ -1264,7 +1264,8 @@ async function replayFailedOperationsUnbound(
               resolver,
               secrets,
               ctx,
-              op.logicalId
+              op.logicalId,
+              prev
             ),
             baseline: prev,
             live: current,
@@ -1284,7 +1285,9 @@ async function replayFailedOperationsUnbound(
               resolver,
               secrets,
               ctx,
-              op.logicalId
+              op.logicalId,
+              // The record's provenance describes its own bag only.
+              op.attemptedProperties === undefined ? current : undefined
             )
           );
           // Issue #2291, the `--revert-failed` twin of the two arms in

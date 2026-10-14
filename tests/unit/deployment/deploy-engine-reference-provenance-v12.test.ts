@@ -35,15 +35,30 @@ const secret = vi.hoisted(() => ({
   version: 'a1b2c3d4-0000-1111-2222-333333333333' as string | undefined,
   mode: 'ok' as 'ok' | 'denied' | 'throttle',
   calls: 0,
+  /** go-to-k/cdkd#4847: the value each version id holds, for a pinned read. */
+  history: {} as Record<string, string>,
+  /** Every lookup, as `<SecretId>@<VersionId or stage>`. */
+  lookups: [] as string[],
 }));
 const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
   secret.calls++;
-  const id = (command as { input?: { SecretId?: string } } | undefined)?.input?.SecretId;
+  const input = (
+    command as { input?: { SecretId?: string; VersionId?: string; VersionStage?: string } } | undefined
+  )?.input;
+  const id = input?.SecretId;
+  secret.lookups.push(`${String(id)}@${input?.VersionId ?? input?.VersionStage ?? ''}`);
   if (secret.mode === 'denied' || id === 'denied-secret') {
     throw Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
   }
   if (secret.mode === 'throttle') {
     throw Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+  }
+  if (input?.VersionId !== undefined) {
+    const queue = secret.history[input.VersionId];
+    if (queue === undefined) {
+      throw Object.assign(new Error('no such version'), { name: 'ResourceNotFoundException' });
+    }
+    return { SecretString: JSON.stringify({ queue }), VersionId: input.VersionId };
   }
   return {
     SecretString: JSON.stringify({ queue: secret.queue }),
@@ -103,6 +118,8 @@ beforeEach(() => {
   secret.version = V1;
   secret.mode = 'ok';
   secret.calls = 0;
+  secret.history = { [V1]: 'sdin-q-1' };
+  secret.lookups = [];
   log.warn.length = 0;
   dynamicReferenceRetryDelays.sleep = () => Promise.resolve();
 });
@@ -148,6 +165,8 @@ interface Run {
   saves: number;
   calls: string[];
   thrown: unknown;
+  /** What each provider update was sent. */
+  sent: Record<string, Record<string, unknown>>;
 }
 
 async function deploy(opts: {
@@ -179,6 +198,7 @@ async function deploy(opts: {
   declineApproval?: boolean;
 }): Promise<Run> {
   const calls: string[] = [];
+  const sent: Record<string, Record<string, unknown>> = {};
   const provider = {
     create: vi.fn(async (id: string) => {
       calls.push(`create:${id}`);
@@ -195,6 +215,7 @@ async function deploy(opts: {
     update: vi.fn(
       async (id: string, _pid: string, _type: string, props: Record<string, unknown>) => {
         calls.push(`update:${id}`);
+        sent[id] = props;
         return id === 'SecretQueue'
           ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
           : {
@@ -302,7 +323,7 @@ async function deploy(opts: {
       (arg): arg is StackState =>
         typeof arg === 'object' && arg !== null && 'resources' in (arg as object)
     );
-  return { last: saved[saved.length - 1], saves: saved.length, calls, thrown };
+  return { last: saved[saved.length - 1], saves: saved.length, calls, thrown, sent };
 }
 
 const provenance = (run: Run, id: string): unknown =>
@@ -399,6 +420,12 @@ describe('the recording seam and the persist writer (written records)', () => {
     // A carried attribute holding the token, beside tokens at mutable paths only.
     first.last!.resources['Reader']!.attributes = { Echo: REF };
     secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    // The queue's record at V2 as well, so the reader's read route (pinned to
+    // the queue's recorded version since go-to-k/cdkd#4847) reads V2 too.
+    first.last!.resources['SecretQueue']!.referenceProvenance = {
+      [REF]: { region: 'us-east-1', versions: [V2] },
+    };
     const run = await deploy({
       state: first.last,
       readerDescription: 'b',
@@ -487,6 +514,12 @@ describe('a write through effectiveProperties (it may carry previous leaves)', (
     });
     // Same value, new VersionId: nothing is replaced, the reader is edited.
     secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    // The queue's record at V2 as well, so the reader's read route (pinned to
+    // the queue's recorded version since go-to-k/cdkd#4847) reads V2 too.
+    first.last!.resources['SecretQueue']!.referenceProvenance = {
+      [REF]: { region: 'us-east-1', versions: [V2] },
+    };
     const run = await deploy({
       state: first.last,
       readerDescription: 'b',
@@ -504,6 +537,12 @@ describe('a write through effectiveProperties (it may carry previous leaves)', (
   it('control: the same update without effectiveProperties takes this run alone', async () => {
     const first = await deploy({ state: undefined });
     secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    // The queue's record at V2 as well, so the reader's read route (pinned to
+    // the queue's recorded version since go-to-k/cdkd#4847) reads V2 too.
+    first.last!.resources['SecretQueue']!.referenceProvenance = {
+      [REF]: { region: 'us-east-1', versions: [V2] },
+    };
     const run = await deploy({ state: first.last, readerDescription: 'b' });
     expect(provenance(run, 'Reader')).toEqual({
       [REF]: { region: 'us-east-1', versions: [V2], readVersions: [V2] },
@@ -690,5 +729,95 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     });
     const second = await deploy({ state: run.last });
     expect(second.saves).toBe(0);
+  });
+});
+
+describe('a recorded reference re-resolved at its recorded version (go-to-k/cdkd#4847)', () => {
+  /** The same state without any v12 field: what today's path reads. */
+  const withoutProvenance = (state: StackState | undefined): StackState => {
+    const copy = structuredClone(state!);
+    delete copy.outputReferenceProvenance;
+    for (const record of Object.values(copy.resources)) delete record.referenceProvenance;
+    return copy;
+  };
+
+  it('a pin equal to the current version: one unpinned lookup, and the sends of a record without the field', async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    const runs: Array<{ run: Run; lookups: string[] }> = [];
+    for (const state of [structuredClone(first.last!), withoutProvenance(first.last)]) {
+      secret.lookups = [];
+      const run = await deploy({ state, readerSpellsSecret: false, readerDescription: 'b' });
+      expect(run.thrown).toBeUndefined();
+      runs.push({ run, lookups: [...secret.lookups] });
+    }
+    const [pinned, today] = runs;
+    // One unpinned lookup, which the pin equal to it reuses.
+    expect(pinned!.lookups).toEqual(['sdin@AWSCURRENT']);
+    expect(pinned!.run.calls).toEqual(today!.run.calls);
+    expect(pinned!.run.sent).toEqual(today!.run.sent);
+    expect(pinned!.run.sent['Reader']?.['Value']).toBe(PLAIN_ARN);
+  });
+
+  it("a reader that spells the token AND reads Arn, edited: the base's one lookup, no pinned one", async () => {
+    const first = await deploy({ state: undefined });
+    secret.lookups = [];
+    const run = await deploy({ state: structuredClone(first.last!), readerDescription: 'b' });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual(['update:Reader']);
+    // The merge base makes exactly this one lookup (measured, PR body table).
+    expect(secret.lookups).toEqual(['sdin@AWSCURRENT']);
+  });
+
+  it('an unrelated redeploy: one unpinned lookup, no pinned one', async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    // Settled first: the reader stored the plaintext ARN in the run that
+    // created its producer, and its next deploy rewrites it once.
+    const settled = await deploy({ state: first.last, readerSpellsSecret: false });
+    secret.lookups = [];
+    const run = await deploy({ state: settled.last, readerSpellsSecret: false });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    // The output's re-resolution of the queue's `Arn` makes the one lookup
+    // it made before v12 (its physical-id proof); the pin equals that
+    // version, so no pinned lookup follows.
+    expect(secret.lookups).toEqual(['sdin@AWSCURRENT']);
+  });
+
+  it('after a rotation, a reader of the UNCHANGED queue is sent the ARN of the name it was created with', async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    secret.queue = 'sdin-q-2';
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-2';
+    secret.lookups = [];
+    const run = await deploy({
+      state: structuredClone(first.last!),
+      readerSpellsSecret: false,
+      readerDescription: 'b',
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual(['update:Reader']);
+    expect(run.sent['Reader']?.['Value']).toBe(PLAIN_ARN);
+    // Unpinned first (the base's own lookup), then the pin: nothing else.
+    expect(secret.lookups).toEqual(['sdin@AWSCURRENT', `sdin@${V1}`]);
+    expect(log.warn.filter((w) => w.includes('as recorded'))).toEqual([]);
+    // The reader persists the reference, read at V1.
+    expect(run.last?.resources['Reader']?.properties['Value']).toBe(RECORDED_ARN);
+    expect(provenance(run, 'Reader')).toEqual({
+      [REF]: { region: 'us-east-1', versions: [V1], readVersions: [V1] },
+    });
+  });
+
+  it("CONTROL: the same rotation with no field takes today's path (served as recorded, with the warning)", async () => {
+    const first = await deploy({ state: undefined, readerSpellsSecret: false });
+    secret.queue = 'sdin-q-2';
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-2';
+    const run = await deploy({
+      state: withoutProvenance(first.last),
+      readerSpellsSecret: false,
+      readerDescription: 'b',
+    });
+    expect(run.sent['Reader']?.['Value']).toBe(RECORDED_ARN);
+    expect(log.warn.some((w) => w.includes('as recorded'))).toBe(true);
   });
 });

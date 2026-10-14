@@ -149,6 +149,19 @@ describe('refuseUnprovenDriftSecret', () => {
     expect((thrown as Error).message).toContain('prod/db');
   });
 
+  it('does not refuse a token whose record names its region (go-to-k/cdkd#4847)', () => {
+    expect(() =>
+      refuseUnprovenDriftSecret(
+        `x-${NAME_EXPR}`,
+        'Env.PW',
+        'Fn',
+        REGION,
+        { regions: [], complete: false },
+        new Map([[NAME_EXPR, 'eu-west-1']])
+      )
+    ).not.toThrow();
+  });
+
   it('leaves the ambiguous case to the classifier (a foreign region already on record)', () => {
     expect(() =>
       refuseUnprovenDriftSecret(NAME_EXPR, 'P', 'Fn', REGION, {

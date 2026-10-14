@@ -24,20 +24,44 @@
 #      record holds the region-less expression, the PARENT's `outputReads`
 #      names us-west-2, and the CHILD's own reads do NOT (the premise: the
 #      child's evidence alone cannot explain the reference).
-#   2d. DRIFT ARM (go-to-k/cdkd#4213): tamper the child's echo (Value and
-#      Description), then `cdkd drift --revert` on the CHILD must refuse on the
-#      parent's regions (exit 2) and write nothing. Pre-fix it wrote the
-#      consumer region's secret. Phase 3's v2 deploy restores the resource.
+#   TWO KINDS OF RECORD (go-to-k/cdkd#4847). A v12 binary records the region
+#   that resolved each `{{resolve:...}}` token (`referenceProvenance`) -- on
+#   the child's SecretEcho too, inherited through the parent's parameter --
+#   and the replay and drift resolve a region-less token in that region. So
+#   the records THIS binary writes get the positive phases (2p, 2b, 5b, 6a2,
+#   6c), each stating its pre-#4847 red line (the refusal its stripped twin
+#   still asserts), and the refusals run on records stripped of the field
+#   (premise present -> write -> read back gone), which is the pre-v12 shape.
+#   2p. Premise: the parent's `Child` row and the child's SecretEcho record
+#      both name us-west-2 for the token.
+#   2b. With the child's echo tampered (Value and Description), `cdkd drift`
+#      on the CHILD reports BOTH drifted (exit 1) and `--revert` exits 0,
+#      writes the PRODUCER's value and restores the Description.
+#   2s. Strip the child's provenance.
+#   2d. DRIFT ARM (go-to-k/cdkd#4213), on the stripped child: tamper the
+#      child's echo again, then `cdkd drift --revert` on the CHILD must refuse
+#      on the parent's regions (exit 2) and write nothing. Pre-#4213 it wrote
+#      the consumer region's secret. Phase 3's v2 deploy restores the resource.
+#   3s. Strip the parent's provenance (the child's is still stripped): the
+#      replay refuses on each journal's previousState, copied from this state.
 #   3. ARM A (`cdkd rollback` of the parent): deploy v2 + INJECT_FAIL under
 #      --no-rollback; assert the child journal carries the echo UPDATE whose
-#      previous Value is the expression.
+#      previous Value is the expression, and that neither journal's
+#      previousState carries provenance.
 #   4. `cdkd rollback --force` of the parent: exit 2, the nested row's revert
 #      refuses naming the reference and us-west-2, and the live echo still
 #      holds the PRODUCER's value.
 #   5. Destroy the consumer (cascades the child).
-#   6. ARM B (the deploy's automatic rollback): deploy v1, then v2 +
-#      INJECT_FAIL WITHOUT --no-rollback. The automatic rollback reverts the
-#      nested row; assert it refused and the live value is untouched.
+#   5b. ARM A on v12 records: deploy v1, fail v2 (both journaled
+#      previousStates name us-west-2), and `cdkd rollback` exits 0, restores
+#      the v1 Description with the PRODUCER's value and drops the parent
+#      journal. 5c destroys the consumer again.
+#   6. ARM B (the deploy's automatic rollback): 6a deploys v1; 6a2 deploys v2
+#      + INJECT_FAIL WITHOUT --no-rollback on v12 records, and the automatic
+#      rollback completes the nested row's revert (v1 Description, PRODUCER's
+#      value). 6a3 destroys, deploys v1 and strips both records; 6b repeats
+#      the failing deploy and asserts the revert refused and the live value
+#      is untouched.
 #   ARMS A AND B ARE REGRESSION NETS, NOT DISCRIMINATORS (measured against the
 #   pre-#4174 binary: both pass). The parent's revert of the `Child` row
 #   re-resolves the row's own `Parameters.SharedValue`, which holds the same
@@ -45,8 +69,10 @@
 #   child's journal replay runs. They pin that no nested revert writes the
 #   wrong region's value, whichever layer refuses.
 #   6c. ARM C (the CHILD engine's own automatic rollback): a failure inside
-#      the child after its echo UPDATE; the child's rollback must refuse on
-#      the parent engine's handed-down regions. THE DISCRIMINATING ARM: the
+#      the child after its echo UPDATE. On v12 records the child's rollback
+#      completes (v1 Description, PRODUCER's value); 6c2 repeats it on a fresh,
+#      stripped v1, and the child's rollback must refuse on the parent
+#      engine's handed-down regions. THE DISCRIMINATING ARM for #4174: the
 #      pre-#4174 binary resolves the echo in us-east-1 here and fails it.
 #   Every refusal must name `producer region(s) on record: us-west-2` and
 #   must NOT be the incomplete-evidence refusal, which a broken hand-down
@@ -283,6 +309,134 @@ assert_producer_value() {
     exit 1
   fi
 }
+# usage: assert_no_refusal <log> <what>
+# The positive arms' discriminator: pre-#4847 each of them refused here.
+assert_no_refusal() {
+  if grep -qE -- 'cannot re-resolve the secret reference|refused to re-resolve|refused to resolve' "$1"; then
+    echo "FAIL: $2 refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
+    sed 's/^/  /' "$1" >&2
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Recorded reference provenance (state schema v12, go-to-k/cdkd#4847)
+# ---------------------------------------------------------------------------
+# A v12 binary records, for each `{{resolve:...}}` token a record holds, the
+# region that resolved it (`referenceProvenance`). The child's SecretEcho
+# record gets us-west-2 for the parent-supplied token (the nested inherited
+# provenance is recorded on the read route), and so does the parent's `Child`
+# row for its `Parameters.SharedValue`. The rollback replay and `cdkd drift`
+# resolve a region-less token in the region its record names, so on records
+# THIS binary wrote nothing refuses: the positive phases (2b, 5b, 6a2, 6c)
+# assert that. A record WITHOUT the field -- one written before v12 -- keeps
+# the old reading, and refusing it is still today's behaviour. The refusal
+# phases (2d, 4, 6b, 6c2) therefore run on records stripped of the field,
+# which is exactly what a pre-v12 record looks like.
+CHILD_ECHO_RECORD='.resources.SecretEcho'
+PARENT_CHILD_ROW='.resources.Child'
+CHILD_JOURNAL_ECHO_PREVIOUS='.segments[]?.operations[]? | select(.logicalId == "SecretEcho" and .changeType == "UPDATE") | .previousState'
+PARENT_JOURNAL_CHILD_PREVIOUS='.segments[]?.operations[]? | select(.logicalId == "Child" and .changeType == "UPDATE") | .previousState'
+
+# Exactly ONE record must match, or the check after it is ambiguous or vacuous.
+assert_one_record() { # usage: assert_one_record <json file> <record filter> <what>
+  local count
+  count="$(jq "[$2 | objects] | length" "$1")" || { echo "FAIL: could not parse $1 for $3" >&2; exit 1; }
+  if [ "${count}" != "1" ]; then
+    echo "FAIL: expected exactly one record for $3, found ${count} -- the provenance check would be ambiguous or vacuous" >&2
+    exit 1
+  fi
+}
+assert_recorded_region() { # usage: assert_recorded_region <json file> <record filter> <region> <what>
+  local got
+  assert_one_record "$1" "$2" "$4"
+  got="$(jq -r --arg t "${SHARED_EXPRESSION}" \
+    "$2 | ((.referenceProvenance // {})[\$t] // {}).region // empty" "$1")" \
+    || { echo "FAIL: could not read the provenance of $4" >&2; exit 1; }
+  if [ "${got}" != "$3" ]; then
+    echo "FAIL: $4 records region '${got}' for ${SHARED_EXPRESSION}, expected '$3'" >&2
+    exit 1
+  fi
+  echo "[verify]   ok: $4 records region $3 for the reference"
+}
+assert_no_reference_provenance() { # usage: assert_no_reference_provenance <json file> <record filter> <what>
+  local held
+  assert_one_record "$1" "$2" "$3"
+  held="$(jq "[$2 | has(\"referenceProvenance\")] | any" "$1")" \
+    || { echo "FAIL: could not parse $1 for $3" >&2; exit 1; }
+  if [ "${held}" != "false" ]; then
+    echo "FAIL: $3 carries referenceProvenance -- the refusal below would be measuring a v12 record, not a pre-v12 one" >&2
+    exit 1
+  fi
+  echo "[verify]   ok: $3 carries no referenceProvenance (the pre-v12 shape)"
+}
+# Every cdkd command this script runs is foreground and has exited before the
+# next line, so nothing holds the stack lock while state.json is edited. The
+# lock object is deleted on release; finding it means something else is
+# running against this stack and the edit would race it.
+assert_stack_unlocked() { # usage: assert_stack_unlocked <state key>
+  local lock_key="${1%state.json}lock.json"
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${lock_key}"; then
+    echo "FAIL: s3://${STATE_BUCKET}/${lock_key} exists -- a cdkd command holds the stack lock, so editing state.json now would race it" >&2
+    exit 1
+  fi
+}
+# Rewrite <state key> as a pre-v12 binary left it: every `referenceProvenance`
+# and `outputReferenceProvenance` dropped, nothing else touched. The repo's
+# precedent for an in-run state edit (cross-stack-secret-import, "Step 7"):
+# PREMISE first (the field is there, so the strip is not vacuous), then write,
+# then read back from S3 and prove it is gone.
+strip_reference_provenance() { # usage: strip_reference_provenance <state key> <tag> <record filter> <what>
+  local before="${LOGDIR}/$2-before-strip.json"
+  local after="${LOGDIR}/$2-after-strip.json"
+  local back="${LOGDIR}/$2-read-back.json"
+  local tokens_before tokens_back left
+  assert_stack_unlocked "$1"
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${before}" >/dev/null \
+    || { echo "FAIL: could not read s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  assert_no_plaintext "${before}" "$4's state document before the strip"
+  assert_recorded_region "${before}" "$3" "${PRODUCER_REGION}" "$4 (PREMISE, before the strip)"
+  jq 'walk(if type == "object" then del(.referenceProvenance, .outputReferenceProvenance) else . end)' \
+    "${before}" > "${after}" || { echo "FAIL: could not strip $1" >&2; exit 1; }
+  aws s3 cp - "s3://${STATE_BUCKET}/$1" < "${after}" >/dev/null \
+    || { echo "FAIL: could not write the stripped s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${back}" >/dev/null \
+    || { echo "FAIL: could not read back s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  left="$(jq '[.. | objects | select(has("referenceProvenance") or has("outputReferenceProvenance"))] | length' "${back}")" \
+    || { echo "FAIL: could not parse the read-back $1" >&2; exit 1; }
+  if [ "${left}" != "0" ]; then
+    echo "FAIL: the read-back $1 still carries ${left} provenance field(s)" >&2
+    exit 1
+  fi
+  assert_no_reference_provenance "${back}" "$3" "$4 (read back after the strip)"
+  # Only the field went: every `{{resolve:...}}` the record held is still there.
+  tokens_before="$(jq '[.. | strings | select(contains("{{resolve:"))] | length' "${before}")" \
+    || { echo "FAIL: could not count tokens in $1" >&2; exit 1; }
+  tokens_back="$(jq '[.. | strings | select(contains("{{resolve:"))] | length' "${back}")" \
+    || { echo "FAIL: could not count tokens in the read-back $1" >&2; exit 1; }
+  if [ "${tokens_before}" != "${tokens_back}" ] || [ "${tokens_back}" = "0" ]; then
+    echo "FAIL: the strip changed the references $1 holds (${tokens_before} -> ${tokens_back})" >&2
+    exit 1
+  fi
+}
+# usage: strip_consumer_and_child <tag>
+# Both pre-deploy records a nested replay reads: the parent's `Child` row (its
+# revert re-resolves `Parameters.SharedValue`) and the child's SecretEcho.
+strip_consumer_and_child() {
+  strip_reference_provenance "${CONSUMER_STATE_KEY}" "$1-parent" "${PARENT_CHILD_ROW}" "the parent's Child row"
+  strip_reference_provenance "${CHILD_STATE_KEY}" "$1-child" "${CHILD_ECHO_RECORD}" "the child's SecretEcho record"
+}
+# usage: assert_v12_records <tag> -- both records name us-west-2 (the positive arms' premise)
+assert_v12_records() {
+  aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" "${LOGDIR}/$1-parent-state.json" >/dev/null \
+    || { echo "FAIL: could not read the consumer state" >&2; exit 1; }
+  aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${LOGDIR}/$1-child-state.json" >/dev/null \
+    || { echo "FAIL: could not read the child state" >&2; exit 1; }
+  assert_no_plaintext "${LOGDIR}/$1-parent-state.json" "consumer state.json ($1)"
+  assert_no_plaintext "${LOGDIR}/$1-child-state.json" "child state.json ($1)"
+  assert_recorded_region "${LOGDIR}/$1-parent-state.json" "${PARENT_CHILD_ROW}" "${PRODUCER_REGION}" "the parent's Child row ($1)"
+  assert_recorded_region "${LOGDIR}/$1-child-state.json" "${CHILD_ECHO_RECORD}" "${PRODUCER_REGION}" "the child's SecretEcho record ($1)"
+}
 
 # ---------------------------------------------------------------------------
 # PHASE 0: seed the SAME SecureString name in BOTH regions with DIFFERENT values
@@ -358,6 +512,73 @@ if [ -n "${CHILD_READ_REGIONS}" ]; then
 fi
 echo "[verify]   ok: the child records the region-less expression; only the PARENT's reads name ${PRODUCER_REGION}"
 
+# PHASE 2p: the v12 records name the region (the premise of every positive
+# arm). The child's record names it although the child's OWN reads name none:
+# it came down with the parent's parameter.
+echo "[verify] phase 2p: the v12 records name ${PRODUCER_REGION} for the parent-supplied reference"
+assert_v12_records v1
+
+# ---------------------------------------------------------------------------
+# PHASE 2b (go-to-k/cdkd#4847): `cdkd drift --revert` on the CHILD's v12 record
+# writes the PRODUCER region's value.
+# Pre-#4847 red line: the Value leaf was refused (`notCompared`, drift saw
+# Description only) and --revert printed `refused to re-resolve` on the
+# parent's regions, exited 2 and left the tamper live -- exactly phase 2d's
+# outcome on the stripped record. With the record's region the token is
+# resolved in us-west-2, compared, and reverted with the producer's value.
+# ---------------------------------------------------------------------------
+TAMPER_SENTINEL="cdkd-4213-tampered-do-not-resolve"
+ECHO_DESCRIPTION_V1="nested cross-region secret echo (v1)"
+echo "[verify] phase 2b: 'cdkd drift --revert' on ${CHILD_STACK}'s v12 record writes the producer region's value"
+aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" --type String \
+  --description "cdkd-4213-tampered-description" --overwrite --region "${CONSUMER_REGION}" >/dev/null
+if [ "$(live_echo_value)" != "${TAMPER_SENTINEL}" ]; then
+  echo "FAIL: the out-of-band tamper did not take; the revert below would have nothing to do" >&2
+  exit 1
+fi
+V12_DRIFT_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --json \
+  --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-child-v12.json" 2> "${LOGDIR}/drift-child-v12.err" || V12_DRIFT_RC=$?
+assert_no_plaintext "${LOGDIR}/drift-child-v12.json" "the v12 child drift --json payload"
+assert_no_plaintext "${LOGDIR}/drift-child-v12.err" "the v12 child drift stderr"
+assert_no_refusal "${LOGDIR}/drift-child-v12.err" "drift --json on the v12 child"
+V12_DRIFTED_PATHS="$(jq -r '[.. | objects | select(has("drifted")) | .drifted[]? | select(.logicalId == "SecretEcho") | .changes[]?.path] | join(",")' \
+  "${LOGDIR}/drift-child-v12.json")"
+for path in Description Value; do
+  case ",${V12_DRIFTED_PATHS}," in
+    *,"${path}",*) ;;
+    *)
+      echo "FAIL: the tampered v12 child echo is not drifted on ${path} (got '${V12_DRIFTED_PATHS}', rc=${V12_DRIFT_RC})" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "${V12_DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: drift --json on the tampered v12 child exited ${V12_DRIFT_RC}, expected 1" >&2
+  exit 1
+fi
+V12_REVERT_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --revert -y \
+  --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-revert-v12.log" 2>&1 || V12_REVERT_RC=$?
+sed 's/^/  /' "${LOGDIR}/drift-revert-v12.log" || true
+assert_no_plaintext "${LOGDIR}/drift-revert-v12.log" "the v12 drift --revert output"
+assert_no_refusal "${LOGDIR}/drift-revert-v12.log" "drift --revert on the v12 child"
+if [ "${V12_REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: drift --revert on the v12 child exited ${V12_REVERT_RC}, expected 0" >&2
+  exit 1
+fi
+assert_producer_value "after drift --revert on the v12 child"
+if [ "$(live_echo_description)" != "${ECHO_DESCRIPTION_V1}" ]; then
+  echo "FAIL: drift --revert on the v12 child did not restore the Description" >&2
+  exit 1
+fi
+echo "[verify]   ok: drift --revert on the v12 child wrote the PRODUCER region's value (rc=0)"
+
+# PHASE 2s: strip the child's provenance, so phase 2d measures the pre-v12
+# record its refusal is still today's behaviour for.
+echo "[verify] phase 2s: strip referenceProvenance from ${CHILD_STACK}'s state (the pre-v12 shape)"
+strip_reference_provenance "${CHILD_STATE_KEY}" child-v1 "${CHILD_ECHO_RECORD}" "the child's SecretEcho record"
+
 # ---------------------------------------------------------------------------
 # PHASE 2d (DRIFT ARM, go-to-k/cdkd#4213): `cdkd drift --revert` on the CHILD
 # must classify the parent-supplied expression with the PARENT's regions.
@@ -367,8 +588,9 @@ echo "[verify]   ok: the child records the region-less expression; only the PARE
 # Both Value (secret-bearing) and Description (ordinary) are tampered: with
 # Value alone the resource is `notCompared`, nothing is drifted, and --revert
 # returns early without reaching the refusal (the sibling fixture's phase 2b2).
+# On the STRIPPED child record (phase 2s): a pre-v12 record names no region,
+# so this refusal is still today's behaviour for it. Phase 2b is the v12 twin.
 echo "[verify] phase 2d: 'cdkd drift --revert' on ${CHILD_STACK} (expect a refusal naming ${PRODUCER_REGION})"
-TAMPER_SENTINEL="cdkd-4213-tampered-do-not-resolve"
 aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" --type String \
   --description "cdkd-4213-tampered-description" --overwrite --region "${CONSUMER_REGION}" >/dev/null
 # Premise guard (the sibling fixture's phase 2b2): the tamper must make the
@@ -438,6 +660,18 @@ echo "[verify]   ok: drift --revert on the child refused on the parent's regions
 # ---------------------------------------------------------------------------
 # PHASE 3 (ARM A): failing v2 under --no-rollback -> journals to replay
 # ---------------------------------------------------------------------------
+# The replay's desired side is each journal's previousState, copied from the
+# state as it stood BEFORE this deploy, and it is resolved (and refused)
+# before the previous side, the record this deploy writes. So the pre-deploy
+# records must be pre-v12: the child's is still the one phase 2s stripped
+# (asserted), and the parent's `Child` row -- whose revert re-resolves
+# `Parameters.SharedValue` and refuses first -- is stripped here.
+echo "[verify] phase 3s: strip the parent's provenance; the child's is still stripped"
+strip_reference_provenance "${CONSUMER_STATE_KEY}" parent-v1 "${PARENT_CHILD_ROW}" "the parent's Child row"
+aws s3 cp "s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" "${LOGDIR}/child-state-before-v2.json" >/dev/null
+assert_no_reference_provenance "${LOGDIR}/child-state-before-v2.json" "${CHILD_ECHO_RECORD}" \
+  "the child's SecretEcho record before the v2 deploy"
+
 echo "[verify] phase 3: deploy ${CONSUMER_STACK} v2 + INJECT_FAIL --no-rollback (expect FAILURE)"
 set +e
 MARKER_VALUE=v2 WITH_XREGION=true INJECT_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
@@ -470,11 +704,17 @@ if [ "$(live_echo_description)" != "nested cross-region secret echo (v2)" ]; the
   exit 1
 fi
 assert_producer_value "after the v2 deploy"
+assert_no_reference_provenance "${LOGDIR}/consumer-journal.json" "${PARENT_JOURNAL_CHILD_PREVIOUS}" \
+  "the parent journal's previousState of the Child row"
+assert_no_reference_provenance "${LOGDIR}/child-journal.json" "${CHILD_JOURNAL_ECHO_PREVIOUS}" \
+  "the child journal's previousState of SecretEcho"
 echo "[verify]   ok: the child's v2 UPDATE landed and its journal carries the expression"
 
 # ---------------------------------------------------------------------------
 # PHASE 4: cdkd rollback of the PARENT — the child's replay must REFUSE
 # ---------------------------------------------------------------------------
+# On pre-v12 journaled records (phase 3's premise), refusing is still today's
+# behaviour. Phase 5b is the v12 twin, where the rollback completes.
 echo "[verify] phase 4: cdkd rollback ${CONSUMER_STACK} --force (expect exit 2 = partial)"
 set +e
 AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
@@ -509,13 +749,109 @@ assert_gone "echo parameter ${ECHO_PARAM} still exists after destroy" \
 assert_gone "child state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
 
+# usage: destroy_consumer <phase>
+destroy_consumer() {
+  AWS_REGION="${CONSUMER_REGION}" ${CLI} destroy "${CONSUMER_STACK}" \
+    --state-bucket "${STATE_BUCKET}" --force
+  assert_gone "echo parameter ${ECHO_PARAM} still exists after the $1 destroy" \
+    aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}"
+  assert_gone "child state file still exists after the $1 destroy" \
+    aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
+}
+# usage: deploy_v1 <phase> -- a fresh v1, whose records a v12 binary wrote
+deploy_v1() {
+  MARKER_VALUE=v1 WITH_XREGION=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+    --state-bucket "${STATE_BUCKET}" --yes
+  assert_producer_value "after the $1 v1 deploy"
+  assert_v12_records "$1"
+}
+# usage: assert_reverted_to_v1 <log> <what> -- a positive arm's outcome
+assert_reverted_to_v1() {
+  assert_no_plaintext "$1" "$2 output"
+  assert_no_refusal "$1" "$2"
+  assert_producer_value "after $2"
+  if [ "$(live_echo_description)" != "${ECHO_DESCRIPTION_V1}" ]; then
+    echo "FAIL: $2 did not restore the v1 Description -- the nested revert was not applied" >&2
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# PHASE 5b (go-to-k/cdkd#4847): ARM A on the records as v12 writes them --
+# `cdkd rollback` of the parent COMPLETES.
+# Pre-#4847 red line: exit 2, the Child row's revert refusing with `cannot
+# re-resolve the secret reference` on us-west-2, Description left at v2 --
+# exactly phase 4's outcome on stripped records. With both journaled records
+# naming us-west-2, the parent's row revert and the child's replay resolve the
+# token there. The live value cannot tell "rewritten with the producer's value"
+# from "untouched", so the Description flip proves the revert was applied.
+# ---------------------------------------------------------------------------
+echo "[verify] phase 5b: arm A on v12 records -- deploy v1, fail v2, cdkd rollback completes"
+deploy_v1 5b
+V12_DEPLOY_RC=0
+MARKER_VALUE=v2 WITH_XREGION=true INJECT_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --no-rollback --yes > "${LOGDIR}/v12-v2-deploy.log" 2>&1 || V12_DEPLOY_RC=$?
+sed 's/^/  /' "${LOGDIR}/v12-v2-deploy.log" || true
+if [ "${V12_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the 5b v2 --no-rollback deploy unexpectedly SUCCEEDED" >&2
+  exit 1
+fi
+assert_no_plaintext "${LOGDIR}/v12-v2-deploy.log" "the 5b v2 deploy output"
+if [ "$(live_echo_description)" != "nested cross-region secret echo (v2)" ]; then
+  echo "FAIL: the child's 5b v2 UPDATE did not land, so the rollback would have nothing to revert" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_JOURNAL_KEY}" "${LOGDIR}/consumer-journal-5b.json" >/dev/null
+aws s3 cp "s3://${STATE_BUCKET}/${CHILD_JOURNAL_KEY}" "${LOGDIR}/child-journal-5b.json" >/dev/null
+assert_recorded_region "${LOGDIR}/consumer-journal-5b.json" "${PARENT_JOURNAL_CHILD_PREVIOUS}" "${PRODUCER_REGION}" \
+  "the parent journal's previousState of the Child row (5b)"
+assert_recorded_region "${LOGDIR}/child-journal-5b.json" "${CHILD_JOURNAL_ECHO_PREVIOUS}" "${PRODUCER_REGION}" \
+  "the child journal's previousState of SecretEcho (5b)"
+V12_ROLLBACK_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${CONSUMER_REGION}" --force \
+  > "${LOGDIR}/v12-rollback.log" 2>&1 || V12_ROLLBACK_RC=$?
+sed 's/^/  /' "${LOGDIR}/v12-rollback.log" || true
+assert_reverted_to_v1 "${LOGDIR}/v12-rollback.log" "the 5b parent rollback"
+if [ "${V12_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd rollback exited ${V12_ROLLBACK_RC} on the v12 journals; expected 0" >&2
+  exit 1
+fi
+assert_gone "the parent journal survived a rollback that completed" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_JOURNAL_KEY}"
+echo "[verify]   ok: the v12 parent rollback completed (rc=0) and restored v1 with the PRODUCER region's value"
+
+echo "[verify] phase 5c: destroy ${CONSUMER_STACK} again"
+destroy_consumer 5c
+
 # ---------------------------------------------------------------------------
 # PHASE 6 (ARM B): the deploy's AUTOMATIC rollback reverts the nested row
 # ---------------------------------------------------------------------------
 echo "[verify] phase 6a: deploy ${CONSUMER_STACK} v1 again"
-MARKER_VALUE=v1 WITH_XREGION=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
-  --state-bucket "${STATE_BUCKET}" --yes
-assert_producer_value "after the arm-B v1 deploy"
+deploy_v1 6a
+
+# PHASE 6a2 (go-to-k/cdkd#4847): arm B on v12 records -- the automatic
+# rollback COMPLETES the nested row's revert. Pre-#4847 red line: the revert
+# refused (`cannot re-resolve the secret reference`) and Description stayed
+# at v2 -- exactly phase 6b's outcome on stripped records.
+echo "[verify] phase 6a2: v2 + INJECT_FAIL on v12 records -- the automatic rollback completes (deploy still FAILS)"
+ARMB_V12_RC=0
+MARKER_VALUE=v2 WITH_XREGION=true INJECT_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --yes > "${LOGDIR}/armb-v12-deploy.log" 2>&1 || ARMB_V12_RC=$?
+sed 's/^/  /' "${LOGDIR}/armb-v12-deploy.log" || true
+if [ "${ARMB_V12_RC}" -eq 0 ]; then
+  echo "FAIL: the 6a2 deploy unexpectedly SUCCEEDED -- nothing was rolled back" >&2
+  exit 1
+fi
+assert_reverted_to_v1 "${LOGDIR}/armb-v12-deploy.log" "the 6a2 automatic rollback"
+echo "[verify]   ok: the automatic rollback on v12 records reverted the nested row with the PRODUCER region's value"
+
+# A fresh v1 for the refusal: its records are stripped, so the 6b deploy's
+# journaled previousState is the pre-v12 shape.
+echo "[verify] phase 6a3: destroy, deploy v1, strip the parent's and the child's provenance"
+destroy_consumer 6a3
+deploy_v1 6a3
+strip_consumer_and_child armb
 
 echo "[verify] phase 6b: deploy v2 + INJECT_FAIL with the automatic rollback (expect FAILURE)"
 set +e
@@ -542,12 +878,31 @@ echo "[verify]   ok: the automatic rollback refused the nested row's revert, and
 # automatic rollback reverts the echo, with the parent engine's regions
 # handed down to it (no journal replay of the row is involved).
 # ---------------------------------------------------------------------------
-echo "[verify] phase 6c: destroy, deploy v1, then v2 + INJECT_CHILD_FAIL (expect FAILURE)"
-AWS_REGION="${CONSUMER_REGION}" ${CLI} destroy "${CONSUMER_STACK}" \
-  --state-bucket "${STATE_BUCKET}" --force
-MARKER_VALUE=v1 WITH_XREGION=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
-  --state-bucket "${STATE_BUCKET}" --yes
-assert_producer_value "after the arm-C v1 deploy"
+# 6c first runs on the records as v12 writes them (go-to-k/cdkd#4847): the
+# child's own rollback resolves the token in the region its record names and
+# COMPLETES. Pre-#4847 red line: the refusal on the parent's regions and
+# Description left at v2 -- exactly 6c2's outcome on stripped records.
+echo "[verify] phase 6c: destroy, deploy v1, then v2 + INJECT_CHILD_FAIL on v12 records (the child's rollback completes; the deploy still FAILS)"
+destroy_consumer 6c
+deploy_v1 6c
+ARMC_V12_RC=0
+MARKER_VALUE=v2 WITH_XREGION=true INJECT_CHILD_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --yes > "${LOGDIR}/armc-v12-deploy.log" 2>&1 || ARMC_V12_RC=$?
+sed 's/^/  /' "${LOGDIR}/armc-v12-deploy.log" || true
+if [ "${ARMC_V12_RC}" -eq 0 ]; then
+  echo "FAIL: the 6c deploy unexpectedly SUCCEEDED -- nothing was rolled back" >&2
+  exit 1
+fi
+assert_reverted_to_v1 "${LOGDIR}/armc-v12-deploy.log" "the child's own automatic rollback on v12 records"
+echo "[verify]   ok: the child's own rollback on v12 records reverted the echo with the PRODUCER region's value"
+
+# 6c2: the refusal, on a fresh v1 whose records are stripped (the pre-v12
+# shape): the child engine's previousState comes from the child's state as it
+# stood before the deploy.
+echo "[verify] phase 6c2: destroy, deploy v1, strip, then v2 + INJECT_CHILD_FAIL (expect FAILURE + refusal)"
+destroy_consumer 6c2
+deploy_v1 6c2
+strip_consumer_and_child armc
 set +e
 MARKER_VALUE=v2 WITH_XREGION=true INJECT_CHILD_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --yes > "${LOGDIR}/armc-deploy.log" 2>&1
@@ -601,4 +956,4 @@ assert_gone "the child's injected failing queue exists — it should never have 
   aws sqs get-queue-url --queue-name "${CHILD_FAILING_QUEUE_NAME}" --region "${CONSUMER_REGION}"
 
 echo ""
-echo "[verify] PASS: rollback-nested-cross-region-secret — drift --revert on the child, the parent rollback, the parent's automatic rollback and the child's own automatic rollback all refused to re-resolve a parent-supplied cross-region secret, and the live value kept the producer region's secret"
+echo "[verify] PASS: rollback-nested-cross-region-secret — on v12 records drift --revert on the child, the parent rollback, the parent's automatic rollback and the child's own automatic rollback all resolved the parent-supplied secret in the producer's region; on pre-v12 records every one of them still refused; the live value never held the consumer region's secret"

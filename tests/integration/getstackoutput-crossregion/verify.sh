@@ -20,6 +20,31 @@
 #   4. Destroy consumer (us-east-1) then producer (us-west-2); assert
 #      both AWS resources AND both region-prefixed state files are gone.
 #
+# go-to-k/cdkd#4847 arm (state schema v12: a recorded reference is re-resolved
+# in its RECORDED region, at its RECORDED version). Secrets named
+# `cdkd-gso-4847-*` hold a queue name, under the SAME name in both regions with
+# DIFFERENT values; the producer publishes each as a `{{resolve:...}}` output
+# and a us-east-1 queue is named from it through `Fn::GetStackOutput`
+# (`Region: us-west-2`). Its record holds `arn:...:{{resolve:...}}`, and the
+# stack reads another region, so pre-fix a reader of `Queue.Arn` added while
+# the queue is NO_CHANGE was sent the literal reference.
+#   0.  Seed the secrets; deploy the producer and CdkdGsoConsumerPre with the
+#       LAST v11 binary; rotate the `-rot` secret BEFORE the upgrade.
+#   5a. Add the reader of `Queue.Arn`: it holds the us-west-2 queue's ARN.
+#   5b. `cdkd drift`: no region refusal.
+#   5c. A forced failure under --no-rollback, then `cdkd rollback`: the reader
+#       is restored, with the us-west-2 queue's ARN.
+#   5d. `cdkd scrub --dry-run --fail`: no refusal, nothing to scrub.
+#   5e. Rotate the main secret, edit the reader: it still holds the ARN of the
+#       queue AWS has (the version the queue's record holds).
+#   6.  CdkdGsoConsumerPre under v12: the migration deploy captures the
+#       provenance (region + version; region only for the rotated queue),
+#       then the readers: the unrotated queue's ARN is served; the rotated
+#       one is served as recorded with the generation warning, never from
+#       us-east-1.
+# Pre-fix red line: "deploy failed / value carries {{resolve: / holds the
+# us-east-1 value" (5a, 5e, 6), "drift refused" (5b), "rollback refused" (5c).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (account-scoped, e.g. cdkd-state-{accountId})
 #   AWS_REGION   — informational; this test pins explicit per-stack regions
@@ -63,6 +88,11 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# go-to-k/cdkd#4847: the arm resolves secret dynamic references, so every
+# state version this run wrote is swept and the sweep asserted at the end.
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
+
 PRODUCER_STACK="CdkdGsoProducer"
 CONSUMER_STACK="CdkdGsoConsumer"
 PRODUCER_REGION="us-west-2"
@@ -74,6 +104,30 @@ PRODUCER_LOCK_KEY="cdkd/${PRODUCER_STACK}/${PRODUCER_REGION}/lock.json"
 CONSUMER_LOCK_KEY="cdkd/${CONSUMER_STACK}/${CONSUMER_REGION}/lock.json"
 PRODUCER_PARAM_NAME="/cdkd/getstackoutput-crossregion/producer"
 CONSUMER_PARAM_NAME="/cdkd/getstackoutput-crossregion/consumer"
+
+# go-to-k/cdkd#4847 arm.
+PRE_STACK="CdkdGsoConsumerPre"
+PRE_STATE_KEY="cdkd/${PRE_STACK}/${CONSUMER_REGION}/state.json"
+PRE_LOCK_KEY="cdkd/${PRE_STACK}/${CONSUMER_REGION}/lock.json"
+PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER_STACK}" "${PRODUCER_REGION}")"
+CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER_STACK}" "${CONSUMER_REGION}")"
+PRE_STATE_PREFIX="$(s3_stack_prefix "${PRE_STACK}" "${CONSUMER_REGION}")"
+CONSUMER_JOURNAL_KEY="cdkd/${CONSUMER_STACK}/${CONSUMER_REGION}/rollback-journal.json"
+READER_PARAM_NAME="/cdkd/getstackoutput-crossregion/reader"
+READER_PRE_PARAM_NAME="/cdkd/getstackoutput-crossregion/reader-pre"
+FAIL_PARAM_NAME="/cdkd/getstackoutput-crossregion/fail-probe"
+# The LAST v11-writing release (the schema-v11-to-v12-migration fixture's).
+V11_CDKD_VERSION="0.298.7"
+V11_TMPDIR=""
+V11_BIN=""
+# Unique per run: a deleted queue's name cannot be reused for 60 s, and a
+# force-deleted secret's name for a few seconds.
+SUFFIX="$(date +%s)"
+SECRET_MAIN="cdkd-gso-4847-${SUFFIX}"
+SECRET_PRE="cdkd-gso-4847-pre-${SUFFIX}"
+SECRET_ROT="cdkd-gso-4847-rot-${SUFFIX}"
+CTX=(-c "gso4847Suffix=${SUFFIX}")
+LOGDIR="$(mktemp -d)"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -101,10 +155,39 @@ cleanup() {
   aws s3 rm "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${CONSUMER_LOCK_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${PRODUCER_LOCK_KEY}" >/dev/null 2>&1 || true
+  # go-to-k/cdkd#4847 arm: only THIS run's names (they end in its suffix), so a
+  # concurrent run on the same account keeps its own; an older run's leftovers
+  # are `/cleanup`'s.
+  if [ -x "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" state destroy "${PRE_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+  fi
+  for p in "${READER_PARAM_NAME}" "${READER_PRE_PARAM_NAME}" "${FAIL_PARAM_NAME}"; do
+    aws ssm delete-parameter --name "${p}" --region "${CONSUMER_REGION}" >/dev/null 2>&1 || true
+  done
+  for q in $(aws sqs list-queues --queue-name-prefix cdkd-gso-4847 --region "${CONSUMER_REGION}" --query 'QueueUrls[]' --output text 2>/dev/null); do
+    case "${q}" in *"-${SUFFIX}") ;; *) continue ;; esac
+    aws sqs delete-queue --queue-url "${q}" --region "${CONSUMER_REGION}" >/dev/null 2>&1 || true
+  done
+  for r in "${PRODUCER_REGION}" "${CONSUMER_REGION}"; do
+    for sid in $(aws secretsmanager list-secrets --region "${r}" --filters Key=name,Values=cdkd-gso-4847 --query 'SecretList[].Name' --output text 2>/dev/null); do
+      case "${sid}" in *"-${SUFFIX}") ;; *) continue ;; esac
+      aws secretsmanager delete-secret --secret-id "${sid}" --force-delete-without-recovery --region "${r}" >/dev/null 2>&1 || true
+    done
+  done
+  aws s3 rm "s3://${STATE_BUCKET}/${PRE_STATE_KEY}" >/dev/null 2>&1 || true
+  aws s3 rm "s3://${STATE_BUCKET}/${PRE_LOCK_KEY}" >/dev/null 2>&1 || true
+  aws s3 rm "s3://${STATE_BUCKET}/${CONSUMER_JOURNAL_KEY}" >/dev/null 2>&1 || true
+  if [ -n "${V11_TMPDIR}" ] && [ -d "${V11_TMPDIR}" ]; then rm -rf "${V11_TMPDIR}"; fi
+  # Noncurrent only: the current objects are what a failed run is debugged
+  # from; the final teardown below takes every version.
+  for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}"; do
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${prefix}" noncurrent || true
+  done
+  if [ "${1:-}" = "final" ]; then rm -rf "${LOGDIR}"; fi
   set -e
 }
 
-trap cleanup EXIT
+trap 'cleanup final' EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
@@ -126,9 +209,56 @@ fi
 echo "==> Pre-run cleanup (drop any stranded state / probes from a prior failed integ)"
 cleanup
 
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
+
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+[ -n "${ACCOUNT_ID}" ] || fail "could not read the account id"
+queue_arn() { printf 'arn:aws:sqs:%s:%s:%s' "${CONSUMER_REGION}" "${ACCOUNT_ID}" "$1"; }
+
+seed_secret() { # <region> <name> <queue name>
+  aws secretsmanager create-secret --region "$1" --name "$2" \
+    --secret-string "{\"queue\":\"$3\"}" >/dev/null
+}
+
+param_value() { # <name>
+  aws ssm get-parameter --name "$1" --region "${CONSUMER_REGION}" --query 'Parameter.Value' --output text
+}
+
+# --- Phase 0 (go-to-k/cdkd#4847): secrets in BOTH regions, a v11 deploy ----
+echo "==> Phase 0: seed the cdkd-gso-4847 secrets (same names, different values per region)"
+seed_secret "${PRODUCER_REGION}" "${SECRET_MAIN}" "cdkd-gso-4847-west-a-${SUFFIX}"
+seed_secret "${CONSUMER_REGION}" "${SECRET_MAIN}" "cdkd-gso-4847-east-${SUFFIX}"
+seed_secret "${PRODUCER_REGION}" "${SECRET_PRE}" "cdkd-gso-4847-pre-a-${SUFFIX}"
+seed_secret "${CONSUMER_REGION}" "${SECRET_PRE}" "cdkd-gso-4847-pre-east-${SUFFIX}"
+seed_secret "${PRODUCER_REGION}" "${SECRET_ROT}" "cdkd-gso-4847-rot-a-${SUFFIX}"
+seed_secret "${CONSUMER_REGION}" "${SECRET_ROT}" "cdkd-gso-4847-rot-east-${SUFFIX}"
+
+echo "==> Phase 0: deploy ${PRODUCER_STACK} and ${PRE_STACK} with the v11 binary (@go-to-k/cdkd@${V11_CDKD_VERSION})"
+V11_TMPDIR="$(mktemp -d)"
+(cd "${V11_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${V11_CDKD_VERSION}" >/dev/null)
+V11_BIN="${V11_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
+[ -f "${V11_BIN}" ] || fail "the v11 binary was not installed at ${V11_BIN}"
+node "${V11_BIN}" deploy "${PRODUCER_STACK}" "${CTX[@]}" \
+  --state-bucket "${STATE_BUCKET}" --region "${PRODUCER_REGION}" --yes
+node "${V11_BIN}" deploy "${PRE_STACK}" "${CTX[@]}" \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes
+PRE_V11_VERSION="$(aws s3 cp "s3://${STATE_BUCKET}/${PRE_STATE_KEY}" - | jq -r '.version')"
+[ "${PRE_V11_VERSION}" = "11" ] || fail "${PRE_STACK} state is version ${PRE_V11_VERSION} after the v11 deploy, expected 11"
+aws sqs get-queue-url --queue-name "cdkd-gso-4847-rot-a-${SUFFIX}" --region "${CONSUMER_REGION}" >/dev/null \
+  || fail "the v11 deploy did not create the rotated arm's queue cdkd-gso-4847-rot-a-${SUFFIX}"
+echo "    OK: v11 state written; queues named from the us-west-2 values"
+# Rotated BEFORE the upgrade: the queue keeps its name (create-only), so the
+# v12 capture cannot match the current value and records the region only.
+aws secretsmanager put-secret-value --region "${PRODUCER_REGION}" --secret-id "${SECRET_ROT}" \
+  --secret-string "{\"queue\":\"cdkd-gso-4847-rot-b-${SUFFIX}\"}" >/dev/null
+echo "    OK: ${SECRET_ROT} rotated in ${PRODUCER_REGION} before the upgrade"
+
 # --- Phase 1: deploy PRODUCER in region X (us-west-2) --------------------
 echo "==> Phase 1: deploy PRODUCER ${PRODUCER_STACK} in ${PRODUCER_REGION}"
-node "${LOCAL_DIST}" deploy "${PRODUCER_STACK}" \
+node "${LOCAL_DIST}" deploy "${PRODUCER_STACK}" "${CTX[@]}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${PRODUCER_REGION}" \
   --yes
@@ -178,7 +308,7 @@ echo "    OK: producer SSM parameter exists in ${PRODUCER_REGION} (ARN ${PRODUCE
 # resolve time ("stack not found in region 'us-west-2'") and the test
 # fails here with that error surfaced.
 echo "==> Phase 2: deploy CONSUMER ${CONSUMER_STACK} in ${CONSUMER_REGION} (reads producer output cross-region from ${PRODUCER_REGION})"
-node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" \
+node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" "${CTX[@]}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${CONSUMER_REGION}" \
   --yes
@@ -222,6 +352,155 @@ case "${CONSUMER_PARAM_VALUE}" in
 esac
 echo "    OK: resolved value names producer region ${PRODUCER_REGION} (true cross-region read)"
 
+# --- Phase 5 (go-to-k/cdkd#4847): a reader of a cross-region-named queue ---
+MAIN_QUEUE="cdkd-gso-4847-west-a-${SUFFIX}"
+EXPECTED_ARN="$(queue_arn "${MAIN_QUEUE}")"
+EAST_VALUE="cdkd-gso-4847-east-${SUFFIX}"
+aws sqs get-queue-url --queue-name "${MAIN_QUEUE}" --region "${CONSUMER_REGION}" >/dev/null \
+  || fail "the consumer's queue was not named from the us-west-2 value (${MAIN_QUEUE} not found)"
+QUEUE_PROV="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | jq -c '.resources.Queue.referenceProvenance')"
+case "${QUEUE_PROV}" in
+  *'"region":"us-west-2"'*) echo "    OK: the queue's record carries region us-west-2 (${QUEUE_PROV})" ;;
+  *) fail "the queue's record carries no us-west-2 provenance: ${QUEUE_PROV}" ;;
+esac
+
+assert_reader() { # <label> <param> <expected value> <expected description or ''>
+  local value
+  value="$(param_value "$2")" || fail "$1: parameter $2 not found"
+  case "${value}" in
+    *'{{resolve:'*) fail "$1: $2 holds the literal reference: ${value}" ;;
+    *"${EAST_VALUE}"*) fail "$1: $2 holds the us-east-1 secret's value: ${value}" ;;
+  esac
+  [ "${value}" = "$3" ] || fail "$1: $2 = '${value}', expected '$3'"
+  if [ -n "$4" ]; then
+    local desc
+    if ! desc="$(aws ssm describe-parameters --region "${CONSUMER_REGION}" \
+      --parameter-filters "Key=Name,Values=$2" --query 'Parameters[0].Description' --output text)"; then
+      fail "$1: could not describe $2"
+    fi
+    [ "${desc}" = "$4" ] || fail "$1: $2 description '${desc}', expected '$4'"
+  fi
+  echo "    OK: $1: $2 = ${value}"
+}
+
+echo "==> Phase 5a: add a reader of Queue.Arn while the queue is NO_CHANGE"
+node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" "${CTX[@]}" -c gso4847Reader=1 \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  || fail "5a: the reader deploy failed (pre-fix: the literal reference was sent)"
+assert_reader "5a" "${READER_PARAM_NAME}" "${EXPECTED_ARN}" "reader rev 1"
+
+echo "==> Phase 5b: cdkd drift resolves the recorded region (no region refusal)"
+DRIFT_RC=0
+node "${LOCAL_DIST}" drift "${CONSUMER_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --json >"${LOGDIR}/drift.json" 2>"${LOGDIR}/drift.err" || DRIFT_RC=$?
+# Nothing changed since 5a, so exit 0 and both records CLEAN (fully compared).
+# Pre-fix: the region-less reference was refused (exit 2, notCompared).
+if [ "${DRIFT_RC}" -ne 0 ] || grep -qE 'carries no region of its own|refused to resolve' "${LOGDIR}/drift.err"; then
+  sed 's/^/  /' "${LOGDIR}/drift.err" "${LOGDIR}/drift.json" >&2
+  fail "5b: drift exited ${DRIFT_RC} (pre-fix: it refused the region-less reference, exit 2)"
+fi
+for id in Queue QueueArnReader; do
+  CLEAN="$(jq -r --arg id "${id}" '[.[].clean[]? | select(.logicalId == $id)] | length' "${LOGDIR}/drift.json")" \
+    || fail "5b: could not parse the drift JSON"
+  [ "${CLEAN}" = "1" ] || fail "5b: ${id} is not reported clean by drift"
+  UNRESOLVED="$(jq -r --arg id "${id}" '[.. | objects | select(.logicalId == $id) | .referencesUnresolved // false] | any' "${LOGDIR}/drift.json")" \
+    || fail "5b: could not parse the drift JSON"
+  [ "${UNRESOLVED}" = "false" ] || fail "5b: ${id} carries referencesUnresolved"
+done
+echo "    OK: drift exited 0, Queue and QueueArnReader clean and fully compared"
+
+echo "==> Phase 5c: a forced failure under --no-rollback, then cdkd rollback"
+FAIL_RC=0
+node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" "${CTX[@]}" -c gso4847Reader=2 -c gso4847Fail=1 \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes --no-rollback \
+  >"${LOGDIR}/fail-deploy.log" 2>&1 || FAIL_RC=$?
+[ "${FAIL_RC}" -ne 0 ] || fail "5c: the deploy with FailProbe succeeded; the rollback below would replay nothing"
+assert_reader "5c (the failed deploy updated the reader)" "${READER_PARAM_NAME}" "${EXPECTED_ARN}" "reader rev 2"
+aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_JOURNAL_KEY}" >/dev/null \
+  || fail "5c: no rollback journal after the failed --no-rollback deploy"
+# PREMISE: the replay's desired side (the journaled previousState) carries
+# the recorded region; without it the rollback below takes the v11 refusal.
+JOURNAL_REGION="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_JOURNAL_KEY}" - \
+  | jq -r '[.. | objects | select(.logicalId == "QueueArnReader") | .previousState.referenceProvenance? // empty | .[] | .region | select(. != null)] | unique | join(",")')" \
+  || fail "5c: could not read the rollback journal"
+[ "${JOURNAL_REGION}" = "${PRODUCER_REGION}" ] \
+  || fail "5c: premise: the journaled previousState of QueueArnReader records region '${JOURNAL_REGION}', expected ${PRODUCER_REGION}"
+ROLLBACK_RC=0
+node "${LOCAL_DIST}" rollback "${CONSUMER_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --force >"${LOGDIR}/rollback.log" 2>&1 || ROLLBACK_RC=$?
+if [ "${ROLLBACK_RC}" -ne 0 ]; then
+  sed 's/^/  /' "${LOGDIR}/rollback.log" >&2
+  fail "5c: cdkd rollback exited ${ROLLBACK_RC} (pre-fix: the replay refused the region-less reference)"
+fi
+assert_reader "5c (restored)" "${READER_PARAM_NAME}" "${EXPECTED_ARN}" "reader rev 1"
+
+echo "==> Phase 5d: cdkd scrub --dry-run --fail"
+SCRUB_RC=0
+# Today's template (with the reader), so scrub resolves what the deploy did.
+node "${LOCAL_DIST}" scrub "${CONSUMER_STACK}" "${CTX[@]}" -c gso4847Reader=1 --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --dry-run --fail >"${LOGDIR}/scrub.log" 2>&1 || SCRUB_RC=$?
+if [ "${SCRUB_RC}" -ne 0 ]; then
+  sed 's/^/  /' "${LOGDIR}/scrub.log" >&2
+  fail "5d: scrub exited ${SCRUB_RC}"
+fi
+echo "    OK: scrub clean"
+
+echo "==> Phase 5e: rotate ${SECRET_MAIN} in ${PRODUCER_REGION}, then edit the reader"
+aws secretsmanager put-secret-value --region "${PRODUCER_REGION}" --secret-id "${SECRET_MAIN}" \
+  --secret-string "{\"queue\":\"cdkd-gso-4847-west-b-${SUFFIX}\"}" >/dev/null
+node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" "${CTX[@]}" -c gso4847Reader=3 \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  || fail "5e: the reader edit after the rotation failed (pre-fix: the literal reference was sent)"
+# The queue is NO_CHANGE (its name is create-only and the diff compares the
+# reference), so AWS still has the pre-rotation queue: the reader must name it.
+assert_reader "5e" "${READER_PARAM_NAME}" "${EXPECTED_ARN}" "reader rev 3"
+if aws sqs get-queue-url --queue-name "cdkd-gso-4847-west-b-${SUFFIX}" --region "${CONSUMER_REGION}" >/dev/null 2>&1; then
+  fail "5e: a queue named from the rotated value exists; the queue was replaced"
+fi
+
+# --- Phase 6 (go-to-k/cdkd#4847): a consumer deployed before the upgrade ----
+echo "==> Phase 6a: the first v12 deploy of ${PRE_STACK} (the one-time capture)"
+node "${LOCAL_DIST}" deploy "${PRE_STACK}" "${CTX[@]}" \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  || fail "6a: the migration deploy of ${PRE_STACK} failed"
+PRE_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${PRE_STATE_KEY}" -)"
+[ "$(printf '%s' "${PRE_STATE}" | jq -r '.version')" = "12" ] || fail "6a: ${PRE_STACK} state is not version 12"
+STILL_PROV="$(printf '%s' "${PRE_STATE}" | jq -c '[.resources.QueueStill.referenceProvenance[]?]')"
+ROT_PROV="$(printf '%s' "${PRE_STATE}" | jq -c '[.resources.QueueRotated.referenceProvenance[]?]')"
+case "${STILL_PROV}" in
+  *'"region":"us-west-2"'*'"versions"'* | *'"versions"'*'"region":"us-west-2"'*) ;;
+  *) fail "6a: QueueStill's capture is not region us-west-2 + versions: ${STILL_PROV}" ;;
+esac
+case "${ROT_PROV}" in
+  *'"versions"'*) fail "6a: QueueRotated's capture recorded a version after a rotation: ${ROT_PROV}" ;;
+  *'"region":"us-west-2"'*) ;;
+  *) fail "6a: QueueRotated's capture recorded no us-west-2 region: ${ROT_PROV}" ;;
+esac
+echo "    OK: capture: QueueStill ${STILL_PROV}, QueueRotated ${ROT_PROV}"
+
+echo "==> Phase 6b: add the readers of the pre-upgrade queues"
+node "${LOCAL_DIST}" deploy "${PRE_STACK}" "${CTX[@]}" -c gso4847PreReaders=1 \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  >"${LOGDIR}/pre-readers.log" 2>&1 || {
+  sed 's/^/  /' "${LOGDIR}/pre-readers.log" >&2
+  fail "6b: the readers deploy failed (pre-fix: the literal reference was sent)"
+}
+EAST_VALUE="cdkd-gso-4847-pre-east-${SUFFIX}"
+assert_reader "6b (QueueStill: the region arm and the version arm)" "${READER_PRE_PARAM_NAME}" \
+  "$(queue_arn "cdkd-gso-4847-pre-a-${SUFFIX}")" ""
+# The rotated queue: no version was recordable, and the current value is not
+# its name, so the physical-id proof fails in us-west-2 and the value is
+# served as recorded, with the generation warning. Never a us-east-1 value.
+ROTATED_OUT="$(aws s3 cp "s3://${STATE_BUCKET}/${PRE_STATE_KEY}" - | jq -r '.outputs.RotatedArn')"
+case "${ROTATED_OUT}" in
+  *"rot-east-${SUFFIX}"* | *"rot-b-${SUFFIX}"*) fail "6b: RotatedArn holds a value that is not the queue's: ${ROTATED_OUT}" ;;
+  *'{{resolve:'*) ;;
+  *) fail "6b: RotatedArn is not the recorded reference: ${ROTATED_OUT}" ;;
+esac
+grep -q 'cannot confirm the secret still holds the value' "${LOGDIR}/pre-readers.log" \
+  || fail "6b: no generation warning for QueueRotated"
+echo "    OK: QueueRotated served as recorded, with the generation warning"
+
 # --- Phase 4: destroy both, assert clean in BOTH regions ---------------
 echo "==> Phase 4a: destroy CONSUMER ${CONSUMER_STACK} (${CONSUMER_REGION})"
 node "${LOCAL_DIST}" destroy "${CONSUMER_STACK}" \
@@ -233,6 +512,27 @@ assert_gone "consumer parameter still exists in ${CONSUMER_REGION} after destroy
 assert_gone "consumer state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 echo "    OK: consumer is gone (AWS resource in ${CONSUMER_REGION} + state)"
 
+assert_gone "the reader parameter still exists after destroy" aws ssm get-parameter --name "${READER_PARAM_NAME}" --region "${CONSUMER_REGION}"
+
+echo "==> Phase 4a2: destroy ${PRE_STACK} (${CONSUMER_REGION})"
+node "${LOCAL_DIST}" destroy "${PRE_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" \
+  --force
+assert_gone "the pre-upgrade reader parameter still exists after destroy" aws ssm get-parameter --name "${READER_PRE_PARAM_NAME}" --region "${CONSUMER_REGION}"
+assert_gone "${PRE_STACK} state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PRE_STATE_KEY}"
+# SQS keeps listing a deleted queue for up to 60 s: poll before calling it a leak.
+LEFT_QUEUES=""
+for _ in $(seq 1 18); do
+  LEFT_QUEUES="$(aws sqs list-queues --queue-name-prefix "cdkd-gso-4847" --region "${CONSUMER_REGION}" \
+    --query 'QueueUrls[]' --output text)" || fail "could not list the cdkd-gso-4847 queues"
+  LEFT_QUEUES="$(printf '%s\n' ${LEFT_QUEUES} | grep -e "-${SUFFIX}\$" || true)"
+  [ -z "${LEFT_QUEUES}" ] && break
+  sleep 5
+done
+[ -z "${LEFT_QUEUES}" ] || fail "this run's queues remain after destroy: ${LEFT_QUEUES}"
+echo "    OK: ${PRE_STACK} is gone, no queue of this run remains"
+
 echo "==> Phase 4b: destroy PRODUCER ${PRODUCER_STACK} (${PRODUCER_REGION})"
 node "${LOCAL_DIST}" destroy "${PRODUCER_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -242,6 +542,16 @@ node "${LOCAL_DIST}" destroy "${PRODUCER_STACK}" \
 assert_gone "producer parameter still exists in ${PRODUCER_REGION} after destroy" aws ssm get-parameter --name "${PRODUCER_PARAM_NAME}" --region "${PRODUCER_REGION}"
 assert_gone "producer state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PRODUCER_STATE_KEY}"
 echo "    OK: producer is gone (AWS resource in ${PRODUCER_REGION} + state)"
+
+# Every state version this run wrote (go-to-k/cdkd#4847: a secret-resolving
+# arm), after the final cleanup, with the trap disarmed so nothing writes a
+# new marker after the count.
+cleanup final
+trap - EXIT INT TERM
+for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}"; do
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
+  s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"
+done
 
 echo ""
 echo "==> getstackoutput-crossregion test passed (cross-region Fn::GetStackOutput resolved correctly + both regions clean)"

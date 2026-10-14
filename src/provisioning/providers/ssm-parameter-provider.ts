@@ -398,9 +398,8 @@ export class SSMParameterProvider implements ResourceProvider {
       if (properties['Tier']) {
         putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
       }
-      if (properties['Policies']) {
-        putParams.Policies = properties['Policies'] as string;
-      }
+      const policies = ssmPoliciesParameter(properties['Policies']);
+      if (policies !== undefined) putParams.Policies = policies;
       if (properties['DataType']) {
         putParams.DataType = properties['DataType'] as string;
       }
@@ -580,9 +579,8 @@ export class SSMParameterProvider implements ResourceProvider {
       if (properties['Tier'] !== undefined) {
         putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
       }
-      if (properties['Policies'] !== undefined) {
-        putParams.Policies = properties['Policies'] as string;
-      }
+      const policies = ssmPoliciesParameter(properties['Policies']);
+      if (policies !== undefined) putParams.Policies = policies;
       if (properties['DataType'] !== undefined) {
         putParams.DataType = properties['DataType'] as string;
       }
@@ -1046,4 +1044,21 @@ export class SSMParameterProvider implements ResourceProvider {
     // parameter reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * `PutParameter`'s `Policies`, which is a JSON STRING (CloudFormation's
+ * `AWS::SSM::Parameter.Policies` too). A template passes that string through.
+ * The bag `cdkd drift --revert` replays is `readCurrentState`'s, which holds
+ * the PARSED policies as an array (`[]` when the parameter has none); sent as
+ * is, the array made AWS refuse the whole update ("Start of list found where
+ * not expected"), so a non-empty array is re-serialized and an empty one, the
+ * no-policies placeholder, is sent as no `Policies` at all, as an absent
+ * template property is.
+ */
+export function ssmPoliciesParameter(policies: unknown): string | undefined {
+  if (policies === undefined || policies === null || policies === '') return undefined;
+  if (typeof policies === 'string') return policies;
+  if (Array.isArray(policies)) return policies.length === 0 ? undefined : JSON.stringify(policies);
+  return JSON.stringify(policies);
 }

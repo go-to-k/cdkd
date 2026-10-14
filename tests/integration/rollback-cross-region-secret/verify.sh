@@ -29,38 +29,74 @@
 #      the consumer's state record for it holds the region-LESS expression and
 #      neither plaintext, and (c) state.outputReads records
 #      sourceRegion=us-west-2, which is the evidence the fix keys on.
-#   2b/2b2/2c. The `cdkd drift` half (issue #2108), riding the CLEAN v1 deploy
-#      rather than the journal. 2b: `drift --json` on the untouched stack must
-#      mark SecretEcho `notCompared` + `referencesUnresolved` and exit 2 -- the
-#      exit code is the signal a CI gate reads, and pre-#2108 this population
-#      exited 1. The phase also asserts the run REPORTED a refusal, since the
-#      exit code is scoped to refusals rather than to the whole `notCompared`
-#      roll-up. 2b2: tamper TWO properties out of band (the secret-bearing
-#      `Value` AND the ordinary `Description`) and assert the resource is now
-#      DRIFTED on Description only, still flagged, exiting 1 -- without the
-#      second property the resource stays `notCompared` and the revert below returns
-#      early, exercising no revert code at all. 2c: `drift --revert -y` must
-#      reach the per-resource refusal (`refused to re-resolve`, a string only
-#      the revert path produces), write NOTHING, and exit 2.
+#   TWO KINDS OF RECORD (go-to-k/cdkd#4847). A v12 binary records the region
+#   that resolved each `{{resolve:...}}` token (`referenceProvenance`), and the
+#   replay, drift and scrub resolve a region-less token in that region. So the
+#   records THIS binary writes get the positive phases (2p-2g, 5b, 6d), and the
+#   refusals are asserted on records stripped of the field (2s, 6s) -- the
+#   pre-v12 shape, for which refusing is still today's behaviour. Each
+#   positive phase states its pre-#4847 red line: the refusal its stripped
+#   twin still asserts.
+#   2p. Premise: the SecretEcho record names us-west-2 for the token, and
+#      LocalSecretEcho -- the SAME token string, resolved by the consumer
+#      itself -- names us-east-1.
+#   2e. `drift --json` on the untouched v12 stack exits 0 with SecretEcho in
+#      clean[] and no `refused to resolve` (pre-#4847: notCompared, exit 2).
+#   2f. `cdkd scrub` on the v12 consumer exits 0 with no `cannot re-resolve
+#      the secret reference` (pre-#4847: that refusal, non-zero exit).
+#   2g. Tamper Value + Description; drift reports BOTH drifted (exit 1), and
+#      `drift --revert -y` exits 0, writes the PRODUCER region's value (never
+#      the consumer region's) and restores the Description (pre-#4847:
+#      `refused to re-resolve`, exit 2, the tamper left live).
+#   2s. Strip the consumer's provenance: premise (present), write, read back
+#      (gone, every token kept).
+#   2b/2b2/2c. The `cdkd drift` half (issue #2108) on the STRIPPED record,
+#      riding the CLEAN v1 deploy rather than the journal. 2b: `drift --json`
+#      on the untouched stack must mark SecretEcho `notCompared` +
+#      `referencesUnresolved` and exit 2 -- the exit code is the signal a CI
+#      gate reads, and pre-#2108 this population exited 1. The phase also
+#      asserts the run REPORTED a refusal, since the exit code is scoped to
+#      refusals rather than to the whole `notCompared` roll-up. 2b2: tamper
+#      TWO properties out of band (the secret-bearing `Value` AND the ordinary
+#      `Description`) and assert the resource is now DRIFTED on Description
+#      only, still flagged, exiting 1 -- without the second property the
+#      resource stays `notCompared` and the revert below returns early,
+#      exercising no revert code at all. 2c: `drift --revert -y` must reach
+#      the per-resource refusal (`refused to re-resolve`, a string only the
+#      revert path produces), write NOTHING, and exit 2.
+#   2d. `cdkd scrub` (issue #2109) on the STRIPPED records refuses
+#      LocalSecretEcho's region-ambiguous literal and leaves state
+#      byte-identical; the producer (no foreign evidence) scrubs normally.
 #   3. Deploy the CONSUMER v2 (Description change + injected SQS failure) under
-#      --no-rollback. Assert it FAILED, a journal exists, and the journal
-#      carries an UPDATE op for the echo parameter — without that op the
-#      rollback has nothing to replay and phase 4 would pass vacuously.
+#      --no-rollback, from the still-stripped state. Assert it FAILED, a
+#      journal exists, the journal carries an UPDATE op for the echo parameter
+#      — without that op the rollback has nothing to replay and phase 4 would
+#      pass vacuously — and that op's previousState carries no provenance
+#      (the side the replay refuses on), while the record the failed deploy
+#      wrote does.
 #   4. `cdkd rollback --force`. Assert exit code 2 (partial: one op refused,
 #      journal kept), that the refusal names the parameter and BOTH regions,
 #      and — THE LOAD-BEARING ASSERTION — that the live echo parameter STILL
-#      holds the PRODUCER region's value. Pre-fix the rollback "succeeds" and
+#      holds the PRODUCER region's value. Pre-#2057 the rollback "succeeds" and
 #      overwrites it with the CONSUMER region's secret.
 #   5. Destroy the consumer, resetting it to a stack that has never read across
 #      a region.
+#   5b. ARM A on v12 records: deploy v1, fail v2 (the journaled previousState
+#      names us-west-2), `cdkd rollback` exits 0, restores the v1 Description,
+#      leaves the PRODUCER region's value live and drops the journal
+#      (pre-#4847: phase 4's refusal). 5c destroys the consumer again.
 #   6. ARM B — the reachable case. Deploy the consumer with NO cross-region read
 #      (assert `outputReads` is empty), then a deploy that BOTH introduces the
 #      read AND fails. Assert the FAILED deploy persisted the read it just made
 #      (before the union fix this was empty, because every non-success save
-#      wrote the pre-deploy snapshot), then that `cdkd rollback` refuses.
-#      ARM A cannot see this: its phase 2 establishes the evidence with a
-#      SUCCESSFUL deploy first, which is why a green ARM A coexisted with a
-#      completely inert fix.
+#      wrote the pre-deploy snapshot). 6s strips the record that deploy wrote
+#      (in arm B the token is on the PREVIOUS side, so the strip comes after
+#      the deploy), then 6c asserts `cdkd rollback` refuses. ARM A cannot see
+#      this: its phase 2 establishes the evidence with a SUCCESSFUL deploy
+#      first, which is why a green ARM A coexisted with a completely inert fix.
+#   6d. The provenance 6s removed is put back and the SAME journal is replayed:
+#      `cdkd rollback` exits 0 and restores the pre-read literal, never the
+#      consumer region's secret (pre-#4847: 6c's refusal).
 #   7. Destroy both stacks, delete the seeded parameters in both regions, and
 #      assert every AWS resource + state file is gone.
 #
@@ -118,6 +154,8 @@ ECHO_PARAM="/cdkd/rollback-xregion/echo"
 # The consumer's OWN region-less secret reference (issue #2109) — see the phase 2d note.
 LOCAL_SECRET_PARAM="/cdkd/rollback-xregion/local-secret"
 FAILING_QUEUE_NAME="${CONSUMER_STACK}-failing-queue"
+# The echo's value with WITH_XREGION unset (lib: LOCAL_LITERAL_VALUE).
+LOCAL_LITERAL_VALUE="local-literal-no-cross-region-read"
 
 # Same NAME, two regions, two DIFFERENT values. Fake test data, but treated as
 # secret throughout: never echoed, only compared.
@@ -298,6 +336,166 @@ echo "[verify] pre-run sweep: drop anything stranded by an earlier failed run"
   exit 0
 )
 
+# Scan for plaintext BEFORE any assertion that can DUMP a payload to stderr.
+# Here the two seeded values are committed literals so a dump is harmless, but
+# this fixture is the shape a future secret-flow fixture will copy, and with a
+# randomly generated secret a failure dump would put the plaintext into the CI
+# log on exactly the regression run that matters.
+assert_no_plaintext() { # usage: assert_no_plaintext <label> <file>...
+  local label="$1"
+  shift
+  local secret file
+  for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
+    for file in "$@"; do
+      if grep -qF "${secret}" "${file}"; then
+        echo "FAIL: ${label} carries a SecureString plaintext" >&2
+        exit 1
+      fi
+    done
+  done
+  echo "[verify]   ok: no plaintext in ${label}"
+}
+
+# ---------------------------------------------------------------------------
+# Recorded reference provenance (state schema v12, go-to-k/cdkd#4847)
+# ---------------------------------------------------------------------------
+# A v12 binary records, for each `{{resolve:...}}` token a record holds, the
+# region that resolved it (`referenceProvenance` on the record,
+# `outputReferenceProvenance` on the stack). The rollback replay, `cdkd drift`
+# and `cdkd scrub` resolve a region-LESS token in the region its record names,
+# so on a record THIS binary wrote the producer's reference is resolved in
+# us-west-2 and none of the region refusals fire: the positive phases (2e-2g,
+# 5b, 6d) assert that. A record WITHOUT the field -- one written before v12 --
+# keeps the old reading, and refusing it is still today's behaviour. The
+# refusal phases (2b-2d, 4, 6c) therefore run on records stripped of the
+# field, which is exactly what a pre-v12 record looks like.
+#
+# Record selectors, as jq filters ($pid / $lpid are bound by the helpers).
+ECHO_RECORD='.resources[] | select(.physicalId == $pid)'
+LOCAL_SECRET_RECORD='.resources[] | select(.physicalId == $lpid)'
+JOURNAL_ECHO_PREVIOUS='.segments[]?.operations[]? | select((.physicalId // .previousState.physicalId) == $pid) | .previousState'
+
+# Exactly ONE record must match, or the check after it is ambiguous or vacuous.
+assert_one_record() { # usage: assert_one_record <json file> <record filter> <what>
+  local count
+  count="$(jq --arg pid "${ECHO_PARAM}" --arg lpid "${LOCAL_SECRET_PARAM}" "[$2] | length" "$1")" \
+    || { echo "FAIL: could not parse $1 for $3" >&2; exit 1; }
+  if [ "${count}" != "1" ]; then
+    echo "FAIL: expected exactly one record for $3, found ${count} -- the provenance check would be ambiguous or vacuous" >&2
+    exit 1
+  fi
+}
+assert_recorded_region() { # usage: assert_recorded_region <json file> <record filter> <region> <what>
+  local got
+  assert_one_record "$1" "$2" "$4"
+  got="$(jq -r --arg pid "${ECHO_PARAM}" --arg lpid "${LOCAL_SECRET_PARAM}" --arg t "${SHARED_EXPRESSION}" \
+    "$2 | ((.referenceProvenance // {})[\$t] // {}).region // empty" "$1")" \
+    || { echo "FAIL: could not read the provenance of $4" >&2; exit 1; }
+  if [ "${got}" != "$3" ]; then
+    echo "FAIL: $4 records region '${got}' for ${SHARED_EXPRESSION}, expected '$3'" >&2
+    exit 1
+  fi
+  echo "[verify]   ok: $4 records region $3 for the reference"
+}
+assert_no_reference_provenance() { # usage: assert_no_reference_provenance <json file> <record filter> <what>
+  local held
+  assert_one_record "$1" "$2" "$3"
+  held="$(jq --arg pid "${ECHO_PARAM}" --arg lpid "${LOCAL_SECRET_PARAM}" \
+    "[$2 | has(\"referenceProvenance\")] | any" "$1")" \
+    || { echo "FAIL: could not parse $1 for $3" >&2; exit 1; }
+  if [ "${held}" != "false" ]; then
+    echo "FAIL: $3 carries referenceProvenance -- the refusal below would be measuring a v12 record, not a pre-v12 one" >&2
+    exit 1
+  fi
+  echo "[verify]   ok: $3 carries no referenceProvenance (the pre-v12 shape)"
+}
+# Every cdkd command this script runs is foreground and has exited before the
+# next line, so nothing holds the stack lock while state.json is edited. The
+# lock object is deleted on release; finding it means something else is
+# running against this stack and the edit would race it.
+assert_stack_unlocked() { # usage: assert_stack_unlocked <state key>
+  local lock_key="${1%state.json}lock.json"
+  if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${lock_key}"; then
+    echo "FAIL: s3://${STATE_BUCKET}/${lock_key} exists -- a cdkd command holds the stack lock, so editing state.json now would race it" >&2
+    exit 1
+  fi
+}
+# Rewrite <state key> as a pre-v12 binary left it: every `referenceProvenance`
+# and `outputReferenceProvenance` dropped, nothing else touched. The repo's
+# precedent for an in-run state edit (cross-stack-secret-import, "Step 7"):
+# PREMISE first (the field is there, so the strip is not vacuous), then write,
+# then read back from S3 and prove it is gone. The pre-strip document is kept
+# at ${LOGDIR}/<tag>-before-strip.json for restore_reference_provenance.
+strip_reference_provenance() { # usage: strip_reference_provenance <state key> <tag> <record filter> <what>
+  local before="${LOGDIR}/$2-before-strip.json"
+  local after="${LOGDIR}/$2-after-strip.json"
+  local back="${LOGDIR}/$2-read-back.json"
+  local tokens_before tokens_back left
+  assert_stack_unlocked "$1"
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${before}" >/dev/null \
+    || { echo "FAIL: could not read s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  assert_no_plaintext "$4's state document before the strip" "${before}"
+  assert_recorded_region "${before}" "$3" "${PRODUCER_REGION}" "$4 (PREMISE, before the strip)"
+  jq 'walk(if type == "object" then del(.referenceProvenance, .outputReferenceProvenance) else . end)' \
+    "${before}" > "${after}" || { echo "FAIL: could not strip $1" >&2; exit 1; }
+  aws s3 cp - "s3://${STATE_BUCKET}/$1" < "${after}" >/dev/null \
+    || { echo "FAIL: could not write the stripped s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${back}" >/dev/null \
+    || { echo "FAIL: could not read back s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  left="$(jq '[.. | objects | select(has("referenceProvenance") or has("outputReferenceProvenance"))] | length' "${back}")" \
+    || { echo "FAIL: could not parse the read-back $1" >&2; exit 1; }
+  if [ "${left}" != "0" ]; then
+    echo "FAIL: the read-back $1 still carries ${left} provenance field(s)" >&2
+    exit 1
+  fi
+  assert_no_reference_provenance "${back}" "$3" "$4 (read back after the strip)"
+  # Only the field went: every `{{resolve:...}}` the record held is still there.
+  tokens_before="$(jq '[.. | strings | select(contains("{{resolve:"))] | length' "${before}")" \
+    || { echo "FAIL: could not count tokens in $1" >&2; exit 1; }
+  tokens_back="$(jq '[.. | strings | select(contains("{{resolve:"))] | length' "${back}")" \
+    || { echo "FAIL: could not count tokens in the read-back $1" >&2; exit 1; }
+  if [ "${tokens_before}" != "${tokens_back}" ] || [ "${tokens_back}" = "0" ]; then
+    echo "FAIL: the strip changed the references $1 holds (${tokens_before} -> ${tokens_back})" >&2
+    exit 1
+  fi
+}
+# Put back, record by record, the `referenceProvenance` the strip removed --
+# merged into the CURRENT document, so anything a command wrote since is kept.
+restore_reference_provenance() { # usage: restore_reference_provenance <state key> <tag> <record filter> <what>
+  local saved="${LOGDIR}/$2-before-strip.json"
+  local current="${LOGDIR}/$2-before-restore.json"
+  local restored="${LOGDIR}/$2-restored.json"
+  local back="${LOGDIR}/$2-restored-read-back.json"
+  assert_stack_unlocked "$1"
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${current}" >/dev/null \
+    || { echo "FAIL: could not read s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  jq --slurpfile saved "${saved}" '
+    ($saved[0].resources // {}) as $s
+    | .resources |= with_entries(
+        if (($s[.key] // null) | type) == "object" and ($s[.key] | has("referenceProvenance"))
+        then .value.referenceProvenance = $s[.key].referenceProvenance
+        else . end)
+    | if ($saved[0] | has("outputReferenceProvenance"))
+      then .outputReferenceProvenance = $saved[0].outputReferenceProvenance
+      else . end' "${current}" > "${restored}" \
+    || { echo "FAIL: could not restore the provenance of $1" >&2; exit 1; }
+  aws s3 cp - "s3://${STATE_BUCKET}/$1" < "${restored}" >/dev/null \
+    || { echo "FAIL: could not write the restored s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  aws s3 cp "s3://${STATE_BUCKET}/$1" "${back}" >/dev/null \
+    || { echo "FAIL: could not read back s3://${STATE_BUCKET}/$1" >&2; exit 1; }
+  assert_recorded_region "${back}" "$3" "${PRODUCER_REGION}" "$4 (read back after the restore)"
+}
+
+echo_description() { # the live Description; get-parameter does not return it
+  aws ssm describe-parameters --region "${CONSUMER_REGION}" \
+    --parameter-filters "Key=Name,Values=${ECHO_PARAM}" \
+    --query 'Parameters[0].Description' --output text
+}
+echo_value() {
+  aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
+    --query 'Parameter.Value' --output text
+}
+
 # ---------------------------------------------------------------------------
 # PHASE 0: seed the SAME SecureString name in BOTH regions with DIFFERENT values
 # ---------------------------------------------------------------------------
@@ -390,9 +588,183 @@ fi
 echo "[verify]   ok: consumer state.outputReads records sourceRegion=${PRODUCER_REGION}"
 
 # ---------------------------------------------------------------------------
+# PHASE 2p: the v12 records name the region that resolved each reference
+#           (go-to-k/cdkd#4847 -- the premise of every positive phase)
+# ---------------------------------------------------------------------------
+# SecretEcho's token was resolved by the cross-region read, in us-west-2;
+# LocalSecretEcho holds the IDENTICAL token string, resolved by the consumer
+# itself in us-east-1. One token, two records, two recorded regions: a reader
+# that keyed the region on the token rather than on the record would resolve
+# one of the two in the wrong region, and phases 2e/2f would see it.
+echo "[verify] phase 2p: the consumer's v12 records name the region of each reference"
+CONSUMER_STATE_FILE="${LOGDIR}/consumer-state-v1.json"
+printf '%s' "${CONSUMER_STATE}" > "${CONSUMER_STATE_FILE}"
+assert_recorded_region "${CONSUMER_STATE_FILE}" "${ECHO_RECORD}" "${PRODUCER_REGION}" "the SecretEcho record"
+assert_recorded_region "${CONSUMER_STATE_FILE}" "${LOCAL_SECRET_RECORD}" "${CONSUMER_REGION}" "the LocalSecretEcho record"
+
+# ---------------------------------------------------------------------------
+# PHASE 2e: `cdkd drift` on the v12 record COMPARES the cross-region secret
+# ---------------------------------------------------------------------------
+# Pre-#4847 red line: SecretEcho came back `notCompared` with
+# `referencesUnresolved: true`, stderr said `refused to resolve`, and the run
+# exited 2 -- exactly what phase 2b still asserts for a pre-v12 record. With
+# the record's region, the token is resolved in us-west-2, compared against
+# the live value (the producer's), and the stack is clean.
+echo "[verify] phase 2e: 'cdkd drift' resolves the reference in the region its record names"
+DRIFT_V12_JSON="${LOGDIR}/drift-v12-clean.json"
+DRIFT_V12_ERR="${LOGDIR}/drift-v12-clean.err"
+DRIFT_V12_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_V12_JSON}" 2>"${DRIFT_V12_ERR}" || DRIFT_V12_RC=$?
+assert_no_plaintext "the v12 drift --json payload + stderr" "${DRIFT_V12_JSON}" "${DRIFT_V12_ERR}"
+if grep -qE 'refused to resolve|carries no region of its own' "${DRIFT_V12_ERR}"; then
+  echo "FAIL: drift refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
+  sed 's/^/  /' "${DRIFT_V12_ERR}" >&2
+  exit 1
+fi
+if [ "${DRIFT_V12_RC}" -ne 0 ]; then
+  echo "FAIL: drift exited ${DRIFT_V12_RC} on the untouched v12 stack; expected 0 (every property compared, nothing drifted)" >&2
+  jq '.' "${DRIFT_V12_JSON}" >&2 || cat "${DRIFT_V12_JSON}" >&2
+  sed 's/^/  /' "${DRIFT_V12_ERR}" >&2
+  exit 1
+fi
+CLEAN_V12="$(jq -r '[.. | objects | select(has("clean")) | .clean[]?.logicalId] | unique | join(",")' \
+  "${DRIFT_V12_JSON}")"
+case ",${CLEAN_V12}," in
+  *,SecretEcho,*) ;;
+  *)
+    echo "FAIL: SecretEcho is not in clean[] (got '${CLEAN_V12}') on the untouched v12 stack" >&2
+    jq '.' "${DRIFT_V12_JSON}" >&2 || cat "${DRIFT_V12_JSON}" >&2
+    exit 1
+    ;;
+esac
+REFS_V12="$(jq -r '[.. | objects | select(.logicalId == "SecretEcho") | .referencesUnresolved] | any' "${DRIFT_V12_JSON}")"
+if [ "${REFS_V12}" != "false" ]; then
+  echo "FAIL: SecretEcho carries referencesUnresolved on the v12 stack (got '${REFS_V12}')" >&2
+  exit 1
+fi
+echo "[verify]   ok: drift exited 0 with SecretEcho clean and compared"
+
+# ---------------------------------------------------------------------------
+# PHASE 2f: `cdkd scrub` on the v12 records resolves instead of refusing
+# ---------------------------------------------------------------------------
+# Pre-#4847 red line: `cannot re-resolve the secret reference` and a non-zero
+# exit, from LocalSecretEcho's region-less literal in a stack with foreign
+# evidence -- exactly what phase 2d still asserts for a pre-v12 record. Its
+# record names us-east-1, so scrub resolves it there and finds nothing to do.
+echo "[verify] phase 2f: 'cdkd scrub' resolves the references in the regions their records name"
+SCRUB_V12_LOG="${LOGDIR}/scrub-consumer-v12.log"
+SCRUB_V12_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} scrub "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" >"${SCRUB_V12_LOG}" 2>&1 || SCRUB_V12_RC=$?
+assert_no_plaintext "the v12 scrub output" "${SCRUB_V12_LOG}"
+if grep -qF "cannot re-resolve the secret reference" "${SCRUB_V12_LOG}"; then
+  echo "FAIL: scrub refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
+  cat "${SCRUB_V12_LOG}" >&2
+  exit 1
+fi
+if [ "${SCRUB_V12_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd scrub exited ${SCRUB_V12_RC} on the v12 consumer; expected 0" >&2
+  cat "${SCRUB_V12_LOG}" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" "${LOGDIR}/consumer-state-after-v12-scrub.json" >/dev/null
+assert_no_plaintext "consumer state.json after the v12 scrub" "${LOGDIR}/consumer-state-after-v12-scrub.json"
+echo "[verify]   ok: scrub exited 0 without a region refusal"
+
+# ---------------------------------------------------------------------------
+# PHASE 2g: `cdkd drift --revert` on the v12 record writes the PRODUCER's value
+# ---------------------------------------------------------------------------
+# The same two-property tamper as phase 2b2 (see there for why Description is
+# needed). Pre-#4847 red line: detection reported Description only (Value was
+# `notCompared`), and `--revert` printed `refused to re-resolve`, exited 2 and
+# left the tamper sentinel live. With the record's region, Value is compared
+# too, and the revert writes the value re-resolved in us-west-2 -- never the
+# consumer region's same-named secret.
+TAMPER_SENTINEL="cdkd-2108-tampered-do-not-resolve"
+TAMPER_DESCRIPTION="cdkd-2108-tampered-description"
+ECHO_DESCRIPTION_V1="cross-region secret echo (v1)"
+echo "[verify] phase 2g: 'cdkd drift --revert' on the v12 record writes the producer region's value"
+aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" \
+  --type String --description "${TAMPER_DESCRIPTION}" \
+  --overwrite --region "${CONSUMER_REGION}" >/dev/null
+if [ "$(echo_description)" != "${TAMPER_DESCRIPTION}" ] || [ "$(echo_value)" != "${TAMPER_SENTINEL}" ]; then
+  echo "FAIL: the out-of-band tamper did not take; the revert below would have nothing to do" >&2
+  exit 1
+fi
+DRIFT_V12_TAMPERED_JSON="${LOGDIR}/drift-v12-tampered.json"
+DRIFT_V12_TAMPERED_ERR="${LOGDIR}/drift-v12-tampered.err"
+DRIFT_V12_TAMPERED_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_V12_TAMPERED_JSON}" 2>"${DRIFT_V12_TAMPERED_ERR}" \
+  || DRIFT_V12_TAMPERED_RC=$?
+assert_no_plaintext "the tampered v12 drift --json payload + stderr" "${DRIFT_V12_TAMPERED_JSON}" "${DRIFT_V12_TAMPERED_ERR}"
+DRIFTED_V12_PATHS="$(jq -r '[.. | objects | select(has("drifted")) | .drifted[]? | select(.logicalId == "SecretEcho") | .changes[]?.path] | join(",")' \
+  "${DRIFT_V12_TAMPERED_JSON}")"
+for path in Description Value; do
+  case ",${DRIFTED_V12_PATHS}," in
+    *,"${path}",*) ;;
+    *)
+      echo "FAIL: the tampered v12 SecretEcho is not drifted on ${path} (got '${DRIFTED_V12_PATHS}')" >&2
+      jq '.' "${DRIFT_V12_TAMPERED_JSON}" >&2 || cat "${DRIFT_V12_TAMPERED_JSON}" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "${DRIFT_V12_TAMPERED_RC}" -ne 1 ]; then
+  echo "FAIL: drift exited ${DRIFT_V12_TAMPERED_RC} on the tampered v12 stack; expected 1" >&2
+  exit 1
+fi
+echo "[verify]   ok: the tampered v12 SecretEcho is drifted on Description AND Value (rc=1)"
+
+REVERT_V12_LOG="${LOGDIR}/revert-v12.log"
+REVERT_V12_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
+  --state-bucket "${STATE_BUCKET}" >"${REVERT_V12_LOG}" 2>&1 || REVERT_V12_RC=$?
+assert_no_plaintext "the v12 revert output" "${REVERT_V12_LOG}"
+if grep -qF 'refused to re-resolve' "${REVERT_V12_LOG}"; then
+  echo "FAIL: drift --revert refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
+  sed 's/^/  /' "${REVERT_V12_LOG}" >&2
+  exit 1
+fi
+if [ "${REVERT_V12_RC}" -ne 0 ]; then
+  echo "FAIL: drift --revert exited ${REVERT_V12_RC} on the v12 stack; expected 0" >&2
+  sed 's/^/  /' "${REVERT_V12_LOG}" >&2
+  exit 1
+fi
+REVERTED_V12_VALUE="$(echo_value)"
+if [ "${REVERTED_V12_VALUE}" = "${CONSUMER_SECRET}" ]; then
+  echo "FAIL: drift --revert wrote the CONSUMER region's secret onto the live parameter" >&2
+  exit 1
+fi
+if [ "${REVERTED_V12_VALUE}" != "${PRODUCER_SECRET}" ]; then
+  echo "FAIL: after drift --revert the live parameter holds neither region's seeded value" >&2
+  exit 1
+fi
+if [ "$(echo_description)" != "${ECHO_DESCRIPTION_V1}" ]; then
+  echo "FAIL: drift --revert did not restore the Description" >&2
+  exit 1
+fi
+echo "[verify]   ok: the revert wrote the PRODUCER region's value and restored the Description (rc=0)"
+
+# ---------------------------------------------------------------------------
+# PHASE 2s: strip the consumer's provenance, as a record written before v12
+# ---------------------------------------------------------------------------
+# Phases 2b-2d and the arm-A rollback (3-4) assert the refusals a pre-v12
+# record still gets. The stripped state also stays the PRE-DEPLOY state of
+# phase 3, which is where the journal's previousState for the replay comes
+# from.
+echo "[verify] phase 2s: strip referenceProvenance from the consumer's state (the pre-v12 shape)"
+strip_reference_provenance "${CONSUMER_STATE_KEY}" consumer-v1 "${ECHO_RECORD}" "the consumer's SecretEcho record"
+assert_no_reference_provenance "${LOGDIR}/consumer-v1-read-back.json" "${LOCAL_SECRET_RECORD}" \
+  "the consumer's LocalSecretEcho record (read back after the strip)"
+
+# ---------------------------------------------------------------------------
 # PHASE 2b: `cdkd drift` must not baseline a cross-region secret LOCALLY
 #           (issue #2108 -- the drift.ts twin of the replay defect below)
 # ---------------------------------------------------------------------------
+# On the STRIPPED record (phase 2s): a pre-v12 record names no region, so the
+# refusal below is still today's behaviour for it. Phase 2e is the v12 twin.
 # This arm rides the CLEAN v1 deploy rather than the journal, because that is
 # precisely what makes #2108 wider than #2057: the defect is reachable from an
 # ORDINARY drift run, not only after a failed deploy. The discriminator is the
@@ -415,28 +787,9 @@ DRIFT_RC=0
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_CLEAN_JSON}" 2>"${DRIFT_CLEAN_ERR}" || DRIFT_RC=$?
 
-# Scan for plaintext BEFORE any assertion that can DUMP a payload to stderr.
-# Here the two seeded values are committed literals so a dump is harmless, but
-# this fixture is the shape a future secret-flow fixture will copy, and with a
-# randomly generated secret a failure dump would put the plaintext into the CI
-# log on exactly the regression run that matters.
 # The wrong-region plaintext must never reach the report or the --json payload:
 # pre-fix it became the `secrets` needle, so it was both the value compared
 # against AND the string redaction was hunting for.
-assert_no_plaintext() { # usage: assert_no_plaintext <label> <file>...
-  local label="$1"
-  shift
-  local secret file
-  for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
-    for file in "$@"; do
-      if grep -qF "${secret}" "${file}"; then
-        echo "FAIL: ${label} carries a SecureString plaintext" >&2
-        exit 1
-      fi
-    done
-  done
-  echo "[verify]   ok: no plaintext in ${label}"
-}
 assert_no_plaintext "the drift --json payload + stderr" "${DRIFT_CLEAN_JSON}" "${DRIFT_CLEAN_ERR}"
 
 # Recursive descent so the assertion does not depend on whether the report is
@@ -524,6 +877,9 @@ echo "[verify]   ok: drift exited 2, and the run says it REFUSED (not merely did
 # ---------------------------------------------------------------------------
 # PHASE 2b2 + 2c: the arm that WRITES
 # ---------------------------------------------------------------------------
+# Still on the STRIPPED record (phase 2s): the refusal is what a pre-v12
+# record gets. Phase 2g is the v12 twin, where the same revert WRITES.
+#
 # TWO properties are tampered, and the SECOND one is what makes this arm run at
 # all. `SecretEcho`'s only secret-bearing property is `Value`, whose STATE side
 # is the `{{resolve:ssm:...}}` token the comparator SKIPS -- so tampering `Value`
@@ -539,19 +895,12 @@ echo "[verify]   ok: drift exited 2, and the run says it REFUSED (not merely did
 # `Description` is passed EXPLICITLY rather than relying on PutParameter's
 # overwrite semantics for an omitted optional field: this arm's premise must be
 # a property this fixture sets, not a side effect of what AWS does with a field
-# nobody named.
-TAMPER_SENTINEL="cdkd-2108-tampered-do-not-resolve"
-TAMPER_DESCRIPTION="cdkd-2108-tampered-description"
-ECHO_DESCRIPTION_V1="cross-region secret echo (v1)"
+# nobody named. TAMPER_SENTINEL / TAMPER_DESCRIPTION / ECHO_DESCRIPTION_V1 are
+# phase 2g's; that phase's revert left the parameter back at v1.
 aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" \
   --type String --description "${TAMPER_DESCRIPTION}" \
   --overwrite --region "${CONSUMER_REGION}" >/dev/null
 
-echo_description() { # the live Description; get-parameter does not return it
-  aws ssm describe-parameters --region "${CONSUMER_REGION}" \
-    --parameter-filters "Key=Name,Values=${ECHO_PARAM}" \
-    --query 'Parameters[0].Description' --output text
-}
 LIVE_DESCRIPTION="$(echo_description)"
 if [ "${LIVE_DESCRIPTION}" != "${TAMPER_DESCRIPTION}" ]; then
   echo "FAIL: the out-of-band tamper did not take -- live Description is '${LIVE_DESCRIPTION}', expected '${TAMPER_DESCRIPTION}'. Phase 2c would exercise no revert code at all." >&2
@@ -698,6 +1047,10 @@ echo "[verify]   ok: echo parameter restored for the rollback arms"
 # exists to close exactly that -- a region-LESS literal in the stack that DOES
 # carry foreign evidence. Without it a scrub arm here would pass with the fix
 # reverted.
+#
+# On the STRIPPED records (phase 2s): LocalSecretEcho's record names no region,
+# as a pre-v12 record does, so the refusal is still today's behaviour for it.
+# Phase 2f is the v12 twin, where its record names us-east-1 and scrub resolves.
 echo "[verify] phase 2d: 'cdkd scrub' refuses the region-ambiguous reference"
 
 SCRUB_STATE_BEFORE="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | shasum -a 256 | cut -d' ' -f1)"
@@ -761,7 +1114,18 @@ echo "[verify]   ok: the producer scrubs normally (rc=${PROD_SCRUB_RC}) — the 
 # ---------------------------------------------------------------------------
 # PHASE 3: failing consumer v2 under --no-rollback -> a journal to replay
 # ---------------------------------------------------------------------------
+# The replay re-resolves BOTH sides of the echo's revert: the desired side is
+# the journal's previousState, copied from the state as it stood BEFORE this
+# deploy, and the previous side is the record this failing deploy writes. The
+# desired side is resolved first and refuses the whole op, so it is the one
+# that must be pre-v12: the state is still the one phase 2s stripped (asserted
+# here, since 2b-2d ran in between), and the journal's copy is asserted below.
+# The record this deploy writes DOES carry the region, which is why phase 4 is
+# a refusal on the desired side alone.
 echo "[verify] phase 3: deploy ${CONSUMER_STACK} v2 (Description change + INJECT_FAIL) --no-rollback (expect FAILURE)"
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" "${LOGDIR}/consumer-state-before-v2.json" >/dev/null
+assert_no_reference_provenance "${LOGDIR}/consumer-state-before-v2.json" "${ECHO_RECORD}" \
+  "the SecretEcho record before the v2 deploy"
 set +e
 MARKER_VALUE=v2 WITH_XREGION=true INJECT_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --no-rollback --yes > "${LOGDIR}/v2-deploy.log" 2>&1
@@ -798,6 +1162,12 @@ if [ "${JOURNAL_PREV_VALUE}" != "${SHARED_EXPRESSION}" ]; then
   exit 1
 fi
 echo "[verify]   ok: journal carries an UPDATE op whose previous Value is the region-less expression"
+printf '%s' "${JOURNAL}" > "${LOGDIR}/journal-arm-a.json"
+assert_no_reference_provenance "${LOGDIR}/journal-arm-a.json" "${JOURNAL_ECHO_PREVIOUS}" \
+  "the journaled previousState of the echo"
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" "${LOGDIR}/consumer-state-after-v2.json" >/dev/null
+assert_recorded_region "${LOGDIR}/consumer-state-after-v2.json" "${ECHO_RECORD}" "${PRODUCER_REGION}" \
+  "the SecretEcho record the failed v2 deploy wrote"
 
 MID_ECHO_VALUE="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
   --query 'Parameter.Value' --output text)"
@@ -817,6 +1187,8 @@ echo "[verify]   ok: the v2 UPDATE landed (Description=v2) and the value is stil
 # ---------------------------------------------------------------------------
 # PHASE 4: cdkd rollback — must REFUSE the region-ambiguous replay
 # ---------------------------------------------------------------------------
+# A pre-v12 previousState (phase 3's premise) names no region, so refusing it
+# is still today's behaviour. Phase 5b is the v12 twin, where it completes.
 echo "[verify] phase 4: cdkd rollback ${CONSUMER_STACK} --force (expect exit 2 = partial)"
 set +e
 AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
@@ -897,6 +1269,86 @@ assert_gone "local-secret parameter ${LOCAL_SECRET_PARAM} still exists after des
 assert_gone "consumer state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 
+# ---------------------------------------------------------------------------
+# PHASE 5b: ARM A on the records as v12 writes them -- the rollback COMPLETES
+#           (go-to-k/cdkd#4847)
+# ---------------------------------------------------------------------------
+# Phases 2-4 again with nothing stripped. The journal's previousState now
+# names us-west-2 for the token, so the replay resolves it there and applies
+# the revert. Pre-#4847 red line: exit 2, `cannot re-resolve the secret
+# reference`, Description left at v2 and the journal kept -- exactly what
+# phase 4 still asserts for a pre-v12 previousState. The live value cannot
+# tell "rewritten with the producer's value" from "untouched" (both are the
+# producer's), so the Description flip is what proves the PutParameter
+# happened; SSMParameterProvider.update re-sends Value on it, so the value
+# after it IS the replay's resolution.
+echo "[verify] phase 5b: arm A on v12 records -- deploy v1, fail v2, cdkd rollback completes"
+MARKER_VALUE=v1 WITH_XREGION=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --yes
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" "${LOGDIR}/consumer-state-5b-v1.json" >/dev/null
+assert_no_plaintext "consumer state.json after the 5b v1 deploy" "${LOGDIR}/consumer-state-5b-v1.json"
+assert_recorded_region "${LOGDIR}/consumer-state-5b-v1.json" "${ECHO_RECORD}" "${PRODUCER_REGION}" \
+  "the 5b SecretEcho record"
+
+V12_DEPLOY_RC=0
+MARKER_VALUE=v2 WITH_XREGION=true INJECT_FAIL=true AWS_REGION="${CONSUMER_REGION}" ${CLI} deploy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --no-rollback --yes > "${LOGDIR}/v12-v2-deploy.log" 2>&1 || V12_DEPLOY_RC=$?
+sed 's/^/  /' "${LOGDIR}/v12-v2-deploy.log" || true
+if [ "${V12_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the 5b v2 --no-rollback deploy unexpectedly SUCCEEDED (rc=0) — no journal to replay" >&2
+  exit 1
+fi
+assert_no_plaintext "the 5b v2 deploy output" "${LOGDIR}/v12-v2-deploy.log"
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_JOURNAL_KEY}"; then
+  echo "FAIL: no rollback journal after the 5b v2 deploy" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_JOURNAL_KEY}" "${LOGDIR}/journal-5b.json" >/dev/null
+assert_recorded_region "${LOGDIR}/journal-5b.json" "${JOURNAL_ECHO_PREVIOUS}" "${PRODUCER_REGION}" \
+  "the journaled previousState of the echo (5b)"
+if [ "$(echo_description)" != "cross-region secret echo (v2)" ]; then
+  echo "FAIL: the 5b v2 UPDATE did not land, so the rollback would have nothing to revert" >&2
+  exit 1
+fi
+
+V12_ROLLBACK_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${CONSUMER_REGION}" --force \
+  > "${LOGDIR}/v12-rollback.log" 2>&1 || V12_ROLLBACK_RC=$?
+sed 's/^/  /' "${LOGDIR}/v12-rollback.log" || true
+assert_no_plaintext "the 5b rollback output" "${LOGDIR}/v12-rollback.log"
+if grep -qF -- 'cannot re-resolve the secret reference' "${LOGDIR}/v12-rollback.log"; then
+  echo "FAIL: the rollback refused a reference whose journaled record names its region (the pre-#4847 behaviour)" >&2
+  exit 1
+fi
+if [ "${V12_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd rollback exited ${V12_ROLLBACK_RC} on the v12 journal; expected 0" >&2
+  exit 1
+fi
+V12_ROLLBACK_VALUE="$(echo_value)"
+if [ "${V12_ROLLBACK_VALUE}" = "${CONSUMER_SECRET}" ]; then
+  echo "FAIL: the rollback wrote the CONSUMER region's secret onto the live parameter — issue #2057's wrong-region write" >&2
+  exit 1
+fi
+if [ "${V12_ROLLBACK_VALUE}" != "${PRODUCER_SECRET}" ]; then
+  echo "FAIL: after the 5b rollback the echo parameter holds neither region's seeded value" >&2
+  exit 1
+fi
+if [ "$(echo_description)" != "${ECHO_DESCRIPTION_V1}" ]; then
+  echo "FAIL: the 5b rollback exited 0 but did not restore the v1 Description — the revert was not applied" >&2
+  exit 1
+fi
+assert_gone "the journal survived a rollback that completed" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_JOURNAL_KEY}"
+echo "[verify]   ok: the v12 rollback completed (rc=0), restored v1 and wrote the PRODUCER region's value"
+
+echo "[verify] phase 5c: destroy ${CONSUMER_STACK} again, so arm B starts from a stack that never read across a region"
+AWS_REGION="${CONSUMER_REGION}" ${CLI} destroy "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --force
+assert_gone "echo parameter ${ECHO_PARAM} still exists after the 5c destroy" \
+  aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}"
+assert_gone "consumer state file still exists after the 5c destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 
 # ---------------------------------------------------------------------------
 # PHASE 6 (ARM B): the cross-region read is INTRODUCED BY THE FAILING DEPLOY.
@@ -925,7 +1377,7 @@ if [ "${LOCAL_ONLY_READS}" != "0" ]; then
 fi
 BASE_ECHO_VALUE="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
   --query 'Parameter.Value' --output text)"
-if [ "${BASE_ECHO_VALUE}" != "local-literal-no-cross-region-read" ]; then
+if [ "${BASE_ECHO_VALUE}" != "${LOCAL_LITERAL_VALUE}" ]; then
   echo "FAIL: the local-only echo value is '${BASE_ECHO_VALUE}', expected the literal" >&2
   exit 1
 fi
@@ -970,6 +1422,15 @@ if [ "${ARMB_READ_REGIONS}" != "${PRODUCER_REGION}" ]; then
 fi
 echo "[verify]   ok: the FAILED deploy recorded sourceRegion=${PRODUCER_REGION}"
 
+# PHASE 6s. In arm B the token sits on the PREVIOUS side of the revert: the
+# journal's previousState is the pre-read literal, and the record this failed
+# deploy wrote holds the region-less expression -- WITH its region, since a v12
+# binary wrote it. So the strip has to come AFTER the deploy and before the
+# rollback reads that record; stripping before the deploy would change nothing.
+echo "[verify] phase 6s: strip the provenance the FAILED deploy recorded (the pre-v12 shape)"
+strip_reference_provenance "${CONSUMER_STATE_KEY}" consumer-armb "${ECHO_RECORD}" \
+  "the SecretEcho record the failed arm-B deploy wrote"
+
 echo "[verify] phase 6c: cdkd rollback ${CONSUMER_STACK} --force (expect exit 2 = partial)"
 set +e
 AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
@@ -1007,6 +1468,50 @@ fi
 echo "[verify]   ok: arm B refused, and the live value is untouched"
 
 # ---------------------------------------------------------------------------
+# PHASE 6d: the SAME journal against the record as v12 wrote it -- the
+#           rollback COMPLETES (go-to-k/cdkd#4847)
+# ---------------------------------------------------------------------------
+# The provenance phase 6s removed is put back on the record (merged into the
+# current document, so nothing the refused rollback wrote is lost), and the
+# kept journal is replayed again. Pre-#4847 red line: exit 2 with `cannot
+# re-resolve the secret reference` and the journal kept -- exactly phase 6c's
+# outcome. With the region, the previous side is resolved in us-west-2 and the
+# revert restores the pre-read literal.
+echo "[verify] phase 6d: restore the arm-B record's provenance, then cdkd rollback completes"
+restore_reference_provenance "${CONSUMER_STATE_KEY}" consumer-armb "${ECHO_RECORD}" \
+  "the arm-B SecretEcho record"
+ARMB_V12_ROLLBACK_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} rollback "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${CONSUMER_REGION}" --force \
+  > "${LOGDIR}/armb-v12-rollback.log" 2>&1 || ARMB_V12_ROLLBACK_RC=$?
+sed 's/^/  /' "${LOGDIR}/armb-v12-rollback.log" || true
+assert_no_plaintext "the 6d rollback output" "${LOGDIR}/armb-v12-rollback.log"
+if grep -qF -- 'cannot re-resolve the secret reference' "${LOGDIR}/armb-v12-rollback.log"; then
+  echo "FAIL: the 6d rollback refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
+  exit 1
+fi
+if [ "${ARMB_V12_ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: the 6d rollback exited ${ARMB_V12_ROLLBACK_RC}; expected 0" >&2
+  exit 1
+fi
+ARMB_V12_VALUE="$(echo_value)"
+if [ "${ARMB_V12_VALUE}" = "${CONSUMER_SECRET}" ]; then
+  echo "FAIL: the 6d rollback wrote the CONSUMER region's secret onto the live parameter" >&2
+  exit 1
+fi
+if [ "${ARMB_V12_VALUE}" != "${LOCAL_LITERAL_VALUE}" ]; then
+  echo "FAIL: the 6d rollback did not restore the pre-read literal (live value is neither the literal nor the consumer region's secret)" >&2
+  exit 1
+fi
+if [ "$(echo_description)" != "${ECHO_DESCRIPTION_V1}" ]; then
+  echo "FAIL: the 6d rollback did not restore the v1 Description" >&2
+  exit 1
+fi
+assert_gone "the journal survived the 6d rollback that completed" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_JOURNAL_KEY}"
+echo "[verify]   ok: the v12 arm-B rollback completed (rc=0) and restored the pre-read literal"
+
+# ---------------------------------------------------------------------------
 # PHASE 7: teardown — both stacks, both regions, and the seeded parameters
 # ---------------------------------------------------------------------------
 echo "[verify] phase 7a: destroy ${CONSUMER_STACK} (${CONSUMER_REGION})"
@@ -1041,4 +1546,4 @@ assert_gone "the injected failing queue exists — it should never have been cre
 
 
 echo ""
-echo "[verify] PASS: rollback-cross-region-secret — the region-ambiguous replay was refused, the live value kept the producer region's secret, and both regions are clean"
+echo "[verify] PASS: rollback-cross-region-secret — on v12 records drift, scrub, drift --revert and both rollbacks resolved each reference in the region its record names and never wrote the consumer region's secret; on pre-v12 records every one of them still refused; both regions are clean"

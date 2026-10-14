@@ -115,7 +115,11 @@ import {
   producerRegionsFromState,
 } from '../../deployment/rollback-executor.js';
 import { recordAfterRollbackUpdate } from '../../deployment/rollback-executor/replay-retry.js';
-import { regionLessSecretName } from '../../deployment/secret-region-classification.js';
+import {
+  classifyRecordedSecretRegion,
+  regionLessSecretName,
+} from '../../deployment/secret-region-classification.js';
+import { recordedReferenceRegions } from '../../deployment/reference-provenance-record.js';
 import {
   inheritProducerRegions,
   type ProducerRegionEvidence,
@@ -2080,6 +2084,15 @@ class DriftSecretResolvers {
     this.pinned.set(target, scoped);
     return scoped;
   }
+
+  /**
+   * The resolver for a region-LESS token a v12 record says `region` resolved
+   * (go-to-k/cdkd#4847): the primary's producer-region GUEST, as in the
+   * rollback replay's `ReplayResolvers.forRecordedRegion`.
+   */
+  forRecordedRegion(region: string): IntrinsicFunctionResolver {
+    return this.primary.resolverForRecordedRegion(region);
+  }
 }
 
 /**
@@ -2361,10 +2374,13 @@ export function refuseUnprovenDriftSecret(
   propertyPath: string,
   logicalId: string,
   consumerRegion: string,
-  evidence: ProducerRegionEvidence
+  evidence: ProducerRegionEvidence,
+  // go-to-k/cdkd#4847: a token the record names a region for is not unproven.
+  recordedRegions?: ReadonlyMap<string, string>
 ): void {
   if (evidence.complete) return;
   for (const token of dynamicReferenceTokens(leaf)) {
+    if (recordedRegions?.has(token) === true) continue;
     const verdict = classifyReplaySecretRegion(token, consumerRegion, evidence.regions);
     const name = verdict.kind === 'local' ? regionLessSecretName(token) : undefined;
     if (name === undefined) continue;
@@ -2524,14 +2540,20 @@ async function resolveDriftLeafByRegion(
   consumerRegion: string,
   producerRegions: readonly string[] | undefined,
   resolvers: DriftSecretResolvers,
-  ctx: ResolverContext
+  ctx: ResolverContext,
+  // go-to-k/cdkd#4847: the region the record's v12 provenance gives each token.
+  recordedRegions?: ReadonlyMap<string, string>
 ): Promise<string> {
   // ONE spelling of the token scan, shared with `secret-redaction.ts` (issue
   // #1936): a private regex here would answer a different question from the one
   // the resolver is about to ask.
   const tokens = dynamicReferenceTokens(leaf);
   const verdicts = tokens.map(
-    (token) => [token, classifyReplaySecretRegion(token, consumerRegion, producerRegions)] as const
+    (token) =>
+      [
+        token,
+        classifyRecordedSecretRegion(token, consumerRegion, producerRegions, recordedRegions),
+      ] as const
   );
 
   for (const [, verdict] of verdicts) {
@@ -2546,7 +2568,11 @@ async function resolveDriftLeafByRegion(
     }
   }
 
-  if (!verdicts.some(([, verdict]) => verdict.kind === 'named-region')) {
+  if (
+    !verdicts.some(
+      ([, verdict]) => verdict.kind === 'named-region' || verdict.kind === 'recorded-region'
+    )
+  ) {
     return await resolvers.primary.resolveDynamicReferences(leaf, ctx);
   }
 
@@ -2572,7 +2598,11 @@ async function resolveDriftLeafByRegion(
     }
     out += leaf.slice(cursor, at);
     const resolver =
-      verdict.kind === 'named-region' ? resolvers.forRegion(verdict.region) : resolvers.primary;
+      verdict.kind === 'named-region'
+        ? resolvers.forRegion(verdict.region)
+        : verdict.kind === 'recorded-region'
+          ? resolvers.forRecordedRegion(verdict.region)
+          : resolvers.primary;
     out += await resolver.resolveDynamicReferences(token, ctx);
     cursor = at + token.length;
   }
@@ -2660,10 +2690,17 @@ async function resolveStateSecretExpressions(
      * {@link driftProducerRegionEvidence}.
      */
     producerRegions: ProducerRegionEvidence;
+    /**
+     * go-to-k/cdkd#4847: the record whose bag this is. A token its v12
+     * provenance names a region for resolves in that region (decision 6: at
+     * the current version).
+     */
+    record?: unknown;
   }
 ): Promise<Record<string, unknown>> {
   if (!containsDynamicReference(props)) return props;
   const { secretPaths, onUnresolved, producerRegions, logicalId, consumerRegion } = options;
+  const recordedRegions = recordedReferenceRegions(options.record);
   const ctx: ResolverContext = {
     template: { Resources: {} },
     resources: {},
@@ -2674,7 +2711,14 @@ async function resolveStateSecretExpressions(
       if (!v.includes('{{resolve:')) return v;
       // Issue #2108: decide the REGION of every reference in this leaf before
       // any of them is fetched. See {@link classifyReplaySecretRegion}.
-      refuseUnprovenDriftSecret(v, path, logicalId, consumerRegion, producerRegions);
+      refuseUnprovenDriftSecret(
+        v,
+        path,
+        logicalId,
+        consumerRegion,
+        producerRegions,
+        recordedRegions
+      );
       const resolved = await resolveDriftLeafByRegion(
         v,
         path,
@@ -2682,7 +2726,8 @@ async function resolveStateSecretExpressions(
         consumerRegion,
         producerRegions.regions,
         resolvers,
-        ctx
+        ctx,
+        recordedRegions
       );
       // Only tokens that were in the INPUT. The scan runs over the RESOLVED
       // string, so a secret whose plaintext happens to contain
@@ -3841,6 +3886,7 @@ async function runDriftForStack(
               onUnresolved: noteUnresolved,
               logicalId,
               consumerRegion: region,
+              record: resource,
               producerRegions,
             }
           );
@@ -3864,6 +3910,7 @@ async function runDriftForStack(
                 onUnresolved: noteUnresolved,
                 logicalId,
                 consumerRegion: region,
+                record: resource,
                 producerRegions,
               }
             );
@@ -6891,6 +6938,7 @@ async function runRevert(
                       onUnresolved: noteUnresolved,
                       logicalId: outcome.logicalId,
                       consumerRegion: report.region,
+                      record: stateResource,
                       producerRegions: revertProducerRegions,
                     }
                   );
@@ -6907,6 +6955,7 @@ async function runRevert(
                         onUnresolved: noteUnresolved,
                         logicalId: outcome.logicalId,
                         consumerRegion: report.region,
+                        record: stateResource,
                         producerRegions: revertProducerRegions,
                       }
                     );

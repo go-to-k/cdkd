@@ -83,7 +83,7 @@ function recordProvenanceOfResolution(
   token: string,
   version: string | undefined
 ): void {
-  if (context === undefined) return;
+  if (context === undefined || context.provenanceSuppressed === true) return;
   const resolution = {
     region: canonicalizeRegion(resolver.explicitRegion),
     version,
@@ -440,11 +440,24 @@ export async function resolveDynamicReferencesWithLogTwin(
       // `set` below: every service arm's first `await` is its lookup helper,
       // which selects `clientsForRegion(...)` before ITS first `await`, so the
       // key and the client that answers come from one reading. Never log it.
-      const dynamicReferenceCacheKey = injectiveKey(
-        credentialFingerprint(ambientCredentialConfig()),
-        fullMatch
-      );
-      const cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
+      //
+      // go-to-k/cdkd#4847: a PINNED token (the re-resolution of a recorded
+      // value) reuses the unpinned entry when that entry already holds the
+      // pinned version, so a pin equal to the current version costs nothing;
+      // otherwise it reads and writes an entry whose key carries the version.
+      // `Map.get`: the pins are a Map, so a token named `__proto__` is a key.
+      const pin = context?.referencePins?.get(fullMatch);
+      const credentialKey = credentialFingerprint(ambientCredentialConfig());
+      let dynamicReferenceCacheKey = injectiveKey(credentialKey, fullMatch);
+      let cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
+      // A value read at a pin OTHER than the unpinned entry's: possibly a
+      // second generation of the token, whose pair is not recorded (see the
+      // fresh seam below).
+      const pinnedGeneration = pin !== undefined && cached?.version !== pin;
+      if (pinnedGeneration) {
+        dynamicReferenceCacheKey = injectiveKey(credentialKey, fullMatch, pin);
+        cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
+      }
       if (cached) {
         // The `cached.value` test excludes the empty string: an empty secret is
         // not a usable redaction needle (it would match every empty leaf).
@@ -492,7 +505,8 @@ export async function resolveDynamicReferencesWithLogTwin(
           recorded.set(cached.value, fullMatch);
           // The uncollapsed twin of that entry (issue #2485) — see the
           // fresh-resolution seam below.
-          recordResolvedPair(recorded, fullMatch, cached.value);
+          // NOT for a pinned generation (go-to-k/cdkd#4847): see the fresh seam.
+          if (!pinnedGeneration) recordResolvedPair(recorded, fullMatch, cached.value);
         }
         // State schema v12: the provenance the lookup that filled this entry
         // read, recorded for THIS pass as the fresh seam below does.
@@ -550,7 +564,8 @@ export async function resolveDynamicReferencesWithLogTwin(
           inner,
           context,
           nameLogText,
-          versionOut
+          versionOut,
+          pinnedGeneration ? pin : undefined
         );
         resolvedVersion = versionOut.version;
       } else if (service === 'ssm') {
@@ -560,7 +575,14 @@ export async function resolveDynamicReferencesWithLogTwin(
         // `StringList` are unaffected by the flag, so the value is the same one
         // the deploy path would resolve and is safe to cache and substitute.
         const decrypt = context?.skipDynamicReferences !== true;
-        const param = await this.resolveSSMReference(parts, decrypt, 'ssm', context, nameLogText);
+        const param = await this.resolveSSMReference(
+          parts,
+          decrypt,
+          'ssm',
+          context,
+          nameLogText,
+          pinnedGeneration ? pin : undefined
+        );
         // The FRESH response is authoritative, so a definitive public verdict
         // both clears `isSecret` and RETRACTS a stale memo. Without the
         // retraction the verdict could only ever be raised, so one transient
@@ -572,20 +594,27 @@ export async function resolveDynamicReferencesWithLogTwin(
         // definitive `SecureString` is memoized: an unclassifiable type is
         // treated as secret for THIS resolution but deliberately not pinned,
         // so the next pass re-asks instead of inheriting a transient answer.
+        // go-to-k/cdkd#4847: a value read at a PINNED generation answers for
+        // that version's `Type`, not the parameter's current one, so it pins
+        // no process-wide verdict (as a producer-region guest pins none): a
+        // retyped parameter's current public value must not be treated as
+        // secret. The bag's proof needs no guard: a pinned secret value is
+        // recorded in this bag, which already voids its public proof.
         const proofBag = context?.recordedSecretValues;
+        const writesVerdict = !pinnedGeneration;
         if (param.type === 'SecureString') {
           if (proofBag) contradictProvenPublicExpression(proofBag, fullMatch);
-          if (decrypt) pinSecureVerdict = true;
+          if (decrypt) pinSecureVerdict = writesVerdict;
           // The comparison path resolves nothing, so it cannot refuse; it
           // still must not pin a token the deploy path would refuse.
           else if (
-            persistedText ||
-            !this.tokenAssembledForRecording(fullMatch, tokenLogText, context)
+            writesVerdict &&
+            (persistedText || !this.tokenAssembledForRecording(fullMatch, tokenLogText, context))
           ) {
             this.pinSecretVerdict(fullMatch, true, verdictScope);
           }
         } else if (!param.secure) {
-          this.pinSecretVerdict(fullMatch, false, verdictScope);
+          if (writesVerdict) this.pinSecretVerdict(fullMatch, false, verdictScope);
           // ...and a PER-BAG proof (issue #2036), read by the empty-map arm of
           // `mixedLeafMayCarryPublicReference`. Filed under THIS pass's bag, not
           // under the bare expression: the bag is one record's pass in this
@@ -647,7 +676,8 @@ export async function resolveDynamicReferencesWithLogTwin(
           true,
           'ssm-secure',
           context,
-          nameLogText
+          nameLogText,
+          pinnedGeneration ? pin : undefined
         );
         if (!param.secure) {
           // `secure` is false only for the two PUBLIC types the predicate
@@ -756,7 +786,14 @@ export async function resolveDynamicReferencesWithLogTwin(
         const recorded = context?.recordedSecretValues;
         if (recorded) {
           recorded.set(resolved, fullMatch);
-          recordResolvedPair(recorded, fullMatch, resolved);
+          // NOT for a value read at a pinned generation (go-to-k/cdkd#4847): the
+          // pair table keeps ONE plaintext per token, and the token's literal
+          // route resolves the current one. Two plaintexts would mark the pair
+          // CONFLICTING, positioning a literal leaf embedding the token would
+          // fall back to the value scan, and a plaintext under the needle
+          // floor would then persist. Equal plaintexts would add nothing. The
+          // value-keyed entry above still redacts and masks the pinned value.
+          if (!pinnedGeneration) recordResolvedPair(recorded, fullMatch, resolved);
         }
         // State schema v12 (go-to-k/cdkd#4847 / #4852): which region answered
         // and which version it read, beside the pair and in the same pass.

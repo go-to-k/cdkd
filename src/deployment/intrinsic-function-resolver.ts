@@ -768,6 +768,18 @@ export class IntrinsicFunctionResolver {
     return resolved;
   }
 
+  /**
+   * The resolver for a region-LESS token whose v12 record names `region` as
+   * the one that resolved it (go-to-k/cdkd#4847): this resolver for its own
+   * region, otherwise its producer-region GUEST for `region`, which pins no
+   * verdict in the process-global store a region-less key shares across
+   * regions. What the rollback replay, `cdkd drift` and `cdkd scrub` route a
+   * recorded region through.
+   */
+  resolverForRecordedRegion(region: string): IntrinsicFunctionResolver {
+    return this.resolverForProducerRegion(region);
+  }
+
   /** @internal */
   resolverForProducerRegion(
     producerRegion: string | undefined,

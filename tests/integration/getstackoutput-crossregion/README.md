@@ -77,3 +77,18 @@ STATE_BUCKET="cdkd-state-<accountId>" bash tests/integration/getstackoutput-cros
 
 Prefer the `/run-integ getstackoutput-crossregion` skill — it records
 the run into the integ ledger and runs the post-run orphan sweep.
+
+## Recorded region and version (issue #4847)
+
+`verify.sh` also seeds `cdkd-gso-4847-*` secrets under the same name in both
+regions with different values. The producer publishes them as
+`{{resolve:...}}` outputs, and `us-east-1` queues are named from them through
+`Fn::GetStackOutput` with `Region: us-west-2`. A reader of `Queue.Arn` added
+while the queue is unchanged must hold the `us-west-2` queue's ARN, through
+`cdkd drift`, a `cdkd rollback` after a forced failure, `cdkd scrub`, and a
+rotation of the secret (the reader keeps naming the queue AWS has).
+`CdkdGsoConsumerPre` is first deployed by the last v11 binary: the v12
+migration deploy records the provenance, and a reader added afterwards gets
+the right ARN. Its second queue's secret is rotated before the upgrade, so
+only its region is recordable; its reader (an output) is served as recorded,
+with the warning, and never from `us-east-1`.

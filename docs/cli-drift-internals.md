@@ -53,7 +53,9 @@ cdkd reads those parent records from state. When they cannot be established
 (a parent record is missing or unreadable, or a record's parent link disagrees
 with its key), every secret reference that names no region is refused rather
 than resolved in the stack's own region: make the parent state readable or
-repair the record, or spell the reference as a full ARN.
+repair the record, or spell the reference as a full ARN. A reference whose
+record a deploy wrote since state schema v12 names the region that resolved
+it, and drift resolves it there (at the current version) instead.
 
 ## What the summary line counts
 

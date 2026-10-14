@@ -113,6 +113,12 @@ import {
   classifyReplaySecretRegion,
   producerRegionsFromState,
 } from '../../deployment/rollback-executor.js';
+import { regionLessSecretName } from '../../deployment/secret-region-classification.js';
+import {
+  keepHeldTokenProvenance,
+  recordedOutputReferenceRegions,
+  recordedReferenceRegions,
+} from '../../deployment/reference-provenance-record.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 // An export NAME is a template-controlled RESOLVED value and an index read's
 // error message interpolates a bucket / key, so both reach the terminal only
@@ -3012,6 +3018,16 @@ class ScrubResolvers {
     this.pinned.set(target, scoped);
     return scoped;
   }
+
+  /**
+   * The resolver for a region-LESS token a v12 record says `region` resolved
+   * (go-to-k/cdkd#4847): the primary's producer-region GUEST, which pins no
+   * verdict in the process-global store a region-less key shares across
+   * regions (the hazard the note above names), or the primary itself.
+   */
+  forRecordedRegion(region: string): IntrinsicFunctionResolver {
+    return this.primary.resolverForRecordedRegion(region);
+  }
 }
 
 /**
@@ -3033,6 +3049,13 @@ interface CrossRegionSecretContext {
   recordedSecretValues: RecordedSecretValues;
   /** Where the bag came from, for the refusal message ("resource 'Db'"). */
   origin: string;
+  /**
+   * go-to-k/cdkd#4847: the region the record's v12 provenance gives each
+   * token. Such a token is resolved here, in that region, whichever it is: the
+   * primary's later pass would classify it against `producerRegions` and
+   * refuse it as ambiguous.
+   */
+  recordedRegions?: ReadonlyMap<string, string> | undefined;
 }
 
 /**
@@ -3098,11 +3121,13 @@ function unresolvableForeignScrubSecretError(
   secretName: string,
   region: string,
   cause: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  /** The region is the one the record's v12 provenance names (go-to-k/cdkd#4847), not an ARN's. */
+  recorded = false
 ): CdkdError {
   return new ScrubRefusalError(
     `Scrub of ${displayStackName(stackName)} could not resolve the secret reference ${maskedIdent(secretName, secrets)} in ${origin} ` +
-      `in the region its ARN names (${displayIdent(region)}): ` +
+      `in ${recorded ? 'the region its state record names' : 'the region its ARN names'} (${displayIdent(region)}): ` +
       `${maskSecretsInText(describeAwsFailure(cause).detail, secrets)}. ` +
       `Refusing rather than resolving ` +
       `it in the stack's own region, which would look for a different secret's value and report ` +
@@ -3336,10 +3361,31 @@ async function resolveForeignRegionTokens(
   // and fell out of the `named-region` test below by identity already.
   const secretTokens = tokens.filter(isSecretReferenceToken);
   if (isAssembledSecretReference(leaf, secretTokens)) return leaf;
-  const verdicts = tokens.map(
-    (token) =>
-      [token, classifyReplaySecretRegion(token, ctx.stackRegion, ctx.producerRegions)] as const
-  );
+  const verdicts = tokens.map((token) => {
+    const verdict = classifyReplaySecretRegion(token, ctx.stackRegion, ctx.producerRegions);
+    // go-to-k/cdkd#4847: a region-less token's recorded region, resolved here
+    // ONLY where the v11 verdict does not already settle it: another region,
+    // or this one against foreign evidence (`ambiguous`). A recorded-local
+    // token v11 calls `local` stays the primary's, whose failed lookup is a
+    // counted finding rather than a refusal of the whole stack.
+    const recorded =
+      regionLessSecretName(token) === undefined ? undefined : ctx.recordedRegions?.get(token);
+    const takesRecorded =
+      recorded !== undefined &&
+      (canonicalizeRegion(recorded) !== canonicalizeRegion(ctx.stackRegion) ||
+        verdict.kind === 'ambiguous');
+    return [
+      token,
+      !takesRecorded
+        ? verdict
+        : ({
+            kind: 'named-region',
+            secretName: regionLessSecretName(token)!,
+            region: recorded!,
+            recorded: true,
+          } as const),
+    ] as const;
+  });
 
   // Refuse FIRST, over the whole leaf, before any reference is read — a leaf
   // can splice several references together, and reading the safe ones first
@@ -3381,7 +3427,10 @@ async function resolveForeignRegionTokens(
     }
     out += leaf.slice(cursor, at);
     if (verdict.kind === 'named-region') {
-      const resolver = ctx.resolvers.forRegion(verdict.region);
+      const resolver =
+        'recorded' in verdict
+          ? ctx.resolvers.forRecordedRegion(verdict.region)
+          : ctx.resolvers.forRegion(verdict.region);
       try {
         // The SAME `recordedSecretValues` map the primary records into, and the
         // resolver's own recording rules apply: an `ssm` reference is recorded
@@ -3399,7 +3448,8 @@ async function resolveForeignRegionTokens(
           verdict.secretName,
           verdict.region,
           err,
-          ctx.recordedSecretValues
+          ctx.recordedSecretValues,
+          'recorded' in verdict
         );
       }
     } else {
@@ -7340,6 +7390,7 @@ export async function scrubStack(
             resolvers,
             recordedSecretValues,
             origin: `resource ${maskedIdent(logicalId, recordedSecretValues)}`,
+            recordedRegions: recordedReferenceRegions(state.resources?.[logicalId]),
           }
         );
         const resourceContext = resolverContext(recordedSecretValues);
@@ -7637,6 +7688,7 @@ export async function scrubStack(
             resolvers,
             recordedSecretValues,
             origin: `orphan record ${maskedIdent(record.logicalId, recordedSecretValues)}`,
+            recordedRegions: recordedReferenceRegions(record.state),
           }
         );
         // PER SUB-BAG, for the same reason the resource loop resolves per
@@ -8021,6 +8073,7 @@ export async function scrubStack(
           resolvers,
           recordedSecretValues: outputSecrets,
           origin: `output ${maskedIdent(name, outputSecrets)}`,
+          recordedRegions: recordedOutputReferenceRegions(state, name),
         });
         const valueContext = resolverContext(outputSecrets);
         // Issue #2133, same treatment and same placement as the two above. An
@@ -8416,7 +8469,8 @@ export async function scrubStack(
               undefined,
               STATE_SOURCED_CROSS_GENERATION_RULES
             );
-      const written = applyScrubNoEcho(migrated, record, plan);
+      // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
+      const written = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
       if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = written;
     }
@@ -8447,11 +8501,8 @@ export async function scrubStack(
       const needles = new Map(allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets));
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
-      const scrubbed = scrubResourceRecord(
-        record.state,
-        needles,
-        undefined,
-        STATE_SOURCED_CROSS_GENERATION_RULES
+      const scrubbed = keepHeldTokenProvenance(
+        scrubResourceRecord(record.state, needles, undefined, STATE_SOURCED_CROSS_GENERATION_RULES)
       );
       if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
       recordsChanged++;

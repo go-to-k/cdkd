@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -56,6 +57,45 @@ export const PRODUCER_OUTPUT_NAME = 'ProducerArn';
 const PRODUCER_PARAM_NAME = '/cdkd/getstackoutput-crossregion/producer';
 const CONSUMER_PARAM_NAME = '/cdkd/getstackoutput-crossregion/consumer';
 
+/**
+ * go-to-k/cdkd#4847 arm. Secrets Manager secrets verify.sh seeds BEFORE any
+ * deploy, under the SAME name in both regions with DIFFERENT values (the
+ * us-west-2 one names the queue; a us-east-1 answer would name another):
+ *
+ * - `cdkd-gso-4847-<suffix>`: the main arm's queue (CdkdGsoConsumer);
+ * - `cdkd-gso-4847-pre-<suffix>`: a queue deployed by the last v11 binary;
+ * - `cdkd-gso-4847-rot-<suffix>`: the same, rotated BEFORE the upgrade.
+ *
+ * The producer publishes each as a `{{resolve:...}}` output, which cdkd
+ * stores as the reference (#1899); a consumer in us-east-1 names a queue from
+ * it through `Fn::GetStackOutput` with `Region: us-west-2`, so the queue's
+ * record holds `arn:aws:sqs:us-east-1:<acct>:{{resolve:...}}`. The suffix (a
+ * context value verify.sh passes) keeps every run's queue names unique.
+ */
+export function gso4847SecretNames(scope: Construct): { main: string; pre: string; rot: string } {
+  const suffix = (scope.node.tryGetContext('gso4847Suffix') as string | undefined) ?? 'local';
+  return {
+    main: `cdkd-gso-4847-${suffix}`,
+    pre: `cdkd-gso-4847-pre-${suffix}`,
+    rot: `cdkd-gso-4847-rot-${suffix}`,
+  };
+}
+const queueNameRef = (secretName: string): string =>
+  `{{resolve:secretsmanager:${secretName}:SecretString:queue}}`;
+
+/** A queue named from a us-west-2 output of `CdkdGsoProducer`, read cross-region. */
+function queueNamedFromProducer(scope: Construct, id: string, outputName: string): sqs.CfnQueue {
+  const queue = new sqs.CfnQueue(scope, id);
+  queue.addPropertyOverride('QueueName', {
+    'Fn::GetStackOutput': {
+      StackName: PRODUCER_STACK_NAME,
+      OutputName: outputName,
+      Region: PRODUCER_REGION,
+    },
+  });
+  return queue;
+}
+
 export class GsoProducerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -80,6 +120,12 @@ export class GsoProducerStack extends cdk.Stack {
       value: producer.parameterArn,
       description: 'ARN of the producer SSM parameter — consumed cross-region via Fn::GetStackOutput',
     });
+
+    // go-to-k/cdkd#4847: secret-derived queue names, published as references.
+    const names = gso4847SecretNames(this);
+    new cdk.CfnOutput(this, 'QueueName', { value: queueNameRef(names.main) });
+    new cdk.CfnOutput(this, 'QueueNamePre', { value: queueNameRef(names.pre) });
+    new cdk.CfnOutput(this, 'QueueNameRot', { value: queueNameRef(names.rot) });
   }
 }
 
@@ -112,5 +158,55 @@ export class GsoConsumerStack extends cdk.Stack {
         Region: PRODUCER_REGION,
       },
     });
+
+    // go-to-k/cdkd#4847 main arm. `Queue` is deployed with the stack; the
+    // reader of its `Arn` arrives in a LATER deploy, so it reads the queue's
+    // RECORDED attribute while the queue is NO_CHANGE. `gso4847Reader` is the
+    // reader's revision (absent: no reader); `gso4847Fail` adds a parameter
+    // AWS refuses, created after the reader, for the rollback phase.
+    const queue = queueNamedFromProducer(this, 'Queue', 'QueueName');
+    const revision = this.node.tryGetContext('gso4847Reader') as string | undefined;
+    if (revision !== undefined) {
+      const reader = new ssm.CfnParameter(this, 'QueueArnReader', {
+        type: 'String',
+        name: '/cdkd/getstackoutput-crossregion/reader',
+        value: queue.attrArn,
+        description: `reader rev ${revision}`,
+      });
+      if (this.node.tryGetContext('gso4847Fail') === '1') {
+        const failing = new ssm.CfnParameter(this, 'FailProbe', {
+          type: 'String',
+          name: '/cdkd/getstackoutput-crossregion/fail-probe',
+          value: 'does-not-match',
+          allowedPattern: '^never$',
+        });
+        failing.addDependency(reader);
+      }
+    }
+  }
+}
+
+/**
+ * go-to-k/cdkd#4847 pre-upgrade arm (us-east-1): two queues first deployed by
+ * the last v11 binary, so their records carry no provenance until the first
+ * v12 deploy's one-time capture writes it. `QueueRotated`'s secret is rotated
+ * BEFORE the upgrade, so the capture records its region and no version.
+ * `gso4847PreReaders` adds the readers in a later deploy: a parameter holding
+ * `QueueStill`'s `Arn`, and an output holding `QueueRotated`'s (an output is
+ * never sent to AWS, so a value served as recorded fails nothing).
+ */
+export class GsoConsumerPreStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    const still = queueNamedFromProducer(this, 'QueueStill', 'QueueNamePre');
+    const rotated = queueNamedFromProducer(this, 'QueueRotated', 'QueueNameRot');
+    if (this.node.tryGetContext('gso4847PreReaders') === '1') {
+      new ssm.CfnParameter(this, 'QueueStillReader', {
+        type: 'String',
+        name: '/cdkd/getstackoutput-crossregion/reader-pre',
+        value: still.attrArn,
+      });
+      new cdk.CfnOutput(this, 'RotatedArn', { value: rotated.attrArn });
+    }
   }
 }

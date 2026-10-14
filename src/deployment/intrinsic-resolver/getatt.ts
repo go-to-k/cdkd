@@ -40,6 +40,11 @@ import {
   recordReferenceProvenanceEntry,
 } from '../secret-redaction/reference-provenance.js';
 import { NOT_CONSTRUCTED, constructAttributeForCoreTypes } from './getatt-construct-core.js';
+import {
+  type TokenResolution,
+  recordedTokenRoutes,
+  reresolveByRecordedRoutes,
+} from './recorded-reference-routes.js';
 import { constructAttributeForAppTypes } from './getatt-construct-app.js';
 import { constructAttributeForComputeTypes } from './getatt-construct-compute.js';
 
@@ -375,12 +380,34 @@ export async function resolveGetAtt(
       // arity the resolver would not accept — still yields `undefined` and
       // still inherits today's behaviour.
       if (reresolvesNestedReference) {
+        const childRegion = nestedStackChildRegionFromLocalArn(resource.physicalId);
+        const nestedOrigin = `nested stack ${logicalId} ${this.displayLeaf(attributeName, context)}`;
+        const nestedSourceKey = crossStackSourceKey({ 'Fn::GetAtt': getAtt });
+        // go-to-k/cdkd#4847: the row's provenance (copied from the child's
+        // outputs) names each token's region and version; the child's region
+        // and the current version answer where it does not.
+        const routes =
+          context.recordedSecretValues === undefined || carriesSecretMask(flatValue)
+            ? undefined
+            : recordedTokenRoutes(flatValue, resource);
+        if (routes !== undefined) {
+          return await reresolveByRecordedRoutes(
+            this,
+            flatValue,
+            logicalId,
+            context,
+            nestedOrigin,
+            nestedSourceKey,
+            routes,
+            { region: childRegion }
+          );
+        }
         return await this.reresolveCrossStackValue(
           flatValue,
-          nestedStackChildRegionFromLocalArn(resource.physicalId),
+          childRegion,
           context,
-          `nested stack ${logicalId} ${this.displayLeaf(attributeName, context)}`,
-          crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+          nestedOrigin,
+          nestedSourceKey
         );
       }
       return await this.reresolveRecordedReferences(
@@ -859,13 +886,50 @@ export async function reresolveRecordedReferences(
 ): Promise<unknown> {
   if (!carriesDynamicReference(value) || carriesSecretMask(value)) return value;
   if (context.recordedSecretValues === undefined) return value;
+  const notReresolvingLine = (): void =>
+    this.logger.debug(
+      safeMsg`Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
+    );
+  const servingAsRecordedLine = (): void =>
+    this.logger.warn(
+      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
+    );
+  // go-to-k/cdkd#4847: a record carrying v12 provenance names each token's
+  // region and version; each arm falls back to today's proof independently.
+  const record = Object.hasOwn(context.resources, logicalId)
+    ? context.resources[logicalId]
+    : undefined;
+  const routes = recordedTokenRoutes(value, record);
+  if (routes !== undefined) {
+    return await reresolveByRecordedRoutes(
+      this,
+      value,
+      logicalId,
+      context,
+      origin,
+      sourceKey,
+      routes,
+      {
+        region: undefined,
+        proofs: {
+          regionProven: (tokens) =>
+            referencesProvenLocal(tokens, logicalId, context) ||
+            referencesRegionProven(tokens, context, this.resolverRegion),
+          onRegionUnproven: notReresolvingLine,
+          generationProven: (tokens, routeOf) =>
+            this.referencesMatchPhysicalId(tokens, logicalId, context, routeOf),
+          onGenerationUnproven: () => {
+            if (context.provenanceCapture !== true) servingAsRecordedLine();
+          },
+        },
+      }
+    );
+  }
   if (
     !referencesProvenLocal(value, logicalId, context) &&
     !referencesRegionProven(value, context, this.resolverRegion)
   ) {
-    this.logger.debug(
-      safeMsg`Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
-    );
+    notReresolvingLine();
     return value;
   }
   // The GENERATION proof: each reference must still resolve to text the
@@ -876,9 +940,7 @@ export async function reresolveRecordedReferences(
     // The v12 migration capture resolves records the deploy itself resolves
     // too; the line is the deploy's to print.
     if (context.provenanceCapture) return value;
-    this.logger.warn(
-      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
-    );
+    servingAsRecordedLine();
     return value;
   }
   return await this.reresolveCrossStackValue(value, undefined, context, origin, sourceKey);
@@ -898,7 +960,10 @@ export async function referencesMatchPhysicalId(
   this: IntrinsicFunctionResolver,
   value: unknown,
   logicalId: string,
-  context: ResolverContext
+  context: ResolverContext,
+  // go-to-k/cdkd#4847: the resolver and context each token resolves in (its
+  // recorded region's); this resolver and `context` when absent.
+  routeOf?: (token: string) => TokenResolution
 ): Promise<boolean> {
   const record = Object.hasOwn(context.resources, logicalId)
     ? context.resources[logicalId]
@@ -906,7 +971,11 @@ export async function referencesMatchPhysicalId(
   const physicalId = typeof record?.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
   for (const leaf of wholeStringLeavesOf(value)) {
     for (const token of dynamicReferenceTokens(leaf)) {
-      const plaintext = await this.resolveDynamicReferences(token, context);
+      const route = routeOf?.(token);
+      const plaintext =
+        route === undefined
+          ? await this.resolveDynamicReferences(token, context)
+          : await route.resolver.resolveDynamicReferences(token, route.context);
       if (plaintext.includes('{{resolve:')) continue;
       if (plaintext.length < MIN_NEEDLE_LENGTH) return false;
       if (!physicalId.includes(plaintext.toLowerCase())) return false;
