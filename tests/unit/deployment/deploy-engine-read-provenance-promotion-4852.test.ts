@@ -621,6 +621,92 @@ describe('a cross-stack consumer (Fn::ImportValue)', () => {
   });
 });
 
+describe('a cross-stack consumer (Fn::GetStackOutput)', () => {
+  const producer = (physicalId: string, versions: string[]): StackState =>
+    ({
+      version: 12,
+      stackName: 'p',
+      region: 'us-east-1',
+      resources: {
+        SecretQueue: {
+          physicalId,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: REF },
+          attributes: { Arn: RECORDED_ARN },
+          dependencies: [],
+          referenceProvenance: { [REF]: at(versions) },
+        },
+      },
+      outputs: { QueueArn: RECORDED_ARN },
+      outputReferenceProvenance: { QueueArn: { [REF]: at(versions, versions) } },
+      lastModified: 0,
+    }) as StackState;
+  const consumer = (description: string): { state: StackState; template: CloudFormationTemplate } => ({
+    state: {
+      version: 12,
+      stackName: 'c',
+      region: 'us-east-1',
+      resources: {
+        Reader: {
+          physicalId: '/c/reader',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Name: '/c/reader', Type: 'String', Value: RECORDED_ARN, Description: 'a' },
+          attributes: {},
+          dependencies: [],
+          referenceProvenance: { [REF]: at([V1], [V1]) },
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState,
+    template: {
+      Resources: {
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: '/c/reader',
+            Type: 'String',
+            Value: {
+              'Fn::GetStackOutput': { StackName: 'p', OutputName: 'QueueArn', Region: 'us-east-1' },
+            },
+            Description: description,
+          },
+        },
+      },
+    },
+  });
+
+  it('is promoted and sent the new queue, reading the producer state no more than before', async () => {
+    rotate();
+    const { state, template } = consumer('a');
+    const run = await deploy({
+      stackName: 'c',
+      state,
+      template,
+      levels: [['Reader']],
+      producers: { p: producer(URL_2, [V2]) },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual(['update:Reader']);
+    expect(run.sent['Reader']?.['Value']).toBe(PLAIN_ARN_2);
+    // The promotion and the pin reuse the state each `Fn::GetStackOutput` read
+    // already holds: as many producer reads as an edited consumer with no read
+    // versions makes (no promotion, no pin), which is the merge base's count.
+    const control = consumer('b');
+    control.state.resources['Reader']!.referenceProvenance = { [REF]: at([V1]) };
+    const controlRun = await deploy({
+      stackName: 'c',
+      ...control,
+      levels: [['Reader']],
+      producers: { p: producer(URL_2, [V2]) },
+    });
+    expect(controlRun.calls).toEqual(['update:Reader']);
+    expect(run.stateReads.filter((n) => n === 'p')).toEqual(
+      controlRun.stateReads.filter((n) => n === 'p')
+    );
+  });
+});
+
 describe('a nested child engine (its upstream is the inherited snapshot)', () => {
   const childState = (read: string[]): StackState =>
     ({
