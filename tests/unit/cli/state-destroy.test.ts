@@ -374,10 +374,40 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].resolveSecretDerivedPrincipals).toEqual({});
     // go-to-k/cdkd#2115: a top-level state destroy is a whole-stack teardown.
     expect(callArgs?.[2].stackDestroy).toBe(true);
+    // go-to-k/cdkd#2346: and the explicit removal of the record's history.
+    expect(callArgs?.[2].purgeStateHistory).toBe(true);
     // go-to-k/cdkd#4705: a top-level state destroy checks the bucket's other state prefixes.
     expect(callArgs?.[2].crossPrefixCheck?.cache).toBeDefined();
     // go-to-k/cdkd#4682: no template, so no NoEcho re-resolution source.
     expect(callArgs?.[2]).not.toHaveProperty('noEchoReresolver');
+  });
+
+  // go-to-k/cdkd#2346: a cascading nested child reads the opt-in from the
+  // nested-stack context's destroyOptions, so it must be there as well.
+  it('carries purgeStateHistory into the nested-stack context destroyOptions', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: makeStackState('MyStack', 'us-east-1'),
+      etag: '"abc"',
+    });
+    const { getCurrentNestedStackContext } = await import(
+      '../../../src/provisioning/nested-stack-context.js'
+    );
+    let seen: unknown;
+    mockRunDestroyForStack.mockImplementationOnce(async () => {
+      seen = getCurrentNestedStackContext()?.destroyOptions?.purgeStateHistory;
+      return {
+        errorCount: 0,
+        skippedCount: 0,
+        deletedCount: 0,
+        journaledOrphanSkips: 0,
+        interrupted: false,
+      };
+    });
+
+    await runStateDestroy(['destroy', 'MyStack', '--yes']);
+
+    expect(seen).toBe(true);
   });
 
   /**

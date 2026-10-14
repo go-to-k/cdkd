@@ -9,9 +9,9 @@ paths:
 
 Versioning is ON for the state bucket, so `DeleteObject` leaves prior versions
 readable by id; `s3-noncurrent-version-purge.ts` makes "deleted" mean
-unreadable. **Only `cdkd scrub` purges `state.json`** (#2624): keys it may
-have written, or under `--purge-history` all it examined bar refused ones. Its
-noncurrent versions ARE the recovery capability.
+unreadable. **`state.json` history is the recovery capability**: only `cdkd
+scrub` (#2624) and `cdkd state destroy` (`purgeDeletedStateHistory`, #2346) purge
+it; every other delete keeps it.
 
 **S3 never replicates a delete naming a `VersionId`**: with CRR or SRR the
 purge is SOURCE-ONLY, which `s3-replication-purge-gap.ts` reports

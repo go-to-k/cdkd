@@ -196,6 +196,75 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     expect(info()).toMatch(/- O \(AWS::Kinesis::Stream\) {2}orphan-stream/);
   });
 
+  // go-to-k/cdkd#2346: the main path purges the record's history exactly when
+  // the caller opted in (`cdkd state destroy` alone), AFTER the kept-resource
+  // record is written and BEFORE the lock is released -- on the awaited tail
+  // and on the deferred one (`deferRegistryTail`) alike.
+  it.each([
+    ['set', { purgeStateHistory: true }, true],
+    ['absent', {}, false],
+    ['false', { purgeStateHistory: false }, false],
+  ])('ctx.purgeStateHistory %s: the main path purges only when true', async (_w, extra, purged) => {
+    const order: string[] = [];
+    const base = makeCtx();
+    const ctx = {
+      ...base,
+      ...extra,
+      stateBackend: {
+        ...(base.stateBackend as object),
+        loadRetainedRecord: vi.fn().mockResolvedValue(null),
+        ensureRetainedTombstone: vi.fn(async () => {
+          order.push('kept');
+        }),
+        saveRetainedResources: vi.fn(async () => {
+          order.push('kept');
+        }),
+        purgeDeletedStateHistory: vi.fn(async () => {
+          order.push('purge');
+        }),
+      } as unknown as S3StateBackend,
+      lockManager: {
+        acquireLock: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn(async () => {
+          order.push('release');
+        }),
+      } as unknown as LockManager,
+    };
+    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), ctx);
+    expect(result.stateDeleted).toBe(true);
+    expect(mockDeleteState.mock.calls).toEqual([['TestStack', REGION]]);
+    expect(order).toEqual(purged ? ['kept', 'purge', 'release'] : ['kept', 'release']);
+  });
+
+  it('the deferred tail purges after the kept write and before the lock is released', async () => {
+    const order: string[] = [];
+    const tails: Array<Promise<void>> = [];
+    const base = makeCtx();
+    await runDestroyForStack('TestStack', makeState({ R: res() }), {
+      ...base,
+      purgeStateHistory: true,
+      deferRegistryTail: (released: Promise<void>) => tails.push(released),
+      stateBackend: {
+        ...(base.stateBackend as object),
+        loadRetainedRecord: vi.fn().mockResolvedValue(null),
+        ensureRetainedTombstone: vi.fn(async () => {
+          order.push('kept');
+        }),
+        purgeDeletedStateHistory: vi.fn(async () => {
+          order.push('purge');
+        }),
+      } as unknown as S3StateBackend,
+      lockManager: {
+        acquireLock: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn(async () => {
+          order.push('release');
+        }),
+      } as unknown as LockManager,
+    });
+    await Promise.all(tails);
+    expect(order).toEqual(['kept', 'purge', 'release']);
+  });
+
   // The fast path deletes state.json with no confirmation and no delete loop.
   it('takes the main path, not the empty-stack fast path, for a resource-less record', async () => {
     mockLoadJournal.mockResolvedValue(journalOf([structuredClone(orphanOp)]));

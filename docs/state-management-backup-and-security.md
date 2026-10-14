@@ -24,6 +24,11 @@ Every save of `state.json` leaves the previous one in the bucket as an earlier
 object version. Restoring means downloading one of those versions and
 uploading it as the current object.
 
+`cdkd state destroy` is the exception. It deletes those earlier versions along
+with the record (see [What cdkd purges](#what-cdkd-purges)), so a record it
+removed cannot be restored this way, unless a warning said earlier versions
+were kept or replicated. `cdkd destroy` and `cdkd state orphan` keep them.
+
 ::: steps
 1. List the versions of the record
 
@@ -194,6 +199,7 @@ for.
 | `deployments/` event streams | Event text, which cdkd treats as sensitive |
 | `cdkd-bootstrap/{region}.json` | Bucket and repository names; no secret |
 | `lock.json` | The lock holder; no secret |
+| `state.json` | Every resource's recorded properties and attributes |
 
 Each object is purged by the commands that delete it:
 
@@ -208,13 +214,25 @@ Each object is purged by the commands that delete it:
 - `cdkd-bootstrap/{region}.json`: `cdkd bootstrap --destroy`.
 - `lock.json`: every lock release, a takeover of an expired lock, and
   `cdkd force-unlock`.
+- `state.json`: `cdkd state destroy`, the one deleting command that purges
+  it (`cdkd scrub` purges it too, after rewriting it). It purges the stack's
+  own record and its nested stacks' records, after it deletes them and writes
+  the stack's kept-resource record. It also purges the legacy
+  `{prefix}/{stackName}/state.json` key, unless that key's body names another
+  region, or another region of the stack still has `state.json` versions,
+  current or earlier. That region may have written the legacy history, so
+  cdkd keeps it. cdkd also keeps the history when the record's absence could
+  not be confirmed, or the stack's other regions could not be listed. In each
+  case a warning says so.
 
 ### What cdkd does not purge
 
-cdkd keeps the earlier versions of `state.json`, because they are how you
-[restore a record](#restore-an-earlier-version-of-a-record). It also keeps the
-earlier versions of the exports index, `_index/{region}/exports.json`. Only
-[`cdkd scrub`](cli-scrub.md) purges those two.
+Every command except `cdkd state destroy` and `cdkd scrub` keeps the earlier
+versions of `state.json`, because they are how you
+[restore a record](#restore-an-earlier-version-of-a-record). That includes
+`cdkd destroy`, `cdkd state orphan` and `cdkd rollback`. cdkd also keeps the
+earlier versions of the exports index, `_index/{region}/exports.json`.
+[`cdkd scrub`](cli-scrub.md) is the one command that purges both.
 
 ### If the two version actions are missing
 

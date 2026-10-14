@@ -638,6 +638,9 @@ export class NestedStackProvider implements ResourceProvider {
         // deploy removes stays on the deploy-side warn-and-drop, since
         // CloudFormation ignores delete failures in an update's cleanup phase.
         ...(deleteContext?.stackDestroy === true && { stackDestroy: true }),
+        // go-to-k/cdkd#2346: only `cdkd state destroy` sets it, so the child's
+        // earlier record versions go with the parent's on that path alone.
+        ...(ctx.destroyOptions?.purgeStateHistory === true && { purgeStateHistory: true }),
         ...(childNoEchoReresolver !== undefined && { noEchoReresolver: childNoEchoReresolver }),
         // `--skip-final-snapshot` reaches a whole-nested-stack removal from
         // BOTH directions: `cdkd destroy` / `state destroy` thread it via

@@ -260,6 +260,15 @@ export interface DestroyRunnerContext {
   stackDestroy?: boolean;
 
   /**
+   * go-to-k/cdkd#2346: when the record is deleted, also purge its earlier
+   * `state.json` versions (`S3StateBackend.purgeDeletedStateHistory`, after
+   * the kept-resource record is written). Set by `cdkd state destroy` only, and
+   * forwarded to its cascading nested children through
+   * `destroyOptions.purgeStateHistory`; `cdkd destroy` keeps the history.
+   */
+  purgeStateHistory?: boolean;
+
+  /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
    * `cdkd destroy` exposes the same `--resource-warn-after` UX as
    * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
@@ -332,6 +341,22 @@ export interface DestroyRunnerContext {
    * `cdkd state destroy` holds no template and leaves it unset.
    */
   noEchoReresolver?: TemplateNoEchoReresolver;
+}
+
+/**
+ * go-to-k/cdkd#2346: purge the deleted record's earlier `state.json` versions
+ * when the caller opted in ({@link DestroyRunnerContext.purgeStateHistory}).
+ * Both of the runner's record deletes call it AFTER the kept-resource record
+ * is written and before the lock is released. Never throws.
+ */
+async function purgeStateHistoryIfOptedIn(
+  ctx: DestroyRunnerContext,
+  stackName: string,
+  region: string
+): Promise<void> {
+  if (ctx.purgeStateHistory === true) {
+    await ctx.stateBackend.purgeDeletedStateHistory(stackName, region);
+  }
 }
 
 /**
@@ -949,7 +974,9 @@ export async function runDestroyForStack(
       // Kept nothing: the tombstone (go-to-k/cdkd#4705 review D-1), and the
       // marker's release -- one round trip, concurrently (review P3).
       await Promise.all([
-        recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger),
+        recordRetainedForReadoption(ctx.stateBackend, stackName, regionForState, [], logger).then(
+          () => purgeStateHistoryIfOptedIn(ctx, stackName, regionForState)
+        ),
         releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger),
       ]);
     } finally {
@@ -2529,6 +2556,9 @@ export async function runDestroyForStack(
       // stack's lock is held until they settle (`holdUntil` below) while the
       // command moves on, so they cost no round trip per stack. The exports
       // index is still awaited here.
+      // go-to-k/cdkd#2346: the history purge (`cdkd state destroy` only)
+      // follows the kept write, so the generated-name guard's earlier-record
+      // source is gone only once `retained.json` replaces it.
       const writeKept = (): Promise<void> =>
         recordRetainedForReadoption(
           ctx.stateBackend,
@@ -2537,7 +2567,7 @@ export async function runDestroyForStack(
           retainedForReadoption,
           logger,
           retainedEarlier
-        );
+        ).then(() => purgeStateHistoryIfOptedIn(ctx, stackName, regionForState));
       const releaseMarker = (): Promise<void> =>
         releaseRegistryMarkerAfterDestroy(ctx, stackName, regionForState, logger);
       if (ctx.deferRegistryTail !== undefined) {

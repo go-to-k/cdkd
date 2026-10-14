@@ -299,9 +299,12 @@ The closing `Done: scrubbed ...` line does not cover the following cases.
   already clean, so its earlier versions are kept as recovery history. This is
   the situation after a current cdkd has redeployed a stack that an older cdkd
   wrote. Run `cdkd scrub MyStack --purge-history`.
-- **A stack with no current state file.** A stack that was destroyed, removed
-  from state with `cdkd state orphan`, or removed from the app is not examined, with or without
-  `--purge-history`. Use the `aws s3api` commands below.
+- **A stack with no current state file.** A stack that was destroyed with
+  `cdkd destroy`, removed from state with `cdkd state orphan`, or removed from
+  the app is not examined, with or without `--purge-history`. Use the
+  `aws s3api` commands below. A `cdkd state destroy` from a release that
+  purges record history already deleted its record's earlier versions, unless
+  it warned that it could not. An older release left them.
 - **A stack scrub refused.** Its versions are never deleted. Fix what the
   refusal names and run scrub again.
 - **A purge that failed.** Deleting versions needs `s3:ListBucketVersions` and

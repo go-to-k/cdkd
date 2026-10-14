@@ -1063,6 +1063,13 @@ assert_eq "the handler's Delete received the real rotated token (digest in ${MAR
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after the destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 pass "the state file is gone after the destroy"
+# go-to-k/cdkd#2346 NEGATIVE CONTROL: `cdkd destroy` keeps the record's
+# earlier versions (the recovery path); only `cdkd state destroy` purges them.
+PHASE8_STATE_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${STATE_KEY}" noncurrent)" \
+  || fail "could not count state.json's noncurrent versions after cdkd destroy"
+[ "${PHASE8_STATE_NONCURRENT}" -ge 1 ] \
+  || fail "cdkd destroy purged state.json's earlier versions (go-to-k/cdkd#2346: only the template-less state-destroy command may)"
+pass "cdkd destroy keeps state.json's earlier versions (${PHASE8_STATE_NONCURRENT} noncurrent)"
 assert_gone "the topic still exists after the destroy" \
   aws sns get-topic-attributes --region "${REGION}" --topic-arn "${TOPIC_ARN_2}"
 pass "the topic is gone after the destroy"
@@ -1111,10 +1118,33 @@ pass "the template-less skipped delete never reached the handler"
 # the marker it never wrote), then the state destroy completes.
 run_cdkd ok "state orphan --resource ${PARAM_CR_ID} after the template-less destroy" "${LOCAL_DIST}" state orphan "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --resource "${PARAM_CR_ID}" --yes
+# go-to-k/cdkd#2346: the completing state destroy below purges state.json's
+# earlier versions, so Phase 9's stack-prefix scan can no longer read them:
+# scan them HERE, while they exist. The saves the destroy itself writes are
+# purged before any scan can read them: that window is deliberately unscanned,
+# and the swept assertion below proves none of it stays readable.
+assert_no_tokens_in_versions "${STATE_KEY}" "state.json (before the template-less destroy purges it)" own
+# The premise of the purge arm: there IS history to purge (the pre-migration
+# v10 bodies, which carry the token by design, among it).
+PRE_PURGE_STATE_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${STATE_KEY}" noncurrent)" \
+  || fail "could not count state.json's noncurrent versions before the template-less destroy"
+[ "${PRE_PURGE_STATE_NONCURRENT}" -ge 2 ] \
+  || fail "premise: state.json has ${PRE_PURGE_STATE_NONCURRENT} noncurrent version(s) before the template-less destroy, expected >= 2"
+pass "premise: state.json has ${PRE_PURGE_STATE_NONCURRENT} noncurrent versions before the template-less destroy"
 run_state_destroy_rc 0 "v11 template-less destroy"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 pass "the state file is gone"
+# go-to-k/cdkd#2346 sites 1-3: cdkd state destroy purged every earlier version
+# (bodies and old delete markers) and kept only its own current delete marker.
+s3_assert_key_versions_swept "${STATE_BUCKET}" "${STATE_KEY}" noncurrent \
+  "the template-less destroy purges state.json's earlier versions (go-to-k/cdkd#2346)"
+ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
+assert_eq "after the template-less destroy, state.json keeps exactly its current delete marker" \
+  "$(s3_count_key_versions "${STATE_BUCKET}" "${STATE_KEY}" all || echo '<list failed>')" "1"
+# No sibling-key over-reach control here: no key this fixture owns is proven
+# to hold a noncurrent version at this point, so a count would certify nothing.
+# Key scoping is the shared helper's exact-key filter, fenced by its unit tests.
 for param in "${TOKEN_PARAM_NAME}" "${SHORT_PARAM_NAME}" "${PLAIN_PARAM_NAME}"; do
   assert_gone "SSM parameter ${param} still exists after destroy" \
     aws ssm get-parameter --region "${REGION}" --name "${param}"
@@ -1160,8 +1190,8 @@ ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 # THE EXECUTED-ASSERTION COUNT, an exact literal maintained by hand: every
 # assertion on the success path runs once, so any other count means a block
 # was skipped (or one was added without updating this line).
-if [ "${ASSERTIONS_RUN:-0}" -ne 160 ]; then
-  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 160 — a block was skipped," >&2
+if [ "${ASSERTIONS_RUN:-0}" -ne 165 ]; then
+  echo "FAIL: ${ASSERTIONS_RUN:-0} assertions executed, expected exactly 165 — a block was skipped," >&2
   echo "      so this run proves less than it claims." >&2
   exit 1
 fi

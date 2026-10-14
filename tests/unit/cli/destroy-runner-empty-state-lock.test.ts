@@ -149,6 +149,24 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(h.order).toEqual(['acquire', 'deleteState', 'release']);
   });
 
+  // go-to-k/cdkd#2346: the fast path purges too, after the tombstone write and
+  // before the lock is released.
+  it('purges the history after the kept write and before the release when ctx.purgeStateHistory is set', async () => {
+    const h = makeCtx({ acquired: true, recheck: null });
+    const backend = h.ctx.stateBackend as unknown as Record<string, unknown>;
+    backend['ensureRetainedTombstone'] = vi.fn(async () => {
+      h.order.push('kept');
+    });
+    backend['purgeDeletedStateHistory'] = vi.fn(async () => {
+      h.order.push('purge');
+    });
+
+    await runDestroyForStack('TestStack', emptyState(), { ...h.ctx, purgeStateHistory: true });
+
+    expect(h.deleteState.mock.calls).toEqual([['TestStack', REGION]]);
+    expect(h.order).toEqual(['acquire', 'deleteState', 'kept', 'purge', 'release']);
+  });
+
   it('refuses when the lock is held, and deletes nothing', async () => {
     const h = makeCtx({ acquired: false });
     const before = process.listeners('SIGINT');

@@ -3297,6 +3297,9 @@ async function stateDestroyCommand(
                 destroyOptions: {
                   ...(options.profile && { profile: options.profile }),
                   statePrefix: options.statePrefix,
+                  // go-to-k/cdkd#2346: a cascading nested child purges its
+                  // earlier record versions too (see `purgeStateHistory` below).
+                  purgeStateHistory: true,
                   ...(options.removeProtection === true && { removeProtection: true }),
                   ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
                   ...(options.resourceWarnAfter?.globalMs !== undefined && {
@@ -3339,6 +3342,11 @@ async function stateDestroyCommand(
                   resolveSecretDerivedPrincipals: {},
                   // go-to-k/cdkd#2115: a whole-stack teardown (see destroy.ts).
                   stackDestroy: true,
+                  // go-to-k/cdkd#2346: the explicit removal of the record, so its
+                  // earlier `state.json` versions -- readable bodies of every
+                  // property it recorded -- go with it. The maintainer's
+                  // decision: this command only; `cdkd destroy` keeps them.
+                  purgeStateHistory: true,
                   // go-to-k/cdkd#4705: refuse when another state prefix records the stack.
                   crossPrefixCheck,
                   ...(deferRegistryTail !== undefined && { deferRegistryTail }),

@@ -220,7 +220,8 @@ replaces nothing, and it saves `***`.
 
 > [!WARNING]
 > Rotate any `NoEcho` value a stack held before the upgrade. Earlier object
-> versions of `state.json` still contain it, and cdkd does not purge them.
+> versions of `state.json` still contain it, and cdkd does not purge them
+> unless `cdkd state destroy` removes the record.
 
 Only a `cdkd deploy` masks a record. A command that has no template, such as
 `cdkd state refresh-observed` or `cdkd drift --accept`, saves the record as

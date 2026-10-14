@@ -254,7 +254,8 @@ attempted properties of the FAILED write verbatim, which is where a literal
 password lands when the resource that failed had one. Unlike `state.json`,
 whose noncurrent versions ARE the recovery capability versioning exists for
 and are left alone everywhere except an explicit
-[`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot), the
+[`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot) or
+`cdkd state destroy`, the
 journal is transient by design, so nothing weighs against removing them. Like the sidecar purge above it fails
 soft: without the two version grants the deploy / rollback / destroy still
 succeeds and a warning names them.
@@ -1102,7 +1103,8 @@ where that was recorded.
 
 **Rotate any `NoEcho` value a stack ever held in the clear.** Earlier object
 versions of `state.json` written before the upgrade still contain it, and cdkd
-does not purge them: they are the state's recovery path. Treat the value as
+does not purge them, short of `cdkd state destroy` removing the record: they
+are the state's recovery path. Treat the value as
 exposed to anyone who can read the state bucket's object versions, as
 [`cdkd scrub`](cli-scrub.md) advises for a secret.
 
@@ -2788,8 +2790,11 @@ Two consequences worth knowing:
 
   Still deliberately NOT purged: `state.json` itself and the v1 -> v2 migration
   delete, because those noncurrent versions ARE
-  the state-recovery capability versioning is enabled for. The one exception
-  is an explicit `cdkd scrub`, which purges the history of a `state.json` it
+  the state-recovery capability versioning is enabled for. The two exceptions
+  are `cdkd state destroy`, which purges the history of each record it deletes
+  after the kept-resource record is written (go-to-k/cdkd#2346; the legacy
+  key's only while its body names no other region and no other region of the
+  stack has `state.json` versions, current or earlier), and an explicit `cdkd scrub`, which purges the history of a `state.json` it
   rewrites (and, under `--purge-history`, of every record it examines and does
   not refuse), short of deleting the bucket itself (`cdkd bootstrap --destroy`,
   `cdkd state migrate --remove-legacy`) — see
@@ -2888,9 +2893,11 @@ The journal is the one to note if you are deciding whether this matters to you:
 it is written by an ORDINARY failed or interrupted deploy, not by an opt-in
 feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
 deliberately NOT in this table — its previous versions are the state-recovery
-capability versioning is enabled for, and short of deleting the bucket only an
-explicit `cdkd scrub` purges them (see
+capability versioning is enabled for, and short of deleting the bucket only
+`cdkd state destroy` (for each record it deletes) and an explicit `cdkd scrub`
+purge them (see
 [`cdkd scrub`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot)).
+`cdkd destroy` keeps them.
 
 **The `deployments/**` event store needs the two version actions as well.**
 Every path that deletes from it — the writer's self-bounding prune,

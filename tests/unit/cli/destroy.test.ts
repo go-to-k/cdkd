@@ -763,6 +763,9 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].resolveSecretDerivedPrincipals).toEqual({});
     // go-to-k/cdkd#2115: a top-level destroy is a whole-stack teardown.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].stackDestroy).toBe(true);
+    // go-to-k/cdkd#2346: `cdkd destroy` keeps the record's earlier versions;
+    // only `cdkd state destroy` opts in to purging them.
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2]).not.toHaveProperty('purgeStateHistory');
     // go-to-k/cdkd#4705: a top-level destroy checks the bucket's other state prefixes.
     expect(mockRunDestroyForStack.mock.calls[0]?.[2].crossPrefixCheck?.cache).toBeDefined();
 

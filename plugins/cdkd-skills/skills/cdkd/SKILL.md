@@ -231,6 +231,8 @@ Before `destroy`, `state destroy`, `orphan`, `import`, `export`, `drift --accept
 3. Check retention, snapshots, backups, and downstream consumers.
 4. Obtain explicit user confirmation immediately before execution.
 
+`state destroy` also deletes the earlier S3 versions of each state record it removes, so that record can no longer be restored from the versioned state bucket unless it warns otherwise; `destroy` and `orphan` keep them.
+
 Do not use `--force`, `--yes`, `--purge-events`, or other confirmation-bypassing flags unless the user approved that exact destructive scope.
 
 ## Use cdkd in CI (per-PR environments)

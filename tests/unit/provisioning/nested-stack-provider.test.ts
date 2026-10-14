@@ -822,6 +822,34 @@ describe('NestedStackProvider', () => {
       }
     });
 
+    // go-to-k/cdkd#2346: the record-history purge reaches the child runner
+    // only from the context's destroyOptions, which `cdkd state destroy` alone
+    // sets; `cdkd destroy` and a deploy's removal keep the child's history.
+    it.each([
+      ['no destroyOptions (a deploy-reached removal)', undefined, false],
+      ['destroyOptions without the opt-in (cdkd destroy)', { statePrefix: 'cdkd' }, false],
+      ['destroyOptions.purgeStateHistory (cdkd state destroy)', { purgeStateHistory: true }, true],
+    ])('%s: forwards purgeStateHistory only when set', async (_what, destroyOptions, forwarded) => {
+      const provider = new NestedStackProvider();
+      await withNestedStackContext(
+        { ...makeContext(), ...(destroyOptions !== undefined && { destroyOptions }) },
+        () =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack',
+            undefined,
+            { expectedRegion: 'us-east-1', stackDestroy: true }
+          )
+      );
+      expect(destroyCalls.length).toBe(1);
+      if (forwarded) {
+        expect(destroyCalls[0]!.destroyCtx['purgeStateHistory']).toBe(true);
+      } else {
+        expect(destroyCalls[0]!.destroyCtx).not.toHaveProperty('purgeStateHistory');
+      }
+    });
+
     // go-to-k/cdkd#4682: a `cdkd destroy` holding the parent's template hands
     // the child runner the CHILD's re-resolution source, built from this row's
     // properties and its re-resolved NoEcho values; a deploy's removal (no

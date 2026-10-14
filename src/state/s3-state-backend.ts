@@ -53,7 +53,12 @@ import { UNRENDERABLE } from './lock-contention-message.js';
 // module that reaches `error-handler` / `retryable-errors` /
 // `lock-contention-message` for nothing.
 import { producerRecordKey } from './record-keys.js';
-import { readEarlierStateResources, type EarlierStateRecord } from './earlier-state-versions.js';
+import {
+  keyMayHaveVersions,
+  listVersionedSubdirectories,
+  readEarlierStateResources,
+  type EarlierStateRecord,
+} from './earlier-state-versions.js';
 import { RetainedTimeUnconfirmedError } from './retained-time.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
@@ -198,6 +203,10 @@ const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
 
 const ROLLBACK_JOURNAL_OBJECT_DESCRIPTION =
   'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim';
+
+/** `objectDescription` for a stack's state record (go-to-k/cdkd#2346 sites 1-3). */
+const STATE_RECORD_OBJECT_DESCRIPTION =
+  "the stack's state record, which carries every resource's recorded properties and attributes";
 
 /**
  * S3-based state backend using conditional writes for optimistic locking.
@@ -800,6 +809,13 @@ export class S3StateBackend {
    * Removes both the new key and the legacy key (if present). Legacy removal
    * is region-conditional: a legacy state file with a different `region`
    * field is left alone.
+   *
+   * It leaves the record's EARLIER versions in place, as every caller but
+   * `cdkd state destroy` needs (go-to-k/cdkd#2346: the maintainer's decision
+   * is that `cdkd destroy`, `cdkd state orphan`, rollback, export and the
+   * v1 -> v2 migration tail keep versioning's recovery points). That command
+   * purges them afterwards with {@link purgeDeletedStateHistory}, once the
+   * destroy runner has written the stack's kept-resource record.
    */
   async deleteState(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
@@ -889,6 +905,136 @@ export class S3StateBackend {
       // best-effort and never throws, so it cannot replace the in-flight
       // StateError.
       await this.deleteRollbackJournal(stackName, region);
+    }
+  }
+
+  /**
+   * Purge the earlier versions of a state record {@link deleteState} has
+   * deleted (go-to-k/cdkd#2346 sites 1-3). `cdkd state destroy` only, through
+   * the destroy runner, AFTER the stack's kept-resource record is written: the
+   * generated-name guard reads earlier `state.json` versions only while that
+   * record is missing (`kept-in-history.ts`). A kept-record write that failed
+   * still purges; the next deploy then refuses to take a kept resource back by
+   * name and names `cdkd import`, the safe direction.
+   *
+   * The region-scoped key, unless it has a current body again (a concurrent
+   * deploy re-created the record, or the delete never happened): its history
+   * is then a live record's, and nothing is purged. The `IsLatest` filter
+   * alone would keep that body but take its recovery points.
+   *
+   * The legacy key only when its history can be this region's alone. Its
+   * versions carry no region in the key: a v1 record is migrated to whichever
+   * region next saves it, so another region of the stack may have written
+   * them. It is purged when it has versions at all, its current state is
+   * absent (this delete removed it, or a migration left a delete marker), and
+   * no OTHER region's `state.json` has any version, current or earlier: a
+   * region whose record `cdkd destroy` or `cdkd state orphan` removed keeps
+   * its history for recovery, and the legacy history may be part of it. When
+   * one does, or that cannot be determined, or the legacy body names another
+   * region (whose history may still hold this region's v1 bodies), the
+   * history is kept with a warning. An unreadable probe purges nothing and
+   * warns too: it is a second read, which can fail where the delete's did not.
+   *
+   * One accepted edge: a concurrent deploy migrating the legacy record into
+   * another region between the region scan and the purge can lose the
+   * pre-migration bodies (the legacy body's own delete had the same race
+   * before this purge existed).
+   *
+   * Never throws: the record is already gone, and a purge failure must not
+   * turn a finished destroy into a failed one. The shared helper warns with
+   * the IAM grants on a denial.
+   */
+  async purgeDeletedStateHistory(stackName: string, region: string): Promise<void> {
+    try {
+      await this.ensureClientForBucket();
+      const stateKey = this.getStateKey(stackName, region);
+      // `safeMsg`: the stack name reached here from an S3 listing.
+      const shown = displayStackName(stackName);
+      let recordBack: boolean;
+      try {
+        recordBack = await this.headObject(stateKey);
+      } catch {
+        recordBack = true;
+      }
+      if (recordBack) {
+        this.logger.warn(
+          safeMsg`Kept the earlier versions of the state record for ${shown}: the record exists again, or its absence could not be confirmed, so they may belong to a live record.`
+        );
+        return;
+      }
+      const keys = [stateKey];
+      const legacyKey = this.getLegacyStateKey(stackName);
+      const mayHave = (key: string): Promise<boolean> =>
+        keyMayHaveVersions(this.s3Client, this.config.bucket, () => this.ownerParam(), key);
+      // The cheap question first: no legacy history, no region scan.
+      if (await mayHave(legacyKey)) {
+        const legacyProbe = await this.probeLegacyState(stackName);
+        const keptBecause =
+          legacyProbe.kind === 'unreadable'
+            ? // Warned HERE too: this is a second GetObject, so a transient
+              // failure on it is not the one `deleteState` already reported.
+              `the legacy record could not be read (${legacyProbe.reason})`
+            : legacyProbe.kind !== 'absent'
+              ? 'its current body belongs to another record of the stack'
+              : await this.otherRegionHistoryState(stackName, region, mayHave);
+        if (keptBecause === 'none') {
+          keys.push(legacyKey);
+        } else {
+          const why =
+            keptBecause === 'exists'
+              ? "another region of the stack still has state record versions, current or earlier, and the legacy versions may be that region's"
+              : keptBecause === 'unknown'
+                ? "could not list the stack's other regions to confirm none of them still owns that history"
+                : keptBecause;
+          this.logger.warn(
+            safeMsg`Kept the earlier versions of the legacy state record for ${shown}: ${why}. cdkd state destroy purges them only once no other region of the stack has state record versions and the legacy record can be read; otherwise delete them by hand.`
+          );
+        }
+      }
+      await this.purgeNoncurrentVersions(keys, {
+        objectDescription: STATE_RECORD_OBJECT_DESCRIPTION,
+      });
+    } catch (error) {
+      this.logger.warn(
+        safeMsg`Could not purge the earlier versions of the state record for ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}. They remain readable via GetObject with a VersionId.`
+      );
+    }
+  }
+
+  /**
+   * Does any region of `stackName` other than `region` have a `state.json`
+   * with any version or delete marker under this prefix? Regions are found by
+   * a version listing, so one with no current object is still seen.
+   * `'unknown'` when the listing failed (logged at debug); `mayHave` itself
+   * answers "yes" on a failure, so both err toward keeping the legacy history.
+   */
+  private async otherRegionHistoryState(
+    stackName: string,
+    region: string,
+    mayHave: (key: string) => Promise<boolean>
+  ): Promise<'none' | 'exists' | 'unknown'> {
+    const stackPrefix = `${this.config.prefix}/${stackName}/`;
+    try {
+      // A VERSION listing: a region whose keys are all behind delete markers
+      // (a removed record whose history is kept) has no current object, so an
+      // ordinary listing would never name it (go-to-k/cdkd#2346 review M3).
+      const regions = (
+        await listVersionedSubdirectories(
+          this.s3Client,
+          this.config.bucket,
+          () => this.ownerParam(),
+          stackPrefix
+        )
+      ).filter((segment) => segment !== region);
+      for (const other of regions) {
+        if (await mayHave(this.getStateKey(stackName, other))) return 'exists';
+      }
+      return 'none';
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not list the other regions of ${displayStackName(stackName)}: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
+      );
+      return 'unknown';
     }
   }
 
@@ -1673,8 +1819,9 @@ export class S3StateBackend {
    * {@link deleteRollbackJournal}, which deletes through its own path. So does
    * `cdkd scrub` after a PUT rather than a delete: the `state.json` it rewrites
    * (and, under `--purge-history`, every record it examines and does not
-   * refuse) and the exports index of each region it wrote. No other writer
-   * purges `state.json`.
+   * refuse) and the exports index of each region it wrote. The only other
+   * `state.json` purge is {@link purgeDeletedStateHistory}, which `cdkd state
+   * destroy` alone runs (go-to-k/cdkd#2346).
    *
    * It reaches only the keys it is given. A key already behind a delete marker
    * is absent from an ordinary listing, so a caller that empties a whole
@@ -2191,7 +2338,7 @@ export class S3StateBackend {
    *
    * Unlike `state.json` — whose noncurrent versions ARE the state-recovery
    * capability versioning is enabled FOR, which is why {@link deleteState}
-   * deliberately does NOT purge — the journal is TRANSIENT by design: it
+   * keeps them and only `cdkd state destroy` purges them — the journal is TRANSIENT by design: it
    * exists only between a failed / interrupted deploy and its `cdkd
    * rollback`. There is no recovery capability to weigh against the purge.
    *

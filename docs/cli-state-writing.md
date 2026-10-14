@@ -158,6 +158,17 @@ resource from the record does not help.
 is [`cdkd destroy`](cli-destroy.md) for a stack whose CDK app you no longer
 have: it takes the list of resources from the record.
 
+Unlike `cdkd destroy`, it also deletes the record's earlier object versions
+once the record is gone. On the versioned state bucket those versions keep
+every property and attribute the record held, readable by version id. This
+needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`. Without them the
+destroy still succeeds and a warning names both actions. A record removed this
+way cannot be
+[restored from an earlier version](state-management-backup-and-security.md#restore-an-earlier-version-of-a-record),
+unless a warning said earlier versions were kept or replicated. A run
+interrupted after the record is deleted can leave the earlier versions without
+a warning; delete them by hand with `aws s3api delete-object --version-id`.
+
 Like `cdkd destroy`, it refuses when another `--state-prefix` of the bucket
 records the same stack and region. See
 [The same stack name under another state prefix](cli-destroy.md#the-same-stack-name-under-another-state-prefix).

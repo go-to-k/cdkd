@@ -79,7 +79,7 @@ one feature each:
 
 | Object | What it holds | When it goes away |
 | --- | --- | --- |
-| `state.json` | The stack's resources and outputs | The stack is destroyed or orphaned |
+| `state.json` | The stack's resources and outputs | The stack is destroyed or orphaned; its [earlier versions](state-management-backup-and-security.md#what-cdkd-purges) go too only with `cdkd state destroy` |
 | `lock.json` | Who is working on the stack | The command releases the [lock](state-management-locking.md) |
 | `rollback-journal.json` | What a failed deploy completed | The next successful deploy, a clean rollback, or a destroy |
 | `create-tokens.json` | Tokens for retrying an interrupted create | Deleted with `state.json` |

@@ -117,6 +117,12 @@ export interface NestedStackProviderContext {
     removeProtection?: boolean;
     skipFinalSnapshot?: boolean;
     profile?: string;
+    /**
+     * go-to-k/cdkd#2346: `cdkd state destroy` only — a cascading child's
+     * record delete purges its earlier `state.json` versions too, as the
+     * parent's does (`DestroyRunnerContext.purgeStateHistory`).
+     */
+    purgeStateHistory?: boolean;
   };
 
   /**
