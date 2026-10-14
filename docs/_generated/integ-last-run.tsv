@@ -92,9 +92,9 @@ dlm-lifecycle-policy	2026-10-08T06:25:38Z	PASS	110	verify.sh	PR #4697 (#4687 rep
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-07T20:26:24Z	PASS	5214	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-14T02:37:11Z	PASS	371	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
+drift-revert	2026-10-14T05:43:41Z	PASS	336	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
 drift-revert-arrays	2026-10-11T09:33:22Z	PASS	221	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-drift-revert-vpc	2026-10-14T02:37:11Z	PASS	376	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
+drift-revert-vpc	2026-10-14T05:43:41Z	PASS	406	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-14T02:37:11Z	PASS	250	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -135,7 +135,7 @@ eventbridge-pipes	2026-10-11T09:33:22Z	PASS	171	verify.sh	PR #4720 (#4705) final
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-14T02:37:11Z	PASS	246	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
+export	2026-10-14T05:43:41Z	PASS	241	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
 export-nested-stack	2026-10-13T14:03:03Z	PASS	190	verify.sh	rc ok, orph clean, own state bucket; PR #4864 06b838511
 fallback-recreate-children	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 fifo-sqs-event-source	2026-10-11T09:33:22Z	PASS	116	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -146,7 +146,7 @@ fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined r
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
 getatt-fallback-guard	2026-10-03T05:59:55Z	PASS	185	verify.sh	rc ok, orph clean (#4497)
-getstackoutput-crossregion	2026-10-14T02:37:11Z	PASS	311	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-region/version re-resolve; pre-fix arm red at 5a (literal reference sent)
+getstackoutput-crossregion	2026-10-14T05:43:41Z	PASS	345	verify.sh	rc ok, orph clean; PR #4888 c646ac434 destroy resolves a recorded-region secret principal; pre-fix arm red at 7b (destroy exited 2)
 globaltable-fix-forward-orphan	2026-10-11T15:56:32Z	PASS	200	verify.sh	rc ok, orph clean; pre-fix arm red at step 2 (journal lacks TableId)
 glue-securityconfig-replace	2026-10-07T13:48:36Z	PASS	75	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 glue-update-hardening	2026-10-13T11:42:44Z	PASS	316	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
@@ -186,7 +186,7 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-13T17:20:45Z	PASS	135	verify.sh	rc ok, orph clean; PR #4872 2b650330c call-log gate: same op set before/after, steady state identical; diffs only AWS waiter/retry counts
+lambda	2026-10-14T05:43:41Z	PASS	140	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -287,7 +287,7 @@ recreate-via-cc-api	2026-10-13T11:42:44Z	PASS	125	verify.sh	PR #4862 (#2007) 594
 recreate-via-sdk-provider	2026-10-13T11:42:44Z	PASS	95	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-14T02:37:11Z	PASS	2135	verify.sh	rc ok, orph clean; PR #4878 c375c60e3 recorded-reference pinning
+remove-protection	2026-10-14T05:43:41Z	PASS	2119	verify.sh	rc ok, orph clean; PR #4888 c646ac434 broad set for the destroy-runner change
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
