@@ -46,8 +46,10 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
@@ -86,6 +88,31 @@ const PRINCIPAL_NAMES = 'group / role / user names';
  * destroy then detaches it from every principal in the account).
  */
 const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
+
+const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
+
+/**
+ * A CUSTOMER-managed policy ARN, the physical id this provider records:
+ * `arn:<partition>:iam::<12-digit account>:policy/<path><name>`, the path `/`
+ * or `/…/` of printable ASCII, the name 1-128 of `A-Z a-z 0-9 + = , . @ _ -`
+ * (IAM's `PolicyName` pattern). Captures the partition-and-account prefix
+ * and the name. An AWS-managed ARN (account `aws`) never matches.
+ */
+const CUSTOMER_POLICY_ARN_RE =
+  /^(arn:aws[a-z0-9-]*:iam::\d{12}):policy\/(?:[!-~]{0,510}\/)?([\w+=,.@-]{1,128})$/;
+
+/**
+ * go-to-k/cdkd#4606 / #4655: a managed policy's identity token is its
+ * `PolicyId` (`ANPA…`). IAM assigns it at `CreatePolicy` and never changes
+ * it; one deleted and re-created under the same name gets another (IAM User
+ * Guide, "IAM identifiers" → "Unique identifiers"; the
+ * `iam-profile-policy-fix-forward-orphan` fixture measures the re-create).
+ * The attach calls a CREATE makes afterwards do not touch it. `undefined` for
+ * a missing or empty one.
+ */
+function policyIdentityToken(id: string | undefined): string | undefined {
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
 
 /**
  * AWS IAM Managed Policy Provider
@@ -203,6 +230,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: the ARN CreatePolicy returned (the id `delete()` takes),
     // cleared when the partial-create cleanup deleted the policy.
     let leftBehindArn: string | undefined;
+    // go-to-k/cdkd#4606: the PolicyId CreatePolicy answered with, carried on
+    // the mark so the journal needs no read of a policy whose failure may fail
+    // that read too.
+    let createdPolicyIdentity: string | undefined;
     try {
       const createParams: {
         PolicyName: string;
@@ -237,6 +268,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         );
       }
       leftBehindArn = policyArn;
+      createdPolicyIdentity = policyIdentityToken(response.Policy?.PolicyId);
       log.debug(`Created IAM managed policy: ${v(policyArn)}`);
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
@@ -285,9 +317,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
+      // The mark carries the PolicyId (go-to-k/cdkd#4606), which a later
+      // settle compares before deleting the policy by ARN.
       const markLeftBehind = <E>(e: E): E =>
         leftBehindArn !== undefined
-          ? markCreatedBeforeFailure(e, logicalId, resourceType, leftBehindArn)
+          ? markCreatedBeforeFailure(
+              e,
+              logicalId,
+              resourceType,
+              leftBehindArn,
+              createdPolicyIdentity
+            )
           : e;
       if (error instanceof CdkdError) {
         markLeftBehind(error);
@@ -646,15 +686,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
-          const clientRegion = await this.iamClient.config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            physicalId
-          );
-          this.logger.debug(mask(`Managed policy ${physicalId} does not exist, skipping deletion`));
+          await this.goneOnDelete(logicalId, physicalId, resourceType, context, mask);
           return;
         }
         throw error;
@@ -675,6 +707,12 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully deleted IAM managed policy ${logicalId}`);
     } catch (error) {
+      // Read back above but gone by `DeletePolicy` (a concurrent delete): the
+      // same not-found arm as the read's.
+      if (error instanceof NoSuchEntityException) {
+        await this.goneOnDelete(logicalId, physicalId, resourceType, context, mask);
+        return;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
         mask,
@@ -688,6 +726,32 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             cause
           )
       );
+    }
+  }
+
+  /**
+   * The not-found arm of `delete`, after the region check. A journaled
+   * failed-CREATE orphan already gone settles with exit 0 (go-to-k/cdkd#4606),
+   * so it is said once at info; the ARN is interpolated verbatim for the
+   * caller's printing bag to mask.
+   */
+  private async goneOnDelete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    mask: MaskerFn
+  ): Promise<void> {
+    const clientRegion = await this.iamClient.config.region();
+    assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        mask(
+          safeMsg`  IAM managed policy ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+        )
+      );
+    } else {
+      this.logger.debug(mask(`Managed policy ${physicalId} does not exist, skipping deletion`));
     }
   }
 
@@ -863,6 +927,103 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     // DescribeStackResources or the template's physical-name property; a managed
     // policy reaching here needs an explicit `--resource` override.
     return null;
+  }
+
+  // ── identity (go-to-k/cdkd#4606) ──────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the managed policy a failed CREATE journaled is
+   * the one the record under the same logical id holds (a fix-forward that
+   * created a new one there under another name).
+   *
+   * Only `AWS::IAM::ManagedPolicy`; both ids must be customer-managed policy
+   * ARNs (the physical id this provider records) of one partition and
+   * account, else `'unknown'`. Equal ARNs are `'same'` without a read:
+   * whatever holds the ARN now is the record's, and deleting by it would
+   * delete it. Two whose policy NAMES are equal ignoring case (another case,
+   * or another path) are `'unknown'`: a policy name is unique per account
+   * regardless of case and path, and this check does not decide on IAM's
+   * rules for it. A policy can be neither renamed nor moved. After the region
+   * check the record's policy must read back (else `'unknown'`); the
+   * journaled one is `'same'` when it reads back under the record's
+   * `PolicyId`, `'different'` under another, and `'different'` when IAM
+   * reports it gone: the record's policy answers to its own, other, ARN. Any
+   * other read failure throws, which the caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== MANAGED_POLICY_TYPE) return 'unknown';
+    const journaled = CUSTOMER_POLICY_ARN_RE.exec(journaledPhysicalId);
+    const recorded = CUSTOMER_POLICY_ARN_RE.exec(record.physicalId);
+    if (journaled === null || recorded === null) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaled[1] !== recorded[1]) return 'unknown';
+    if (journaled[2]!.toLowerCase() === recorded[2]!.toLowerCase()) return 'unknown';
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordId = await this.readPolicyIdIfExists(record.physicalId);
+    if (recordId === undefined) return 'unknown';
+    const journaledId = await this.readPolicyIdIfExists(journaledPhysicalId);
+    if (journaledId === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case; kept so the
+    // verdict rests on AWS's answer.
+    return journaledId === recordId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the policy's `PolicyId`
+   * ({@link policyIdentityToken}). One re-created under the ARN answers with
+   * another, so the settle keeps it rather than deleting it as the failed
+   * CREATE's orphan. A failed CREATE's own token comes from its
+   * `CreatePolicy` response, on the failure's mark
+   * (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a customer-managed
+   * policy ARN, or a client in another region than `expectedRegion` (IAM is
+   * global, but the check keeps every identity read on the stack's own
+   * client). `RESOURCE_NOT_FOUND` only on `NoSuchEntityException`; any other
+   * failure, a response naming another policy, and one with no id throw.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== MANAGED_POLICY_TYPE || !CUSTOMER_POLICY_ARN_RE.test(physicalId)) {
+      return undefined;
+    }
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const id = await this.readPolicyIdIfExists(physicalId);
+    return id === undefined ? RESOURCE_NOT_FOUND : id;
+  }
+
+  /**
+   * The policy's `PolicyId` (`GetPolicy`), or `undefined` when IAM answers
+   * `NoSuchEntityException`. Any other failure, a response naming another
+   * policy, and one with no id throw: "could not read" never reads as "gone".
+   */
+  private async readPolicyIdIfExists(policyArn: string): Promise<string | undefined> {
+    let answeredArn: string | undefined;
+    let id: string | undefined;
+    try {
+      const response = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: policyArn }));
+      answeredArn = response.Policy?.Arn;
+      id = response.Policy?.PolicyId;
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) return undefined;
+      throw error;
+    }
+    if (answeredArn !== policyArn) {
+      throw new Error('IAM answered for another managed policy than the one asked for');
+    }
+    const token = policyIdentityToken(id);
+    if (token === undefined) throw new Error('IAM returned no PolicyId');
+    return token;
   }
 
   // ── helpers ───────────────────────────────────────────────────────

@@ -152,8 +152,9 @@ glue-securityconfig-replace	2026-10-07T13:48:36Z	PASS	75	verify.sh	PR #4664 (#46
 glue-update-hardening	2026-10-13T11:42:44Z	PASS	316	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-08T06:25:38Z	PASS	75	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
-iam-managed-policy	2026-10-13T11:42:44Z	PASS	76	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
+iam-managed-policy	2026-10-14T05:57:33Z	PASS	71	verify.sh	rc ok, orph clean
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
+iam-profile-policy-fix-forward-orphan	2026-10-14T05:57:33Z	PASS	135	verify.sh	rc ok, orph clean; own state bucket; pre-fix providers go red at step 2 (#4606)
 iam-propagation-stress	2026-10-11T09:33:22Z	PASS	135	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
 iam-role-fix-forward-orphan	2026-10-13T20:59:29Z	PASS	106	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket; PR #4881 adc9b6fb4

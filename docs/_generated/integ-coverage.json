@@ -4191,6 +4191,7 @@
       "resourceType": "AWS::IAM::Group",
       "integs": [
         "iam-managed-policy",
+        "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "iam-user-group-fix-forward-orphan",
@@ -4200,6 +4201,9 @@
       "signals": {
         "iam-managed-policy": [
           "l2"
+        ],
+        "iam-profile-policy-fix-forward-orphan": [
+          "l1"
         ],
         "iam-recreate-reattach": [
           "l1",
@@ -4227,6 +4231,7 @@
         "emr-instance-configs",
         "emr-instance-fleets",
         "iam-managed-policy",
+        "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
         "import-attribute-readback-misc",
         "propagation-races-2",
@@ -4252,6 +4257,9 @@
           "l1",
           "literal"
         ],
+        "iam-profile-policy-fix-forward-orphan": [
+          "l1"
+        ],
         "iam-recreate-reattach": [
           "l1",
           "literal"
@@ -4271,6 +4279,7 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "iam-managed-policy",
+        "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
         "import-attributes",
@@ -4280,6 +4289,9 @@
       "signals": {
         "iam-managed-policy": [
           "literal"
+        ],
+        "iam-profile-policy-fix-forward-orphan": [
+          "l1"
         ],
         "iam-recreate-reattach": [
           "l1",
@@ -4394,6 +4406,7 @@
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
+        "iam-profile-policy-fix-forward-orphan",
         "iam-propagation-stress",
         "iam-recreate-reattach",
         "iam-role-fix-forward-orphan",
@@ -4564,6 +4577,9 @@
         "iam-oidc-provider": [
           "l2",
           "literal"
+        ],
+        "iam-profile-policy-fix-forward-orphan": [
+          "l1"
         ],
         "iam-propagation-stress": [
           "l2"

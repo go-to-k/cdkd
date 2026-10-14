@@ -1218,6 +1218,11 @@
       "scenarios": []
     },
     {
+      "name": "iam-profile-policy-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "iam-propagation-stress",
       "annotated": true,
       "scenarios": [
@@ -3343,6 +3348,7 @@
     "glue-securityconfig-replace",
     "healthimaging-stateful-update-fallback",
     "iam-managed-policy",
+    "iam-profile-policy-fix-forward-orphan",
     "iam-recreate-reattach",
     "iam-role-fix-forward-orphan",
     "iam-role-policies-drift-clean",
