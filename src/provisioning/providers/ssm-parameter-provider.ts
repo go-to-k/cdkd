@@ -584,7 +584,8 @@ export class SSMParameterProvider implements ResourceProvider {
         putParams.Policies = policies;
       } else if (
         context?.desiredFromAwsReadback === true &&
-        !['[]', undefined].includes(ssmPoliciesParameter(previousProperties['Policies']))
+        !['[]', undefined].includes(ssmPoliciesParameter(previousProperties['Policies'])) &&
+        templateDeclaresNoPolicies(context.recordedProperties)
       ) {
         // go-to-k/cdkd#4884: PutParameter keeps a parameter's policies until it
         // is sent new ones or an empty one, so omitting `Policies` would leave
@@ -592,6 +593,10 @@ export class SSMParameterProvider implements ResourceProvider {
         // success. The AWS-documented removal is the empty policy `[{}]`. A
         // deploy keeps omitting it: CloudFormation's update passes an absent
         // template `Policies` through as none, which keeps the policies.
+        // Only when the TEMPLATE declares no policies too: `readCurrentState`
+        // also writes the `[]` placeholder when DescribeParameters fails, so a
+        // baseline captured that way must not delete a policy the template
+        // declares.
         putParams.Policies = SSM_CLEAR_POLICIES;
       }
       if (properties['DataType'] !== undefined) {
@@ -824,7 +829,9 @@ export class SSMParameterProvider implements ResourceProvider {
     // Always-emit guard: if DescribeParameters failed entirely, surface
     // an empty Policies placeholder so a console-side ADD on a previously-
     // un-policy'd parameter still surfaces as drift on the v3
-    // observedProperties baseline.
+    // observedProperties baseline. The placeholder cannot be told from a read
+    // of no policies, so `update` clears live policies on a revert only when
+    // the template declares none too (go-to-k/cdkd#4884).
     if (!policiesEmitted) result['Policies'] = [];
 
     // Tags via ListTagsForResource (best-effort; missing tag permission is
@@ -1064,6 +1071,25 @@ export class SSMParameterProvider implements ResourceProvider {
  * Manager user guide spells it ("Assigning parameter policies").
  */
 export const SSM_CLEAR_POLICIES = '[{}]';
+
+/**
+ * Whether the record's template side declares `Policies` and declares none
+ * (`'[]'`, `''`, `[]`). An undeclared `Policies` captured empty is never
+ * compared by `cdkd drift`, so it never reaches a revert.
+ */
+function templateDeclaresNoPolicies(recorded: Record<string, unknown> | undefined): boolean {
+  if (recorded === undefined || !Object.hasOwn(recorded, 'Policies')) return false;
+  const declared = recorded['Policies'];
+  if (Array.isArray(declared)) return declared.length === 0;
+  if (typeof declared !== 'string') return false;
+  if (declared.trim() === '') return true;
+  try {
+    const parsed: unknown = JSON.parse(declared);
+    return Array.isArray(parsed) && parsed.length === 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * `PutParameter`'s `Policies`, which is a JSON STRING (CloudFormation's

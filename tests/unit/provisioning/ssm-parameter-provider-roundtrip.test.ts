@@ -251,10 +251,15 @@ describe('a revert to no policies clears the live ones (go-to-k/cdkd#4884)', () 
     AllowedPattern: '',
   };
 
+  /** The template side of the record: it declares `Policies: '[]'`. */
+  const DECLARED_EMPTY = { ...base, Policies: '[]' };
+
   async function sentPolicies(
     desired: Record<string, unknown>,
     previous: Record<string, unknown>,
-    desiredFromAwsReadback: boolean | undefined
+    desiredFromAwsReadback: boolean | undefined,
+    // `null`: no recordedProperties at all (an explicit undefined takes the default).
+    recordedProperties: Record<string, unknown> | null = DECLARED_EMPTY
   ): Promise<string | undefined> {
     mockSend.mockResolvedValue({});
     const provider = new SSMParameterProvider();
@@ -264,7 +269,12 @@ describe('a revert to no policies clears the live ones (go-to-k/cdkd#4884)', () 
       RESOURCE_TYPE,
       desired,
       previous,
-      desiredFromAwsReadback === undefined ? undefined : { desiredFromAwsReadback }
+      desiredFromAwsReadback === undefined
+        ? undefined
+        : {
+            desiredFromAwsReadback,
+            ...(recordedProperties !== null && { recordedProperties }),
+          }
     );
     const put = mockSend.mock.calls
       .map((c) => c[0] as unknown)
@@ -279,6 +289,39 @@ describe('a revert to no policies clears the live ones (go-to-k/cdkd#4884)', () 
     expect(
       await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: [expiration] }, true)
     ).toBe('[{}]');
+  });
+
+  it.each([
+    ["'[]'", '[]'],
+    ["''", ''],
+    ['[]', []],
+    ["' [ ] '", ' [ ] '],
+  ])('drift --revert: the template declares Policies %s: the live policy is cleared', async (_l, declared) => {
+    expect(
+      await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: [expiration] }, true, {
+        ...base,
+        Policies: declared,
+      })
+    ).toBe('[{}]');
+  });
+
+  it.each([
+    // The baseline's `[]` is the placeholder of a DescribeParameters failure
+    // at capture, not what the template wants: never delete its policy.
+    ['declares a policy', { ...base, Policies: JSON.stringify([expiration]) }],
+    ['does not declare Policies', { ...base }],
+    ['declares an unparsable string', { ...base, Policies: '[' }],
+    ['declares a non-string, non-list', { ...base, Policies: 7 }],
+    ['is not passed', null],
+  ])('drift --revert: a template that %s keeps the live policy', async (_l, recorded) => {
+    expect(
+      await sentPolicies(
+        { ...base, Policies: [] },
+        { ...base, Policies: [expiration] },
+        true,
+        recorded as Record<string, unknown> | null
+      )
+    ).toBe(undefined);
   });
 
   it.each([

@@ -7347,6 +7347,9 @@ async function runRevert(
                         // the record `stateResource.physicalId` came from.
                         {
                           desiredFromAwsReadback: true,
+                          // go-to-k/cdkd#4884: what the template declares, beside
+                          // the readback baseline.
+                          recordedProperties: stateResource.properties,
                           maskSecrets: createSecretMasker(secrets),
                           expectedRegion: report.region,
                           recordedAttributes: stateResource.attributes,

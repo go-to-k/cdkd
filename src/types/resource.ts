@@ -668,6 +668,16 @@ export interface UpdateContext extends SecretMaskingContext {
   desiredFromAwsReadback?: boolean;
 
   /**
+   * With {@link desiredFromAwsReadback}: the state record's TEMPLATE-side
+   * `properties` (`ResourceState.properties`), set by `cdkd drift --revert`
+   * only. A readback baseline cannot say whether an empty collection was read
+   * or stands in for a read that failed at capture; what the template declares
+   * can (go-to-k/cdkd#4884: an SSM parameter's `Policies` placeholder).
+   * Read-only evidence; absent on every other caller.
+   */
+  recordedProperties?: Record<string, unknown> | undefined;
+
+  /**
    * `true` when the desired properties handed to `update()` come from a cdkd
    * STATE record rather than from the synthesized template — today that is the
    * rollback executor's two REVERT arms (`revert` and `revert-failed-update`),
