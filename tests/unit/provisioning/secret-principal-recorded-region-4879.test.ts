@@ -394,6 +394,33 @@ describe('the IAM deletes thread the incomplete-evidence marker (go-to-k/cdkd#48
     expect(warned).not.toContain('so fix that and re-run');
   });
 
+  it.each(['AWS::IAM::Policy', 'AWS::IAM::UserToGroupAddition'])(
+    '%s recorded in a region whose lookup fails: the skip names the lookup, not the parent',
+    async (type) => {
+      guestResolve.mockRejectedValue(new Error('ResourceNotFoundException'));
+      const result =
+        type === 'AWS::IAM::Policy'
+          ? await new IAMPolicyProvider().delete(
+              'P',
+              'pol',
+              type,
+              { PolicyName: 'pol', PolicyDocument: {}, Roles: [REF] },
+              optIn(recorded({ [REF]: 'us-west-2' }))
+            )
+          : await new IAMUserGroupProvider().delete(
+              'M',
+              'M',
+              type,
+              { GroupName: 'grp', Users: [REF] },
+              optIn(recorded({ [REF]: 'us-west-2' }))
+            );
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      const warned = childWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('so fix that and re-run');
+      expect(warned).not.toContain('destroy it through its top-level stack');
+    }
+  );
+
   it('AWS::IAM::UserToGroupAddition recorded in a region: removes the user that region names', async () => {
     send.mockImplementation((cmd: { constructor: { name: string }; input: Record<string, unknown> }) =>
       Promise.resolve(

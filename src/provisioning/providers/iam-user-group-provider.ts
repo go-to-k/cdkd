@@ -63,6 +63,7 @@ import {
 } from '../iam-policy-targets.js';
 import {
   isResolvableSecretPrincipalList,
+  holdsUnprovenSecretPrincipalToken,
   resolveSecretDerivedPrincipals,
 } from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -2075,7 +2076,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
           ? 'The recorded Users is secret-derived (cdkd keeps the dynamic reference or its mask ' +
             'in state), so do not write the name into state.json' +
             (resolutionAttempted
-              ? optIn?.producerRegionsIncomplete === true
+              ? optIn?.producerRegionsIncomplete === true &&
+                holdsUnprovenSecretPrincipalToken(properties['Users'], optIn.recordedRegions)
                 ? '; this nested stack was destroyed without its parent, so a reference with ' +
                   "no recorded region is not resolved (it may name the parent's region): " +
                   'destroy it through its top-level stack, or'

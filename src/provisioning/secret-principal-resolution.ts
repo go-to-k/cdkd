@@ -326,6 +326,26 @@ export function holdsUnprovenSecretPrincipalRecord(resource: unknown): boolean {
   );
 }
 
+/**
+ * Whether a recorded principal value holds a token
+ * {@link holdsUnprovenSecretPrincipalRecord} counts, given the record's
+ * recorded regions: what an IAM delete's skip names as its cause when the
+ * evidence is incomplete, rather than an access or value failure.
+ */
+export function holdsUnprovenSecretPrincipalToken(
+  value: unknown,
+  recordedRegions: ReadonlyMap<string, string> | undefined
+): boolean {
+  return (
+    Array.isArray(value) &&
+    value.some(
+      (entry) =>
+        typeof entry === 'string' &&
+        dynamicReferenceTokens(entry).some((t) => unprovenRegionLessToken(t, recordedRegions))
+    )
+  );
+}
+
 /** The principal lists of `resource` that {@link isResolvableSecretPrincipalList} accepts. */
 function resolvablePrincipalLists(resource: unknown): string[][] {
   if (typeof resource !== 'object' || resource === null) return [];
