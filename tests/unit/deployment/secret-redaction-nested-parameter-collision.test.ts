@@ -671,6 +671,9 @@ describe('positionByParameterReread refuses what it cannot certify (#4731)', () 
     'a leading-zero index': { 'Fn::Select': ['00', [{ Ref: PARAM_A }]] },
     'a {{resolve: literal': { 'Fn::Select': [0, [{ Ref: PARAM_A }, EXPR_A]] },
     // JavaScript would split on `"null"` and so render the leaf back.
+    // A list reaches `Fn::Split`: JavaScript arrays have no `split`, so the
+    // collision walk, which runs before any resolution, would throw.
+    'a list to split': { 'Fn::Select': [0, { 'Fn::Split': [',', ['a', 'b']] }] },
     'a non-string delimiter': { 'Fn::Select': [0, { 'Fn::Split': [null, { Ref: PARAM_A }] }] },
     // JavaScript would join `[[CONN]]` to `CONN`.
     'an array part in Fn::Join': {
