@@ -45,6 +45,19 @@
 # Pre-fix red line: "deploy failed / value carries {{resolve: / holds the
 # us-east-1 value" (5a, 5e, 6), "drift refused" (5b), "rollback refused" (5c).
 #
+# go-to-k/cdkd#4879 arm (a DESTROY of a secret-derived IAM principal list).
+# `cdkd-gso-4847-iam-*` holds a ROLE name, again different per region; the role
+# the us-west-2 value names is created here, outside any stack.
+# CdkdGsoConsumer4879 (us-east-1) puts an inline policy on it through
+# `Fn::GetStackOutput` (`Region: us-west-2`), so its record holds a region-less
+# `{{resolve:...}}` beside a foreign producer region.
+#   7a. Deploy it; premise: the policy is on the role, the record holds the
+#       reference with recorded region us-west-2.
+#   7b. Destroy it: exit 0, the policy is gone from the role, the state is
+#       gone, and the destroy log never prints the role name.
+# Pre-fix red line: "7b: destroy exited 2" and "7b: the inline policy is still
+# on the role" (the record was skipped as ambiguous).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (account-scoped, e.g. cdkd-state-{accountId})
 #   AWS_REGION   — informational; this test pins explicit per-stack regions
@@ -126,6 +139,15 @@ SUFFIX="$(date +%s)"
 SECRET_MAIN="cdkd-gso-4847-${SUFFIX}"
 SECRET_PRE="cdkd-gso-4847-pre-${SUFFIX}"
 SECRET_ROT="cdkd-gso-4847-rot-${SUFFIX}"
+# go-to-k/cdkd#4879 arm.
+SECRET_IAM="cdkd-gso-4847-iam-${SUFFIX}"
+STACK_4879="CdkdGsoConsumer4879"
+STATE_KEY_4879="cdkd/${STACK_4879}/${CONSUMER_REGION}/state.json"
+LOCK_KEY_4879="cdkd/${STACK_4879}/${CONSUMER_REGION}/lock.json"
+STATE_PREFIX_4879="$(s3_stack_prefix "${STACK_4879}" "${CONSUMER_REGION}")"
+ROLE_4879="cdkd-gso-4879-role-${SUFFIX}"
+POLICY_4879="cdkd-gso-4879-inline"
+CREATED_ROLE_4879=0
 CTX=(-c "gso4847Suffix=${SUFFIX}")
 LOGDIR="$(mktemp -d)"
 
@@ -160,7 +182,16 @@ cleanup() {
   # are `/cleanup`'s.
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${PRE_STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${STACK_4879}" --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
   fi
+  # go-to-k/cdkd#4879: the role is this run's (created below, its name carries
+  # the suffix); a skipped destroy leaves the inline policy on it.
+  if [ "${CREATED_ROLE_4879}" = 1 ]; then
+    aws iam delete-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}" >/dev/null 2>&1 || true
+    aws iam delete-role --role-name "${ROLE_4879}" >/dev/null 2>&1 || true
+  fi
+  aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_4879}" >/dev/null 2>&1 || true
+  aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY_4879}" >/dev/null 2>&1 || true
   for p in "${READER_PARAM_NAME}" "${READER_PRE_PARAM_NAME}" "${FAIL_PARAM_NAME}"; do
     aws ssm delete-parameter --name "${p}" --region "${CONSUMER_REGION}" >/dev/null 2>&1 || true
   done
@@ -180,7 +211,7 @@ cleanup() {
   if [ -n "${V11_TMPDIR}" ] && [ -d "${V11_TMPDIR}" ]; then rm -rf "${V11_TMPDIR}"; fi
   # Noncurrent only: the current objects are what a failed run is debugged
   # from; the final teardown below takes every version.
-  for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}"; do
+  for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${prefix}" noncurrent || true
   done
   if [ "${1:-}" = "final" ]; then rm -rf "${LOGDIR}"; fi
@@ -235,6 +266,16 @@ seed_secret "${PRODUCER_REGION}" "${SECRET_PRE}" "cdkd-gso-4847-pre-a-${SUFFIX}"
 seed_secret "${CONSUMER_REGION}" "${SECRET_PRE}" "cdkd-gso-4847-pre-east-${SUFFIX}"
 seed_secret "${PRODUCER_REGION}" "${SECRET_ROT}" "cdkd-gso-4847-rot-a-${SUFFIX}"
 seed_secret "${CONSUMER_REGION}" "${SECRET_ROT}" "cdkd-gso-4847-rot-east-${SUFFIX}"
+# go-to-k/cdkd#4879: a role name; only the us-west-2 value names a real role.
+aws secretsmanager create-secret --region "${PRODUCER_REGION}" --name "${SECRET_IAM}" \
+  --secret-string "{\"role\":\"${ROLE_4879}\"}" >/dev/null
+aws secretsmanager create-secret --region "${CONSUMER_REGION}" --name "${SECRET_IAM}" \
+  --secret-string "{\"role\":\"cdkd-gso-4879-east-${SUFFIX}\"}" >/dev/null
+CREATED_ROLE_4879=1
+aws iam create-role --role-name "${ROLE_4879}" \
+  --description "cdkd getstackoutput-crossregion #4879 (named through a secret)" \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+  >/dev/null
 
 echo "==> Phase 0: deploy ${PRODUCER_STACK} and ${PRE_STACK} with the v11 binary (@go-to-k/cdkd@${V11_CDKD_VERSION})"
 V11_TMPDIR="$(mktemp -d)"
@@ -501,6 +542,46 @@ grep -q 'cannot confirm the secret still holds the value' "${LOGDIR}/pre-readers
   || fail "6b: no generation warning for QueueRotated"
 echo "    OK: QueueRotated served as recorded, with the generation warning"
 
+# --- Phase 7 (go-to-k/cdkd#4879): destroy a cross-region secret principal ----
+echo "==> Phase 7a: deploy ${STACK_4879} (an inline policy on a role named from the us-west-2 secret)"
+node "${LOCAL_DIST}" deploy "${STACK_4879}" "${CTX[@]}" \
+  --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
+  || fail "7a: the deploy of ${STACK_4879} failed"
+aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}" >/dev/null \
+  || fail "7a: premise: the inline policy is not on the role the us-west-2 value names"
+STATE_4879="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_4879}" -)" || fail "7a: could not read the ${STACK_4879} state"
+ROLES_4879="$(printf '%s' "${STATE_4879}" | jq -r '.resources.Policy4879.properties.Roles[0] // empty')"
+case "${ROLES_4879}" in
+  "{{resolve:secretsmanager:${SECRET_IAM}:"*) ;;
+  *) fail "7a: premise: the record's Roles is not the region-less reference (got '${ROLES_4879}')" ;;
+esac
+REGION_4879="$(printf '%s' "${STATE_4879}" | jq -r --arg t "${ROLES_4879}" '.resources.Policy4879.referenceProvenance[$t].region // empty')"
+[ "${REGION_4879}" = "${PRODUCER_REGION}" ] \
+  || fail "7a: premise: the record's provenance gives the reference region '${REGION_4879}', expected ${PRODUCER_REGION}"
+READS_4879="$(printf '%s' "${STATE_4879}" | jq -r '[.outputReads[]?.sourceRegion] | unique | join(",")')"
+[ "${READS_4879}" = "${PRODUCER_REGION}" ] \
+  || fail "7a: premise: the stack's recorded cross-region reads are '${READS_4879}', expected ${PRODUCER_REGION} (without them the reference is not ambiguous)"
+echo "    OK: policy on the role; the record holds the reference, recorded in ${PRODUCER_REGION}"
+
+echo "==> Phase 7b: destroy ${STACK_4879}"
+DESTROY_4879_RC=0
+node "${LOCAL_DIST}" destroy "${STACK_4879}" --state-bucket "${STATE_BUCKET}" \
+  --region "${CONSUMER_REGION}" --force >"${LOGDIR}/destroy-4879.log" 2>&1 || DESTROY_4879_RC=$?
+if [ "${DESTROY_4879_RC}" -ne 0 ]; then
+  sed 's/^/  /' "${LOGDIR}/destroy-4879.log" >&2
+  fail "7b: destroy exited ${DESTROY_4879_RC} (pre-fix: 2, the record skipped as ambiguous)"
+fi
+assert_gone "7b: the inline policy is still on the role after the destroy" \
+  aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4879}"
+assert_gone "7b: ${STACK_4879} state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_4879}"
+grep -q 'resolved to the principals the secret names NOW' "${LOGDIR}/destroy-4879.log" \
+  || fail "7b: no resolution warning in the destroy log (the policy was not removed by resolving the reference)"
+if grep -qF "${ROLE_4879}" "${LOGDIR}/destroy-4879.log"; then
+  fail "7b: the destroy log prints the secret-derived role name"
+fi
+echo "    OK: destroy exited 0, the policy is gone from the role, no role name printed"
+
 # --- Phase 4: destroy both, assert clean in BOTH regions ---------------
 echo "==> Phase 4a: destroy CONSUMER ${CONSUMER_STACK} (${CONSUMER_REGION})"
 node "${LOCAL_DIST}" destroy "${CONSUMER_STACK}" \
@@ -548,10 +629,16 @@ echo "    OK: producer is gone (AWS resource in ${PRODUCER_REGION} + state)"
 # new marker after the count.
 cleanup final
 trap - EXIT INT TERM
-for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}"; do
+for prefix in "${PRODUCER_STATE_PREFIX}" "${CONSUMER_STATE_PREFIX}" "${PRE_STATE_PREFIX}" "${STATE_PREFIX_4879}"; do
   s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
   s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "getstackoutput-crossregion ${prefix} teardown"
 done
+# After the sweep, so a failure here still leaves the state history swept.
+# go-to-k/cdkd#4879: the role is created outside any stack under a name no
+# stack-prefix sweep matches, so a failed delete must fail the run here.
+if [ "${CREATED_ROLE_4879}" = 1 ]; then
+  assert_gone "the #4879 role ${ROLE_4879} leaked after cleanup" aws iam get-role --role-name "${ROLE_4879}"
+fi
 
 echo ""
 echo "==> getstackoutput-crossregion test passed (cross-region Fn::GetStackOutput resolved correctly + both regions clean)"

@@ -2150,6 +2150,70 @@ describe('cdkd drift resolves a recorded region in that region (go-to-k/cdkd#484
     expect((put!.input as Record<string, unknown>)['Value']).toBe('v1-value');
   });
 
+  it.each([
+    // The template declares `Policies: '[]'`, so the captured-empty baseline
+    // is compared and the out-of-band policy is drift that --revert must clear.
+    ['declares Policies', { Policies: '[]' }, '[{}]'],
+    // Undeclared and captured empty: not compared (`undeclaredEmptyObservedKeys`,
+    // as CloudFormation compares only declared properties), so nothing is
+    // reverted and no PutParameter is sent.
+    ['does not declare Policies', {}, null],
+  ])('--revert of an out-of-band SSM parameter policy when the template %s (go-to-k/cdkd#4884)', async (_label, declared, expected) => {
+    const { SSMParameterProvider } = await import(
+      '../../../src/provisioning/providers/ssm-parameter-provider.js'
+    );
+    const bag = {
+      Name: '/plain',
+      Type: 'String',
+      Value: 'v1-value',
+      Description: 'v1',
+      AllowedPattern: '',
+      Tier: 'Advanced',
+      Policies: [] as unknown[],
+    };
+    const outOfBand = {
+      Type: 'Expiration',
+      Version: '1.0',
+      Attributes: { Timestamp: '2030-01-01T00:00:00.000Z' },
+    };
+    prime(CONSUMER_REGION, 'PutParameterCommand', { Version: 2 });
+    const real = new SSMParameterProvider();
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        {
+          Plain: {
+            physicalId: '/plain',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: {
+              Name: '/plain',
+              Type: 'String',
+              Value: 'v1-value',
+              Tier: 'Advanced',
+              ...declared,
+            },
+            observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+          } as unknown as ResourceState,
+        },
+        []
+      )
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ ...bag, Policies: [outOfBand] }),
+      update: (...args: Parameters<typeof real.update>) => real.update(...args),
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    const put = ssmSends.find((s) => s.command === 'PutParameterCommand');
+    if (expected === null) {
+      expect(put).toBeUndefined();
+      return;
+    }
+    expect((put!.input as Record<string, unknown>)['Policies']).toBe(expected);
+    expect((put!.input as Record<string, unknown>)['Value']).toBe('v1-value');
+  });
+
   it("an invalid recorded region is ignored: today's refusal", async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);

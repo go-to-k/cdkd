@@ -65,3 +65,9 @@ copies left under those bare names. Step 6f (issue
 [#4081](https://github.com/go-to-k/cdkd/issues/4081)) then runs a plain
 `cdkd drift --json` on the same records and requires neither to report a name
 drift, since the live name is the prefixed form of the recorded one.
+
+Steps 3b and 5c (issue [#4884](https://github.com/go-to-k/cdkd/issues/4884))
+cover an Advanced-tier `AWS::SSM::Parameter` that declares `Policies: '[]'`.
+A `NoChangeNotification` policy is attached out of band; step 4 must report the
+parameter as drift, and after `--revert` `describe-parameters` must show no
+policy, since `PutParameter` keeps policies when `Policies` is omitted.

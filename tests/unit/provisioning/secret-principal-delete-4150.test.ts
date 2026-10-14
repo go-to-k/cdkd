@@ -110,11 +110,11 @@ beforeEach(() => {
 });
 
 describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
-  const fake = { resolveDynamicReferences: resolveSpy };
+  const fake = { resolveDynamicReferences: resolveSpy, resolverForRecordedRegion: vi.fn() };
   const make = () => fake;
 
   it('resolves a local reference, keeps plain entries, and masks every resolved name', async () => {
-    const r = await resolveSecretDerivedPrincipals({ Roles: ['plain', REF] }, 'us-east-1', [], make);
+    const r = await resolveSecretDerivedPrincipals({ Roles: ['plain', REF] }, 'us-east-1', [], undefined, make);
     expect(r?.lists).toEqual({ Roles: ['plain', ROLE] });
     expect(r?.mask(`removed from role ${ROLE}`)).not.toContain(ROLE);
     expect(r?.mask(ROLE)).not.toBe(ROLE);
@@ -128,7 +128,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
     ['a non-string entry', { Roles: [7] }, 'us-east-1'],
   ])('%s: undefined, and nothing is resolved', async (_what, values, region) => {
     expect(
-      await resolveSecretDerivedPrincipals(values as Record<string, unknown>, region, [], make)
+      await resolveSecretDerivedPrincipals(values as Record<string, unknown>, region, [], undefined, make)
     ).toBeUndefined();
     expect(resolveSpy).not.toHaveBeenCalled();
   });
@@ -137,7 +137,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
     const foreign =
       '{{resolve:secretsmanager:arn:aws:secretsmanager:eu-west-1:111122223333:secret:sdp:SecretString:role::}}';
     expect(
-      await resolveSecretDerivedPrincipals({ Roles: [foreign] }, 'us-east-1', [], make)
+      await resolveSecretDerivedPrincipals({ Roles: [foreign] }, 'us-east-1', [], undefined, make)
     ).toBeUndefined();
     expect(resolveSpy).not.toHaveBeenCalled();
   });
@@ -146,25 +146,25 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
     // A cross-region import records the producer's region-less spelling; the
     // same name can hold another value in the consumer's region.
     expect(
-      await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', ['us-west-2'], make)
+      await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', ['us-west-2'], undefined, make)
     ).toBeUndefined();
     expect(resolveSpy).not.toHaveBeenCalled();
     // The stack's own region as producer is no evidence against it.
     expect(
-      (await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', ['us-east-1'], make))
+      (await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', ['us-east-1'], undefined, make))
         ?.lists
     ).toEqual({ Roles: [ROLE] });
   });
 
   it('a malformed `{{resolve:` fragment (no whole token) is undefined with no resolver call', async () => {
     expect(
-      await resolveSecretDerivedPrincipals({ Roles: ['{{resolve:secretsmanager:half'] }, 'us-east-1', [], make)
+      await resolveSecretDerivedPrincipals({ Roles: ['{{resolve:secretsmanager:half'] }, 'us-east-1', [], undefined, make)
     ).toBeUndefined();
     expect(resolveSpy).not.toHaveBeenCalled();
   });
 
   it('returns a maskError that masks the whole cause chain, and the names it resolved', async () => {
-    const r = await resolveSecretDerivedPrincipals({ Roles: ['plain', REF] }, 'us-east-1', [], make);
+    const r = await resolveSecretDerivedPrincipals({ Roles: ['plain', REF] }, 'us-east-1', [], undefined, make);
     expect([...(r?.resolvedNames.Roles ?? [])]).toEqual([ROLE]);
     const inner = new Error(`arn:aws:iam::1:role/${ROLE} denied`);
     const outer = new Error(`wrapped ${ROLE}`, { cause: inner });
@@ -176,7 +176,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
   });
 
   it('a name ONLY in an own field (no message holds it) is masked on a clone, the original untouched', async () => {
-    const r = await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make);
+    const r = await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make);
     const sdkError = Object.assign(new Error('AccessDenied'), {
       Error: { Code: 'AccessDenied', Message: `role/${ROLE}` },
     });
@@ -189,7 +189,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
   });
 
   it('the own-field pass stops where the clone does: links past the depth cap are the originals, untouched', async () => {
-    const r = await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make);
+    const r = await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make);
     const links: Array<Error & { Error: { Message: string } }> = [];
     let cause: Error | undefined;
     for (let i = 0; i < 25; i++) {
@@ -228,6 +228,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
       { Roles: [REF], Users: ['plain-user', REF2] },
       'us-east-1',
       [],
+      undefined,
       make
     );
     expect(r?.lists).toEqual({ Roles: [ROLE], Users: ['plain-user', 'secret-named-user-0001'] });
@@ -241,7 +242,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
       $metadata: { httpStatusCode: 400 },
     });
     resolveSpy.mockRejectedValue(throttle);
-    const error = (await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make).catch(
+    const error = (await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make).catch(
       (e: unknown) => e
     )) as Error;
     expect(error.message).toBe(TRANSIENT_RESOLUTION_MESSAGE);
@@ -257,7 +258,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
       })
     );
     await expect(
-      resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make)
+      resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make)
     ).rejects.toThrow(TRANSIENT_RESOLUTION_MESSAGE);
   });
 
@@ -277,6 +278,7 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
       { Roles: [REF], Users: [REF2] },
       'us-east-1',
       [],
+      undefined,
       make
     ).catch((e: unknown) => e)) as Error;
     expect((error.cause as Error).message).not.toContain(ROLE);
@@ -290,18 +292,18 @@ describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
   ])('%s is a skip (undefined), not a throw', async (_what, err) => {
     resolveSpy.mockRejectedValue(err);
     await expect(
-      resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make)
+      resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make)
     ).resolves.toBeUndefined();
   });
 
   it('a failing resolution is undefined (fail-safe)', async () => {
     resolveSpy.mockRejectedValue(new Error('AccessDenied'));
-    expect(await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make)).toBeUndefined();
+    expect(await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make)).toBeUndefined();
   });
 
   it('a resolved value that is not an IAM name is undefined', async () => {
     resolveSpy.mockResolvedValue('not a name!');
-    expect(await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], make)).toBeUndefined();
+    expect(await resolveSecretDerivedPrincipals({ Roles: [REF] }, 'us-east-1', [], undefined, make)).toBeUndefined();
   });
 });
 

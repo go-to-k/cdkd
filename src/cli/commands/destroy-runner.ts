@@ -78,6 +78,7 @@ import {
   type DeploymentEventRecorder,
 } from '../../types/deployment-events.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
+import { recordedReferenceRegions } from '../../deployment/reference-provenance-record.js';
 import {
   destroyProducerRegions,
   holdsSecretDerivedPrincipalRecord,
@@ -2044,12 +2045,17 @@ export async function runDestroyForStack(
             // by a nested-stack row that is otherwise deleted.
             let childLeftInAws = 0;
             // go-to-k/cdkd#4150: ONE opt-in object per resource, so every retry
-            // below shares its `retryMemo`.
+            // below shares its `retryMemo`. go-to-k/cdkd#4879: with the regions
+            // the record's v12 provenance names, read from the record in hand
+            // (no AWS call).
+            const recordedRegions =
+              secretPrincipalRegions !== undefined ? recordedReferenceRegions(resource) : undefined;
             const secretPrincipalOptIn =
               secretPrincipalRegions !== undefined
                 ? {
                     importedProducerRegions: secretPrincipalRegions,
                     retryMemo: { detached: new Set<string>() },
+                    ...(recordedRegions !== undefined && { recordedRegions }),
                   }
                 : undefined;
 

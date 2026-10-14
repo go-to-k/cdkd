@@ -357,7 +357,9 @@ The custom-resource handler causes attempted the delete. The per-resource
     not an IAM name;
   - the state record has no region;
   - a reference names another region, or is region-less while the stack reads
-    a value from another region (it is then ambiguous);
+    a value from another region (it is then ambiguous), unless the record
+    (state schema v12) says which region resolved it, where it is then
+    resolved;
   - the reference cannot be resolved (no access to the secret, or it is gone);
     a throttle or server error is retried instead;
   - the resolved value is not an IAM name.

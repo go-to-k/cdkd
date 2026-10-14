@@ -4,6 +4,7 @@ import {
   GsoProducerStack,
   GsoConsumerStack,
   GsoConsumerPreStack,
+  GsoConsumer4879Stack,
   PRODUCER_STACK_NAME,
   PRODUCER_REGION,
   CONSUMER_REGION,
@@ -30,5 +31,11 @@ new GsoConsumerStack(app, 'CdkdGsoConsumer', {
 // go-to-k/cdkd#4847: a consumer first deployed by the last v11 binary.
 new GsoConsumerPreStack(app, 'CdkdGsoConsumerPre', {
   description: 'cdkd cross-region Fn::GetStackOutput integ consumer deployed before v12 (us-east-1)',
+  env: { region: CONSUMER_REGION },
+});
+
+// go-to-k/cdkd#4879: a destroy of a secret-derived principal list read cross-region.
+new GsoConsumer4879Stack(app, 'CdkdGsoConsumer4879', {
+  description: 'cdkd cross-region Fn::GetStackOutput integ: IAM policy on a secret-named role (us-east-1)',
   env: { region: CONSUMER_REGION },
 });

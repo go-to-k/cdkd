@@ -580,7 +580,25 @@ export class SSMParameterProvider implements ResourceProvider {
         putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
       }
       const policies = ssmPoliciesParameter(properties['Policies']);
-      if (policies !== undefined) putParams.Policies = policies;
+      if (policies !== undefined) {
+        putParams.Policies = policies;
+      } else if (
+        context?.desiredFromAwsReadback === true &&
+        !['[]', undefined].includes(ssmPoliciesParameter(previousProperties['Policies'])) &&
+        context.declaredEmptyProperties?.has('Policies') === true
+      ) {
+        // go-to-k/cdkd#4884: PutParameter keeps a parameter's policies until it
+        // is sent new ones or an empty one, so omitting `Policies` would leave
+        // an out-of-band policy in place while `cdkd drift --revert` reports
+        // success. The AWS-documented removal is the empty policy `[{}]`. A
+        // deploy keeps omitting it: CloudFormation's update passes an absent
+        // template `Policies` through as none, which keeps the policies.
+        // Only when the TEMPLATE declares no policies too: `readCurrentState`
+        // also writes the `[]` placeholder when DescribeParameters fails, so a
+        // baseline captured that way must not delete a policy the template
+        // declares.
+        putParams.Policies = SSM_CLEAR_POLICIES;
+      }
       if (properties['DataType'] !== undefined) {
         putParams.DataType = properties['DataType'] as string;
       }
@@ -811,7 +829,9 @@ export class SSMParameterProvider implements ResourceProvider {
     // Always-emit guard: if DescribeParameters failed entirely, surface
     // an empty Policies placeholder so a console-side ADD on a previously-
     // un-policy'd parameter still surfaces as drift on the v3
-    // observedProperties baseline.
+    // observedProperties baseline. The placeholder cannot be told from a read
+    // of no policies, so `update` clears live policies on a revert only when
+    // the template declares none too (go-to-k/cdkd#4884).
     if (!policiesEmitted) result['Policies'] = [];
 
     // Tags via ListTagsForResource (best-effort; missing tag permission is
@@ -1047,6 +1067,12 @@ export class SSMParameterProvider implements ResourceProvider {
 }
 
 /**
+ * The empty policy that removes every policy from a parameter, as the Systems
+ * Manager user guide spells it ("Assigning parameter policies").
+ */
+export const SSM_CLEAR_POLICIES = '[{}]';
+
+/**
  * `PutParameter`'s `Policies`, which is a JSON STRING (CloudFormation's
  * `AWS::SSM::Parameter.Policies` too). A template passes that string through.
  * The bag `cdkd drift --revert` replays is `readCurrentState`'s, which holds
@@ -1054,7 +1080,8 @@ export class SSMParameterProvider implements ResourceProvider {
  * is, the array made AWS refuse the whole update ("Start of list found where
  * not expected"), so a non-empty array is re-serialized and an empty one, the
  * no-policies placeholder, is sent as no `Policies` at all, as an absent
- * template property is.
+ * template property is (a revert that must clear live policies sends
+ * `SSM_CLEAR_POLICIES` instead; see `update`).
  */
 export function ssmPoliciesParameter(policies: unknown): string | undefined {
   if (policies === undefined || policies === null || policies === '') return undefined;

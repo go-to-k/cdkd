@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
+import { PutRuleCommand } from '@aws-sdk/client-eventbridge';
 
 describe('EventBridgeRuleProvider', () => {
   let provider: EventBridgeRuleProvider;
@@ -700,5 +701,44 @@ describe('EventBridgeRuleProvider', () => {
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('EventBridgeRuleProvider update region guard (issue #2613)', () => {
+  let provider: EventBridgeRuleProvider;
+  const desired = { Name: 'my-rule', ScheduleExpression: 'rate(10 minutes)', State: 'ENABLED' };
+  const previous = { Name: 'my-rule', ScheduleExpression: 'rate(5 minutes)', State: 'ENABLED' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new EventBridgeRuleProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyRule', 'arn:aws:events:us-east-1:123456789012:rule/my-rule', 'AWS::Events::Rule', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyRule .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({ RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule' });
+    await provider.update('MyRule', 'arn:aws:events:us-east-1:123456789012:rule/my-rule', 'AWS::Events::Rule', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutRuleCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    ((provider as unknown as { eventBridgeClient: { config: { region: unknown } } }).eventBridgeClient).config.region = region;
+    mockSend.mockResolvedValue({ RuleArn: 'arn:aws:events:us-east-1:123456789012:rule/my-rule' });
+    await provider.update('MyRule', 'arn:aws:events:us-east-1:123456789012:rule/my-rule', 'AWS::Events::Rule', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutRuleCommand);
   });
 });

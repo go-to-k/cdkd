@@ -633,3 +633,40 @@ describe('SQSQueueProvider.update', () => {
     });
   });
 });
+
+describe('SQSQueueProvider update region guard (issue #2613)', () => {
+  let provider: SQSQueueProvider;
+  const desired = { QueueName: 'my-queue', VisibilityTimeout: 60 };
+  const previous = { QueueName: 'my-queue', VisibilityTimeout: 30 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new SQSQueueProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyQueue', QUEUE_URL, 'AWS::SQS::Queue', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyQueue .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:123456789012:my-queue' } });
+    await provider.update('MyQueue', QUEUE_URL, 'AWS::SQS::Queue', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(SetQueueAttributesCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    ((provider as unknown as { sqsClient: { config: { region: unknown } } }).sqsClient).config.region = region;
+    mockSend.mockResolvedValue({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:123456789012:my-queue' } });
+    await provider.update('MyQueue', QUEUE_URL, 'AWS::SQS::Queue', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(SetQueueAttributesCommand);
+  });
+});

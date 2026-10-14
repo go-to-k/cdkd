@@ -1,8 +1,9 @@
 import { IntrinsicFunctionResolver } from '../deployment/intrinsic-function-resolver.js';
 import type { ResolverContext } from '../deployment/intrinsic-function-resolver.js';
 import {
-  classifyReplaySecretRegion,
+  classifyRecordedSecretRegion,
   producerRegionsFromState,
+  type RecordedSecretRegionVerdict,
 } from '../deployment/secret-region-classification.js';
 import {
   createSecretMasker,
@@ -48,6 +49,24 @@ export interface SecretPrincipalRetryMemo {
 }
 
 /**
+ * The resolver {@link resolveSecretDerivedPrincipals} resolves through: the
+ * stack region's own, and its producer-region guest for a recorded region.
+ */
+export type SecretPrincipalResolver = Pick<
+  IntrinsicFunctionResolver,
+  'resolveDynamicReferences'
+> & {
+  resolverForRecordedRegion(
+    region: string
+  ): Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
+};
+
+/** Whether {@link resolveSecretDerivedPrincipals} may resolve a token with this verdict. */
+function resolvableVerdict(verdict: RecordedSecretRegionVerdict): boolean {
+  return verdict.kind === 'local' || verdict.kind === 'recorded-region';
+}
+
+/**
  * Resolve a secret-derived principal list a DELETE has to address
  * (go-to-k/cdkd#4150). State keeps a principal name that came from a secret as
  * its `{{resolve:...}}` expression, which names no principal, and a delete has
@@ -57,10 +76,14 @@ export interface SecretPrincipalRetryMemo {
  * Each expression is resolved the way a rollback replay re-resolves a
  * journaled one (`rollback-executor/replay-props.ts`'s `resolveReplayProps`): the SAME
  * resolver seam (`IntrinsicFunctionResolver.resolveDynamicReferences`), after
- * the SAME region classification (`classifyReplaySecretRegion`) armed with the
+ * the SAME region classification (`classifyRecordedSecretRegion`) armed with the
  * SAME producer-region evidence (`producerRegionsFromState`, passed by the
- * caller). Only a token classified `local` is resolved: a region-less spelling
- * a cross-region import recorded is `ambiguous` and is not guessed. The
+ * caller). Only a token classified `local` is resolved, or a region-less one
+ * the record's v12 provenance places in a region (`recordedRegions`,
+ * go-to-k/cdkd#4879), which resolves there through the stack resolver's
+ * producer-region guest, as the rollback replay and `cdkd drift` do. Without
+ * a recorded region, a region-less spelling beside a cross-region import is
+ * `ambiguous` and is not guessed. The
  * plaintext is recorded into a map of this call's own, and the returned masker
  * masks it; the caller masks every printed NAME on its own (the whole-value
  * arm, which a name under `MIN_NEEDLE_LENGTH` needs). An AWS error message
@@ -88,11 +111,14 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
   values: Record<K, unknown>,
   region: string | undefined,
   importedProducerRegions: readonly string[],
-  makeResolver: (region: string) => Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'> = (
-    r
-  ) => new IntrinsicFunctionResolver(r)
+  recordedRegions: ReadonlyMap<string, string> | undefined,
+  makeResolver: (region: string) => SecretPrincipalResolver = (r) =>
+    new IntrinsicFunctionResolver(r)
 ): Promise<ResolvedSecretPrincipals<K> | undefined> {
   if (!region) return undefined;
+  const stackRegion = region;
+  const verdictOf = (token: string): RecordedSecretRegionVerdict =>
+    classifyRecordedSecretRegion(token, stackRegion, importedProducerRegions, recordedRegions);
   // Every entry checked BEFORE any resolution: a value that will be refused
   // anyway sends no request to Secrets Manager / SSM.
   const entries = {} as Record<K, string[]>;
@@ -106,10 +132,7 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
           !entry.includes(SECRET_MASK) &&
           (!entry.includes('{{resolve:') ||
             (dynamicReferenceTokens(entry).length > 0 &&
-              dynamicReferenceTokens(entry).every(
-                (t) =>
-                  classifyReplaySecretRegion(t, region, importedProducerRegions).kind === 'local'
-              )))
+              dynamicReferenceTokens(entry).every((t) => resolvableVerdict(verdictOf(t)))))
       )
     ) {
       return undefined;
@@ -122,7 +145,7 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
     resources: {},
     recordedSecretValues: secrets,
   };
-  let resolver: Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'> | undefined;
+  let resolver: SecretPrincipalResolver | undefined;
   const lists = {} as Record<K, string[]>;
   const resolvedNames = {} as Record<K, Set<string>>;
   for (const key of Object.keys(entries) as K[]) {
@@ -136,7 +159,7 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
       let resolved: string;
       try {
         resolver ??= makeResolver(region);
-        resolved = await resolver.resolveDynamicReferences(entry, context);
+        resolved = await resolveEntry(entry, resolver, verdictOf, context);
       } catch (error) {
         // A throttle or a 5xx only (never a MESSAGE pattern: `does not exist`
         // is one, and the destroy runner reads that text in a thrown message
@@ -168,6 +191,40 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
     maskError: (error) => maskSecretsInError(error, secrets),
     resolvedNames,
   };
+}
+
+/**
+ * One principal entry: whole, by the stack region's resolver, when no token in
+ * it has a recorded foreign region (every entry before go-to-k/cdkd#4879);
+ * otherwise token by token, each by its own region's resolver, the rest of the
+ * entry kept as written (as `cdkd drift` splices a leaf).
+ */
+async function resolveEntry(
+  entry: string,
+  primary: SecretPrincipalResolver,
+  verdictOf: (token: string) => RecordedSecretRegionVerdict,
+  context: ResolverContext
+): Promise<string> {
+  const tokens = dynamicReferenceTokens(entry).map((t) => [t, verdictOf(t)] as const);
+  if (!tokens.some(([, v]) => v.kind === 'recorded-region')) {
+    return await primary.resolveDynamicReferences(entry, context);
+  }
+  let out = '';
+  let cursor = 0;
+  for (const [token, verdict] of tokens) {
+    const at = entry.indexOf(token, cursor);
+    // The tokens come from a scan of this string; fail closed if not.
+    if (at < 0)
+      throw new Error('A scanned dynamic reference is not in the entry it was scanned from');
+    out += entry.slice(cursor, at);
+    const resolver =
+      verdict.kind === 'recorded-region'
+        ? primary.resolverForRecordedRegion(verdict.region)
+        : primary;
+    out += await resolver.resolveDynamicReferences(token, context);
+    cursor = at + token.length;
+  }
+  return out + entry.slice(cursor);
 }
 
 /**

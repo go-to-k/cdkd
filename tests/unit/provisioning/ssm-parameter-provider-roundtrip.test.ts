@@ -236,3 +236,112 @@ describe('the Policies a read-back bag carries reach PutParameter as a JSON stri
     expect(put.input.Policies).toBe(expected);
   });
 });
+
+describe('a revert to no policies clears the live ones (go-to-k/cdkd#4884)', () => {
+  const expiration = {
+    Type: 'Expiration',
+    Version: '1.0',
+    Attributes: { Timestamp: '2030-01-01T00:00:00.000Z' },
+  };
+  const base = {
+    Name: PARAM_NAME,
+    Type: 'String',
+    Value: 'bar',
+    Description: '',
+    AllowedPattern: '',
+  };
+
+  /** drift --revert's evidence that the template declares `Policies` empty. */
+  const DECLARED_EMPTY: ReadonlySet<string> = new Set(['Policies']);
+
+  async function sentPolicies(
+    desired: Record<string, unknown>,
+    previous: Record<string, unknown>,
+    desiredFromAwsReadback: boolean | undefined,
+    // `null`: no declaredEmptyProperties at all (an explicit undefined takes the default).
+    declaredEmpty: ReadonlySet<string> | null = DECLARED_EMPTY
+  ): Promise<string | undefined> {
+    mockSend.mockResolvedValue({});
+    const provider = new SSMParameterProvider();
+    await provider.update(
+      'P',
+      PARAM_NAME,
+      RESOURCE_TYPE,
+      desired,
+      previous,
+      desiredFromAwsReadback === undefined
+        ? undefined
+        : {
+            desiredFromAwsReadback,
+            ...(declaredEmpty !== null && { declaredEmptyProperties: declaredEmpty }),
+          }
+    );
+    const put = mockSend.mock.calls
+      .map((c) => c[0] as unknown)
+      .find((c): c is PutParameterCommand => c instanceof PutParameterCommand)!;
+    return put.input.Policies;
+  }
+
+  it('drift --revert: an empty baseline against a live policy sends the documented empty policy [{}]', async () => {
+    // AWS keeps a parameter's policies until it is sent new ones or an empty
+    // one; omitting `Policies` (what the placeholder used to become) kept the
+    // out-of-band policy while the revert reported success.
+    expect(
+      await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: [expiration] }, true)
+    ).toBe('[{}]');
+  });
+
+  it.each([
+    // The baseline's `[]` is the placeholder of a DescribeParameters failure
+    // at capture, not what the template wants: never delete its policy.
+    ['does not declare Policies empty', new Set<string>(['Description'])],
+    ['declares nothing empty', new Set<string>()],
+    ['is not passed', null],
+  ])('drift --revert: a template that %s keeps the live policy', async (_l, declared) => {
+    expect(
+      await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: [expiration] }, true, declared)
+    ).toBe(undefined);
+  });
+
+  it.each([
+    ['the readback placeholder []', []],
+    ["a template's empty JSON string", '[]'],
+    ['no Policies key', undefined],
+  ])(
+    'drift --revert: an empty baseline against %s sends no Policies (nothing to clear)',
+    async (_label, live) => {
+      // Sending the empty policy where there is nothing to clear is not free:
+      // a parameter policy is an Advanced-tier feature.
+      expect(await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: live }, true)).toBe(
+        undefined
+      );
+    }
+  );
+
+  it('drift --revert: a recorded policy is sent as itself, not cleared', async () => {
+    expect(
+      await sentPolicies(
+        { ...base, Policies: [expiration] },
+        { ...base, Policies: [expiration, { ...expiration, Type: 'NoChangeNotification' }] },
+        true
+      )
+    ).toBe(JSON.stringify([expiration]));
+  });
+
+  it.each([
+    ['no context', undefined],
+    ['desiredFromAwsReadback false', false],
+  ])(
+    'deploy (%s): a template without Policies leaves a policy in place, as CloudFormation does',
+    async (_label, flag) => {
+      // CloudFormation's AWS::SSM::Parameter update passes the model's Policies
+      // through, null when the template has none, so PutParameter keeps them.
+      expect(
+        await sentPolicies({ ...base }, { ...base, Policies: JSON.stringify([expiration]) }, flag)
+      ).toBe(undefined);
+      expect(
+        await sentPolicies({ ...base, Policies: [] }, { ...base, Policies: [expiration] }, flag)
+      ).toBe(undefined);
+    }
+  );
+});

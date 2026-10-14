@@ -111,6 +111,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ReadCurrentStateContext,
@@ -205,9 +206,22 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating S3 bucket policy ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the policy is put on a bucket NAME, and a client in another region
+    // than the state record is not the one this record was written through. Ahead of the
+    // required-property checks so the refusal names the region, not a symptom. Refuse before
+    // any call; the client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.s3Client.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
 
     const bucketName = properties['Bucket'] as string | undefined;
     const policyDocument = properties['PolicyDocument'];

@@ -39,8 +39,35 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { safeMsg } from '../../utils/display-safe.js';
+
+const INSTANCE_PROFILE_TYPE = 'AWS::IAM::InstanceProfile';
+
+/**
+ * An IAM instance profile NAME (1-128 of `A-Z a-z 0-9 + = , . @ _ -`, IAM's
+ * `InstanceProfileName` pattern): the physical id this provider records. The
+ * identity answers (`isSameResource`, `resourceIdentity`) refuse anything
+ * else, an ARN included: this provider never records one.
+ */
+function isInstanceProfileName(id: string): boolean {
+  return /^[\w+=,.@-]{1,128}$/.test(id);
+}
+
+/**
+ * go-to-k/cdkd#4606 / #4655: an instance profile's identity token is its
+ * `InstanceProfileId` (`AIPA…`). IAM assigns it at `CreateInstanceProfile` and
+ * never changes it; one deleted and re-created under the same name gets
+ * another (IAM User Guide, "IAM identifiers" → "Unique identifiers"; the
+ * `iam-profile-policy-fix-forward-orphan` fixture measures the re-create). The
+ * `AddRoleToInstanceProfile` a CREATE makes afterwards does not touch it.
+ * `undefined` for a missing or empty one.
+ */
+function instanceProfileIdentityToken(id: string | undefined): string | undefined {
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
 
 /**
  * AWS IAM InstanceProfile Provider
@@ -123,6 +150,10 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     // go-to-k/cdkd#4583: set once CreateInstanceProfile returns; cleared when the
     // partial-create cleanup deleted the profile, so only a left-behind one is marked.
     let leftBehind = false;
+    // go-to-k/cdkd#4606: the InstanceProfileId CreateInstanceProfile answered
+    // with, carried on the mark so the journal needs no read of a profile whose
+    // failure may fail that read too.
+    let createdProfileIdentity: string | undefined;
     try {
       // Create instance profile
       const createClient = await this.createClient.get();
@@ -133,6 +164,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         })
       );
       leftBehind = true;
+      createdProfileIdentity = instanceProfileIdentityToken(
+        response.InstanceProfile?.InstanceProfileId
+      );
 
       log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
 
@@ -226,8 +260,16 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             cause
           )
       );
+      // With its InstanceProfileId (go-to-k/cdkd#4606), which a later settle
+      // compares before deleting the profile by name.
       if (leftBehind) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, instanceProfileName);
+        markCreatedBeforeFailure(
+          thrown,
+          logicalId,
+          resourceType,
+          instanceProfileName,
+          createdProfileIdentity
+        );
       }
       throw thrown;
     }
@@ -443,7 +485,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             logicalId,
             physicalId
           );
-          this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
+          this.logGoneOnDelete(logicalId, physicalId, context);
           return;
         }
         throw error;
@@ -482,7 +524,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
+        this.logGoneOnDelete(logicalId, physicalId, context);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -494,6 +536,123 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The not-found arm of `delete`. A journaled failed-CREATE orphan already
+   * gone settles with exit 0 (go-to-k/cdkd#4606), so it is said once at info;
+   * the name is interpolated verbatim for the caller's printing bag to mask.
+   */
+  private logGoneOnDelete(
+    logicalId: string,
+    physicalId: string,
+    context: DeleteContext | undefined
+  ): void {
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        safeMsg`  IAM instance profile ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+      );
+    } else {
+      this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
+    }
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the instance profile a failed CREATE journaled
+   * is the one the record under the same logical id holds (a fix-forward that
+   * created a new one there under another name).
+   *
+   * Only `AWS::IAM::InstanceProfile`; both ids must be instance profile NAMES
+   * (the physical id this provider records), else `'unknown'`, and so are two
+   * names differing only in case: IAM treats those as one profile, and this
+   * check does not decide on IAM's case rules. Equal names are `'same'`
+   * without a read: whatever holds the name now is the record's, and deleting
+   * by that name would delete it. An instance profile name is unique per
+   * account (case-insensitively) and cannot be changed. After the region
+   * check the record's profile must read back (else `'unknown'`); the
+   * journaled one is `'same'` when it reads back under the record's id,
+   * `'different'` under another, and `'different'` when IAM reports it gone:
+   * the record's profile answers to its own, other, name. Any other read
+   * failure throws, which the caller reads as `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== INSTANCE_PROFILE_TYPE) return 'unknown';
+    if (!isInstanceProfileName(journaledPhysicalId) || !isInstanceProfileName(record.physicalId)) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordId = await this.readIdIfExists(record.physicalId);
+    if (recordId === undefined) return 'unknown';
+    const journaledId = await this.readIdIfExists(journaledPhysicalId);
+    if (journaledId === undefined) return 'different';
+    // Unreachable as 'same' while the names differ beyond case; kept so the
+    // verdict rests on AWS's answer.
+    return journaledId === recordId ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the profile's `InstanceProfileId`
+   * ({@link instanceProfileIdentityToken}). One re-created under the name
+   * answers with another, so the settle keeps it rather than deleting it as
+   * the failed CREATE's orphan. A failed CREATE's own token comes from its
+   * `CreateInstanceProfile` response, on the failure's mark
+   * (`markCreatedBeforeFailure`); this is the live read.
+   *
+   * `undefined` for another type, an id that is not a profile name, or a
+   * client in another region than `expectedRegion` (IAM is global, but the
+   * check keeps every identity read on the stack's own client).
+   * `RESOURCE_NOT_FOUND` only on `NoSuchEntityException`; any other failure,
+   * a response naming another profile, and one with no id throw.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== INSTANCE_PROFILE_TYPE || !isInstanceProfileName(physicalId)) {
+      return undefined;
+    }
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const id = await this.readIdIfExists(physicalId);
+    return id === undefined ? RESOURCE_NOT_FOUND : id;
+  }
+
+  /**
+   * The profile's `InstanceProfileId` (`GetInstanceProfile`), or `undefined`
+   * when IAM answers `NoSuchEntityException`. Any other failure, a response
+   * naming another profile, and one with no id throw: "could not read" never
+   * reads as "gone".
+   */
+  private async readIdIfExists(name: string): Promise<string | undefined> {
+    let answeredName: string | undefined;
+    let id: string | undefined;
+    try {
+      const response = await this.iamClient.send(
+        new GetInstanceProfileCommand({ InstanceProfileName: name })
+      );
+      answeredName = response.InstanceProfile?.InstanceProfileName;
+      id = response.InstanceProfile?.InstanceProfileId;
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) return undefined;
+      throw error;
+    }
+    if (answeredName !== name) {
+      throw new Error('IAM answered for another instance profile than the one asked for');
+    }
+    const token = instanceProfileIdentityToken(id);
+    if (token === undefined) throw new Error('IAM returned no InstanceProfileId');
+    return token;
   }
 
   /**

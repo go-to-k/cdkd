@@ -7347,6 +7347,11 @@ async function runRevert(
                         // the record `stateResource.physicalId` came from.
                         {
                           desiredFromAwsReadback: true,
+                          // go-to-k/cdkd#4884: what the template declares, beside
+                          // the readback baseline.
+                          declaredEmptyProperties: declaredEmptyProperties(
+                            stateResource.properties
+                          ),
                           maskSecrets: createSecretMasker(secrets),
                           expectedRegion: report.region,
                           recordedAttributes: stateResource.attributes,
@@ -9320,4 +9325,36 @@ function otherPhysicalIds(
     if (id !== logicalId && typeof record?.physicalId === 'string') ids.push(record.physicalId);
   }
   return ids;
+}
+
+/**
+ * The top-level keys `properties` (a record's template side) declares EMPTY:
+ * `''`, `[]`, `{}`, or a JSON string of an empty list or object
+ * (`UpdateContext.declaredEmptyProperties`, go-to-k/cdkd#4884). A key whose
+ * value is anything else, unparsable or a mask included, is not in it.
+ */
+export function declaredEmptyProperties(properties: unknown): ReadonlySet<string> {
+  const out = new Set<string>();
+  if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+    return out;
+  }
+  const isEmpty = (v: unknown): boolean =>
+    (Array.isArray(v) && v.length === 0) ||
+    (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0);
+  for (const [key, value] of Object.entries(properties as Record<string, unknown>)) {
+    if (typeof value === 'string') {
+      if (value.trim() === '') {
+        out.add(key);
+        continue;
+      }
+      try {
+        if (isEmpty(JSON.parse(value) as unknown)) out.add(key);
+      } catch {
+        // Not JSON: a declared value, not an empty one.
+      }
+    } else if (isEmpty(value)) {
+      out.add(key);
+    }
+  }
+  return out;
 }

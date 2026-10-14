@@ -1184,9 +1184,11 @@ The unpinned lookup runs first and the pinned one reuses it when the versions
 match, so a pin equal to the current version costs no call. A value read at
 another version is recorded as a redaction needle but never as the token's
 resolved pair, which keeps the token's own literal leaves positionable. The
-rollback replay, `cdkd drift` (at the current version) and `cdkd scrub` use
-the recorded region of a region-less token instead of refusing it as
-ambiguous, through the stack resolver's producer-region guest; `cdkd scrub`
+rollback replay, `cdkd drift` (at the current version), `cdkd scrub` and a
+destroy's secret-derived IAM principal lists (issue
+[#4879](https://github.com/go-to-k/cdkd/issues/4879)) use the recorded region
+of a region-less token instead of refusing it as ambiguous, through the stack
+resolver's producer-region guest; `cdkd scrub`
 keeps a rewritten record's entries for the tokens it still holds only.
 
 **Known residual: a secret rotated before the upgrade.** A resource deployed

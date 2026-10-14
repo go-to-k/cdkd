@@ -7,10 +7,12 @@
 #   2. cdkd deploy CdkdDriftRevertExample (refused on a peer's lock -> fail
 #      WITHOUT the cleanup destroy: the stack is the peer's)
 #   3. inject drift via direct AWS SDK calls
+#  3b. issue #4884: attach an SSM parameter policy out of band
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
 #  5b. issue #2102: the live value at a token EMBEDDED in a Glue parameter
 #      survives that revert
+#  5c. issue #4884: the revert removed that SSM parameter policy
 #   6. cdkd drift  -> assert exit 0 (clean)
 #  6b. rewrite the recorded bucket-policy principal to a BOGUS unique id
 #      -> assert exit 1 (a real principal change is still drift)
@@ -124,7 +126,7 @@ sweep_bare_iam_names() { (
 
 cleanup() {
   rc=$?
-  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}" "${STEP6G_OUT:-}"
+  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP4_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}" "${STEP6G_OUT:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
     exit "${rc}"
@@ -176,13 +178,54 @@ fi
 echo "[verify] step 3: inject drift"
 node inject-drift.ts
 
+# Issue #4884: the policies on the template's `Policies: '[]'` parameter.
+# PutParameter keeps a parameter's policies unless it is sent new ones or the
+# documented empty policy, so a revert that omits `Policies` leaves one behind.
+SSM_POLICY_PARAM="/cdkd-drift-revert/policies-4884"
+ssm_policy_count() { # prints the number of policies AWS holds; a failed read fails the caller
+  local out
+  out="$(aws ssm describe-parameters --parameter-filters "Key=Name,Values=${SSM_POLICY_PARAM}" \
+    --query 'length(Parameters[0].Policies)' --output text)" || return 1
+  printf '%s' "${out}"
+}
+ssm_policy_read_failed() {
+  echo "[verify] FAIL: describe-parameters ${SSM_POLICY_PARAM} failed" >&2
+  exit 1
+}
+echo "[verify] step 3b: issue #4884 — attach an SSM parameter policy out of band"
+# Premise: the deploy left the parameter with no policy, so the baseline
+# captured the empty list this arm reverts to.
+POLICIES_DEPLOYED="$(ssm_policy_count)" || ssm_policy_read_failed
+if [ "${POLICIES_DEPLOYED}" != "0" ]; then
+  echo "[verify] FAIL step 3b: the deployed parameter holds ${POLICIES_DEPLOYED} policies, expected 0" >&2
+  exit 1
+fi
+# NoChangeNotification only emits an event; it never deletes the parameter.
+aws ssm put-parameter --name "${SSM_POLICY_PARAM}" --value "integ-policies-4884" --type String \
+  --overwrite --tier Advanced \
+  --policies '[{"Type":"NoChangeNotification","Version":"1.0","Attributes":{"After":"30","Unit":"Days"}}]' \
+  >/dev/null
+POLICIES_INJECTED="$(ssm_policy_count)" || ssm_policy_read_failed
+if [ "${POLICIES_INJECTED}" != "1" ]; then
+  echo "[verify] FAIL step 3b: the out-of-band policy did not land (${POLICIES_INJECTED} policies)" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: 1 out-of-band policy"
+
 echo "[verify] step 4: cdkd drift (expect exit 1)"
+STEP4_LOG="$(mktemp)"
 set +e
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
-rc=$?
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" 2>&1 | tee -i "${STEP4_LOG}"
+rc=${PIPESTATUS[0]}
 set -e
 if [ "${rc}" -ne 1 ]; then
   echo "[verify] FAIL: expected drift exit 1, got ${rc}"
+  exit 1
+fi
+# Issue #4884: exit 1 is satisfied by any drifted resource; the policy
+# parameter must be one of them, or step 5c would be vacuous.
+if ! grep -qF '~ DriftPoliciesParameter (' "${STEP4_LOG}"; then
+  echo "[verify] FAIL step 4: the out-of-band SSM parameter policy was not reported as drift" >&2
   exit 1
 fi
 echo "[verify] step 4 ok: exit ${rc}"
@@ -227,6 +270,16 @@ if [ "${CONN_AFTER}" != "${GLUE_CONN_LIVE}" ]; then
   exit 1
 fi
 echo "[verify] step 5b ok: Description reverted, Parameters.conn kept live"
+
+echo "[verify] step 5c: issue #4884 — the revert removed the out-of-band SSM parameter policy"
+POLICIES_AFTER="$(ssm_policy_count)" || ssm_policy_read_failed
+if [ "${POLICIES_AFTER}" != "0" ]; then
+  echo "[verify] FAIL step 5c: ${SSM_POLICY_PARAM} still holds ${POLICIES_AFTER} policies after --revert reported success" >&2
+  aws ssm describe-parameters --parameter-filters "Key=Name,Values=${SSM_POLICY_PARAM}" \
+    --query 'Parameters[0].Policies' >&2 || true
+  exit 1
+fi
+echo "[verify] step 5c ok: no policy left"
 
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
