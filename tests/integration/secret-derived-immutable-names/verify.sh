@@ -1490,6 +1490,34 @@ promo_assert_settled() { # usage: promo_assert_settled <which> <logical id>|<(ty
   done
   echo "    OK: the ${which} steady-state deploy left $* alone"
 }
+promo_assert_none_sent() { # usage: promo_assert_none_sent <which> [allowed logical id...]
+  # Rotation-alone parity (go-to-k/cdkd#4852): after a version bump of the
+  # secret, a reader whose OWN key did not rotate is never sent. Every
+  # `<Id> is sent:` line in DEPLOY_LOG must name an allowed id. Sentinel: the
+  # log names the stack, so it was captured; the arms assert the same line
+  # PRESENT where a send is due, so a reworded line fails there.
+  local which="$1" sent id allowed ok
+  shift
+  if ! grep -qF -- "${STACK}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the ${which} deploy's log does not name ${STACK} - the output was not captured, so the absence below would be vacuous" >&2
+    exit 1
+  fi
+  sent="$(awk '{ i = index($0, " is sent: "); if (i) { n = split(substr($0, 1, i - 1), w, /[ \t]+/); print w[n] } }' "${DEPLOY_LOG}")" || {
+    echo "FAIL: could not scan the ${which} deploy's log for 'is sent:' lines" >&2
+    exit 1
+  }
+  for id in ${sent}; do
+    ok=0
+    for allowed in "$@"; do
+      if [ "${id}" = "${allowed}" ]; then ok=1; fi
+    done
+    if [ "${ok}" != "1" ]; then
+      echo "FAIL: ${id} was sent after a rotation of another key (go-to-k/cdkd#4852 rotation-alone parity): the ${which} deploy" >&2
+      log_tail
+      exit 1
+    fi
+  done
+}
 promo_wait_queue_gone() { # usage: promo_wait_queue_gone <what> <queue name>: SQS may answer for a deleted queue for up to 60 seconds
   local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
@@ -1510,6 +1538,7 @@ promo_put_secret
 PROMO_ENV+=(SDIN_PH=true)
 promo_deploy
 promo_expect_deployed "step 5h create"
+promo_assert_none_sent "step 5h create (after the promo fields entered the secret)"
 # A settle deploy: the reader is edited while PromoQueue is NO_CHANGE, so it is
 # served the queue's RECORDED ARN on the read route and records that version.
 PROMO_ENV+=(SDIN_PH_SETTLE=true)
@@ -1552,6 +1581,7 @@ PQ_CUR="${PQ_NAME_2}"
 promo_put_secret
 PROMO_ENV+=(SDIN_PH_FIFO=true)
 promo_deploy --no-rollback SDIN_PH_FAULT=true
+promo_assert_none_sent "step 5h fault (after the pqueue rotation)" PromoReader
 if [ "${PROMO_RC}" -eq 0 ]; then
   echo "FAIL: premise: the step 5h fault deploy exited 0 (SSM accepted PromoReader's value against its AllowedPattern, so nothing was interrupted)" >&2
   log_tail
@@ -1675,6 +1705,7 @@ NQ_CUR="${NQ_NAME_2}"
 promo_put_secret
 PROMO_ENV+=(SDIN_PI_FIFO=true)
 promo_deploy --no-rollback SDIN_PI_FAULT=true
+promo_assert_none_sent "step 5i fault (after the nqueue rotation)" PromoChild PromoChildReader
 if [ "${PROMO_RC}" -eq 0 ]; then
   echo "FAIL: premise: the step 5i fault deploy exited 0 (SSM accepted PromoChildReader's value against its AllowedPattern, so nothing was interrupted)" >&2
   log_tail
@@ -1792,6 +1823,7 @@ promo_put_secret
 PROMO_ENV+=(SDIN_PJ_EDIT=true)
 promo_deploy
 promo_expect_deployed "step 5j producer edit"
+promo_assert_none_sent "step 5j producer edit (after the pjvalue rotation)"
 if ! promo_log_has "PromoValueProducer" "(AWS::SSM::Parameter)" "updated"; then
   echo "FAIL: premise: the step 5j producer-edit deploy has no 'PromoValueProducer (AWS::SSM::Parameter) updated' line" >&2
   log_tail

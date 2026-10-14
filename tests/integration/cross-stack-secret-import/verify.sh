@@ -2255,6 +2255,30 @@ cssi_assert_not_sent() { # usage: cssi_assert_not_sent <which> <fail text>: CSSI
     fail "$2"
   fi
 }
+cssi_assert_none_sent() { # usage: cssi_assert_none_sent <stack> <which> [allowed logical id...]
+  # Rotation-alone parity (go-to-k/cdkd#4852): after a version bump of the
+  # secret, a reader whose OWN key did not rotate is never sent. Every
+  # `<Id> is sent:` line in CSSI_OUT must name an allowed id. Sentinel: the
+  # output names the stack, so it was captured; 11f asserts the same line
+  # PRESENT, so a reworded line fails there.
+  local stack="$1" which="$2" sent id allowed ok
+  shift 2
+  if ! grep -qF -- "${stack}" <<< "${CSSI_OUT}"; then
+    fail "the ${which} deploy's output does not name ${stack} - the output was not captured, so the absence below would be vacuous"
+  fi
+  sent="$(awk '{ i = index($0, " is sent: "); if (i) { n = split(substr($0, 1, i - 1), w, /[ \t]+/); print w[n] } }' <<< "${CSSI_OUT}")" \
+    || fail "could not scan the ${which} deploy's output for 'is sent:' lines"
+  for id in ${sent}; do
+    ok=0
+    for allowed in "$@"; do
+      if [ "${id}" = "${allowed}" ]; then ok=1; fi
+    done
+    if [ "${ok}" != "1" ]; then
+      diag "${CSSI_OUT}"
+      fail "${id} was sent after a rotation of another key (go-to-k/cdkd#4852 rotation-alone parity): the ${which} deploy"
+    fi
+  done
+}
 cssi_queue_arn() { # usage: cssi_queue_arn <queue name> (a strict capture: a failed read aborts)
   local url
   url="$(aws sqs get-queue-url --queue-name "$1" --region "${REGION}" --query QueueUrl --output text)" || return 1
@@ -2282,7 +2306,9 @@ echo ""
 echo "==> Step 11d (go-to-k/cdkd#4852 PREMISE): PromoImportReader records the producer version it read"
 cssi_put_secret "${PROMO_QUEUE_NAME}"
 cssi_deploy "${PRODUCER}" "step 11d producer"
+cssi_assert_none_sent "${PRODUCER}" "step 11d producer (after pqueue entered the secret)"
 cssi_deploy "${CONSUMER}" "step 11d consumer"
+cssi_assert_none_sent "${CONSUMER}" "step 11d consumer (after pqueue entered the secret)"
 # A settle deploy: the reader is written while the producer is unchanged, so
 # its record takes the version of the producer output it read.
 CSSI_ENV+=(CSSI_PROMO_SETTLE=true)
@@ -2320,6 +2346,7 @@ echo "==> Step 11e (go-to-k/cdkd#4852 CONTROL): a rotation alone sends the consu
 # neither promoted nor re-pointed (CloudFormation parity).
 cssi_put_secret "${PROMO_QUEUE_NAME_2}"
 cssi_deploy "${CONSUMER}" "step 11e consumer"
+cssi_assert_none_sent "${CONSUMER}" "step 11e consumer (after the pqueue rotation)"
 cssi_assert_not_sent "step 11e consumer" \
   "the rotation alone UPDATED PromoImportReader: a consumer whose producer did not change was sent (go-to-k/cdkd#4852 CloudFormation parity)"
 cssi_capture PROMO_GOT "PromoImportReader's live SSM value" cssi_reader_value
@@ -2340,6 +2367,9 @@ echo "==> Step 11e-ii (go-to-k/cdkd#4852 CONSUMER PINNING): an edited consumer i
 # rotated pqueue (a queue nobody created).
 CSSI_ENV+=(CSSI_PROMO_EDIT=true)
 cssi_deploy "${CONSUMER}" "step 11e-ii consumer edit"
+# The edit is sent as an ordinary update; its read versions did not move
+# (pinned to the producer's V1), so no "is sent" line is expected.
+cssi_assert_none_sent "${CONSUMER}" "step 11e-ii consumer edit (after the pqueue rotation)"
 if ! cssi_out_has "PromoImportReader" "(AWS::SSM::Parameter)" "updated"; then
   diag "${CSSI_OUT}"
   fail "premise: the step 11e-ii consumer edit has no 'PromoImportReader (AWS::SSM::Parameter) updated' line (the reader was not sent, so its value says nothing about pinning)"
@@ -2364,6 +2394,7 @@ echo "==> Step 11f (go-to-k/cdkd#4852 THE FIX): the producer replaces its queue;
 # the same. The producer is deployed ALONE.
 CSSI_ENV+=(CSSI_PROMO_FIFO=true)
 cssi_deploy "${PRODUCER}" "step 11f producer"
+cssi_assert_none_sent "${PRODUCER}" "step 11f producer (after the pqueue rotation)"
 if ! cssi_out_has "PromoQueue" "(AWS::SQS::Queue)" "replaced"; then
   diag "${CSSI_OUT}"
   fail "premise: the step 11f producer deploy has no 'PromoQueue (AWS::SQS::Queue) replaced' line"
@@ -2394,6 +2425,7 @@ if [ "${PROMO_GOT}" != "${PROMO_ARN_1}" ]; then
   fail "premise: PromoImportReader's SSM value is not the deleted queue's ARN after the producer-only deploy"
 fi
 cssi_deploy "${CONSUMER}" "step 11f consumer"
+cssi_assert_none_sent "${CONSUMER}" "step 11f consumer (after the pqueue rotation)" PromoImportReader
 # LOAD-BEARING (the red line): the consumer holds the replacement's ARN.
 cssi_capture PROMO_LIVE "PromoImportReader's live SSM value" cssi_reader_value
 if [ "${PROMO_LIVE}" != "${PROMO_ARN_2}" ]; then
