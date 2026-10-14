@@ -180,7 +180,13 @@ async function deploy(opts: {
   const engine = new DeployEngine(
     {
       getState: vi.fn(async (name: string) => {
-        stateReads.push(name);
+        // A producer read `Fn::GetStackOutput` makes itself (every read on
+        // main) is tagged, so a case can assert this PR adds none beside it.
+        stateReads.push(
+          name !== stackName && new Error().stack?.includes('getSameAccountStackState') === true
+            ? `${name}:get-stack-output`
+            : name
+        );
         if (name === stackName) return { state: opts.state, etag: 'e0' };
         const producer = opts.producers?.[name];
         return producer === undefined ? null : { state: producer, etag: 'p0' };
@@ -690,20 +696,9 @@ describe('a cross-stack consumer (Fn::GetStackOutput)', () => {
     expect(run.calls).toEqual(['update:Reader']);
     expect(run.sent['Reader']?.['Value']).toBe(PLAIN_ARN_2);
     // The promotion and the pin reuse the state each `Fn::GetStackOutput` read
-    // already holds: as many producer reads as an edited consumer with no read
-    // versions makes (no promotion, no pin), which is the merge base's count.
-    const control = consumer('b');
-    control.state.resources['Reader']!.referenceProvenance = { [REF]: at([V1]) };
-    const controlRun = await deploy({
-      stackName: 'c',
-      ...control,
-      levels: [['Reader']],
-      producers: { p: producer(URL_2, [V2]) },
-    });
-    expect(controlRun.calls).toEqual(['update:Reader']);
-    expect(run.stateReads.filter((n) => n === 'p')).toEqual(
-      controlRun.stateReads.filter((n) => n === 'p')
-    );
+    // already holds: no producer read but the resolver's own.
+    expect(run.stateReads.filter((n) => n.startsWith('p:'))).not.toEqual([]);
+    expect(run.stateReads.filter((n) => n === 'p')).toEqual([]);
   });
 });
 

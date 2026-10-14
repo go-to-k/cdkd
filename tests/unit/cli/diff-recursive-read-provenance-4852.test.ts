@@ -97,7 +97,10 @@ describe('cdkd diff --recursive: read-provenance promotion (#4852)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function treeOf(queueVersions: string[]): Promise<DiffTreeNode> {
+  async function treeOf(
+    queueVersions: string[],
+    rowProvenance: ReferenceProvenance = at([V1], [V1])
+  ): Promise<DiffTreeNode> {
     const childPath = join(dir, 'child.json');
     writeFileSync(
       childPath,
@@ -128,7 +131,7 @@ describe('cdkd diff --recursive: read-provenance promotion (#4852)', () => {
             properties: { Parameters: { QueueArn: ARN } },
             attributes: {},
             dependencies: ['Queue'],
-            referenceProvenance: { [REF]: at([V1], [V1]) },
+            referenceProvenance: { [REF]: rowProvenance },
           },
         },
         'Root'
@@ -240,6 +243,14 @@ describe('cdkd diff --recursive: read-provenance promotion (#4852)', () => {
     expect(node.changes.get('Reader')?.changeType).toBe('UPDATE');
     expect(printed(node)).toContain('[read value moved upstream]');
     expect(lookups.count).toBe(0);
+  });
+
+  it('a row the deploy leaves NO_CHANGE runs no child engine, so its child is not promoted', async () => {
+    // The row recorded no read versions (a migrated record): not promoted, so
+    // the deploy never reaches the child, whose own record would promote it.
+    const root = await treeOf([V2], at([V1]));
+    expect(root.changes.get('Child')?.changeType).toBe('NO_CHANGE');
+    expect(root.children[0]!.changes.get('Reader')?.changeType).toBe('NO_CHANGE');
   });
 
   it('control: the queue still at the version both recorded promotes nothing', async () => {
