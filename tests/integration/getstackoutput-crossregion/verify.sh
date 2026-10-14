@@ -68,7 +68,7 @@
 #   8b. `cdkd state destroy 'CdkdGsoNested4887~Child'`: exit 0, the policy is
 #       gone from the role, the child state is gone, no role name printed.
 #   8c. Destroy the parent: exit 0, its state is gone.
-# Pre-fix red line: "8b: state destroy of the child exited 2" (the child,
+# Pre-fix red line: "8b: the lone destroy of the child exited 2" (the child,
 # destroyed on its own, was given no resolution opt-in and skipped the record).
 #
 # Required env vars:
@@ -635,11 +635,11 @@ echo "    OK: policy on the role; the child record holds the reference, recorded
 
 echo "==> Phase 8b: cdkd state destroy '${CHILD_4887}' (the child on its own)"
 DESTROY_4887_RC=0
-node "${LOCAL_DIST}" state destroy "${CHILD_4887}" --state-bucket "${STATE_BUCKET}" \
+node "${LOCAL_DIST}" state destroy "${CHILD_4887}" --state-bucket "${STATE_BUCKET:-}" \
   --region "${CONSUMER_REGION}" --yes >"${LOGDIR}/destroy-4887.log" 2>&1 || DESTROY_4887_RC=$?
 if [ "${DESTROY_4887_RC}" -ne 0 ]; then
   sed 's/^/  /' "${LOGDIR}/destroy-4887.log" >&2
-  fail "8b: state destroy of the child exited ${DESTROY_4887_RC} (pre-fix: 2, the record skipped without its parent)"
+  fail "8b: the lone destroy of the child exited ${DESTROY_4887_RC} (pre-fix: 2, the record skipped without its parent)"
 fi
 assert_gone "8b: the nested child's inline policy is still on the role after its destroy" \
   aws iam get-role-policy --role-name "${ROLE_4879}" --policy-name "${POLICY_4887}"

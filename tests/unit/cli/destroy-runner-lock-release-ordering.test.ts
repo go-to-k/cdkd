@@ -365,7 +365,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       parentStack: 'Parent',
     } as unknown as StackState;
     logs.warn.mockImplementation((msg: unknown) => {
-      if (String(msg).includes('secret-derived principal records')) {
+      if (String(msg).includes('destroy it through its parent stack')) {
         throw new Error('EPIPE: broken pipe');
       }
     });
