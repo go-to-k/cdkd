@@ -53,7 +53,7 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
     updateError = new Error(AWS_TEXT);
   });
 
-  function makeEngine(decision: Record<string, unknown>) {
+  function makeEngine(decision: Record<string, unknown>, options: Record<string, unknown> = {}) {
     const provider = {
       create: vi.fn(),
       update: vi.fn().mockImplementation(() => Promise.reject(updateError)),
@@ -87,7 +87,7 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
         filterByType: vi.fn().mockReturnValue([]),
       } as unknown as never,
       registry as unknown as never,
-      {},
+      options,
       'us-east-1'
     );
   }
@@ -155,6 +155,16 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
       expect(message).toContain('--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy');
     }
   );
+
+  it('drops --recreate-via-cc-api inside a nested child engine', async () => {
+    const engine = makeEngine(AUTO_ROUTED, {
+      parentStackInfo: { parentStack: 'Parent', parentLogicalId: 'Child', parentRegion: 'us-east-1' },
+    });
+    const message = ((await runUpdate(engine, 'sdk')) as Error).message;
+    expect(message).toContain('nested stack');
+    expect(message).not.toContain('--recreate-via-cc-api MyTopic');
+    expect(message).toContain('--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy');
+  });
 
   it('leaves the message alone for a resource already on Cloud Control', async () => {
     const thrown = await runUpdate(makeEngine(AUTO_ROUTED), 'cc-api');

@@ -1135,7 +1135,8 @@ export async function updateInPlace(
         updateError.message += ccAutoRouteUpdateFailureRemedy(
           logicalId,
           resourceType,
-          updateDecision.ccRouteReason.properties
+          updateDecision.ccRouteReason.properties,
+          this.options.parentStackInfo !== undefined
         );
       }
       throw updateError;

@@ -372,6 +372,11 @@ BAD_PLAIN=$(printf '%s' "${BAD_OUT}" | sed $'s/\033\[[0-9;]*m//g')
 # absence below would read as a cdkd defect when the deploy died elsewhere.
 grep -qE "Failed to update resource ${LOGICAL_ID}" <<<"${BAD_PLAIN}" || {
   echo "FAIL: the badwindow deploy failed, but not on the update of ${LOGICAL_ID}; the arm below would test nothing" >&2; exit 1; }
+# And inside Cloud Control: `CloudControlProvider.handleError` words its own
+# failure this way, so a failure before the route, or on the SDK provider,
+# reads as a premise failure rather than as a missing note.
+grep -qF "UPDATE failed for ${LOGICAL_ID}:" <<<"${BAD_PLAIN}" || {
+  echo "FAIL: the update of ${LOGICAL_ID} did not fail inside Cloud Control; the arm below would test nothing" >&2; exit 1; }
 grep -qF -- "moved the resource from its SDK provider to Cloud Control API" <<<"${BAD_PLAIN}" || {
   echo "FAIL: the update of ${LOGICAL_ID} failed without naming the move to Cloud Control" >&2; exit 1; }
 grep -qF -- "--recreate-via-cc-api ${LOGICAL_ID}" <<<"${BAD_PLAIN}" || {
