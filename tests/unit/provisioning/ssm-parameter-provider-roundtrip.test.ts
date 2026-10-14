@@ -309,6 +309,7 @@ describe('a revert to no policies clears the live ones (go-to-k/cdkd#4884)', () 
     // The baseline's `[]` is the placeholder of a DescribeParameters failure
     // at capture, not what the template wants: never delete its policy.
     ['declares a policy', { ...base, Policies: JSON.stringify([expiration]) }],
+    ['declares a policy as a list', { ...base, Policies: [expiration] }],
     ['does not declare Policies', { ...base }],
     ['declares an unparsable string', { ...base, Policies: '[' }],
     ['declares a non-string, non-list', { ...base, Policies: 7 }],

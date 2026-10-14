@@ -202,7 +202,7 @@ if [ "${POLICIES_DEPLOYED}" != "0" ]; then
 fi
 # NoChangeNotification only emits an event; it never deletes the parameter.
 aws ssm put-parameter --name "${SSM_POLICY_PARAM}" --value "integ-policies-4884" --type String \
-  --overwrite \
+  --overwrite --tier Advanced \
   --policies '[{"Type":"NoChangeNotification","Version":"1.0","Attributes":{"After":"30","Unit":"Days"}}]' \
   >/dev/null
 POLICIES_INJECTED="$(ssm_policy_count)" || ssm_policy_read_failed
@@ -224,7 +224,7 @@ if [ "${rc}" -ne 1 ]; then
 fi
 # Issue #4884: exit 1 is satisfied by any drifted resource; the policy
 # parameter must be one of them, or step 5c would be vacuous.
-if ! grep -q "DriftPoliciesParameter" "${STEP4_LOG}"; then
+if ! grep -qF '~ DriftPoliciesParameter (' "${STEP4_LOG}"; then
   echo "[verify] FAIL step 4: the out-of-band SSM parameter policy was not reported as drift" >&2
   exit 1
 fi

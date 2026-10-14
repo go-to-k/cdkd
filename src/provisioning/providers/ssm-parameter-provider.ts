@@ -1078,8 +1078,7 @@ export const SSM_CLEAR_POLICIES = '[{}]';
  * compared by `cdkd drift`, so it never reaches a revert.
  */
 function templateDeclaresNoPolicies(recorded: Record<string, unknown> | undefined): boolean {
-  if (recorded === undefined || !Object.hasOwn(recorded, 'Policies')) return false;
-  const declared = recorded['Policies'];
+  const declared = recorded?.['Policies'];
   if (Array.isArray(declared)) return declared.length === 0;
   if (typeof declared !== 'string') return false;
   if (declared.trim() === '') return true;
