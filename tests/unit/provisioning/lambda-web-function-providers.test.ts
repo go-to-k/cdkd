@@ -760,3 +760,152 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
     await expect(provider.getAttribute(EP_ARN, EP_TYPE, 'DomainName')).resolves.toBe('d.on.aws');
   });
 });
+
+describe('Lambda Web providers — re-review round 2 gaps', () => {
+  const revision = new LambdaWebFunctionRevisionProvider();
+  const endpoint = new LambdaWebFunctionEndpointProvider();
+  const revBase = {
+    FunctionName: FN_ARN,
+    BuildConfig: {
+      CodeConfig: { S3Object: { Bucket: 'code-bucket', Key: 'app.zip' } },
+      RuntimeConfig: { Runtime: 'nodejs24.x' },
+    },
+    ServiceConfig: { ExecutionRoleArn: ROLE },
+  };
+  const epBase = {
+    FunctionName: FN_ARN,
+    EndpointName: 'prod',
+    EndpointType: 'HomeRegion',
+    AuthType: 'IamAuth',
+    RevisionWeights: [{ RevisionId: 'rev-abc12', Weight: 100 }],
+  };
+  const serverError = (): Error =>
+    Object.assign(new Error('internal error'), {
+      name: 'InternalServerException',
+      $metadata: { httpStatusCode: 500 },
+      $fault: 'server',
+    });
+
+  it('the orphan report names neither a revision this process recorded nor one outside the window', async () => {
+    const recorded = `${FN_ARN}/revision/rev-recorded`;
+    // An earlier successful create in this process records its ARN.
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: recorded, revisionId: 'rev-recorded' }]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active' }]],
+      ])
+    );
+    await revision.create('Rev', REV_TYPE, revBase);
+    respond(new Map<string, unknown[]>([['CreateWebFunctionRevisionCommand', [serverError()]]]));
+    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow('internal error');
+    respond(
+      new Map<string, unknown[]>([
+        [
+          'ListWebFunctionRevisionsCommand',
+          [
+            {
+              revisions: [
+                { revisionArn: recorded, createdAt: new Date() },
+                { revisionArn: `${FN_ARN}/revision/rev-old`, createdAt: new Date(Date.now() - 86_400_000) },
+                { revisionArn: `${FN_ARN}/revision/rev-orphan`, createdAt: new Date() },
+              ],
+            },
+          ],
+        ],
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active' }]],
+      ])
+    );
+    await revision.create('Rev', REV_TYPE, revBase);
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('rev-orphan');
+    expect(warned).not.toContain('rev-recorded');
+    expect(warned).not.toContain('rev-old');
+  });
+
+  it('a 4xx create failure arms nothing: the next create lists no revisions', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        [
+          'CreateWebFunctionRevisionCommand',
+          [Object.assign(new Error('bad zip'), { name: 'ValidationException', $metadata: { httpStatusCode: 400 } })],
+        ],
+      ])
+    );
+    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow('bad zip');
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active' }]],
+      ])
+    );
+    await revision.create('Rev', REV_TYPE, revBase);
+    expect(callsOf(ListWebFunctionRevisionsCommand)).toHaveLength(0);
+  });
+
+  it('a create the SDK replayed inside its send reports the candidates afterwards', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        [
+          'CreateWebFunctionRevisionCommand',
+          [{ revisionArn: REV_ARN, revisionId: 'rev-abc12', $metadata: { attempts: 2 } }],
+        ],
+        [
+          'ListWebFunctionRevisionsCommand',
+          [{ revisions: [{ revisionArn: `${FN_ARN}/revision/rev-twin`, createdAt: new Date() }] }],
+        ],
+        ['GetWebFunctionRevisionCommand', [{ state: 'Active' }]],
+      ])
+    );
+    await revision.create('Rev', REV_TYPE, revBase);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('rev-twin'));
+  });
+
+  it('the not-found grace is create-only and bounded', async () => {
+    // Update: a not-found is not a visibility gap, it throws at once.
+    respond(
+      new Map<string, unknown[]>([
+        ['UpdateWebFunctionEndpointCommand', [{}]],
+        ['GetWebFunctionEndpointCommand', [notFound()]],
+      ])
+    );
+    await expect(endpoint.update('Ep', EP_ARN, EP_TYPE, epBase, epBase)).rejects.toThrow('does not exist');
+    expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(1);
+    // Create: a not-found that outlasts the grace throws.
+    mockSend.mockClear();
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+        ['GetWebFunctionEndpointCommand', [notFound()]],
+      ])
+    );
+    await expect(endpoint.create('Ep', EP_TYPE, epBase)).rejects.toThrow('does not exist');
+    expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(11);
+  });
+
+  const A = { RevisionId: 'rev-a', Weight: 90 };
+  const B = { RevisionId: 'rev-b', Weight: 10 };
+  it.each([
+    ['sent a,b / read b,a', [A, B], [B, A]],
+    ['sent b,a / read a,b', [B, A], [A, B]],
+  ])('the update wait accepts the sent weights in any order (%s)', async (_label, sent, read) => {
+    respond(
+      new Map<string, unknown[]>([
+        ['UpdateWebFunctionEndpointCommand', [{}]],
+        [
+          'GetWebFunctionEndpointCommand',
+          [
+            {
+              endpointArn: EP_ARN,
+              state: 'Active',
+              updateStatus: 'Successful',
+              revisionWeights: read.map((w) => ({ revisionId: w.RevisionId, weight: w.Weight })),
+            },
+          ],
+        ],
+      ])
+    );
+    await endpoint.update('Ep', EP_ARN, EP_TYPE, { ...epBase, RevisionWeights: sent }, epBase);
+    expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(1);
+  });
+});

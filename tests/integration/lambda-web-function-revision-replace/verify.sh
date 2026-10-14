@@ -341,7 +341,14 @@ DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KE
   exit 1
 }
 echo "${DRIFT_OUT}"
-echo "    OK: no drift"
+# Exit 0 also covers a resource drift could not compare (unsupported or
+# skipped), so require every resource of the stack to have been compared: the
+# role, the function, the revision and the endpoint.
+if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(4 resources checked, 0 unsupported)'; then
+  echo "FAIL: drift did not compare all 4 resources -- expected '(4 resources checked, 0 unsupported)'" >&2
+  exit 1
+fi
+echo "    OK: no drift, all 4 resources compared"
 
 echo "==> Destroy"
 ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
