@@ -52,8 +52,13 @@ export interface SecretPrincipalRetryMemo {
  * The resolver {@link resolveSecretDerivedPrincipals} resolves through: the
  * stack region's own, and its producer-region guest for a recorded region.
  */
-export type SecretPrincipalResolver = Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'> & {
-  resolverForRecordedRegion(region: string): Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
+export type SecretPrincipalResolver = Pick<
+  IntrinsicFunctionResolver,
+  'resolveDynamicReferences'
+> & {
+  resolverForRecordedRegion(
+    region: string
+  ): Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
 };
 
 /** Whether {@link resolveSecretDerivedPrincipals} may resolve a token with this verdict. */
@@ -107,7 +112,8 @@ export async function resolveSecretDerivedPrincipals<K extends string>(
   region: string | undefined,
   importedProducerRegions: readonly string[],
   recordedRegions: ReadonlyMap<string, string> | undefined,
-  makeResolver: (region: string) => SecretPrincipalResolver = (r) => new IntrinsicFunctionResolver(r)
+  makeResolver: (region: string) => SecretPrincipalResolver = (r) =>
+    new IntrinsicFunctionResolver(r)
 ): Promise<ResolvedSecretPrincipals<K> | undefined> {
   if (!region) return undefined;
   const stackRegion = region;
@@ -208,7 +214,8 @@ async function resolveEntry(
   for (const [token, verdict] of tokens) {
     const at = entry.indexOf(token, cursor);
     // The tokens come from a scan of this string; fail closed if not.
-    if (at < 0) throw new Error('A scanned dynamic reference is not in the entry it was scanned from');
+    if (at < 0)
+      throw new Error('A scanned dynamic reference is not in the entry it was scanned from');
     out += entry.slice(cursor, at);
     const resolver =
       verdict.kind === 'recorded-region'
