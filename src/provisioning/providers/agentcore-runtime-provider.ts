@@ -34,6 +34,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -178,9 +179,23 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating BedrockAgentCore Runtime ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is the bare runtime id, so a client in another region than
+    // the state record would send `UpdateAgentRuntime` to a region this record was not written
+    // through. Ahead of the RoleArn check so the refusal names the region, not a symptom, and outside
+    // the try so it is not re-labelled as an AWS failure. Refuse before any call; the client's
+    // region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.client.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
 
     const roleArn = properties['RoleArn'] as string;
     if (!roleArn) {

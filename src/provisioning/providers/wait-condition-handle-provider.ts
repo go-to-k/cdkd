@@ -5,6 +5,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
@@ -55,13 +56,18 @@ export class WaitConditionHandleProvider implements ResourceProvider {
   /**
    * The type has no properties, so there is nothing to update — keep the
    * existing physical id.
+   *
+   * go-to-k/cdkd#2613: `context` is accepted but no region guard runs. The
+   * handle is a local placeholder with no AWS client, so there is neither a
+   * call to misdirect nor a client region to compare.
    */
   async update(
     logicalId: string,
     physicalId: string,
     _resourceType: string,
     _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`No-op update for WaitConditionHandle ${logicalId}`);
     return { physicalId, wasReplaced: false, attributes: {} };

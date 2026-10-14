@@ -96,7 +96,12 @@ export class DocdbNeptuneStack extends cdk.Stack {
       this,
       'DocdbSubnetGroup',
       {
-        dbSubnetGroupDescription: 'cdkd integ docdb subnet group',
+        // Issue #2613: a changed description is an in-place
+        // ModifyDBSubnetGroup, so the removal redeploy (step 3c) also reaches
+        // the subnet group provider's update() and its recorded-region guard.
+        dbSubnetGroupDescription: isRemoval
+          ? 'cdkd integ docdb subnet group (updated)'
+          : 'cdkd integ docdb subnet group',
         subnetIds,
       }
     );

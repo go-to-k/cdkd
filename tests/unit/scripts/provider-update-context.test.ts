@@ -186,6 +186,10 @@ describe('provider UpdateContext fence — the real tree', () => {
     expect([...report.declaring].sort()).toEqual([
       'ACMCertificateProvider',
       'ASGProvider',
+      'AgentCoreBrowserProvider',
+      'AgentCoreCodeInterpreterProvider',
+      'AgentCoreEvaluatorProvider',
+      'AgentCoreRuntimeProvider',
       'ApiGatewayProvider',
       'ApiGatewayV2Provider',
       'AppSyncProvider',
@@ -197,7 +201,9 @@ describe('provider UpdateContext fence — the real tree', () => {
       'CodeCommitRepositoryProvider',
       'CognitoUserPoolProvider',
       'CustomResourceProvider',
+      'DLMLifecyclePolicyProvider',
       'DocDBProvider',
+      'DocDBSubnetGroupProvider',
       'DynamoDBGlobalTableProvider',
       'DynamoDBTableProvider',
       'EC2Provider',
@@ -212,6 +218,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'EventBridgeBusProvider',
       'EventBridgeRuleProvider',
       'FSxFileSystemProvider',
+      'FirehoseProvider',
       'GlueConnectionProvider',
       'GlueCrawlerProvider',
       'GlueJobProvider',
@@ -230,6 +237,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaEventInvokeConfigProvider',
       'LambdaEventSourceMappingProvider',
       'LambdaFunctionProvider',
+      'LambdaLayerVersionProvider',
       'LambdaMicrovmImageProvider',
       'LambdaPermissionProvider',
       'LambdaUrlProvider',
@@ -255,6 +263,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'SecretsManagerSecretProvider',
       'ServiceDiscoveryProvider',
       'StepFunctionsProvider',
+      'WaitConditionHandleProvider',
     ]);
   });
 
@@ -509,49 +518,49 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
   }, SPAWN_TIMEOUT_MS);
 
   it('an OMITTING provider that gains the parameter fails with the good news', () => {
-    // Subject: `FirehoseProvider`, an omitter whose file carries the
-    // five-parameter header and the import tail once each. It was
-    // `EventBridgeBusProvider` until that provider gained the parameter
-    // (issue #2613 remedy 2) and left the omitting set.
+    // Subject: `CloudFrontDistributionProvider`, an omitter whose file carries
+    // the five-parameter header and the import tail once each. It was
+    // `FirehoseProvider` until that provider gained the parameter (issue #2613
+    // remedy 2) and left the omitting set.
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'firehose-provider.ts',
+      'cloudfront-distribution-provider.ts',
       `  ResourceNotFound,
 } from '../../types/resource.js';`,
       `  ResourceNotFound,
   UpdateContext,
 } from '../../types/resource.js';`
     );
-    mutate(dir, 'firehose-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+    mutate(dir, 'cloudfront-distribution-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[newly-declaring]');
     expect(result.stderr).toContain('good news');
-    expect(result.stderr).toContain('FirehoseProvider');
+    expect(result.stderr).toContain('CloudFrontDistributionProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a RENAMED provider leaves a stale allow-list entry and fails', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'docdb-subnet-group-provider.ts',
-      'export class DocDBSubnetGroupProvider implements ResourceProvider {',
-      'export class DocDBClusterSubnetGroupProvider implements ResourceProvider {'
+      'cloudfront-oac-provider.ts',
+      'export class CloudFrontOACProvider implements ResourceProvider {',
+      'export class CloudFrontOriginAccessControlProvider implements ResourceProvider {'
     );
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[stale-entry]');
-    expect(result.stderr).toContain('DocDBSubnetGroupProvider');
+    expect(result.stderr).toContain('CloudFrontOACProvider');
     // ...and the renamed class is itself an unrecorded omitter.
-    expect(result.stderr).toContain('DocDBClusterSubnetGroupProvider');
+    expect(result.stderr).toContain('CloudFrontOriginAccessControlProvider');
   }, SPAWN_TIMEOUT_MS);
 
   it('a 6th parameter typed `unknown` is REFUSED, not counted as declaring', () => {
     const dir = copyProvidersTree();
     mutate(
       dir,
-      'firehose-provider.ts',
+      'cloudfront-distribution-provider.ts',
       FIVE_PARAM_UPDATE,
       `  async update(
     logicalId: string,
@@ -565,7 +574,7 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[refusal]');
-    expect(result.stderr).toContain('FirehoseProvider');
+    expect(result.stderr).toContain('CloudFrontDistributionProvider');
     expect(result.stderr).toContain('not `UpdateContext`');
     // The refusal must NOT quietly reclassify it as declaring.
     expect(result.stderr).not.toContain('[newly-declaring]');

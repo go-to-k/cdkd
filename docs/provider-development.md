@@ -114,7 +114,8 @@ import { DocDBClient /* and the commands */ } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import type { ResourceProvider } from '../../types/resource.js';
+import { assertRegionMatch } from '../region-check.js';
+import type { ResourceProvider, UpdateContext } from '../../types/resource.js';
 
 export class DocDBSubnetGroupProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
@@ -267,8 +268,17 @@ async update(
   physicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
+  assertRegionMatch(
+    context?.expectedRegion ? await this.getClient().config.region() : undefined,
+    context?.expectedRegion,
+    resourceType,
+    logicalId,
+    physicalId,
+    'pre-update'
+  );
   refuseMalformedDesiredTags(
     properties['Tags'],
     resourceType,
@@ -303,6 +313,13 @@ async update(
   }
 }
 ```
+
+`assertRegionMatch` runs before any AWS call. `context.expectedRegion` is the
+region cdkd recorded in state, and a client in another region would send the
+update to a resource of the same name that cdkd does not manage. Declare the
+`context` parameter even when your `update` sends nothing:
+`scripts/check-provider-update-context.ts` fails on a provider that leaves it
+out.
 
 The call to `clearOnUpdateRemoval` is the part that is easy to miss. Suppose a
 user sets `DBSubnetGroupDescription`, deploys, then deletes the property from

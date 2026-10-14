@@ -15,6 +15,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -150,10 +151,23 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.assertType(resourceType, logicalId, physicalId);
     this.logger.debug(safeMsg`Updating DocDB DBSubnetGroup ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is the subnet group NAME, so a client in another region
+    // than the state record would modify and retag a same-named group cdkd does not manage. Outside
+    // the try: a refusal is not an AWS failure to re-label. Refuse before any call; the client's
+    // region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

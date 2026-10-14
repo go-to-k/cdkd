@@ -26,6 +26,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -479,8 +480,23 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: the update addresses the policy by its id, so a client in another region
+    // than the state record would send `UpdateLifecyclePolicy` and the tag diff to a region this
+    // record was not written through. Ahead of the DefaultPolicy refusal too: that one is a
+    // `ResourceUpdateNotSupportedError` steering toward a replacement, which is the wrong next step
+    // when the region is what disagrees. Refuse before any call; the client's region is resolved
+    // only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

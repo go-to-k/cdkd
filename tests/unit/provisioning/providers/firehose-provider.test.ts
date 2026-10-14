@@ -411,3 +411,56 @@ describe('FirehoseProvider', () => {
     });
   });
 });
+
+describe('FirehoseProvider update region guard (issue #2613)', () => {
+  let provider: FirehoseProvider;
+  const desired = { DeliveryStreamName: 'test-stream', Tags: [{ Key: 'team', Value: 'a' }] };
+  const previous = { DeliveryStreamName: 'test-stream', Tags: [] as Array<{ Key: string; Value: string }> };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyDeliveryStream .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof DescribeDeliveryStreamCommand
+          ? { DeliveryStreamDescription: { VersionId: '1', Destinations: [] } }
+          : {}
+      )
+    );
+    await provider.update('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend.mock.calls.map((c) => (c[0] as object).constructor.name)).toContain(
+      'TagDeliveryStreamCommand'
+    );
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region = region;
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof DescribeDeliveryStreamCommand
+          ? { DeliveryStreamDescription: { VersionId: '1', Destinations: [] } }
+          : {}
+      )
+    );
+    await provider.update('MyDeliveryStream', 'test-stream', 'AWS::KinesisFirehose::DeliveryStream', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls.map((c) => (c[0] as object).constructor.name)).toContain(
+      'TagDeliveryStreamCommand'
+    );
+  });
+});

@@ -43,6 +43,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -624,8 +625,21 @@ export class FirehoseProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: the physical id is the delivery stream NAME, so a client in another region
+    // than the state record would retag and update a same-named stream cdkd does not manage.
+    // Outside the try, ahead of `applyUpdate`'s first call. Refuse before any call; the client's
+    // region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     try {
       return await this.applyUpdate(
         logicalId,

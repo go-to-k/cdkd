@@ -699,7 +699,7 @@ auto-routed there and `S3BucketProvider.delete` never runs at all (issue
 | Guard | Route / phase | On an INDETERMINATE answer |
 | --- | --- | --- |
 | `S3BucketProvider.assertExistingBucketRegion` | SDK, create | refuses |
-| `assertRegionMatch` (`src/provisioning/region-check.ts`) | generic, delete; update only where a provider opts in (`S3BucketProvider` alone today) | no-op without `expectedRegion` |
+| `assertRegionMatch` (`src/provisioning/region-check.ts`) | generic, delete; update in each provider whose `update()` calls it with `UpdateContext.expectedRegion` ([#2613](https://github.com/go-to-k/cdkd/issues/2613)) | no-op without `expectedRegion` |
 | `CloudControlProvider.confirmDeleteTargetIdentity` | CC, delete, per-type (S3 today) | **warns and PROCEEDS** |
 | `CloudControlProvider.assertRecordedRegionAgainstClient` | CC, delete + update | **refuses** |
 

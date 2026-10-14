@@ -51,6 +51,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -196,9 +197,23 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating BedrockAgentCore Evaluator ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the update addresses the evaluator by the id inside the recorded ARN, so a
+    // client in another region than the state record would send it, and the tag sync after it, to
+    // a region this record was not written through. Outside the try: a refusal is not an AWS
+    // failure to re-label. Refuse before any call; the client's region is resolved only when there
+    // is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.client.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

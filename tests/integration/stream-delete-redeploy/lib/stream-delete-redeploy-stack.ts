@@ -25,6 +25,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * redeploy re-creates the SAME names. The bucket name carries the phase
  * (`CDKD_SRD_PHASE`) instead: S3 can hold a just-deleted bucket name too, and
  * that would fail the redeploy for a reason this probe is not about.
+ *
+ * `CDKD_SRD_TAG` sets the delivery stream's one tag; verify.sh's Phase 3b
+ * changes it, an in-place update through the Firehose provider's `update()`
+ * and its recorded-region guard (issue #2613).
  */
 export class StreamDeleteRedeployStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -32,6 +36,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
 
     const runId = process.env.CDKD_SRD_RUN_ID ?? 'manual';
     const phase = process.env.CDKD_SRD_PHASE ?? 'a';
+    const tagValue = process.env.CDKD_SRD_TAG ?? 'base';
 
     const stream = new kinesis.Stream(this, 'Stream', {
       streamName: `cdkd-stream-redeploy-${runId}`,
@@ -62,6 +67,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
         bucketArn: bucket.bucketArn,
         roleArn: role.roleArn,
       },
+      tags: [{ key: 'cdkd-srd', value: tagValue }],
     });
     // The role's grant policy must exist before Firehose validates the role.
     deliveryStream.node.addDependency(role);

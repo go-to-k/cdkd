@@ -21,6 +21,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -368,11 +369,24 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
    */
   async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
     _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: this method sends nothing, but the refusal below is a
+    // `ResourceUpdateNotSupportedError` steering toward a replacement, the wrong next step when the
+    // client's region disagrees with the state record's. Refuse first, naming both regions; the
+    // client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.lambdaClient.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     return Promise.reject(
       new ResourceUpdateNotSupportedError(
         resourceType,

@@ -22,7 +22,9 @@
 #       ModifyDBCluster has merge semantics (absent = "no change"), so
 #       before the #1160 fix the removed fields silently kept their old
 #       live values — worst case DeletionProtection, which would make
-#       the step-4 destroy fail.
+#       the step-4 destroy fail. The same redeploy changes the DocDB
+#       subnet group description, an in-place update through the
+#       provider's update() (issue #2613).
 #   3d. poll describe-db-clusters until both clusters settle back to the
 #       CFn defaults (DeletionProtection=false, BackupRetentionPeriod=1,
 #       Neptune IAMDatabaseAuthenticationEnabled=false)
@@ -327,6 +329,24 @@ check_param() { # usage: check_param <state json> <logical id> <expected value>
 echo "[verify] step 3e: endpoint Fn::GetAtt values reached their consumers (issue #3650)"
 check_endpoints "step 3e"
 
+# Issue #2613: the step-3c redeploy also changes the DocDB subnet group's
+# description, an in-place ModifyDBSubnetGroup through the provider's update().
+# The generated name is deterministic, so a replacement would come back under
+# the SAME name and this check cannot tell the two apart; a replacement fails
+# the deploy itself instead (the cluster still uses the group, and the create
+# collides with the name). What is checked here is that the description applied.
+DOCDB_SG_NAME=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.DocdbSubnetGroup.physicalId // ""')
+if [ -z "${DOCDB_SG_NAME}" ]; then
+  echo "[verify] FAIL: DocdbSubnetGroup has no physicalId in state before step 3c" >&2
+  exit 1
+fi
+DOCDB_SG_DESC=$(aws docdb describe-db-subnet-groups --db-subnet-group-name "${DOCDB_SG_NAME}" \
+  --region "${REGION}" --query 'DBSubnetGroups[0].DBSubnetGroupDescription' --output text)
+if [ "${DOCDB_SG_DESC}" != "cdkd integ docdb subnet group" ]; then
+  echo "[verify] FAIL: DocDB subnet group ${DOCDB_SG_NAME} description is '${DOCDB_SG_DESC}' after create, expected 'cdkd integ docdb subnet group'" >&2
+  exit 1
+fi
+
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 fields)"
 CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -371,6 +391,18 @@ if [ -z "${RESET_OK}" ]; then
   exit 1
 fi
 echo "[verify] step 3d ok: both clusters reset to DeletionProtection=false + BackupRetentionPeriod=1 (+ Neptune IAMDatabaseAuthenticationEnabled=false) — #1160 silent-drop CLOSED"
+
+# Issue #2613: the description must have changed on the recorded group.
+if ! DOCDB_SG_DESC=$(aws docdb describe-db-subnet-groups --db-subnet-group-name "${DOCDB_SG_NAME}" \
+  --region "${REGION}" --query 'DBSubnetGroups[0].DBSubnetGroupDescription' --output text); then
+  echo "[verify] FAIL: DocDB subnet group ${DOCDB_SG_NAME} is gone after step 3c (issue #2613: the description change must update the group in place)" >&2
+  exit 1
+fi
+if [ "${DOCDB_SG_DESC}" != "cdkd integ docdb subnet group (updated)" ]; then
+  echo "[verify] FAIL: DocDB subnet group ${DOCDB_SG_NAME} description is '${DOCDB_SG_DESC}' after step 3c, expected 'cdkd integ docdb subnet group (updated)' (issue #2613: the subnet group update() did not apply)" >&2
+  exit 1
+fi
+echo "[verify] step 3c ok: DocDB subnet group description updated (issue #2613)"
 
 echo "[verify] step 3f: endpoint Fn::GetAtt values after the UPDATE redeploy (issue #3650)"
 check_endpoints "step 3f"

@@ -95,3 +95,14 @@ describe('WaitConditionHandleProvider', () => {
     });
   });
 });
+
+describe('WaitConditionHandleProvider update with a recorded region (issue #2613)', () => {
+  // A local placeholder with no AWS client: nothing to misdirect, no region to compare.
+  it('stays a no-op whatever region is recorded', async () => {
+    const provider = new WaitConditionHandleProvider();
+    const result = await provider.update('Placeholder', 'existing-id', TYPE, {}, {}, {
+      expectedRegion: 'us-west-2',
+    });
+    expect(result).toEqual({ physicalId: 'existing-id', wasReplaced: false, attributes: {} });
+  });
+});

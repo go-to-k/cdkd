@@ -13,6 +13,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { LambdaLayerVersionProvider } from '../../../../src/provisioning/providers/lambda-layer-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('LambdaLayerVersionProvider — import', () => {
   let provider: LambdaLayerVersionProvider;
@@ -48,6 +49,43 @@ describe('LambdaLayerVersionProvider — import', () => {
   it('returns null without any AWS call when no explicit ARN is given', async () => {
     const result = await provider.import!(makeInput());
     expect(result).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('LambdaLayerVersionProvider update region guard (issue #2613)', () => {
+  let provider: LambdaLayerVersionProvider;
+  const ARN = 'arn:aws:lambda:us-east-1:123456789012:layer:my-layer:3';
+  const TYPE = 'AWS::Lambda::LayerVersion';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new LambdaLayerVersionProvider();
+  });
+
+  it('refuses a wrong-region update with the region named, not the immutability error', async () => {
+    const error = await provider
+      .update('MyLayer', ARN, TYPE, {}, {}, { expectedRegion: 'us-west-2' })
+      .catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toMatch(/Refusing to update MyLayer .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('a matching region reaches the immutability refusal', async () => {
+    await expect(
+      provider.update('MyLayer', ARN, TYPE, {}, {}, { expectedRegion: 'us-east-1' })
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('without a recorded region reaches the immutability refusal and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { lambdaClient: { config: { region: unknown } } }).lambdaClient.config.region = region;
+    await expect(provider.update('MyLayer', ARN, TYPE, {}, {})).rejects.toBeInstanceOf(
+      ResourceUpdateNotSupportedError
+    );
+    expect(region).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

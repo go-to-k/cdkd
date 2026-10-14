@@ -19,6 +19,8 @@
 #      either stream was still present after destroy.
 #   3. Assert both streams are ACTIVE again (the redeploy really re-created
 #      them under the same names).
+#   3b. Redeploy with a changed delivery stream tag: an in-place update, the
+#      stream's CreateTimestamp unchanged (issue #2613).
 #   4. Destroy, assert both streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -193,6 +195,40 @@ assert_eq "Firehose status after the redeploy" "ACTIVE" "$(firehose_status)"
 assert_eq "Kinesis status after the redeploy" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after the redeploy" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE again under the same names"
+
+# --- Phase 3b: an in-place delivery stream update (issue #2613) ----------
+# Only the delivery stream's tag changes, so the redeploy reaches the Firehose
+# provider's update() and its recorded-region guard. CreateTimestamp pins that
+# the stream was updated, not replaced.
+firehose_created() {
+  aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query 'DeliveryStreamDescription.CreateTimestamp' --output text
+}
+firehose_tag() {
+  aws firehose list-tags-for-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query "Tags[?Key=='cdkd-srd'].Value | [0]" --output text
+}
+# Each read is its own assignment so a failed `aws` call trips `set -e`, rather
+# than comparing as an empty string inside assert_eq's arguments.
+PRE_TAG="$(firehose_tag)"
+assert_eq "Firehose tag cdkd-srd before Phase 3b" "base" "${PRE_TAG}"
+PRE_CREATED="$(firehose_created)"
+if [ -z "${PRE_CREATED}" ] || [ "${PRE_CREATED}" = None ]; then
+  echo "FAIL: no CreateTimestamp for ${NAME} before Phase 3b (got '${PRE_CREATED}')" >&2
+  exit 1
+fi
+echo "==> Phase 3b: redeploy with a changed delivery stream tag"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+POST_TAG="$(firehose_tag)"
+assert_eq "Firehose tag cdkd-srd after Phase 3b (issue #2613: the delivery stream update() did not apply)" "updated" "${POST_TAG}"
+POST_CREATED="$(firehose_created)"
+if [ -z "${POST_CREATED}" ] || [ "${POST_CREATED}" = None ]; then
+  echo "FAIL: no CreateTimestamp for ${NAME} after Phase 3b (got '${POST_CREATED}')" >&2
+  exit 1
+fi
+assert_eq "Firehose CreateTimestamp after Phase 3b (issue #2613: the tag change must update the stream in place, not replace it)" "${PRE_CREATED}" "${POST_CREATED}"
+echo "    delivery stream tag updated in place, CreateTimestamp unchanged (issue #2613)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"

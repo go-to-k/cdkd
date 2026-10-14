@@ -194,3 +194,19 @@ describe('AgentCoreBrowserProvider', () => {
     });
   });
 });
+
+describe('AgentCoreBrowserProvider update with a recorded region (issue #2613)', () => {
+  // update() is a no-op that sends nothing, so there is no call to misdirect and no guard.
+  it('sends nothing and resolves no client region, whatever region is recorded', async () => {
+    vi.clearAllMocks();
+    const provider = new AgentCoreBrowserProvider();
+    const region = vi.fn(() => Promise.resolve('us-east-1'));
+    (provider as unknown as { client: { config: { region: unknown } } }).client.config.region = region;
+    const result = await provider.update('MyBrowser', DEFAULT_ARN, 'AWS::BedrockAgentCore::Browser', {}, {}, {
+      expectedRegion: 'us-west-2',
+    });
+    expect(result).toEqual({ physicalId: DEFAULT_ARN, wasReplaced: false, attributes: {} });
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});

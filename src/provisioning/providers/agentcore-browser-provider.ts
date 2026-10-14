@@ -35,6 +35,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
@@ -107,13 +108,18 @@ export class AgentCoreBrowserProvider implements ResourceProvider {
   /**
    * Every property on this type is read-only, so there is nothing to
    * update — keep the existing physical id.
+   *
+   * go-to-k/cdkd#2613: `context` is accepted but no region guard runs. This
+   * method sends nothing, so a client in another region than the state record
+   * has no call to misdirect; `delete()` is a no-op for the same reason.
    */
   async update(
     logicalId: string,
     physicalId: string,
     _resourceType: string,
     _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`No-op update for default browser ${logicalId}`);
     return { physicalId, wasReplaced: false, attributes: {} };

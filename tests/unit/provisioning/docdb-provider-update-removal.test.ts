@@ -236,3 +236,40 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
     });
   });
 });
+
+describe('DocDBSubnetGroupProvider update region guard (issue #2613)', () => {
+  let provider: DocDBSubnetGroupProvider;
+  const desired = { DBSubnetGroupDescription: 'new', SubnetIds: ['subnet-a', 'subnet-b'] };
+  const previous = { DBSubnetGroupDescription: 'old', SubnetIds: ['subnet-a', 'subnet-b'] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new DocDBSubnetGroupProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MySubnetGroup', 'my-subnet-group', 'AWS::DocDB::DBSubnetGroup', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MySubnetGroup .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({ DBSubnetGroups: [] });
+    await provider.update('MySubnetGroup', 'my-subnet-group', 'AWS::DocDB::DBSubnetGroup', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBSubnetGroupCommand');
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region = region;
+    mockSend.mockResolvedValue({ DBSubnetGroups: [] });
+    await provider.update('MySubnetGroup', 'my-subnet-group', 'AWS::DocDB::DBSubnetGroup', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBSubnetGroupCommand');
+  });
+});

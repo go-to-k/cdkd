@@ -621,3 +621,56 @@ describe('DLMLifecyclePolicyProvider import', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
+
+describe('DLMLifecyclePolicyProvider update region guard (issue #2613)', () => {
+  let provider: DLMLifecyclePolicyProvider;
+  const desired = { Description: 'new', State: 'DISABLED', PolicyDetails: POLICY_DETAILS };
+  const previous = { Description: 'old', State: 'ENABLED', PolicyDetails: POLICY_DETAILS };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new DLMLifecyclePolicyProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyPolicy', POLICY_ID, 'AWS::DLM::LifecyclePolicy', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyPolicy .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({ Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } });
+    await provider.update('MyPolicy', POLICY_ID, 'AWS::DLM::LifecyclePolicy', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateLifecyclePolicyCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region = region;
+    mockSend.mockResolvedValue({ Policy: { PolicyId: POLICY_ID, PolicyArn: POLICY_ARN } });
+    await provider.update('MyPolicy', POLICY_ID, 'AWS::DLM::LifecyclePolicy', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateLifecyclePolicyCommand);
+  });
+
+  it('a wrong-region refusal comes ahead of the DefaultPolicy replacement refusal', async () => {
+    const error = await provider
+      .update(
+        'MyPolicy',
+        POLICY_ID,
+        RESOURCE_TYPE,
+        { DefaultPolicy: 'VOLUME' },
+        { DefaultPolicy: 'INSTANCE' },
+        { expectedRegion: 'us-west-2' }
+      )
+      .catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toMatch(/Refusing to update MyPolicy .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});

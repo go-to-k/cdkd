@@ -228,22 +228,13 @@ const REQUIRED_MEMBERS = ['create', 'update', 'delete'] as const;
  * you do, which is the ratchet.
  */
 export const OMITS_UPDATE_CONTEXT: readonly string[] = [
-  'AgentCoreBrowserProvider',
-  'AgentCoreCodeInterpreterProvider',
-  'AgentCoreEvaluatorProvider',
-  'AgentCoreRuntimeProvider',
   'CloudFrontDistributionProvider',
   'CloudFrontOACProvider',
   'CloudFrontOAIProvider',
-  'DLMLifecyclePolicyProvider',
-  'DocDBSubnetGroupProvider',
-  'FirehoseProvider',
   'GlueSecurityConfigurationProvider',
-  'LambdaLayerVersionProvider',
   'S3DirectoryBucketProvider',
   'S3TablesProvider',
   'WAFv2WebACLProvider',
-  'WaitConditionHandleProvider',
 ];
 
 /**

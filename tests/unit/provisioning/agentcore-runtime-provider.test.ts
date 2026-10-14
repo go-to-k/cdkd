@@ -468,3 +468,51 @@ describe('AgentCoreRuntimeProvider', () => {
     });
   });
 });
+
+describe('AgentCoreRuntimeProvider update region guard (issue #2613)', () => {
+  let provider: AgentCoreRuntimeProvider;
+  const desired = { AgentRuntimeName: 'my-runtime', RoleArn: 'arn:aws:iam::123456789012:role/my-role', Description: 'new' };
+  const previous = { AgentRuntimeName: 'my-runtime', RoleArn: 'arn:aws:iam::123456789012:role/my-role', Description: 'old' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new AgentCoreRuntimeProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyRuntime', 'runtime-12345', 'AWS::BedrockAgentCore::Runtime', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyRuntime .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValue({ agentRuntimeId: 'runtime-12345', status: 'UPDATING' });
+    await provider.update('MyRuntime', 'runtime-12345', 'AWS::BedrockAgentCore::Runtime', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('UpdateAgentRuntimeCommand');
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { client: { config: { region: unknown } } }).client.config.region = region;
+    mockSend.mockResolvedValue({ agentRuntimeId: 'runtime-12345', status: 'UPDATING' });
+    await provider.update('MyRuntime', 'runtime-12345', 'AWS::BedrockAgentCore::Runtime', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('UpdateAgentRuntimeCommand');
+  });
+
+  it('a wrong-region refusal comes ahead of the RoleArn check', async () => {
+    await expect(
+      provider.update('MyRuntime', 'runtime-12345', 'AWS::BedrockAgentCore::Runtime', {}, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyRuntime .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
