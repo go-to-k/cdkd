@@ -2,34 +2,34 @@ import type { JsonPatchOp } from './json-patch-generator.js';
 
 const DETECTOR_TYPE = 'AWS::GuardDuty::Detector';
 
+/** The read-back keys `UpdateDetector` refuses beside each other. */
+const READ_BACK_KEYS = ['Features', 'DataSources'] as const;
+
 /**
  * Extend a Cloud Control update patch for `AWS::GuardDuty::Detector` so the
  * keys GuardDuty fills in on read never reach `UpdateDetector` (issue
  * [#4910](https://github.com/go-to-k/cdkd/issues/4910)).
  *
  * Cloud Control applies the patch on top of the model its read handler
- * returns, and for a detector that model carries two keys the template never
- * declared: `DataSources` (derived from the enabled features) and the FULL
- * `Features` list (every feature GuardDuty knows, `EKS_RUNTIME_MONITORING` and
- * `RUNTIME_MONITORING` both included). `UpdateDetector` refuses a request
- * carrying `DataSources` beside `Features`, and one carrying both runtime
- * features, so a patch that leaves either key as read fails — a scalar-only
- * change leaves both, a `Features` change leaves `DataSources`.
+ * returns, and for a detector that model always carries both `DataSources`
+ * and the FULL `Features` list (every feature GuardDuty knows,
+ * `EKS_RUNTIME_MONITORING` and `RUNTIME_MONITORING` both included), whichever
+ * of them the template declares. `UpdateDetector` refuses a request carrying
+ * `DataSources` beside `Features`, and one carrying both runtime features, so
+ * any patch that leaves either key as read fails.
  *
- * Applies only when the desired properties declare `Features` as a list and do
- * not declare `DataSources` (the shape CDK's `CfnDetector` examples use, and
- * the only one measured), and only to a non-empty patch: it adds
- * `add /Features` with the desired list when the patch has no `/Features` op,
- * and `remove /DataSources` when it has no `/DataSources` op. `add` replaces
- * an existing member (RFC 6902), and the read model always carries both keys —
- * after an update too — so neither op can miss its target.
+ * For each of the two keys the patch has no op on, a non-empty patch gets
+ * `add /<key>` with the desired value when the desired properties declare it
+ * (`add` replaces an existing member, RFC 6902), and `remove /<key>` when they
+ * do not. The request then carries what the template declares, as a
+ * CloudFormation update does. Measured on all three template shapes: `Features`
+ * only, `DataSources` only, and neither.
  *
  * Settings the template does not mention keep their AWS value: measured for
  * the features the template omits and for `RDS_DATA_RISK`, which GuardDuty
  * enables under `RDS_LOGIN_EVENTS` (the `guardduty-detector-update` fixture).
  *
- * Every other type, the legacy `DataSources`-only shape, and an empty patch
- * are returned unchanged (same array).
+ * Every other type and an empty patch are returned unchanged (same array).
  */
 export function withGuardDutyDetectorReadBackOps(
   resourceType: string,
@@ -37,18 +37,16 @@ export function withGuardDutyDetectorReadBackOps(
   desired: Record<string, unknown>
 ): JsonPatchOp[] {
   if (resourceType !== DETECTOR_TYPE || patch.length === 0) return patch;
-  if (!Array.isArray(desired['Features'])) return patch;
-  if (Object.prototype.hasOwnProperty.call(desired, 'DataSources')) return patch;
-
-  // The generator emits top-level ops only (`json-patch-generator.ts`).
-  const touches = (key: string): boolean => patch.some((op) => op.path === `/${key}`);
 
   const extra: JsonPatchOp[] = [];
-  if (!touches('Features')) {
-    extra.push({ op: 'add', path: '/Features', value: desired['Features'] });
-  }
-  if (!touches('DataSources')) {
-    extra.push({ op: 'remove', path: '/DataSources' });
+  for (const key of READ_BACK_KEYS) {
+    // The generator emits top-level ops only (`json-patch-generator.ts`).
+    if (patch.some((op) => op.path === `/${key}`)) continue;
+    extra.push(
+      Object.prototype.hasOwnProperty.call(desired, key)
+        ? { op: 'add', path: `/${key}`, value: desired[key] }
+        : { op: 'remove', path: `/${key}` }
+    );
   }
   return extra.length === 0 ? patch : [...patch, ...extra];
 }

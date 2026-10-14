@@ -2453,6 +2453,18 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
     ]);
   });
 
+  it('removes both read-back keys for a detector declaring neither', async () => {
+    await provider.update('Detector', 'det', TYPE, { Enable: false }, { Enable: true });
+
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/Enable', value: false },
+        { op: 'remove', path: '/Features' },
+        { op: 'remove', path: '/DataSources' },
+      ],
+    ]);
+  });
+
   it('sends nothing when nothing changed', async () => {
     const result = await provider.update(
       'Detector',

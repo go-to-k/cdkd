@@ -5,13 +5,13 @@ cdkd Cloud Control update integration test for `AWS::GuardDuty::Detector`
 
 cdkd has no SDK provider for the detector, so it updates it through Cloud
 Control, which applies the JSON patch on top of its read model. For a detector
-that model carries `DataSources` and the full `Features` list, and
-`UpdateDetector` refuses both beside the declared `Features` (`both data sources
-and features were provided`, `EKS_RUNTIME_MONITORING and RUNTIME_MONITORING
-cannot be provided in the same request`). Before the fix every update failed.
-When the template declares `Features` and no `DataSources`, the fix appends
-`add /Features` (the desired list) and `remove /DataSources` to a non-empty
-patch, each unless the patch already has an op on that key.
+that model always carries both `DataSources` and the full `Features` list, and
+`UpdateDetector` refuses them together (`both data sources and features were
+provided`, `EKS_RUNTIME_MONITORING and RUNTIME_MONITORING cannot be provided in
+the same request`). Before the fix every update failed, whichever of the two
+keys the template declared. For each key the patch has no op on, the fix
+appends `add /<key>` with the declared value, or `remove /<key>` when the
+template does not declare it, to a non-empty patch.
 
 ## What it covers
 
@@ -28,6 +28,11 @@ patch, each unless the patch already has an op on that key.
 3. **Features update** (`CDKD_TEST_UPDATE=scalar,features`): `EKS_AUDIT_LOGS:
    DISABLED` reaches AWS, with the same in-place checks.
 4. **Destroy**: the detector and the cdkd state file are gone.
+5. **`DataSources` shape** (`CDKD_TEST_SHAPE=datasources`, `S3Logs` disabled):
+   deploy, scalar update, destroy; `ONE_HOUR` reaches AWS, the id is
+   unchanged, `S3Logs` stays `DISABLED` and `cdkd drift` is clean.
+6. **Bare shape** (`CDKD_TEST_SHAPE=bare`, neither key declared): the same
+   cycle.
 
 ## Region requirement
 

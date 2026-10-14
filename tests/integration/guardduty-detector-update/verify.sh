@@ -16,6 +16,10 @@
 #   3. Re-deploy with CDKD_TEST_UPDATE=scalar,features (adds EKS_AUDIT_LOGS:
 #      DISABLED). Same assertions, plus EKS_AUDIT_LOGS is DISABLED.
 #   4. Destroy; assert the detector and the state file are gone.
+#   5. CDKD_TEST_SHAPE=datasources (DataSources only, S3Logs disabled): deploy,
+#      scalar update, destroy. Assert ONE_HOUR, the same id, S3Logs still
+#      DISABLED and a clean drift.
+#   6. CDKD_TEST_SHAPE=bare (neither key declared): the same cycle.
 #
 # GuardDuty allows ONE detector per region. The run refuses (exit 1) when the
 # region already holds a detector without this fixture's `cdkd-integ` tag, and
@@ -60,6 +64,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# Phases 1-4 deploy the default (Features) shape; 5 and 6 set it per command.
+unset CDKD_TEST_SHAPE
 
 STACK="CdkdGuarddutyDetectorUpdateExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -257,5 +263,65 @@ echo "    detector deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
+# --- Phases 5-6: the other template shapes ------------------------------
+# $1 phase label, $2 CDKD_TEST_SHAPE value
+shape_cycle() {
+  local id f s3 ids left tag
+  echo "==> $1: deploy CDKD_TEST_SHAPE=$2"
+  env -u CDKD_TEST_UPDATE CDKD_TEST_SHAPE="$2" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  id="$(detector_ids)"
+  case "${id}" in
+    ''|*[!0-9a-f]*) echo "FAIL: $1: expected exactly one detector after deploy, got '${id}'" >&2; exit 1 ;;
+  esac
+  tag="$(detector_tag "${id}")"
+  if [ "${tag}" != "${TAG_VALUE}" ]; then
+    echo "FAIL: $1: the detector does not carry the fixture tag" >&2; exit 1
+  fi
+  f="$(detector_field "${id}" FindingPublishingFrequency)"
+  if [ "${f}" = "ONE_HOUR" ]; then
+    echo "FAIL: $1: premise: FindingPublishingFrequency is already ONE_HOUR" >&2; exit 1
+  fi
+  if [ "$2" = "datasources" ]; then
+    s3="$(detector_field "${id}" DataSources.S3Logs.Status)"
+    if [ "${s3}" != "DISABLED" ]; then
+      echo "FAIL: $1: premise: expected the declared S3Logs DISABLED, got '${s3}'" >&2; exit 1
+    fi
+  fi
+
+  echo "==> $1: scalar update"
+  CDKD_TEST_SHAPE="$2" CDKD_TEST_UPDATE=scalar node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  f="$(detector_field "${id}" FindingPublishingFrequency)"
+  if [ "${f}" != "ONE_HOUR" ]; then
+    echo "FAIL: $1: FindingPublishingFrequency is '${f}', expected ONE_HOUR" >&2; exit 1
+  fi
+  ids="$(detector_ids)"
+  if [ "${ids}" != "${id}" ]; then
+    echo "FAIL: $1: expected only detector ${id}, got '${ids}' (replaced?)" >&2; exit 1
+  fi
+  if [ "$2" = "datasources" ]; then
+    s3="$(detector_field "${id}" DataSources.S3Logs.Status)"
+    if [ "${s3}" != "DISABLED" ]; then
+      echo "FAIL: $1: S3Logs changed from DISABLED to '${s3}'" >&2; exit 1
+    fi
+  fi
+  if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
+    echo "FAIL: $1: cdkd drift is not clean after the update" >&2; exit 1
+  fi
+
+  echo "==> $1: destroy"
+  node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+  left="$(detector_ids)"
+  if [ -n "${left}" ]; then
+    echo "FAIL: $1: a detector still exists in ${REGION} after destroy" >&2; exit 1
+  fi
+  echo "    $2 shape updated in place and destroyed"
+}
+shape_cycle "Phase 5" datasources
+shape_cycle "Phase 6" bare
+
+assert_gone "state file ${STATE_KEY} still exists after the shape phases" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+
 trap - EXIT INT TERM
-echo "[verify] PASS — GuardDuty detector Cloud Control update, all 4 phases passed"
+echo "[verify] PASS — GuardDuty detector Cloud Control update, all 6 phases passed"

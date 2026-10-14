@@ -8,6 +8,10 @@ import type { Construct } from 'constructs';
  * model carries `DataSources` and the full `Features` list; before the fix
  * every update failed in `UpdateDetector`.
  *
+ * `CDKD_TEST_SHAPE` picks which of the two read-back keys the template
+ * declares: unset -> `Features` only, `datasources` -> `DataSources` only,
+ * `bare` -> neither.
+ *
  * `CDKD_TEST_UPDATE` is a comma-separated mode list, monotonic across phases:
  *   - `scalar`   -> `FindingPublishingFrequency: ONE_HOUR` (Features untouched)
  *   - `features` -> appends `EKS_AUDIT_LOGS: DISABLED` to `Features`
@@ -29,9 +33,11 @@ export class GuarddutyDetectorUpdateStack extends cdk.Stack {
       features.push({ name: 'EKS_AUDIT_LOGS', status: 'DISABLED' });
     }
 
+    const shape = process.env.CDKD_TEST_SHAPE ?? '';
     new guardduty.CfnDetector(this, 'Detector', {
       enable: true,
-      features,
+      ...(shape === '' ? { features } : {}),
+      ...(shape === 'datasources' ? { dataSources: { s3Logs: { enable: false } } } : {}),
       ...(modes.includes('scalar') ? { findingPublishingFrequency: 'ONE_HOUR' } : {}),
       tags: [{ key: 'cdkd-integ', value: 'guardduty-detector-update' }],
     });
