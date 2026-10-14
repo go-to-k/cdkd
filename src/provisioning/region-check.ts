@@ -186,9 +186,17 @@ export interface DeleteContext extends SecretMaskingContext {
    * `retryMemo` is ONE object per resource, shared by the runner's retries of
    * that delete, so a retry reuses the first resolution and does not read its
    * own earlier detach as a rotated secret.
+   *
+   * `recordedRegions` is the deleted record's v12 provenance
+   * (`recordedReferenceRegions`, go-to-k/cdkd#4879): a region-less reference
+   * it places in a region resolves there instead of reading as `ambiguous`.
    */
   resolveSecretDerivedPrincipals?:
-    | { importedProducerRegions: readonly string[]; retryMemo?: SecretPrincipalRetryMemo }
+    | {
+        importedProducerRegions: readonly string[];
+        retryMemo?: SecretPrincipalRetryMemo;
+        recordedRegions?: ReadonlyMap<string, string>;
+      }
     | undefined;
 
   /**

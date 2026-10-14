@@ -2048,7 +2048,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
         (await resolveSecretDerivedPrincipals(
           { Users: properties['Users'] },
           context?.expectedRegion,
-          optIn.importedProducerRegions
+          optIn.importedProducerRegions,
+          optIn.recordedRegions
         ));
       if (resolved && memo) memo.resolved = resolved;
       if (resolved?.lists['Users'] !== undefined) {
