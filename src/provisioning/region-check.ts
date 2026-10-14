@@ -166,8 +166,8 @@ export interface DeleteContext extends SecretMaskingContext {
   deletionPolicy?: string | undefined;
 
   /**
-   * Set by a top-level or cascading DESTROY (`cdkd destroy` / `cdkd state
-   * destroy`), which vouches that nothing else in its run can have attached
+   * Set by a DESTROY (`cdkd destroy` / `cdkd state destroy`: a top-level
+   * stack, a cascading nested child, or one destroyed alone), which vouches that nothing else in its run can have attached
    * the same inline policy name or group membership to the principals this
    * record names (go-to-k/cdkd#4150). The `AWS::IAM::Policy` and
    * `AWS::IAM::UserToGroupAddition` deletes then resolve a principal list
