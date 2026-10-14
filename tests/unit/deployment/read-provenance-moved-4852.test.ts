@@ -8,9 +8,12 @@ import {
   confirmValueMoves,
   readProvenanceMovedPaths,
   sameValueAtVersions,
+  withRefreshedReadVersions,
 } from '../../../src/deployment/deploy-engine/read-provenance-moved.js';
 import { recordReferenceResolution } from '../../../src/deployment/secret-redaction/reference-provenance.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction/pairs.js';
+import { readProducerStateOnce } from '../../../src/deployment/intrinsic-resolver/cross-stack.js';
+import type { ResourceState } from '../../../src/types/state.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const V1 = 'a1b2c3d4-0000-1111-2222-333333333333';
@@ -187,5 +190,28 @@ describe('confirmValueMoves', () => {
     expect(
       await sameValueAtVersions(resolver as never, entry, V1, V2, { template: { Resources: {} }, resources: {} })
     ).toBeUndefined();
+  });
+
+  it('withRefreshedReadVersions leaves a token whose union would pass the cap of 8', () => {
+    const eight = Array.from({ length: 8 }, (_, i) => `${String(i)}1b2c3d4-0000-1111-2222-333333333333`);
+    const rec = {
+      physicalId: 'p',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {},
+      referenceProvenance: { [REF]: { region: 'us-east-1', versions: eight, readVersions: [eight[0]!] } },
+    } as ResourceState;
+    const out = withRefreshedReadVersions(rec, [
+      { token: REF, paths: new Set(['Value']), recorded: [eight[0]!], served: new Set([V2]), region: 'us-east-1' },
+    ]);
+    expect(out.referenceProvenance?.[REF]?.readVersions).toEqual([eight[0]]);
+  });
+
+  it('readProducerStateOnce reports a failed cached read to every caller', async () => {
+    const scope = {};
+    const backend = { getState: async () => Promise.reject(new Error('denied')) };
+    let failures = 0;
+    await readProducerStateOnce(scope, backend as never, 'p', 'us-east-1', () => failures++);
+    await readProducerStateOnce(scope, backend as never, 'p', 'us-east-1', () => failures++);
+    expect(failures).toBe(2);
   });
 });

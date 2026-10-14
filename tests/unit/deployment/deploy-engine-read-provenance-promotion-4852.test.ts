@@ -39,12 +39,15 @@ const secret = vi.hoisted(() => ({
   history: {} as Record<string, string>,
   /** Every lookup, as `<SecretId>@<VersionId or stage>`. */
   lookups: [] as string[],
+  /** The region of each lookup, beside `lookups`. */
+  regions: [] as string[],
 }));
-const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
+const answer = vi.hoisted(() => async (command?: unknown, region = 'us-east-1'): Promise<unknown> => {
   const input = (
     command as { input?: { SecretId?: string; VersionId?: string; VersionStage?: string } } | undefined
   )?.input;
   secret.lookups.push(`${String(input?.SecretId)}@${input?.VersionId ?? input?.VersionStage ?? ''}`);
+  secret.regions.push(region);
   if (input?.VersionId !== undefined) {
     const queue = secret.history[input.VersionId];
     if (queue === undefined) {
@@ -54,12 +57,19 @@ const answer = vi.hoisted(() => async (command?: unknown): Promise<unknown> => {
   }
   return { SecretString: JSON.stringify({ queue: secret.queue }), VersionId: secret.version };
 });
-vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({
-    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
-    secretsManager: { send: answer, config: { region: () => Promise.resolve('us-east-1') } },
-  }),
-}));
+vi.mock('../../../src/utils/aws-clients.js', () => {
+  // Region-scoped client sets, so a lookup says which region asked.
+  const clients = (region: string): Record<string, unknown> => ({
+    sts: { send: async () => ({ Account: '123456789012' }) },
+    secretsManager: {
+      send: (command: unknown) => answer(command, region),
+      config: { region: () => Promise.resolve(region) },
+    },
+    credentialConfig: {},
+    withRegion: (target: string) => clients(target),
+  });
+  return { getAwsClients: () => clients('us-east-1') };
+});
 vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-cloudformation')>();
   return {
@@ -108,6 +118,7 @@ beforeEach(() => {
   secret.version = V1;
   secret.history = { [V1]: 'sdin-q-1' };
   secret.lookups = [];
+  secret.regions = [];
   log.info.length = 0;
   log.warn.length = 0;
 });
@@ -384,7 +395,7 @@ describe('an interrupted earlier deploy (the queue was replaced, its reader not)
 
 describe('a version move whose value did not move (another key of a JSON secret)', () => {
   /** An SSM producer of the secret's `queue` key, read into a reader's create-only Name. */
-  const shape = (producerVersions: string[]) => {
+  const shape = (producerVersions: string[], region = 'us-east-1', deletionPolicy?: string) => {
     const state = {
       version: 12,
       stackName: 's',
@@ -396,7 +407,7 @@ describe('a version move whose value did not move (another key of a JSON secret)
           properties: { Name: '/p/producer', Type: 'String', Value: REF, Description: 'b' },
           attributes: { Value: REF },
           dependencies: [],
-          referenceProvenance: { [REF]: at(producerVersions) },
+          referenceProvenance: { [REF]: { region, versions: producerVersions } },
         },
         Reader: {
           physicalId: REF,
@@ -404,7 +415,7 @@ describe('a version move whose value did not move (another key of a JSON secret)
           properties: { Name: REF, Type: 'String', Value: 'x' },
           attributes: {},
           dependencies: ['Producer'],
-          referenceProvenance: { [REF]: at([V1], [V1]) },
+          referenceProvenance: { [REF]: { region, versions: [V1], readVersions: [V1] } },
         },
       },
       outputs: {},
@@ -417,6 +428,7 @@ describe('a version move whose value did not move (another key of a JSON secret)
           Properties: { Name: '/p/producer', Type: 'String', Value: REF, Description: 'b' },
         },
         Reader: {
+          ...(deletionPolicy !== undefined && { DeletionPolicy: deletionPolicy }),
           Type: 'AWS::SSM::Parameter',
           Properties: {
             Name: { 'Fn::GetAtt': ['Producer', 'Value'] },
@@ -447,6 +459,40 @@ describe('a version move whose value did not move (another key of a JSON secret)
     const again = await deploy({ state: run.last!, template, levels: LV });
     expect(again.calls).toEqual([]);
     expect(secret.lookups).not.toContain(`sdin@${V1}`);
+  });
+
+  it('a recorded version that cannot be read counts as moved (no skip, no refresh)', async () => {
+    secret.version = V2;
+    secret.history = { [V2]: 'sdin-q-1' };
+    const { state, template } = shape([V2]);
+    const run = await deploy({ state, template, levels: LV });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toContain('create:Reader');
+    expect(run.last?.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).not.toEqual([
+      V1,
+    ]);
+  });
+
+  it('compares in the region the record names', async () => {
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    const { state, template } = shape([V2], 'us-west-2');
+    const run = await deploy({ state, template, levels: LV });
+    expect(run.thrown).toBeUndefined();
+    expect(run.calls).toEqual([]);
+    const atV1 = secret.lookups.indexOf(`sdin@${V1}`);
+    expect(atV1).toBeGreaterThanOrEqual(0);
+    expect(secret.regions[atV1]).toBe('us-west-2');
+  });
+
+  it('an attribute-only change keeps the refresh', async () => {
+    secret.version = V2;
+    secret.history[V2] = 'sdin-q-1';
+    const { state, template } = shape([V2], 'us-east-1', 'Retain');
+    const run = await deploy({ state, template, levels: LV });
+    expect(run.thrown).toBeUndefined();
+    expect(run.last?.resources['Reader']?.deletionPolicy).toBe('Retain');
+    expect(run.last?.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).toEqual([V2]);
   });
 
   it('control: the value moved too, so the create-only reader is replaced with it', async () => {
