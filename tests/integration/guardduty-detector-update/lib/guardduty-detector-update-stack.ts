@@ -5,8 +5,8 @@ import type { Construct } from 'constructs';
 /**
  * A GuardDuty detector declared with `Features`, updated in place
  * (go-to-k/cdkd#4910). cdkd routes the type through Cloud Control, whose read
- * model carries `DataSources` and the full `Features` list; before the fix
- * every update failed in `UpdateDetector`.
+ * model carries `DataSources` and the full `Features` list; before the fix a
+ * scalar-only or a `Features` update failed in `UpdateDetector`.
  *
  * `CDKD_TEST_SHAPE` picks which of the two read-back keys the template
  * declares: unset -> `Features` only, `datasources` -> `DataSources` only,

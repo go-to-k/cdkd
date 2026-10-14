@@ -18,7 +18,7 @@
 #   4. Destroy; assert the detector and the state file are gone.
 #   5. CDKD_TEST_SHAPE=datasources (DataSources only, S3Logs disabled): deploy,
 #      scalar update, destroy. Assert ONE_HOUR, the same id, S3Logs still
-#      DISABLED and a clean drift.
+#      DISABLED, every feature but RDS_LOGIN_EVENTS unchanged and a clean drift.
 #   6. CDKD_TEST_SHAPE=bare (neither key declared): the same cycle.
 #
 # GuardDuty allows ONE detector per region. The run refuses (exit 1) when the
@@ -266,7 +266,7 @@ echo "    cdkd state removed"
 # --- Phases 5-6: the other template shapes ------------------------------
 # $1 phase label, $2 CDKD_TEST_SHAPE value
 shape_cycle() {
-  local id f s3 ids left tag
+  local id f s3 ids left tag omitted after
   echo "==> $1: deploy CDKD_TEST_SHAPE=$2"
   env -u CDKD_TEST_UPDATE CDKD_TEST_SHAPE="$2" node "${LOCAL_DIST}" deploy "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -288,6 +288,13 @@ shape_cycle() {
       echo "FAIL: $1: premise: expected the declared S3Logs DISABLED, got '${s3}'" >&2; exit 1
     fi
   fi
+  # This shape declares no Features, so every feature but RDS_LOGIN_EVENTS is
+  # compared, and the runtime pair must be in the read model (as in Phase 1).
+  omitted="$(omitted_features "${id}")"
+  if [[ $'\t'"${omitted}"$'\t' != *$'\t'EKS_RUNTIME_MONITORING=* ]] \
+    || [[ $'\t'"${omitted}"$'\t' != *$'\t'RUNTIME_MONITORING=* ]]; then
+    echo "FAIL: $1: premise: expected both EKS_RUNTIME_MONITORING and RUNTIME_MONITORING in the read model, got '${omitted}'" >&2; exit 1
+  fi
 
   echo "==> $1: scalar update"
   CDKD_TEST_SHAPE="$2" CDKD_TEST_UPDATE=scalar node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -305,6 +312,10 @@ shape_cycle() {
     if [ "${s3}" != "DISABLED" ]; then
       echo "FAIL: $1: S3Logs changed from DISABLED to '${s3}'" >&2; exit 1
     fi
+  fi
+  after="$(omitted_features "${id}")"
+  if [ "${after}" != "${omitted}" ]; then
+    echo "FAIL: $1: features changed: was '${omitted}', now '${after}'" >&2; exit 1
   fi
   if ! node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
     echo "FAIL: $1: cdkd drift is not clean after the update" >&2; exit 1

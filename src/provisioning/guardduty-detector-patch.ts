@@ -16,7 +16,8 @@ const READ_BACK_KEYS = ['Features', 'DataSources'] as const;
  * `EKS_RUNTIME_MONITORING` and `RUNTIME_MONITORING` both included), whichever
  * of them the template declares. `UpdateDetector` refuses a request carrying
  * `DataSources` beside `Features`, and one carrying both runtime features, so
- * any patch that leaves either key as read fails.
+ * a patch that leaves `Features` as read fails, and so does one that sends any
+ * `Features` beside the read-back `DataSources`.
  *
  * For each of the two keys the patch has no op on, a non-empty patch gets
  * `add /<key>` with the desired value when the desired properties declare it
