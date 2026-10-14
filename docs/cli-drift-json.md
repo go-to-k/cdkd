@@ -155,6 +155,12 @@ line-separator characters are written as `\uXXXX` escapes. A JSON parser turns
 them back into the stored values, and printing the raw payload cannot run a
 terminal control sequence.
 
+One thing is masked, as in the report: a name taken from a secret prints as
+`***` inside a drifted value and in its `path`. Two paths that differ only in
+such a name can then print the same `path`, so do not key rows on `path` alone.
+See
+[A value that names a resource named from a secret](cli-drift-secrets.md#a-value-that-names-a-resource-named-from-a-secret).
+
 Which other commands reserve stdout for a payload is under
 [Output streams](cli-reference-output.md).
 

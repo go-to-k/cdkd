@@ -207,6 +207,19 @@ The property shapes that produce the mask, and the rules of the re-read, are
 in
 [cdkd drift internals](cli-drift-internals.md#a-masked-position-cdkd-could-not-certify).
 
+## A value that names a resource named from a secret
+
+A resource can take its name from a secret, for example an IAM role whose
+`RoleName` is a `{{resolve:secretsmanager:...}}` reference. The name then
+prints as `***` wherever drift shows it, inside an ARN or URL too
+(`arn:aws:iam::123456789012:role/***`). That covers the provider's `--verbose`
+lines and a failed read's warning. It also covers a drifted value in the
+report, `--json` and the `--accept` / `--revert` plans, such as an instance
+profile's `Roles` holding that role's name.
+
+Only the display is masked. The comparison uses the real value, and
+`--accept` writes the real value AWS reports into state.
+
 ## Tokens that are not references
 
 A `{{resolve:...}}` string that cdkd does not resolve is either text that only

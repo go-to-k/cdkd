@@ -5,6 +5,9 @@ import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
 import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
 import { readRecordAttributes } from '../read-only-attribute-healer.js';
+import { secretNamePrintingBag, secretNamePrintingBags } from '../secret-name-needles.js';
+import type { RecordedSecretValues } from '../secret-redaction.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
   type StaleAttributeHealOutcome,
   isHealExcludedType,
@@ -103,6 +106,42 @@ export function isHealEligible(
   );
 }
 
+/**
+ * One judge per loaded map (go-to-k/cdkd#3869). `secretNamePrintingBags`
+ * reads the map LIVE and memoizes each record's needles by record IDENTITY, so
+ * a heal judges each record once per deploy, not once per heal. That is sound
+ * because a deploy only REPLACES entries of the loaded map, never mutates a
+ * record object in place: `deploy-flow.ts` (`currentState.resources[id] =
+ * withRebaselinedFingerprints(record, ...)`, which returns `record` or a copy)
+ * and `deploy-engine/rollback.ts` (`currentState.resources[id] = record` for an
+ * adopted orphan); a replaced entry is a new object, so it is judged afresh.
+ */
+const healJudges = new WeakMap<
+  Readonly<Record<string, ResourceState>>,
+  (logicalId: string) => RecordedSecretValues
+>();
+
+/**
+ * The printing bag a heal of `resource` binds: its own name spellings and
+ * those of each secret-named record of `baseline` it holds. A record other
+ * than the one the map holds under its id is judged with itself in place.
+ */
+function healPrintingBag(
+  baseline: Readonly<Record<string, ResourceState>>,
+  logicalId: string,
+  resource: ResourceState
+): RecordedSecretValues {
+  if (!Object.hasOwn(baseline, logicalId) || baseline[logicalId] !== resource) {
+    return secretNamePrintingBag(logicalId, { ...baseline, [logicalId]: resource });
+  }
+  let judge = healJudges.get(baseline);
+  if (judge === undefined) {
+    judge = secretNamePrintingBags(baseline, undefined);
+    healJudges.set(baseline, judge);
+  }
+  return judge(logicalId);
+}
+
 export async function readStaleAttributes(
   this: DeployEngine,
   logicalId: string,
@@ -122,13 +161,21 @@ export async function readStaleAttributes(
   });
   // The read's logic is shared with `cdkd diff`'s read-only healer, so a
   // guard or masking rule cannot land in only one of them (go-to-k/cdkd#4196).
-  const outcome = await readRecordAttributes({
-    provider,
-    logicalId,
-    resource,
-    stackName,
-    region: this.stackRegion,
-  });
+  // go-to-k/cdkd#3869: the read addresses AWS by the record's physical id, and
+  // the provider's lines name it. A record named from a secret (or one holding
+  // such a name) binds those spellings as log-only needles, judged against
+  // the records this deploy loaded, as `cdkd diff`'s heal does.
+  const outcome = await withPrintingSecrets(
+    healPrintingBag(this.healBaseline, logicalId, resource),
+    () =>
+      readRecordAttributes({
+        provider,
+        logicalId,
+        resource,
+        stackName,
+        region: this.stackRegion,
+      })
+  );
   if (outcome.kind !== 'read') return outcome;
   const { attributes } = outcome;
   if (Object.keys(attributes).length > 0) {

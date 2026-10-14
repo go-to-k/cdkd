@@ -658,3 +658,256 @@ describe('a denied re-read during the diff is worded as the preview (go-to-k/cdk
     }
   });
 });
+
+describe("the heal's provider lines mask a record named from a secret (go-to-k/cdkd#3869)", () => {
+  // Through `buildDiffTree`, so the wrapper `healerUnderRecordPrintingBag`
+  // around the factory's healer is what binds the record's printing bag.
+  async function healLine(identifier: string): Promise<string | undefined> {
+    let line: string | undefined;
+    const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
+    const provider = {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      import: vi.fn(async (input: { knownPhysicalId?: string }) => {
+        const text = `Describing DB instance ${input.knownPhysicalId}`;
+        line = currentLogLineMasker()?.(text) ?? text;
+        return { physicalId: input.knownPhysicalId!, attributes: live['db1']! };
+      }),
+    } as unknown as ResourceProvider;
+    await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+          Endpoint: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({
+        S: st('S', {
+          Db: {
+            physicalId: 'team-secret-db',
+            resourceType: 'AWS::RDS::DBInstance',
+            properties: { Engine: 'postgres', DBInstanceIdentifier: identifier },
+            attributes: {},
+          },
+          Endpoint: {
+            physicalId: 'endpoint-param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: 'team-secret-db' },
+            attributes: {},
+          },
+        }),
+      }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+      attributeHealerFor: createReadOnlyAttributeHealerFactory({
+        getProvider: () => provider,
+        inRegion: (_region, fn) => fn(),
+      }),
+    });
+    return line;
+  }
+
+  it.each(['{{resolve:secretsmanager:db-name}}', '***'])(
+    'masks the id of a record whose name is secret-derived (%s)',
+    async (identifier) => {
+      expect(await healLine(identifier)).toBe('Describing DB instance ***');
+    }
+  );
+
+  it('negative control: an ordinary name prints as it is', async () => {
+    expect(await healLine('team-secret-db')).toBe('Describing DB instance team-secret-db');
+  });
+});
+
+describe("the heal's printing bag reads the records the diff reads (go-to-k/cdkd#3869)", () => {
+  const ROLE_ID = 'App-team-secret-role';
+  const roleRecord = (roleName: string): ResourceState => ({
+    physicalId: ROLE_ID,
+    resourceType: 'AWS::IAM::Role',
+    properties: { RoleName: roleName },
+    attributes: {},
+  });
+  // The healed DB instance READS the role (its monitoring role ARN), and the
+  // provider's line names that role.
+  const dbRecord: ResourceState = {
+    physicalId: 'db1',
+    resourceType: 'AWS::RDS::DBInstance',
+    properties: {
+      Engine: 'postgres',
+      MonitoringRoleArn: `arn:aws:iam::123456789012:role/${ROLE_ID}`,
+    },
+    attributes: {},
+  };
+  const template: CloudFormationTemplate = {
+    Resources: {
+      Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+      Endpoint: {
+        Type: 'AWS::SSM::Parameter',
+        Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+      },
+    },
+  };
+  const endpointRecord: ResourceState = {
+    physicalId: 'endpoint-param',
+    resourceType: 'AWS::SSM::Parameter',
+    properties: { Type: 'String', Value: 'db1' },
+    attributes: {},
+  };
+
+  async function healerLine(): Promise<{
+    factory: ReturnType<typeof createReadOnlyAttributeHealerFactory>;
+    line: () => string | undefined;
+  }> {
+    const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
+    let line: string | undefined;
+    const provider = {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      import: vi.fn(async (input: { knownPhysicalId?: string }) => {
+        const text = `Describing DB instance ${input.knownPhysicalId} (monitoring role ${ROLE_ID})`;
+        line = currentLogLineMasker()?.(text) ?? text;
+        return { physicalId: input.knownPhysicalId!, attributes: live['db1']! };
+      }),
+    } as unknown as ResourceProvider;
+    return {
+      factory: createReadOnlyAttributeHealerFactory({
+        getProvider: () => provider,
+        inRegion: (_region, fn) => fn(),
+      }),
+      line: () => line,
+    };
+  }
+
+  it.each([
+    ['a secret-named role', '{{resolve:secretsmanager:role-name}}', 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary role', 'plain-role-name', `Describing DB instance db1 (monitoring role ${ROLE_ID})`],
+  ])("masks a secret-named record the healed record reads, through buildDiffTree (%s)", async (_l, roleName, expected) => {
+    const { factory, line } = await healerLine();
+    await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: { Resources: { ...template.Resources, Role: { Type: 'AWS::IAM::Role', Properties: {} } } },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: fakeBackend({
+        S: st('S', { Role: roleRecord(roleName), Db: dbRecord, Endpoint: endpointRecord }),
+      }),
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+      attributeHealerFor: factory,
+    });
+    expect(line()).toBe(expected);
+  });
+
+  it.each([
+    ['a secret-named role', '{{resolve:secretsmanager:role-name}}', 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary role', 'plain-role-name', `Describing DB instance db1 (monitoring role ${ROLE_ID})`],
+  ])("masks it when a NEW nested child's parameter is the first to heal the record (%s)", async (_l, roleName, expected) => {
+    await childFirstHeal(roleName, expected, false);
+  });
+
+  it.each([
+    ['a secret-named role', '***', 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary role', 'plain-role-name', `Describing DB instance db1 (monitoring role ${ROLE_ID})`],
+  ])("judges that first heal over the records AFTER adoption (%s)", async (_l, roleName, expected) => {
+    // The role exists only as a kept orphan the diff adopts back.
+    await childFirstHeal(roleName, expected, true);
+  });
+
+  async function childFirstHeal(roleName: string, expected: string, adopted: boolean): Promise<void> {
+    // The nested row is a CREATE (not in the parent's state), so the parent's
+    // own diff does not resolve its Parameters: the child-parameter pass is the
+    // FIRST to heal Db, and only its wrapper binds the bag (go-to-k/cdkd#3869).
+    const { factory, line } = await healerLine();
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-child-heal-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Parameters: { EndpointIn: { Type: 'String' } },
+          Resources: {
+            Consumer: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: { Ref: 'EndpointIn' } } },
+          },
+        })
+      );
+      await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: {
+            Role: { Type: 'AWS::IAM::Role', Properties: {} },
+            Db: { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } },
+            Child: {
+              Type: NESTED,
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: { Parameters: { EndpointIn: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } } },
+            },
+          },
+        },
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({
+          S: Object.assign(
+            st('S', adopted ? { Db: dbRecord } : { Role: roleRecord(roleName), Db: dbRecord }),
+            adopted
+              ? { orphans: [{ logicalId: 'Role', orphanedAt: 0, state: roleRecord(roleName) }] }
+              : {}
+          ) as StackState,
+        }),
+        ...(adopted && {
+          previewOrphanAdoption: async () => ({
+            adopted: { Role: roleRecord(roleName) },
+            refusals: [],
+          }),
+        }),
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        attributeHealerFor: factory,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(line()).toBe(expected);
+  }
+
+  it.each([
+    ['a secret-named role', '***', 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary role', 'plain-role-name', `Describing DB instance db1 (monitoring role ${ROLE_ID})`],
+  ])('masks a secret-named record the diff ADOPTED from state.orphans (%s)', async (_l, roleName, expected) => {
+    const { factory, line } = await healerLine();
+    const state = st('S', { Db: dbRecord, Endpoint: endpointRecord });
+    state.orphans = [
+      { logicalId: 'Role', orphanedAt: 0, state: roleRecord(roleName) } as never,
+    ];
+    await computeStackDiff(
+      state,
+      { Resources: { ...template.Resources, Role: { Type: 'AWS::IAM::Role', Properties: {} } } },
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      {
+        attributeHealer: factory('S', 'us-east-1'),
+        // The planner adopts the kept role back into the diff's records.
+        previewOrphanAdoption: async () => ({
+          adopted: { Role: roleRecord(roleName) },
+          refusals: [],
+        }),
+      }
+    );
+    expect(line()).toBe(expected);
+  });
+});

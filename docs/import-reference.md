@@ -114,6 +114,11 @@ Summary: 1 imported, 0 not found, 0 unsupported, 1 out of scope, 0 failed
 | `-` | out of scope | You listed other resources and not this one. Add it, or pass `--auto`. |
 | `✗` | failed | Looking the resource up or verifying it raised an error. The row gives the reason. |
 
+A physical id whose name the template takes from a secret, such as a
+`RoleName` that is a `{{resolve:secretsmanager:...}}` reference, prints as
+`***` in the plan, inside an ARN or URL too. The state record keeps the real
+id.
+
 An import is not all-or-nothing. After you confirm, cdkd writes state for the
 rows marked `✓` and leaves the others out. When no row is marked `✓`, cdkd
 writes no state.

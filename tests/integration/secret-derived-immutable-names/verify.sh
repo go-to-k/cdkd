@@ -137,6 +137,11 @@
 #      which then holds the rotated value.
 #      After each of 5h-5j, one more deploy with the same flags must neither
 #      update nor send the promoted resources (steady state).
+#   5k. `cdkd orphan <stack>/SecretQueue --dry-run --verbose` over a record
+#      given a `Ref` and an `Fn::GetAtt Arn` to SecretQueue by hand (an
+#      intrinsic that survived, as in orphan-getatt-takeover): the audit and
+#      the live read's lines do not name the queue (go-to-k/cdkd#3869). The
+#      record is restored before any assertion.
 #   6. Destroy. Its --verbose log does not name SecretFilter's FilterName,
 #      SecretQueue's name or SecretPolicy's path (go-to-k/cdkd#3869):
 #      Cloud Control's delete line withholds the id (go-to-k/cdkd#3869).
@@ -214,6 +219,10 @@
 # src/cli/commands/destroy-runner.ts ALONE and step 6 fails naming
 # ${QUEUE_NAME} on the 'Deleting SQS queue SecretQueue' line (neither yet
 # measured on real AWS).
+# Revert the `withPrintingSecrets(orphanPrintingBag(state), ...)` wrap in
+# src/cli/commands/orphan.ts ALONE (go-to-k/cdkd#3869) and step 5k fails naming
+# ${QUEUE_NAME} on the `[ref] SecretQueueReaderPolicy.properties.CdkdOrphanProbeRef`
+# audit line (not yet measured on real AWS).
 # Revert the `rowPrintingRegistry` argument of printNestedStackReadsOnly in
 # src/deployment/deploy-engine/resolver-context.ts (pass a fresh Map) ALONE
 # (go-to-k/cdkd#3869) and step 2 fails naming ${QUEUE_NAME} on the nested
@@ -1874,6 +1883,67 @@ fi
 promo_assert_masked "step 5j redeploy" PJ_VALUE_1 PJ_VALUE_2
 echo "    OK: the reader of a producer updated in an earlier run was promoted and holds the rotated value"
 promo_assert_settled "step 5j" "PromoValueReader|(AWS::SSM::Parameter)"
+
+echo "==> Step 5k: cdkd orphan --dry-run withholds a secret-named resource's id in its audit (go-to-k/cdkd#3869)"
+# A deploy persists RESOLVED properties, so no record holds an intrinsic for the
+# rewrite to act on; one SURVIVES only from an import that could not resolve it
+# or a pre-v3 record (tests/integration/orphan-getatt-takeover does the same by
+# hand). Two probe properties are added to SecretQueueReaderPolicy's record: a
+# `Ref` (rewritten to the queue's URL, its physical id) and an `Fn::GetAtt Arn`
+# (a live SQS read, rewritten to the ARN). Both carry the queue name, and the
+# audit prints both at default verbosity. --dry-run writes nothing, and the
+# record is put back byte-for-byte before any assertion, so a failure below
+# never leaves the probe for the destroy.
+ORIG_STATE_FILE="$(mktemp -t secret-derived-immutable-names-state.XXXXXX)"
+PROBE_STATE_FILE="$(mktemp -t secret-derived-immutable-names-probe.XXXXXX)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${ORIG_STATE_FILE}" --region "${REGION}" >/dev/null
+node -e '
+  const fs = require("fs");
+  const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const reader = state.resources && state.resources.SecretQueueReaderPolicy;
+  if (!reader || !reader.properties) {
+    console.error("FAIL: premise: state has no SecretQueueReaderPolicy record");
+    process.exit(1);
+  }
+  reader.properties.CdkdOrphanProbeRef = { Ref: "SecretQueue" };
+  reader.properties.CdkdOrphanProbeArn = { "Fn::GetAtt": ["SecretQueue", "Arn"] };
+  fs.writeFileSync(process.argv[2], JSON.stringify(state));
+' "${ORIG_STATE_FILE}" "${PROBE_STATE_FILE}" || { rm -f "${ORIG_STATE_FILE}" "${PROBE_STATE_FILE}"; exit 1; }
+aws s3 cp "${PROBE_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" orphan "${STACK}/SecretQueue" --dry-run --verbose \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" > "${DEPLOY_LOG}" 2>&1
+ORPHAN_DRY_RC=$?
+set -e
+# Put the record back FIRST, whatever the run did.
+aws s3 cp "${ORIG_STATE_FILE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+RESTORED_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+ORIG_STATE="$(cat "${ORIG_STATE_FILE}")"
+rm -f "${ORIG_STATE_FILE}" "${PROBE_STATE_FILE}"
+if [ "${RESTORED_STATE}" != "${ORIG_STATE}" ]; then
+  echo "FAIL: the state record was not restored after the orphan probe; ${STATE_KEY} still carries the probe properties" >&2
+  exit 1
+fi
+if [ "${ORPHAN_DRY_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd orphan --dry-run exited ${ORPHAN_DRY_RC}" >&2
+  log_tail
+  exit 1
+fi
+# PREMISE: both rewrites are in the audit, and the GetAtt one was answered.
+for audit_line in "[ref] SecretQueueReaderPolicy.properties.CdkdOrphanProbeRef: " \
+  "[getAtt] SecretQueueReaderPolicy.properties.CdkdOrphanProbeArn: "; do
+  if ! grep -qF -- "${audit_line}" "${DEPLOY_LOG}"; then
+    echo "FAIL: premise: the cdkd orphan --dry-run log has no '${audit_line}' audit line (the probe was not rewritten, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+done
+if grep -qF -- "${QUEUE_NAME}" "${DEPLOY_LOG}"; then
+  HIT_LINES="$(grep -nF -- "${QUEUE_NAME}" "${DEPLOY_LOG}" | cut -d: -f1 | paste -sd ' ' -)"
+  echo "FAIL: the cdkd orphan --dry-run log names SecretQueue, a secret-named resource, in plaintext: \${QUEUE_NAME} on log line(s) ${HIT_LINES} (go-to-k/cdkd#3869)" >&2
+  exit 1
+fi
+echo "    OK: the orphan audit withholds the secret-named queue's URL and ARN"
 
 echo "==> Step 6: destroy"
 set +e

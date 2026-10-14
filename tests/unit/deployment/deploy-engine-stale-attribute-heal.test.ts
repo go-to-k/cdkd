@@ -185,6 +185,32 @@ describe('DeployEngine - heals a stale attribute map on a Fn::GetAtt miss (#1852
     expect(saved[0]!.outputs['ParamArn']).toBe(REAL_ARN);
   });
 
+  it.each([
+    ['a secret reference', '{{resolve:secretsmanager:param-name}}', 'Describing parameter ***'],
+    ['the redaction mask', '***', 'Describing parameter ***'],
+    ['negative control, an ordinary name', '/app/config', 'Describing parameter /app/config'],
+  ])(
+    "masks the read's provider line for a record named from a secret (go-to-k/cdkd#3869): %s",
+    async (_l, name, expected) => {
+      const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
+      let line: string | undefined;
+      mockProvider.import!.mockImplementation(async (input: { knownPhysicalId?: string }) => {
+        const text = `Describing parameter ${input.knownPhysicalId}`;
+        line = currentLogLineMasker()?.(text) ?? text;
+        return { physicalId: '/app/config', attributes: { Arn: REAL_ARN } };
+      });
+      mockStateBackend.getState!.mockResolvedValue(
+        stateOf({ Param: staleRecord({ properties: { ...PARAM_PROPS, Name: name } }) })
+      );
+
+      await makeEngine().deploy(STACK, template);
+
+      // Premise: the heal read ran.
+      expect(mockProvider.import).toHaveBeenCalledTimes(1);
+      expect(line).toBe(expected);
+    }
+  );
+
   it('persists the heal even when it is the ONLY thing the no-change path has to save', async () => {
     // The output already holds the right value (say, a previous deploy healed
     // in memory but its save failed): outputs unchanged, nothing else pending.

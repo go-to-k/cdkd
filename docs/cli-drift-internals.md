@@ -158,9 +158,12 @@ the report.
 
 `--json` is not sanitised — a consumer of that mode wants the stored value. It
 is escaped instead: every control, format, line-separator and
-paragraph-separator character is written as a `\uXXXX` escape, so the payload
-parses back to exactly the stored values and printing it cannot run a control
-sequence.
+paragraph-separator character is written as a `\uXXXX` escape, so printing it
+cannot run a control sequence. Like the report and the plans, it masks a name
+taken from a secret in a drifted row as `***`, in its path and in the value's
+string leaves and keys, and keeps the value's shape: a key that masks into one already present
+gets a `#2`, `#3`, ... suffix. Otherwise the payload parses back to the
+stored values.
 
 ## Exit codes in full
 

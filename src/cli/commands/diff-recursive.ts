@@ -85,6 +85,8 @@ import {
 } from '../../deployment/deploy-engine/noecho.js';
 import {
   orphanRecordsPrintingBag,
+  secretNamePrintingBag,
+  secretNamePrintingBags,
   stateSecretNameNeedles,
   secretNamedRecordNeedles,
   storedSecretNameNeedles,
@@ -1411,11 +1413,18 @@ export async function computeStackDiff(
     inheritSecretBearingTemplate,
     inheritedSecrets,
     inheritedDerivedNames,
-    attributeHealer,
+    attributeHealer: unboundAttributeHealer,
     parentUnresolvedParameters,
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
   } = options;
+  // go-to-k/cdkd#3869: every heal of this node binds the healed record's
+  // printing bag, judged over the records the diff reads at that moment
+  // (`healResources`, which takes the adopted records once they are spliced).
+  let healResources: Readonly<Record<string, ResourceState>> = currentState.resources ?? {};
+  const attributeHealer =
+    unboundAttributeHealer &&
+    healerUnderRecordPrintingBag(unboundAttributeHealer, () => healResources);
   // This template's `NoEcho` parameters, plus (in a nested child) the ones the
   // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
   const noEchoParametersOf = (t: CloudFormationTemplate): Set<string> =>
@@ -1999,6 +2008,7 @@ export async function computeStackDiff(
         ...currentState,
         resources: { ...currentState.resources, ...plan.adopted },
       };
+      healResources = stateForDiff.resources;
       // A SECOND properties repair, because this splice is the one place a
       // record enters the diff that `loadStateOrEmpty` never walked
       // (go-to-k/cdkd#3191 review). `planOrphanAdoption` builds each adopted
@@ -3203,6 +3213,41 @@ function recordedTemplateResources(
   return recorded;
 }
 
+/**
+ * `healer`, each read bound to the healed record's PRINTING bag
+ * (go-to-k/cdkd#3869), as `cdkd drift` binds it: a heal reads the record
+ * through `provider.import`, whose lines name its physical id, so the record's
+ * own name spellings and those of each secret-named record it holds are
+ * log-only needles around the read. `resources` answers the records the diff
+ * reads AT THE TIME OF THE HEAL (adopted records included), and is judged once
+ * per map. A record other than the one the map holds under its id is judged
+ * with itself in place. Its own properties (the read-only flag) are kept.
+ */
+export function healerUnderRecordPrintingBag(
+  healer: StaleAttributeHealer,
+  resources: () => Readonly<Record<string, ResourceState>>
+): StaleAttributeHealer {
+  let judged:
+    | {
+        readonly map: Readonly<Record<string, ResourceState>>;
+        readonly bagOf: (logicalId: string) => RecordedSecretValues;
+      }
+    | undefined;
+  const bagFor = (logicalId: string, resource: ResourceState): RecordedSecretValues => {
+    const map = resources();
+    if (!Object.hasOwn(map, logicalId) || map[logicalId] !== resource) {
+      return secretNamePrintingBag(logicalId, { ...map, [logicalId]: resource });
+    }
+    if (judged?.map !== map) judged = { map, bagOf: secretNamePrintingBags(map, undefined) };
+    return judged.bagOf(logicalId);
+  };
+  return Object.assign(
+    (logicalId: string, resource: ResourceState) =>
+      withPrintingSecrets(bagFor(logicalId, resource), () => healer(logicalId, resource)),
+    healer
+  );
+}
+
 export async function buildDiffTree(args: {
   stackName: string;
   displayName: string;
@@ -3381,7 +3426,7 @@ export async function buildDiffTree(args: {
     refusalRecovery,
     inheritedReferenceProvenance,
   } = args;
-  const attributeHealer = attributeHealerFor?.(stackName, region);
+  const unboundHealer = attributeHealerFor?.(stackName, region);
 
   const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
     stackName,
@@ -3389,6 +3434,9 @@ export async function buildDiffTree(args: {
     stateBackend,
     refusalRecovery
   );
+  // go-to-k/cdkd#3869: `computeStackDiff` binds each heal's printing bag over
+  // the records it diffs; this node's child-parameter pass binds its own below.
+  const attributeHealer = unboundHealer;
   // Warm the create-only DescribeType cache while the preprocessing below
   // runs, as `cdkd deploy` does (issue #3718). Without it `calculateDiff`
   // resolved each type inline, one resource at a time. Every node of a
@@ -3643,7 +3691,13 @@ export async function buildDiffTree(args: {
       conditions,
       cfnFallback,
       printingSecrets,
-      attributeHealer,
+      // Load-bearing (go-to-k/cdkd#3869): the healers share one in-flight read
+      // per record, which runs in the context of whichever caller asks FIRST.
+      // A nested row the parent's state does not hold yet (a CREATE) has its
+      // Parameters resolved here only, so this pass heals first and only this
+      // binds the bag.
+      attributeHealer &&
+        healerUnderRecordPrintingBag(attributeHealer, () => stateAfterAdoption.resources ?? {}),
       childUnresolvedParameters,
       trust,
       rowDerivedNames,

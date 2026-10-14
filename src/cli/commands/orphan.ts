@@ -61,6 +61,10 @@ import {
   STACK_REF_MAX_CODE_POINTS,
 } from '../../utils/display-safe.js';
 import { plainOrDescribed } from '../../utils/pasteable-command.js';
+import type { StackState } from '../../types/state.js';
+import type { RecordedSecretValues } from '../../deployment/secret-redaction.js';
+import { secretNamedRecordNeedles } from '../../deployment/secret-name-needles.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 
 /**
  * `cdkd orphan` renders assembly-derived values — a stack's `stackName` /
@@ -493,31 +497,32 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       const providerRegistry = new ProviderRegistry();
       registerAllProviders(providerRegistry, providerClasses);
 
-      const rewriteResult = await rewriteResourceReferences(
-        state,
-        orphanLogicalIds,
-        providerRegistry,
-        { force: options.force }
-      );
+      // go-to-k/cdkd#3869: see `orphanPrintingBag`.
+      const rewriteResult = await withPrintingSecrets(orphanPrintingBag(state), async () => {
+        const result = await rewriteResourceReferences(state, orphanLogicalIds, providerRegistry, {
+          force: options.force,
+        });
 
-      printRewriteSummary(rewriteResult.rewrites, orphanLogicalIds);
+        printRewriteSummary(result.rewrites, orphanLogicalIds);
 
-      if (rewriteResult.unresolvable.length > 0 && !options.force) {
-        printUnresolvable(rewriteResult.unresolvable);
-        throw new Error(
-          `Orphan aborted: ${rewriteResult.unresolvable.length} reference(s) could not be resolved.\n` +
-            `Re-run with --force to fall back to cached attribute values from state, ` +
-            `or fix the underlying provider/AWS issue and retry.`
-        );
-      }
-      if (rewriteResult.unresolvable.length > 0) {
-        // --force path: print but don't abort.
-        printUnresolvable(rewriteResult.unresolvable);
-        logger.warn(
-          `--force: continuing despite ${rewriteResult.unresolvable.length} unresolved reference(s); ` +
-            `the original intrinsic was left in place where the cache also lacked the value.`
-        );
-      }
+        if (result.unresolvable.length > 0 && !options.force) {
+          printUnresolvable(result.unresolvable);
+          throw new Error(
+            `Orphan aborted: ${result.unresolvable.length} reference(s) could not be resolved.\n` +
+              `Re-run with --force to fall back to cached attribute values from state, ` +
+              `or fix the underlying provider/AWS issue and retry.`
+          );
+        }
+        if (result.unresolvable.length > 0) {
+          // --force path: print but don't abort.
+          printUnresolvable(result.unresolvable);
+          logger.warn(
+            `--force: continuing despite ${result.unresolvable.length} unresolved reference(s); ` +
+              `the original intrinsic was left in place where the cache also lacked the value.`
+          );
+        }
+        return result;
+      });
 
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
@@ -737,6 +742,17 @@ async function pickStackRegion(
     `Stack ${plainOrDescribed(stackName, 'stack name')} has state in multiple regions: ${regions}. ` +
       `Re-run with --stack-region '<region>' to disambiguate.`
   );
+}
+
+/**
+ * The PRINTING bag a per-resource orphan's rewrite and its report run under
+ * (go-to-k/cdkd#3869): every secret-named record's spellings, as log-only
+ * needles. A live `Fn::GetAtt` read of such a resource prints its id in the
+ * provider's lines and in AWS's error, and the audit prints the id a `Ref` is
+ * rewritten to. Shared with `cdkd state orphan --resource`.
+ */
+export function orphanPrintingBag(state: StackState): RecordedSecretValues {
+  return secretNamedRecordNeedles(state.resources, undefined);
 }
 
 /**

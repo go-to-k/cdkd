@@ -106,9 +106,11 @@ import {
   maskedLeafCoordinatesOf,
 } from '../../deployment/secret-redaction.js';
 import { PublicSsmProver } from '../../deployment/public-ssm-proof.js';
+import { secretNamePrintingBags } from '../../deployment/secret-name-needles.js';
+import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import { stripForDisplay } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext, driftProducerRegionEvidence } from './drift.js';
-import { printRewriteSummary, printUnresolvable } from './orphan.js';
+import { orphanPrintingBag, printRewriteSummary, printUnresolvable } from './orphan.js';
 import { rewriteResourceReferences } from '../../analyzer/orphan-rewriter.js';
 import { runDestroyForStack, type DestroyRunnerResult } from './destroy-runner.js';
 import { skippedDestroyMessage } from './destroy-skip-message.js';
@@ -2840,27 +2842,31 @@ async function stateOrphanResources(
         registerAllProviders(scoped, providerClasses);
         return scoped;
       });
-      const rewriteResult = await runWithStackAwsClients(scopedClients, () =>
-        rewriteResourceReferences(state, logicalIds, registry, { force: options.force })
-      );
-
-      printRewriteSummary(rewriteResult.rewrites, logicalIds);
-
-      if (rewriteResult.unresolvable.length > 0 && !options.force) {
-        printUnresolvable(rewriteResult.unresolvable);
-        throw new Error(
-          `Orphan aborted: ${rewriteResult.unresolvable.length} reference(s) could not be resolved.\n` +
-            `Re-run with --force to fall back to cached attribute values from state, ` +
-            `or fix the underlying provider/AWS issue and retry.`
+      // go-to-k/cdkd#3869: see `orphanPrintingBag`.
+      const rewriteResult = await withPrintingSecrets(orphanPrintingBag(state), async () => {
+        const result = await runWithStackAwsClients(scopedClients, () =>
+          rewriteResourceReferences(state, logicalIds, registry, { force: options.force })
         );
-      }
-      if (rewriteResult.unresolvable.length > 0) {
-        printUnresolvable(rewriteResult.unresolvable);
-        logger.warn(
-          safeMsg`--force: continuing despite ${rewriteResult.unresolvable.length} unresolved reference(s); ` +
-            `the original intrinsic was left in place where the cache also lacked the value.`
-        );
-      }
+
+        printRewriteSummary(result.rewrites, logicalIds);
+
+        if (result.unresolvable.length > 0 && !options.force) {
+          printUnresolvable(result.unresolvable);
+          throw new Error(
+            `Orphan aborted: ${result.unresolvable.length} reference(s) could not be resolved.\n` +
+              `Re-run with --force to fall back to cached attribute values from state, ` +
+              `or fix the underlying provider/AWS issue and retry.`
+          );
+        }
+        if (result.unresolvable.length > 0) {
+          printUnresolvable(result.unresolvable);
+          logger.warn(
+            safeMsg`--force: continuing despite ${result.unresolvable.length} unresolved reference(s); ` +
+              `the original intrinsic was left in place where the cache also lacked the value.`
+          );
+        }
+        return result;
+      });
 
       const idList = logicalIds.map((id) => displayIdent(id)).join(', ');
       if (!options.yes && !options.force) {
@@ -4609,209 +4615,217 @@ async function refreshObservedForStack(
     // resource-name resolution sees the right stack (mirrors the deploy
     // engine's enclosing scope).
     await withStackName(stackName, async () => {
-      const tasks = entries.map(async ([logicalId, resource]) => {
-        // Schema v10+ (issue #2944). A `cdkd import` run REFUSED to capture a
-        // baseline for this resource because its recorded `properties` can no
-        // longer position the redaction — and this command positions its
-        // readback against exactly those `properties` (the 4th argument to
-        // `readCurrentState`, and the source bag handed to
-        // `redactSecretsForState` below). After a refusal they can hold the
-        // WRONG-BRANCH LITERAL the import distrusted, and a literal source leaf
-        // against a string readback PAIRS as an ordinary drifted literal, so
-        // the walk refuses nothing and the decrypted value is persisted.
-        //
-        // This command has NO template in hand — by construction, it is the
-        // synth-free half of the CLI — so the discard evidence the refusal was
-        // based on is structurally unavailable to it. Reading the marker is the
-        // only thing it can do, which is why the refusal is persisted at all;
-        // see `ResourceState.observedBaselineRefused`'s doc.
-        //
-        // Counted apart from `unsupported`: a refused resource IS supported and
-        // WOULD have been refreshed, so folding it into that tally would report
-        // a security refusal as missing provider coverage.
-        // The one `--accept-refused` names passed its gate (issue #3466).
-        if (resource.observedBaselineRefused === true && logicalId !== acceptId) {
-          refusedBaseline++;
-          if (refusedBaselineRemedy(resource) !== undefined) refusedSticky++;
-          return;
-        }
-        if (providerRegistry.shouldSkipResource(resource.resourceType)) {
-          unsupported++;
-          return;
-        }
-        let provider;
-        try {
-          provider = providerRegistry.getProviderFor({
-            resourceType: resource.resourceType,
-            provisionedBy: resource.provisionedBy,
-          }).provider;
-        } catch {
-          unsupported++;
-          return;
-        }
-        if (!provider.readCurrentState) {
-          unsupported++;
-          return;
-        }
-        try {
-          const observed = await provider.readCurrentState(
-            resource.physicalId,
-            logicalId,
-            resource.resourceType,
-            resource.properties ?? {},
-            // Issue #323: pass cross-resource context so IAM providers
-            // can filter out inline policies managed by sibling
-            // AWS::IAM::Policy resources. The refreshed observed must
-            // match what `cdkd drift` would see (also passes context),
-            // otherwise post-refresh drift would fire on the offset.
-            buildReadCurrentStateContext(state, logicalId)
-          );
-          if (observed === undefined) {
-            // Provider is registered with readCurrentState but has no read
-            // path for this type. Leave observed unchanged.
+      // go-to-k/cdkd#3869: each read runs under the record's printing bag, as
+      // `cdkd drift` does: a provider's debug line, and a failed read's AWS
+      // error, name the physical id, which for a resource named from a secret
+      // (or a reader of one) no recorded plaintext spells. Log-only needles, so
+      // the redaction below never reads them.
+      const printingBagOf = secretNamePrintingBags(state.resources, undefined);
+      const tasks = entries.map(([logicalId, resource]) =>
+        withPrintingSecrets(printingBagOf(logicalId), async () => {
+          // Schema v10+ (issue #2944). A `cdkd import` run REFUSED to capture a
+          // baseline for this resource because its recorded `properties` can no
+          // longer position the redaction — and this command positions its
+          // readback against exactly those `properties` (the 4th argument to
+          // `readCurrentState`, and the source bag handed to
+          // `redactSecretsForState` below). After a refusal they can hold the
+          // WRONG-BRANCH LITERAL the import distrusted, and a literal source leaf
+          // against a string readback PAIRS as an ordinary drifted literal, so
+          // the walk refuses nothing and the decrypted value is persisted.
+          //
+          // This command has NO template in hand — by construction, it is the
+          // synth-free half of the CLI — so the discard evidence the refusal was
+          // based on is structurally unavailable to it. Reading the marker is the
+          // only thing it can do, which is why the refusal is persisted at all;
+          // see `ResourceState.observedBaselineRefused`'s doc.
+          //
+          // Counted apart from `unsupported`: a refused resource IS supported and
+          // WOULD have been refreshed, so folding it into that tally would report
+          // a security refusal as missing provider coverage.
+          // The one `--accept-refused` names passed its gate (issue #3466).
+          if (resource.observedBaselineRefused === true && logicalId !== acceptId) {
+            refusedBaseline++;
+            if (refusedBaselineRemedy(resource) !== undefined) refusedSticky++;
+            return;
+          }
+          if (providerRegistry.shouldSkipResource(resource.resourceType)) {
             unsupported++;
             return;
           }
-          if (observed === RESOURCE_NOT_FOUND) {
-            // AWS reports the resource gone (go-to-k/cdkd#4283). Not a type
-            // without a read path, so not `unsupported`: there is nothing to
-            // refresh, and saying so is what tells the user. Counted on its own
-            // (the run exits 2, with its own advice), and the record keeps
-            // whatever baseline it had rather than being nulled out under what
-            // may be an eventual-consistency window.
-            notFound++;
+          let provider;
+          try {
+            provider = providerRegistry.getProviderFor({
+              resourceType: resource.resourceType,
+              provisionedBy: resource.provisionedBy,
+            }).provider;
+          } catch {
+            unsupported++;
+            return;
+          }
+          if (!provider.readCurrentState) {
+            unsupported++;
+            return;
+          }
+          try {
+            const observed = await provider.readCurrentState(
+              resource.physicalId,
+              logicalId,
+              resource.resourceType,
+              resource.properties ?? {},
+              // Issue #323: pass cross-resource context so IAM providers
+              // can filter out inline policies managed by sibling
+              // AWS::IAM::Policy resources. The refreshed observed must
+              // match what `cdkd drift` would see (also passes context),
+              // otherwise post-refresh drift would fire on the offset.
+              buildReadCurrentStateContext(state, logicalId)
+            );
+            if (observed === undefined) {
+              // Provider is registered with readCurrentState but has no read
+              // path for this type. Leave observed unchanged.
+              unsupported++;
+              return;
+            }
+            if (observed === RESOURCE_NOT_FOUND) {
+              // AWS reports the resource gone (go-to-k/cdkd#4283). Not a type
+              // without a read path, so not `unsupported`: there is nothing to
+              // refresh, and saying so is what tells the user. Counted on its own
+              // (the run exits 2, with its own advice), and the record keeps
+              // whatever baseline it had rather than being nulled out under what
+              // may be an eventual-consistency window.
+              notFound++;
+              logger.warn(
+                safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
+                  safeMsg`(${displayIdent(resource.resourceType)}): ` +
+                  `not found in AWS — it was deleted outside cdkd; 'cdkd drift' reports it as deleted.`
+              );
+              return;
+            }
+            // GHSA-p5qg-v9gv-hc7w (issue #1926). The readback is what AWS
+            // actually holds, so for a resource deployed from a
+            // `{{resolve:secretsmanager:...}}` reference — or a
+            // `{{resolve:ssm:...}}` naming a `SecureString` — it is the DECRYPTED
+            // value, and persisting it verbatim re-introduces the advisory's
+            // disclosure inside `state.json`. This writer reached the redaction
+            // module through NO path at all before this line, which is why the
+            // #1910 sweep (framed as "every writer passes a POSITION source")
+            // never surfaced it.
+            //
+            // The map is EMPTY by construction (issue #1926): this command neither
+            // synthesizes nor resolves, so no plaintext is ever recorded and a
+            // VALUE scan has no needles — POSITION is the whole mechanism: the
+            // record's own `properties` hold the unresolved expression, and
+            // walking the observed bag against them rewrites the plaintext AWS
+            // echoes back onto that expression with no secret fetch and no value
+            // matching.
+            //
+            // The MIXED-leaf and unpairable-array refusals live in
+            // `secret-redaction.ts`, NOT here (issue #1926 review). This command
+            // is not the only writer with an empty map and a state-bag source — a
+            // plain `cdkd deploy` reaches the same configuration through
+            // `drainObservedCaptures` and the persist choke point — so a remedy
+            // spelled at this call site would have left the DEFAULT path leaking.
+            // That module's `refuseUncertifiedReadbackPositions` carries the
+            // measured per-shape table, and since issue #2012 landed the rows it
+            // names are fewer — by TWO SEPARATE mechanisms, which the table keeps
+            // apart and so must this note. `unkeyedArrayPairsByAnchors` closes
+            // two rows CONDITIONALLY: an unkeyed array is walked positionally
+            // when its own positions corroborate the alignment. The OTHER two
+            // rows (an unpaired element beside a paired one; an observed KEY the
+            // source does not carry) are closed instead by DERIVED NEEDLES, and
+            // this write site is exactly where they apply — `deriveReadbackNeedles`
+            // returns nothing unless the secrets map is EMPTY, which it is here
+            // by construction (see above). Read that
+            // function's own table for which shapes still fall through.
+            //
+            // A THIRD mechanism since issue
+            // [#2852](https://github.com/go-to-k/cdkd/issues/2852), and it is the
+            // one that decides what happens where the first two say nothing: the
+            // walk FAILS CLOSED. A position whose source subtree spells a
+            // reference and whose two sides cannot be paired is persisted as
+            // `SECRET_MASK` rather than as the readback — which is what closes
+            // this command's own raw-shape hazard, issue
+            // [#2846](https://github.com/go-to-k/cdkd/issues/2846): `cdkd import`
+            // legitimately writes a RAW `Fn::Join` / `Fn::Sub` OBJECT into
+            // `properties` (its warn path says so), and walking a STRING readback
+            // against it used to persist the decrypted value here. The remedy is
+            // in the MODULE for the same reason the two above are, and the
+            // remaining open row is named on that function.
+            //
+            // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
+            // in `secret-redaction/rules.ts`'s generation table ("observed walk,
+            // own-record source"): the source is THIS record's own persisted bag,
+            // so it is the same GENERATION as the bag beside it and holds no
+            // PUBLIC ssm expression — a `String` parameter is stored resolved
+            // (issue #1901) — which is what lets a stored expression win over the
+            // plaintext AWS echoes back. BLIND positional array descent stays off
+            // because AWS may reorder a list, and the two relaxations that reach
+            // an element anyway both live inside that pass and are inherited here
+            // rather than re-solved: the order-independent KEYED descent added by
+            // issue #1915, so a secret nested in a `Tags[]` / `Environment[]`
+            // element is reached; and, for a list with no identity key, the
+            // corroborated positional walk `unkeyedArrayPairsByAnchors` licenses
+            // (issue #2012). "Descent stays off" is about pairing by INDEX ALONE,
+            // not a claim that no array is ever walked by index here — and the
+            // flag is not a knob to reach for either way. Turning it ON does two
+            // things, not one: it enables BLIND positional descent inside the
+            // path pass (`redactByPath`'s equal-length array arm, plus the
+            // `positionalIsExact` fallback for an unpaired keyed element), AND —
+            // because `!descendArrays` is one of the three conjuncts in
+            // `isReadbackProjectedFromState` — it switches the CORROBORATED pass
+            // off entirely. It is a trade, and the half it gives up is the half
+            // with evidence behind it.
+            //
+            // Inherited residual, not introduced here: `cdkd import`'s warn path
+            // can leave a PUBLIC expression in `properties`, and
+            // `trustAnyExpression` would then copy it over the observed value —
+            // the same trade every other caller of this rules constant makes.
+            //
+            // A PRE-GHSA record is not repaired by either pass and cannot be:
+            // its `properties` hold the plaintext too, so the position source
+            // carries no expression to take. `cdkd scrub` is what repairs that,
+            // and the command's own description says to run it first.
+            //
+            // EMPTY, but not a shared constant (issue #2036): the map carries,
+            // by identity, a PROOF for each plain `ssm` reference in a MIXED
+            // leaf of `properties` whose parameter a no-decryption
+            // `GetParameter` in this stack's region answered as public. Such a
+            // leaf keeps the value AWS holds instead of the expression; with no
+            // proof (a `SecureString`, a missing `ssm:GetParameter` grant, any
+            // error) it is refused exactly as before. See `PublicSsmProver`.
+            // go-to-k/cdkd#4043: a coordinate the record marks in `noEchoLeaves`
+            // holds `***` in `properties`, which positions nothing for the walk
+            // below, so the readback's live value there is masked FIRST (through
+            // each list's identity field, the whole list where none pairs them).
+            resource.observedProperties = redactSecretsForState(
+              maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
+                // A record naming no coordinate (pre-v11, imported, scrubbed)
+                // still holds `***` where the value stood: mask there too, as
+                // the deploy-start refresh does.
+                ...maskedLeafCoordinatesOf(resource.properties ?? {}),
+                ...(noEchoLeavesOf(resource) ?? []),
+              ]),
+              await publicSsmProver.proofBagFor(resource.properties ?? {}),
+              resource.properties ?? {},
+              STATE_SOURCED_BASELINE_RULES
+            );
+            // Issue #3466: BOTH fields, and only once a baseline was captured —
+            // a marker left without its reason is re-stamped by the next deploy,
+            // and a failed read keeps the refusal.
+            if (logicalId === acceptId) {
+              delete resource.observedBaselineRefused;
+              delete resource.observedBaselineRefusalReason;
+            }
+            refreshed++;
+          } catch (err) {
+            failed++;
             logger.warn(
               safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
                 safeMsg`(${displayIdent(resource.resourceType)}): ` +
-                `not found in AWS — it was deleted outside cdkd; 'cdkd drift' reports it as deleted.`
+                safeMsg`readCurrentState failed — ${describeAwsFailure(err).detail}`
             );
-            return;
           }
-          // GHSA-p5qg-v9gv-hc7w (issue #1926). The readback is what AWS
-          // actually holds, so for a resource deployed from a
-          // `{{resolve:secretsmanager:...}}` reference — or a
-          // `{{resolve:ssm:...}}` naming a `SecureString` — it is the DECRYPTED
-          // value, and persisting it verbatim re-introduces the advisory's
-          // disclosure inside `state.json`. This writer reached the redaction
-          // module through NO path at all before this line, which is why the
-          // #1910 sweep (framed as "every writer passes a POSITION source")
-          // never surfaced it.
-          //
-          // The map is EMPTY by construction (issue #1926): this command neither
-          // synthesizes nor resolves, so no plaintext is ever recorded and a
-          // VALUE scan has no needles — POSITION is the whole mechanism: the
-          // record's own `properties` hold the unresolved expression, and
-          // walking the observed bag against them rewrites the plaintext AWS
-          // echoes back onto that expression with no secret fetch and no value
-          // matching.
-          //
-          // The MIXED-leaf and unpairable-array refusals live in
-          // `secret-redaction.ts`, NOT here (issue #1926 review). This command
-          // is not the only writer with an empty map and a state-bag source — a
-          // plain `cdkd deploy` reaches the same configuration through
-          // `drainObservedCaptures` and the persist choke point — so a remedy
-          // spelled at this call site would have left the DEFAULT path leaking.
-          // That module's `refuseUncertifiedReadbackPositions` carries the
-          // measured per-shape table, and since issue #2012 landed the rows it
-          // names are fewer — by TWO SEPARATE mechanisms, which the table keeps
-          // apart and so must this note. `unkeyedArrayPairsByAnchors` closes
-          // two rows CONDITIONALLY: an unkeyed array is walked positionally
-          // when its own positions corroborate the alignment. The OTHER two
-          // rows (an unpaired element beside a paired one; an observed KEY the
-          // source does not carry) are closed instead by DERIVED NEEDLES, and
-          // this write site is exactly where they apply — `deriveReadbackNeedles`
-          // returns nothing unless the secrets map is EMPTY, which it is here
-          // by construction (see above). Read that
-          // function's own table for which shapes still fall through.
-          //
-          // A THIRD mechanism since issue
-          // [#2852](https://github.com/go-to-k/cdkd/issues/2852), and it is the
-          // one that decides what happens where the first two say nothing: the
-          // walk FAILS CLOSED. A position whose source subtree spells a
-          // reference and whose two sides cannot be paired is persisted as
-          // `SECRET_MASK` rather than as the readback — which is what closes
-          // this command's own raw-shape hazard, issue
-          // [#2846](https://github.com/go-to-k/cdkd/issues/2846): `cdkd import`
-          // legitimately writes a RAW `Fn::Join` / `Fn::Sub` OBJECT into
-          // `properties` (its warn path says so), and walking a STRING readback
-          // against it used to persist the decrypted value here. The remedy is
-          // in the MODULE for the same reason the two above are, and the
-          // remaining open row is named on that function.
-          //
-          // `STATE_SOURCED_BASELINE_RULES` is the row this write site occupies
-          // in `secret-redaction/rules.ts`'s generation table ("observed walk,
-          // own-record source"): the source is THIS record's own persisted bag,
-          // so it is the same GENERATION as the bag beside it and holds no
-          // PUBLIC ssm expression — a `String` parameter is stored resolved
-          // (issue #1901) — which is what lets a stored expression win over the
-          // plaintext AWS echoes back. BLIND positional array descent stays off
-          // because AWS may reorder a list, and the two relaxations that reach
-          // an element anyway both live inside that pass and are inherited here
-          // rather than re-solved: the order-independent KEYED descent added by
-          // issue #1915, so a secret nested in a `Tags[]` / `Environment[]`
-          // element is reached; and, for a list with no identity key, the
-          // corroborated positional walk `unkeyedArrayPairsByAnchors` licenses
-          // (issue #2012). "Descent stays off" is about pairing by INDEX ALONE,
-          // not a claim that no array is ever walked by index here — and the
-          // flag is not a knob to reach for either way. Turning it ON does two
-          // things, not one: it enables BLIND positional descent inside the
-          // path pass (`redactByPath`'s equal-length array arm, plus the
-          // `positionalIsExact` fallback for an unpaired keyed element), AND —
-          // because `!descendArrays` is one of the three conjuncts in
-          // `isReadbackProjectedFromState` — it switches the CORROBORATED pass
-          // off entirely. It is a trade, and the half it gives up is the half
-          // with evidence behind it.
-          //
-          // Inherited residual, not introduced here: `cdkd import`'s warn path
-          // can leave a PUBLIC expression in `properties`, and
-          // `trustAnyExpression` would then copy it over the observed value —
-          // the same trade every other caller of this rules constant makes.
-          //
-          // A PRE-GHSA record is not repaired by either pass and cannot be:
-          // its `properties` hold the plaintext too, so the position source
-          // carries no expression to take. `cdkd scrub` is what repairs that,
-          // and the command's own description says to run it first.
-          //
-          // EMPTY, but not a shared constant (issue #2036): the map carries,
-          // by identity, a PROOF for each plain `ssm` reference in a MIXED
-          // leaf of `properties` whose parameter a no-decryption
-          // `GetParameter` in this stack's region answered as public. Such a
-          // leaf keeps the value AWS holds instead of the expression; with no
-          // proof (a `SecureString`, a missing `ssm:GetParameter` grant, any
-          // error) it is refused exactly as before. See `PublicSsmProver`.
-          // go-to-k/cdkd#4043: a coordinate the record marks in `noEchoLeaves`
-          // holds `***` in `properties`, which positions nothing for the walk
-          // below, so the readback's live value there is masked FIRST (through
-          // each list's identity field, the whole list where none pairs them).
-          resource.observedProperties = redactSecretsForState(
-            maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
-              // A record naming no coordinate (pre-v11, imported, scrubbed)
-              // still holds `***` where the value stood: mask there too, as
-              // the deploy-start refresh does.
-              ...maskedLeafCoordinatesOf(resource.properties ?? {}),
-              ...(noEchoLeavesOf(resource) ?? []),
-            ]),
-            await publicSsmProver.proofBagFor(resource.properties ?? {}),
-            resource.properties ?? {},
-            STATE_SOURCED_BASELINE_RULES
-          );
-          // Issue #3466: BOTH fields, and only once a baseline was captured —
-          // a marker left without its reason is re-stamped by the next deploy,
-          // and a failed read keeps the refusal.
-          if (logicalId === acceptId) {
-            delete resource.observedBaselineRefused;
-            delete resource.observedBaselineRefusalReason;
-          }
-          refreshed++;
-        } catch (err) {
-          failed++;
-          logger.warn(
-            safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
-              safeMsg`(${displayIdent(resource.resourceType)}): ` +
-              safeMsg`readCurrentState failed — ${describeAwsFailure(err).detail}`
-          );
-        }
-      });
+        })
+      );
       await Promise.all(tasks);
     });
 
