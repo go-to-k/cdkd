@@ -2307,6 +2307,14 @@ echo "==> Step 11d (go-to-k/cdkd#4852 PREMISE): PromoImportReader records the pr
 cssi_put_secret "${PROMO_QUEUE_NAME}"
 cssi_deploy "${PRODUCER}" "step 11d producer"
 cssi_assert_none_sent "${PRODUCER}" "step 11d producer (after pqueue entered the secret)"
+# A producer settle deploy. The deploy that CREATES PromoQueue stores the
+# output as the plain ARN (a resource created in this run hands its readers
+# the provider's value, go-to-k/cdkd#4802); the next, unchanged deploy reads
+# the queue's RECORDED Arn and stores the output in its {{resolve: spelling,
+# with the output's reference provenance. Only that form carries a version
+# for the consumer to read.
+cssi_deploy "${PRODUCER}" "step 11d producer settle"
+cssi_assert_none_sent "${PRODUCER}" "step 11d producer settle"
 cssi_deploy "${CONSUMER}" "step 11d consumer"
 cssi_assert_none_sent "${CONSUMER}" "step 11d consumer (after pqueue entered the secret)"
 # A settle deploy: the reader is written while the producer is unchanged, so
@@ -2399,6 +2407,12 @@ if ! cssi_out_has "PromoQueue" "(AWS::SQS::Queue)" "replaced"; then
   diag "${CSSI_OUT}"
   fail "premise: the step 11f producer deploy has no 'PromoQueue (AWS::SQS::Queue) replaced' line"
 fi
+# As in 11d: the replacing deploy stores the output as the new plain ARN, which
+# the consumer's ordinary diff would catch. A producer settle deploy stores it
+# back in the SAME {{resolve: spelling, now at the rotated version: the shape
+# only the read-provenance promotion sees.
+cssi_deploy "${PRODUCER}" "step 11f producer settle"
+cssi_assert_none_sent "${PRODUCER}" "step 11f producer settle"
 # SQS may answer for a deleted queue for up to 60 seconds.
 wait_gone 14 "premise: the replaced PromoQueue still exists 70s after the producer deploy" \
   aws sqs get-queue-url --queue-name "${PROMO_QUEUE_NAME}" --region "${REGION}"
