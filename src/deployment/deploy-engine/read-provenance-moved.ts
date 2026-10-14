@@ -192,7 +192,17 @@ export function withRefreshedReadVersions(
   const out: Record<string, ReferenceProvenance> = { ...field };
   for (const { token, served } of unchanged) {
     const before = Object.hasOwn(field, token) ? field[token] : undefined;
-    const versions = [...new Set([...(before?.versions ?? []), ...served])].sort();
+    // The old READ versions are REPLACED, not unioned: they are superseded by
+    // the equal value served now, and a union would grow by one version per
+    // rotation of another key until the cap stopped every refresh (a reader
+    // promoted on every deploy). Literal-route versions are kept.
+    const previousRead = new Set(before?.readVersions ?? []);
+    const versions = [
+      ...new Set([
+        ...(before?.versions ?? []).filter((version) => !previousRead.has(version)),
+        ...served,
+      ]),
+    ].sort();
     if (versions.length > MAX_REFERENCE_VERSIONS) continue;
     const next = validateReferenceProvenance(token, {
       ...(before?.region !== undefined && { region: before.region }),

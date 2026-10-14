@@ -168,7 +168,8 @@ export async function reresolveCrossStackValue(
   ) {
     context.crossStackReads.set(sourceKey, {
       stackName: producerOutput.stackName,
-      region: producerOutput.region || this.resolverRegion,
+      // The same key the pin reads under (`producerStateOnce`), so one read serves both.
+      region: producerOutput.region || this.resolverRegion || '',
       outputKey: producerOutput.outputKey,
       carriesToken: carriesDynamicReference(value),
       ...(producerOutput.state !== undefined && { state: producerOutput.state }),

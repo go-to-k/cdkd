@@ -517,6 +517,31 @@ describe('a version move whose value did not move (another key of a JSON secret)
     expect(run.last?.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).toEqual([V2]);
   });
 
+  it('ten cycles of other-key rotation + producer edit never leave a standing promotion', async () => {
+    const v = (i: number): string => `${String(i).padStart(2, '0')}b2c3d4-0000-1111-2222-333333333333`;
+    let { state } = shape([V1]);
+    const { template } = shape([V1]);
+    for (let i = 1; i <= 10; i++) {
+      // Another key rotated (the `queue` key still reads sdin-q-1), and an
+      // earlier run updated the producer in place at that version.
+      secret.version = v(i);
+      secret.history[v(i)] = 'sdin-q-1';
+      state = JSON.parse(JSON.stringify(state)) as StackState;
+      state.resources['Producer']!.referenceProvenance = { [REF]: at([v(i)]) };
+      const run = await deploy({ state, template, levels: LV });
+      expect(run.thrown).toBeUndefined();
+      expect(run.calls).toEqual([]);
+      state = run.last!;
+      expect(state.resources['Reader']?.referenceProvenance?.[REF]?.readVersions).toEqual([v(i)]);
+    }
+    // Settled: the next deploy promotes nothing, so it reads no older version.
+    secret.lookups = [];
+    const settled = await deploy({ state, template, levels: LV });
+    expect(settled.calls).toEqual([]);
+    expect(secret.lookups.filter((l) => !l.endsWith('@AWSCURRENT') && !l.endsWith('@'))).toEqual([]);
+    expect(state.resources['Reader']?.referenceProvenance?.[REF]?.versions?.length).toBeLessThanOrEqual(2);
+  });
+
   it('control: the value moved too, so the create-only reader is replaced with it', async () => {
     rotate();
     const { state, template } = shape([V2]);

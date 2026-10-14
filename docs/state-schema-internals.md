@@ -1229,7 +1229,12 @@ a token), and the rollback replay restores a token at its record's version
 (a version that cannot be read, or whose value is under four characters,
 restores the current value with a warning). What it does not catch: a reader
 already stale before the upgrade (no `readVersions` yet), and one reader
-reading one token from two upstreams at two versions.
+reading one token from two upstreams at two versions. Before sending, the
+deploy reads the token at the recorded and the served version and sends only
+when the value moved (a JSON secret's version changes when any key does); a
+skipped reader then records the served version. A recorded version that can
+no longer be read counts as moved, so a create-only read leaf whose value is in
+fact equal can be replaced, with the create-only replacement warning.
 
 #### Migration
 

@@ -214,7 +214,7 @@ describe('confirmValueMoves', () => {
     expect(reads).toBe(0);
   });
 
-  it('withRefreshedReadVersions leaves a token whose union would pass the cap of 8', () => {
+  it('withRefreshedReadVersions leaves a token whose versions would pass the cap of 8', () => {
     const eight = Array.from({ length: 8 }, (_, i) => `${String(i)}1b2c3d4-0000-1111-2222-333333333333`);
     const rec = {
       physicalId: 'p',
@@ -223,7 +223,7 @@ describe('confirmValueMoves', () => {
       referenceProvenance: { [REF]: { region: 'us-east-1', versions: eight, readVersions: [eight[0]!] } },
     } as ResourceState;
     const out = withRefreshedReadVersions(rec, [
-      { token: REF, paths: new Set(['Value']), recorded: [eight[0]!], served: new Set([V2]), region: 'us-east-1' },
+      { token: REF, paths: new Set(['Value']), recorded: [eight[0]!], served: new Set([V2, 'e1b2c3d4-0000-1111-2222-333333333333']), region: 'us-east-1' },
     ]);
     expect(out.referenceProvenance?.[REF]?.readVersions).toEqual([eight[0]]);
   });
@@ -235,5 +235,25 @@ describe('confirmValueMoves', () => {
     await readProducerStateOnce(scope, backend as never, 'p', 'us-east-1', () => failures++);
     await readProducerStateOnce(scope, backend as never, 'p', 'us-east-1', () => failures++);
     expect(failures).toBe(2);
+  });
+
+  it('a refresh replaces the old read versions, so repeated other-key rotations never reach the cap', () => {
+    const v = (i: number): string => `${String(i).padStart(2, '0')}b2c3d4-0000-1111-2222-333333333333`;
+    const LITERAL = 'f1b2c3d4-0000-1111-2222-333333333333';
+    let rec = {
+      physicalId: 'p',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {},
+      referenceProvenance: { [REF]: { region: 'us-east-1', versions: [LITERAL, v(0)], readVersions: [v(0)] } },
+    } as ResourceState;
+    for (let i = 1; i <= 12; i++) {
+      rec = withRefreshedReadVersions(rec, [
+        { token: REF, paths: new Set(['Value']), recorded: [v(i - 1)], served: new Set([v(i)]), region: 'us-east-1' },
+      ]);
+      // Refreshed every cycle: the reader is current and is not promoted again.
+      expect(rec.referenceProvenance?.[REF]?.readVersions).toEqual([v(i)]);
+    }
+    // The literal-route version survives; the superseded read versions do not.
+    expect(rec.referenceProvenance?.[REF]?.versions).toEqual([v(12), LITERAL].sort());
   });
 });

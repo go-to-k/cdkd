@@ -1019,7 +1019,10 @@ export async function provisionUpdate(
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
     // value now records the versions it was served (the save persists it).
     if (provenanceUnchanged.length > 0) {
-      stateResources[logicalId] = withRefreshedReadVersions(currentResource, provenanceUnchanged);
+      stateResources[logicalId] = withRefreshedReadVersions(
+        stateResources[logicalId] ?? currentResource,
+        provenanceUnchanged
+      );
     }
     // Attribute-only change (schema v5+): `DeletionPolicy` /
     // `UpdateReplacePolicy` may have flipped without any AWS-side
