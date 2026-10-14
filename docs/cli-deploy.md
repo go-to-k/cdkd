@@ -190,6 +190,10 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **`AWS::Lambda::NetworkConnector` waits for `ACTIVE` in every mode.** AWS
+  rejects a web function revision that uses a connector still in `PENDING`, so
+  an early return would only move the wait into a failure. See
+  [cdkd deploy: wait mode details](cli-deploy-waits.md#aws-lambda-networkconnector).
 - **CloudFront and `AWS::Lambda::MicrovmImage` through Cloud Control.** cdkd
   provisions common resource types by calling the service's own API, and the
   rest through the AWS Cloud Control API. The early return in the table

@@ -104,6 +104,33 @@ returns as soon as the API call returns. A Lambda function in a VPC that
 nothing invokes therefore does not hold the deploy for the 5 to 10 minutes its
 network interface takes to attach.
 
+### `AWS::Lambda::NetworkConnector`
+
+A Lambda network connector also waits in every mode. Its create returns only
+once the connector leaves `PENDING` for `ACTIVE`, which takes about four
+minutes. AWS rejects any `AWS::Lambda::WebFunctionRevision` whose
+`ServiceConfig.EgressNetworkConnectorArn` names a connector that is not
+`ACTIVE` yet:
+
+```text
+The egress network connector arn:aws:lambda:...:network-connector:<id>:1 is in
+PENDING state. Only network connectors in ACTIVE state can be used.
+```
+
+Returning early would therefore not shorten a deploy:
+
+| Layout | Effect of returning early |
+| --- | --- |
+| Connector and revisions in one stack | The revision create fails with the error above. |
+| Connector in its own stack, revisions in a dependent stack | The dependent stack deploys next and fails the same way. |
+| Connector stack deployed alone | Only the terminal frees up sooner; the next deploy that uses the connector still waits. |
+
+The four-minute wait belongs to the connector's create. A deploy that leaves
+the connector unchanged does not touch it, so adding or updating web functions
+that use an existing connector does not wait for it. Keeping the wait also
+means a connector that ends in `FAILED` fails the deploy that created it,
+rather than surfacing later as a revision error.
+
 ## What `--full-wait` adds
 
 `--full-wait` adds two waits that CloudFormation performs and cdkd skips by
