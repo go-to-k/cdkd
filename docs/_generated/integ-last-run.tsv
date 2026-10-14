@@ -335,7 +335,7 @@ schema-v8-to-v9-migration	2026-10-12T05:46:57Z	FAIL	160	verify.sh	PR #4812: fixt
 schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#3466) b48362d regression run; rc 0, 54 assertions, destroy clean, 0 state versions, orph clean
 scrub-nested-child	2026-10-14T08:07:57Z	PASS	201	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
-sdk-to-cc-autoroute	2026-10-14T10:33:18Z	PASS	227	verify.sh	PR for #4904 at 5d643b6ad, new phase 1b; rc 0, destroy clean, orph clean
+sdk-to-cc-autoroute	2026-10-14T13:24:47Z	PASS	225	verify.sh	PR #4906 (#4904) rebased on 0c5272aaf, new phase 1b; rc 0, destroy clean, orph clean
 secret-derived-immutable-names	2026-10-14T08:07:57Z	PASS	897	verify.sh	rc ok, orph clean; PR #4892 e45f0ef17 diff promotion of a stale reader (5h/5i/5j); pre-fix arm red at 5h (reader NO_CHANGE, deleted queue ARN)
 secrets-array-nested	2026-10-12T00:02:47Z	PASS	393	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, 0 state versions, orph clean
 secrets-dynamic-ref	2026-10-14T09:34:45Z	PASS	828	verify.sh	rc ok, orph clean; PR #4889 f7a89df87
