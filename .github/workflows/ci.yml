@@ -403,6 +403,48 @@ jobs:
       - run: vp run build
       - run: vp env exec --node ${{ matrix.node-version }} node dist/cli.js --version
 
+  # The one job on a real Windows host (issue #2190). `dockerSpawnEnvWithSensitive`
+  # has a win32-only arm that removes a case-differing spelling of a secret's
+  # name, and its premise -- which spelling a spawned child reads -- is a
+  # property of Windows and Node that no stubbed `process.platform` can show.
+  # The test file measures it with a Node child and `cmd.exe` and asserts the
+  # fixed behaviour; `CDKD_REQUIRE_WIN32` makes a skipped run fail rather than
+  # pass, and the report it writes is printed for the PR record. It runs that
+  # one file, not the suite: much of the suite assumes POSIX. Required through
+  # `ci-ok`, so a change that breaks the arm cannot merge.
+  windows-env-precedence:
+    runs-on: windows-latest
+    # A runaway cap, as above; the job is install plus one test file.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - run: vp install --frozen-lockfile
+      - name: win32 env-block precedence
+        shell: bash
+        env:
+          CDKD_REQUIRE_WIN32: '1'
+          CDKD_WIN32_REPORT: ${{ runner.temp }}/win32-env-report.jsonl
+        run: |
+          set -euo pipefail
+          vp test run tests/unit/utils/docker-cmd-win32.test.ts
+          # Every measured case appends one line, so fewer than six means a
+          # case returned before it measured anything.
+          cat "${CDKD_WIN32_REPORT}"
+          lines=$(wc -l < "${CDKD_WIN32_REPORT}")
+          if [ "${lines}" -lt 6 ]; then
+            echo "::error::expected 6 measurement lines in the win32 report, found ${lines}."
+            exit 1
+          fi
+
   # A stale standing release PR is MERGEABLE and silently reverts main.
   # release-please does not rebuild a release PR whose computed release is
   # unchanged — it logs `PR #N remained the same` and leaves the branch on the
@@ -514,9 +556,10 @@ jobs:
   #     rather than only the required ones.
   ci-ok:
     if: always()
-    needs: [check-build-test, once-leak-detect, runtime-compat, release-pr-not-stale]
+    needs:
+      [check-build-test, once-leak-detect, runtime-compat, windows-env-precedence, release-pr-not-stale]
     runs-on: ubuntu-latest
-    # observed at least 5 s -- a shell loop over four strings.
+    # observed at least 5 s -- a shell loop over five strings.
     timeout-minutes: 10
     permissions: {}
     env:
@@ -527,7 +570,7 @@ jobs:
       # Must equal the length of `needs:` above. Both halves are read out of
       # this file by tests/unit/scripts/ci-ok-gate.test.ts, which also asserts
       # `needs:` covers every other job — so this cannot drift silently.
-      EXPECTED_UPSTREAM: '4'
+      EXPECTED_UPSTREAM: '5'
     steps:
       - name: every upstream job succeeded or was skipped
         run: |

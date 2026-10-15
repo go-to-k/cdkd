@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { inspect } from 'node:util';
-import { displayIdent } from './display-safe.js';
+import { displayIdent, safeMsg } from './display-safe.js';
 import { getLogger, isStdoutReservedForPayload } from './logger.js';
 import { escapeRegExp } from './regexp.js';
 import { defineOwnKey } from './own-keys.js';
@@ -398,6 +398,24 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'USERPROFILE',
   'HOMEDRIVE',
   'HOMEPATH',
+  // Windows system vars that decide WHAT CODE the client and its helpers run
+  // (#2190). `ComSpec` names the command interpreter, so it is the `PATH` /
+  // `PATHEXT` reason applied to a batch-file credential helper. `SystemRoot`
+  // (and its legacy alias `windir`) is what `%SystemRoot%\System32` resolves
+  // to, which is where Winsock providers and other system DLLs load from, the
+  // `LD_*` / `DYLD_*` class. `SystemDrive` is the root those registry paths
+  // expand against. `PSModulePath` is where PowerShell autoloads modules
+  // from, so it chooses code in a credential helper written as a PowerShell
+  // script, the `PYTHONPATH` class, and `PSExecutionPolicyPreference` sets
+  // which scripts that helper trusts to run. `TEMP` / `TMP` are deliberately absent:
+  // they only choose where temporary files go, which the RULE above keeps
+  // OUT, as it keeps `TMPDIR` out on POSIX.
+  'COMSPEC',
+  'SYSTEMROOT',
+  'WINDIR',
+  'SYSTEMDRIVE',
+  'PSMODULEPATH',
+  'PSEXECUTIONPOLICYPREFERENCE',
   // Connection / transport (docs.docker.com/reference/cli/docker) — a colliding
   // secret here could redirect the client to a different daemon or downgrade TLS.
   'DOCKER_HOST',
@@ -767,6 +785,11 @@ export function isMalformedEnvKey(key: string): boolean {
  *   execution as the operator. Defining the GOOD shape positively also catches
  *   the empty key (`-e ''`, an opaque docker rejection) in one predicate.
  *
+ * On win32 (`options.platform`, injectable for tests; #2190) a sensitive key
+ * that {@link Win32EnvNames} calls AMBIGUOUS is dropped the same way, with
+ * its own warning, and the surviving keys that differ only by letter case are
+ * warned about. Both warnings are prefixed with `options.subject` when given.
+ *
  * The collision case is why the argv half lives here beside the env half.
  * Emitting `-e KEY` for a key that `dockerSpawnEnvWithSensitive` refuses to
  * set makes docker resolve the flag against the CLIENT's own environment, so
@@ -776,11 +799,15 @@ export function isMalformedEnvKey(key: string): boolean {
  */
 export function partitionSensitiveEnv(
   env: Record<string, string>,
-  sensitiveKeys: ReadonlySet<string>
+  sensitiveKeys: ReadonlySet<string>,
+  options: { platform?: NodeJS.Platform; subject?: string } = {}
 ): { flags: string[]; sensitiveEnv: Record<string, string>; collisions: string[] } {
+  const platform = options.platform ?? process.platform;
   const flags: string[] = [];
   const sensitiveEnv: Record<string, string> = {};
   const collisions: string[] = [];
+  const names = platform === 'win32' ? new Win32EnvNames(Object.keys(process.env)) : undefined;
+  const ambiguous: string[] = [];
   for (const [k, v] of Object.entries(env)) {
     if (!sensitiveKeys.has(k)) {
       flags.push('-e', `${k}=${v}`);
@@ -790,6 +817,13 @@ export function partitionSensitiveEnv(
       collisions.push(k);
       continue;
     }
+    if (names) {
+      if (names.lookup(k).ambiguous) {
+        ambiguous.push(k);
+        continue;
+      }
+      names.replace(k);
+    }
     flags.push('-e', k);
     // Own-key define (issue #3515): a secret NAMED `__proto__` assigned onto
     // this `{}` literal ran Object.prototype's setter, so its value vanished
@@ -797,7 +831,93 @@ export function partitionSensitiveEnv(
     // argv. The value still never reaches the argv either way.
     defineOwnKey(sensitiveEnv, k, v);
   }
+  if (ambiguous.length > 0) {
+    getLogger().warn(
+      (options.subject === undefined ? '' : safeMsg`${options.subject}: `) +
+        safeMsg`Sensitive env var(s) ${ambiguous.map((k) => displayIdent(k)).join(', ')} ` +
+        `were NOT passed to the container. On Windows each matches another variable's name ` +
+        `(in your environment or another secret) only through a letter-case difference outside ` +
+        `A-Z, which cdkd does not treat as the same variable. Rename the secret if the ` +
+        `container needs it.`
+    );
+  }
+  if (names) warnCaseVariantSensitiveKeys(Object.keys(sensitiveEnv), options.subject);
   return { flags, sensitiveEnv, collisions };
+}
+
+/**
+ * Warn about sensitive keys that differ only by letter case (#2190). A Windows
+ * environment holds ONE variable for all of them, so each value-less `-e KEY`
+ * the client resolves reads the same value, the one
+ * {@link dockerSpawnEnvWithSensitive} writes last. It runs inside
+ * {@link partitionSensitiveEnv}, which every caller reaches before any
+ * `docker run`, so an earlier container's failed start cannot suppress a later
+ * container's warning. It reads only the keys that SURVIVED partitioning: a
+ * dropped key reaches neither the argv nor the spawn env, so it collides with
+ * nothing.
+ */
+function warnCaseVariantSensitiveKeys(keys: readonly string[], subject: string | undefined): void {
+  const byUpper = new Map<string, string[]>();
+  for (const k of keys) {
+    const upper = asciiUpper(k);
+    const group = byUpper.get(upper);
+    if (group) group.push(k);
+    else byUpper.set(upper, [k]);
+  }
+  for (const group of byUpper.values()) {
+    if (group.length < 2) continue;
+    getLogger().warn(
+      (subject === undefined ? '' : safeMsg`${subject}: `) +
+        safeMsg`Sensitive env vars ${group.map((k) => displayIdent(k)).join(', ')} differ only by letter case. ` +
+        safeMsg`Windows treats them as one variable, so the container receives the value of ` +
+        safeMsg`${displayIdent(group[group.length - 1]!)} under every one of these names. ` +
+        `Rename them to distinct names if the container needs each value.`
+    );
+  }
+}
+
+/** Upper-cases `a`-`z` only: the letter-case relation cdkd treats as one variable. */
+function asciiUpper(name: string): string {
+  return name.replace(/[a-z]/g, (c) => c.toUpperCase());
+}
+
+/**
+ * The names of a win32 spawn env, grouped the way Node's `spawn` dedups them
+ * there: by `toUpperCase`, keeping only the first of a group in sort order
+ * (#2190). Windows then compares names with its own one-to-one table, which
+ * agrees with `toUpperCase` on `a`-`z` and not on every other letter (`ß`
+ * becomes `SS`, `ı` becomes `I`). So a name is an ALIAS of a group member
+ * when the two differ only in `a`-`z` case: cdkd removes the other spelling
+ * and the secret wins. It is AMBIGUOUS when it shares a group with a name it
+ * differs from in any other way (`AWS_ACCEß_KEY_ID` next to the operator's
+ * `AWS_ACCESS_KEY_ID`): deleting the other name would strip it, and keeping
+ * both leaves Node's sort order to drop one, so the secret is refused instead.
+ * `isDockerClientEnvKey` keeps the full fold, where matching more names only
+ * refuses more.
+ */
+class Win32EnvNames {
+  private readonly groups = new Map<string, string[]>();
+
+  constructor(names: Iterable<string>) {
+    for (const name of names) {
+      const key = name.toUpperCase();
+      const group = this.groups.get(key);
+      if (group) group.push(name);
+      else this.groups.set(key, [name]);
+    }
+  }
+
+  /** The other spellings of `name`, and whether any differs beyond `a`-`z` case. */
+  lookup(name: string): { aliases: string[]; ambiguous: boolean } {
+    const others = (this.groups.get(name.toUpperCase()) ?? []).filter((n) => n !== name);
+    const folded = asciiUpper(name);
+    return { aliases: others, ambiguous: others.some((n) => asciiUpper(n) !== folded) };
+  }
+
+  /** Record that `name` is now the only spelling of its group. */
+  replace(name: string): void {
+    this.groups.set(name.toUpperCase(), [name]);
+  }
 }
 
 /**
@@ -811,7 +931,8 @@ export function partitionSensitiveEnv(
  * `sensitiveEnv`; the guard here is defence in depth.
  */
 export function dockerSpawnEnvWithSensitive(
-  sensitiveEnv: Record<string, string>
+  sensitiveEnv: Record<string, string>,
+  platform: NodeJS.Platform = process.platform
 ): NodeJS.ProcessEnv {
   // Start from the client's OWN environment and add only the sensitive keys
   // that do NOT name a docker-client var and are not malformed. A colliding /
@@ -826,14 +947,29 @@ export function dockerSpawnEnvWithSensitive(
   // OS-parsed NAME is only the part before the first `=`, which the denylist
   // check cannot see, so the raw key must be refused here too.
   //
-  // NOTE: case-insensitive Windows env handling (a case-differing HOST alias of
-  // a passthrough key, and two sensitive keys differing only by case) is
-  // DELIBERATELY not handled here — it needs the Windows-critical vars on the
-  // denylist first and a real Windows execution path, neither of which exists
-  // in this repo (CI is ubuntu-only). Tracked in issue #2190.
+  // On win32 a key differing only by letter case names the SAME variable
+  // (#2190). Left in, both spellings reach `spawn`, and Node keeps whichever
+  // sorts first (measured: the host's), so before a sensitive key is written
+  // every other spelling of it is removed: the host's alias, and an earlier
+  // sensitive key (`partitionSensitiveEnv` warns about that pair). The secret
+  // then replaces the host's variable exactly as the same spelling does on
+  // every platform. A removed alias is never a docker-client var, since the
+  // denylist check above is itself case-insensitive and the Windows system
+  // vars (`ComSpec`, `SystemRoot`, ...) are on it. An AMBIGUOUS key
+  // (`Win32EnvNames`) is skipped, as `partitionSensitiveEnv` refuses it. The
+  // `windows-env-precedence` CI job runs this arm on a real Windows host. POSIX
+  // env is case-sensitive, so elsewhere both spellings are distinct variables
+  // and are left alone.
   const env: NodeJS.ProcessEnv = { ...process.env };
+  const names = platform === 'win32' ? new Win32EnvNames(Object.keys(env)) : undefined;
   for (const [k, v] of Object.entries(sensitiveEnv)) {
     if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) continue;
+    if (names) {
+      const { aliases, ambiguous } = names.lookup(k);
+      if (ambiguous) continue;
+      for (const alias of aliases) delete env[alias];
+      names.replace(k);
+    }
     // Own-key define for the reason given in `partitionSensitiveEnv` (issue
     // #3515). Node's spawn serialises an own `__proto__` env key like any other.
     defineOwnKey(env as Record<string, unknown>, k, v);

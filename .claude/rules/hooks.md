@@ -39,8 +39,7 @@ refused for any commit**, and a merge waits on the six contexts.
 1. **A commit on a LOCAL `main` is refused by nothing.** It cannot reach the
    remote; move it: `git branch <name>` + `git reset --hard origin/main`.
 2. **A red check OUTSIDE the required set does not block a merge.** `ci-ok`
-   aggregates `check-build-test`, `once-leak-detect`, `runtime-compat` and
-   `release-pr-not-stale`; notably `hook-suites` is outside, so a hooks PR with
+   aggregates every other `ci.yml` job; notably `hook-suites` is outside, so a hooks PR with
    a red `hook-suites` merges. Read `gh pr checks`, not the rc.
 3. **`git push --dry-run` cannot probe any of this** — the server skips rule
    evaluation there. It DOES probe the local hooks: the same command against a

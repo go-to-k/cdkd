@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   ALLOW_SECRETS_ON_ARGV_ENV,
   DOCKER_CLIENT_ENV_KEYS,
@@ -24,6 +25,8 @@ import {
   spawnStreaming,
 } from '../../../src/utils/docker-cmd.js';
 import { SENSITIVE_ENV_KEYS } from '../../../src/local/docker-runner.js';
+import { buildDockerRunArgs } from '../../../src/local/ecs-task-runner.js';
+import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -349,6 +352,13 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'USERPROFILE',
     'HOMEDRIVE',
     'HOMEPATH',
+    // Windows system vars (#2190); TEMP / TMP are deliberately absent.
+    'COMSPEC',
+    'SYSTEMROOT',
+    'WINDIR',
+    'SYSTEMDRIVE',
+    'PSMODULEPATH',
+    'PSEXECUTIONPOLICYPREFERENCE',
     'DOCKER_HOST',
     'DOCKER_CONTEXT',
     'DOCKER_CONFIG',
@@ -833,6 +843,249 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     } finally {
       if (saved !== undefined) process.env['DOCKER_CONTEXT'] = saved;
     }
+  });
+});
+
+// The win32 arm, driven through the injected `platform` argument so it runs on
+// the ubuntu CI too. The same arm runs on a real Windows host in
+// `docker-cmd-win32.test.ts` (the `windows-env-precedence` CI job).
+describe('win32 letter-case handling of the spawn env (issue #2190)', () => {
+  const PROBE = 'CDKD_2190_CASE_PROBE';
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  const savedProbe = process.env[PROBE];
+  const savedComSpec = process.env['ComSpec'];
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    process.env[PROBE] = 'host-value';
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedProbe === undefined) delete process.env[PROBE];
+    else process.env[PROBE] = savedProbe;
+    if (savedComSpec === undefined) delete process.env['ComSpec'];
+    else process.env['ComSpec'] = savedComSpec;
+  });
+
+  it('on win32 removes the host spelling of a sensitive key so the secret is the only one', () => {
+    const lower = PROBE.toLowerCase();
+    const env = dockerSpawnEnvWithSensitive({ [lower]: 'secret-value' }, 'win32');
+    expect(Object.keys(env).filter((k) => k.toUpperCase() === PROBE)).toEqual([lower]);
+    expect(env[lower]).toBe('secret-value');
+    // The rest of the host env is untouched.
+    expect(env['PATH']).toBe(process.env['PATH']);
+  });
+
+  it('leaves both spellings alone off win32, where they are distinct variables', () => {
+    const lower = PROBE.toLowerCase();
+    for (const platform of ['linux', 'darwin'] as const) {
+      const env = dockerSpawnEnvWithSensitive({ [lower]: 'secret-value' }, platform);
+      expect(env[PROBE]).toBe('host-value');
+      expect(env[lower]).toBe('secret-value');
+    }
+  });
+
+  it('defaults to the running platform', () => {
+    const lower = PROBE.toLowerCase();
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+    expect(dockerSpawnEnvWithSensitive({ [lower]: 's' })[PROBE]).toBeUndefined();
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'linux' });
+    expect(dockerSpawnEnvWithSensitive({ [lower]: 's' })[PROBE]).toBe('host-value');
+  });
+
+  it('keeps the LAST of two sensitive spellings on win32, the one the warning names', () => {
+    const env = dockerSpawnEnvWithSensitive({ my_2190_secret: 'a', MY_2190_SECRET: 'b' }, 'win32');
+    expect(Object.keys(env).filter((k) => k.toUpperCase() === 'MY_2190_SECRET')).toEqual([
+      'MY_2190_SECRET',
+    ]);
+    expect(env['MY_2190_SECRET']).toBe('b');
+    const posix = dockerSpawnEnvWithSensitive({ my_2190_secret: 'a', MY_2190_SECRET: 'b' }, 'linux');
+    expect(posix['my_2190_secret']).toBe('a');
+    expect(posix['MY_2190_SECRET']).toBe('b');
+  });
+
+  // Each name paired with the host spelling Windows sets, so the "remove" half
+  // has a host alias to remove.
+  it.each([
+    ['comspec', 'ComSpec'],
+    ['COMSPEC', 'ComSpec'],
+    ['systemroot', 'SystemRoot'],
+    ['Windir', 'windir'],
+    ['systemdrive', 'SystemDrive'],
+    ['psmodulepath', 'PSModulePath'],
+    ['psexecutionpolicypreference', 'PSExecutionPolicyPreference'],
+  ])('never lets a secret named %s remove or replace the host %s', (key, hostName) => {
+    const saved = process.env[hostName];
+    process.env[hostName] = 'host-value';
+    try {
+      const env = dockerSpawnEnvWithSensitive(
+        { [key]: 'evil', CONTROL_SECRET: 'arrived' },
+        'win32'
+      );
+      expect(env[hostName]).toBe('host-value');
+      expect(Object.values(env)).not.toContain('evil');
+      expect(env['CONTROL_SECRET']).toBe('arrived');
+      expect(
+        partitionSensitiveEnv({ [key]: 'evil' }, new Set([key]), { platform: 'win32' }).collisions
+      ).toEqual([key]);
+    } finally {
+      if (saved === undefined) delete process.env[hostName];
+      else process.env[hostName] = saved;
+    }
+  });
+
+  it.each(['TEMP', 'TMP', 'tmp'])('still delivers a secret named %s (a temp dir only)', (key) => {
+    expect(isDockerClientEnvKey(key)).toBe(false);
+    expect(partitionSensitiveEnv({ [key]: 'v' }, new Set([key])).flags).toEqual(['-e', key]);
+  });
+
+  it('on win32 a secret named temp replaces the host TEMP, as TMPDIR is replaced on POSIX', () => {
+    const saved = process.env['TEMP'];
+    process.env['TEMP'] = 'C:\\host-temp';
+    try {
+      const env = dockerSpawnEnvWithSensitive({ temp: 'secret-temp' }, 'win32');
+      expect(Object.keys(env).filter((k) => k.toUpperCase() === 'TEMP')).toEqual(['temp']);
+      expect(env['temp']).toBe('secret-temp');
+    } finally {
+      if (saved === undefined) delete process.env['TEMP'];
+      else process.env['TEMP'] = saved;
+    }
+  });
+
+  // Node's win32 `spawn` dedups names by `toUpperCase`; Windows' own table
+  // agrees with it on a-z only. A name matching another beyond a-z case is
+  // refused, never treated as an alias: deleting the other name stripped the
+  // operator's credential (security review of #4964), and keeping both leaves
+  // Node's sort order to drop one.
+  it.each([
+    'AWS_ACCEß_KEY_ID', // ß upper-cases to SS (longer)
+    'AWS_ACCESS_KEY_ıD', // dotless ı upper-cases to ASCII I (one-to-one)
+    'AWS_ACCEſS_KEY_ID', // long s upper-cases to ASCII S
+  ])('on win32 refuses %s rather than strip the host AWS_ACCESS_KEY_ID', (key) => {
+    const saved = process.env['AWS_ACCESS_KEY_ID'];
+    process.env['AWS_ACCESS_KEY_ID'] = 'OPERATOR_AKID';
+    try {
+      const env = dockerSpawnEnvWithSensitive({ [key]: 'x' }, 'win32');
+      expect(env['AWS_ACCESS_KEY_ID']).toBe('OPERATOR_AKID');
+      expect(env[key]).toBeUndefined();
+      const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+        { [key]: 'x', OTHER_2190: 'y' },
+        new Set([key, 'OTHER_2190']),
+        { platform: 'win32', subject: "Container 'web'" }
+      );
+      expect(flags).toEqual(['-e', 'OTHER_2190']);
+      expect(Object.keys(sensitiveEnv)).toEqual(['OTHER_2190']);
+      expect(collisions).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = String(warnSpy.mock.calls[0]![0]);
+      expect(message).toMatch(/^Container 'web': Sensitive env var\(s\) /);
+      expect(message).toContain('were NOT passed to the container');
+      // Off win32 the names are distinct variables and the secret is delivered.
+      expect(dockerSpawnEnvWithSensitive({ [key]: 'x' }, 'linux')[key]).toBe('x');
+    } finally {
+      if (saved === undefined) delete process.env['AWS_ACCESS_KEY_ID'];
+      else process.env['AWS_ACCESS_KEY_ID'] = saved;
+    }
+  });
+
+  it('on win32 refuses the later of two secrets that match beyond a-z case, keeping the first', () => {
+    const { flags } = partitionSensitiveEnv(
+      { CAFé_2190: 'a', CAFÉ_2190: 'b' },
+      new Set(['CAFé_2190', 'CAFÉ_2190']),
+      { platform: 'win32' }
+    );
+    expect(flags).toEqual(['-e', 'CAFé_2190']);
+    const env = dockerSpawnEnvWithSensitive({ CAFé_2190: 'a', CAFÉ_2190: 'b' }, 'win32');
+    expect(Object.keys(env).filter((k) => k.startsWith('CAF'))).toEqual(['CAFé_2190']);
+  });
+
+  it('warns on win32 about sensitive keys differing only by case, naming the surviving one', () => {
+    const env = { my_2190_secret: 'a', MY_2190_SECRET: 'b', OTHER_2190: 'c', PLAIN: 'p' };
+    const keys = new Set(['my_2190_secret', 'MY_2190_SECRET', 'OTHER_2190']);
+    const { flags } = partitionSensitiveEnv(env, keys, { platform: 'win32' });
+    // Both value-less flags stay: each name still reaches the container.
+    expect(flags).toEqual(['-e', 'my_2190_secret', '-e', 'MY_2190_SECRET', '-e', 'OTHER_2190', '-e', 'PLAIN=p']);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = String(warnSpy.mock.calls[0]![0]);
+    expect(message).toContain('my_2190_secret, MY_2190_SECRET differ only by letter case');
+    expect(message).toContain('receives the value of MY_2190_SECRET under every one');
+    expect(message).not.toContain('OTHER_2190');
+  });
+
+  it('run-task names the container in the warning (buildDockerRunArgs wiring)', () => {
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+    const container = {
+      name: 'web',
+      image: { kind: 'public', uri: 'nginx:alpine' },
+      environment: {},
+      secrets: [],
+      portMappings: [],
+      mountPoints: [],
+      dependsOn: [],
+      links: [],
+      essential: true,
+      ulimits: [],
+      warnings: [],
+    } as unknown as ResolvedEcsContainer;
+    const task = {
+      stack: { stackName: 'S1', displayName: 'S1', artifactId: 'S1', template: { Resources: {} } },
+      taskDefinitionLogicalId: 'TD',
+      resource: { Type: 'AWS::ECS::TaskDefinition' },
+      family: 'fam',
+      networkMode: 'bridge',
+      containers: [container],
+      volumes: [],
+      warnings: [],
+    } as unknown as ResolvedEcsTask;
+    buildDockerRunArgs({
+      task,
+      container,
+      image: 'nginx:alpine',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [
+        { name: 'my_2190_secret', value: 'a' },
+        { name: 'MY_2190_SECRET', value: 'b' },
+      ],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    const warned = warnSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(warned.filter((m: string) => m.startsWith("Container 'web': Sensitive env vars "))).toHaveLength(1);
+  });
+
+  it('prefixes the warning with the caller-supplied subject', () => {
+    partitionSensitiveEnv(
+      { my_2190_secret: 'a', MY_2190_SECRET: 'b' },
+      new Set(['my_2190_secret', 'MY_2190_SECRET']),
+      { platform: 'win32', subject: "Container 'web'" }
+    );
+    expect(String(warnSpy.mock.calls[0]![0])).toMatch(/^Container 'web': Sensitive env vars /);
+  });
+
+  it('does not warn off win32', () => {
+    const env = { my_2190_secret: 'a', MY_2190_SECRET: 'b' };
+    for (const platform of ['linux', 'darwin'] as const) {
+      partitionSensitiveEnv(env, new Set(Object.keys(env)), { platform });
+    }
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not warn about keys partitioning already dropped', () => {
+    // Both spellings name a docker-client var, so neither reaches the spawn env
+    // and nothing is shadowed; the collision warning is the caller's.
+    const env = { docker_host: 'a', DOCKER_HOST: 'b', 'A=B': 'c', 'a=b': 'd' };
+    const { collisions } = partitionSensitiveEnv(env, new Set(Object.keys(env)), {
+      platform: 'win32',
+    });
+    expect(collisions).toEqual(['docker_host', 'DOCKER_HOST', 'A=B', 'a=b']);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 

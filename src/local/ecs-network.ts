@@ -204,7 +204,9 @@ async function createNetworkAndSidecar(args: {
     flags: sidecarFlags,
     sensitiveEnv: sidecarSensitiveEnv,
     collisions: sidecarCollisions,
-  } = partitionSensitiveEnv(sidecarEnv, SENSITIVE_ENV_KEYS);
+  } = partitionSensitiveEnv(sidecarEnv, SENSITIVE_ENV_KEYS, {
+    subject: `Sidecar '${taskSidecarName(networkName)}'`,
+  });
   sidecarArgs.push(...sidecarFlags);
   if (sidecarCollisions.length > 0) {
     logger.warn(

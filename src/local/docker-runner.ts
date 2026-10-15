@@ -295,7 +295,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     flags,
     sensitiveEnv: passthroughEnv,
     collisions,
-  } = partitionSensitiveEnv(opts.env, sensitiveKeys);
+  } = partitionSensitiveEnv(opts.env, sensitiveKeys, {
+    // Names the container in the win32 letter-case warnings (#2190); `cdkd
+    // local start-api` sets a name carrying the function's logical id.
+    ...(opts.name !== undefined && { subject: `Container '${opts.name}'` }),
+  });
   args.push(...flags);
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs

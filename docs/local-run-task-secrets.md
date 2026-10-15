@@ -59,7 +59,8 @@ change how the container client itself behaves. A secret named `DOCKER_HOST`,
 for example, would point the client at another Docker daemon, which would let
 a template redirect it. If the container needs such a secret, rename it.
 
-Two kinds of name are dropped. The first is a name that is empty or contains
+Two kinds of name are dropped on every platform, and on Windows a third,
+described after the table. The first is a name that is empty or contains
 `=` or a NUL character. The second is a name, in any letter case, that the
 container client (Docker, podman, nerdctl, finch) or one of its credential
 helpers reads:
@@ -68,6 +69,7 @@ helpers reads:
 | --- | --- |
 | Docker connection, TLS and behaviour settings | `DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_TLS_VERIFY` |
 | Process, loader and trust variables | `PATH`, `HOME`, `GCONV_PATH`, `SSL_CERT_FILE`; the `LD_` / `DYLD_` prefixes |
+| Windows system and PowerShell variables | `ComSpec`, `SystemRoot`, `windir`, `SystemDrive`, `PSModulePath`, `PSExecutionPolicyPreference` |
 | SSH helper variables | `SSH_AUTH_SOCK`, `SSH_ASKPASS` |
 | AWS variables `docker-credential-ecr-login` reads | `AWS_PROFILE`, `AWS_ECR_CACHE_DIR`; the `AWS_ENDPOINT_URL_` prefix |
 | gcloud variables `docker-credential-gcloud` reads | `GCE_METADATA_HOST`; the `CLOUDSDK_` prefix, except `CLOUDSDK_AUTH_ACCESS_TOKEN`, which is forwarded |
@@ -76,6 +78,15 @@ helpers reads:
 | nerdctl connection, config and CNI | `CONTAINERD_ADDRESS`, `NERDCTL_TOML`, `CNI_PATH` |
 | finch's Lima layer | `SSH` |
 | Base directories the above fall back to | `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`; on Windows `APPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `LOCALAPPDATA` |
+
+On Windows, cdkd treats names that differ only in A-Z letter case as one
+variable. A secret named `my_token` replaces a `MY_TOKEN` already set in your shell, as a secret
+spelled `MY_TOKEN` would. When two secrets differ only in letter case, cdkd
+warns, and the container receives the value of the one listed last under both
+names. A secret whose name matches another variable only through a letter
+outside A-Z (`ß` against `SS`, for example) is dropped with a warning on
+Windows, because cdkd treats only a difference in A-Z letter case as the same
+variable.
 
 ## Related
 

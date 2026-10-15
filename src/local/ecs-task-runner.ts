@@ -1619,7 +1619,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     ...secrets.map((s) => s.name),
     ...(opts.plaintextEnvKeys ?? []),
   ]);
-  const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
+  // `subject` names the container in the win32 letter-case warning (#2190).
+  const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys, {
+    subject: `Container '${container.name}'`,
+  });
   args.push(...flags);
 
   if (container.user) args.push('--user', container.user);

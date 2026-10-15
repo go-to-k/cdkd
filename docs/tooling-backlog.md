@@ -57,8 +57,7 @@ separate the clauses, is in
 - **What the ruleset still does NOT cover, recorded as first occurrences.** A
   commit on a LOCAL `main` is refused by nothing (move it with `git branch` +
   `git reset`). A red check outside the required set does not block a merge:
-  `ci-ok` aggregates `check-build-test`, `once-leak-detect`, `runtime-compat`
-  and `release-pr-not-stale`, but `hook-suites` notably sits outside, so a hooks
+  `ci-ok` aggregates every other `ci.yml` job, but `hook-suites` notably sits outside, so a hooks
   PR with a red `hook-suites` merges. Neither is worth a hook; both are
   `AGENTS.md` rules. And `git push --dry-run` does NOT evaluate the ruleset, so
   it cannot probe any of it — against the local hooks it still works.
