@@ -130,6 +130,7 @@ describe('local-state-loader: an unconvertible rejection still degrades (#3361)'
     mocks.getStateMock.mockResolvedValue(stateWithExport('SharedName', 'from-scan'));
 
     await expect((await resolver()).resolveImport('SharedName')).resolves.toBe('from-scan');
+    expect(mocks.getStateMock).toHaveBeenCalledWith('Producer', 'us-east-1');
     expect(debugLine('exports index lookup failed')).toContain(PLACEHOLDER);
   });
 
