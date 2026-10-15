@@ -210,6 +210,11 @@ fi
 # EKS_AUDIT_LOGS, so its baseline leaves that one out.
 OMITTED_P2="$(omitted_features "${DETECTOR_ID}")"
 OMITTED_P3="$(omitted_features "${DETECTOR_ID}" "${NOT_EKS_AUDIT}")"
+# The additional-configuration half of the comparison is vacuous unless some
+# omitted feature carries one ("Name:Status" after the ';').
+if [[ "${OMITTED_P2}" != *';'*':'* ]]; then
+  echo "FAIL: premise: no omitted feature carries an additional configuration, got '${OMITTED_P2}'" >&2; exit 1
+fi
 # Both runtime features must be in the read model: that pair is what
 # UpdateDetector refuses on a scalar-only patch.
 if [[ $'\t'"${OMITTED_P2}"$'\t' != *$'\t'EKS_RUNTIME_MONITORING=* ]] \

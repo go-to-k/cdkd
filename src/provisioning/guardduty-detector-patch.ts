@@ -11,8 +11,8 @@ const READ_BACK_KEYS = ['Features', 'DataSources'] as const;
  * [#4910](https://github.com/go-to-k/cdkd/issues/4910)).
  *
  * Cloud Control applies the patch on top of the model its read handler
- * returns, and for a detector that model always carries both `DataSources`
- * and the FULL `Features` list (every feature GuardDuty knows,
+ * returns, and for a detector that model carried both `DataSources` and the
+ * FULL `Features` list on every read measured (see the remove ops below) (every feature GuardDuty knows,
  * `EKS_RUNTIME_MONITORING` and `RUNTIME_MONITORING` both included), whichever
  * of them the template declares. `UpdateDetector` refuses a request carrying
  * `DataSources` beside `Features`, and one carrying both runtime features, so

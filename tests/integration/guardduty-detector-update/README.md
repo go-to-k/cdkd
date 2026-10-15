@@ -5,7 +5,8 @@ cdkd Cloud Control update integration test for `AWS::GuardDuty::Detector`
 
 cdkd has no SDK provider for the detector, so it updates it through Cloud
 Control, which applies the JSON patch on top of its read model. For a detector
-that model always carries both `DataSources` and the full `Features` list, and
+that model carried both `DataSources` and the full `Features` list on every read
+measured (us-east-1 and us-west-2), and
 `UpdateDetector` refuses them together (`both data sources and features were
 provided`, `EKS_RUNTIME_MONITORING and RUNTIME_MONITORING cannot be provided in
 the same request`). Before the fix a scalar-only update failed, because the
