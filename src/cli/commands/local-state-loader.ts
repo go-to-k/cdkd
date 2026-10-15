@@ -21,6 +21,7 @@
  */
 
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import { CdkdError, StateError } from '../../utils/error-handler.js';
@@ -417,7 +418,7 @@ export async function loadBootstrapContainerRepo(
     stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, region);
   } catch (err) {
     logger.debug(
-      `${prefix}: could not resolve state bucket for the bootstrap-marker read: ${err instanceof Error ? err.message : String(err)}. Falling back to conventional asset-repo names.`
+      `${prefix}: could not resolve state bucket for the bootstrap-marker read: ${describeAwsFailure(err).detail}. Falling back to conventional asset-repo names.`
     );
     return undefined;
   }
@@ -473,7 +474,7 @@ export async function loadBootstrapContainerRepo(
     return marker.containerRepo;
   } catch (err) {
     logger.debug(
-      `${prefix}: bootstrap-marker read failed: ${err instanceof Error ? err.message : String(err)}. Falling back to conventional asset-repo names.`
+      `${prefix}: bootstrap-marker read failed: ${describeAwsFailure(err).detail}. Falling back to conventional asset-repo names.`
     );
     return undefined;
   } finally {
@@ -695,7 +696,7 @@ export async function buildCrossStackResolver(
         }
       } catch (err) {
         logger.debug(
-          `${prefix}: exports index lookup failed for '${exportName}': ${err instanceof Error ? err.message : String(err)}; falling back to per-stack state scan`
+          `${prefix}: exports index lookup failed for '${exportName}': ${describeAwsFailure(err).detail}; falling back to per-stack state scan`
         );
       }
 
@@ -707,7 +708,7 @@ export async function buildCrossStackResolver(
         refs = await stateBackend.listStacks();
       } catch (err) {
         logger.debug(
-          `${prefix}: failed to list stacks during Fn::ImportValue fallback for '${exportName}': ${err instanceof Error ? err.message : String(err)}`
+          `${prefix}: failed to list stacks during Fn::ImportValue fallback for '${exportName}': ${describeAwsFailure(err).detail}`
         );
         return undefined;
       }
@@ -738,7 +739,7 @@ export async function buildCrossStackResolver(
           }
         } catch (err) {
           logger.debug(
-            `${prefix}: state read failed for ${ref.stackName} (${region}) during Fn::ImportValue fallback: ${err instanceof Error ? err.message : String(err)}`
+            `${prefix}: state read failed for ${ref.stackName} (${region}) during Fn::ImportValue fallback: ${describeAwsFailure(err).detail}`
           );
           continue;
         }
@@ -845,7 +846,7 @@ export async function buildCrossStackResolver(
         return undefined;
       } catch (err) {
         logger.debug(
-          `${prefix}: state read failed for Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}): ${err instanceof Error ? err.message : String(err)}`
+          `${prefix}: state read failed for Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}): ${describeAwsFailure(err).detail}`
         );
         return undefined;
       }
