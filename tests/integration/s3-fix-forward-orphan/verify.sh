@@ -15,13 +15,16 @@
 #      nor delete it. A `--no-rollback` deploy run as that role with
 #      WITH_ORPHANS=true creates `OrphanA`'s, `OrphanC`'s, `OrphanD`'s, `OrphanE`'s and `OrphanF`'s buckets, enables
 #      their versioning, fails on the tagging call that follows, and the
-#      provider's own cleanup cannot delete them. (The AccessDenied is retried
-#      as IAM propagation; each retry proves the bucket is its own first
+#      provider's own cleanup cannot delete them. (The role holds neither
+#      s3:TagResource nor s3:PutBucketTagging: the tagged CreateBucket is
+#      refused and re-sent untagged (go-to-k/cdkd#4969), and the tagging call's
+#      IMPLICIT-deny AccessDenied is retried as IAM propagation -- an explicit
+#      deny would fail fast since go-to-k/cdkd#4969; each retry proves the bucket is its own first
 #      attempt's leftover (#4758), takes it back without a CreateBucket, and
 #      fails on the tagging call again until the retries give up, while the
 #      created-bucket mark is carried to the journal, an abort during the
 #      backoff included (#4757).) Asserted: the
-#      deploy failed, every orphan bucket exists, no state record holds them, and the
+#      deploy failed after IAM-propagation retries, every orphan bucket exists, no state record holds them, and the
 #      rollback journal carries each as a proven orphan with its identity
 #      `<name>|<region>|<CreationDate>`, equal to what ListBuckets reports.
 #   2b. The re-used name: `OrphanC`'s bucket is deleted and its name created
@@ -300,10 +303,13 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # the identity read). ListAllMyBuckets is the identity read's ListBuckets.
 # PutBucketVersioning (the first configuration call) is allowed, so S3 has a
 # configuration write to move the date on; PutBucketTagging (the next one,
-# the stack's fixture tag) is denied, so each CREATE fails after S3 made the
-# bucket; DeleteBucket is denied, so the provider's own cleanup cannot remove
-# it.
-DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:PutBucketVersioning","s3:ListBucket","s3:GetBucketLocation"],Resource:`arn:aws:s3:::cdkd-s3ffo-*-${acct}`},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["s3:PutBucketTagging","s3:DeleteBucket"],Resource:`arn:aws:s3:::cdkd-s3ffo-*-${acct}`}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
+# the stack's fixture tag) is never granted -- an IMPLICIT deny, which the
+# engine retries as IAM propagation, where an explicit one fails fast
+# (go-to-k/cdkd#4969) -- so each CREATE fails after S3 made the bucket, and
+# s3:TagResource is never granted either, so the tagged CreateBucket is
+# re-sent untagged; DeleteBucket is explicitly denied, so the provider's own
+# cleanup cannot remove it.
+DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:PutBucketVersioning","s3:ListBucket","s3:GetBucketLocation"],Resource:`arn:aws:s3:::cdkd-s3ffo-*-${acct}`},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","ssm:GetParameter","ssm:GetParameters","kms:Decrypt","kms:GenerateDataKey","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["s3:DeleteBucket"],Resource:`arn:aws:s3:::cdkd-s3ffo-*-${acct}`}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=s3-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1
@@ -398,6 +404,13 @@ assert_gone "role ${DENY_ROLE} still exists a minute after its delete" aws iam g
 DENY_ROLE_CREATED=""
 if [ "${INJECT_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the --no-rollback deploy as ${DENY_ROLE} unexpectedly SUCCEEDED" >&2
+  exit 1
+fi
+# The retries are the path #4758 / #4757 cover: each takes back its own
+# leftover bucket. An implicit deny on the tagging call keeps them; an explicit
+# one would end the CREATE on its first answer (go-to-k/cdkd#4969).
+if ! grep -qF 'IAM-propagation retr' "${LOG_DIR}/inject.log"; then
+  echo "[verify] FAIL: the refused tagging call was not retried as IAM propagation (no 'IAM-propagation retr' give-up line -- output above)" >&2
   exit 1
 fi
 for b in "${BUCKET_A}" "${BUCKET_C}" "${BUCKET_D}" "${BUCKET_E}" "${BUCKET_F}"; do

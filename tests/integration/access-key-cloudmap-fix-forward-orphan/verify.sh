@@ -18,10 +18,12 @@
 #      and `ServiceA` (with `ServiceAttributes`), fails each on its follow-up
 #      call, and the provider's own cleanup is refused too. Asserted: the
 #      deploy failed, the journal carries each as a proven orphan whose key or
-#      service exists, and no state record holds them. The deploy retries the
-#      key's refused create and mints a second key, which only the journal's
-#      newest mark names (go-to-k/cdkd#4945); the run deletes every key the
-#      journal does not name, so the fix-forward fits the user's 2-key quota.
+#      service exists, and no state record holds them. The follow-up calls are
+#      refused by an IMPLICIT deny (never granted), which the engine retries as
+#      IAM propagation, as before go-to-k/cdkd#4969 made an explicit deny fail
+#      fast. A key create that left its key behind is not replayed
+#      (go-to-k/cdkd#4945); the run still deletes any key the journal does not
+#      name, so the fix-forward fits the user's 2-key quota.
 #   3. The fix-forward: WITH_ORPHANS=true ORPHAN_FIX_FORWARD=true keeps both
 #      logical ids (the key `Active`, the service as `-b`). Asserted: the
 #      deploy exits 0, the journaled key and service are deleted
@@ -315,14 +317,16 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # s3-replication-purge-gap}.ts, src/utils/aws-region-resolver.ts). On this
 # run's user (`cdkd-akcfo-*`) the role may CreateAccessKey and read the user
 # and its keys; in Cloud Map it may CreateService and read. UpdateAccessKey and
-# UpdateServiceAttributes (each CREATE's follow-up) are denied, so each CREATE
-# fails after AWS made the key or service; DeleteAccessKey, DeleteService,
+# UpdateServiceAttributes (each CREATE's follow-up) are never granted -- an
+# IMPLICIT deny, retried as IAM propagation, where an explicit one would fail
+# fast (go-to-k/cdkd#4969) -- so each CREATE fails after AWS made the key or
+# service; DeleteAccessKey, DeleteService,
 # DeleteServiceAttributes, DeleteNamespace and DeleteUser are denied, so the
 # providers' own cleanup cannot remove it. No statement allows a credential
 # beyond the access key on this run's user, a PassRole or a role write.
 # sts:AssumeRole is denied everywhere: nothing this session runs assumes a role
 # (cdkd is run without --role-arn).
-DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const user=`arn:aws:iam::${acct}:user/cdkd-akcfo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateAccessKey","iam:ListAccessKeys","iam:GetAccessKeyLastUsed","iam:GetUser","iam:ListUserPolicies","iam:ListAttachedUserPolicies","iam:ListUserTags","iam:ListGroupsForUser"],Resource:user},{Effect:"Allow",Action:["servicediscovery:CreateService","servicediscovery:GetService","servicediscovery:GetNamespace","servicediscovery:GetOperation","servicediscovery:GetServiceAttributes","servicediscovery:ListNamespaces","servicediscovery:ListServices","servicediscovery:ListTagsForResource"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:UpdateAccessKey","iam:DeleteAccessKey","iam:DeleteUser","iam:PassRole"],Resource:user},{Effect:"Deny",Action:["servicediscovery:UpdateServiceAttributes","servicediscovery:DeleteServiceAttributes","servicediscovery:DeleteService","servicediscovery:DeleteNamespace"],Resource:"*"},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
+DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const user=`arn:aws:iam::${acct}:user/cdkd-akcfo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateAccessKey","iam:ListAccessKeys","iam:GetAccessKeyLastUsed","iam:GetUser","iam:ListUserPolicies","iam:ListAttachedUserPolicies","iam:ListUserTags","iam:ListGroupsForUser"],Resource:user},{Effect:"Allow",Action:["servicediscovery:CreateService","servicediscovery:GetService","servicediscovery:GetNamespace","servicediscovery:GetOperation","servicediscovery:GetServiceAttributes","servicediscovery:ListNamespaces","servicediscovery:ListServices","servicediscovery:ListTagsForResource"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeleteAccessKey","iam:DeleteUser","iam:PassRole"],Resource:user},{Effect:"Deny",Action:["servicediscovery:DeleteServiceAttributes","servicediscovery:DeleteService","servicediscovery:DeleteNamespace"],Resource:"*"},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=access-key-cloudmap-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1
@@ -505,10 +509,10 @@ fi
 echo "[verify] step 2 ok: access key ${KEY_J} and service ${SRV_J} are in AWS, journaled as proven orphans, with no state record"
 
 echo "[verify] step 2b: the keys the journal does not name are deleted (go-to-k/cdkd#4945)"
-# The deploy retried KeyA's refused create (the refusal reads as IAM
-# propagation), and each retry minted another key until the user's 2-key
-# quota refused one; only the journal's newest mark names one of them. Left in
-# place, the extra key fills the quota the fix-forward's CREATE needs.
+# A replayed KeyA create would mint another key the journal does not name;
+# go-to-k/cdkd#4945 stops that replay, and this sweep keeps the fixture's
+# quota premise if one ever happens. Left in place, an extra key fills the
+# quota the fix-forward's CREATE needs.
 KEYS_2="$(user_key_ids)" || { echo "[verify] FAIL: ListAccessKeys on ${BASE_USER} failed after step 2" >&2; exit 1; }
 for k in ${KEYS_2}; do
   if [ "${k}" != "${KEY_J}" ]; then
