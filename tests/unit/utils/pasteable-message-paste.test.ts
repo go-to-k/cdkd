@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from 'vite-plus/test';
-import { rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { commandHole, pasteableCommand, shellQuote } from '../../../src/utils/pasteable-command.js';
@@ -47,7 +47,9 @@ import {
   checkedDisplays,
   filesTouchedBy,
   lineStarts,
+  pasteSpawnCount,
   segmentsOf,
+  spanRun,
   spansThatRun,
   spansThatRunBesideTheDisplay,
   withPasteDir,
@@ -693,6 +695,69 @@ describe('pasteable messages — nothing runs at any granularity', () => {
         filesTouchedBy('[ "$(type -P cdkd)" -ef "$HOME/../bin/cdkd" ] && touch OWNED', outer)
       ).toEqual(['OWNED']);
     });
+  }, 120_000);
+
+  it('serves a repeated span from the cache only inside one call, and only from the seeded decoys', () => {
+    // The header's MEMOIZED: the harness reuses a span's result, so each
+    // property that makes the reuse sound is pinned here by spawn count.
+    const spawnsOf = (run: () => void): number => {
+      const start = pasteSpawnCount();
+      run();
+      return pasteSpawnCount() - start;
+    };
+    const shells = PASTE_SHELLS.length;
+    withPasteDir((dir) => {
+      // A repeat returns the first run's result, running and inert alike,
+      // without a child...
+      expect(spawnsOf(() => expect(filesTouchedBy('touch OWNED', dir)).toEqual(['OWNED']))).toBe(shells);
+      expect(spawnsOf(() => expect(filesTouchedBy('touch OWNED', dir)).toEqual(['OWNED']))).toBe(0);
+      expect(spawnsOf(() => expect(spanRun('cdkd state show x', dir, {})).toEqual({ touched: [], verbRan: true }))).toBe(shells);
+      expect(spawnsOf(() => expect(spanRun('cdkd state show x', dir, {})).toEqual({ touched: [], verbRan: true }))).toBe(0);
+      expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(shells);
+      // A directory holding anything but the seeded decoys always spawns: an
+      // extra file...
+      writeFileSync(join(dir, 'planted'), 'x\n', 'utf8');
+      try {
+        expect(spawnsOf(() => expect(filesTouchedBy('true', dir)).toEqual([]))).toBe(shells);
+      } finally {
+        rmSync(join(dir, 'planted'));
+      }
+      // ...or a decoy whose content changed.
+      const region = join(dir, 'region');
+      const seeded = readFileSync(region, 'utf8');
+      writeFileSync(region, 'changed\n', 'utf8');
+      try {
+        expect(spawnsOf(() => expect(filesTouchedBy('true', dir)).toEqual([]))).toBe(shells);
+      } finally {
+        writeFileSync(region, seeded, 'utf8');
+      }
+      expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(0);
+      // ...or a decoy whose MODE changed: read-only, a truncation onto it does
+      // nothing, and that answer must not be served once the mode is back.
+      const seededMode = statSync(region).mode & 0o7777;
+      chmodSync(region, 0o444);
+      try {
+        expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(shells);
+      } finally {
+        chmodSync(region, seededMode);
+      }
+      expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(0);
+      // A run that FAILED is not recorded: its repeat runs, and fails, again.
+      const killed = 'kill -KILL $$';
+      expect(spawnsOf(() => expect(() => filesTouchedBy(killed, dir)).toThrow(/killed/))).toBeGreaterThan(0);
+      expect(spawnsOf(() => expect(() => filesTouchedBy(killed, dir)).toThrow(/killed/))).toBeGreaterThan(0);
+      // A nested call misses what the outer one cached (its own stub
+      // directory is in the key), and the outer cache is still there after it.
+      withPasteDir((inner) => {
+        expect(spawnsOf(() => filesTouchedBy('true', inner))).toBe(shells);
+      });
+      expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(0);
+    });
+    // A later call starts empty, and its controls already ran on the first.
+    withPasteDir((dir) => {
+      expect(spawnsOf(() => filesTouchedBy('true', dir))).toBe(shells);
+    });
+    expect(spawnsOf(() => withPasteDir(() => undefined))).toBe(0);
   }, 120_000);
 
   it('records what displayIdent costs in a pasted span — it is a DISPLAY boundary, not a shell one', () => {
