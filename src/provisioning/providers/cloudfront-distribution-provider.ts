@@ -24,6 +24,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
   ResourceProvider,
+  UpdateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
@@ -421,9 +422,27 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudFront Distribution ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: CloudFront is global -- the SDK sends every region to
+    // cloudfront.amazonaws.com -- but the client's configured region is the
+    // stack's region (it is built from the shared client options, not pinned
+    // to us-east-1), so a mismatch with the recorded region means this client
+    // was not built for the stack the record belongs to. Refused before the
+    // first call (delete() compares the regions only on a NotFound), outside
+    // the try so the refusal is not re-labelled as an AWS failure; the
+    // client's region is read only when there is a recorded one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.cloudFrontClient.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update',
+      'global'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 

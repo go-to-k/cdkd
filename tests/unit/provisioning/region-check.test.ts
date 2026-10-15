@@ -136,6 +136,38 @@ describe('assertRegionMatch', () => {
       }
     });
 
+    it('words a GLOBAL-endpoint pre-update refusal without claiming a different resource (#2613)', () => {
+      const refuse = (endpoint?: 'regional' | 'global'): string => {
+        try {
+          assertRegionMatch('us-east-1', 'eu-west-1', resourceType, logicalId, physicalId, 'pre-update', endpoint);
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProvisioningError);
+          return (err as Error).message;
+        }
+        return expect.fail('expected ProvisioningError');
+      };
+      const global = refuse('global');
+      expect(global).toContain(`Refusing to update ${logicalId}`);
+      expect(global).toContain('one global endpoint, so the call would reach the same resource');
+      expect(global).not.toContain('different resource');
+      expect(global).toContain('Point the AWS client at eu-west-1');
+      // The default stays the regional wording.
+      expect(refuse()).toContain('a different resource that usually exists');
+      expect(refuse()).not.toContain('one global endpoint');
+      // ...and the unknown-client-region arm follows the same switch.
+      const unknown = (endpoint?: 'regional' | 'global'): string => {
+        try {
+          assertRegionMatch(undefined, 'eu-west-1', resourceType, logicalId, physicalId, 'pre-update', endpoint);
+        } catch (err) {
+          return (err as Error).message;
+        }
+        return expect.fail('expected ProvisioningError');
+      };
+      expect(unknown('global')).toContain('this client was built for the stack this record belongs to');
+      expect(unknown('global')).not.toContain('names the resource this client would act on');
+      expect(unknown()).toContain('names the resource this client would act on');
+    });
+
     it('names the unknown CLIENT region in every phase, and still throws', () => {
       for (const phase of ['not-found', 'pre-delete', 'pre-update'] as const) {
         expect(() =>

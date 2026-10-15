@@ -221,17 +221,16 @@ const REQUIRED_MEMBERS = ['create', 'update', 'delete'] as const;
 
 /**
  * Provider classes that do NOT declare `update`'s `UpdateContext` parameter, so
- * `assertRegionMatch` cannot run on their update path (issue #2613 remedy 2 is
- * the backfill; this list is its worklist). Sorted; keep it that way.
+ * `assertRegionMatch` cannot run on their update path. Empty: issue #2613
+ * remedy 2 backfilled every provider, the global CloudFront ones included
+ * (their client is built in the stack's region, the region the record holds).
  *
- * REMOVE a name when its provider gains the parameter — the check fails until
- * you do, which is the ratchet.
+ * A name belongs here only when its provider deliberately cannot take the
+ * parameter; say why beside the entry. Keep it sorted. REMOVE a name when its
+ * provider gains the parameter — the check fails until you do, which is the
+ * ratchet.
  */
-export const OMITS_UPDATE_CONTEXT: readonly string[] = [
-  'CloudFrontDistributionProvider',
-  'CloudFrontOACProvider',
-  'CloudFrontOAIProvider',
-];
+export const OMITS_UPDATE_CONTEXT: readonly string[] = [];
 
 /**
  * Collapse-toward-zero floors. Deliberately loose — their job is to fail a

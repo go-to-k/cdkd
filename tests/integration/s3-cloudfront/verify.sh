@@ -334,6 +334,35 @@ aws cloudfront update-distribution --id "${DIST_ID}" --region "${REGION}" \
 rm -f /tmp/cdkd-cf-drift-conf.json
 echo "    OK: reverted; CloudFront::Distribution drift blind spot CLOSED"
 
+# Issue #2613: the OAC and the OAI ids, and their pre-update description /
+# comment, for the in-place update assertions after Phase 1.5. The pre-update
+# values are checked so the post-update match cannot pass on a value that was
+# already there.
+OAC_ID=$(echo "${STATE}" | jq -r '.outputs.OACId // empty')
+OAI_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudFront::CloudFrontOriginAccessIdentity") | .value.physicalId] | if length == 1 then .[0] else empty end')
+if [ -z "${OAC_ID}" ] || [ -z "${OAI_ID}" ]; then
+  echo "FAIL: cdkd state carries no OAC id (OACId output='${OAC_ID}') or no single OAI record ('${OAI_ID}')" >&2
+  exit 1
+fi
+oac_description() {
+  aws cloudfront get-origin-access-control --id "${OAC_ID}" \
+    --query 'OriginAccessControl.OriginAccessControlConfig.Description' --output text
+}
+oai_comment() {
+  aws cloudfront get-cloud-front-origin-access-identity --id "${OAI_ID}" \
+    --query 'CloudFrontOriginAccessIdentity.CloudFrontOriginAccessIdentityConfig.Comment' --output text
+}
+PRE_OAC_DESC=$(oac_description)
+PRE_OAI_COMMENT=$(oai_comment)
+if [ "${PRE_OAC_DESC}" != "OAC for S3 origin" ]; then
+  echo "FAIL: OAC ${OAC_ID} description after create is '${PRE_OAC_DESC}', expected 'OAC for S3 origin'" >&2
+  exit 1
+fi
+if [ "${PRE_OAI_COMMENT}" != "OAI for ${POLICY_BUCKET}" ]; then
+  echo "FAIL: OAI ${OAI_ID} comment after create is '${PRE_OAI_COMMENT}', expected 'OAI for ${POLICY_BUCKET}'" >&2
+  exit 1
+fi
+
 # --- Phase 1.5: UPDATE via the read-modify-write merge (#1371) --------
 # Re-deploy with CDKD_TEST_UPDATE=true (new comment + narrowed geo
 # allowlist). Before #1371 this UpdateDistribution failed unconditionally
@@ -398,6 +427,36 @@ if [ "${POST_SIDS}" != "1" ]; then
   exit 1
 fi
 echo "    OK: bucket policy updated in place (issue #2613)"
+
+# Issue #2613: the same update changes the OAC description and the OAI
+# comment, each an in-place update through its provider's update() and its
+# recorded-region guard. The ids must not move: a replacement would also
+# satisfy the new value.
+POST_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+POST_OAC_ID=$(echo "${POST_STATE}" | jq -r '.outputs.OACId // empty')
+POST_OAI_ID=$(echo "${POST_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudFront::CloudFrontOriginAccessIdentity") | .value.physicalId] | if length == 1 then .[0] else empty end')
+if [ "${POST_OAC_ID}" != "${OAC_ID}" ] || [ "${POST_OAI_ID}" != "${OAI_ID}" ]; then
+  echo "FAIL: OAC / OAI id moved across Phase 1.5 (OAC ${OAC_ID} -> '${POST_OAC_ID}', OAI ${OAI_ID} -> '${POST_OAI_ID}'); expected an in-place update" >&2
+  exit 1
+fi
+CF_UPDATED_OK=""
+for _ in $(seq 1 12); do
+  # A failed read is retried like an unpropagated one; a read failing on
+  # every attempt ends in the FAIL below with the empty value it left.
+  POST_OAC_DESC=$(oac_description || true)
+  POST_OAI_COMMENT=$(oai_comment || true)
+  if [ "${POST_OAC_DESC}" = "OAC for S3 origin (updated)" ] \
+    && [ "${POST_OAI_COMMENT}" = "${PRE_OAI_COMMENT} (updated)" ]; then
+    CF_UPDATED_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${CF_UPDATED_OK}" ]; then
+  echo "FAIL: OAC description ('${POST_OAC_DESC}') or OAI comment ('${POST_OAI_COMMENT}') not updated after Phase 1.5 (issue #2613: the OAC / OAI update() did not apply)" >&2
+  exit 1
+fi
+echo "    OK: OAC description and OAI comment updated in place (issue #2613)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

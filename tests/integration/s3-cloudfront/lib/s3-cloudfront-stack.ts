@@ -29,9 +29,15 @@ export class S3CloudFrontStack extends cdk.Stack {
       autoDeleteObjects: false,
     });
 
-    // Create CloudFront Origin Access Identity
+    // UPDATE mode switch (CDKD_TEST_UPDATE=true); each consumer below says
+    // what it changes.
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
+    // Create CloudFront Origin Access Identity. UPDATE mode changes the
+    // comment, an in-place UpdateCloudFrontOriginAccessIdentity through the
+    // provider's update() and its recorded-region guard (issue #2613).
     const oai = new cloudfront.OriginAccessIdentity(this, 'OAI', {
-      comment: `OAI for ${bucket.bucketName}`,
+      comment: isUpdate ? `OAI for ${bucket.bucketName} (updated)` : `OAI for ${bucket.bucketName}`,
     });
 
     // Grant OAI read access to the bucket
@@ -43,10 +49,10 @@ export class S3CloudFrontStack extends cdk.Stack {
       })
     );
 
-    // UPDATE mode (CDKD_TEST_UPDATE=true, see below) adds a statement, an
+    // UPDATE mode adds a statement, an
     // in-place PutBucketPolicy through the bucket policy provider's update()
     // and its recorded-region guard (issue #2613).
-    if (process.env.CDKD_TEST_UPDATE === 'true') {
+    if (isUpdate) {
       bucket.addToResourcePolicy(
         new iam.PolicyStatement({
           sid: 'CdkdUpdateDenyInsecureTransport',
@@ -80,16 +86,14 @@ export class S3CloudFrontStack extends cdk.Stack {
       fallbackStatusCodes: [500, 502, 503, 504],
     });
 
-    // UPDATE mode (CDKD_TEST_UPDATE=true): change the comment + narrow the
-    // geo allowlist so the second deploy exercises UpdateDistribution's
-    // read-modify-write merge (issue #1371) — before that fix, ANY update
-    // failed with "WebACLId is missing for the resource" because the
-    // template config was sent verbatim instead of merged over the live one.
-    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
-
     // Create CloudFront Distribution. The geo allowlist synthesizes
     // `Restrictions.GeoRestriction.Locations`, exercising the CFn -> SDK
     // GeoRestriction shape conversion (issue #1370) on create AND update.
+    // UPDATE mode changes the comment + narrows the geo allowlist so the
+    // second deploy exercises UpdateDistribution's read-modify-write merge
+    // (issue #1371) — before that fix, ANY update failed with "WebACLId is
+    // missing for the resource" because the template config was sent
+    // verbatim instead of merged over the live one.
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
         origin: originGroup,
@@ -110,14 +114,17 @@ export class S3CloudFrontStack extends cdk.Stack {
     cdk.Tags.of(distribution).add('cdkd-test-owner', 'integ');
     cdk.Tags.of(distribution).add('cdkd-test-env', 'integ-env');
 
-    // CloudFront Origin Access Control (OAC) - modern replacement for OAI
+    // CloudFront Origin Access Control (OAC) - modern replacement for OAI.
+    // UPDATE mode changes the description, an in-place
+    // UpdateOriginAccessControl through the provider's update() and its
+    // recorded-region guard (issue #2613).
     const oac = new cloudfront.CfnOriginAccessControl(this, 'OAC', {
       originAccessControlConfig: {
         name: `${this.stackName}-oac`,
         originAccessControlOriginType: 's3',
         signingBehavior: 'always',
         signingProtocol: 'sigv4',
-        description: 'OAC for S3 origin',
+        description: isUpdate ? 'OAC for S3 origin (updated)' : 'OAC for S3 origin',
       },
     });
 

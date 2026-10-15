@@ -3,9 +3,9 @@
  *
  * `ResourceProvider.update`'s `context` parameter is optional, so a provider
  * that omits it compiles, the deploy engine keeps passing `expectedRegion`, and
- * `assertRegionMatch` simply never runs for that provider. Nothing reds. This
- * suite is what stops the omitting set widening while remedies 2 (backfill the
- * parameter plus the guard call) and 3 (drop the `?`) stay open.
+ * `assertRegionMatch` simply never runs for that provider. Nothing reds. Remedy
+ * 2 (backfill the parameter plus the guard call) emptied the omitting set; this
+ * suite is what keeps it empty while remedy 3 (drop the `?`) stays undone.
  *
  * TWO INDEPENDENT INSTRUMENTS, which must agree
  * ---------------------------------------------
@@ -141,6 +141,31 @@ const SIX_PARAM_UPDATE = `  async update(
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {`;
 
+/**
+ * A synthetic OMITTING provider for the ratchet arms. The real tree has no
+ * omitter left, and a mutation of a real provider back to five parameters
+ * would test the "lost the parameter" arm, not the allow-listed ones.
+ */
+const SYNTHETIC_OMITTER = 'SyntheticOmitterProvider';
+const SYNTHETIC_FILE = 'zzz-synthetic-omitter-provider.ts';
+const SYNTHETIC_IMPORT_ANCHOR = '// synthetic-imports\n';
+const IMPORT_UPDATE_CONTEXT = "import type { UpdateContext } from '../../types/resource.js';\n";
+
+function withSyntheticOmitter(dir: string): string {
+  writeFileSync(
+    join(dir, SYNTHETIC_FILE),
+    `${SYNTHETIC_IMPORT_ANCHOR}export class ${SYNTHETIC_OMITTER} implements ResourceProvider {
+  async create(a: string): Promise<void> {}
+${FIVE_PARAM_UPDATE}
+    return {};
+  }
+  async delete(a: string): Promise<void> {}
+}
+`
+  );
+  return dir;
+}
+
 /** Parsed once — both describes below read the same report. */
 const report = buildReport(PROVIDERS_DIR);
 
@@ -194,6 +219,9 @@ describe('provider UpdateContext fence — the real tree', () => {
       'ApiGatewayV2Provider',
       'AppSyncProvider',
       'BudgetsBudgetProvider',
+      'CloudFrontDistributionProvider',
+      'CloudFrontOACProvider',
+      'CloudFrontOAIProvider',
       'CloudTrailProvider',
       'CloudWatchAlarmProvider',
       'CloudWatchAnomalyDetectorProvider',
@@ -524,50 +552,55 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     expect(result.stderr).toContain('S3BucketProvider');
   }, SPAWN_TIMEOUT_MS);
 
-  it('an OMITTING provider that gains the parameter fails with the good news', () => {
-    // Subject: `CloudFrontDistributionProvider`, an omitter whose file carries
-    // the five-parameter header and the import tail once each. It was
-    // `FirehoseProvider` until that provider gained the parameter (issue #2613
-    // remedy 2) and left the omitting set.
-    const dir = copyProvidersTree();
-    mutate(
-      dir,
-      'cloudfront-distribution-provider.ts',
-      `  ResourceNotFound,
-} from '../../types/resource.js';`,
-      `  ResourceNotFound,
-  UpdateContext,
-} from '../../types/resource.js';`
-    );
-    mutate(dir, 'cloudfront-distribution-provider.ts', FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+  // The three ratchet arms below need an allow-listed omitter. The real tree
+  // has none since issue #2613 remedy 2 finished (`OMITS_UPDATE_CONTEXT` is
+  // empty), so the subject is a SYNTHETIC omitter written into the copy, and
+  // the allow-list naming it is passed to `findViolations` in process — the
+  // spawned binary only ever reads the shipped list.
+  it('the synthetic subject is green when allow-listed (the arms below start from a pass)', () => {
+    const dir = withSyntheticOmitter(copyProvidersTree());
+    const scratch = buildReport(dir);
+    expect(scratch.omitting).toEqual([SYNTHETIC_OMITTER]);
+    expect(findViolations(scratch, [SYNTHETIC_OMITTER])).toEqual([]);
+    // ...and the shipped binary, which does not list it, reds on it.
     const result = runCheck(dir);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('[newly-declaring]');
-    expect(result.stderr).toContain('good news');
-    expect(result.stderr).toContain('CloudFrontDistributionProvider');
+    expect(result.stderr).toContain('[new-omitting]');
+    expect(result.stderr).toContain(SYNTHETIC_OMITTER);
   }, SPAWN_TIMEOUT_MS);
+
+  it('an OMITTING provider that gains the parameter fails with the good news', () => {
+    const dir = withSyntheticOmitter(copyProvidersTree());
+    mutate(dir, SYNTHETIC_FILE, FIVE_PARAM_UPDATE, SIX_PARAM_UPDATE);
+    mutate(dir, SYNTHETIC_FILE, SYNTHETIC_IMPORT_ANCHOR, IMPORT_UPDATE_CONTEXT);
+    const findings = findViolations(buildReport(dir), [SYNTHETIC_OMITTER]);
+    expect(findings.map((f) => f.kind)).toEqual(['newly-declaring']);
+    expect(findings[0].message).toContain('good news');
+    expect(findings[0].message).toContain(SYNTHETIC_OMITTER);
+  });
 
   it('a RENAMED provider leaves a stale allow-list entry and fails', () => {
-    const dir = copyProvidersTree();
+    const dir = withSyntheticOmitter(copyProvidersTree());
     mutate(
       dir,
-      'cloudfront-oac-provider.ts',
-      'export class CloudFrontOACProvider implements ResourceProvider {',
-      'export class CloudFrontOriginAccessControlProvider implements ResourceProvider {'
+      SYNTHETIC_FILE,
+      `export class ${SYNTHETIC_OMITTER} implements ResourceProvider {`,
+      'export class SyntheticRenamedProvider implements ResourceProvider {'
     );
-    const result = runCheck(dir);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('[stale-entry]');
-    expect(result.stderr).toContain('CloudFrontOACProvider');
+    const findings = findViolations(buildReport(dir), [SYNTHETIC_OMITTER]);
+    expect(findings.map((f) => f.kind).sort()).toEqual(['new-omitting', 'stale-entry']);
+    const stale = findings.find((f) => f.kind === 'stale-entry');
+    expect(stale?.message).toContain(SYNTHETIC_OMITTER);
     // ...and the renamed class is itself an unrecorded omitter.
-    expect(result.stderr).toContain('CloudFrontOriginAccessControlProvider');
-  }, SPAWN_TIMEOUT_MS);
+    const fresh = findings.find((f) => f.kind === 'new-omitting');
+    expect(fresh?.message).toContain('SyntheticRenamedProvider');
+  });
 
   it('a 6th parameter typed `unknown` is REFUSED, not counted as declaring', () => {
-    const dir = copyProvidersTree();
+    const dir = withSyntheticOmitter(copyProvidersTree());
     mutate(
       dir,
-      'cloudfront-distribution-provider.ts',
+      SYNTHETIC_FILE,
       FIVE_PARAM_UPDATE,
       `  async update(
     logicalId: string,
@@ -581,16 +614,16 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     const result = runCheck(dir);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[refusal]');
-    expect(result.stderr).toContain('CloudFrontDistributionProvider');
+    expect(result.stderr).toContain(SYNTHETIC_OMITTER);
     expect(result.stderr).toContain('not `UpdateContext`');
-    // The refusal must NOT quietly reclassify it as declaring.
-    expect(result.stderr).not.toContain('[newly-declaring]');
-    // ...nor report the provider as a DEAD allow-list entry. Review measured
+    // The refusal must NOT quietly reclassify it as declaring...
+    const findings = findViolations(buildReport(dir), [SYNTHETIC_OMITTER]);
+    expect(findings.map((f) => f.kind)).toEqual(['refusal']);
+    // ...nor report the allow-listed provider as a DEAD entry. Review measured
     // exactly that: a refused provider also produced `[stale-entry] … no
     // longer exist … Remove or rename the entries`, and obeying it would have
     // deleted a live worklist entry for a provider still sitting in the tree.
-    expect(result.stderr).not.toContain('[stale-entry]');
-    expect(result.stderr).not.toContain('no longer exist');
+    expect(findings.map((f) => f.message).join('\n')).not.toContain('no longer exist');
   }, SPAWN_TIMEOUT_MS);
 
   it('a provider in a `.mts` file is SCANNED, not skipped', () => {
@@ -659,7 +692,9 @@ describe('provider UpdateContext fence — the checker still discriminates', () 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('[floor]');
     expect(result.stderr).toContain('not seeing the provider tree');
-    // A stale-entry finding for every listed name is the second, louder signal.
-    expect(result.stderr).toContain('[stale-entry]');
+    // With a non-empty list, a stale-entry finding for every listed name is the
+    // second, louder signal.
+    const findings = findViolations(buildReport(dir), [SYNTHETIC_OMITTER]);
+    expect(findings.map((f) => f.kind)).toContain('stale-entry');
   }, SPAWN_TIMEOUT_MS);
 });
