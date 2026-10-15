@@ -13,11 +13,12 @@ import { NoSuchBucket } from '@aws-sdk/client-s3';
  * printing the CLASS is told apart from one printing the MESSAGE.
  */
 
-const { mockSend, debugSpy, warnSpy, infoSpy } = vi.hoisted(() => ({
+const { mockSend, debugSpy, warnSpy, infoSpy, errorSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   debugSpy: vi.fn(),
   warnSpy: vi.fn(),
   infoSpy: vi.fn(),
+  errorSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -31,7 +32,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
-    error: vi.fn(),
+    error: errorSpy,
     child: vi.fn().mockReturnThis(),
   };
   return {
@@ -40,7 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       debug: debugSpy,
       info: infoSpy,
       warn: warnSpy,
-      error: vi.fn(),
+      error: errorSpy,
     }),
   };
 });
@@ -73,12 +74,21 @@ function accessDeniedNamingTheCaller(action: string): Error {
     `User: ${CALLER_ARN} is not authorized to perform: ${action} on resource: ` +
       `"arn:aws:s3:::${BUCKET}" because no identity-based policy allows the ${action} action`
   );
-  return Object.assign(e, { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } });
+  return Object.assign(e, {
+    name: 'AccessDenied',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 403 },
+  });
 }
+
+const SECRET = 'tok-SECRETVALUE-9f3a';
+const maskSecret = (t: string): string => t.split(SECRET).join('***');
 
 const debugText = (): string => debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
 const defaultLevelText = (): string =>
-  [...infoSpy.mock.calls, ...warnSpy.mock.calls].map((c) => String(c[0])).join('\n');
+  [...infoSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
+    .map((c) => String(c[0]))
+    .join('\n');
 
 async function capture(run: () => Promise<unknown>): Promise<Error> {
   try {
@@ -111,22 +121,32 @@ describe('S3BucketPolicyProvider thrown-failure identity redaction (go-to-k/cdkd
   const operations: Array<{
     operation: 'create' | 'update' | 'delete';
     action: string;
-    run: (p: S3BucketPolicyProvider) => Promise<unknown>;
+    run: (p: S3BucketPolicyProvider, maskSecrets?: (t: string) => string) => Promise<unknown>;
   }> = [
     {
       operation: 'create',
       action: 's3:PutBucketPolicy',
-      run: (p) => p.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES, maskSecrets && { maskSecrets }),
     },
     {
       operation: 'update',
       action: 's3:PutBucketPolicy',
-      run: (p) => p.update(LOGICAL_ID, BUCKET, RESOURCE_TYPE, PROPERTIES, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.update(
+          LOGICAL_ID,
+          BUCKET,
+          RESOURCE_TYPE,
+          PROPERTIES,
+          PROPERTIES,
+          maskSecrets && { maskSecrets }
+        ),
     },
     {
       operation: 'delete',
       action: 's3:DeleteBucketPolicy',
-      run: (p) => p.delete(LOGICAL_ID, BUCKET, RESOURCE_TYPE, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.delete(LOGICAL_ID, BUCKET, RESOURCE_TYPE, PROPERTIES, maskSecrets && { maskSecrets }),
     },
   ];
 
@@ -185,27 +205,40 @@ describe('S3BucketPolicyProvider thrown-failure identity redaction (go-to-k/cdkd
       expect(thrown.cause).toBeUndefined();
       expect(hasRedactedCause(thrown)).toBe(false);
     });
+
+    it("routes the debug line through this operation's masker", async () => {
+      // AWS echoes request values into some messages, and the debug line is
+      // the only place the raw text now goes. Each call site passes its own
+      // masker, so each is exercised.
+      mockSend.mockRejectedValue(
+        Object.assign(new Error(`Invalid principal in policy: ${SECRET}`), {
+          name: 'MalformedPolicy',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        })
+      );
+
+      await capture(() => run(provider, maskSecret));
+
+      expect(debugText()).toContain('Invalid principal in policy: ***');
+      expect(debugText()).not.toContain(SECRET);
+    });
   });
 
-  it("routes the debug line through the operation's masker", async () => {
-    // AWS echoes request values into some messages; the debug line is the only
-    // place the raw text now goes, and a delete binds no masking bag of its own.
-    const secret = 'tok-SECRETVALUE-9f3a';
+  it('reads a bucket that is gone by error NAME too, so the redacted wrap is never reached', async () => {
+    // The wrap no longer carries AWS's `does not exist`, which the engine's
+    // already-deleted substring match used to rescue a guard miss with.
     mockSend.mockRejectedValue(
-      Object.assign(new Error(`Invalid principal in policy: ${secret}`), {
-        name: 'MalformedPolicy',
-        $metadata: { httpStatusCode: 400 },
+      Object.assign(new Error('The specified bucket does not exist'), {
+        name: 'NoSuchBucket',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 404 },
       })
     );
 
-    await capture(() =>
-      provider.delete(LOGICAL_ID, BUCKET, RESOURCE_TYPE, PROPERTIES, {
-        maskSecrets: (t: string) => t.split(secret).join('***'),
-      })
-    );
-
-    expect(debugText()).toContain('Invalid principal in policy: ***');
-    expect(debugText()).not.toContain(secret);
+    await expect(
+      provider.delete(LOGICAL_ID, BUCKET, RESOURCE_TYPE, PROPERTIES)
+    ).resolves.toBeUndefined();
   });
 
   it('and withRetry ITSELF re-attempts the redacted wrap', async () => {

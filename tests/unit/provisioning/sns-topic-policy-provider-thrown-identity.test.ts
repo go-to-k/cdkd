@@ -122,28 +122,41 @@ describe('SNSTopicPolicyProvider thrown-failure identity redaction (go-to-k/cdkd
   const operations: Array<{
     name: string;
     operation: 'create' | 'update' | 'delete';
-    run: (p: SNSTopicPolicyProvider) => Promise<unknown>;
+    run: (p: SNSTopicPolicyProvider, maskSecrets?: (t: string) => string) => Promise<unknown>;
   }> = [
     {
       name: 'create()',
       operation: 'create',
-      run: (p) => p.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES, maskSecrets && { maskSecrets }),
     },
     {
       name: 'update()',
       operation: 'update',
-      run: (p) => p.update(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.update(
+          LOGICAL_ID,
+          TOPIC,
+          RESOURCE_TYPE,
+          PROPERTIES,
+          PROPERTIES,
+          maskSecrets && { maskSecrets }
+        ),
     },
     {
       name: 'delete()',
       operation: 'delete',
-      run: (p) => p.delete(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES),
+      run: (p, maskSecrets) =>
+        p.delete(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES, maskSecrets && { maskSecrets }),
     },
     {
       name: "a failed create's delete",
       operation: 'delete',
-      run: (p) =>
-        p.delete(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES, { failedCreateOrphan: true }),
+      run: (p, maskSecrets) =>
+        p.delete(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES, {
+          failedCreateOrphan: true,
+          ...(maskSecrets && { maskSecrets }),
+        }),
     },
   ];
 
@@ -210,26 +223,23 @@ describe('SNSTopicPolicyProvider thrown-failure identity redaction (go-to-k/cdkd
       expect(hasRedactedCause(thrown)).toBe(false);
       expect(debugText()).not.toContain(`Failed to ${operation} SNS topic policy`);
     });
-  });
 
-  it("routes the debug line through the operation's masker", async () => {
-    const secret = 'tok-SECRETVALUE-9f3a';
-    rejectWrites(
-      Object.assign(new Error(`Invalid parameter: Policy Error: ${secret}`), {
-        name: 'InvalidParameterException',
-        $fault: 'client',
-        $metadata: { httpStatusCode: 400 },
-      })
-    );
+    it("routes the debug line through this operation's masker", async () => {
+      // Each call site passes its own masker, so each is exercised.
+      const secret = 'tok-SECRETVALUE-9f3a';
+      rejectWrites(
+        Object.assign(new Error(`Invalid parameter: Policy Error: ${secret}`), {
+          name: 'InvalidParameterException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        })
+      );
 
-    await capture(() =>
-      provider.update(LOGICAL_ID, TOPIC, RESOURCE_TYPE, PROPERTIES, PROPERTIES, {
-        maskSecrets: (t: string) => t.split(secret).join('***'),
-      })
-    );
+      await capture(() => run(provider, (t: string) => t.split(secret).join('***')));
 
-    expect(debugText()).toContain('Policy Error: ***');
-    expect(debugText()).not.toContain(secret);
+      expect(debugText()).toContain('Policy Error: ***');
+      expect(debugText()).not.toContain(secret);
+    });
   });
 
   it('and withRetry ITSELF re-attempts the redacted wrap', async () => {
