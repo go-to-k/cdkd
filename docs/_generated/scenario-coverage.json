@@ -2076,6 +2076,11 @@
       "scenarios": []
     },
     {
+      "name": "replaced-delete-failed-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replacement-fanout",
       "annotated": true,
       "scenarios": [
@@ -3434,6 +3439,7 @@
     "remove-protection-journaled-orphan",
     "rename-refactor",
     "replace-squatter-refusal",
+    "replaced-delete-failed-rollback",
     "replacement-immutable-name",
     "replacement-rename-onto-holder",
     "require-approval-broadening",

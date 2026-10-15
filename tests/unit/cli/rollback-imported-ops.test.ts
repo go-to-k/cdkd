@@ -551,6 +551,29 @@ describe('cdkd rollback leaves a resource cdkd import adopted after the deploy a
     expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(true);
   });
 
+  // go-to-k/cdkd#2631: an old resource whose delete was not confirmed may be
+  // left running too, so the import of the replacement warns, naming it.
+  it('a replacement UPDATE whose NEW resource the import took, old delete unconfirmed, warns naming the old', async () => {
+    install({ Topic: { ...topicRecord('imported'), physicalId: 'new-phys' } }, [
+      {
+        operations: [{ ...replacementOp(false), oldResourceMaySurvive: 'unconfirmed' }],
+        importedResources: [{ ...MARK, physicalId: 'new-phys' }],
+      },
+    ]);
+
+    const thrown = await rollbackCommand(STACK, opts()).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(infoLines().some((l) => l.includes('adopted by cdkd import'))).toBe(false);
+    expect(
+      infoLines().some((l) =>
+        l.includes('replaced old-phys and may have kept it (its delete was not confirmed)')
+      )
+    ).toBe(true);
+  });
+
   it('--revert-failed: a displaced failed UPDATE is not force-reverted, warns, and stays in the journal', async () => {
     install({ Topic: topicRecord('imported') }, [
       {

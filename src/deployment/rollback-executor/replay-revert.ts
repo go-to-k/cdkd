@@ -45,14 +45,29 @@ import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-ret
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 
-/** `replaySingle`'s 'reverse-replacement-readopt' arm (#4426). */
-export async function replayReadopt(s: ReplayOpScope): Promise<void> {
+/**
+ * How the reverse replacement hands this arm an old resource that survived
+ * an unconfirmed delete (go-to-k/cdkd#2631) rather than a retained one:
+ * `reason` is recorded on the success event, the one channel that outlives
+ * the terminal, so `cdkd events` keeps the "check it with cdkd drift" advice.
+ */
+export interface ReadoptSurvivor {
+  reason: string;
+}
+
+/**
+ * `replaySingle`'s 'reverse-replacement-readopt' arm (#4426), and the reverse
+ * replacement's for an old resource that survived its delete (#2631).
+ */
+export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor): Promise<void> {
   const { op, stateResources, stackName, ctx, result, inlinePolicyWriters, afterOp, logger, mask } =
     s;
-  // Replacement rollback where UpdateReplacePolicy: Retain orphaned
-  // the OLD physical resource (issue #1199): it still exists with its
-  // data, so delete the NEW resource and point state back at the old
-  // one — a true clean revert, no re-create needed.
+  // Replacement rollback whose OLD physical resource still exists: orphaned
+  // under UpdateReplacePolicy: Retain (issue #1199), or left by a delete AWS
+  // refused (`survivor`, #2631). Delete the NEW resource and point state back
+  // at the old one — no re-create needed. The messages call the old resource
+  // what it is: "retained" or "surviving".
+  const oldKind = survivor === undefined ? 'retained' : 'surviving';
   const current = stateResources[op.logicalId]!;
   const prev = op.previousState!;
   // go-to-k/cdkd#4628: the delete below addresses the NEW resource by the
@@ -83,12 +98,12 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
           // (go-to-k/cdkd#4214).
           safeMsg`Cannot reverse the replacement of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
             reason +
-            ` The retained old resource (${oldShown}) is named only by the rollback journal, ` +
+            ` The ${oldKind} old resource (${oldShown}) is named only by the rollback journal, ` +
             `so the JOURNAL is kept. Check both resources by hand.` +
             (remedy.offered
               ? ` To leave this one as it is, re-run ` +
                 `${rerunRollbackPhrase(ctx, '`cdkd rollback`')} with the command below; that ` +
-                `also drops the journal's only record of the retained old resource ` +
+                `also drops the journal's only record of the ${oldKind} old resource ` +
                 `(${oldShown}), so note that id first.`
               : // A nested child's revert: no state repair makes this op's re-run
                 // succeed, whatever the clause below says about re-running.
@@ -133,7 +148,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
         : `Repair the record's 'physicalId' to ${target}, the replacement's new resource the ` +
           `journal records (inspect it with \`cdkd state show\`); the re-run deletes it and ` +
           `re-adopts the old one. Any other id stops the revert and drops the journal's only ` +
-          `record of the retained old resource (${oldShown}). Then re-run ` +
+          `record of the ${oldKind} old resource (${oldShown}). Then re-run ` +
           `${rerunRollbackPhrase(ctx, '`cdkd rollback`')}.` +
           // Only the journal holds it: the state record is the damaged one.
           (describedPhysicalIdPointer(target) !== ''
@@ -148,7 +163,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
       // shared catch.
       safeMsg`Cannot reverse the replacement of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
         `its state record has no non-empty string 'physicalId', so cdkd cannot address the new ` +
-        `resource in AWS to delete it, and sent nothing. The retained old resource ` +
+        `resource in AWS to delete it, and sent nothing. The ${oldKind} old resource ` +
         `(${oldShown}) is named only by the rollback journal, ` +
         `so the JOURNAL is kept. ` +
         repair,
@@ -177,7 +192,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
   }
   logger.info(
     `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
-      `deleting the new resource and re-adopting the retained old one ` +
+      `deleting the new resource and re-adopting the ${oldKind} old one ` +
       `(${displaySafe(mask(prev.physicalId))})`
   );
   /**
@@ -190,7 +205,8 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
    * with the terminal -- `cdkd events` shows a clean success and state
    * names only the OLD resource, while a live, billing, untracked copy
    * remains. `Retain` is precisely the marker users put on data-bearing
-   * resources, so that is the worst population to lose the id for.
+   * resources, so that is the worst population to lose the id for. A
+   * `survivor`'s own reason rides the same field (#2631).
    *
    * Same shape as the `rollbackPartial` survivor record ~700 lines down
    * and as the deploy engine's `RESOURCE_SKIPPED` twin.
@@ -199,23 +215,16 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
   // go-to-k/cdkd#4628: the record's id may be unaddressable here.
   const survivorId = retainedSurvivorId(current, op);
   if (rollbackRetainsNewResource(current)) {
-    // ON THIS ARM THIS IS THE ALWAYS-CASE, not an exception, and saying
-    // so is the point (review of issue #2598). `oldResourceRetained` is
+    // On the classifier's route (`reverse-replacement-readopt`) this is
+    // the always-case (review of issue #2598): `oldResourceRetained` is
     // set only when the TEMPLATE being applied declared
     // `UpdateReplacePolicy: Retain`, and the SAME template read
-    // populates the new record through `extractTemplateAttributes` — so
-    // whenever `classifyRollbackOp` reaches `reverse-replacement-readopt`
-    // for a journal any cdkd binary wrote, `current` carries `Retain`
-    // too. Net effect: this rollback path no longer deletes the new copy
-    // at all, which is a real behaviour change and is what CloudFormation
-    // does (the A/B's `DELETE_SKIPPED` rows). The `else` below is kept
-    // for a record that did NOT come from that pairing — a hand-edited
-    // or externally-produced state file — rather than deleted, because
-    // the classifier and this executor are separately reachable and a
-    // dead-by-construction branch is cheaper than a crash when the
-    // construction changes. The `reverse-replacement` twin is genuinely
-    // conditional: a provider that re-creates inside its own `update()`
-    // reaches it with either polarity.
+    // populates the new record through `extractTemplateAttributes`, so
+    // `current` carries `Retain` too and the new copy is kept, as
+    // CloudFormation does (the A/B's `DELETE_SKIPPED` rows). The `else`
+    // below is ROUTINE since #2631: a survivor of an unconfirmed delete
+    // reaches this arm whatever the new record's policy, and deletes the
+    // new copy there. (A hand-edited state file reaches it too.)
     //
     // Issue #2598: the NEW copy declares `UpdateReplacePolicy: Retain`,
     // which the A/B on {@link rollbackRetainsNewResource} measured as
@@ -278,7 +287,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
       )
     );
     // Issue #1762: BEFORE the state re-point, so a skip cannot leave
-    // state naming the retained OLD resource while the NEW one is still
+    // state naming the OLD resource while the NEW one is still
     // alive — two live resources with state describing one. The `Retain`
     // arm above reaches that same shape DELIBERATELY, which is why it
     // announces it rather than failing the op.
@@ -286,7 +295,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
       readoptDelete,
       op.logicalId,
       current.physicalId,
-      'while reversing its replacement (re-adopting the retained old resource)',
+      `while reversing its replacement (re-adopting the ${oldKind} old resource)`,
       {
         ctx,
         stackName,
@@ -298,7 +307,7 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
     );
   }
   stateResources[op.logicalId] = prev;
-  logger.info(`  Rollback: ${safe(op.logicalId)} restored to the retained old resource`);
+  logger.info(`  Rollback: ${safe(op.logicalId)} restored to the ${oldKind} old resource`);
   await afterOp?.(op.logicalId);
   // The SURVIVOR's routing layer, which is NOT the op's. Follow-up to
   // the security review of issue #2598: the layer field sitting beside
@@ -340,9 +349,16 @@ export async function replayReadopt(s: ReplayOpScope): Promise<void> {
     // `--json` consumer should not have to parse prose, and it is the
     // one datum a cleanup pass needs. Masked because the record is
     // durable, the same reason the survivor record below masks.
+    // go-to-k/cdkd#2631: a survivor's re-adopt records its reason alone when
+    // the new copy was deleted (no survivor id rides then: that id was
+    // deleted), and beside the retained copy's reason otherwise.
+    ...(survivorReason === undefined &&
+      survivor !== undefined && { reason: mask(survivor.reason) }),
     ...(survivorReason !== undefined && {
       ...(survivorId !== undefined && { physicalId: survivorId }),
-      reason: mask(survivorReason),
+      reason: mask(
+        survivor === undefined ? survivorReason : `${survivorReason}; ${survivor.reason}`
+      ),
       // Overrides the op's layer spread above -- a later spread wins.
       // Gated with the other two, deliberately: on a non-retain revert
       // this event describes the OP, and the op's layer is correct there.

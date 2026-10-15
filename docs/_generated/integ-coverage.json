@@ -4287,6 +4287,7 @@
         "iam-secret-derived-principals",
         "import-attributes",
         "import-auto-mode",
+        "replaced-delete-failed-rollback",
         "secret-derived-immutable-names"
       ],
       "signals": {
@@ -4308,6 +4309,10 @@
           "literal"
         ],
         "import-auto-mode": [
+          "literal"
+        ],
+        "replaced-delete-failed-rollback": [
+          "l1",
           "literal"
         ],
         "secret-derived-immutable-names": [

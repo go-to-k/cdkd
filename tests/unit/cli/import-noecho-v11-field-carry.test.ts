@@ -147,6 +147,8 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
       logger: { warn: (m: string) => lines.push(m), info: () => undefined, debug: () => undefined },
       replacementDeleteContext: () => ({}),
       replacedDeleteSkips: new Map<string, string>(),
+      // go-to-k/cdkd#2631: the skip marks the old resource as a possible survivor.
+      replacedOldMaySurvive: new Map<string, string>(),
       // go-to-k/cdkd#2007: the delete masker reads the derived-name registry.
       secretNameBagFor: () => new Map(),
     } as unknown as DeployEngine;

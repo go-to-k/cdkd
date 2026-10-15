@@ -527,6 +527,23 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     ).toMatchObject({ oldDeletedBeforeCreate: true });
   });
 
+  // go-to-k/cdkd#2631: it sends the replay to an AWS read of the old resource.
+  it('refuses an oldResourceMaySurvive outside its two verdicts', () => {
+    for (const planted of ['yes', true]) {
+      expect(
+        messageOf(journalWith([{ ...op, changeType: 'UPDATE', oldResourceMaySurvive: planted }]))
+      ).toContain('oldResourceMaySurvive must be kept or unconfirmed when present');
+    }
+    for (const verdict of ['kept', 'unconfirmed']) {
+      expect(
+        parseRollbackJournal(
+          journalWith([{ ...op, changeType: 'UPDATE', oldResourceMaySurvive: verdict }]),
+          'S'
+        ).segments[0]!.operations[0]
+      ).toMatchObject({ oldResourceMaySurvive: verdict });
+    }
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,
@@ -700,6 +717,10 @@ describe('parseRollbackJournal — the nested-child fields (issue #3754)', () =>
     const replacement = { logicalId: 'B', resourceType: 'T', changeType: 'UPDATE', physicalId: 'new', previousState: { physicalId: 'old' } };
     expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: true })).toBe('old');
     expect(retainedOldPhysicalId({ ...replacement, oldResourceRetained: false })).toBeUndefined();
+    // go-to-k/cdkd#2631: a delete the deploy did not confirm may have kept it.
+    expect(
+      retainedOldPhysicalId({ ...replacement, oldResourceRetained: false, oldResourceMaySurvive: 'unconfirmed' })
+    ).toBe('old');
     // X3: an explicit verdict wins over any recorded policy (`??`, never `||`).
     expect(
       retainedOldPhysicalId({ ...replacement, oldResourceRetained: false, previousState: { physicalId: 'old', updateReplacePolicy: 'Retain' } } as never)

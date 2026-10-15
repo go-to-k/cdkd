@@ -65,6 +65,9 @@ import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.j
 import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import { replayReadopt } from './replay-revert.js';
+import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
+import { probeReplacedSurvivor } from './replaced-survivor.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
 /** `replaySingle`'s 'reverse-replacement' arm (#4426). */
@@ -100,6 +103,42 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     throw unroutableReplacementError(op, oldTypeRouting.reason, ctx);
   }
   const oldType = oldTypeRouting.oldType;
+  // go-to-k/cdkd#2631: the deploy's delete of the old resource was not
+  // confirmed, so it may still exist. Read AWS first: re-creating a live one
+  // duplicates it (auto-named) or collides with it (named).
+  if (op.oldResourceMaySurvive !== undefined) {
+    const survivor = await probeReplacedSurvivor(s, oldType);
+    // Alive but `'unconfirmed'`: an accepted delete may still be running
+    // (a read of a `deleting` RDS instance answers like a live one), and
+    // re-adopting it would delete the new copy for a resource about to go.
+    if (survivor === 'exists' && op.oldResourceMaySurvive !== 'kept') {
+      throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
+    }
+    if (survivor === 'exists') {
+      // As a retained one: delete the new copy, point state back at the old.
+      // A warning, since a provider's delete may have run earlier steps
+      // before AWS refused it (a managed policy's detaches).
+      // The line names `cdkd drift`, so each value is shown only when plain.
+      const oldShown = refusalPhysicalId(mask(String(prev.physicalId)));
+      logger.warn(
+        safeMsg`  ⚠ Rollback: the old resource of ${shownLogicalId(op.logicalId)} (${oldShown}) still ` +
+          `exists — the deploy's delete of it was not confirmed — so it is re-adopted instead of ` +
+          `re-created. Part of it may have been removed before that delete failed: check it ` +
+          safeMsg`with cdkd drift after the rollback.${describedPhysicalIdPointer(oldShown)}`
+      );
+      result.warnings++;
+      return replayReadopt(s, {
+        reason:
+          `the old resource survived a delete that was refused or never sent during the ` +
+          `deploy and was re-adopted instead of re-created; the provider may have run part of ` +
+          `that delete, so check it with cdkd drift`,
+      });
+    }
+    if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
+    logger.info(
+      safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) is gone — re-creating it`
+    );
+  }
   const typeChanged = oldType !== op.resourceType;
   // Issue #3203, BEFORE any AWS call and before the secret resolution:
   // `{}` here would create a default-configured resource and then delete
@@ -1280,4 +1319,57 @@ async function deleteMarkedRecreate(error: unknown, s: MarkedRecreateScope): Pro
       safeMsg`failing (${s.mask(failure)}); no record holds it — delete it yourself`
   );
   return false;
+}
+
+/**
+ * go-to-k/cdkd#2631: the old resource of a replacement whose delete was not
+ * confirmed may still exist, and the read could not tell. Re-creating it blind
+ * duplicates it (auto-named) or collides with it (named), so the op is
+ * refused, journal kept, before any AWS write. Its own lines
+ * (`ownRemedyError`): every value is described or masked, and the pasteable
+ * `--orphan` command is the last line.
+ */
+function survivorUnprovenRefusal(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
+  oldType: string,
+  verdict: 'unreadable' | 'unknown' | 'interrupted' | 'maybe-deleting'
+): Error {
+  const { op, ctx, mask } = s;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  const oldId = op.previousState?.physicalId;
+  const oldShown = hasAddressablePhysicalId({ physicalId: oldId })
+    ? refusalPhysicalId(mask(String(oldId)))
+    : 'no recorded id';
+  const rerun = rerunRollbackPhrase(ctx, 'cdkd rollback');
+  const why =
+    verdict === 'unreadable'
+      ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
+        `it could duplicate it or collide with it`
+      : verdict === 'interrupted'
+        ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
+          `${rerun} reads it`
+        : verdict === 'unknown'
+          ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
+            `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
+            `with it`
+          : `AWS still reports it, but the failed delete may have been accepted and still be ` +
+            `running. Re-adopting it could leave neither resource once that delete finishes; once ` +
+            `AWS reports it gone, re-running ${rerun} re-creates it`;
+  return ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(oldType)}): the deploy did not confirm that it deleted the old ` +
+          `resource (${oldShown}), so it may still exist, and ${why}. Nothing was sent and the ` +
+          `journal is kept.` +
+          (remedy.offered
+            ? ` To keep the new resource in its place instead, re-run with the command below, ` +
+              `then delete the old resource by hand if it still exists.`
+            : '') +
+          `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
+          remedy.line,
+        'REPLACED_SURVIVOR_UNPROVEN'
+      )
+    )
+  );
 }
