@@ -121,7 +121,8 @@ import { Construct } from 'constructs';
  *    token's text: a piece (`Fn::Select [1, ...]`, the `Description`) and the
  *    whole list joined back (`Fn::Join ['|', ...]`, the `Value`). The deploy's
  *    diff side split the bound spelling into token fragments (`//{{resolve`)
- *    no deploy persists, so every child redeploy UPDATED it. It now keeps each
+ *    no deploy persists, so every child redeploy's plan carried an UPDATE row
+ *    for it (skipped only after resolution). It now keeps each
  *    token whole where it splits. Kept out of `cdkd diff --recursive`'s
  *    phases until that command keeps them whole too (#4929).
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of

@@ -1844,22 +1844,27 @@ echo "    OK: the updated tree also converges"
 # a plain `ColonTouch`; `colon-touch` then changes ONLY `ColonTouch`, so the
 # child redeploys and diffs `FallthroughColonReversed` with nothing of its own
 # changed. The deploy's diff side used to split the bound spelling into token
-# fragments (`//{{resolve`), so that redeploy UPDATED it, re-putting an
-# unchanged value: the SSM parameter's version moves. Kept out of `cdkd diff
-# --recursive` (phases 2 and 2c), which still splits the token text (#4929).
-echo "==> Phase 2d: #4914, FallConnA2 split on ':' is not updated by a child redeploy"
-deploy_2d() { # deploy_2d <CDKD_TEST_UPDATE> <label>
-  local out rc
+# fragments (`//{{resolve`), so its plan carried an UPDATE row for it on every
+# child redeploy (`--require-approval` asked about it; a create-only property
+# planned a replacement). The engine's post-resolution re-check then skipped
+# the call, so AWS never moved: the discriminator is the PLAN, read from the
+# diff calculator's `--verbose` line. Kept out of `cdkd diff --recursive`
+# (phases 2 and 2c), which still splits the token text (#4929).
+echo "==> Phase 2d: #4914, FallConnA2 split on ':' is not planned as a change by a child redeploy"
+DEPLOY_2D_OUT=""
+deploy_2d() { # deploy_2d <CDKD_TEST_UPDATE> <label> -- sets DEPLOY_2D_OUT
+  local rc
   set +e
-  out="$(CDKD_TEST_UPDATE="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
-    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+  DEPLOY_2D_OUT="$(CDKD_TEST_UPDATE="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1)"
   rc=$?
   set -e
   if [ "${rc}" -ne 0 ]; then
     echo "FAIL: phase 2d deploy (${2}) exited ${rc}" >&2
-    diag_output "${out}"
+    diag_output "${DEPLOY_2D_OUT}"
     exit 1
   fi
+  scan_verbose_output "phase 2d deploy (${2})" "${DEPLOY_2D_OUT}"
 }
 colon_version() {
   aws ssm get-parameter --name "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" --region "${REGION}" \
@@ -1894,9 +1899,30 @@ COLON_VERSION_BEFORE="$(colon_version)"
 [ -n "${COLON_VERSION_BEFORE}" ] || { echo "FAIL: could not read FallthroughColonReversed's SSM version" >&2; exit 1; }
 
 deploy_2d "child-property,colon-split,colon-touch" "change only ColonTouch"
-# PROOF THE CHILD REDEPLOYED: without it the version check below is vacuous.
-assert_eq "ColonTouch's description was UPDATED (so the child engine diffed the arm)" \
-  "$(colon_touch_desc)" "cdkd nested-stack-secret integ - #4914 touch (updated)"
+# PROOF THE CHILD REDEPLOYED AND DIFFED: its plan names `ColonTouch` (the
+# positive control for the line's format), and AWS took the change. The
+# description read retries: `DescribeParameters` lags a successful update.
+if ! grep -qF "UPDATE: ColonTouch (" <<<"${DEPLOY_2D_OUT}"; then
+  echo "FAIL: the child's plan has no 'UPDATE: ColonTouch (' line, so the check below proves nothing (log format drifted, or the child did not diff)" >&2
+  exit 1
+fi
+COLON_TOUCH_EXPECTED="cdkd nested-stack-secret integ - #4914 touch (updated)"
+COLON_TOUCH_DESC=""
+for _ in $(seq 1 12); do
+  COLON_TOUCH_DESC="$(colon_touch_desc)"
+  [ "${COLON_TOUCH_DESC}" = "${COLON_TOUCH_EXPECTED}" ] && break
+  sleep 5
+done
+assert_eq "ColonTouch's description was UPDATED (so the child engine ran)" \
+  "${COLON_TOUCH_DESC}" "${COLON_TOUCH_EXPECTED}"
+# THE #4914 ASSERTION: nothing of `FallthroughColonReversed` changed, so its
+# plan row must not exist.
+if grep -qF "UPDATE: FallthroughColonReversed (" <<<"${DEPLOY_2D_OUT}"; then
+  echo "FAIL: the child's plan carries an UPDATE for FallthroughColonReversed, which nothing changed: the diff side split a {{resolve:...}} token on ':' (issue #4914)" >&2
+  exit 1
+fi
+echo "    OK: the child's plan carries no row for FallthroughColonReversed"
+# ...and nothing was sent for it either.
 COLON_VERSION_AFTER="$(colon_version)"
 if [ "${COLON_VERSION_AFTER}" != "${COLON_VERSION_BEFORE}" ]; then
   echo "FAIL: FallthroughColonReversed was UPDATED by a child redeploy that changed nothing of it (SSM version ${COLON_VERSION_BEFORE} -> ${COLON_VERSION_AFTER}): the diff side split a {{resolve:...}} token on ':' (issue #4914)" >&2
