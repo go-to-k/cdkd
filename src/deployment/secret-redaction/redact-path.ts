@@ -1,4 +1,4 @@
-import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
+import { type RecordedSecretValues, SECRET_MASK, resolvedPlaintextOf } from './pairs.js';
 import {
   type PathSourceRules,
   isDynamicReferenceString,
@@ -25,6 +25,185 @@ import {
 } from './mask-only.js';
 
 /**
+ * Whether resolving a source ARRAY element can drop it from the resolved
+ * array (`resolveValue` filters `AWS::NoValue`; issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): `always` (a `Ref` to
+ * `AWS::NoValue`; `Ref` is dispatched first), `never` (a literal, an array, any
+ * other `Ref`, a single-key `Fn::Join` / `Fn::Sub` / `Fn::Select` /
+ * `Fn::Split` / `Fn::GetAtt`, an `Fn::If` neither of whose branches can drop),
+ * `maybe` (a single-key `Fn::If` with a branch that can), or `unknown` (any
+ * other intrinsic, a malformed `Fn::If`): nothing here says it cannot.
+ */
+type ArrayElementDrop = 'always' | 'never' | 'maybe' | 'unknown';
+
+const NEVER_DROPPING_INTRINSICS: ReadonlySet<string> = new Set([
+  'Fn::Join',
+  'Fn::Sub',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::GetAtt',
+]);
+
+function arrayElementDrop(element: unknown, depth = 0): ArrayElementDrop {
+  if (depth > 16) return 'unknown';
+  if (!isPlainObject(element)) return 'never';
+  if (Object.hasOwn(element, 'Ref')) return element['Ref'] === 'AWS::NoValue' ? 'always' : 'never';
+  const keys = Object.keys(element);
+  const intrinsics = keys.filter((key) => key.startsWith('Fn::') || key === 'Condition');
+  if (intrinsics.length === 0) return 'never';
+  if (keys.length !== 1) return 'unknown';
+  if (NEVER_DROPPING_INTRINSICS.has(keys[0]!)) return 'never';
+  if (keys[0] !== 'Fn::If') return 'unknown';
+  const args = element['Fn::If'];
+  if (!Array.isArray(args) || args.length !== 3) return 'unknown';
+  const branches = [arrayElementDrop(args[1], depth + 1), arrayElementDrop(args[2], depth + 1)];
+  if (branches.includes('unknown')) return 'unknown';
+  if (branches.every((branch) => branch === 'never')) return 'never';
+  if (branches.every((branch) => branch === 'always')) return 'always';
+  return 'maybe';
+}
+
+/**
+ * The elements of a source array that stay in a resolved bag of `bagLength`
+ * elements, in order, when the count says which dropped (issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): every `always`
+ * element, and either none or all of the `maybe` ones. `undefined` for an
+ * `unknown` element or any other count -- some but not all `maybe` elements,
+ * which no count can tell apart.
+ */
+export function sourceElementsKeptFor(
+  source: readonly unknown[],
+  bagLength: number
+): unknown[] | undefined {
+  const drops = source.map((element) => arrayElementDrop(element));
+  if (drops.includes('unknown')) return undefined;
+  const always = drops.filter((drop) => drop === 'always').length;
+  const maybe = drops.filter((drop) => drop === 'maybe').length;
+  const dropped = source.length - bagLength;
+  let dropMaybe: boolean;
+  if (dropped === always) dropMaybe = false;
+  else if (dropped === always + maybe) dropMaybe = true;
+  else return undefined;
+  return source.filter((_, i) => drops[i] === 'never' || (drops[i] === 'maybe' && !dropMaybe));
+}
+
+/**
+ * Does every kept source element agree with the bag element it pairs with
+ * (issue [#4919](https://github.com/go-to-k/cdkd/issues/4919))? See
+ * {@link keptElementCorroborates}.
+ */
+function keptLiteralsCorroborate(
+  kept: readonly unknown[],
+  bag: readonly unknown[],
+  secrets: RecordedSecretValues
+): boolean {
+  return kept.every((element, i) => keptElementCorroborates(element, bag[i], secrets));
+}
+
+/** A single-key `Ref` / `Fn::*` object: the arm the pairing hands it to checks its value. */
+function isIntrinsicNode(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'));
+}
+
+/**
+ * Does a kept source element agree with its bag element, leaf by leaf? A
+ * plain literal must equal it; a string holding a `{{resolve:...}}` token must
+ * be ONE token this pass resolved to exactly that leaf (`resolvedPlaintextOf`);
+ * an intrinsic is accepted, as the arm it reaches checks the value; a plain
+ * object or array is walked, each bag key matched by a source key and a source
+ * key the bag lacks one that can resolve to `AWS::NoValue`. Anything else, an
+ * array of another length included, refuses the whole pairing.
+ */
+function keptElementCorroborates(
+  source: unknown,
+  bag: unknown,
+  secrets: RecordedSecretValues,
+  depth = 0
+): boolean {
+  if (depth > 16) return false;
+  if (typeof source === 'string') {
+    if (!source.includes('{{resolve:')) return source === bag;
+    return isSingleDynamicReferenceToken(source) && resolvedPlaintextOf(secrets, source) === bag;
+  }
+  if (source === null || typeof source !== 'object') return source === bag;
+  if (isIntrinsicNode(source)) return true;
+  if (Array.isArray(source)) {
+    return (
+      Array.isArray(bag) &&
+      bag.length === source.length &&
+      source.every((element, i) => keptElementCorroborates(element, bag[i], secrets, depth + 1))
+    );
+  }
+  if (!isPlainObject(source) || !isPlainObject(bag)) return false;
+  if (Object.keys(bag).some((key) => !Object.hasOwn(source, key))) return false;
+  return Object.entries(source).every(([key, value]) =>
+    Object.hasOwn(bag, key)
+      ? keptElementCorroborates(value, bag[key], secrets, depth + 1)
+      : arrayElementDrop(value) === 'always' || arrayElementDrop(value) === 'maybe'
+  );
+}
+
+/**
+ * Can {@link keptElementCorroborates} accept this kept element whatever the
+ * pass resolved, from the template alone? Not where it holds a
+ * `{{resolve:...}}` string (a public reference has no pair, an embedding
+ * literal is no single token) or a nested array an element can drop out of.
+ */
+function corroboratesWhateverResolves(source: unknown, depth = 0): boolean {
+  if (depth > 16) return false;
+  if (typeof source === 'string') return !source.includes('{{resolve:');
+  if (source === null || typeof source !== 'object') return true;
+  if (isIntrinsicNode(source)) return true;
+  if (Array.isArray(source)) {
+    return source.every(
+      (element) =>
+        arrayElementDrop(element) === 'never' && corroboratesWhateverResolves(element, depth + 1)
+    );
+  }
+  if (!isPlainObject(source)) return false;
+  // A `Ref` / `Fn::*` key beside others is dispatched as that intrinsic by
+  // `resolveValue`, not walked as an object; and a property only the persist
+  // walk's drop classifier can excuse when it is missing must be one it
+  // classifies (an `Fn::FindInMap` `DefaultValue`, even under an `Fn::If`,
+  // can drop it unclassified).
+  if (Object.keys(source).some((key) => key === 'Ref' || key.startsWith('Fn::'))) return false;
+  return Object.values(source).every(
+    (value) =>
+      arrayElementDrop(value) !== 'unknown' && corroboratesWhateverResolves(value, depth + 1)
+  );
+}
+
+/**
+ * Does the shrunken-array pairing ({@link sourceElementsKeptFor} and
+ * {@link keptLiteralsCorroborate}) pair a resolved bag of this source array
+ * whatever its elements resolve to? So with no `unknown` element, at most one
+ * `maybe`, and every element one the corroboration accepts from the template
+ * alone: the collision walk (`poisonRenderedSpellingsCollidingIn`) runs
+ * before conditions are evaluated and reads such an array as walked by
+ * position. An array holding no element that can resolve to `AWS::NoValue`
+ * -- an `Fn::If`, a `Ref` to it, an `Fn::FindInMap` with a `DefaultValue`
+ * (`resolveFindInMap` can return it) -- is walked by position anyway.
+ */
+export function arrayPairsWhateverDrops(source: readonly unknown[]): boolean {
+  const mayDrop = source.some(
+    (element) =>
+      isPlainObject(element) &&
+      (Object.hasOwn(element, 'Fn::If') ||
+        element['Ref'] === 'AWS::NoValue' ||
+        (Array.isArray(element['Fn::FindInMap']) && element['Fn::FindInMap'].length > 3))
+  );
+  if (!mayDrop) return true;
+  const drops = source.map((element) => arrayElementDrop(element));
+  return (
+    !drops.includes('unknown') &&
+    drops.filter((drop) => drop === 'maybe').length <= 1 &&
+    source.every((element) => corroboratesWhateverResolves(element))
+  );
+}
+
+/**
  * PATH-based redaction: walk `bag` alongside a SOURCE bag that still carries the
  * unresolved `{{resolve:...}}` expressions, and wherever the source leaf is such
  * a string, persist THAT string verbatim.
@@ -47,8 +226,9 @@ import {
  * nested-stack child's `{Ref: <Param>}` leaf whose parameter carried an
  * inherited secret into this resource is answered first, as the diff side
  * binds that parameter ({@link positionByInheritedParameter}, issue #2349),
- * and an `Fn::Select` / `Fn::Split` leaf over its parameters is re-read with
- * those bindings ({@link positionByParameterReread}, issue #4731).
+ * and an `Fn::Select` / `Fn::Split` / `Fn::If` leaf over its parameters is
+ * re-read with those bindings ({@link positionByParameterReread}, issues
+ * #4731, #4919).
  * Any other goes through four positioning passes before the value scan, in
  * this order:
  *
@@ -184,8 +364,9 @@ export function redactByPath(
     // last, while the diff side scans the parent's.
     const inherited = positionByInheritedParameter(bag, source, secrets);
     if (inherited !== undefined) return inherited;
-    // Its `Fn::Select` / `Fn::Split` twin (issue #4731): such a leaf, re-read
-    // with the diff side's parameter bindings, rather than from that slot.
+    // Its `Fn::Select` / `Fn::Split` / `Fn::If` twin (issues #4731, #4919):
+    // such a leaf, re-read with the diff side's parameter bindings, rather
+    // than from that slot.
     const reread = positionByParameterReread(bag, source, secrets);
     if (reread !== undefined) return reread;
   }
@@ -391,6 +572,23 @@ export function redactByPath(
       return bag.map((item, i) =>
         redactByPath(item, source[i], secrets, rules, secretExpressions, bagIsSameGeneration)
       );
+    }
+    // SHORTER than a source that resolving produced (issue
+    // [#4919](https://github.com/go-to-k/cdkd/issues/4919)): the resolver
+    // drops an element that resolves to `AWS::NoValue`, so where the count
+    // alone says WHICH elements dropped, the rest pair in order. Every kept
+    // LITERAL element must equal its bag element, and every kept token must be
+    // the one this pass resolved to it, the corroboration the length check
+    // gives the positional arm: a producer that removed an element itself
+    // (rules.ts) falls to the value scan. Any other shortfall
+    // keeps the value scan.
+    if (rules.descendArrays && bag.length < source.length) {
+      const kept = sourceElementsKeptFor(source, bag.length);
+      if (kept !== undefined && keptLiteralsCorroborate(kept, bag, secrets)) {
+        return bag.map((item, i) =>
+          redactByPath(item, kept[i], secrets, rules, secretExpressions, bagIsSameGeneration)
+        );
+      }
     }
   }
   // `hasPlainPrototype` for issue

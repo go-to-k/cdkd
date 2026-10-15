@@ -4,6 +4,7 @@ import {
   rereadParameterExpression,
   type ParameterBinding,
 } from '../secret-redaction/nested-stack.js';
+import { arrayPairsWhateverDrops } from '../secret-redaction/redact-path.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -166,8 +167,9 @@ export function recordInheritedParameterSecrets(
   const mirror = parameterReadMirrors.get(recorded);
   // Issue #4731: every parameter this resource reads, with its value, so the
   // persist walk can re-read an `Fn::Select` / `Fn::Split` leaf over them.
-  recordInheritedParameterValue(recorded, inherited, parameterName, value);
-  if (mirror) recordInheritedParameterValue(mirror, inherited, parameterName, value);
+  const declared = declaredParameterNames(context);
+  recordInheritedParameterValue(recorded, inherited, parameterName, value, declared);
+  if (mirror) recordInheritedParameterValue(mirror, inherited, parameterName, value, declared);
   // Issue #2291 round 2. THIS parameter's own expression, when the parent
   // certified one, rather than the collapsed map's survivor. See the
   // "WHICH EXPRESSION" section of the doc above for why the survivor is the
@@ -216,6 +218,22 @@ export function recordInheritedParameterSecrets(
     carryFreshNoEchoMark(inherited, recorded, plaintext);
   }
 }
+
+/**
+ * The parameter names the template being resolved declares (issue #4919),
+ * cached per `Parameters` object; `undefined` without one.
+ */
+function declaredParameterNames(context: ResolverContext): ReadonlySet<string> | undefined {
+  const declared: unknown = context.template?.Parameters;
+  if (declared === null || typeof declared !== 'object') return undefined;
+  let names = declaredNamesCache.get(declared);
+  if (names === undefined) {
+    names = new Set(Object.keys(declared));
+    declaredNamesCache.set(declared, names);
+  }
+  return names;
+}
+const declaredNamesCache = new WeakMap<object, ReadonlySet<string>>();
 
 /**
  * The bag each pass bag's nested-stack parameter reads are ALSO recorded on
@@ -303,8 +321,8 @@ function carriedExpressionFor(
  *
  * The carry holds ONE expression per plaintext per resource, so in such a
  * resource whichever parameter resolved last decides every value-scanned leaf
- * (an `Fn::If`, an `Fn::Sub` under `Fn::Select`, a read beside a `Fn::GetAtt`):
- * the other parameter's leaf persists
+ * (a read beside a `Fn::GetAtt`, an `Fn::If` whose branches the leaf cannot
+ * tell apart): the other parameter's leaf persists
  * a token its diff side does not render, a change on every deploy. Before
  * #4644 the literal parameter carried the survivor, which the diff side bound
  * too. Withdrawing its spelling restores exactly that for the parameter
@@ -322,10 +340,13 @@ function carriedExpressionFor(
  * slot, so it collides with a slot read of the other parameter. A leaf the
  * persist walk re-reads per parameter (`Fn::Select` / `Fn::Split` over
  * parameters, `rereadParameterExpression`, issue
- * [#4731](https://github.com/go-to-k/cdkd/issues/4731)) is no slot read
- * either. An untaken
- * `Fn::If` branch counts; over-reading only withdraws more, which is the
- * pre-#4644 answer. `Outputs` count as one resource whose leaves are each
+ * [#4731](https://github.com/go-to-k/cdkd/issues/4731); since issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919) also `Fn::Sub` inside
+ * one, and an `Fn::If` whose every branch re-reads and whose leaf names its
+ * branch) is no slot read either, nor is a read in a bag array the persist
+ * walk pairs whatever drops out of it (`arrayPairsWhateverDrops`). Any other
+ * `Fn::If` branch counts, untaken ones included; over-reading only withdraws
+ * more, which is the pre-#4644 answer. `Outputs` count as one resource whose leaves are each
  * output's `Value` (issue [#4913](https://github.com/go-to-k/cdkd/issues/4913):
  * the outputs bag carries the outputs pass's reads, `mirrorInheritedParameterReads`).
  */
@@ -437,7 +458,7 @@ function collidingRenderedNames(
  * `Fn::Join` or `Fn::Sub` (the placeholder arms). Any other `Fn::*` --
  * `Fn::Select`, `Fn::Split`, and `Fn::If`, whose branch may be an array the
  * walk does not position -- leaves its result to the value scan, which reads
- * the slot.
+ * the slot, unless the whole leaf re-reads (`rereadParameterExpression`).
  */
 const POSITIONED_INTRINSICS: ReadonlySet<string> = new Set(['Fn::Join', 'Fn::Sub']);
 
@@ -466,21 +487,24 @@ function parameterReadsOf(
     if (Array.isArray(value)) {
       // An element that can resolve to `AWS::NoValue` (an `Fn::If`, or the
       // `Ref` itself) drops out of the bag, so the persist walk's lengths
-      // differ and it value-scans the WHOLE array from the slot: every read
-      // in it is a slot read, a bare `{Ref}` and a re-read included. So is
-      // an array ON the walk's path (`atLeaf`) in a bag it never descends
-      // positionally (the outputs); one inside an intrinsic is the
-      // intrinsic's argument, not a bag array.
-      const mayShrink =
-        (atLeaf && !positionsArrays) ||
-        value.some(
-          (element) =>
-            element !== null &&
-            typeof element === 'object' &&
-            !Array.isArray(element) &&
-            (Object.hasOwn(element, 'Fn::If') ||
-              (element as Record<string, unknown>)['Ref'] === 'AWS::NoValue')
-        );
+      // differ. It pairs the rest in order where the count says which
+      // dropped (issue #4919), which `arrayPairsWhateverDrops` answers for
+      // every outcome; otherwise it value-scans the WHOLE array from the
+      // slot, and every read in it is a slot read, a bare `{Ref}` and a
+      // re-read included. So is an array ON the walk's path (`atLeaf`) in a
+      // bag it never descends positionally (the outputs). One inside an
+      // intrinsic is the intrinsic's argument, not a bag array: any element
+      // that can drop there still counts.
+      const mayShrink = atLeaf
+        ? !positionsArrays || !arrayPairsWhateverDrops(value)
+        : value.some(
+            (element) =>
+              element !== null &&
+              typeof element === 'object' &&
+              !Array.isArray(element) &&
+              (Object.hasOwn(element, 'Fn::If') ||
+                (element as Record<string, unknown>)['Ref'] === 'AWS::NoValue')
+          );
       for (const element of value) {
         visit(element, slotRead || mayShrink, atLeaf && !mayShrink);
       }
@@ -634,7 +658,10 @@ function outputsGroupParts(outputs: unknown): ReadsGroupPart[] {
   return parts;
 }
 
-/** The parameter names `node` reads through `{Ref}`, at any depth. */
+/**
+ * The parameter names `node` reads through `{Ref}` or an `Fn::Sub`
+ * placeholder (issue #4919: a re-read evaluates `Fn::Sub`), at any depth.
+ */
 function refNamesIn(node: unknown, names: ReadonlySet<string>): Set<string> {
   const found = new Set<string>();
   const visit = (value: unknown): void => {
@@ -645,6 +672,14 @@ function refNamesIn(node: unknown, names: ReadonlySet<string>): Set<string> {
     if (value === null || typeof value !== 'object') return;
     const record = value as Record<string, unknown>;
     if (typeof record['Ref'] === 'string' && names.has(record['Ref'])) found.add(record['Ref']);
+    const sub = record['Fn::Sub'];
+    const text = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
+    if (typeof text === 'string') {
+      for (const match of text.matchAll(/\$\{([^}!][^}]*)\}/g)) {
+        const name = match[1]!.trim();
+        if (names.has(name)) found.add(name);
+      }
+    }
     for (const child of Object.values(record)) visit(child);
   };
   visit(node);

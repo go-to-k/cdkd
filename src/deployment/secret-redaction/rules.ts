@@ -119,7 +119,12 @@ export function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   be walked against the template; every `effectiveProperties` producer today
  *   preserves length and order on an equal-length array, and the length check
  *   below is what makes a producer that stops doing so fall to the value scan
- *   rather than mis-align. An AWS readback may be REORDERED — AWS does not
+ *   rather than mis-align. A SHORTER bag is paired only where the source holds
+ *   elements that can resolve to `AWS::NoValue`, the count says which dropped,
+ *   and every kept element corroborates its bag element leaf by leaf (a
+ *   literal equal, a token resolved to it; issue #4919); a producer removing an
+ *   element there falls to the value scan unless every kept element is an
+ *   intrinsic, which the arm it reaches checks. An AWS readback may be REORDERED — AWS does not
  *   preserve list order, which is the whole reason
  *   `src/analyzer/drift-normalize.ts` exists — and descending it BLINDLY by
  *   position would write an expression onto the WRONG element while leaving the

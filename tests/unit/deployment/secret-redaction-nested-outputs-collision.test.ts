@@ -68,10 +68,13 @@ const PARAMETERS = { [PARAM_A]: CONN, [PARAM_B]: SHARED, [PUB]: PUB_VALUE };
 const SEL_A = { 'Fn::Select': [0, [{ Ref: PARAM_A }]] };
 const SEL_B = { 'Fn::Select': [0, [{ Ref: PARAM_B }]] };
 const SPLIT_A = { 'Fn::Select': [0, { 'Fn::Split': ['@', { Ref: PARAM_A }] }] };
-/** Slot reads no re-read evaluates: an `Fn::Sub` under `Fn::Select`. */
+/** Re-read since issue #4919: an `Fn::Sub` under `Fn::Select`. */
 const SUB_SEL_A = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_A}}` }]] };
 const SUB_B = { 'Fn::Sub': `x-\${${PARAM_B}}` };
 const SUB_SEL_B = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${${PARAM_B}}` }]] };
+/** Slot reads no re-read evaluates: an intrinsic it does not evaluate in the list. */
+const OPAQUE_SEL_A = { 'Fn::Select': [0, [{ Ref: PARAM_A }, { 'Fn::Base64': 'x' }]] };
+const OPAQUE_SEL_B = { 'Fn::Select': [0, [{ Ref: PARAM_B }, { 'Fn::Base64': 'x' }]] };
 
 /** One parent row's bag; `reversed` resolves `ConnA` first, so `EXPR_B` survives. */
 function parentRow(reversed: boolean): RecordedSecretValues {
@@ -101,6 +104,9 @@ function childTemplate(outputs: Record<string, unknown>): CloudFormationTemplate
       [PARAM_B]: { Type: 'String' },
       [PUB]: { Type: 'String' },
     },
+    // Declared, as CloudFormation requires of the condition an `Fn::If` names;
+    // false, which is what the outputs pass here resolves it to.
+    Conditions: { On: { 'Fn::Equals': ['a', 'b'] } },
     Resources: {},
     Outputs: Object.fromEntries(Object.entries(outputs).map(([key, value]) => [key, { Value: value }])),
   } as CloudFormationTemplate;
@@ -185,6 +191,14 @@ describe("a nested child's Outputs reading BOTH parameters keep each spelling (#
       OA: { 'Fn::Join': ['', ['x-', { Ref: PARAM_A }]] },
       OB: SEL_B,
     },
+    // Issue #4919: an `Fn::Sub` under `Fn::Select`, and an `Fn::If` whose
+    // leaf names its branch (`On` is false on both sides).
+    'Sub-in-Select ConnA, bare SecretB': { OA: SUB_SEL_A, OB: { Ref: PARAM_B } },
+    'bare ConnA, Sub-in-Select SecretB': { OA: { Ref: PARAM_A }, OB: SUB_SEL_B },
+    'Fn::If over ConnA, bare SecretB': {
+      OA: { 'Fn::If': ['On', 'z', { Ref: PARAM_A }] },
+      OB: { Ref: PARAM_B },
+    },
   };
   for (const reversed of [true, false]) {
     for (const literalLast of [true, false]) {
@@ -216,8 +230,8 @@ describe("a nested child's Outputs reading BOTH parameters keep each spelling (#
 
 describe('an output read the persist walk cannot position still withdraws (#4913)', () => {
   const SLOT: Record<string, Record<string, unknown>> = {
-    'Sub-in-Select ConnA, bare SecretB': { OA: SUB_SEL_A, OB: { Ref: PARAM_B } },
-    'bare ConnA, Sub-in-Select SecretB': { OA: { Ref: PARAM_A }, OB: SUB_SEL_B },
+    'opaque Select ConnA, bare SecretB': { OA: OPAQUE_SEL_A, OB: { Ref: PARAM_B } },
+    'bare ConnA, opaque Select SecretB': { OA: { Ref: PARAM_A }, OB: OPAQUE_SEL_B },
     // `TEMPLATE_SOURCED_RULES` walks no array positionally, so a read inside
     // a list-valued output is value-scanned from the slot.
     'ConnA in a list-valued output, bare SecretB': { OA: [{ Ref: PARAM_A }], OB: { Ref: PARAM_B } },
@@ -236,9 +250,9 @@ describe('an output read the persist walk cannot position still withdraws (#4913
       OA: { Ref: PARAM_A },
       OB: { 'Fn::Join': ['-', [{ Ref: 'AWS::Region' }, { Ref: PUB }, { Ref: PARAM_B }]] },
     },
-    // An `Fn::If` is the walk's leaf, and no re-read.
-    'Fn::If over ConnA, bare SecretB': {
-      OA: { 'Fn::If': ['On', { Ref: PARAM_A }, 'z'] },
+    // An `Fn::If` is the walk's leaf, re-read only where every branch is.
+    'Fn::If over opaque ConnA, bare SecretB': {
+      OA: { 'Fn::If': ['On', OPAQUE_SEL_A, 'z'] },
       OB: { Ref: PARAM_B },
     },
   };

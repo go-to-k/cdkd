@@ -1216,6 +1216,13 @@ const inheritedParameterReads = new WeakMap<
        * re-reads a leaf from. `names` stays the secret-carrying subset.
        */
       readonly values: Map<string, unknown>;
+      /**
+       * The parameter names the child template DECLARES (issue #4919), so a
+       * re-read can tell an unread parameter (a branch the pass did not take)
+       * from a `Ref` to anything else; `undefined` until a recording names
+       * them, when every unanswered name refuses.
+       */
+      declared?: ReadonlySet<string>;
     }
   | symbol
 >();
@@ -1225,7 +1232,13 @@ const POISONED_PARAMETER_READS: unique symbol = Symbol('cdkd.inherited-parameter
 function parameterReadsFor(
   childSecrets: RecordedSecretValues,
   parentSecrets: RecordedSecretValues
-): { readonly names: Set<string>; readonly values: Map<string, unknown> } | undefined {
+):
+  | {
+      readonly names: Set<string>;
+      readonly values: Map<string, unknown>;
+      declared?: ReadonlySet<string>;
+    }
+  | undefined {
   const reads = inheritedParameterReads.get(childSecrets);
   if (reads === undefined) {
     const created = { parent: parentSecrets, names: new Set<string>(), values: new Map() };
@@ -1251,10 +1264,22 @@ export function recordInheritedParameterValue(
   childSecrets: RecordedSecretValues,
   parentSecrets: RecordedSecretValues,
   parameterName: string,
-  value: unknown
+  value: unknown,
+  declared?: ReadonlySet<string>
 ): void {
   const reads = parameterReadsFor(childSecrets, parentSecrets);
   if (reads === undefined) return;
+  if (declared !== undefined) {
+    // One child template per bag; two differing sets refuse the record.
+    if (reads.declared === undefined) reads.declared = declared;
+    else if (
+      reads.declared.size !== declared.size ||
+      [...declared].some((name) => !reads.declared!.has(name))
+    ) {
+      inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
+      return;
+    }
+  }
   if (reads.values.has(parameterName)) {
     if (!deepEqualJsonValue(reads.values.get(parameterName), value)) {
       inheritedParameterReads.set(childSecrets, POISONED_PARAMETER_READS);
@@ -1367,11 +1392,20 @@ export type ParameterBinding = (name: string) => { readonly value: unknown } | u
 
 /**
  * The intrinsics a re-read ({@link rereadParameterExpression}) evaluates. Only
- * a source holding `Fn::Select` or `Fn::Split` is re-read: a `{Ref}` alone, an
- * `Fn::Join` / `Fn::Sub` over `{Ref}`s, already has a per-parameter arm.
+ * a source holding `Fn::Select`, `Fn::Split` or `Fn::If` (issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)) is re-read: a `{Ref}`
+ * alone, an `Fn::Join` / `Fn::Sub` over `{Ref}`s, already has a per-parameter
+ * arm.
  */
-const REREAD_TRIGGERS: ReadonlySet<string> = new Set(['Fn::Select', 'Fn::Split']);
+const REREAD_TRIGGERS: ReadonlySet<string> = new Set(['Fn::Select', 'Fn::Split', 'Fn::If']);
 const MAX_REREAD_DEPTH = 16;
+/**
+ * The most distinct `Fn::If` condition names one re-read enumerates (each
+ * doubles the evaluations); a source naming more is no re-read.
+ */
+const MAX_REREAD_CONDITIONS = 4;
+/** What a re-read evaluates `{Ref: AWS::NoValue}` to: the leaf drops out. */
+const REREAD_NO_VALUE: unique symbol = Symbol('cdkd.reread.no-value');
 
 /**
  * `Fn::Split` as a COMPARISON pass evaluates it (issue
@@ -1450,27 +1484,36 @@ const plainSplit = (text: string, delimiter: string): string[] => text.split(del
 
 /**
  * Evaluate a PURE parameter expression -- string literals, arrays, `{Ref}` to
- * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join` -- as the
- * resolver does (`string-functions.ts`), or `undefined` for anything else: a
- * `{{resolve:` literal (the resolver would resolve it), a number outside a
- * `Fn::Select` index, a non-literal index or delimiter, an index out of
- * bounds, any other intrinsic (`Fn::If`, `Fn::Sub`, `Fn::GetAtt`, a pseudo
- * parameter). `split` is the pass's `Fn::Split`: {@link plainSplit} over real
- * values, {@link splitOutsideDynamicReferences} as the diff side splits.
+ * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join`, `Fn::Sub`
+ * over such values, and `Fn::If` taking the branch `choose` names -- as the
+ * resolver does (`string-functions.ts`, `sub.ts`, `functions.ts`), or
+ * `undefined` for anything else: a `{{resolve:` literal (the resolver would
+ * resolve it), a number outside a `Fn::Select` index, a non-literal index or
+ * delimiter, an index out of bounds, a non-string `Fn::Sub` value, any other
+ * intrinsic (`Fn::GetAtt`, a pseudo parameter, a dotted `${X.Y}`). `split` is
+ * the pass's `Fn::Split`: {@link plainSplit} over real values,
+ * {@link splitOutsideDynamicReferences} as the diff side splits.
+ *
+ * `{Ref: AWS::NoValue}` evaluates to {@link REREAD_NO_VALUE}, which only an
+ * `Fn::If` passes up: anywhere else (an array element, an argument) it refuses
+ * rather than model the resolver's filtering.
  */
 function evaluatePureRead(
   node: unknown,
   bind: ParameterBinding,
   split: (text: string, delimiter: string) => string[],
+  choose: (condition: string) => boolean,
   depth = 0
 ): { value: unknown } | undefined {
   if (depth > MAX_REREAD_DEPTH) return undefined;
+  const evaluate = (child: unknown): { value: unknown } | undefined =>
+    evaluatePureRead(child, bind, split, choose, depth + 1);
   if (typeof node === 'string') return node.includes('{{resolve:') ? undefined : { value: node };
   if (Array.isArray(node)) {
     const out: unknown[] = [];
     for (const element of node) {
-      const evaluated = evaluatePureRead(element, bind, split, depth + 1);
-      if (evaluated === undefined) return undefined;
+      const evaluated = evaluate(element);
+      if (evaluated === undefined || evaluated.value === REREAD_NO_VALUE) return undefined;
       out.push(evaluated.value);
     }
     return { value: out };
@@ -1480,7 +1523,17 @@ function evaluatePureRead(
   if (keys.length !== 1) return undefined;
   const key = keys[0]!;
   const args = node[key];
-  if (key === 'Ref') return typeof args === 'string' ? bind(args) : undefined;
+  if (key === 'Ref') {
+    if (args === 'AWS::NoValue') return { value: REREAD_NO_VALUE };
+    return typeof args === 'string' ? bind(args) : undefined;
+  }
+  if (key === 'Fn::If') {
+    // `resolveIf`: the evaluated condition picks the branch, which is
+    // resolved as any other value.
+    if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') return undefined;
+    return evaluate(choose(args[0]) ? args[1] : args[2]);
+  }
+  if (key === 'Fn::Sub') return evaluatePureSub(args, bind, evaluate);
   if (!Array.isArray(args) || args.length !== 2) return undefined;
   if (key === 'Fn::Select') {
     // `selectIndexPosition`'s rule (`intrinsic-resolver/context.ts`), spelled
@@ -1493,7 +1546,7 @@ function evaluatePureRead(
           ? Number(index)
           : undefined;
     if (position === undefined || !Number.isSafeInteger(position) || position < 0) return undefined;
-    const list = evaluatePureRead(args[1], bind, split, depth + 1);
+    const list = evaluate(args[1]);
     if (list === undefined || !Array.isArray(list.value) || position >= list.value.length) {
       return undefined;
     }
@@ -1502,17 +1555,88 @@ function evaluatePureRead(
   const delimiter = args[0];
   if (typeof delimiter !== 'string') return undefined;
   if (key === 'Fn::Split') {
-    const value = evaluatePureRead(args[1], bind, split, depth + 1);
+    const value = evaluate(args[1]);
     if (value === undefined || typeof value.value !== 'string') return undefined;
     return { value: split(value.value, delimiter) };
   }
   if (key === 'Fn::Join') {
-    const parts = evaluatePureRead(args[1], bind, split, depth + 1);
+    const parts = evaluate(args[1]);
     if (parts === undefined || !Array.isArray(parts.value)) return undefined;
     if (!parts.value.every((part) => typeof part === 'string')) return undefined;
     return { value: parts.value.join(delimiter) };
   }
   return undefined;
+}
+
+/**
+ * `Fn::Sub` as `resolveSub` (`sub.ts`) evaluates it (issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)), over string values
+ * only: `${!X}` renders `${X}`, an empty `${}` stays, a name bound in the
+ * variable map takes that variable (every one evaluated, as the resolver
+ * resolves the map), and any other name is a `{Ref}` to a parameter `bind`
+ * answers. A pseudo parameter (`AWS::`), a dotted attribute read, a
+ * non-string value (`String()` of a number or a list's refusal) all refuse.
+ */
+function evaluatePureSub(
+  args: unknown,
+  bind: ParameterBinding,
+  evaluate: (child: unknown) => { value: unknown } | undefined
+): { value: unknown } | undefined {
+  const [text, variables] =
+    typeof args === 'string'
+      ? [args, {}]
+      : Array.isArray(args) && args.length === 2
+        ? [args[0], args[1]]
+        : [undefined, undefined];
+  if (typeof text !== 'string' || text.includes('{{resolve:') || !isPlainObject(variables)) {
+    return undefined;
+  }
+  const bound = new Map<string, string>();
+  for (const [name, variable] of Object.entries(variables)) {
+    const evaluated = evaluate(variable);
+    if (evaluated === undefined || typeof evaluated.value !== 'string') return undefined;
+    bound.set(name, evaluated.value);
+  }
+  let out = '';
+  let cursor = 0;
+  for (const match of text.matchAll(/\$\{(!)?([^}]*)\}/g)) {
+    const name = match[2] ?? '';
+    let replacement: string;
+    if (match[1] === '!') replacement = `\${${name}}`;
+    else if (name === '') replacement = match[0];
+    else if (bound.has(name)) replacement = bound.get(name)!;
+    else {
+      // The resolver's order: a pseudo parameter, then a `Ref`, then a dotted
+      // `Fn::GetAtt`. UNFALSIFIABLE while every binding answers template
+      // parameter names only, which hold neither form; stated so a binding
+      // that ever answers one cannot turn a pseudo or attribute read into it.
+      if (name.startsWith('AWS::') || name.includes('.')) return undefined;
+      const value = bind(name);
+      if (value === undefined || typeof value.value !== 'string') return undefined;
+      replacement = value.value;
+    }
+    out += text.slice(cursor, match.index) + replacement;
+    cursor = match.index + match[0].length;
+  }
+  return { value: out + text.slice(cursor) };
+}
+
+/**
+ * Collect into `names` every `Fn::If` condition name in `node`, untaken
+ * branches included; `false` for a malformed one or a source too deep.
+ */
+function collectRereadConditions(node: unknown, names: Set<string>, depth = 0): boolean {
+  if (depth > MAX_REREAD_DEPTH) return false;
+  if (Array.isArray(node)) {
+    return node.every((element) => collectRereadConditions(element, names, depth + 1));
+  }
+  if (!isPlainObject(node)) return true;
+  if (Object.hasOwn(node, 'Fn::If')) {
+    const args = node['Fn::If'];
+    if (!Array.isArray(args) || typeof args[0] !== 'string') return false;
+    names.add(args[0]);
+  }
+  return Object.values(node).every((child) => collectRereadConditions(child, names, depth + 1));
 }
 
 /** Does `node` hold a {@link REREAD_TRIGGERS} intrinsic anywhere? */
@@ -1546,55 +1670,143 @@ function rendersReadTo(
   return false;
 }
 
+/** One evaluation of a re-read: the source's real value and its diff-side value. */
+interface ParameterReread {
+  readonly resolved: unknown;
+  readonly redacted: unknown;
+}
+
 /**
- * Re-read a nested-stack child's leaf source holding `Fn::Select` /
- * `Fn::Split` over its parameters with the bindings the DIFF side uses (issue
- * [#4731](https://github.com/go-to-k/cdkd/issues/4731)): `resolved` is the
+ * What a re-read assignment that names a parameter its binding does not
+ * answer evaluates to: the evaluator walks only the branches the assignment
+ * takes, as `resolveIf` does, so at persist time (bound to this resource's
+ * recorded reads) such an assignment is one the real pass did NOT take.
+ */
+const REREAD_UNBOUND: unique symbol = Symbol('cdkd.reread.unbound');
+
+/**
+ * The source re-read under every assignment of its `Fn::If` conditions (issue
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)), one entry per
+ * assignment: the pair, {@link REREAD_NO_VALUE} where both sides drop out,
+ * {@link REREAD_UNBOUND} where it names a parameter `bind` does not answer,
+ * or `undefined` where it does not re-read for any other reason. `undefined` overall
+ * for a source with no {@link REREAD_TRIGGERS} intrinsic, a malformed
+ * `Fn::If`, or more than {@link MAX_REREAD_CONDITIONS} condition names.
+ *
+ * Assigned per condition NAME, as `resolveIf` reads one evaluated table: one
+ * name never takes two branches in one pass. Names that are equivalent are
+ * still assigned independently, which only adds assignments no pass takes.
+ */
+function rereadAssignments(
+  source: unknown,
+  bind: ParameterBinding,
+  parentSecrets: RecordedSecretValues,
+  /** Names whose missing binding proves the assignment untaken; none by default. */
+  untakenWhenUnbound: (name: string) => boolean = () => false
+): Array<ParameterReread | typeof REREAD_NO_VALUE | typeof REREAD_UNBOUND | undefined> | undefined {
+  if (!holdsRereadTrigger(source)) return undefined;
+  const conditions = new Set<string>();
+  if (!collectRereadConditions(source, conditions)) return undefined;
+  if (conditions.size > MAX_REREAD_CONDITIONS) return undefined;
+  const names = [...conditions];
+  const redactedBind: ParameterBinding = (name) => {
+    const bound = bind(name);
+    return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
+  };
+  // A token the parent resolved stands for its plaintext; any other is text
+  // the child received as text. The resolver's diff pass asks the same bag.
+  const tokenSplit = (text: string, delimiter: string): string[] =>
+    splitOutsideDynamicReferences(text, delimiter, (token) =>
+      standsForInheritedSecret(parentSecrets, token)
+    );
+  const out: Array<ParameterReread | typeof REREAD_NO_VALUE | typeof REREAD_UNBOUND | undefined> =
+    [];
+  for (let assignment = 0; assignment < 2 ** names.length; assignment++) {
+    const choose = (condition: string): boolean =>
+      Math.floor(assignment / 2 ** names.indexOf(condition)) % 2 === 1;
+    let unbound = false;
+    const tracked: ParameterBinding = (name) => {
+      const bound = bind(name);
+      if (bound === undefined && untakenWhenUnbound(name)) unbound = true;
+      return bound;
+    };
+    const resolved = evaluatePureRead(source, tracked, plainSplit, choose);
+    const redacted = resolved && evaluatePureRead(source, redactedBind, tokenSplit, choose);
+    if (unbound) out.push(REREAD_UNBOUND);
+    else if (resolved === undefined || redacted === undefined) out.push(undefined);
+    else if (resolved.value === REREAD_NO_VALUE || redacted.value === REREAD_NO_VALUE) {
+      out.push(resolved.value === redacted.value ? REREAD_NO_VALUE : undefined);
+    } else if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) out.push(undefined);
+    else out.push({ resolved: resolved.value, redacted: redacted.value });
+  }
+  return out;
+}
+
+/**
+ * Re-read a nested-stack child's leaf source holding `Fn::Select`,
+ * `Fn::Split` or `Fn::If` over its parameters with the bindings the DIFF side
+ * uses (issues [#4731](https://github.com/go-to-k/cdkd/issues/4731),
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): `resolved` is the
  * source evaluated with `bind`'s real values, `redacted` with each value as
  * {@link redactInheritedParameterValue} answers it -- the function
  * `DeployEngine.redactParametersForDiff` binds -- so `redacted` is what the
  * diff side computes for the leaf, splitting as it does
  * ({@link splitOutsideDynamicReferences}: a token stays whole, issue
- * [#4914](https://github.com/go-to-k/cdkd/issues/4914)). `undefined` unless
- * the source is pure ({@link evaluatePureRead}) and `redacted` renders,
+ * [#4914](https://github.com/go-to-k/cdkd/issues/4914)). A re-read requires
+ * the source to be pure ({@link evaluatePureRead}) and `redacted` to render,
  * through the parent's own pairs, to exactly `resolved` ({@link rendersReadTo}):
  * a delimiter cutting a PLAINTEXT, a piece left holding a plaintext, an
  * unpaired token all refuse.
  *
- * Shared by the persist arm ({@link positionByParameterReread}) and the
- * collision walk (`poisonRenderedSpellingsCollidingIn`), which reads such a
- * leaf as answered per parameter rather than from the carry's slot.
+ * STATIC, for the collision walk (`poisonRenderedSpellingsCollidingIn`),
+ * which runs before any condition is evaluated and reads such a leaf as
+ * answered per parameter rather than from the carry's slot: EVERY assignment
+ * of the source's `Fn::If` conditions must re-read (or drop out on both
+ * sides), and any two whose `resolved` values are equal must have equal
+ * `redacted` ones. Then whichever branches the real pass takes, its leaf is
+ * one of these `resolved` values, and {@link positionByParameterReread} finds
+ * its diff-side value from the leaf alone -- no condition outcome is needed on
+ * either side. The pair returned is the first assignment's that does not drop
+ * out; `undefined` otherwise.
  */
 export function rereadParameterExpression(
   source: unknown,
   bind: ParameterBinding,
   parentSecrets: RecordedSecretValues
-): { readonly resolved: unknown; readonly redacted: unknown } | undefined {
-  if (!holdsRereadTrigger(source)) return undefined;
-  const resolved = evaluatePureRead(source, bind, plainSplit);
-  if (resolved === undefined) return undefined;
-  const redacted = evaluatePureRead(
-    source,
-    (name) => {
-      const bound = bind(name);
-      return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
-    },
-    // A token the parent resolved stands for its plaintext; any other is text
-    // the child received as text. The resolver's diff pass asks the same bag.
-    (text, delimiter) =>
-      splitOutsideDynamicReferences(text, delimiter, (token) =>
-        standsForInheritedSecret(parentSecrets, token)
+): ParameterReread | undefined {
+  const assignments = rereadAssignments(source, bind, parentSecrets);
+  if (
+    assignments === undefined ||
+    assignments.includes(undefined) ||
+    assignments.includes(REREAD_UNBOUND)
+  ) {
+    return undefined;
+  }
+  const rereads = assignments.filter(
+    (entry): entry is ParameterReread =>
+      entry !== undefined && entry !== REREAD_NO_VALUE && entry !== REREAD_UNBOUND
+  );
+  if (rereads.length === 0 || ambiguousRereads(rereads)) return undefined;
+  return rereads[0];
+}
+
+/** Do two re-reads share a `resolved` value but differ in their `redacted` one? */
+function ambiguousRereads(rereads: readonly ParameterReread[]): boolean {
+  return rereads.some((a, i) =>
+    rereads
+      .slice(i + 1)
+      .some(
+        (b) =>
+          deepEqualJsonValue(a.resolved, b.resolved) && !deepEqualJsonValue(a.redacted, b.redacted)
       )
   );
-  if (redacted === undefined) return undefined;
-  if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) return undefined;
-  return { resolved: resolved.value, redacted: redacted.value };
 }
 
 /**
- * Persist a nested-stack child leaf whose source is `Fn::Select` /
- * `Fn::Split` over its parameters as the diff side computes it (issue
- * [#4731](https://github.com/go-to-k/cdkd/issues/4731)), or `undefined` (the
+ * Persist a nested-stack child leaf whose source is `Fn::Select`,
+ * `Fn::Split` or `Fn::If` over its parameters as the diff side computes it
+ * (issues [#4731](https://github.com/go-to-k/cdkd/issues/4731),
+ * [#4919](https://github.com/go-to-k/cdkd/issues/4919)), or `undefined` (the
  * caller keeps its existing arms).
  *
  * Such a leaf used to fall to the CHILD bag's value scan, whose one slot per
@@ -1604,11 +1816,20 @@ export function rereadParameterExpression(
  * `poisonRenderedSpellingsCollidingIn` had to withdraw the literal's spelling
  * for the whole child. Re-reading answers each leaf from its own parameters.
  *
+ * An `Fn::If`'s branch is read off the LEAF: every condition assignment must
+ * either re-read with this resource's recorded values or name a DECLARED
+ * parameter this resource never read (one the pass did not take: it read
+ * every parameter its taken branches name; a `Ref` to a resource or pseudo
+ * parameter is no such proof), and those whose `resolved` value IS the
+ * leaf must agree on one diff-side value. The taken assignment is among them,
+ * so their agreed value is the diff side's. An assignment refused for any
+ * other reason may be the taken one, so it refuses the leaf.
+ *
  * {@link positionByInheritedParameter}'s conditions, over the re-read: this
- * resource's resolution read every parameter the source names (its recorded
- * values bind the re-read; the #2087 scope), the source evaluated with them
- * IS the leaf, the leaf carries no child-only plaintext, and the child bag
- * would not rewrite the answer.
+ * resource's resolution read every parameter the taken source names (its
+ * recorded values bind the re-read; the #2087 scope), the source evaluated
+ * with them IS the leaf, the leaf carries no child-only plaintext, and the
+ * child bag would not rewrite the answer.
  */
 export function positionByParameterReread(
   bag: unknown,
@@ -1618,14 +1839,26 @@ export function positionByParameterReread(
   const reads = inheritedParameterReads.get(secrets);
   if (reads === undefined || typeof reads === 'symbol') return undefined;
   if (typeof bag !== 'string' && !Array.isArray(bag)) return undefined;
-  const reread = rereadParameterExpression(
+  const declared = reads.declared;
+  const assignments = rereadAssignments(
     source,
     (name) => (reads.values.has(name) ? { value: reads.values.get(name) } : undefined),
-    reads.parent
+    reads.parent,
+    (name) => declared?.has(name) === true
   );
-  if (reread === undefined || !deepEqualJsonValue(reread.resolved, bag)) return undefined;
+  // An assignment refused for any reason but an unread parameter may be the
+  // one the pass took, whose leaf another assignment could merely equal.
+  if (assignments === undefined || assignments.includes(undefined)) return undefined;
+  const matching = assignments.filter(
+    (entry): entry is ParameterReread =>
+      entry !== undefined &&
+      entry !== REREAD_NO_VALUE &&
+      entry !== REREAD_UNBOUND &&
+      deepEqualJsonValue(entry.resolved, bag)
+  );
+  if (matching.length === 0 || ambiguousRereads(matching)) return undefined;
   if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
-  const answer = reread.redacted;
+  const answer = matching[0]!.redacted;
   if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
   return answer;
 }

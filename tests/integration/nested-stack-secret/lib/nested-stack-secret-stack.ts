@@ -132,6 +132,12 @@ import { Construct } from 'constructs';
  *    for it (skipped only after resolution), and `cdkd diff --recursive`
  *    reported a change on every run (#4929). Both now keep each token whole
  *    where it splits; phases 2 and 2c diff it, phase 2d redeploys the child.
+ *  - `FallthroughIfReversed`, `FallthroughSubSelectReversed`,
+ *    `FallthroughShrinkRule` (child) — THE #4919 ARMS. Each reads `FallConnA2`
+ *    beside `FallSecretB2` in ONE resource, through an `Fn::If`, an `Fn::Sub`
+ *    inside `Fn::Select`, and list matchers an `Fn::If` element can shrink.
+ *    Before #4919 each was a slot read, and cdkd withdrew `FallConnA2`'s
+ *    literal spelling for the whole child.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -212,6 +218,9 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughSelectReversedParamName: string;
       fallthroughMixedReversedParamName: string;
       fallthroughColonReversedParamName: string;
+      fallthroughIfReversedParamName: string;
+      fallthroughSubSelectReversedParamName: string;
+      fallthroughShrinkRuleName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -545,6 +554,65 @@ class SecretBearingChild extends cdk.NestedStack {
       description: names.colonTouchDescription,
     });
     ((colonTouch.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('ColonTouch');
+
+    // THE #4919 ARMS: `FallConnA2` read beside `FallSecretB2` in ONE resource
+    // through each shape the #4731 re-read used to leave to the carry's slot:
+    // an `Fn::If`, an `Fn::Sub` inside `Fn::Select`, and arrays an `Fn::If`
+    // element can shrink. Before #4919 each made cdkd withdraw `FallConnA2`'s
+    // literal spelling for the WHOLE child.
+    const fall4919On = new cdk.CfnCondition(this, 'Fall4919On', {
+      expression: cdk.Fn.conditionEquals('on', 'on'),
+    });
+    fall4919On.overrideLogicalId('Fall4919On');
+    const fall4919Off = new cdk.CfnCondition(this, 'Fall4919Off', {
+      expression: cdk.Fn.conditionEquals('on', 'off'),
+    });
+    fall4919Off.overrideLogicalId('Fall4919Off');
+    const fallthroughIfReversed = new ssm.StringParameter(this, 'FallthroughIfReversed', {
+      parameterName: names.fallthroughIfReversedParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: cdk.Fn.conditionIf(
+        fall4919On.logicalId,
+        cdk.Fn.select(0, cdk.Fn.split('@', fallConn2.valueAsString)),
+        'none'
+      ).toString(),
+    });
+    ((fallthroughIfReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
+      'FallthroughIfReversed'
+    );
+    // Overridden: CDK folds `Fn.select` over a literal list to its element.
+    const fallthroughSubSelectReversed = new ssm.StringParameter(
+      this,
+      'FallthroughSubSelectReversed',
+      {
+        parameterName: names.fallthroughSubSelectReversedParamName,
+        stringValue: fallSecret2.valueAsString,
+        description: 'replaced by the override below',
+      }
+    );
+    const subSelectCfn = fallthroughSubSelectReversed.node.defaultChild as ssm.CfnParameter;
+    subSelectCfn.overrideLogicalId('FallthroughSubSelectReversed');
+    subSelectCfn.addPropertyOverride('Description', {
+      'Fn::Select': [0, [{ 'Fn::Sub': '${FallConnA2}' }]],
+    });
+    // Two list matchers: `dropped` loses its `Fn::If` element (condition
+    // false), `kept` is CDK's `Fn.conditionIf(cond, secret, Aws.NO_VALUE)`
+    // whose element stays. An `EventPattern` for the reason `ListPair` gives.
+    const fallthroughShrinkRule = new events.CfnRule(this, 'FallthroughShrinkRule', {
+      name: names.fallthroughShrinkRuleName,
+      description: fallSecret2.valueAsString,
+      eventPattern: {
+        source: ['cdkd.integ.nested-stack-secret'],
+        detail: {
+          dropped: [
+            cdk.Fn.conditionIf(fall4919Off.logicalId, 'never', cdk.Aws.NO_VALUE),
+            fallConn2.valueAsString,
+          ],
+          kept: [cdk.Fn.conditionIf(fall4919On.logicalId, fallConn2.valueAsString, cdk.Aws.NO_VALUE)],
+        },
+      },
+    });
+    fallthroughShrinkRule.overrideLogicalId('FallthroughShrinkRule');
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
     // parse refuses, so only the resolver's recorded parameter spans can
@@ -980,6 +1048,9 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughSelectReversedParamName: `cdkd-nested-child-fallthroughselectrev-${account}`,
         fallthroughMixedReversedParamName: `cdkd-nested-child-fallthroughmixedrev-${account}`,
         fallthroughColonReversedParamName: `cdkd-nested-child-fallthroughcolonrev-${account}`,
+        fallthroughIfReversedParamName: `cdkd-nested-child-fallthroughifrev-${account}`,
+        fallthroughSubSelectReversedParamName: `cdkd-nested-child-fallthroughsubselrev-${account}`,
+        fallthroughShrinkRuleName: `cdkd-nested-child-fallshrink-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

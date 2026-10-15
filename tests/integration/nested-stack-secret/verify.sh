@@ -199,6 +199,9 @@ CHILD_FALLTHROUGH_SELECT_REV_PARAM="cdkd-nested-child-fallthroughselectrev-${ACC
 CHILD_FALLTHROUGH_MIXED_REV_PARAM="cdkd-nested-child-fallthroughmixedrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_COLON_REV_PARAM="cdkd-nested-child-fallthroughcolonrev-${ACCOUNT_ID}"
 CHILD_COLON_TOUCH_PARAM="cdkd-nested-child-colontouch-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_IF_REV_PARAM="cdkd-nested-child-fallthroughifrev-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_SUBSEL_REV_PARAM="cdkd-nested-child-fallthroughsubselrev-${ACCOUNT_ID}"
+CHILD_FALL_SHRINK_RULE="cdkd-nested-child-fallshrink-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -646,6 +649,7 @@ cleanup() {
              "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
              "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
              "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
+             "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -655,6 +659,7 @@ cleanup() {
     # The #2327 arm's rule. No targets, so a plain delete suffices; `--force` is
     # only for rules a managed service owns.
     aws events delete-rule --name "${CHILD_LIST_RULE}" --region "${REGION}" >/dev/null 2>&1
+    aws events delete-rule --name "${CHILD_FALL_SHRINK_RULE}" --region "${REGION}" >/dev/null 2>&1
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
@@ -1406,6 +1411,59 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4919: one resource reading the literal through Fn::If, Fn::Sub in -----
+# Fn::Select, or a list an Fn::If element can shrink, beside the sibling.
+# `FallthroughIfReversed`, `FallthroughSubSelectReversed` and
+# `FallthroughShrinkRule` each read `FallConnA2` that way beside `FallSecretB2`.
+# Before #4919 each was a slot read, so cdkd withdrew `FallConnA2`'s literal
+# spelling for the WHOLE child, and every #4913 / #4731 / #4644 assertion below
+# went red with it; checked FIRST, so a regression names this issue.
+echo "==> #4919: FallConnA2 read through Fn::If, Fn::Sub in Fn::Select and a shrinkable list beside FallSecretB2"
+assert_eq "premise: FallthroughIfReversed's synthesized Description is an Fn::If over a Select of FallConnA2, its Value a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughIfReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::If":["Fall4919On",{"Fn::Select":[0,{"Fn::Split":["@",{"Ref":"FallConnA2"}]}]},"none"]},{"Ref":"FallSecretB2"}]'
+assert_eq "premise: FallthroughSubSelectReversed's synthesized Description is an Fn::Sub of FallConnA2 inside Fn::Select" \
+  "$(jq -c '.Resources.FallthroughSubSelectReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::Select":[0,[{"Fn::Sub":"${FallConnA2}"}]]},{"Ref":"FallSecretB2"}]'
+assert_eq "premise: FallthroughShrinkRule's synthesized matchers are lists an Fn::If element can shrink, its Description a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughShrinkRule.Properties | [.EventPattern.detail, .Description]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"dropped":[{"Fn::If":["Fall4919Off","never",{"Ref":"AWS::NoValue"}]},{"Ref":"FallConnA2"}],"kept":[{"Fn::If":["Fall4919On",{"Ref":"FallConnA2"},{"Ref":"AWS::NoValue"}]}]},{"Ref":"FallSecretB2"}]'
+FALL2_CONN_VALUE="postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}@host"
+assert_eq "the LIVE FallthroughIfReversed Description holds the resolved text before the @" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_IF_REV_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}"
+assert_eq "the LIVE FallthroughSubSelectReversed Description holds the resolved FallConnA2" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "${FALL2_CONN_VALUE}"
+LIVE_SHRINK_DETAIL=$(aws events describe-rule --name "${CHILD_FALL_SHRINK_RULE}" \
+  --region "${REGION}" --query 'EventPattern' --output text | jq -c '.detail | [.dropped, .kept]')
+assert_eq "the LIVE FallthroughShrinkRule matchers hold the resolved FallConnA2, the false Fn::If dropped" \
+  "${LIVE_SHRINK_DETAIL}" "$(jq -cn --arg c "${FALL2_CONN_VALUE}" '[[$c], [$c]]')"
+FALL2_IF_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughIfReversed.properties.Description')"
+FALL2_SUBSEL_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughSubSelectReversed.properties.Description')"
+FALL2_SHRINK_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughShrinkRule.properties.EventPattern.detail | [.dropped, .kept] | tojson')"
+case "${FALL2_IF_STATE}|${FALL2_SUBSEL_STATE}|${FALL2_SHRINK_STATE}" in
+  *"${FALL2_EXPR_B}"*)
+    echo "FAIL: a #4919 arm persisted the survivor's spelling (fall2:AWSCURRENT:), so FallConnA2's literal was withdrawn for the child (issue #4919)" >&2
+    exit 1
+    ;;
+esac
+assert_eq "FallthroughIfReversed.Description persists the literal's own tokens" \
+  "${FALL2_IF_STATE}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
+assert_eq "FallthroughSubSelectReversed.Description persists the literal's own tokens" \
+  "${FALL2_SUBSEL_STATE}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host"
+assert_eq "FallthroughShrinkRule's matchers persist the literal's own tokens" \
+  "${FALL2_SHRINK_STATE}" \
+  "$(jq -rn --arg c "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host" '[[$c], [$c]] | tojson')"
+for id in FallthroughIfReversed FallthroughSubSelectReversed; do
+  assert_eq "${id}.Value persists FallSecretB2's OWN expression" \
+    "$(jq_state "${CHILD_STATE}" ".resources.${id}.properties.Value")" "${FALL2_EXPR_B}"
+done
+assert_eq "FallthroughShrinkRule.Description persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughShrinkRule.properties.Description')" "${FALL2_EXPR_B}"
+
 # --- #4913: the child's OUTPUTS read the literal beside the sibling ---------
 # `ChildFallConnOutput` (bare) and `ChildFallSelectOutput` (Select over Split)
 # read `FallConnA2`, `ChildFallSecretOutput` reads `FallSecretB2`: one
@@ -1968,6 +2026,15 @@ if grep -qF "UPDATE: FallthroughColonReversed (" <<<"${DEPLOY_2D_OUT}"; then
   exit 1
 fi
 echo "    OK: the child's plan carries no row for FallthroughColonReversed"
+# The #4919 arms through the same child redeploy: each persisted its own
+# spelling, so the deploy's diff side plans no change for any of them.
+for id in FallthroughIfReversed FallthroughSubSelectReversed FallthroughShrinkRule; do
+  if grep -qF "UPDATE: ${id} (" <<<"${DEPLOY_2D_OUT}"; then
+    echo "FAIL: the child's plan carries an UPDATE for ${id}, which nothing changed: its persisted spelling disagrees with the diff side (issue #4919)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the child's plan carries no row for the #4919 arms"
 # ...and nothing was sent for it either.
 COLON_VERSION_AFTER="$(colon_version)"
 if [ "${COLON_VERSION_AFTER}" != "${COLON_VERSION_BEFORE}" ]; then
@@ -1994,6 +2061,7 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
          "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
          "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
          "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
+         "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do
@@ -2002,11 +2070,14 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
 done
 echo "    OK: every stack-owned SSM parameter is gone"
 
-# The #2327 arm's rule is the one non-SSM resource this stack owns, so its
-# destroy is asserted on its own terms rather than inferred from the loop above.
-assert_gone "EventBridge rule '${CHILD_LIST_RULE}' still exists after destroy" \
-  aws events describe-rule --name "${CHILD_LIST_RULE}" --region "${REGION}"
-echo "    OK: the stack-owned EventBridge rule is gone"
+# The #2327 and #4919 arms' rules are the non-SSM resources this stack owns, so
+# their destroy is asserted on its own terms rather than inferred from the loop
+# above.
+for r in "${CHILD_LIST_RULE}" "${CHILD_FALL_SHRINK_RULE}"; do
+  assert_gone "EventBridge rule '${r}' still exists after destroy" \
+    aws events describe-rule --name "${r}" --region "${REGION}"
+done
+echo "    OK: the stack-owned EventBridge rules are gone"
 
 # The out-of-band pair is NOT in the stack, so destroy must have left it alone
 # -- deleting a resource cdkd does not manage would be the real failure. Then
