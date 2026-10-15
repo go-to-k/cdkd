@@ -20,13 +20,6 @@ import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
  * placeholder is rendered, so a fix that dropped the report would not pass.
  */
 
-vi.mock('../../../src/local/api-server-grouping.js', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  groupRoutesByServer: (): unknown[] => [
-    { serverKey: 'api', displayName: 'Api', routes: [] },
-  ],
-}));
-
 const { installFatalShutdownHandlers, reloadAllServers } =
   await import('../../../src/cli/commands/local-start-api.js');
 
@@ -121,7 +114,12 @@ describe('cdkd local start-api fatal-event handlers (#3361)', () => {
 });
 
 describe('cdkd local start-api --watch reload (#3361)', () => {
-  it('keeps the previous version and reports it when the re-synth rejects with an unconvertible value', async () => {
+  /** Run a reload whose re-synth rejects with `reason`; return what it touched. */
+  async function reloadRejectingWith(reason: unknown): Promise<{
+    warn: ReturnType<typeof vi.fn>;
+    buildPool: ReturnType<typeof vi.fn>;
+    setServerState: ReturnType<typeof vi.fn>;
+  }> {
     const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
     const buildPool = vi.fn();
     const setServerState = vi.fn();
@@ -132,18 +130,39 @@ describe('cdkd local start-api --watch reload (#3361)', () => {
 
     await expect(
       reloadAllServers({
-        synthesizeAndBuild: () => Promise.reject(unconvertible()),
+        synthesizeAndBuild: () => Promise.reject(reason),
         servers: [booted],
         buildPool: buildPool as unknown as ReloadArgs['buildPool'],
         logger: logger as unknown as ReloadArgs['logger'],
       })
     ).resolves.toBeUndefined();
+    return { warn: logger.warn, buildPool, setServerState };
+  }
+
+  it('keeps the previous version and reports it when the re-synth rejects with an unconvertible value', async () => {
+    const { warn, buildPool, setServerState } = await reloadRejectingWith(unconvertible());
 
     expect(buildPool).not.toHaveBeenCalled();
     expect(setServerState).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(logger.warn).toHaveBeenCalledWith(
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
       `cdk synth failed during reload; keeping previous version. (${PLACEHOLDER})`
+    );
+  });
+
+  it("keeps an AWS-authored Error's own message verbatim in the warning", async () => {
+    // An SDK-shaped error: `describeAwsFailure` would REDACT it in `.summary`,
+    // so this pins that the warning still takes `.detail`, the raw message.
+    const err = Object.assign(new Error('Stack [cdkd-macro] does not exist'), {
+      name: 'ValidationError',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+
+    const { warn } = await reloadRejectingWith(err);
+
+    expect(warn).toHaveBeenCalledWith(
+      'cdk synth failed during reload; keeping previous version. (Stack [cdkd-macro] does not exist)'
     );
   });
 });
