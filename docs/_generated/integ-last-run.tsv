@@ -95,9 +95,9 @@ dlm-lifecycle-policy	2026-10-14T14:47:46Z	PASS	115	verify.sh	PR #4899 (#2613 upd
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-15T20:03:28Z	PASS	291	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4976 exhausted HeadBucket retry logs at debug (safeMsg)
+drift-revert	2026-10-15T23:44:38Z	PASS	290	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 IAM/SSM drift baseline
 drift-revert-arrays	2026-10-14T22:42:50Z	PASS	165	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
-drift-revert-vpc	2026-10-15T19:32:45Z	PASS	342	verify.sh	broad set, clean destroy, 0 orphans
+drift-revert-vpc	2026-10-15T23:44:38Z	PASS	356	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 EC2 drift baseline after tagged create
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-14T08:07:57Z	PASS	265	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -111,7 +111,7 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-13T02:41:29Z	PASS	55	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
-ec2-instance	2026-10-11T16:48:28Z	PASS	181	verify.sh	PR #4796, rc ok, orph clean
+ec2-instance	2026-10-15T23:44:38Z	PASS	160	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 RunInstances with TagSpecifications
 ec2-instance-fanout	2026-09-30T18:16:33Z	PASS	175	verify.sh	rc ok, orph clean (#4242)
 ec2-route-targets	2026-10-05T14:42:45Z	PASS	606	verify.sh	PR #4587 (#2080 EC2 create client); rc 0, destroy clean, orph clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
@@ -161,7 +161,7 @@ iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final 
 iam-profile-policy-fix-forward-orphan	2026-10-15T19:36:36Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 iam-propagation-stress	2026-10-11T09:33:22Z	PASS	135	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
-iam-role-fix-forward-orphan	2026-10-15T19:51:32Z	PASS	106	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+iam-role-fix-forward-orphan	2026-10-15T23:44:38Z	PASS	110	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 CreateRole carries tags; src-revert proof fails the tag assertion
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-13T11:42:44Z	PASS	145	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
@@ -313,7 +313,7 @@ rollback-command	2026-10-15T19:39:40Z	PASS	922	verify.sh	PR #4966 (#3252) d92a57
 rollback-cross-region-secret	2026-10-14T08:07:57Z	PASS	376	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
 rollback-deletion-policy-snapshot	2026-10-15T06:52:24Z	PASS	130	verify.sh	rc ok, orph clean, own bucket
 rollback-explicit-name-rewrite	2026-10-14T11:28:29Z	PASS	210	verify.sh	rc ok, orph clean; PR #4901 d4e2f0273 destroy-path broad set
-rollback-failure-injection	2026-10-13T11:42:44Z	PASS	1449	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean, own state bucket
+rollback-failure-injection	2026-10-15T23:44:38Z	PASS	1448	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981
 rollback-nested-cross-region-secret	2026-10-15T09:24:20Z	PASS	486	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
 rollback-replacement-retain	2026-10-14T12:12:31Z	PASS	70	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 rollback-replay-cc-generated-name	2026-10-11T09:33:22Z	PASS	175	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -373,9 +373,9 @@ state-info-command	2026-10-08T05:48:01Z	PASS	155	verify.sh	rc ok, orph clean (#4
 stepfunctions	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stepfunctions-logging	2026-10-14T05:21:01Z	PASS	215	verify.sh	rc ok, orph clean
 stepfunctions-s3-definition	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-stream-delete-redeploy	2026-10-14T14:47:46Z	PASS	225	verify.sh	PR #4899 (#2613) beef2d5, new Phase 3b Firehose tag in-place update arm (CreateTimestamp unchanged); rc 0, destroy clean, orph clean
+stream-delete-redeploy	2026-10-15T23:44:38Z	PASS	226	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 tagged CreateStream
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-tags-propagation	2026-10-15T18:48:28Z	PASS	60	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4972 bucket tags set by CreateBucket read back
+tags-propagation	2026-10-15T23:44:38Z	PASS	195	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 tags on create under a RequestTag deny + ec2:CreateTags fallback; src-revert proof fails step 2
 throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 type-change-replacement	2026-10-14T12:12:31Z	PASS	200	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -384,6 +384,6 @@ update-replace	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #490
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-10-07T14:26:55Z	PASS	761	verify.sh	PR #4660 (#4655) regression: NAT/EIP fix-forward through the unique-id set; rc 0, destroy clean, orph clean
+vpc-nat-gateway	2026-10-15T23:44:38Z	PASS	781	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 src with the #4983 Phase 1e/1f fixture
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
