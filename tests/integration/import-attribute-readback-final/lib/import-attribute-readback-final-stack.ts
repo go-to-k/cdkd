@@ -47,9 +47,12 @@ export class ImportAttributeReadbackFinalStack extends cdk.Stack {
     param('MachineNameParam', machine.attrName);
     param('MachineRevisionParam', machine.attrStateMachineRevisionId);
 
+    // Issue #2613: verify.sh's step 6b redeploys with CDKD_IARF_ACL_BLOCK=true,
+    // an in-place UpdateWebACL through the WAFv2 provider's update() and its
+    // recorded-region guard.
     const acl = new wafv2.CfnWebACL(this, 'Acl', {
       scope: 'REGIONAL',
-      defaultAction: { allow: {} },
+      defaultAction: process.env.CDKD_IARF_ACL_BLOCK === 'true' ? { block: {} } : { allow: {} },
       visibilityConfig: {
         cloudWatchMetricsEnabled: false,
         metricName: 'cdkd-import-readback',

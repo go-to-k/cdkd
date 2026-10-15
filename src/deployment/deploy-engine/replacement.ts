@@ -23,6 +23,7 @@ import { green } from '../../utils/colors.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
+import { replacedDeleteFailureVerdict } from '../rollback-executor/replaced-survivor.js';
 import {
   type ReportedDeleteGuard,
   collectDeleteGuards,
@@ -727,7 +728,9 @@ export async function createFirstThenDeleteOld(
  * or a skip warns rather than fails the resource (issue #1762): the new
  * resource is created and about to be recorded, so the old one is untracked
  * either way, and failing here would roll back a replacement that
- * succeeded. Neither is recorded as a retention (issue #2631). The delete
+ * succeeded. Neither is recorded as a retention: both mark the old resource
+ * as one that may survive (`replacedOldMaySurvive`, go-to-k/cdkd#2631), so a
+ * rollback reads AWS for it before re-creating it. The delete
  * error is masked with `secrets` BEFORE it is rendered: a provider can echo
  * a resolved value.
  */
@@ -789,6 +792,19 @@ export async function deleteReplacedAfterCreate(
       secrets
     );
     deleteFailed = true;
+    // go-to-k/cdkd#2631: before the deferral below, whose retry runs only
+    // after this row's op is journaled (and not at all if the deploy fails
+    // first; `execute.ts` re-stamps the op after it). A retry that then
+    // deletes it leaves the mark: the rollback's read finds it gone and
+    // re-creates, as it would have.
+    // A retry never upgrades an earlier `'unconfirmed'`: that delete may
+    // still be running.
+    this.replacedOldMaySurvive.set(
+      logicalId,
+      this.replacedOldMaySurvive.get(logicalId) === 'unconfirmed'
+        ? 'unconfirmed'
+        : replacedDeleteFailureVerdict(deleteError)
+    );
     // go-to-k/cdkd#4900: a resource this deploy has yet to update may still
     // use the old one (an endpoint on a replaced revision refuses its
     // delete), so the first failure inside a deploy's DAG is retried once
@@ -838,6 +854,9 @@ export async function deleteReplacedAfterCreate(
   });
   const skipReason = deleteSkipReason(deleteResult);
   if (skipReason !== undefined) {
+    // A skip does not say the delete was not sent (a custom-resource handler
+    // that refused DID get it), so it never licenses a re-adopt.
+    this.replacedOldMaySurvive.set(logicalId, 'unconfirmed');
     // go-to-k/cdkd#4043 (review MEDIUM-3): the old resource survives
     // untracked, so the row is a PARTIAL update and the deploy exits 2 unless
     // `--allow-unaddressed` (the #1819 survivor contract), not a clean one.
@@ -858,6 +877,10 @@ export async function deleteReplacedAfterCreate(
       )}. Delete it manually — it is no longer tracked in state.`
     );
   } else if (!deleteFailed) {
+    // go-to-k/cdkd#2631: the retry deleted it, so the mark goes: a rollback's
+    // read of an eventually consistent API could still see the old resource
+    // and re-adopt a deleted id.
+    if (isRetry) this.replacedOldMaySurvive.delete(logicalId);
     this.logger.info(
       isRetry
         ? safeMsg`  ${green('✓')} Old ${logicalId} (${currentResource.physicalId}) deleted`

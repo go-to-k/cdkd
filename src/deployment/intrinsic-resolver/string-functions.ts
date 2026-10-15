@@ -9,6 +9,10 @@ import {
 } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import {
+  splitOutsideDynamicReferences,
+  standsForInheritedSecret,
+} from '../secret-redaction/nested-stack.js';
+import {
   type DynamicReferenceSubstitution,
   type IntrinsicLeafResolution,
   type RecordedSecretValues,
@@ -480,6 +484,20 @@ export function describeSplitValueSource(
 }
 
 /**
+ * Does the real pass resolve every `{{resolve:...}}` token in what this
+ * `Fn::Split` value evaluates to (issue
+ * [#4914](https://github.com/go-to-k/cdkd/issues/4914))? A template literal
+ * does, and so do `Fn::Join` and `Fn::Sub`, which resolve references in their
+ * assembled string.
+ */
+function splitValueResolvesReferences(value: unknown): boolean {
+  if (typeof value === 'string') return true;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === 'Fn::Join' || keys[0] === 'Fn::Sub');
+}
+
+/**
  * Resolve Fn::Split intrinsic function
  *
  * Fn::Split: [delimiter, string]
@@ -605,7 +623,28 @@ export async function resolveSplit(
     );
   }
 
-  const result = resolvedValue.split(delimiter);
+  // go-to-k/cdkd#4914: a comparison pass (the deploy's diff, `cdkd diff`)
+  // holds a secret as its `{{resolve:...}}` token, and `:` is in every one, so
+  // a plain split cut the token into fragments no persisted value holds -- a
+  // change on every deploy. It keeps each token whole in its piece, as the
+  // persist side's real split leaves the plaintext -- but only a token the real
+  // pass provably RESOLVES before splitting: any token when the split's value
+  // is a template literal (`resolveValue`'s string arm) or an `Fn::Join` /
+  // `Fn::Sub` (each re-resolves references in its assembled string, whatever
+  // part they came from), otherwise one a nested child's parent resolved (a
+  // pair on the inherited bag). Token text that arrives as text (a `Ref` to a
+  // parameter spelling one, an `Fn::FindInMap` value) is split as text on both
+  // sides. A pass with real values splits as CloudFormation does.
+  const result =
+    context.skipDynamicReferences === true && typeof delimiter === 'string'
+      ? splitOutsideDynamicReferences(
+          resolvedValue,
+          delimiter,
+          splitValueResolvesReferences(value)
+            ? () => true
+            : (token) => standsForInheritedSecret(context.inheritedSecrets, token)
+        )
+      : resolvedValue.split(delimiter);
   // go-to-k/cdkd#4049: a piece holding part of a LOG-ONLY needle (a `NoEcho`
   // parameter's value) becomes a log-only needle itself, recorded BEFORE the
   // debug line below so that line masks it, and into the pass's bag so the

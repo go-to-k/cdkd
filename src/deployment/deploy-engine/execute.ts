@@ -537,6 +537,12 @@ export async function executeDeployment(
             // when the forward deleted the old one first.
             oldDeletedBeforeCreate: this.oldDeletedBeforeCreate.has(logicalId),
           }),
+          // go-to-k/cdkd#2631: the cleanup delete did not confirm the old
+          // resource gone, so the rollback reads AWS before re-creating it.
+          ...(change.changeType === 'UPDATE' &&
+            this.replacedOldMaySurvive.has(logicalId) && {
+              oldResourceMaySurvive: this.replacedOldMaySurvive.get(logicalId),
+            }),
           // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
           // gave one; absent, the rollback infers a replacement from a changed
           // physical id, as it does for a journal an older binary wrote.
@@ -667,7 +673,23 @@ export async function executeDeployment(
     // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
     // still-unupdated dependent refused inside the DAG.
     if (this.interrupted) this.warnUnretriedReplacedDeletes('interrupted');
-    else await this.retryDeferredReplacedDeletes(stackName, actualCounts);
+    else {
+      try {
+        await this.retryDeferredReplacedDeletes(stackName, actualCounts);
+      } finally {
+        // go-to-k/cdkd#2631: the ops were journaled with the FIRST failure's
+        // verdict; a retry that failed differently (a waiter that gave up)
+        // must not leave a later rollback re-adopting on the first one —
+        // nor a retry pass that threw before returning.
+        for (const op of completedOperations) {
+          if (op.changeType !== 'UPDATE') continue;
+          const verdict = this.replacedOldMaySurvive.get(op.logicalId);
+          // A retry that deleted it dropped the verdict: so does the op.
+          if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
+          else delete op.oldResourceMaySurvive;
+        }
+      }
+    }
   } catch (error) {
     this.warnUnretriedReplacedDeletes(this.interruptCause === 'user' ? 'interrupted' : 'failed');
     // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy

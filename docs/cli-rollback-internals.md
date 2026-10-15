@@ -209,6 +209,33 @@ of the disagreement is destructive (adding it made the rollback re-create a
 resource that was still running; removing it made the rollback point state at a
 resource that had just been deleted).
 
+When the deploy tried to delete the old resource but did not confirm it gone —
+the delete failed (including the retry cdkd makes after the rest of the
+deploy, or a deploy that failed before that retry), the provider skipped it,
+or a failed `UpdateReplacePolicy: Snapshot` snapshot blocked it — the journal
+records that the old resource may still exist, and whether AWS refused the
+delete outright (access denied, a dependency) or the snapshot stopped it
+before it was sent. Before re-creating it, the rollback
+reads AWS for it through the resource type's drift read (an ordinary reverse
+replacement makes no such read). Reported gone, it is re-created as usual.
+Still there after an outright refusal or a delete that was never sent, it is
+re-adopted as a retained one is,
+with a `⚠` warning (exit `2`), since the provider may have run earlier steps
+of its delete (a managed policy's detaches): check it with `cdkd drift`. The
+same advice is recorded on the rollback's event, so `cdkd events` keeps it. Still
+there after any other failure — a skip, a resource AWS reports in use, or a
+wait that gave up on a delete AWS had accepted — the operation fails instead (exit `1`, journal kept, nothing
+sent): that delete may still be running, and re-adopting a resource about to
+disappear would leave neither; once AWS reports it gone, re-running
+`cdkd rollback` re-creates it. The operation also fails when cdkd cannot tell
+— the type has no read, or the read fails or does not answer in time — since
+re-creating could duplicate the old resource or collide with it; a failed read
+is retried by re-running `cdkd rollback`. In every refusal, the `--orphan`
+command the message prints keeps the new resource in its place instead, and you
+delete the old one by hand if it still exists. CloudFormation never reaches
+this state, since it deletes old resources only after the stack update
+succeeds.
+
 **`UpdateReplacePolicy: Retain` also protects the NEW resource from the
 rollback.** If the resource the replacement created declares it, the rollback
 does not delete that copy: it is left running and dropped from state, and the

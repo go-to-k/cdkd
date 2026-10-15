@@ -507,6 +507,22 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
       // that depends on whether the type has a user-supplied physical name.
       // Promising the unconditional happy path here would be the same #1366
       // defect this flag exists to close, one step further along.
+      // go-to-k/cdkd#2631: likewise the re-create of an old resource whose
+      // delete was not confirmed, which the replay first reads AWS for.
+      if (op.oldResourceMaySurvive !== undefined) {
+        return (
+          `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +
+          `[the deploy did not confirm deleting the old resource: re-create it if AWS reports it ` +
+          `gone, ` +
+          (op.oldResourceMaySurvive === 'kept'
+            ? `re-adopt it if AWS still has it (its delete was refused or never sent), `
+            : `REFUSED if AWS still has it (its delete may still be running), `) +
+          `REFUSED if cdkd cannot tell; ` +
+          (item.retainsNewResource
+            ? `new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]`
+            : `delete new]`)
+        );
+      }
       return item.retainsNewResource
         ? `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +
             `[re-create old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left ` +

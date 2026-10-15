@@ -29,6 +29,7 @@ The rollback works in the same order the deploy did:
 | Created the new resource, then deleted the old one | Re-creates the old one, then deletes the new one |
 | Deleted the old one first | Deletes the new one, then re-creates the old one |
 | Kept the old one (`UpdateReplacePolicy: Retain`) | Adopts the old one again; re-creates nothing |
+| Created the new resource first, then could not delete the old one | Checks AWS for the old one first: re-creates it if gone, adopts it again if AWS had refused its delete or it was never sent, and otherwise changes nothing and keeps the journal ([details](cli-rollback-internals.md#reversing-a-replacement)) |
 
 A deploy deletes the old resource first under `--recreate-via-*`, on the
 delete-first path of `--replace`, and when it falls back to a replacement

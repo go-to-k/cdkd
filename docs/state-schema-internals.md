@@ -219,7 +219,14 @@ lost with its re-created parent): the
 rollback then deletes the new resource before re-creating the old one, so a
 port or name only one of them can hold does not collide. An absent value (an
 older binary's journal) keeps the create-first order. A failed UPDATE carries
-it too, so the rollback knows the old resource it names is gone. It is deliberately **not** part of the state
+it too, so the rollback knows the old resource it names is gone. A replacement
+whose delete of the old resource the deploy did not confirm (it failed, was
+skipped, or a failed final snapshot blocked it) records `oldResourceMaySurvive`
+(additive, no bump): `kept` when the delete was never sent or AWS refused it
+outright, `unconfirmed` otherwise. Its rollback reads AWS for the old resource
+before re-creating it, re-adopting one that is still there only on `kept`. An
+absent value (an older binary's journal, or a confirmed delete) keeps the
+re-create. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted

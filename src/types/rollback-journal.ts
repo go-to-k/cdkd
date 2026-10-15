@@ -211,6 +211,7 @@ export interface JournalOpIdentitySource {
   physicalId?: string | undefined;
   previousResourceType?: string | undefined;
   oldResourceRetained?: boolean | undefined;
+  oldResourceMaySurvive?: string | undefined;
   previousState?: { physicalId?: unknown; resourceType?: unknown } | undefined;
 }
 
@@ -233,7 +234,9 @@ export function journalOpPhysicalId(op: JournalOpIdentitySource): string | undef
  * the op is reported (displaced), naming it, rather than adopted silently.
  *
  * Only an explicit `oldResourceRetained: false` — the verdict a current binary
- * stamps on every completed UPDATE — says the old resource is gone. A FAILED
+ * stamps on every completed UPDATE — says the old resource is gone, and not
+ * beside `oldResourceMaySurvive` (its cleanup delete was unconfirmed,
+ * go-to-k/cdkd#2631). A FAILED
  * op never carries the verdict, and `previousState.updateReplacePolicy` is the
  * stale pre-#2603 read (a deploy that ADDS Retain records it absent), so an
  * absent verdict counts as kept: the op warns instead of adopting silently.
@@ -249,7 +252,9 @@ export function retainedOldPhysicalId(op: JournalOpIdentitySource): string | und
   const distinct =
     prev !== journalOpPhysicalId(op) || (oldType !== undefined && oldType !== op.resourceType);
   if (!distinct) return undefined;
-  return op.oldResourceRetained !== false ? prev : undefined;
+  return op.oldResourceRetained !== false || op.oldResourceMaySurvive !== undefined
+    ? prev
+    : undefined;
 }
 
 /**
@@ -431,6 +436,14 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
     typeof o['oldDeletedBeforeCreate'] !== 'boolean'
   ) {
     fail('oldDeletedBeforeCreate', o['oldDeletedBeforeCreate'], 'a boolean when present');
+  }
+  // go-to-k/cdkd#2631: COMPUTED by the engine; it sends the replay to an AWS
+  // read of the old resource instead of the re-create.
+  if (
+    o['oldResourceMaySurvive'] !== undefined &&
+    !(['kept', 'unconfirmed'] as unknown[]).includes(o['oldResourceMaySurvive'])
+  ) {
+    fail('oldResourceMaySurvive', o['oldResourceMaySurvive'], 'kept or unconfirmed when present');
   }
   // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
   // `--revert-failed` delete arm for a resource no state record holds, so a

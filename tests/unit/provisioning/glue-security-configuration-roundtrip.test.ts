@@ -293,3 +293,45 @@ describe('GlueSecurityConfigurationProvider', () => {
     expect([...(set ?? new Set())].sort()).toEqual(['EncryptionConfiguration', 'Name']);
   });
 });
+
+describe('GlueSecurityConfigurationProvider update region guard (issue #2613)', () => {
+  let provider: GlueSecurityConfigurationProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueSecurityConfigurationProvider();
+  });
+
+  it('a wrong-region client is refused ahead of the replacement-steering refusal', async () => {
+    // `ResourceUpdateNotSupportedError` becomes a DELETE + CREATE under
+    // `--replace`; with the client in another region that would act on a
+    // same-named configuration, so the region refusal must come first.
+    const error = await provider
+      .update('L', 'my-sec', 'AWS::Glue::SecurityConfiguration', { Name: 'my-sec' }, {}, {
+        expectedRegion: 'us-west-2',
+      })
+      .catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toMatch(/Refusing to update L .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('a matching region still reaches the immutable-resource refusal', async () => {
+    await expect(
+      provider.update('L', 'my-sec', 'AWS::Glue::SecurityConfiguration', { Name: 'my-sec' }, {}, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('without a recorded region never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region = region;
+    await expect(
+      provider.update('L', 'my-sec', 'AWS::Glue::SecurityConfiguration', { Name: 'my-sec' }, {})
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});

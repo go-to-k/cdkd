@@ -819,17 +819,26 @@ export class DeployEngine {
    *     leaving state naming a deleted resource.
    *
    * Records only the DELIBERATE retention. A best-effort cleanup delete that
-   * FAILED, was SKIPPED, or was blocked by a failed final snapshot also leaves
-   * the old resource alive, but the deploy does not KNOW it survived — those
-   * stay `false` and keep today's `reverse-replacement` behaviour rather than
-   * having the rollback re-adopt an id it cannot vouch for (issue
-   * [#2631](https://github.com/go-to-k/cdkd/issues/2631)).
+   * FAILED, was SKIPPED, or was blocked by a failed final snapshot may also
+   * leave the old resource alive, but the deploy does not KNOW it survived —
+   * those go in {@link replacedOldMaySurvive} instead.
    *
    * Cleared per `deploy()` alongside the other per-run maps: a `false` here
    * must mean "this deploy deleted it", never "a previous run said so".
    */
   /** @internal */
   retainedOldOnReplacement = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#2631: logical ids whose replacement's cleanup delete of the
+   * OLD resource did not confirm it gone (failed, deferred, skipped, or
+   * blocked by a failed final snapshot), with the verdict stamped as
+   * {@link CompletedOperation.oldResourceMaySurvive}, which makes the rollback
+   * read AWS for the old resource before re-creating it. Cleared per
+   * `deploy()`.
+   */
+  /** @internal */
+  replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed'>();
 
   /**
    * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
@@ -1119,6 +1128,7 @@ export class DeployEngine {
     // here would tell the next run's rollback to re-adopt an id this run
     // deleted. Reset in the same block as the other per-run bags.
     this.retainedOldOnReplacement = new Set();
+    this.replacedOldMaySurvive = new Map();
     this.recreatedUnderSameId = new Set();
     this.restoredLostChildren = new Set();
     this.updatesThatSentNothing = new Set();

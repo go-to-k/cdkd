@@ -949,6 +949,9 @@ export async function updateByReplacement(
           throw snapshotError;
         }
         snapshotBlockedDelete = true;
+        // go-to-k/cdkd#2631: the delete was never sent, so the old resource
+        // is whole and a rollback may re-adopt it.
+        this.replacedOldMaySurvive.set(logicalId, 'kept');
         this.logger.warn(
           safeMsg`  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
             safeMsg`failed: ${asIsMessage(snapshotError instanceof Error ? snapshotError.message : String(snapshotError))}. ` +

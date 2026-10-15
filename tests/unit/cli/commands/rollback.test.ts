@@ -279,7 +279,10 @@ const EXPECTED_STACK_NAME_RENDERS = 5;
 // Went 50 -> 49 in its parent review round: the nested-child preview's
 // failed-read line renders the backend's error through `backendErrorText`,
 // which withholds text re-spelling a padded child name.
-const EXPECTED_SAFE_REFERENCES = 49;
+//
+// 49 -> 50 (go-to-k/cdkd#2631): the plan label for a replacement whose old
+// delete was not confirmed renders the op's logical id, as its siblings do.
+const EXPECTED_SAFE_REFERENCES = 50;
 
 /**
  * Bare `safeRoleArn` references -- 1 declaration plus the role-ARN renders of
@@ -913,6 +916,8 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       previousResourceType?: string;
       /** A failed in-flight op recorded beside the completed one. */
       failedOperations?: unknown[];
+      /** go-to-k/cdkd#2631: the deploy did not confirm the old delete. */
+      oldResourceMaySurvive?: 'kept' | 'unconfirmed';
     }): void {
       const op = {
         logicalId: 'R',
@@ -921,6 +926,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         physicalId: 'phys-new',
         provisionedBy: 'sdk',
         oldResourceRetained: opts.oldResourceRetained,
+        ...(opts.oldResourceMaySurvive && { oldResourceMaySurvive: opts.oldResourceMaySurvive }),
         ...(opts.previousResourceType !== undefined && {
           previousResourceType: opts.previousResourceType,
         }),
@@ -1022,6 +1028,32 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       const lines = await runForPlan();
       expect(lines.some((l) => /re-create old resource, delete new/.test(l))).toBe(true);
       expect(lines.some((l) => /RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(false);
+    });
+
+    // go-to-k/cdkd#2631: the replay reads AWS for the old resource first, so
+    // the label must not promise the re-create.
+    it.each([
+      ['kept' as const, undefined, 'delete new]'],
+      ['kept' as const, 'Retain' as const, 'new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]'],
+      ['unconfirmed' as const, undefined, 'delete new]'],
+      ['unconfirmed' as const, 'Retain' as const, 'new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]'],
+    ])('an old delete the deploy did not confirm (%s, new copy policy %s) names its outcomes', async (verdict, policy, tail) => {
+      installReplacementStack({
+        oldResourceRetained: false,
+        oldResourceMaySurvive: verdict,
+        ...(policy && { newCopyPolicy: policy }),
+      });
+      const lines = await runForPlan();
+      const line = lines.find((l) => l.includes('reverse-replace R'));
+      expect(line).toContain(
+        '[the deploy did not confirm deleting the old resource: re-create it if AWS reports it gone, ' +
+          (verdict === 'kept'
+            ? 're-adopt it if AWS still has it (its delete was refused or never sent), '
+            : 'REFUSED if AWS still has it (its delete may still be running), ') +
+          'REFUSED if cdkd cannot tell; ' +
+          tail
+      );
+      expect(lines.some((l) => /re-create old resource, delete new/.test(l))).toBe(false);
     });
 
     describe('a replacement that changed the resource Type (issue #2668)', () => {

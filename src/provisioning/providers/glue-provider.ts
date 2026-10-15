@@ -1146,6 +1146,19 @@ export class GlueProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // database or table cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     switch (resourceType) {
       case 'AWS::Glue::Database':
         return this.deleteDatabase(logicalId, physicalId, resourceType, properties, context);
@@ -3392,6 +3405,19 @@ export class GlueWorkflowProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Workflow ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // workflow cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
 
     try {
       await this.getClient().send(new DeleteWorkflowCommand({ Name: physicalId }));
@@ -3672,14 +3698,30 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
     _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: this update sends nothing, but the refusal below is a
+    // `ResourceUpdateNotSupportedError`, which `update-in-place.ts` turns into a
+    // DELETE + CREATE under `--replace`. The physical id is the configuration
+    // NAME, so with a client in another region than the state record that
+    // replacement would act on a same-named configuration cdkd does not manage.
+    // Refused first, so the error names the region rather than steering toward
+    // a replacement. The client's region is resolved only when there is one to
+    // compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // SecurityConfiguration is immutable per AWS — no `UpdateSecurity*`
     // command exists. `cdkd drift --revert` and replacement-detection
     // both end up here; the latter expects the CREATE→DELETE replacement
@@ -3700,6 +3742,19 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue SecurityConfiguration ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // security configuration cdkd does not manage. Refuse before any call,
+    // not only on NotFound; the client's region is resolved only when there
+    // is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
 
     try {
       await this.getClient().send(new DeleteSecurityConfigurationCommand({ Name: physicalId }));
@@ -4394,6 +4449,19 @@ export class GlueJobProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Job ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // job cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     try {
       await this.getClient().send(new DeleteJobCommand({ JobName: physicalId }));
     } catch (error) {
@@ -5032,6 +5100,18 @@ export class GlueCrawlerProvider implements ResourceProvider {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     const { value: v } = log;
     log.debug(`Deleting Glue Crawler ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would stop and delete a same-named crawler
+    // cdkd does not manage. Refuse before any call, not only on NotFound; the
+    // client's region is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     try {
       await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
     } catch (error) {
@@ -5556,6 +5636,19 @@ export class GlueConnectionProvider implements ResourceProvider {
     // go-to-k/cdkd#2007: the name can be secret-derived.
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     log.debug(`Deleting Glue Connection ${logicalId}: ${log.value(physicalId)}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // connection cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     // Same catalog-scoping rule as the Table / Database deletes — see
     // {@link deleteCatalogId} (issue #1675). This call already forwarded
     // `CatalogId`, but through a bare cast that would have sent an unresolved
@@ -6030,6 +6123,19 @@ export class GlueTriggerProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Trigger ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
+    // region than the state record would delete a same-named
+    // trigger cdkd does not manage. Refuse before any call, not only
+    // on NotFound; the client's region is resolved only when there is one
+    // to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     try {
       // An ACTIVATED scheduled / conditional trigger should be stopped before
       // deletion so a firing trigger does not race the delete.

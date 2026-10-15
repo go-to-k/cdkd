@@ -9,7 +9,7 @@
  * is re-read with the diff side's bindings (`positionByParameterReread`), so
  * each leaf persists its own parameter's spelling and nothing is withdrawn.
  * A slot read the persist walk cannot re-read (an `Fn::Sub` under
- * `Fn::Select`, an `Fn::If`, a delimiter cutting a token) still makes
+ * `Fn::Select`, an `Fn::If`, a delimiter cutting a plaintext) still makes
  * `poisonRenderedSpellingsCollidingIn` withdraw the literal's spelling for the
  * whole child -- the pre-#4644 answer.
  *
@@ -131,6 +131,8 @@ async function persistAndDesired(
     template,
     resources: {},
     parameters: redactParametersForDiff.call(engine, PARAMETERS),
+    // As `buildResolverContext` sets it on the deploy's diff context.
+    inheritedSecrets: parent,
     skipDynamicReferences: true,
     conditions: CONDITIONS,
   } as unknown as ResolverContext)) as Record<string, unknown>;
@@ -412,6 +414,16 @@ describe('a child resource reading BOTH parameters through Fn::Select / Fn::Spli
       A: { 'Fn::Split': ['@', { Ref: PARAM_A }] },
       B: SEL_B,
     },
+    // Issue #4914: `:` occurs inside every token's text, and the diff side
+    // keeps each token whole where it splits.
+    'Select over a token-cutting Split ConnA, Select SecretB': {
+      A: { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] },
+      B: SEL_B,
+    },
+    'token-cutting Fn::Split ConnA (a list leaf), Select SecretB': {
+      A: { 'Fn::Split': [':', { Ref: PARAM_A }] },
+      B: SEL_B,
+    },
   };
   for (const reversed of [true, false]) {
     for (const literalLast of [true, false]) {
@@ -449,9 +461,11 @@ describe('a child resource reading BOTH parameters through Fn::Select / Fn::Spli
   });
 
   // A re-read that does NOT render back to the leaf is no re-read: the
-  // collision walk counts it a slot read and withdraws, as before.
-  it('withdraws where a Split delimiter cuts a token (the re-read does not render to the leaf)', async () => {
-    const properties = { A: { 'Fn::Select': [1, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }, B: SEL_B };
+  // collision walk counts it a slot read and withdraws, as before. A delimiter
+  // in a token's TEXT no longer does that (issue #4914, the table above); one
+  // cutting a PLAINTEXT does.
+  it('withdraws where a Split delimiter cuts a plaintext (the re-read does not render to the leaf)', async () => {
+    const properties = { A: { 'Fn::Select': [0, { 'Fn::Split': ['-', { Ref: PARAM_A }] }] }, B: SEL_B };
     const template = childTemplate({ Mixed: properties });
     const parent = parentRow(true);
     poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);

@@ -116,6 +116,15 @@ import { Construct } from 'constructs';
  *    literal spelling for the WHOLE child: every arm above persisted the
  *    survivor while `cdkd diff --recursive` rendered the literal. The leaf is
  *    now re-read with the diff side's bindings.
+ *  - `FallthroughColonReversed` (child, phase 2d only) — THE #4914 ARM.
+ *    `FallConnA2` split on `:`, which occurs inside every `{{resolve:...}}`
+ *    token's text: a piece (`Fn::Select [1, ...]`, the `Description`) and the
+ *    whole list joined back (`Fn::Join ['|', ...]`, the `Value`). The deploy's
+ *    diff side split the bound spelling into token fragments (`//{{resolve`)
+ *    no deploy persists, so every child redeploy's plan carried an UPDATE row
+ *    for it (skipped only after resolution). It now keeps each
+ *    token whole where it splits. Kept out of `cdkd diff --recursive`'s
+ *    phases until that command keeps them whole too (#4929).
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -195,11 +204,15 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughEmbedReversedParamName: string;
       fallthroughSelectReversedParamName: string;
       fallthroughMixedReversedParamName: string;
+      fallthroughColonReversedParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
       pinJoinParamName: string;
       pinJoinParamDescription: string;
+      colonSplit: boolean;
+      colonTouchParamName: string;
+      colonTouchDescription: string;
       listRuleName: string;
       unrelatedLiteral: string;
       handoffAllowedPattern?: string;
@@ -509,6 +522,25 @@ class SecretBearingChild extends cdk.NestedStack {
     ((fallthroughMixedReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
       'FallthroughMixedReversed'
     );
+    // THE #4914 ARM (phase 2d only): `FallConnA2` split on `:`, a delimiter
+    // inside every token, beside a plain `ColonTouch` the phase changes.
+    if (names.colonSplit) {
+      const colonPieces = cdk.Fn.split(':', fallConn2.valueAsString);
+      const fallthroughColonReversed = new ssm.StringParameter(this, 'FallthroughColonReversed', {
+        parameterName: names.fallthroughColonReversedParamName,
+        stringValue: cdk.Fn.join('|', colonPieces),
+        description: cdk.Fn.select(1, colonPieces),
+      });
+      ((fallthroughColonReversed.node.defaultChild as ssm.CfnParameter)).overrideLogicalId(
+        'FallthroughColonReversed'
+      );
+      const colonTouch = new ssm.StringParameter(this, 'ColonTouch', {
+        parameterName: names.colonTouchParamName,
+        stringValue: 'colontouch4914',
+        description: names.colonTouchDescription,
+      });
+      ((colonTouch.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('ColonTouch');
+    }
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
     // parse refuses, so only the resolver's recorded parameter spans can
@@ -800,6 +832,13 @@ export class NestedStackSecretStack extends cdk.Stack {
     const pinJoinParamDescription = updateMode.includes('child-property')
       ? 'cdkd nested-stack-secret integ - #3062 sub-floor Fn::Join framed parameter (updated)'
       : 'cdkd nested-stack-secret integ - #3062 sub-floor Fn::Join framed parameter';
+    // The #4914 arm (phase 2d only): `colon-split` adds it, `colon-touch`
+    // changes only its `ColonTouch` sibling, so the child redeploys and diffs
+    // `FallthroughColonReversed` with nothing of its own changed.
+    const colonSplit = updateMode.includes('colon-split');
+    const colonTouchDescription = updateMode.includes('colon-touch')
+      ? 'cdkd nested-stack-secret integ - #4914 touch (updated)'
+      : 'cdkd nested-stack-secret integ - #4914 touch';
 
     // Fixed, account-scoped names so verify.sh can build the `{{resolve:...}}`
     // strings and read every resource back deterministically. Simple
@@ -918,11 +957,15 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughEmbedReversedParamName: `cdkd-nested-child-fallthroughembedrev-${account}`,
         fallthroughSelectReversedParamName: `cdkd-nested-child-fallthroughselectrev-${account}`,
         fallthroughMixedReversedParamName: `cdkd-nested-child-fallthroughmixedrev-${account}`,
+        fallthroughColonReversedParamName: `cdkd-nested-child-fallthroughcolonrev-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,
         pinJoinParamName: `cdkd-nested-child-pinjoin-${account}`,
         pinJoinParamDescription,
+        colonSplit,
+        colonTouchParamName: `cdkd-nested-child-colontouch-${account}`,
+        colonTouchDescription,
         listRuleName: `cdkd-nested-child-listpair-${account}`,
         listRuleDescription,
         ...(handoffAllowedPattern !== undefined && { handoffAllowedPattern }),

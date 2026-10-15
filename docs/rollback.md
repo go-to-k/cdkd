@@ -123,6 +123,17 @@ deletes nothing. The new copy is left running and removed from state. If the
 deploy had kept the old resource under that policy, cdkd takes the old
 resource back under management, with its data.
 
+### A replacement whose old resource was not deleted
+
+If the deploy could not delete the old resource, the rollback first checks
+whether the old resource is still there. If it is gone, cdkd re-creates it. If
+it is still there and AWS had refused the delete (access denied, for example)
+or the delete was never sent (a failed `UpdateReplacePolicy: Snapshot`
+snapshot), cdkd takes it back under management instead of creating a second one, and
+warns you to check it with `cdkd drift`. Otherwise — the delete may still be
+running, or cdkd cannot tell — it changes nothing for that resource, keeps the
+rollback journal, and prints what to do next.
+
 ### Nested stacks
 
 A nested stack that the deploy updated is rolled back from cdkd's record of

@@ -62,16 +62,30 @@
  * (`/etc/zshenv` still is). Where zsh is not installed the harness drives bash alone,
  * except under `CI`, where a missing zsh FAILS: the CI jobs install it, so a
  * skip there would be a harness quietly measuring less than it claims.
+ *
+ * MEMOIZED, because a file pastes the same span many times over (measured: of
+ * ~97,000 span runs across the harness's callers, ~17,000 were distinct), and
+ * every run is a process spawn the OS inspects and logs — enough, with several
+ * suites running at once, to stall the machine. A span run's result is reused
+ * only within ONE `withPasteDir` call (the scratch directory and stub tree it
+ * embeds are then the same), only when the directory held exactly the seeded
+ * decoys before the run (a case that plants a file or changes a decoy always
+ * spawns), and never for a control or a run that failed. The CONTROLS run on a
+ * module's first `withPasteDir` call: each is a fact about the shells and the
+ * way the harness builds its stub tree, the same for every later call.
  */
 
 import { expect } from 'vite-plus/test';
 import {
+  accessSync,
   chmodSync,
+  constants,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -160,6 +174,49 @@ const STUBBED_VERBS = ['cdkd', 'aws'] as const;
  * the real `aws` and the real credentials.
  */
 let stubBin: string | undefined;
+
+/** A span run's outcome under one shell. */
+interface ShellRun {
+  readonly touched: string[];
+  readonly verbRan: boolean;
+}
+
+/**
+ * The span runs of the current {@link withPasteDir} call, keyed by shell, span
+ * and the PATH the child inherits; saved and restored with {@link stubBin} so a
+ * nested call keeps its own. See the header's MEMOIZED.
+ */
+let spanCache: Map<string, ShellRun> | undefined;
+
+/** Whether this module's {@link withPasteDir} controls have passed once. */
+let controlsPassed = false;
+
+let spawns = 0;
+
+/**
+ * How many shell children this module has started: the harness self-test's
+ * handle on whether a run was served from the cache.
+ */
+export function pasteSpawnCount(): number {
+  return spawns;
+}
+
+/** The file mode the current {@link withPasteDir} call seeded its decoys with. */
+let seededMode: number | undefined;
+
+/**
+ * Whether `dir`, read as `before`, is exactly the seeded decoys: their names,
+ * their content and their mode (a decoy made read-only turns a truncation into
+ * a no-op).
+ */
+function holdsOnlyTheDecoys(before: ReadonlyMap<string, string>, dir: string): boolean {
+  return (
+    before.size === DECOYS.length &&
+    DECOYS.every(
+      (decoy) => before.get(decoy) === DECOY_CONTENT && statSync(join(dir, decoy)).mode === seededMode
+    )
+  );
+}
 
 /**
  * Lines, sentences and clauses — what an operator actually selects — plus
@@ -286,7 +343,7 @@ export function spanRun(
   dir: string,
   options: PasteRunOptions
 ): { touched: string[]; verbRan: boolean } {
-  const runs = (options.shells ?? PASTE_SHELLS).map((shell) => runUnder(shell, span, dir));
+  const runs = (options.shells ?? PASTE_SHELLS).map((shell) => runUnder(shell, span, dir, true));
   return {
     touched: [...new Set(runs.flatMap((r) => r.touched))],
     verbRan: runs.some((r) => r.verbRan),
@@ -298,15 +355,23 @@ export function spanRun(
  * CREATED or CHANGED, then put the directory back — created files removed,
  * changed decoys re-seeded — so the next span starts from the decoys alone.
  * The stubbed verbs' {@link VERB_RAN} marker is reported as `verbRan`, not as
- * a touched file.
+ * a touched file. A `memoize`d run (through {@link spanRun}; the controls call
+ * this directly and are never served from the cache) is served from and
+ * recorded in {@link spanCache} when the directory holds only the decoys.
  */
 function runUnder(
   shell: PasteShell,
   span: string,
-  dir: string
+  dir: string,
+  memoize = false
 ): { touched: string[]; verbRan: boolean } {
   expect(stubBin, 'filesTouchedBy runs only inside withPasteDir').toBeDefined();
   const before = new Map(readdirSync(dir).map((f) => [f, readFileSync(join(dir, f), 'utf8')]));
+  const childPath = `${stubBin}${delimiter}${process.env['PATH'] ?? ''}`;
+  const cache = memoize && holdsOnlyTheDecoys(before, dir) ? spanCache : undefined;
+  const key = `${shell}\0${childPath}\0${span}`;
+  const hit = cache?.get(key);
+  if (hit !== undefined) return { touched: [...hit.touched], verbRan: hit.verbRan };
   // A bounded child with a minimal env: a span that BLOCKS fails the case
   // rather than hanging the file, and `HOME` is the scratch directory so a
   // `~`-expanding span writes where the sweep below can see it. The stub
@@ -328,6 +393,7 @@ function runUnder(
   //   BEFORE the span, because history expansion happens when a line is
   //   read, before any command on it runs (M8). The harness then
   //   over-approximates a successful expansion.
+  spawns++;
   const r = spawnSync(shell, shell === 'zsh' ? ['-f', '-i'] : ['-c', script], {
     cwd: dir,
     encoding: 'utf8',
@@ -337,7 +403,7 @@ function runUnder(
     // EXIT after the signal, so a span ignoring TERM (`trap '' TERM`) would
     // hang the synchronous runner past the timeout.
     killSignal: 'SIGKILL',
-    env: { PATH: `${stubBin}${delimiter}${process.env['PATH'] ?? ''}`, HOME: dir },
+    env: { PATH: childPath, HOME: dir },
   });
   expect(r.error, `${shell} did not start, or hung, for: ${span}`).toBeUndefined();
   expect(r.signal, `the ${shell} child was killed for: ${span}`).toBeNull();
@@ -360,7 +426,9 @@ function runUnder(
       writeFileSync(join(dir, f), was, 'utf8');
     }
   }
-  return { touched: touched.filter((f) => f !== VERB_RAN), verbRan: touched.includes(VERB_RAN) };
+  const result = { touched: touched.filter((f) => f !== VERB_RAN), verbRan: touched.includes(VERB_RAN) };
+  cache?.set(key, { touched: [...result.touched], verbRan: result.verbRan });
+  return result;
 }
 
 /**
@@ -779,7 +847,8 @@ export const PAYLOAD_SENTINEL = 'touch OWNED';
 
 /**
  * A scratch directory seeded with the decoys, beside a stub `bin` the child's
- * PATH starts with, both removed afterwards. The POSITIVE CONTROLS run first:
+ * PATH starts with, both removed afterwards. The POSITIVE CONTROLS run first,
+ * on the module's first call (see the header's MEMOIZED):
  * a payload that had silently stopped working — a shell that does not do
  * backticks, a sentinel name that collides — would otherwise make every
  * "nothing ran" below pass for the wrong reason. `echo`, not a bare `Name:`
@@ -807,14 +876,25 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
   // Saved and restored rather than cleared, so a nested call leaves the
   // outer one's isolation in place.
   const outer = stubBin;
+  const outerCache = spanCache;
+  const outerMode = seededMode;
   stubBin = bin;
+  spanCache = new Map();
   try {
     for (const decoy of DECOYS) writeFileSync(join(dir, decoy), DECOY_CONTENT, 'utf8');
+    seededMode = statSync(join(dir, DECOYS[0])).mode;
     // A missing zsh is a skip only outside CI (see the header).
     expect(
       ZSH_AVAILABLE || !process.env['CI'],
       'zsh is not installed, and under CI the paste harness must drive it'
     ).toBe(true);
+    // The controls below ran on this module's first call (see the header's
+    // MEMOIZED); every call still checks, spawn-free, that its own stubs are
+    // in place where the PATH control found the first call's.
+    if (controlsPassed) {
+      for (const verb of STUBBED_VERBS) accessSync(join(dir, '..', 'bin', verb), constants.X_OK);
+      return fn(dir);
+    }
     // Keyed on AVAILABILITY, not on `PASTE_SHELLS`: a population that dropped
     // zsh would otherwise skip the very control that catches the drop (M7).
     if (ZSH_AVAILABLE) {
@@ -906,9 +986,12 @@ export function withPasteDir<T>(fn: (dir: string) => T): T {
         ).toEqual({ touched: [], verbRan: false });
       }
     }
+    controlsPassed = true;
     return fn(dir);
   } finally {
     stubBin = outer;
+    spanCache = outerCache;
+    seededMode = outerMode;
     rmSync(root, { recursive: true, force: true });
   }
 }

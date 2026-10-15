@@ -7,6 +7,11 @@ export class S3TablesStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // Issue #2613: verify.sh's Phase 1b redeploys with CDKD_S3T_TEAM set, a tag
+    // change on the TableBucket and the SDK-routed Table, so the redeploy
+    // reaches the S3 Tables provider's update() and its recorded-region guard.
+    const teamTag = process.env.CDKD_S3T_TEAM ?? 'platform';
+
     const tableBucket = new s3tables.CfnTableBucket(this, 'TableBucket', {
       tableBucketName: `${this.stackName}-table-bucket`.toLowerCase(),
     });
@@ -19,7 +24,7 @@ export class S3TablesStack extends cdk.Stack {
     // ListTagsForResource hop) paths. verify.sh asserts both tags reach
     // AWS via `aws s3tables list-tags-for-resource --resource-arn <bucket-arn>`.
     cdk.Tags.of(tableBucket).add('bucket-env', 'cdkd-integ');
-    cdk.Tags.of(tableBucket).add('bucket-team', 'platform');
+    cdk.Tags.of(tableBucket).add('bucket-team', teamTag);
 
     // Namespace + Table inside the bucket. Issue #609 Tags backfill (this
     // PR) wires `Tags` for AWS::S3Tables::Table via the SDK provider's
@@ -53,7 +58,7 @@ export class S3TablesStack extends cdk.Stack {
     // shape. The provider's create() forwards these to CreateTableCommand's
     // `tags: Record<string, string>` field in a single atomic call.
     cdk.Tags.of(table).add('env', 'cdkd-integ');
-    cdk.Tags.of(table).add('team', 'platform');
+    cdk.Tags.of(table).add('team', teamTag);
 
     // --- CC-routed Table + Ref-to-table-name assertion (issue #974) ------
     // A schema-bearing Table (IcebergMetadata set) is NOT in the SDK

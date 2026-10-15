@@ -197,6 +197,8 @@ CHILD_FALLTHROUGH_REV_PARAM="cdkd-nested-child-fallthroughrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_EMBED_REV_PARAM="cdkd-nested-child-fallthroughembedrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_SELECT_REV_PARAM="cdkd-nested-child-fallthroughselectrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_MIXED_REV_PARAM="cdkd-nested-child-fallthroughmixedrev-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_COLON_REV_PARAM="cdkd-nested-child-fallthroughcolonrev-${ACCOUNT_ID}"
+CHILD_COLON_TOUCH_PARAM="cdkd-nested-child-colontouch-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -643,6 +645,7 @@ cleanup() {
              "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
              "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
              "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
+             "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -1836,6 +1839,99 @@ if [ "${DIFF_RC3}" -ne 0 ]; then
 fi
 echo "    OK: the updated tree also converges"
 
+# --- Phase 2d: #4914, a split on a delimiter inside every token's text ------
+# `colon-split` adds `FallthroughColonReversed` (`FallConnA2` split on `:`) and
+# a plain `ColonTouch`; `colon-touch` then changes ONLY `ColonTouch`, so the
+# child redeploys and diffs `FallthroughColonReversed` with nothing of its own
+# changed. The deploy's diff side used to split the bound spelling into token
+# fragments (`//{{resolve`), so its plan carried an UPDATE row for it on every
+# child redeploy (`--require-approval` asked about it; a create-only property
+# planned a replacement). The engine's post-resolution re-check then skipped
+# the call, so AWS never moved: the discriminator is the PLAN, read from the
+# diff calculator's `--verbose` line. Kept out of `cdkd diff --recursive`
+# (phases 2 and 2c), which still splits the token text (#4929).
+echo "==> Phase 2d: #4914, FallConnA2 split on ':' is not planned as a change by a child redeploy"
+DEPLOY_2D_OUT=""
+deploy_2d() { # deploy_2d <CDKD_TEST_UPDATE> <label> -- sets DEPLOY_2D_OUT
+  local rc
+  set +e
+  DEPLOY_2D_OUT="$(CDKD_TEST_UPDATE="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: phase 2d deploy (${2}) exited ${rc}" >&2
+    diag_output "${DEPLOY_2D_OUT}"
+    exit 1
+  fi
+  scan_verbose_output "phase 2d deploy (${2})" "${DEPLOY_2D_OUT}"
+}
+colon_version() {
+  aws ssm get-parameter --name "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" --region "${REGION}" \
+    --query 'Parameter.Version' --output text
+}
+colon_touch_desc() {
+  aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_COLON_TOUCH_PARAM}" \
+    --query 'Parameters[0].Description' --output text
+}
+deploy_2d "child-property,colon-split" "add the #4914 arm"
+CHILD_TEMPLATE_FILE_2D="$(jq -r '.Resources.Child.Metadata["aws:asset:path"] // empty' "${SYNTH_TEMPLATE}")"
+assert_eq "premise: FallthroughColonReversed's Description selects piece 1 and its Value joins every piece of FallConnA2 split on ':'" \
+  "$(jq -c '.Resources.FallthroughColonReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE_2D}")" \
+  '[{"Fn::Select":[1,{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]},{"Fn::Join":["|",{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]}]'
+assert_eq "the LIVE FallthroughColonReversed Description holds the resolved piece 1" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_COLON_REV_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "//${FALL2_USER_VALUE}"
+assert_eq "the LIVE FallthroughColonReversed Value holds the resolved pieces joined" \
+  "$(aws ssm get-parameter --name "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" --region "${REGION}" \
+    --query 'Parameter.Value' --output text)" "postgres|//${FALL2_USER_VALUE}|${FALL2_PW_VALUE}@host"
+CHILD_STATE_2D="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
+assert_eq "FallthroughColonReversed.Description persists the piece with the user token whole" \
+  "$(jq_state "${CHILD_STATE_2D}" '.resources.FallthroughColonReversed.properties.Description')" \
+  "//${FALL2_USER_EXPR}"
+assert_eq "FallthroughColonReversed.Value persists every piece with its token whole" \
+  "$(jq_state "${CHILD_STATE_2D}" '.resources.FallthroughColonReversed.properties.Value')" \
+  "postgres|//${FALL2_USER_EXPR}|${FALL2_EXPR_A}@host"
+assert_child_state_carries_no_plaintext "after the #4914 arm's deploy" "${CHILD_STATE_2D}"
+COLON_VERSION_BEFORE="$(colon_version)"
+[ -n "${COLON_VERSION_BEFORE}" ] || { echo "FAIL: could not read FallthroughColonReversed's SSM version" >&2; exit 1; }
+
+deploy_2d "child-property,colon-split,colon-touch" "change only ColonTouch"
+# PROOF THE CHILD REDEPLOYED AND DIFFED: its plan names `ColonTouch` (the
+# positive control for the line's format), and AWS took the change. The
+# description read retries: `DescribeParameters` lags a successful update.
+if ! grep -qF "UPDATE: ColonTouch (" <<<"${DEPLOY_2D_OUT}"; then
+  echo "FAIL: the child's plan has no 'UPDATE: ColonTouch (' line, so the check below proves nothing (log format drifted, or the child did not diff)" >&2
+  exit 1
+fi
+COLON_TOUCH_EXPECTED="cdkd nested-stack-secret integ - #4914 touch (updated)"
+COLON_TOUCH_DESC=""
+for _ in $(seq 1 12); do
+  COLON_TOUCH_DESC="$(colon_touch_desc)"
+  [ "${COLON_TOUCH_DESC}" = "${COLON_TOUCH_EXPECTED}" ] && break
+  sleep 5
+done
+assert_eq "ColonTouch's description was UPDATED (so the child engine ran)" \
+  "${COLON_TOUCH_DESC}" "${COLON_TOUCH_EXPECTED}"
+# THE #4914 ASSERTION: nothing of `FallthroughColonReversed` changed, so its
+# plan row must not exist.
+if grep -qF "UPDATE: FallthroughColonReversed (" <<<"${DEPLOY_2D_OUT}"; then
+  echo "FAIL: the child's plan carries an UPDATE for FallthroughColonReversed, which nothing changed: the diff side split a {{resolve:...}} token on ':' (issue #4914)" >&2
+  exit 1
+fi
+echo "    OK: the child's plan carries no row for FallthroughColonReversed"
+# ...and nothing was sent for it either.
+COLON_VERSION_AFTER="$(colon_version)"
+if [ "${COLON_VERSION_AFTER}" != "${COLON_VERSION_BEFORE}" ]; then
+  echo "FAIL: FallthroughColonReversed was UPDATED by a child redeploy that changed nothing of it (SSM version ${COLON_VERSION_BEFORE} -> ${COLON_VERSION_AFTER}): the diff side split a {{resolve:...}} token on ':' (issue #4914)" >&2
+  exit 1
+fi
+echo "    OK: FallthroughColonReversed kept SSM version ${COLON_VERSION_AFTER} across the child redeploy"
+assert_child_state_carries_no_plaintext "after the #4914 arm's child redeploy" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
+
 # --- Phase 3: destroy -------------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -1851,6 +1947,7 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
          "${CHILD_HANDOFF_SPANS_PARAM}" "${CHILD_HANDOFF_SPANS_IF_PARAM}" "${CHILD_FALLTHROUGH_PARAM}" \
          "${CHILD_FALLTHROUGH_REV_PARAM}" "${CHILD_FALLTHROUGH_EMBED_REV_PARAM}" \
          "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
+         "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do

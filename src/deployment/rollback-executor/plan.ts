@@ -1099,6 +1099,8 @@ export function markDeleteFirstBlocked(
   for (const op of operations) {
     const prev = op.previousState?.physicalId;
     if (typeof prev !== 'string' || prev === '') continue;
+    // An old resource that may survive (`oldResourceMaySurvive`, #2631) counts
+    // as taken away too: that only keeps another op's reversal create-first.
     const replacedAway =
       op.changeType === 'DELETE' ||
       (op.changeType === 'UPDATE' &&

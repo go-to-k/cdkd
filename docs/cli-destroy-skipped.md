@@ -255,7 +255,8 @@ What the deploy does depends on which delete was skipped:
   resource would run beside a live old one, or collide with its name.
 - **The cleanup delete after a replacement that created the new resource
   first.** The deploy warns. The old resource is no longer tracked; delete it
-  by hand.
+  by hand. If a later failure in the same deploy rolls it back, the rollback
+  checks AWS for that old resource before re-creating it.
 - **A delete made by a rollback**, automatic or `cdkd rollback`. It counts as
   a failure, so the rollback journal is kept and running `cdkd rollback` again
   retries it.

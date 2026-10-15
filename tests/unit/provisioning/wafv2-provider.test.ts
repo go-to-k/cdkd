@@ -398,3 +398,51 @@ describe('WAFv2WebACLProvider', () => {
     });
   });
 });
+
+describe('WAFv2WebACLProvider update region guard (issue #2613)', () => {
+  let provider: WAFv2WebACLProvider;
+  const visibility = {
+    CloudWatchMetricsEnabled: true,
+    MetricName: 'my-acl-metric',
+    SampledRequestsEnabled: true,
+  };
+  const desired = { Name: 'my-acl', Scope: 'REGIONAL', DefaultAction: { Block: {} }, VisibilityConfig: visibility };
+  const previous = { Name: 'my-acl', Scope: 'REGIONAL', DefaultAction: { Allow: {} }, VisibilityConfig: visibility };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new WAFv2WebACLProvider();
+  });
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyWebACL', TEST_ARN, 'AWS::WAFv2::WebACL', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyWebACL .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    mockSend.mockResolvedValueOnce({ LockToken: 'lock-token-123', WebACL: {} }).mockResolvedValueOnce({});
+    await provider.update('MyWebACL', TEST_ARN, 'AWS::WAFv2::WebACL', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+      'GetWebACLCommand',
+      'UpdateWebACLCommand',
+    ]);
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region = region;
+    mockSend.mockResolvedValueOnce({ LockToken: 'lock-token-123', WebACL: {} }).mockResolvedValueOnce({});
+    await provider.update('MyWebACL', TEST_ARN, 'AWS::WAFv2::WebACL', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toEqual([
+      'GetWebACLCommand',
+      'UpdateWebACLCommand',
+    ]);
+  });
+});

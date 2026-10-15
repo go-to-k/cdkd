@@ -69,12 +69,31 @@ export interface CompletedOperation {
    * unreachable for them.
    *
    * Set only for a DELIBERATE retention. A cleanup delete that failed, was
-   * skipped, or was blocked by a failed final snapshot also leaves the old
+   * skipped, or was blocked by a failed final snapshot may also leave the old
    * resource alive, but the deploy cannot vouch for that — those record
-   * `false` and keep the re-create behaviour (issue
-   * [#2631](https://github.com/go-to-k/cdkd/issues/2631)).
+   * `false` here and {@link oldResourceMaySurvive} beside it.
    */
   oldResourceRetained?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#2631: the replacement's cleanup delete of the OLD resource
+   * did not confirm it gone, so it may still exist. The reverse-replacement
+   * replay then reads AWS for it before re-creating: reported gone, it is
+   * re-created; still there, it is re-adopted only on `'kept'`; anything else
+   * is refused (journal kept) rather than re-created blind, which would
+   * duplicate it or collide with it. CloudFormation never reaches this
+   * state: it deletes old resources only after the stack update succeeds.
+   *
+   * - `'kept'`: the delete was never sent (a failed final snapshot blocked
+   *   it), or AWS refused it outright (`replacedDeleteFailureVerdict`): the resource
+   *   is whole and is not being deleted.
+   * - `'unconfirmed'`: any other failure or a provider skip. The delete may
+   *   have been accepted and still be running (a waiter that gave up), so a
+   *   live read cannot license re-adopting a resource about to disappear.
+   *
+   * ADDITIVE, no `journalVersion` bump: absent (an older binary's journal,
+   * or a delete that succeeded) keeps the re-create.
+   */
+  oldResourceMaySurvive?: 'kept' | 'unconfirmed' | undefined;
   /**
    * The type of the resource that existed BEFORE this UPDATE — the state
    * record's `resourceType` (issue
