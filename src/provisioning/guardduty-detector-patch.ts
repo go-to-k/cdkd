@@ -120,8 +120,11 @@ function narrowToChangedFeatures(op: JsonPatchOp, current: unknown): JsonPatchOp
     throw markNonRetryable(
       new Error(
         'cannot revert Features: the live list differs from the recorded baseline only in the ' +
-          'order of its entries or in entries GuardDuty added, which UpdateDetector cannot undo. ' +
-          'Run cdkd drift --accept to record the live list as the baseline.'
+          'order of its entries or in entries GuardDuty added, which UpdateDetector cannot undo, ' +
+          'so nothing on this detector was reverted. cdkd drift --accept would record the live ' +
+          'list, but it records the live value of EVERY drifted property of the stack, not only ' +
+          'Features: revert any other drift on this detector first (for example with ' +
+          'aws guardduty update-detector), then run it.'
       )
     );
   }

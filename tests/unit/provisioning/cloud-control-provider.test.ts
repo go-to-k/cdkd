@@ -2482,6 +2482,11 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
 
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toMatch(/cannot revert Features: .*cdkd drift --accept/);
+    // go-to-k/cdkd#4935 M2: --accept records EVERY drifted property, so the
+    // advice must say so and send other drift on the detector through first.
+    expect((failure as Error).message).toMatch(
+      /records the live value of EVERY drifted property of the stack, not only Features: revert any other drift on this detector first/
+    );
     expect(isMarkedNonRetryable(failure)).toBe(true);
     expect(updateCalls()).toEqual([]);
   });
