@@ -149,7 +149,9 @@ import { Construct } from 'constructs';
  *    left to the slot: `FallConnA2` read through an `Fn::Sub` naming
  *    `AWS::Region` and `AWS::Partition` inside `Fn::Select` / `Fn::Split`,
  *    beside `FallSecretB2`. The child's parameter resolution now records the
- *    pseudo values its resolver answers, so the re-read binds them.
+ *    pseudo values its resolver answers, so the re-read binds them. Since
+ *    #4975 the `Fn::Sub` names `AWS::AccountId` too, which the child binds
+ *    through a gated account lookup whether or not the account was settled.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -695,7 +697,9 @@ class SecretBearingChild extends cdk.NestedStack {
 
     // THE #4962 ARM: the issue's own shape, a piece of an `Fn::Sub` naming
     // pseudo parameters beside `FallConnA2`, with the pseudo values kept IN
-    // the piece so a wrong binding shows in the persisted leaf.
+    // the piece so a wrong binding shows in the persisted leaf. `AWS::AccountId`
+    // is #4975's: bound through an account lookup the child makes only for
+    // such a shape.
     const fallthroughPseudoSub = new ssm.StringParameter(this, 'FallthroughPseudoSub', {
       parameterName: names.fallthroughPseudoSubParamName,
       stringValue: fallSecret2.valueAsString,
@@ -706,7 +710,12 @@ class SecretBearingChild extends cdk.NestedStack {
     pseudoSubCfn.addPropertyOverride('Description', {
       'Fn::Select': [
         0,
-        { 'Fn::Split': ['@', { 'Fn::Sub': '${AWS::Region}.${AWS::Partition}.${FallConnA2}' }] },
+        {
+          'Fn::Split': [
+            '@',
+            { 'Fn::Sub': '${AWS::Region}.${AWS::Partition}.${AWS::AccountId}.${FallConnA2}' },
+          ],
+        },
       ],
     });
 

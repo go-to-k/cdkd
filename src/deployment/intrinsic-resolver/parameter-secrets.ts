@@ -3,8 +3,10 @@ import {
   recordInheritedParameterValue,
   recordInheritedPseudoParameters,
   rereadParameterExpression,
+  templateRereadsAccountId,
   type ParameterBinding,
 } from '../secret-redaction/nested-stack.js';
+import { accountIdForReread } from './account-drain.js';
 import { arrayPairsWhateverDrops } from '../secret-redaction/redact-path.js';
 import {
   recordDroppedArrayElements,
@@ -235,18 +237,29 @@ export function recordInheritedParameterSecrets(
  * on both callers (`deploy-flow.ts`, `scrub.ts`); a stack inheriting nothing
  * pays nothing.
  *
- * `AWS::Region`, `AWS::Partition` and `AWS::URLSuffix` only, each a pure
- * function of `resolverRegion` read through `resolvePseudoParameter` itself,
- * so no AWS call is made and every pass binds the same value.
+ * `AWS::Region`, `AWS::Partition` and `AWS::URLSuffix`, each a pure function
+ * of `resolverRegion` read through `resolvePseudoParameter` itself, so no AWS
+ * call is made and every pass binds the same value. `AWS::AccountId` (issue
+ * [#4975](https://github.com/go-to-k/cdkd/issues/4975)) only where
+ * `templateRereadsAccountId` finds a resource that may re-read it, and then
+ * from `accountIdForReread` -- the resolver's own account source, asking STS
+ * at most once per process and only while the account is not yet settled --
+ * so the binding never depends on whether earlier work settled it. A refused
+ * lookup leaves it unbound.
  */
 export async function recordInheritedPseudoParameterValues(
   resolver: IntrinsicFunctionResolver,
-  inherited: RecordedSecretValues
+  inherited: RecordedSecretValues,
+  template: { Resources?: unknown; Outputs?: unknown } | undefined
 ): Promise<void> {
   if (inherited.size === 0) return;
   const values = new Map<string, unknown>();
   for (const name of ['AWS::Region', 'AWS::Partition', 'AWS::URLSuffix']) {
     values.set(name, await resolver.resolvePseudoParameter(name));
+  }
+  if (templateRereadsAccountId(template)) {
+    const accountId = await accountIdForReread(resolver.resolverRegion);
+    if (accountId !== undefined) values.set('AWS::AccountId', accountId);
   }
   recordInheritedPseudoParameters(inherited, values);
 }

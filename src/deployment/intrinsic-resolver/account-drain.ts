@@ -623,6 +623,53 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
 }
 
 /**
+ * Credential identities whose {@link accountIdForReread} lookup was refused,
+ * so a later nested child in the same process does not ask STS again (issue
+ * #4975). Cleared by {@link resetAccountInfoCache}.
+ */
+const rereadAccountLookupRefused = new Set<string>();
+
+/**
+ * The account id a nested child's parameter re-read binds `AWS::AccountId` to
+ * (issue [#4975](https://github.com/go-to-k/cdkd/issues/4975)), or `undefined`
+ * to leave it unbound. The SAME source as the resolver's `AWS::AccountId`
+ * arm, {@link getAccountInfo} and its per-identity cache, so the re-read
+ * binds exactly what the pass substitutes, and it binds whether or not
+ * something earlier in the process settled the account: the verdict cannot
+ * depend on that order.
+ *
+ * Asks STS (inside `getAccountInfo`) at most once per credential identity per
+ * process: a settled account is a cache hit, and a refused lookup is
+ * remembered and answers `undefined` from then on. NEVER throws: a refusal
+ * leaves the account unbound (the slot read the walk takes without it), and a
+ * leaf that really resolves the account still gets `getAccountInfo`'s own
+ * refusal there, so the user sees no new error.
+ */
+export async function accountIdForReread(overrideRegion?: string): Promise<string | undefined> {
+  let identityKey: string;
+  try {
+    identityKey = credentialFingerprint(ambientCredentialConfig());
+  } catch {
+    return undefined;
+  }
+  const cached = cachedAccountIdentities.get(identityKey);
+  if (cached) return cached.accountId;
+  if (rereadAccountLookupRefused.has(identityKey)) return undefined;
+  try {
+    return (await getAccountInfo(overrideRegion)).accountId;
+  } catch (error) {
+    rereadAccountLookupRefused.add(identityKey);
+    getLogger()
+      .child('IntrinsicFunctionResolver')
+      .debug(
+        `AWS::AccountId stays unbound in the nested-stack parameter re-read: the account lookup ` +
+          `failed (${error instanceof Error ? error.name : 'unknown'})`
+      );
+    return undefined;
+  }
+}
+
+/**
  * Await a lookup that other callers may share, giving THIS caller its own
  * refusal instance. Concurrent callers share one rejected promise, and a
  * caller's catch may decorate what it caught (`markAuxiliaryFailure` stamps a
@@ -769,6 +816,7 @@ export function resetAccountInfoCache(): void {
   // otherwise hand the next caller the identity this call asked to forget, and
   // the resolve arm would re-populate the cache AFTER the reset.
   accountInfoInFlight.clear();
+  rereadAccountLookupRefused.clear();
   // Also reset AZ cache
   cachedAvailabilityZones.clear();
   // Resolved dynamic-reference VALUES are no longer cleared here: they live on
