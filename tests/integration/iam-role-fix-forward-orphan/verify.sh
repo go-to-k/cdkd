@@ -10,14 +10,17 @@
 #
 # Phases:
 #   1. Baseline deploy: `BaseRole`.
-#   2. The failed CREATE. A role is created that may create a role, put an
-#      inline policy on it and read it, but may not tag it, delete its inline
+#   2. The failed CREATE. A role is created that may create, tag and read a
+#      role and put an inline policy on it, but may not delete its inline
 #      policy, or delete it. A `--no-rollback` deploy run as that role with
 #      WITH_ORPHANS=true creates `OrphanA`'s and `OrphanC`'s roles, fails each
-#      on `TagRole` (OrphanA after a successful `PutRolePolicy`), and the
-#      provider's own cleanup (`DeleteRolePolicy` / `DeleteRole`) is refused
-#      too. Asserted: the deploy failed, both roles exist untagged (OrphanA with
-#      its inline policy), no state record holds them, and the rollback journal
+#      on the `PutRolePolicy` AWS refuses (`MalformedPolicyDocument`; OrphanA
+#      after a successful one), and the provider's own cleanup
+#      (`DeleteRolePolicy` / `DeleteRole`) is refused too. Asserted: the deploy
+#      failed, both roles exist carrying the template's tag (it rode on
+#      `CreateRole`, go-to-k/cdkd#4971; the post-create `TagRole` it replaced
+#      was never reached), OrphanA with its valid inline policy, no state
+#      record holds them, and the rollback journal
 #      carries each as a proven orphan whose identity is the `RoleId` GetRole
 #      reports for it (the premise that the wiring calls do not change it).
 #   2b. The re-used name: `OrphanC`'s role is deleted and its name created
@@ -126,8 +129,8 @@ ALL_ROLES=("${BASE_ROLE}" "${ROLE_A}" "${ROLE_A_B}" "${ROLE_C}" "${ROLE_C_B}")
 INLINE_POLICY="irffo-inline"
 LAMBDA_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
-DENY_ROLE="${STACK}-no-tag"
-DENY_POLICY_NAME="create-without-tag"
+DENY_ROLE="${STACK}-no-delete"
+DENY_POLICY_NAME="create-without-delete"
 DENY_ROLE_CREATED=""
 # Set once the preconditions below pass: before that, the roles or the stack
 # may belong to a concurrent or earlier run, which a failure-path delete must
@@ -243,7 +246,7 @@ echo "[verify] step 1: baseline deploy (BaseRole)"
 env -u WITH_ORPHANS -u ORPHAN_FIX_FORWARD ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
 BASE_ID="$(role_id "${BASE_ROLE}")" || { echo "[verify] FAIL: ${BASE_ROLE} reads no RoleId after step 1" >&2; exit 1; }
 
-echo "[verify] step 2: a role that may create a role but neither tag nor delete it"
+echo "[verify] step 2: a role that may create and tag a role but not delete it"
 TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what this deploy calls: only read-only CloudFormation verbs and
 # sts:GetCallerIdentity (which takes no resource) are `*`; SSM is the CDK
@@ -251,16 +254,17 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # The S3 verbs on the state bucket are the state path's
 # (src/state/{s3-state-backend,lock-manager,s3-noncurrent-version-purge,
 # s3-replication-purge-gap}.ts, src/utils/aws-region-resolver.ts). On this
-# run's roles (`cdkd-irffo-*`) the role may CreateRole and PutRolePolicy, and
-# read (GetRole, ListRoleTags, ListRolePolicies, GetRolePolicy,
-# ListAttachedRolePolicies, ListInstanceProfilesForRole). TagRole (the CREATE's
-# last wiring call) is denied, so each CREATE fails after IAM made the role;
+# run's roles (`cdkd-irffo-*`) the role may CreateRole, TagRole (a tagged
+# CreateRole needs it, go-to-k/cdkd#4971) and PutRolePolicy, and read
+# (GetRole, ListRoleTags, ListRolePolicies, GetRolePolicy,
+# ListAttachedRolePolicies, ListInstanceProfilesForRole). The template's
+# refused inline policy fails each CREATE after IAM made the role;
 # DeleteRolePolicy and DeleteRole are denied, so the provider's own cleanup
 # cannot remove it. sts:AssumeRole is denied everywhere: CreateRole and
 # PutRolePolicy could otherwise mint a role trusting this session and assume
 # it. Nothing this session runs assumes a role (cdkd is run without
 # --role-arn).
-DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const roles=`arn:aws:iam::${acct}:role/cdkd-irffo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateRole","iam:PutRolePolicy","iam:GetRole","iam:ListRoleTags","iam:ListRolePolicies","iam:GetRolePolicy","iam:ListAttachedRolePolicies","iam:ListInstanceProfilesForRole"],Resource:roles},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:TagRole","iam:DeleteRolePolicy","iam:DeleteRole"],Resource:roles},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
+DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const roles=`arn:aws:iam::${acct}:role/cdkd-irffo-*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreateRole","iam:TagRole","iam:PutRolePolicy","iam:GetRole","iam:ListRoleTags","iam:ListRolePolicies","iam:GetRolePolicy","iam:ListAttachedRolePolicies","iam:ListInstanceProfilesForRole"],Resource:roles},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeleteRolePolicy","iam:DeleteRole"],Resource:roles},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
 aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=iam-role-fix-forward-orphan >/dev/null
 DENY_ROLE_CREATED=1
@@ -380,15 +384,23 @@ for r in "${ROLE_A}" "${ROLE_C}"; do
   fi
 done
 # The premise of the injection, from AWS's own answers: each CREATE failed on
-# TagRole (the roles carry no tag), OrphanA's after its PutRolePolicy went
-# through (its inline policy is there).
+# a PutRolePolicy after CreateRole (OrphanA's after its valid one went
+# through: its inline policy is there), and each role carries the template's
+# tag although the CREATE failed: the tags rode on CreateRole
+# (go-to-k/cdkd#4971). Before that change a post-create TagRole, never reached
+# here, applied them, so the roles were untagged.
 for r in "${ROLE_A}" "${ROLE_C}"; do
-  TAGS="$(aws iam list-role-tags --role-name "${r}" --query 'length(Tags)' --output text)"
-  if [ "${TAGS}" != "0" ]; then
-    echo "[verify] FAIL: role ${r} carries ${TAGS} tag(s) after step 2 (expected none: its CREATE must fail on the denied TagRole)" >&2
+  TAG="$(aws iam list-role-tags --role-name "${r}" \
+    --query "Tags[?Key=='cdkd-integ'].Value | [0]" --output text)"
+  if [ "${TAG}" != "iam-role-fix-forward-orphan" ]; then
+    echo "[verify] FAIL: role ${r} carries cdkd-integ='${TAG}' after step 2 (expected iam-role-fix-forward-orphan: CreateRole must carry the template's tags, go-to-k/cdkd#4971)" >&2
     exit 1
   fi
 done
+if ! printf '%s' "$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ')" | grep -qF 'must be in ARN format'; then
+  echo "[verify] FAIL: the step-2 deploy did not fail on the refused inline policy (MalformedPolicyDocument 'must be in ARN format'; output above)" >&2
+  exit 1
+fi
 A_POLICIES="$(aws iam list-role-policies --role-name "${ROLE_A}" --query 'PolicyNames' --output text)"
 if [ "${A_POLICIES}" != "${INLINE_POLICY}" ]; then
   echo "[verify] FAIL: role ${ROLE_A}'s inline policies read '${A_POLICIES}' after step 2 (expected ${INLINE_POLICY}: its CREATE must pass PutRolePolicy and its cleanup must be refused DeleteRolePolicy)" >&2

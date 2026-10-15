@@ -183,6 +183,12 @@ const canonical = (cidr: string): string => {
   return `${[24, 16, 8, 0].map((s) => (masked >>> s) & 255).join('.')}/${bits}`;
 };
 
+/** The tags a create's `TagSpecifications` carried (go-to-k/cdkd#4971), as EC2 applies them. */
+const specTags = (input: Record<string, unknown>): Tag[] =>
+  structuredClone(
+    (input['TagSpecifications'] as Array<{ Tags: Tag[] }> | undefined)?.[0]?.Tags ?? []
+  );
+
 /** A fake EC2. The arrays count RESOURCES, not calls (issue #2080 acceptance item 2). */
 class FakeEc2 {
   readonly vpcs: FakeVpc[] = [];
@@ -226,7 +232,7 @@ class FakeEc2 {
           VpcId: this.id('vpc'),
           CidrBlock: canonical(input['CidrBlock'] as string),
           IsDefault: false,
-          Tags: [],
+          Tags: specTags(input),
         };
         this.vpcs.push(vpc);
         return this.answer({ Vpc: { VpcId: vpc.VpcId } });
@@ -245,7 +251,7 @@ class FakeEc2 {
           VpcId: vpcId,
           CidrBlock: cidr,
           AvailabilityZone: 'ap-southeast-2a',
-          Tags: [],
+          Tags: specTags(input),
         };
         this.subnets.push(subnet);
         return this.answer({
@@ -253,7 +259,11 @@ class FakeEc2 {
         });
       }
       case 'CreateInternetGatewayCommand': {
-        const igw: FakeIgw = { InternetGatewayId: this.id('igw'), Attachments: [], Tags: [] };
+        const igw: FakeIgw = {
+          InternetGatewayId: this.id('igw'),
+          Attachments: [],
+          Tags: specTags(input),
+        };
         this.igws.push(igw);
         return this.answer({ InternetGateway: { InternetGatewayId: igw.InternetGatewayId } });
       }
@@ -268,7 +278,7 @@ class FakeEc2 {
             (input['NetworkBorderGroup'] as string | undefined) ?? 'ap-southeast-2',
           // ...and a pool: `amazon` for an Amazon-provided address.
           PublicIpv4Pool: (input['PublicIpv4Pool'] as string | undefined) ?? 'amazon',
-          Tags: [],
+          Tags: specTags(input),
         };
         this.addresses.push(address);
         return this.answer({ AllocationId: address.AllocationId, PublicIp: address.PublicIp });
@@ -438,11 +448,55 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       await createWithRetry('AWS::EC2::VPC', VPC_PROPS);
 
       const line = reportFor('CreateVpc')!;
-      expect(line).toContain('1 untagged VPC(s) match');
+      expect(line).toContain("1 VPC(s) with no tags or exactly the template's tags match");
       expect(line).not.toContain(earlier.physicalId);
       for (const id of ['vpc-tagged', 'vpc-othercidr', 'vpc-default']) {
         expect(line).not.toContain(id);
       }
+    });
+
+    // go-to-k/cdkd#4971: the lost create sent the template's tags in
+    // TagSpecifications, so its orphan carries them and is still named; an
+    // untagged VPC (a lost untagged re-send) is named too, and a superset or
+    // other tag set is not.
+    it('names an orphan carrying exactly the sent tags, or none, and no other tag set', async () => {
+      aws.vpcs.push(
+        { VpcId: 'vpc-none', CidrBlock: '10.0.0.0/16', IsDefault: false, Tags: [] },
+        {
+          VpcId: 'vpc-superset',
+          CidrBlock: '10.0.0.0/16',
+          IsDefault: false,
+          Tags: [
+            { Key: 'Name', Value: 'app' },
+            { Key: 'extra', Value: 'x' },
+          ],
+        },
+        {
+          VpcId: 'vpc-othervalue',
+          CidrBlock: '10.0.0.0/16',
+          IsDefault: false,
+          Tags: [{ Key: 'Name', Value: 'other' }],
+        }
+      );
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::EC2::VPC', VPC_PROPS);
+
+      expect(aws.vpcs.find((v) => v.VpcId === 'vpc-001')!.Tags).toEqual(VPC_PROPS.Tags);
+      const line = reportFor('CreateVpc')!;
+      expect(line).toContain("2 VPC(s) with no tags or exactly the template's tags match");
+      expect(line).toContain('vpc-001');
+      expect(line).toContain('vpc-none');
+      expect(line).not.toContain('vpc-superset');
+      expect(line).not.toContain('vpc-othervalue');
+    });
+
+    it('keeps the untagged noun for a template that declares no tags', async () => {
+      aws.loseNextCreateResponse = transient500();
+
+      await createWithRetry('AWS::EC2::VPC', { CidrBlock: '10.0.0.0/16' });
+
+      expect(reportFor('CreateVpc')).toContain('1 untagged VPC(s) match');
     });
 
     it('matches a CIDR EC2 stored host-bit-cleared against the template spelling', async () => {
@@ -593,7 +647,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       ).rejects.toThrow(/conflicts with another subnet/);
 
       const line = reportFor('CreateSubnet')!;
-      expect(line).toContain('1 untagged subnet(s) match');
+      expect(line).toContain("1 subnet(s) with no tags or exactly the template's tags match");
       for (const id of ['subnet-tagged', 'subnet-othercidr', 'subnet-othervpc']) {
         expect(line).not.toContain(id);
       }
@@ -623,7 +677,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
 
       expect(aws.lookupCount('DescribeSubnetsCommand')).toBe(1);
       expect(reportFor('CreateSubnet')).toBeUndefined();
-      expect(debugLines().some((l) => l.startsWith('No listed untagged subnet(s)'))).toBe(true);
+      expect(debugLines().some((l) => l.startsWith("No listed subnet(s) with no tags or exactly the template's tags"))).toBe(true);
     });
 
     it('does not report a subnet this process created, of the same CIDR in the same VPC', async () => {
@@ -666,7 +720,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       expect(result.physicalId).toBe('igw-003');
       expect(aws.calls).not.toContain('DeleteInternetGatewayCommand');
       const line = reportFor('CreateInternetGateway')!;
-      expect(line).toContain('1 detached, untagged internet gateway(s) match');
+      expect(line).toContain("1 detached internet gateway(s) with no tags or exactly the template's tags match");
       expect(line).toContain(
         'aws ec2 describe-internet-gateways --internet-gateway-ids igw-002 --region ap-southeast-2'
       );
@@ -737,7 +791,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       expect(result.physicalId).toContain('eipalloc-003');
       expect(aws.calls).not.toContain('ReleaseAddressCommand');
       const line = reportFor('AllocateAddress')!;
-      expect(line).toContain('1 unassociated, untagged Elastic IP address(es) match');
+      expect(line).toContain("1 unassociated Elastic IP address(es) with no tags or exactly the template's tags match");
       expect(line).toContain(
         'aws ec2 describe-addresses --allocation-ids eipalloc-002 --region ap-southeast-2'
       );

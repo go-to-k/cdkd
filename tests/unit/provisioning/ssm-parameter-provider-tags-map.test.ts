@@ -52,9 +52,9 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
     provider = new SSMParameterProvider();
   });
 
-  it('create: accepts the CFn map shape and applies it as SDK Tag[]', async () => {
+  // go-to-k/cdkd#4971: a create's tags ride on PutParameter itself.
+  it('create: accepts the CFn map shape and sends it as SDK Tag[] on PutParameter', async () => {
     mockSend.mockResolvedValueOnce({}); // PutParameterCommand
-    mockSend.mockResolvedValueOnce({}); // AddTagsToResourceCommand
 
     await provider.create('MyParam', RESOURCE_TYPE, {
       Name: '/foo/bar',
@@ -64,23 +64,15 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
     });
 
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
-    expect(names).toEqual(['PutParameterCommand', 'AddTagsToResourceCommand']);
-    const addCall = mockSend.mock.calls.find(
-      (c) => c[0].constructor.name === 'AddTagsToResourceCommand'
-    );
-    expect(addCall![0].input).toEqual({
-      ResourceType: 'Parameter',
-      ResourceId: '/foo/bar',
-      Tags: [
-        { Key: 'Example', Value: 'context-test' },
-        { Key: 'Project', Value: 'cdkd' },
-      ],
-    });
+    expect(names).toEqual(['PutParameterCommand']);
+    expect(mockSend.mock.calls[0]![0].input.Tags).toEqual([
+      { Key: 'Example', Value: 'context-test' },
+      { Key: 'Project', Value: 'cdkd' },
+    ]);
   });
 
   it('create: still accepts the list shape (defensive) and drops aws:* keys', async () => {
     mockSend.mockResolvedValueOnce({}); // PutParameterCommand
-    mockSend.mockResolvedValueOnce({}); // AddTagsToResourceCommand
 
     await provider.create('MyParam', RESOURCE_TYPE, {
       Name: '/foo/bar',
@@ -89,13 +81,10 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
       Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/Param/Resource' },
     });
 
-    const addCall = mockSend.mock.calls.find(
-      (c) => c[0].constructor.name === 'AddTagsToResourceCommand'
-    );
-    expect(addCall![0].input.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    expect(mockSend.mock.calls[0]![0].input.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('create: empty map does NOT fire AddTagsToResource (no tags to apply)', async () => {
+  it('create: empty map sends no Tags member and no AddTagsToResource', async () => {
     mockSend.mockResolvedValueOnce({}); // PutParameterCommand
 
     await provider.create('MyParam', RESOURCE_TYPE, {
@@ -107,11 +96,11 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
 
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
     expect(names).toEqual(['PutParameterCommand']);
+    expect('Tags' in mockSend.mock.calls[0]![0].input).toBe(false);
   });
 
   it('create: coerces non-string tag values to strings (SSM tag values must be strings)', async () => {
     mockSend.mockResolvedValueOnce({}); // PutParameterCommand
-    mockSend.mockResolvedValueOnce({}); // AddTagsToResourceCommand
 
     await provider.create('MyParam', RESOURCE_TYPE, {
       Name: '/foo/bar',
@@ -120,10 +109,7 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
       Tags: { Version: 3, Enabled: true },
     });
 
-    const addCall = mockSend.mock.calls.find(
-      (c) => c[0].constructor.name === 'AddTagsToResourceCommand'
-    );
-    expect(addCall![0].input.Tags).toEqual([
+    expect(mockSend.mock.calls[0]![0].input.Tags).toEqual([
       { Key: 'Version', Value: '3' },
       { Key: 'Enabled', Value: 'true' },
     ]);
@@ -150,6 +136,11 @@ describe('SSMParameterProvider Tags map shape (AWS::SSM::Parameter.Tags is a map
     );
     expect(removeCall![0].input.TagKeys).toEqual(['Team']);
     expect(addCall![0].input.Tags).toEqual([{ Key: 'Env', Value: 'prod' }]);
+    // AWS refuses `Tags` together with `Overwrite: true` (measured,
+    // go-to-k/cdkd#4971), so the update's PutParameter never carries them.
+    const put = mockSend.mock.calls.find((c) => c[0].constructor.name === 'PutParameterCommand');
+    expect(put![0].input.Overwrite).toBe(true);
+    expect('Tags' in put![0].input).toBe(false);
   });
 
   it('update: pure key-reorder (same key/value set) does NOT fire any tag mutation', async () => {

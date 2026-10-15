@@ -42,7 +42,6 @@ import {
 } from '../tag-list.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   ResourceProvider,
@@ -350,14 +349,13 @@ export class SSMParameterProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // Issue #2176: ONE masked sink per operation, rather than a `mask(...)` at
-    // each interpolation. `properties['Name']` reaches five message sites here
-    // (one of them a paste-ready `--name '<value>'` remediation command), and a
-    // line added later is masked by construction instead of by remembering.
+    // each interpolation. `properties['Name']` reaches several message sites
+    // here, and a line added later is masked by construction instead of by
+    // remembering.
     // Absent context means identity, which is the back-compatible default the
     // contract mandates -- `create()` is also reached from the import path,
     // from `cdkd drift --revert`, and from tests.
     const mask = maskerOrIdentity(context?.maskSecrets);
-    const warn = (message: string): void => this.logger.warn(mask(message));
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const ssmTags = SSMParameterProvider.desiredSsmTags(
       properties['Tags'],
@@ -381,9 +379,6 @@ export class SSMParameterProvider implements ResourceProvider {
       );
     }
 
-    // go-to-k/cdkd#4583: set once PutParameter (Overwrite: false) returns;
-    // cleared when the cleanup deleted the parameter.
-    let leftBehind = false;
     try {
       const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
         Name: name,
@@ -404,85 +399,28 @@ export class SSMParameterProvider implements ResourceProvider {
         putParams.DataType = properties['DataType'] as string;
       }
 
-      await (await this.getCreateClient()).send(new PutParameterCommand(putParams));
-      leftBehind = true;
+      // go-to-k/cdkd#4971: the tags ride on `PutParameter` itself, as
+      // CloudFormation sends them, so an SCP requiring `aws:RequestTag/...` on
+      // `ssm:PutParameter` sees them. `AWS::SSM::Parameter.Tags` is a key->value
+      // MAP (not the {Key,Value}[] list most CFn resources use); `ssmTags` was
+      // normalized from either form, and checked, before any call. A tagged
+      // `PutParameter` needs `ssm:AddTagsToResource` (measured), the permission
+      // the follow-up `AddTagsToResource` already needed. AWS refuses `Tags`
+      // with `Overwrite: true` ("tags and overwrite can't be used together",
+      // measured); this create sends `Overwrite: false`, which it accepts, and
+      // `update()` keeps tagging through `AddTagsToResource`.
+      if (ssmTags.length > 0) putParams.Tags = ssmTags;
 
-      // PutParameter has succeeded (Overwrite: false, so AWS has committed
-      // a new parameter — not an idempotent pre-existing-resource path).
-      // Wrap the post-create wiring in an inner try/catch that issues a
-      // best-effort `DeleteParameterCommand` cleanup on failure, so the
-      // next redeploy doesn't hit `ParameterAlreadyExists` from an orphan.
-      // See Issue #376 for the cross-provider sweep.
-      try {
-        // Apply tags if specified. AWS::SSM::Parameter.Tags is a key->value
-        // MAP (not the {Key,Value}[] list most CFn resources use); `ssmTags`
-        // was normalized from either form, and checked, before any call.
-        if (ssmTags.length > 0) {
-          await this.ssmClient.send(
-            new AddTagsToResourceCommand({
-              ResourceType: 'Parameter',
-              ResourceId: name,
-              Tags: ssmTags,
-            })
-          );
-        }
-      } catch (innerError) {
-        try {
-          await this.ssmClient.send(new DeleteParameterCommand({ Name: name }));
-          leftBehind = false;
-          debug(
-            `Cleaned up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          // The SSM twin of the issue #2669 remedy (issue #3136): a pasteable
-          // command naming a TEMPLATE-chosen value, hand-quoted with `'...'`
-          // until now — so a `'` in the parameter name broke out of the
-          // quoting and a control byte forged terminal lines. (A WARN, so the
-          // terminal is its whole reach: the recorder persists a thrown
-          // `error.message`, not this.) Rendered through the shared sanitize /
-          // shell-quote / SUPPRESS, so the COMMAND never carries either raw,
-          // and no command is shown at all when sanitizing CHANGED the name
-          // (it would act on a DIFFERENT parameter). The PROSE copy of the
-          // name beside it goes through `displaySafe` (issue
-          // [#3269](https://github.com/go-to-k/cdkd/issues/3269)), masked
-          // FIRST: `displaySafe` rewrites characters, so a secret carrying
-          // one would no longer OCCUR literally for the message-level mask.
-          //
-          // `maskSecrets` is threaded, and is not decoration: `mask` below is
-          // a message-level masker matching by LITERAL occurrence, and
-          // `shellQuote` rewrites an inner `'` to `'\''` — so a resolved
-          // `{{resolve:secretsmanager:...}}` name carrying a quote would come
-          // through `warn` in PLAINTEXT. Supplying the masker suppresses the
-          // command for such a name instead (security review of issue #3136).
-          const deleteCommand = renderDisableCommand({
-            before: 'aws ssm delete-parameter --name',
-            identifier: name,
-            maskSecrets: mask,
-          });
-          const manualStep = deleteCommand
-            ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
-            : "Outside a rollback's re-create, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the " +
-              'parameter name cannot be reproduced safely on a command line: a command naming ' +
-              'the sanitized form would delete a DIFFERENT parameter, and one naming a name ' +
-              'that is not inert unquoted could run part of it as shell.';
-          warn(
-            `Failed to clean up partially-created SSM parameter ${displaySafe(logicalId)} (${displaySafe(mask(name))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
-          );
-        }
-        // The parameter itself was created: an "already exists" from its wiring is an
-        // auxiliary object's, not this parameter's name collision (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
+      await (await this.getCreateClient()).send(new PutParameterCommand(putParams));
 
       debug(
         `Successfully created SSM parameter ${displaySafe(logicalId)}: ${displaySafe(mask(name))}`
       );
 
-      // Built AFTER the cleanup-guarded wiring block on purpose (issue #1824):
-      // a failure here must NOT trigger the best-effort `DeleteParameter` above,
-      // which would destroy a successfully created parameter over a missing
-      // attribute. `buildParameterArn` never throws (enforced in its own body,
-      // not assumed here), so it cannot fail the create either.
+      // Nothing after `PutParameter` can fail the create (issue #1824): a
+      // failure building the ARN must not fail -- or clean up -- a parameter
+      // that was created over a missing attribute. `buildParameterArn` never
+      // throws (enforced in its own body, not assumed here).
       const arn = await this.buildParameterArn(name, mask);
 
       return {
@@ -509,7 +447,7 @@ export class SSMParameterProvider implements ResourceProvider {
       // so the engine is not the only boundary. The `cause` stays unmasked,
       // and a message the mask changed is stamped so the retry classifiers
       // read that chain (`wrapMaskedError`, issue #4244).
-      const thrown = this.wrapMaskedError(
+      throw this.wrapMaskedError(
         mask,
         error,
         (text) =>
@@ -521,9 +459,6 @@ export class SSMParameterProvider implements ResourceProvider {
             cause
           )
       );
-      // A non-enumerable symbol, never part of the message.
-      if (leftBehind) markCreatedBeforeFailure(thrown, logicalId, resourceType, name);
-      throw thrown;
     }
   }
 

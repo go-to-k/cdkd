@@ -112,45 +112,9 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
     ssmRegionFails.value = false;
   });
 
-  describe('SSMParameterProvider partial-create cleanup', () => {
-    const run = async (name: string, maskSecrets?: MaskerFn): Promise<void> => {
-      mockSend.mockResolvedValueOnce({}); // PutParameter
-      mockSend.mockRejectedValueOnce(new Error('AddTags boom')); // AddTagsToResource
-      mockSend.mockRejectedValueOnce(new Error('DeleteParameter also failed')); // cleanup
-      await expect(
-        new SSMParameterProvider().create(
-          'MyParam',
-          'AWS::SSM::Parameter',
-          { Name: name, Type: 'String', Value: 'v', Tags: [{ Key: 'k', Value: 'v' }] },
-          maskSecrets ? { maskSecrets } : undefined
-        )
-      ).rejects.toThrow('AddTags boom');
-    };
-
-    it('sanitizes the prose name, keeping it in the line', async () => {
-      await run(`/cdkd/${HOSTILE}`);
-      expectNoForgers(logged());
-      expect(logged()).toContain(
-        `Failed to clean up partially-created SSM parameter MyParam (/cdkd/${HOSTILE_SHOWN})`
-      );
-    });
-
-    it('renders a clean name byte-identically', async () => {
-      await run('/cdkd/clean');
-      expect(logged()).toContain(
-        'Failed to clean up partially-created SSM parameter MyParam (/cdkd/clean)'
-      );
-    });
-
-    it('masks BEFORE sanitizing, so a secret carrying a rewritten character stays masked', async () => {
-      // The masker matches the LITERAL secret, which includes the NEL. Sanitize
-      // first and the text holds `s3cr et`, which the masker no longer matches.
-      const secret = `s3cr${NEL}et`;
-      await run(`/cdkd/${secret}`, (t) => t.split(secret).join('<redacted>'));
-      expect(logged()).not.toContain('s3cr');
-      expect(logged()).toContain('(/cdkd/<redacted>)');
-    });
-  });
+  // The SSM partial-create cleanup lines these cases pinned are gone: the tags
+  // ride on PutParameter (go-to-k/cdkd#4971), so no call follows it whose
+  // failure needs a cleanup.
 
   describe('SSMParameterProvider mask-before-sanitize at every create / update site', () => {
     // A secret carrying a character `displaySafe` rewrites is the only input
@@ -170,22 +134,6 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       );
       expect(logged()).toContain('Could not build the Arn attribute for SSM parameter /cdkd/<redacted>');
       expect(logged()).toContain('Successfully created SSM parameter MyParam: /cdkd/<redacted>');
-      expect(logged()).not.toContain('s3cr');
-    });
-
-    it('create: the cleaned-up line', async () => {
-      mockSend.mockResolvedValueOnce({}); // PutParameter
-      mockSend.mockRejectedValueOnce(new Error('AddTags boom'));
-      mockSend.mockResolvedValueOnce({}); // cleanup succeeds
-      await expect(
-        new SSMParameterProvider().create(
-          'MyParam',
-          'AWS::SSM::Parameter',
-          { Name: `/cdkd/${secret}`, Type: 'String', Value: 'v', Tags: [{ Key: 'k', Value: 'v' }] },
-          { maskSecrets: masker }
-        )
-      ).rejects.toThrow('AddTags boom');
-      expect(logged()).toContain('Cleaned up partially-created SSM parameter MyParam (/cdkd/<redacted>)');
       expect(logged()).not.toContain('s3cr');
     });
 

@@ -55,23 +55,14 @@ describe('SSMParameterProvider created-before-failure mark (go-to-k/cdkd#4583)',
     provider = new SSMParameterProvider();
   });
 
-  it('marks the parameter name when tagging failed and the cleanup delete failed', async () => {
+  // go-to-k/cdkd#4971: the tags ride on PutParameter, so no call follows it
+  // that could fail and leave the parameter behind for the mark to name.
+  it('sends no call after PutParameter for a tagged create', async () => {
     mockSend.mockResolvedValueOnce({}); // PutParameter
-    mockSend.mockRejectedValueOnce(new Error('AddTagsToResource boom'));
-    mockSend.mockRejectedValueOnce(new Error('DeleteParameter boom'));
 
-    const error = await createError(provider);
-    expect(createdBeforeFailure(error, 'MyParam', RESOURCE_TYPE)).toBe(NAME);
-  });
-
-  it('does not mark when the cleanup deleted the parameter', async () => {
-    mockSend.mockResolvedValueOnce({}); // PutParameter
-    mockSend.mockRejectedValueOnce(new Error('AddTagsToResource boom'));
-    mockSend.mockResolvedValueOnce({}); // DeleteParameter
-
-    const error = await createError(provider);
-    expect(error).toBeInstanceOf(Error);
-    expect(createdBeforeFailure(error, 'MyParam', RESOURCE_TYPE)).toBeUndefined();
+    await provider.create('MyParam', RESOURCE_TYPE, PROPS);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0].input.Tags).toEqual([{ Key: 'team', Value: 'core' }]);
   });
 
   it('does not mark when PutParameter itself failed', async () => {

@@ -89,6 +89,11 @@ const maskSecrets = createSecretMasker(bagOf(SECRET, SHORT, OLD_SECRET, SECRET_A
 const PLAINTEXTS = [SECRET, SHORT, OLD_SECRET, SECRET_ARN];
 
 const DOC = { Version: '2012-10-17', Statement: [] };
+/**
+ * A managed policy whose attach the partial-create cases fail: the tags ride
+ * on CreateRole (go-to-k/cdkd#4971), so no TagRole follows it to fail instead.
+ */
+const WIRED_POLICY = 'arn:aws:iam::aws:policy/ReadOnlyAccess';
 
 function allLines(): string {
   return [...warnSpy.mock.calls, ...debugSpy.mock.calls].map((c) => String(c[0])).join('\n');
@@ -235,17 +240,17 @@ describe('IAMRoleProvider (issue #2177)', () => {
 
   it('WITHHOLDS the cleanup commands for a secret-bearing name, and renders them for an ordinary one', async () => {
     answerIam({
-      TagRoleCommand: new Error('TagRole boom'),
+      AttachRolePolicyCommand: new Error('AttachRolePolicy boom'),
       ListAttachedRolePoliciesCommand: new Error('cleanup failed'),
     });
     await expect(
       new IAMRoleProvider().create(
         'MyRole',
         TYPE,
-        { RoleName: SECRET, AssumeRolePolicyDocument: DOC, Tags: [{ Key: 'k', Value: 'v' }] },
+        { RoleName: SECRET, AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [WIRED_POLICY], Tags: [{ Key: 'k', Value: 'v' }] },
         { maskSecrets }
       )
-    ).rejects.toThrow('TagRole boom');
+    ).rejects.toThrow('AttachRolePolicy boom');
     const warnMsg = String(warnSpy.mock.calls[0]?.[0]);
     expect(warnMsg).toContain(WITHHELD_AWS_COMMAND);
     expect(warnMsg).not.toContain('aws iam delete-role');
@@ -257,10 +262,10 @@ describe('IAMRoleProvider (issue #2177)', () => {
       new IAMRoleProvider().create(
         'MyRole',
         TYPE,
-        { RoleName: 'ordinary-role', AssumeRolePolicyDocument: DOC, Tags: [{ Key: 'k', Value: 'v' }] },
+        { RoleName: 'ordinary-role', AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [WIRED_POLICY], Tags: [{ Key: 'k', Value: 'v' }] },
         { maskSecrets }
       )
-    ).rejects.toThrow('TagRole boom');
+    ).rejects.toThrow('AttachRolePolicy boom');
     expect(String(warnSpy.mock.calls[0]?.[0])).toContain('aws iam delete-role --role-name ordinary-role');
   });
 
@@ -704,7 +709,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     const roleName = derived(raw, 64);
     expect(roleName).not.toBe(raw); // premise: the name really is rewritten
     answerIam({
-      TagRoleCommand: new Error('TagRole boom'),
+      AttachRolePolicyCommand: new Error('AttachRolePolicy boom'),
       ListAttachedRolePoliciesCommand: new Error('cleanup failed'),
     });
     await expect(
@@ -712,11 +717,11 @@ describe('derived physical names (issue #2177 security review)', () => {
         new IAMRoleProvider().create(
           'MyRole',
           'AWS::IAM::Role',
-          { RoleName: raw, AssumeRolePolicyDocument: DOC, Tags: [{ Key: 'k', Value: 'v' }] },
+          { RoleName: raw, AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [WIRED_POLICY], Tags: [{ Key: 'k', Value: 'v' }] },
           { maskSecrets: derivedMasker }
         )
       )
-    ).rejects.toThrow('TagRole boom');
+    ).rejects.toThrow('AttachRolePolicy boom');
     const lines = allLines();
     expect(lines).toContain('Created IAM role');
     expect(lines).not.toContain(roleName);
@@ -1093,7 +1098,7 @@ describe('derived physical names (issue #2177 security review)', () => {
 describe('partial-create cleanup that SUCCEEDS (issue #2177)', () => {
   it('masks every AWS::IAM::Role cleanup line', async () => {
     answerIam(
-      { TagRoleCommand: new Error('TagRole boom') },
+      { AttachRolePolicyCommand: new Error('AttachRolePolicy boom') },
       {
         ListAttachedRolePoliciesCommand: { AttachedPolicies: [{ PolicyArn: SECRET_ARN }] },
         ListRolePoliciesCommand: { PolicyNames: [SHORT] },
@@ -1103,10 +1108,10 @@ describe('partial-create cleanup that SUCCEEDS (issue #2177)', () => {
       new IAMRoleProvider().create(
         'MyRole',
         'AWS::IAM::Role',
-        { RoleName: SECRET, AssumeRolePolicyDocument: DOC, Tags: [{ Key: 'k', Value: 'v' }] },
+        { RoleName: SECRET, AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [WIRED_POLICY], Tags: [{ Key: 'k', Value: 'v' }] },
         { maskSecrets }
       )
-    ).rejects.toThrow('TagRole boom');
+    ).rejects.toThrow('AttachRolePolicy boom');
     expect(allLines()).toContain('Detached managed policy');
     expect(allLines()).toContain('Deleted inline policy');
     expectTranscriptMasked();
@@ -1531,16 +1536,16 @@ describe('the remaining masked lines, each with a secret (issue #2177 review)', 
   it('IAMRoleProvider cleanup: empty lists, already-detached, already-deleted and role-gone arms', async () => {
     // Pass 1: both lists empty.
     answerIam(
-      { TagRoleCommand: new Error('boom') },
+      { AttachRolePolicyCommand: new Error('boom') },
       { ListAttachedRolePoliciesCommand: { AttachedPolicies: [] }, ListRolePoliciesCommand: { PolicyNames: [] } }
     );
-    const tagged = { RoleName: SECRET, AssumeRolePolicyDocument: DOC, Tags: [{ Key: 'k', Value: 'v' }] };
+    const tagged = { RoleName: SECRET, AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [WIRED_POLICY], Tags: [{ Key: 'k', Value: 'v' }] };
     await expect(new IAMRoleProvider().create('R', 'AWS::IAM::Role', tagged, { maskSecrets })).rejects.toThrow('boom');
     expect(allLines()).toContain('No managed policies attached');
     expect(allLines()).toContain('No inline policies on role');
     // Pass 2: each item is already gone.
     answerIam(
-      { TagRoleCommand: new Error('boom'), DetachRolePolicyCommand: gone(), DeleteRolePolicyCommand: gone() },
+      { AttachRolePolicyCommand: new Error('boom'), DetachRolePolicyCommand: gone(), DeleteRolePolicyCommand: gone() },
       {
         ListAttachedRolePoliciesCommand: { AttachedPolicies: [{ PolicyArn: SECRET_ARN }] },
         ListRolePoliciesCommand: { PolicyNames: [SHORT] },
@@ -1551,7 +1556,7 @@ describe('the remaining masked lines, each with a secret (issue #2177 review)', 
     expect(allLines()).toContain('already deleted from role');
     // Pass 3: the role itself is gone when listing.
     answerIam({
-      TagRoleCommand: new Error('boom'),
+      AttachRolePolicyCommand: new Error('boom'),
       ListAttachedRolePoliciesCommand: gone(),
       ListRolePoliciesCommand: gone(),
     });

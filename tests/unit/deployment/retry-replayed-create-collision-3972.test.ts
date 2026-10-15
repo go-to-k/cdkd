@@ -61,7 +61,14 @@ import { awsSdkError } from '../_aws-sdk-error.js';
 
 const LOGICAL_ID = 'Stream';
 const TYPE = 'AWS::Kinesis::Stream';
-const PROPERTIES = { Name: 'stream', ShardCount: 1, Tags: [{ Key: 'k', Value: 'v' }] };
+// The tags ride on CreateStream (go-to-k/cdkd#4971); the retention change is
+// the auxiliary call a failure is injected into.
+const PROPERTIES = {
+  Name: 'stream',
+  ShardCount: 1,
+  RetentionPeriodHours: 48,
+  Tags: [{ Key: 'k', Value: 'v' }],
+};
 /** Kinesis's own wording for a stream name that is taken. */
 const COLLISION = 'Stream stream under account 123456789012 already exists.';
 const THROTTLE = 'Rate exceeded for stream stream under account 123456789012.';
@@ -70,7 +77,7 @@ type Sendable = { send: (command: unknown) => Promise<unknown> };
 
 /**
  * `createStreamOutcomes[i]` is what the i-th `CreateStream` does ('ok' or
- * 'collide'); `tagThrottles` is how many `AddTagsToStream` calls are throttled
+ * 'collide'); `tagThrottles` is how many `IncreaseStreamRetentionPeriod` calls are throttled
  * before one succeeds. Returns the command log.
  */
 function stubKinesis(opts: {
@@ -89,7 +96,7 @@ function stubKinesis(opts: {
         if (outcome === 'collide') throw awsSdkError(COLLISION, 'ResourceInUseException');
         return {};
       }
-      if (name === 'AddTagsToStreamCommand' && tags++ < opts.tagThrottles) {
+      if (name === 'IncreaseStreamRetentionPeriodCommand' && tags++ < opts.tagThrottles) {
         throw awsSdkError(THROTTLE, 'LimitExceededException');
       }
       if (name === 'DescribeStreamCommand') {
@@ -198,10 +205,10 @@ describe('a replayed create colliding with its own earlier attempt (#3972)', () 
     const error = await createThroughRetry();
 
     // The shape the issue describes, and not a shortcut to it: the stream was
-    // created, its tag call was throttled, the wrapper replayed create(), and
+    // created, its retention call was throttled, the wrapper replayed create(), and
     // the replay's CreateStream collided.
     expect(sent.filter((c) => c === 'CreateStreamCommand')).toHaveLength(2);
-    expect(sent.filter((c) => c === 'AddTagsToStreamCommand')).toHaveLength(1);
+    expect(sent.filter((c) => c === 'IncreaseStreamRetentionPeriodCommand')).toHaveLength(1);
     expect(error).toBeInstanceOf(Error);
     // What the wrapper throws is the replay's, and it still RELAYS AWS's
     // "already exists": the message is unchanged, so only the carried mark
@@ -249,7 +256,7 @@ describe('a replayed create colliding with its own earlier attempt (#3972)', () 
     const error = await createThroughRetry();
 
     expect(sent.filter((c) => c === 'CreateStreamCommand')).toHaveLength(1);
-    expect(sent).not.toContain('AddTagsToStreamCommand');
+    expect(sent).not.toContain('IncreaseStreamRetentionPeriodCommand');
     expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(true);
   });
 
@@ -400,7 +407,7 @@ describe('the rollback reverse-replacement arm does not delete the live new stre
 
   it('fails the op instead of deleting the new stream', async () => {
     // The issue's rollback shape: the Name changed (stream -> stream-new), so
-    // reverting re-creates `stream`; its tag call is throttled, the replayed
+    // reverting re-creates `stream`; its retention call is throttled, the replayed
     // CreateStream meets the `stream` attempt 1 just made, and the
     // delete-new-first arm used to delete the live `stream-new`, which never
     // held the name.

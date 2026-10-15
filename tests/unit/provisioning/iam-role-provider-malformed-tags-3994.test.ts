@@ -164,14 +164,23 @@ describe('IAMRoleProvider Tags (go-to-k/cdkd#3994)', () => {
     expect(sent.filter((n) => /Untag|RemoveTags|DeleteTags/.test(n))).toEqual([]);
   });
 
-  it('creates with the desired tags', async () => {
+  // go-to-k/cdkd#4971: the tags ride on CreateRole itself, so an SCP requiring
+  // `aws:RequestTag/...` on iam:CreateRole sees them, and no TagRole follows.
+  it('creates with the desired tags on CreateRole and no TagRole call', async () => {
     await provider.create('R', TYPE, { ...BASE, Tags: DESIRED });
-    const tag = commands().filter((c) => c instanceof TagRoleCommand) as TagRoleCommand[];
-    expect(tag.map((c) => c.input)).toEqual([{ RoleName: ROLE, Tags: DESIRED }]);
+    const create = commands().filter((c) => c instanceof CreateRoleCommand) as CreateRoleCommand[];
+    expect(create.map((c) => c.input.Tags)).toEqual([DESIRED]);
+    expect(commands().some((c) => c instanceof TagRoleCommand)).toBe(false);
   });
 
-  it('creates with no TagRole call when Tags is absent', async () => {
-    await provider.create('R', TYPE, { ...BASE });
+  it.each([
+    ['absent', undefined],
+    ['empty', []],
+  ])('creates with no Tags member and no TagRole call when Tags is %s', async (_label, tags) => {
+    await provider.create('R', TYPE, { ...BASE, ...(tags !== undefined && { Tags: tags }) });
+    const create = commands().filter((c) => c instanceof CreateRoleCommand) as CreateRoleCommand[];
+    expect(create).toHaveLength(1);
+    expect('Tags' in create[0]!.input).toBe(false);
     expect(commands().some((c) => c instanceof TagRoleCommand)).toBe(false);
   });
 });

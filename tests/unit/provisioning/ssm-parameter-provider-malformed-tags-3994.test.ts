@@ -207,22 +207,17 @@ describe('SSMParameterProvider Tags (go-to-k/cdkd#3994)', () => {
     expect(tagCalls()).toEqual([]);
   });
 
-  it('creates with the desired tags, coercing a scalar value', async () => {
+  // go-to-k/cdkd#4971: the tags ride on PutParameter itself.
+  it('creates with the desired tags on PutParameter, coercing a scalar value', async () => {
     await provider.create('P', TYPE, { ...BASE, Tags: { n: 1, b: true, s: 'x' } });
-    expect(commands().some((c) => c instanceof PutParameterCommand)).toBe(true);
-    expect(tagCalls()).toEqual([
+    const put = commands().filter((c) => c instanceof PutParameterCommand) as PutParameterCommand[];
+    expect(put.map((c) => c.input.Tags)).toEqual([
       [
-        'AddTagsToResourceCommand',
-        {
-          ResourceType: 'Parameter',
-          ResourceId: NAME,
-          Tags: [
-            { Key: 'n', Value: '1' },
-            { Key: 'b', Value: 'true' },
-            { Key: 's', Value: 'x' },
-          ],
-        },
+        { Key: 'n', Value: '1' },
+        { Key: 'b', Value: 'true' },
+        { Key: 's', Value: 'x' },
       ],
     ]);
+    expect(tagCalls()).toEqual([]);
   });
 });

@@ -180,14 +180,25 @@ describe('KinesisStreamProvider Tags (go-to-k/cdkd#3994)', () => {
     expect(sent.filter((n) => /Untag|RemoveTags|DeleteTags/.test(n))).toEqual([]);
   });
 
-  it('creates with the desired tags', async () => {
+  // go-to-k/cdkd#4971: the tags ride on CreateStream itself, so an SCP
+  // requiring `aws:RequestTag/...` on kinesis:CreateStream sees them.
+  it('creates with the desired tags on CreateStream and no AddTagsToStream call', async () => {
     await provider.create('S', TYPE, { Name: STREAM, Tags: DESIRED });
-    expect(commands().some((c) => c instanceof CreateStreamCommand)).toBe(true);
-    const tag = commands().filter(
-      (c) => c instanceof AddTagsToStreamCommand
-    ) as AddTagsToStreamCommand[];
-    expect(tag.map((c) => c.input)).toEqual([
-      { StreamName: STREAM, Tags: { keep: 'same', add: '' } },
-    ]);
+    const create = commands().filter(
+      (c) => c instanceof CreateStreamCommand
+    ) as CreateStreamCommand[];
+    expect(create.map((c) => c.input.Tags)).toEqual([{ keep: 'same', add: '' }]);
+    expect(commands().some((c) => c instanceof AddTagsToStreamCommand)).toBe(false);
+  });
+
+  it('creates with no Tags member when Tags is absent or empty', async () => {
+    await provider.create('S', TYPE, { Name: STREAM });
+    await provider.create('S2', TYPE, { Name: `${STREAM}-2`, Tags: [] });
+    const create = commands().filter(
+      (c) => c instanceof CreateStreamCommand
+    ) as CreateStreamCommand[];
+    expect(create).toHaveLength(2);
+    expect(create.every((c) => !('Tags' in c.input))).toBe(true);
+    expect(commands().some((c) => c instanceof AddTagsToStreamCommand)).toBe(false);
   });
 });

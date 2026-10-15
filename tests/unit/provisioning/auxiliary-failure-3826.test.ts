@@ -51,7 +51,6 @@ import { Route53Client } from '@aws-sdk/client-route-53';
 import { S3Client } from '@aws-sdk/client-s3';
 import { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { SNSClient } from '@aws-sdk/client-sns';
-import { SSMClient } from '@aws-sdk/client-ssm';
 import { STSClient } from '@aws-sdk/client-sts';
 
 import {
@@ -91,7 +90,6 @@ import { Route53Provider } from '../../../src/provisioning/providers/route53-pro
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
-import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -774,9 +772,9 @@ const CASES: Case[] = [
       name: 'ResourceInUseException',
       message: 'Stream stream under account 123456789012 already exists.',
     },
-    aux: 'AddTagsToStreamCommand',
+    // The tags ride on CreateStream (go-to-k/cdkd#4971), so no tag call follows it.
+    aux: 'IncreaseStreamRetentionPeriodCommand',
     alsoAux: [
-      'IncreaseStreamRetentionPeriodCommand',
       'StartStreamEncryptionCommand',
       'EnableEnhancedMonitoringCommand',
       {
@@ -909,17 +907,6 @@ const CASES: Case[] = [
         },
       },
     },
-  },
-  {
-    name: 'ssm-parameter AWS::SSM::Parameter',
-    provider: () => new SSMParameterProvider(),
-    resourceType: 'AWS::SSM::Parameter',
-    properties: { Name: 'param', Type: 'String', Value: 'v', Tags: { k: 'v' } },
-    clients: [SSMClient, STSClient],
-    main: 'PutParameterCommand',
-    mainAwsError: { name: 'ParameterAlreadyExists', message: 'The parameter already exists. To overwrite this value, set the overwrite option in the request to true.' },
-    aux: 'AddTagsToResourceCommand',
-    responses: { GetCallerIdentityCommand: { Account: '123456789012' } },
   },
   {
     // #3995: the group's metrics and notifications ride their own APIs after

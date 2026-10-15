@@ -132,17 +132,21 @@ describe('EC2Provider createSubnet MapPublicIpOnLaunch read-back (issue #1299)',
     expect(reads.length).toBe(0);
   });
 
-  it('tags still applied before the modify (CreateTags call ordering preserved)', async () => {
+  // go-to-k/cdkd#4971: the tags ride on CreateSubnet itself, so they land
+  // before the modify by construction and no CreateTags follows.
+  it('tags ride on CreateSubnet, before the modify, with no CreateTags call', async () => {
     wire([true]);
     await provider.create('Sub', 'AWS::EC2::Subnet', {
       ...subnetProps,
       Tags: [{ Key: 'Name', Value: 'my-subnet' }],
     });
-    const tagIdx = mockSend.mock.calls.findIndex((c) => c[0] instanceof CreateTagsCommand);
-    const modifyIdx = mockSend.mock.calls.findIndex(
-      (c) => c[0] instanceof ModifySubnetAttributeCommand
-    );
-    expect(tagIdx).toBeGreaterThanOrEqual(0);
-    expect(modifyIdx).toBeGreaterThan(tagIdx);
+    const create = mockSend.mock.calls.find((c) => c[0] instanceof CreateSubnetCommand)!;
+    expect(create[0].input.TagSpecifications).toEqual([
+      { ResourceType: 'subnet', Tags: [{ Key: 'Name', Value: 'my-subnet' }] },
+    ]);
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof CreateTagsCommand)).toBe(false);
+    expect(
+      mockSend.mock.calls.some((c) => c[0] instanceof ModifySubnetAttributeCommand)
+    ).toBe(true);
   });
 });

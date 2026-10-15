@@ -468,9 +468,9 @@ export class KinesisStreamProvider implements ResourceProvider {
     }
 
     // Set once CreateStream returns. No failure after it is this stream's name
-    // collision: it is an auxiliary call's (AddTagsToStream, the retention
-    // change, StartStreamEncryption, EnableEnhancedMonitoring) or an ACTIVE
-    // wait's, so every one is marked (#3826, #3877).
+    // collision: it is an auxiliary call's (the retention change,
+    // StartStreamEncryption, EnableEnhancedMonitoring) or an ACTIVE wait's,
+    // so every one is marked (#3826, #3877).
     let streamCreated = false;
     try {
       // Determine stream mode
@@ -494,6 +494,16 @@ export class KinesisStreamProvider implements ResourceProvider {
       // replay, where it is omitted and AWS applies its own default.
       const maxRecordSizeInKiB = maxRecordRead.kind === 'usable' ? maxRecordRead.size : undefined;
 
+      // go-to-k/cdkd#4971: the tags ride on `CreateStream` itself, as
+      // CloudFormation sends them, so an SCP requiring `aws:RequestTag/...` on
+      // `kinesis:CreateStream` sees them. No separate `AddTagsToStream`
+      // follows. A tagged `CreateStream` needs `kinesis:AddTagsToStream`
+      // (measured), the permission that follow-up call already needed.
+      const tags: Record<string, string> = {};
+      for (const tag of desiredTags) {
+        tags[tag.Key] = tag.Value;
+      }
+
       await this.getCreateClient().send(
         new CreateStreamCommand({
           StreamName: streamName,
@@ -502,6 +512,7 @@ export class KinesisStreamProvider implements ResourceProvider {
             StreamMode: streamMode as 'PROVISIONED' | 'ON_DEMAND',
           },
           ...(maxRecordSizeInKiB !== undefined && { MaxRecordSizeInKiB: maxRecordSizeInKiB }),
+          ...(Object.keys(tags).length > 0 && { Tags: tags }),
         })
       );
       streamCreated = true;
@@ -510,20 +521,6 @@ export class KinesisStreamProvider implements ResourceProvider {
 
       // Poll until stream is ACTIVE
       const streamInfo = await this.waitForStreamActive(streamName);
-
-      // Apply tags if specified
-      const tags: Record<string, string> = {};
-      for (const tag of desiredTags) {
-        tags[tag.Key] = tag.Value;
-      }
-      if (Object.keys(tags).length > 0) {
-        await this.getClient().send(
-          new AddTagsToStreamCommand({
-            StreamName: streamName,
-            Tags: tags,
-          })
-        );
-      }
 
       // Apply RetentionPeriodHours if specified (default is 24 hours)
       const retentionPeriodHours =

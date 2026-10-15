@@ -8,12 +8,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *
  * - The baseline holds `BaseRole`.
  * - `WITH_ORPHANS=true` adds `OrphanA` and `OrphanC`, each declaring `Tags`.
- *   verify.sh deploys that template as a role that may create a role but may
- *   neither tag nor delete it, so each CREATE makes the role, fails on the
- *   post-create `TagRole`, and cannot clean up: the journal records each as a
- *   proven orphan with the `RoleId` its `CreateRole` answered with. `OrphanA`
- *   also declares an inline policy, whose `PutRolePolicy` succeeds before the
- *   `TagRole` fails, and whose cleanup `DeleteRolePolicy` is refused too: the
+ *   Outside the fix-forward each also declares an inline policy AWS refuses
+ *   (`MalformedPolicyDocument`: a `Resource` that is not an ARN). verify.sh
+ *   deploys that template as a role that may create and tag a role but may
+ *   not delete it, so each CREATE makes the role -- tagged, since the tags
+ *   ride on `CreateRole` (go-to-k/cdkd#4971) -- fails on that `PutRolePolicy`,
+ *   and cannot clean up: the journal records each as a proven orphan with the
+ *   `RoleId` its `CreateRole` answered with. `OrphanA` puts a valid inline
+ *   policy first, whose cleanup `DeleteRolePolicy` is refused too: the
  *   fix-forward's delete must remove it before `DeleteRole`.
  * - `ORPHAN_FIX_FORWARD=true` keeps every orphan logical id under another name
  *   (`-b`), so the fix-forward deploy creates two new roles. Before it,
@@ -46,7 +48,24 @@ export class IamRoleFixForwardOrphanStack extends cdk.Stack {
     });
 
     if (process.env.WITH_ORPHANS === 'true') {
-      const suffix = process.env.ORPHAN_FIX_FORWARD === 'true' ? '-b' : '';
+      const fixForward = process.env.ORPHAN_FIX_FORWARD === 'true';
+      const suffix = fixForward ? '-b' : '';
+      // The failed CREATE's wiring failure: AWS refuses this document
+      // (`MalformedPolicyDocument`, measured). Synth's template validation
+      // warns about the same `Resource`; that warning is expected.
+      const refused: iam.CfnRole.PolicyProperty[] = fixForward
+        ? []
+        : [
+            {
+              policyName: 'irffo-refused',
+              policyDocument: {
+                Version: '2012-10-17',
+                Statement: [
+                  { Effect: 'Allow', Action: 'logs:CreateLogGroup', Resource: 'not-an-arn' },
+                ],
+              },
+            },
+          ];
       new iam.CfnRole(this, 'OrphanA', {
         roleName: `cdkd-irffo-a${suffix}`,
         assumeRolePolicyDocument,
@@ -58,14 +77,17 @@ export class IamRoleFixForwardOrphanStack extends cdk.Stack {
               Statement: [{ Effect: 'Allow', Action: 'logs:CreateLogGroup', Resource: '*' }],
             },
           },
+          ...refused,
         ],
         tags: [{ key: 'cdkd-integ', value: 'iam-role-fix-forward-orphan' }],
       });
       new iam.CfnRole(this, 'OrphanC', {
         roleName: `cdkd-irffo-c${suffix}`,
         assumeRolePolicyDocument,
+        ...(refused.length > 0 && { policies: refused }),
         tags: [{ key: 'cdkd-integ', value: 'iam-role-fix-forward-orphan' }],
       });
+
     }
   }
 }

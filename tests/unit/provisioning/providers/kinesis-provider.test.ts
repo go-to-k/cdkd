@@ -116,14 +116,14 @@ describe('KinesisStreamProvider', () => {
 
       expect(result.physicalId).toBe('tagged-stream');
 
-      const addTagsCall = mockSend.mock.calls.find(
-        (call: unknown[]) => call[0] instanceof AddTagsToStreamCommand
+      // go-to-k/cdkd#4971: the tags ride on CreateStream, with no follow-up.
+      const createCall = mockSend.mock.calls.find(
+        (call: unknown[]) => call[0] instanceof CreateStreamCommand
       );
-      expect(addTagsCall).toBeDefined();
-      expect(addTagsCall![0].input).toEqual({
-        StreamName: 'tagged-stream',
-        Tags: { Environment: 'test', Project: 'cdkd' },
-      });
+      expect(createCall![0].input.Tags).toEqual({ Environment: 'test', Project: 'cdkd' });
+      expect(
+        mockSend.mock.calls.some((call: unknown[]) => call[0] instanceof AddTagsToStreamCommand)
+      ).toBe(false);
     });
 
     it('should create stream with ON_DEMAND mode without ShardCount', async () => {

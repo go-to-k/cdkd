@@ -76,7 +76,7 @@ function isRoleName(id: string): boolean {
  * role deleted and re-created under the same name gets another one (IAM User
  * Guide, "IAM identifiers" → "Unique identifiers"; the
  * `iam-role-fix-forward-orphan` fixture measures the re-create). The wiring
- * calls a CREATE makes after `CreateRole` (policies, tags) do not touch it.
+ * calls a CREATE makes after `CreateRole` (policies) do not touch it.
  * `undefined` for a missing or empty one.
  */
 function roleIdentityToken(roleId: string | undefined): string | undefined {
@@ -231,6 +231,7 @@ export class IAMRoleProvider implements ResourceProvider {
         MaxSessionDuration?: number;
         Path?: string;
         PermissionsBoundary?: string;
+        Tags?: Array<{ Key: string; Value: string }>;
       } = {
         RoleName: roleName,
         AssumeRolePolicyDocument: policyDocument,
@@ -248,6 +249,15 @@ export class IAMRoleProvider implements ResourceProvider {
       if (properties['PermissionsBoundary']) {
         createParams.PermissionsBoundary = properties['PermissionsBoundary'] as string;
       }
+      // go-to-k/cdkd#4971: the tags ride on `CreateRole` itself, as
+      // CloudFormation sends them, so an SCP requiring `aws:RequestTag/...` on
+      // `iam:CreateRole` sees them. No separate `TagRole` follows. A tagged
+      // `CreateRole` needs `iam:TagRole` (measured), the permission the
+      // follow-up `TagRole` already needed, so no role that could create
+      // before loses it.
+      if (tags.length > 0) {
+        createParams.Tags = tags;
+      }
 
       const createClient = await this.createClient.get();
       const response = await createClient.send(new CreateRoleCommand(createParams));
@@ -258,7 +268,7 @@ export class IAMRoleProvider implements ResourceProvider {
 
       // CreateRoleCommand has succeeded — AWS has now committed the Role.
       // Every subsequent call wires sub-resources onto it (managed-policy
-      // attachments / inline policies / tags); if any fail, the role
+      // attachments / inline policies); if any fail, the role
       // exists on AWS but cdkd state will NOT (the throw aborts before
       // the success-return). The next redeploy would then re-try CREATE
       // and AWS would reject with `EntityAlreadyExists: Role with name
@@ -303,17 +313,6 @@ export class IAMRoleProvider implements ResourceProvider {
             );
             log.debug(`Added inline policy ${v(policy.PolicyName)} to role ${v(roleName)}`);
           }
-        }
-
-        // Add tags if specified
-        if (properties['Tags'] !== undefined && properties['Tags'] !== null) {
-          await this.iamClient.send(
-            new TagRoleCommand({
-              RoleName: roleName,
-              Tags: tags,
-            })
-          );
-          log.debug(`Tagged role ${v(roleName)}`);
         }
       } catch (innerError) {
         try {

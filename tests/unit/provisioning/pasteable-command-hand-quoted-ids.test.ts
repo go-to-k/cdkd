@@ -186,83 +186,9 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
     clientRegion.value = 'eu-west-1';
   });
 
-  describe('SSMParameterProvider partial-create cleanup', () => {
-    const BEFORE = 'aws ssm delete-parameter --name';
-
-    /** Drive create() to the arm where BOTH the wiring and the cleanup fail. */
-    const runFailedCleanup = async (name: string, maskSecrets?: MaskerFn): Promise<void> => {
-      mockSend.mockResolvedValueOnce({}); // PutParameter
-      mockSend.mockRejectedValueOnce(new Error('AddTags boom')); // AddTagsToResource
-      mockSend.mockRejectedValueOnce(new Error('DeleteParameter also failed')); // cleanup
-      await expect(
-        new SSMParameterProvider().create(
-          'MyParam',
-          'AWS::SSM::Parameter',
-          { Name: name, Type: 'String', Value: 'v', Tags: [{ Key: 'k', Value: 'v' }] },
-          maskSecrets ? { maskSecrets } : undefined
-        )
-      ).rejects.toThrow('AddTags boom');
-    };
-
-    for (const c of CASES) {
-      it(`${RENDERED_VERB[c.rendered]} the command for ${c.label}`, async () => {
-        const name = `/cdkd/${c.suffix}`;
-        await runFailedCleanup(name);
-        expectRendering(warnings(), BEFORE, name, c.rendered);
-      });
-    }
-
-    it('still names the parameter in PROSE when the command is suppressed', async () => {
-      // The suppression removes the pasteable span, not the diagnosis: a
-      // warning that named neither the resource nor a next step would be worse
-      // than the defect it replaced.
-      const name = `/cdkd/a${CONTROL_BYTE}b`;
-      await runFailedCleanup(name);
-      expect(warnings()).toContain('Failed to clean up partially-created SSM parameter MyParam');
-      expect(warnings()).toContain('`cdkd rollback --revert-failed`; otherwise delete it yourself');
-      // go-to-k/cdkd#4604: a deploy journals the id (a first-time CREATE and a
-      // replacement alike); a rollback's re-create does not.
-      expect(warnings()).toContain("Outside a rollback's re-create, the failed deploy's rollback journal");
-    });
-
-    it('SUPPRESSES the command for a name the MASKER would change', async () => {
-      // The regression this file's own fix could have shipped (found by the
-      // security review of #3136). `mask` is a message-level masker matching by
-      // LITERAL occurrence, and `shellQuote` rewrites an inner `'` to `'\''` —
-      // so the secret no longer OCCURS in the assembled line and comes through
-      // in PLAINTEXT. The hand-quoted form this replaced did NOT have that
-      // problem, because it left the value byte-identical. So a secret-bearing
-      // id is suppressed exactly as a sanitized one is.
-      //
-      // The name carries no quote: since go-to-k/cdkd#3950 a `'` is withheld by
-      // the shell-active gate whatever the masker says, so a quote-free secret
-      // name is the one only the masker gate withholds.
-      await runFailedCleanup('/cdkd/obrien-s3cr3t', (t) => t.replace(/s3cr3t/g, '<redacted>'));
-      expect(warnings()).not.toContain('s3cr3t');
-      expect(warnings()).not.toContain(BEFORE);
-      expect(warnings()).toContain('via the console');
-      // The PROSE copy is still there and IS masked, so the warning is still
-      // diagnosable — masking is not the same as withholding.
-      expect(warnings()).toContain('<redacted>');
-    });
-
-    it('still renders the command for a clean name when a masker IS supplied', async () => {
-      // The other direction: supplying a masker must not suppress every
-      // command, or the arm above would be indistinguishable from a renderer
-      // that gave up whenever it was handed one.
-      await runFailedCleanup('/cdkd/clean', (t) => t.replace(/s3cr3t/g, '<redacted>'));
-      expect(warnings()).toContain(`${BEFORE} /cdkd/clean`);
-    });
-
-    it('SUPPRESSES the command when the name sanitizes to NOTHING', async () => {
-      // The `!safeId` arm of the renderer: an all-non-ASCII name leaves an
-      // empty string after the positive allowlist, and an empty ARGUMENT would
-      // be a command acting on no resource at all.
-      await runFailedCleanup('ΩΩΩ');
-      expect(warnings()).not.toContain(BEFORE);
-      expect(warnings()).toContain('via the console');
-    });
-  });
+  // The SSM partial-create cleanup command these cases pinned is gone: the
+  // tags ride on PutParameter (go-to-k/cdkd#4971), so no call follows it whose
+  // failure needs a cleanup.
 
   describe('SSMParameterProvider import refusal', () => {
     const BEFORE = 'aws ssm get-parameter --name';

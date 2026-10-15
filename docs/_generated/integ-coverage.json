@@ -1329,6 +1329,7 @@
         "rollback-replay-effective-props",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
+        "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -1490,6 +1491,9 @@
         ],
         "stack-copy-create-tokens": [
           "l2"
+        ],
+        "tags-propagation": [
+          "l1"
         ],
         "vpc-lambda": [
           "l2"
@@ -1723,7 +1727,8 @@
       "resourceType": "AWS::EC2::NetworkAcl",
       "integs": [
         "ec2-vpc",
-        "import-migrate-vpc"
+        "import-migrate-vpc",
+        "tags-propagation"
       ],
       "signals": {
         "ec2-vpc": [
@@ -1731,6 +1736,9 @@
         ],
         "import-migrate-vpc": [
           "l2"
+        ],
+        "tags-propagation": [
+          "l1"
         ]
       }
     },
@@ -2030,6 +2038,7 @@
         "rollback-replay-effective-props",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
+        "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2192,6 +2201,9 @@
         "stack-copy-create-tokens": [
           "l2"
         ],
+        "tags-propagation": [
+          "l1"
+        ],
         "vpc-lambda": [
           "l2"
         ],
@@ -2242,6 +2254,7 @@
         "rollback-replay-effective-props",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
+        "tags-propagation",
         "update-replace",
         "vpc-lambda",
         "vpc-lambda-cr-race"
@@ -2365,6 +2378,9 @@
           "l2",
           "literal"
         ],
+        "tags-propagation": [
+          "l1"
+        ],
         "update-replace": [
           "l2",
           "literal"
@@ -2469,6 +2485,7 @@
         "sdk-to-cc-autoroute",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
+        "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -2650,6 +2667,9 @@
         ],
         "stack-copy-create-tokens": [
           "l2"
+        ],
+        "tags-propagation": [
+          "l1"
         ],
         "vpc-lambda": [
           "l2"
@@ -2952,6 +2972,7 @@
         "servicediscovery",
         "sg-circular-dependency",
         "stack-copy-create-tokens",
+        "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
         "vpc-nat-gateway"
@@ -3152,6 +3173,9 @@
         "stack-copy-create-tokens": [
           "l2",
           "literal"
+        ],
+        "tags-propagation": [
+          "l1"
         ],
         "vpc-lambda": [
           "l2"
@@ -4989,7 +5013,8 @@
         "rollback-command",
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
-        "stream-delete-redeploy"
+        "stream-delete-redeploy",
+        "tags-propagation"
       ],
       "signals": {
         "cache-streaming": [
@@ -5031,6 +5056,9 @@
         "stream-delete-redeploy": [
           "l2",
           "literal"
+        ],
+        "tags-propagation": [
+          "l1"
         ]
       }
     },

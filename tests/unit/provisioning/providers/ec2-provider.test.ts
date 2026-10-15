@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vite-plus/test';
 import {
   CreateSecurityGroupCommand,
+  CreateNatGatewayCommand,
   AuthorizeSecurityGroupIngressCommand,
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupEgressCommand,
@@ -1224,14 +1225,12 @@ describe('EC2Provider - NatGateway', () => {
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
-    it('applies tags via the post-create CreateTags API', async () => {
+    it('sends tags on CreateNatGateway with no post-create CreateTags (go-to-k/cdkd#4971)', async () => {
       process.env['CDKD_NO_WAIT'] = 'true'; // skip waiter for test focus
 
-      mockSend
-        .mockResolvedValueOnce({
-          NatGateway: { NatGatewayId: 'nat-tagged', State: 'pending' },
-        })
-        .mockResolvedValueOnce({}); // CreateTagsCommand
+      mockSend.mockResolvedValueOnce({
+        NatGateway: { NatGatewayId: 'nat-tagged', State: 'pending' },
+      });
 
       await provider.create('Nat', 'AWS::EC2::NatGateway', {
         SubnetId: 'subnet-abc',
@@ -1239,11 +1238,11 @@ describe('EC2Provider - NatGateway', () => {
         Tags: [{ Key: 'Name', Value: 'my-nat' }],
       });
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(CreateTagsCommand);
-      const tagInput = (mockSend.mock.calls[1][0] as CreateTagsCommand).input;
-      expect(tagInput.Resources).toEqual(['nat-tagged']);
-      expect(tagInput.Tags).toEqual([{ Key: 'Name', Value: 'my-nat' }]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const input = (mockSend.mock.calls[0][0] as CreateNatGatewayCommand).input;
+      expect(input.TagSpecifications).toEqual([
+        { ResourceType: 'natgateway', Tags: [{ Key: 'Name', Value: 'my-nat' }] },
+      ]);
     });
   });
 
@@ -1346,19 +1345,19 @@ describe('EC2Provider - EIP (Elastic IP) SDK provider', () => {
     expect((mockSend.mock.calls[0][0] as AllocateAddressCommand).input.Domain).toBe('vpc');
   });
 
-  it('defaults Domain to vpc and applies tags via CreateTags', async () => {
-    mockSend
-      .mockResolvedValueOnce({ AllocationId: 'eipalloc-tag', PublicIp: '1.2.3.4' })
-      .mockResolvedValueOnce({}); // CreateTags
+  it('defaults Domain to vpc and sends tags on AllocateAddress (go-to-k/cdkd#4971)', async () => {
+    mockSend.mockResolvedValueOnce({ AllocationId: 'eipalloc-tag', PublicIp: '1.2.3.4' });
 
     await provider.create('Eip', 'AWS::EC2::EIP', {
       Tags: [{ Key: 'Name', Value: 'my-eip' }],
     });
 
-    expect((mockSend.mock.calls[0][0] as AllocateAddressCommand).input.Domain).toBe('vpc');
-    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(CreateTagsCommand);
-    const tagInput = (mockSend.mock.calls[1][0] as CreateTagsCommand).input;
-    expect(tagInput.Resources).toEqual(['eipalloc-tag']);
+    const input = (mockSend.mock.calls[0][0] as AllocateAddressCommand).input;
+    expect(input.Domain).toBe('vpc');
+    expect(input.TagSpecifications).toEqual([
+      { ResourceType: 'elastic-ip', Tags: [{ Key: 'Name', Value: 'my-eip' }] },
+    ]);
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof CreateTagsCommand)).toBe(false);
   });
 
   it('resolves AllocationId / PublicIp from the composite physicalId without an API call', async () => {

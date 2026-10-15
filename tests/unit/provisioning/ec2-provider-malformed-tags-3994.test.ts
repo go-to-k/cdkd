@@ -194,22 +194,23 @@ describe('EC2Provider Tags (go-to-k/cdkd#3994)', () => {
     });
   });
 
+  // go-to-k/cdkd#4971: the tags ride on the create's TagSpecifications.
   it('creates an InternetGateway with the desired tags', async () => {
     await provider.create('G', 'AWS::EC2::InternetGateway', { Tags: DESIRED });
-    expect(tagCalls()).toEqual([['CreateTagsCommand', { Resources: ['igw-1'], Tags: DESIRED }]]);
+    const create = mockSend.mock.calls
+      .map((c) => c[0] as unknown)
+      .filter((c) => c instanceof CreateInternetGatewayCommand) as CreateInternetGatewayCommand[];
+    expect(create.map((c) => c.input)).toEqual([
+      { TagSpecifications: [{ ResourceType: 'internet-gateway', Tags: DESIRED }] },
+    ]);
+    expect(tagCalls()).toEqual([]);
   });
 });
 
-// Each wired create applies the checked list through `applyTags` (a create
-// that dropped it would stay green on the refusal cases alone).
+// Each wired create sends the checked list in its TagSpecifications
+// (go-to-k/cdkd#4971; a create that dropped it would stay green on the refusal
+// cases alone).
 describe('EC2Provider create applies the desired tags (go-to-k/cdkd#3994)', () => {
-  const ID: Record<string, string> = {
-    'AWS::EC2::VPC': 'vpc-1',
-    'AWS::EC2::RouteTable': 'rtb-1',
-    'AWS::EC2::SecurityGroup': 'sg-1',
-    'AWS::EC2::Instance': 'i-1',
-    'AWS::EC2::NetworkAcl': 'acl-1',
-  };
   const PROPS: Record<string, Record<string, unknown>> = {
     'AWS::EC2::VPC': { CidrBlock: '10.0.0.0/16' },
     'AWS::EC2::RouteTable': { VpcId: 'vpc-1' },
@@ -228,6 +229,13 @@ describe('EC2Provider create applies the desired tags (go-to-k/cdkd#3994)', () =
     Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
     NetworkAcl: { NetworkAclId: 'acl-1' },
   };
+  const TAG_RESOURCE_TYPE: Record<string, string> = {
+    'AWS::EC2::VPC': 'vpc',
+    'AWS::EC2::RouteTable': 'route-table',
+    'AWS::EC2::SecurityGroup': 'security-group',
+    'AWS::EC2::Instance': 'instance',
+    'AWS::EC2::NetworkAcl': 'network-acl',
+  };
   let provider: EC2Provider;
   const savedNoWait = process.env['CDKD_NO_WAIT'];
 
@@ -243,11 +251,12 @@ describe('EC2Provider create applies the desired tags (go-to-k/cdkd#3994)', () =
     else process.env['CDKD_NO_WAIT'] = savedNoWait;
   });
 
-  it.each(Object.keys(ID))('%s', async (type) => {
+  it.each(Object.keys(TAG_RESOURCE_TYPE))('%s', async (type) => {
     await provider.create('R', type, { ...PROPS[type], Tags: DESIRED });
-    const created = (
-      mockSend.mock.calls.map((c) => c[0] as unknown).filter((c) => c instanceof CreateTagsCommand) as CreateTagsCommand[]
-    ).map((c) => c.input);
-    expect(created).toContainEqual({ Resources: [ID[type]], Tags: DESIRED });
+    const sent = mockSend.mock.calls.map((c) => c[0] as { input: Record<string, unknown> });
+    expect(sent[0]!.input['TagSpecifications']).toEqual([
+      { ResourceType: TAG_RESOURCE_TYPE[type], Tags: DESIRED },
+    ]);
+    expect(sent.some((c) => c instanceof CreateTagsCommand)).toBe(false);
   });
 });

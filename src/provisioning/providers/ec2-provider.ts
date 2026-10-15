@@ -88,6 +88,8 @@ import {
   type InstanceMetadataProtocolState,
   type InstanceMetadataTagsState,
   type Instance,
+  type ResourceType as Ec2TagResourceType,
+  type TagSpecification,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -183,6 +185,8 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import {
+  explicitDenyPolicyKind,
+  isExplicitDenyError,
   isThrottlingError,
   markNonRetryable,
   THROTTLING_ERROR_NAMES,
@@ -616,15 +620,75 @@ export function resetEc2CreateRetryStateForTests(): void {
 }
 
 /**
- * Whether a resource could be an orphan of a lost create response: none of
- * the five creates sends `TagSpecifications`, and its tags land by a
- * follow-up `CreateTags` the lost attempt never reached, so an orphan has NO
- * tags. A recorded resource whose template declares none (or whose tagging
- * failed: `applyTags` only warns) is untagged too, which the undated report's
- * wording already allows for.
+ * Whether a resource could be an orphan of a lost create response, by its
+ * tags: the creates send the template's tags in `TagSpecifications`
+ * (go-to-k/cdkd#4971), so an orphan carries EXACTLY those -- or none, when the
+ * lost attempt was the untagged re-send of {@link EC2Provider.sendTaggedCreate}
+ * or the template declares none. Any other tag set was put there by something
+ * else. A recorded resource with the same tags matches too, which the undated
+ * report's wording already allows for.
  */
-const isUntagged = (tags: ReadonlyArray<unknown> | undefined): boolean =>
-  tags === undefined || tags.length === 0;
+const mayBeLostCreate = (
+  tags: ReadonlyArray<unknown> | undefined,
+  sent: ReadonlyArray<CfnTagEntry>
+): boolean =>
+  tags === undefined || tags.length === 0 || (sent.length > 0 && tagListsMatch(tags, sent));
+
+/**
+ * The orphan report's noun for a lookup matched by {@link mayBeLostCreate}:
+ * `untagged <what>` when the template declares no tags, else a phrase naming
+ * both tag states that lookup accepts. `adjective` leads either form.
+ */
+const lostCreateNoun = (
+  what: string,
+  sent: ReadonlyArray<CfnTagEntry>,
+  adjective?: string
+): string =>
+  sent.length === 0
+    ? `${adjective !== undefined ? `${adjective}, ` : ''}untagged ${what}`
+    : `${adjective !== undefined ? `${adjective} ` : ''}${what} with no tags or exactly the template's tags`;
+
+/**
+ * True when a create that carried `TagSpecifications` was refused for lacking
+ * `ec2:CreateTags` (go-to-k/cdkd#4971). Measured wording, from a session
+ * allowed each create action but not `ec2:CreateTags`: `UnauthorizedOperation`
+ * with "... is not authorized to perform: ec2:CreateTags on resource: ...", for
+ * all nine creates. Untagged, each of those creates was allowed. An answer
+ * that names no action (only the encoded authorization message) is not
+ * matched: such a create fails, as the same create from CloudFormation would.
+ */
+function isCreateTagsDenial(error: unknown): boolean {
+  return (
+    isNamedError(error, CREATE_TAGS_DENIAL_NAMES) &&
+    describeAwsFailure(error).detail.includes('ec2:CreateTags')
+  );
+}
+
+/** The error code EC2 answers a denied action with. */
+const CREATE_TAGS_DENIAL_NAMES: ReadonlySet<string> = new Set(['UnauthorizedOperation']);
+
+/**
+ * EC2's answer to a `ClientToken` re-used with different parameters. A
+ * token-bearing create (NAT gateway, route table, network ACL, instance) whose
+ * earlier attempt went through the untagged re-send of
+ * {@link EC2Provider.sendTaggedCreate} holds its token for the UNTAGGED
+ * request, so a later tagged attempt with that token gets this answer --
+ * measured, once the caller may `ec2:CreateTags` (a role that still may not is
+ * refused that first, also measured). The untagged re-send then returns the
+ * resource the token already names.
+ */
+const IDEMPOTENT_MISMATCH_NAMES: ReadonlySet<string> = new Set(['IdempotentParameterMismatch']);
+
+/**
+ * go-to-k/cdkd#4971: an EC2 `Describe*` is eventually consistent, so the
+ * deploy's observed capture -- which reads right after cdkd's own create
+ * (`afterOwnWrite`) -- can be told a resource made a moment ago does not
+ * exist, and a not-found there discards the drift baseline. Before tags rode
+ * the create, the `CreateTags` call sat between the two. The capture is off the
+ * deploy's critical path, and the wait is only spent on a not-found answer.
+ */
+const OWN_WRITE_READ_ATTEMPTS = 5;
+const OWN_WRITE_READ_DELAY_MS = 500;
 
 /** Page size of an orphan lookup's `Describe*` call (EC2's maximum). */
 const ORPHAN_LIST_PAGE_SIZE = 1000;
@@ -883,8 +947,9 @@ export class EC2Provider implements ResourceProvider {
   /**
    * Issue #2080: after an attempt at one of the tokenless creates ended
    * AMBIGUOUS (a 5xx: EC2 may have made the resource and lost the answer),
-   * name the resources that could be its orphan: untagged (see
-   * {@link isUntagged}), matching what the create sent, and not created by
+   * name the resources that could be its orphan: tagged as that attempt could
+   * have left them (see {@link mayBeLostCreate}), matching what the create
+   * sent, and not created by
    * this process. EC2 reports no creation time for any of the four types, so
    * the report is the undated one -- a read command per candidate, no delete
    * command (`orphan-report.ts`). Never throws.
@@ -924,12 +989,14 @@ export class EC2Provider implements ResourceProvider {
 
   /**
    * VPCs with the same primary CIDR (compared host-bit-cleared, as EC2 may
-   * store it), untagged, not a default VPC. A VPC CIDR can repeat across
-   * VPCs, so a replayed `CreateVpc` is a second VPC.
+   * store it), untagged or carrying exactly the tags the create sent
+   * (`sent`), not a default VPC. A VPC CIDR can repeat across VPCs, so a
+   * replayed `CreateVpc` is a second VPC.
    */
   private async reportPossibleOrphanVpcs(
     logicalId: string,
     cidrBlock: string,
+    sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
@@ -939,7 +1006,7 @@ export class EC2Provider implements ResourceProvider {
       action: 'CreateVpc',
       listAction: 'DescribeVpcs',
       subject: `a VPC with CIDR ${log.value(cidrBlock)}`,
-      noun: 'untagged VPC(s)',
+      noun: lostCreateNoun('VPC(s)', sent),
       list: () =>
         collectOrphanIds(
           async (token) => {
@@ -951,7 +1018,7 @@ export class EC2Provider implements ResourceProvider {
           (vpc) =>
             vpc.VpcId !== undefined &&
             vpc.IsDefault !== true &&
-            isUntagged(vpc.Tags) &&
+            mayBeLostCreate(vpc.Tags, sent) &&
             vpc.CidrBlock !== undefined &&
             (canonicalizeIpv4Cidr(vpc.CidrBlock) ?? vpc.CidrBlock) === wanted &&
             !ec2IdsCreatedByThisProcess.has(vpc.VpcId)
@@ -964,14 +1031,16 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Subnets of the same VPC with the same CIDR, untagged. A CIDR cannot repeat
-   * in one VPC, so at most one matches, and its existence is what makes the
-   * replayed `CreateSubnet` fail with `InvalidSubnet.Conflict`.
+   * Subnets of the same VPC with the same CIDR, untagged or carrying exactly
+   * the tags the create sent. A CIDR cannot repeat in one VPC, so at most one
+   * matches, and its existence is what makes the replayed `CreateSubnet` fail
+   * with `InvalidSubnet.Conflict`.
    */
   private async reportPossibleOrphanSubnets(
     logicalId: string,
     vpcId: string,
     cidrBlock: string,
+    sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
@@ -981,7 +1050,7 @@ export class EC2Provider implements ResourceProvider {
       action: 'CreateSubnet',
       listAction: 'DescribeSubnets',
       subject: `a subnet with CIDR ${log.value(cidrBlock)} in VPC ${log.value(vpcId)}`,
-      noun: 'untagged subnet(s)',
+      noun: lostCreateNoun('subnet(s)', sent),
       afterward:
         'Creating it again, which fails with InvalidSubnet.Conflict while that subnet exists.',
       list: () =>
@@ -998,7 +1067,7 @@ export class EC2Provider implements ResourceProvider {
           },
           (subnet) =>
             subnet.SubnetId !== undefined &&
-            isUntagged(subnet.Tags) &&
+            mayBeLostCreate(subnet.Tags, sent) &&
             subnet.CidrBlock !== undefined &&
             (canonicalizeIpv4Cidr(subnet.CidrBlock) ?? subnet.CidrBlock) === wanted &&
             !ec2IdsCreatedByThisProcess.has(subnet.SubnetId)
@@ -1011,12 +1080,14 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Internet gateways attached to nothing, untagged. `CreateInternetGateway`
-   * takes no input to match on; the attachment is a separate resource
+   * Internet gateways attached to nothing, untagged or carrying exactly the
+   * tags the create sent. `CreateInternetGateway` takes no other input to
+   * match on; the attachment is a separate resource
    * (`AWS::EC2::VPCGatewayAttachment`), so an orphan stays detached.
    */
   private async reportPossibleOrphanInternetGateways(
     logicalId: string,
+    sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
@@ -1025,7 +1096,7 @@ export class EC2Provider implements ResourceProvider {
       action: 'CreateInternetGateway',
       listAction: 'DescribeInternetGateways',
       subject: 'an internet gateway',
-      noun: 'detached, untagged internet gateway(s)',
+      noun: lostCreateNoun('internet gateway(s)', sent, 'detached'),
       list: () =>
         collectOrphanIds(
           async (token) => {
@@ -1040,7 +1111,7 @@ export class EC2Provider implements ResourceProvider {
           (igw) =>
             igw.InternetGatewayId !== undefined &&
             (igw.Attachments ?? []).length === 0 &&
-            isUntagged(igw.Tags) &&
+            mayBeLostCreate(igw.Tags, sent) &&
             !ec2IdsCreatedByThisProcess.has(igw.InternetGatewayId)
               ? igw.InternetGatewayId
               : undefined
@@ -1052,13 +1123,14 @@ export class EC2Provider implements ResourceProvider {
 
   /**
    * Elastic IPs of the same domain (and the same network border group and
-   * pool, when the template names them), associated with nothing, untagged.
-   * The association is a follow-up call the lost attempt never reached.
-   * `DescribeAddresses` is not paginated.
+   * pool, when the template names them), associated with nothing, untagged or
+   * carrying exactly the tags the create sent. The association is a follow-up
+   * call the lost attempt never reached. `DescribeAddresses` is not paginated.
    */
   private async reportPossibleOrphanAddresses(
     logicalId: string,
     input: AllocateAddressCommandInput,
+    sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
@@ -1067,7 +1139,7 @@ export class EC2Provider implements ResourceProvider {
       action: 'AllocateAddress',
       listAction: 'DescribeAddresses',
       subject: `an Elastic IP address (domain ${log.value(input.Domain ?? 'vpc')})`,
-      noun: 'unassociated, untagged Elastic IP address(es)',
+      noun: lostCreateNoun('Elastic IP address(es)', sent, 'unassociated'),
       list: async () => {
         const response = await this.ec2Client.send(new DescribeAddressesCommand({}));
         const ids: string[] = [];
@@ -1077,7 +1149,7 @@ export class EC2Provider implements ResourceProvider {
             id === undefined ||
             (address.Domain ?? 'vpc') !== (input.Domain ?? 'vpc') ||
             address.AssociationId !== undefined ||
-            !isUntagged(address.Tags) ||
+            !mayBeLostCreate(address.Tags, sent) ||
             (input.NetworkBorderGroup !== undefined &&
               address.NetworkBorderGroup !== input.NetworkBorderGroup) ||
             (input.PublicIpv4Pool !== undefined &&
@@ -1630,17 +1702,31 @@ export class EC2Provider implements ResourceProvider {
       // have made before a second CreateVpc is sent. Detection only.
       const orphanWindow = createVpcLatch.take(logicalId);
       if (orphanWindow !== undefined) {
-        await this.reportPossibleOrphanVpcs(logicalId, cidrBlock, orphanWindow, context);
+        await this.reportPossibleOrphanVpcs(
+          logicalId,
+          cidrBlock,
+          desiredTags,
+          orphanWindow,
+          context
+        );
       }
       const attemptStartMs = Date.now();
       let response: CreateVpcCommandOutput;
+      let tagsApplied: boolean;
       try {
-        response = await createClient.send(
-          new CreateVpcCommand({
-            CidrBlock: cidrBlock,
-            InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
-          })
-        );
+        ({ response, tagsApplied } = await this.sendTaggedCreate(
+          logicalId,
+          'vpc',
+          desiredTags,
+          (TagSpecifications) =>
+            createClient.send(
+              new CreateVpcCommand({
+                CidrBlock: cidrBlock,
+                InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
+                ...(TagSpecifications && { TagSpecifications }),
+              })
+            )
+        ));
       } catch (error) {
         createVpcLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -1652,7 +1738,13 @@ export class EC2Provider implements ResourceProvider {
       // an earlier attempt may have made one too. Detection only.
       const vpcReplayWindow = replayedSendWindow(response, attemptStartMs);
       if (vpcReplayWindow !== undefined) {
-        await this.reportPossibleOrphanVpcs(logicalId, cidrBlock, vpcReplayWindow, context);
+        await this.reportPossibleOrphanVpcs(
+          logicalId,
+          cidrBlock,
+          desiredTags,
+          vpcReplayWindow,
+          context
+        );
       }
 
       // CreateVpcCommand has succeeded — AWS has now committed the VPC.
@@ -1695,8 +1787,8 @@ export class EC2Provider implements ResourceProvider {
           );
         }
 
-        // Apply tags
-        await this.applyTags(vpcId, desiredTags, logicalId);
+        // Apply tags the create did not carry (go-to-k/cdkd#4971)
+        if (!tagsApplied) await this.applyTags(vpcId, desiredTags, logicalId);
 
         // Fetch VPC details for attributes
         await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
@@ -2018,18 +2110,33 @@ export class EC2Provider implements ResourceProvider {
       // `InvalidSubnet.Conflict` if it did, and that error names no subnet.
       const orphanWindow = createSubnetLatch.take(logicalId);
       if (orphanWindow !== undefined) {
-        await this.reportPossibleOrphanSubnets(logicalId, vpcId, cidrBlock, orphanWindow, context);
+        await this.reportPossibleOrphanSubnets(
+          logicalId,
+          vpcId,
+          cidrBlock,
+          desiredTags,
+          orphanWindow,
+          context
+        );
       }
       const attemptStartMs = Date.now();
       let response: CreateSubnetCommandOutput;
+      let tagsApplied: boolean;
       try {
-        response = await createClient.send(
-          new CreateSubnetCommand({
-            VpcId: vpcId,
-            CidrBlock: cidrBlock,
-            AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
-          })
-        );
+        ({ response, tagsApplied } = await this.sendTaggedCreate(
+          logicalId,
+          'subnet',
+          desiredTags,
+          (TagSpecifications) =>
+            createClient.send(
+              new CreateSubnetCommand({
+                VpcId: vpcId,
+                CidrBlock: cidrBlock,
+                AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
+                ...(TagSpecifications && { TagSpecifications }),
+              })
+            )
+        ));
       } catch (error) {
         createSubnetLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -2045,6 +2152,7 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           vpcId,
           cidrBlock,
+          desiredTags,
           subnetReplayWindow,
           context
         );
@@ -2061,8 +2169,8 @@ export class EC2Provider implements ResourceProvider {
       // original error. A freshly-created subnet has no ENIs / route
       // associations attached, so a single DeleteSubnet suffices.
       try {
-        // Apply tags
-        await this.applyTags(subnetId, desiredTags, logicalId);
+        // Apply tags the create did not carry (go-to-k/cdkd#4971)
+        if (!tagsApplied) await this.applyTags(subnetId, desiredTags, logicalId);
 
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
@@ -2404,12 +2512,26 @@ export class EC2Provider implements ResourceProvider {
       // may have made before a second CreateInternetGateway is sent.
       const orphanWindow = createInternetGatewayLatch.take(logicalId);
       if (orphanWindow !== undefined) {
-        await this.reportPossibleOrphanInternetGateways(logicalId, orphanWindow, context);
+        await this.reportPossibleOrphanInternetGateways(
+          logicalId,
+          desiredTags,
+          orphanWindow,
+          context
+        );
       }
       const attemptStartMs = Date.now();
       let response: CreateInternetGatewayCommandOutput;
+      let tagsApplied: boolean;
       try {
-        response = await createClient.send(new CreateInternetGatewayCommand({}));
+        ({ response, tagsApplied } = await this.sendTaggedCreate(
+          logicalId,
+          'internet-gateway',
+          desiredTags,
+          (TagSpecifications) =>
+            createClient.send(
+              new CreateInternetGatewayCommand(TagSpecifications ? { TagSpecifications } : {})
+            )
+        ));
       } catch (error) {
         createInternetGatewayLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -2420,11 +2542,16 @@ export class EC2Provider implements ResourceProvider {
       // an earlier attempt may have made one too. Detection only.
       const igwReplayWindow = replayedSendWindow(response, attemptStartMs);
       if (igwReplayWindow !== undefined) {
-        await this.reportPossibleOrphanInternetGateways(logicalId, igwReplayWindow, context);
+        await this.reportPossibleOrphanInternetGateways(
+          logicalId,
+          desiredTags,
+          igwReplayWindow,
+          context
+        );
       }
 
-      // Apply tags
-      await this.applyTags(igwId, desiredTags, logicalId);
+      // Apply tags the create did not carry (go-to-k/cdkd#4971)
+      if (!tagsApplied) await this.applyTags(igwId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
 
@@ -2586,12 +2713,29 @@ export class EC2Provider implements ResourceProvider {
       // may have allocated before a second AllocateAddress is sent.
       const orphanWindow = allocateAddressLatch.take(logicalId);
       if (orphanWindow !== undefined) {
-        await this.reportPossibleOrphanAddresses(logicalId, input, orphanWindow, context);
+        await this.reportPossibleOrphanAddresses(
+          logicalId,
+          input,
+          desiredTags,
+          orphanWindow,
+          context
+        );
       }
       const attemptStartMs = Date.now();
       let response: AllocateAddressCommandOutput;
+      let tagsApplied: boolean;
       try {
-        response = await createClient.send(new AllocateAddressCommand(input));
+        ({ response, tagsApplied } = await this.sendTaggedCreate(
+          logicalId,
+          'elastic-ip',
+          desiredTags,
+          (TagSpecifications) =>
+            createClient.send(
+              new AllocateAddressCommand(
+                TagSpecifications ? { ...input, TagSpecifications } : input
+              )
+            )
+        ));
       } catch (error) {
         allocateAddressLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
         throw error;
@@ -2614,10 +2758,17 @@ export class EC2Provider implements ResourceProvider {
       // an earlier attempt may have made one too. Detection only.
       const eipReplayWindow = replayedSendWindow(response, attemptStartMs);
       if (eipReplayWindow !== undefined) {
-        await this.reportPossibleOrphanAddresses(logicalId, input, eipReplayWindow, context);
+        await this.reportPossibleOrphanAddresses(
+          logicalId,
+          input,
+          desiredTags,
+          eipReplayWindow,
+          context
+        );
       }
 
-      await this.applyTags(allocationId, desiredTags, logicalId);
+      // Tags the create did not carry (go-to-k/cdkd#4971)
+      if (!tagsApplied) await this.applyTags(allocationId, desiredTags, logicalId);
 
       // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
       // off the ~20s Cloud Control async-poll route.
@@ -3082,33 +3233,35 @@ export class EC2Provider implements ResourceProvider {
     // failure leaves it in place on purpose (see the token note above).
     let createdId: string | undefined;
     try {
-      const response = await this.ec2Client.send(
-        new CreateNatGatewayCommand({
-          ClientToken: natGatewayToken.value,
-          SubnetId: subnetId,
-          AllocationId: properties['AllocationId'] as string | undefined,
-          ConnectivityType:
-            (properties['ConnectivityType'] as 'public' | 'private' | undefined) ?? undefined,
-          PrivateIpAddress: properties['PrivateIpAddress'] as string | undefined,
-          SecondaryAllocationIds: properties['SecondaryAllocationIds'] as string[] | undefined,
-          SecondaryPrivateIpAddresses: properties['SecondaryPrivateIpAddresses'] as
-            | string[]
-            | undefined,
-          SecondaryPrivateIpAddressCount: properties['SecondaryPrivateIpAddressCount'] as
-            | number
-            | undefined,
-        })
+      const { response, tagsApplied } = await this.sendTaggedCreate(
+        logicalId,
+        'natgateway',
+        desiredTags,
+        (TagSpecifications) =>
+          this.ec2Client.send(
+            new CreateNatGatewayCommand({
+              ...(TagSpecifications && { TagSpecifications }),
+              ClientToken: natGatewayToken.value,
+              SubnetId: subnetId,
+              AllocationId: properties['AllocationId'] as string | undefined,
+              ConnectivityType:
+                (properties['ConnectivityType'] as 'public' | 'private' | undefined) ?? undefined,
+              PrivateIpAddress: properties['PrivateIpAddress'] as string | undefined,
+              SecondaryAllocationIds: properties['SecondaryAllocationIds'] as string[] | undefined,
+              SecondaryPrivateIpAddresses: properties['SecondaryPrivateIpAddresses'] as
+                | string[]
+                | undefined,
+              SecondaryPrivateIpAddressCount: properties['SecondaryPrivateIpAddressCount'] as
+                | number
+                | undefined,
+            })
+          )
       );
       const natGatewayId = response.NatGateway!.NatGatewayId!;
       createdId = natGatewayId;
 
-      // Apply tags via the post-create CreateTags API to match the
-      // pattern used by sibling EC2 helpers (Subnet / IGW / RouteTable).
-      // CreateNatGateway also supports inline TagSpecifications, but
-      // staying consistent with `applyTags` keeps tag handling in one
-      // place — and the extra API call is dwarfed by the optional
-      // available-state wait below.
-      await this.applyTags(natGatewayId, desiredTags, logicalId);
+      // Tags the create did not carry (go-to-k/cdkd#4971)
+      if (!tagsApplied) await this.applyTags(natGatewayId, desiredTags, logicalId);
 
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
@@ -3298,22 +3451,32 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    // Issue #2039: a replayed create would leave an untagged, unstated route
-    // table behind. Same release rule as the NAT gateway above.
+    // Issue #2039: a replayed create would leave an unstated route table
+    // behind. Same release rule as the NAT gateway above.
     const routeTableToken = acquireIdempotencyToken({
       scope: 'CreateRouteTable',
       logicalId,
     });
 
     try {
-      const response = await this.ec2Client.send(
-        new CreateRouteTableCommand({ VpcId: vpcId, ClientToken: routeTableToken.value })
+      const { response, tagsApplied } = await this.sendTaggedCreate(
+        logicalId,
+        'route-table',
+        desiredTags,
+        (TagSpecifications) =>
+          this.ec2Client.send(
+            new CreateRouteTableCommand({
+              VpcId: vpcId,
+              ClientToken: routeTableToken.value,
+              ...(TagSpecifications && { TagSpecifications }),
+            })
+          )
       );
 
       const routeTableId = response.RouteTable!.RouteTableId!;
 
-      // Apply tags
-      await this.applyTags(routeTableId, desiredTags, logicalId);
+      // Apply tags the create did not carry (go-to-k/cdkd#4971)
+      if (!tagsApplied) await this.applyTags(routeTableId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
@@ -3842,12 +4005,19 @@ export class EC2Provider implements ResourceProvider {
       // name (`InvalidGroup.Duplicate`) rather than duplicating; the create
       // client surfaces a 5xx so `withRetry` can mark that collision (#3978).
       const createClient = await this.getCreateClient();
-      const response = await createClient.send(
-        new CreateSecurityGroupCommand({
-          GroupName: (properties['GroupName'] as string) ?? logicalId,
-          Description: groupDescription,
-          VpcId: (properties['VpcId'] as string) ?? undefined,
-        })
+      const { response, tagsApplied } = await this.sendTaggedCreate(
+        logicalId,
+        'security-group',
+        desiredTags,
+        (TagSpecifications) =>
+          createClient.send(
+            new CreateSecurityGroupCommand({
+              GroupName: (properties['GroupName'] as string) ?? logicalId,
+              Description: groupDescription,
+              VpcId: (properties['VpcId'] as string) ?? undefined,
+              ...(TagSpecifications && { TagSpecifications }),
+            })
+          )
       );
 
       const groupId = response.GroupId!;
@@ -3913,7 +4083,8 @@ export class EC2Provider implements ResourceProvider {
             firstRejection ??= { error };
           });
         await Promise.all([
-          recordRejection(this.applyTags(groupId, desiredTags, logicalId)),
+          // Only tags the create did not carry (go-to-k/cdkd#4971).
+          recordRejection(this.applyTags(groupId, tagsApplied ? [] : desiredTags, logicalId)),
           recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
           recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
@@ -5456,46 +5627,53 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
       });
 
-      const response = await this.ec2Client.send(
-        new RunInstancesCommand({
-          ClientToken: runInstancesToken.value,
-          ImageId: imageId,
-          InstanceType: instanceType as _InstanceType,
-          KeyName: (properties['KeyName'] as string) ?? undefined,
-          NetworkInterfaces: networkInterfaces,
-          SecurityGroupIds: securityGroupIds ?? undefined,
-          SecurityGroups: securityGroups ?? undefined,
-          SubnetId: (properties['SubnetId'] as string) ?? undefined,
-          UserData: (properties['UserData'] as string) ?? undefined,
-          MinCount: 1,
-          MaxCount: 1,
-          IamInstanceProfile: iamInstanceProfile
-            ? { Arn: iamInstanceProfile.arn, Name: iamInstanceProfile.name }
-            : undefined,
-          BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
-          // Security-focused backfill (#609). These all ride on RunInstances
-          // input so they take effect at launch (no post-create modify needed):
-          //  - DisableApiTermination: termination protection (security: a
-          //    silent-drop made the user think the instance was protected
-          //    when it wasn't).
-          //  - MetadataOptions: IMDSv2 enforcement (HttpTokens=required)
-          //    mitigates SSRF credential theft.
-          //  - Monitoring.Enabled: detailed CloudWatch monitoring.
-          //  - EbsOptimized: dedicated EBS throughput.
-          //  - CreditSpecification.CpuCredits: T-family burstable mode.
-          DisableApiTermination: this.coerceBool(properties['DisableApiTermination']),
-          EbsOptimized: this.coerceBool(properties['EbsOptimized']),
-          Monitoring: this.buildRunInstancesMonitoring(properties),
-          MetadataOptions: this.buildMetadataOptions(properties),
-          CreditSpecification: this.buildCreditSpecification(properties),
-          // Issue #1276. `SubnetId` already pins the AZ, so this is usually
-          // redundant -- but the CFn property exists, the CDK L2 construct
-          // always emits it, and leaving it unhandled is what routed L2
-          // instances onto the Cloud Control path. When both are present and
-          // DISAGREE, AWS rejects the RunInstances call; that is the correct
-          // outcome to surface rather than to paper over by dropping one.
-          Placement: this.buildPlacement(properties),
-        })
+      const { response, tagsApplied } = await this.sendTaggedCreate(
+        logicalId,
+        'instance',
+        desiredTags,
+        (TagSpecifications) =>
+          this.ec2Client.send(
+            new RunInstancesCommand({
+              ...(TagSpecifications && { TagSpecifications }),
+              ClientToken: runInstancesToken.value,
+              ImageId: imageId,
+              InstanceType: instanceType as _InstanceType,
+              KeyName: (properties['KeyName'] as string) ?? undefined,
+              NetworkInterfaces: networkInterfaces,
+              SecurityGroupIds: securityGroupIds ?? undefined,
+              SecurityGroups: securityGroups ?? undefined,
+              SubnetId: (properties['SubnetId'] as string) ?? undefined,
+              UserData: (properties['UserData'] as string) ?? undefined,
+              MinCount: 1,
+              MaxCount: 1,
+              IamInstanceProfile: iamInstanceProfile
+                ? { Arn: iamInstanceProfile.arn, Name: iamInstanceProfile.name }
+                : undefined,
+              BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
+              // Security-focused backfill (#609). These all ride on RunInstances
+              // input so they take effect at launch (no post-create modify needed):
+              //  - DisableApiTermination: termination protection (security: a
+              //    silent-drop made the user think the instance was protected
+              //    when it wasn't).
+              //  - MetadataOptions: IMDSv2 enforcement (HttpTokens=required)
+              //    mitigates SSRF credential theft.
+              //  - Monitoring.Enabled: detailed CloudWatch monitoring.
+              //  - EbsOptimized: dedicated EBS throughput.
+              //  - CreditSpecification.CpuCredits: T-family burstable mode.
+              DisableApiTermination: this.coerceBool(properties['DisableApiTermination']),
+              EbsOptimized: this.coerceBool(properties['EbsOptimized']),
+              Monitoring: this.buildRunInstancesMonitoring(properties),
+              MetadataOptions: this.buildMetadataOptions(properties),
+              CreditSpecification: this.buildCreditSpecification(properties),
+              // Issue #1276. `SubnetId` already pins the AZ, so this is usually
+              // redundant -- but the CFn property exists, the CDK L2 construct
+              // always emits it, and leaving it unhandled is what routed L2
+              // instances onto the Cloud Control path. When both are present and
+              // DISAGREE, AWS rejects the RunInstances call; that is the correct
+              // outcome to surface rather than to paper over by dropping one.
+              Placement: this.buildPlacement(properties),
+            })
+          )
       );
 
       const instance = response.Instances?.[0];
@@ -5528,8 +5706,8 @@ export class EC2Provider implements ResourceProvider {
       // termination via `aws ec2 describe-instances` if cleanup itself
       // failed.
       try {
-        // Apply tags
-        await this.applyTags(instanceId, desiredTags, logicalId);
+        // Apply tags the create did not carry (go-to-k/cdkd#4971)
+        if (!tagsApplied) await this.applyTags(instanceId, desiredTags, logicalId);
 
         // Wait for instance to reach running state unless --no-wait is set.
         // Same gating pattern as the NAT Gateway wait above. Before issue
@@ -6655,22 +6833,32 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    // Issue #2039: a replayed create would leave an untagged, unstated network
-    // ACL behind. Same release rule as the NAT gateway above.
+    // Issue #2039: a replayed create would leave an unstated network ACL
+    // behind. Same release rule as the NAT gateway above.
     const networkAclToken = acquireIdempotencyToken({
       scope: 'CreateNetworkAcl',
       logicalId,
     });
 
     try {
-      const response = await this.ec2Client.send(
-        new CreateNetworkAclCommand({ VpcId: vpcId, ClientToken: networkAclToken.value })
+      const { response, tagsApplied } = await this.sendTaggedCreate(
+        logicalId,
+        'network-acl',
+        desiredTags,
+        (TagSpecifications) =>
+          this.ec2Client.send(
+            new CreateNetworkAclCommand({
+              VpcId: vpcId,
+              ClientToken: networkAclToken.value,
+              ...(TagSpecifications && { TagSpecifications }),
+            })
+          )
       );
 
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
-      // Apply tags
-      await this.applyTags(networkAclId, desiredTags, logicalId);
+      // Apply tags the create did not carry (go-to-k/cdkd#4971)
+      if (!tagsApplied) await this.applyTags(networkAclId, desiredTags, logicalId);
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
@@ -6969,10 +7157,89 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
+   * Send one of the nine tagged creates (go-to-k/cdkd#4971) with the template's
+   * tags in `TagSpecifications`, as CloudFormation sends them, so an SCP
+   * requiring `aws:RequestTag/...` on the create action sees them. `send`
+   * builds and sends the create, with `TagSpecifications` when given one.
+   *
+   * `tagsApplied` says whether the created resource already carries the tags;
+   * when it is `false` the caller tags it with {@link applyTags}, the path
+   * every create took before (and a no-op for a template declaring none).
+   *
+   * Tags on a create need `ec2:CreateTags` (measured for all nine). Before
+   * this change the follow-up `CreateTags` only WARNED on failure, so a role
+   * without it could still create, untagged. To keep that working, a tagged
+   * create denied `ec2:CreateTags` ({@link isCreateTagsDenial}) is re-sent ONCE
+   * without `TagSpecifications` and `tagsApplied` is `false`; the extra call is
+   * spent only by such a role, never by one the tagged create succeeds for. A
+   * `ClientToken` the denied attempt carried is reusable: EC2 records no token
+   * for a request it refused (measured). An `IdempotentParameterMismatch` on
+   * the tagged send takes the same re-send ({@link IDEMPOTENT_MISMATCH_NAMES}).
+   * When the untagged re-send is denied too (an SCP requiring request tags,
+   * say), the `ec2:CreateTags` denial is the one surfaced, since granting it
+   * lets the tagged create through, with a fixed note that the re-send was
+   * refused too (and the policy type of an explicit deny) appended to its
+   * message, so a role missing the create action itself is told so in the
+   * same run without echoing AWS's text; marked non-retryable when the re-send's denial was an explicit
+   * deny, which no wait lifts. Any other answer from the re-send is its own.
+   */
+  private async sendTaggedCreate<T>(
+    logicalId: string,
+    tagResourceType: Ec2TagResourceType,
+    tags: CfnTagEntry[],
+    send: (tagSpecifications: TagSpecification[] | undefined) => Promise<T>
+  ): Promise<{ response: T; tagsApplied: boolean }> {
+    if (tags.length === 0) return { response: await send(undefined), tagsApplied: false };
+    const tagSpecifications: TagSpecification[] = [
+      { ResourceType: tagResourceType, Tags: tags.map((t) => ({ Key: t.Key, Value: t.Value })) },
+    ];
+    try {
+      return { response: await send(tagSpecifications), tagsApplied: true };
+    } catch (taggedError) {
+      const tagsDenied = isCreateTagsDenial(taggedError);
+      if (!tagsDenied && !isNamedError(taggedError, IDEMPOTENT_MISMATCH_NAMES)) throw taggedError;
+      this.logger.debug(
+        safeMsg`Create of ${logicalId} with tags was ${tagsDenied ? 'denied ec2:CreateTags' : 'refused for a client token an untagged create already used'}; ` +
+          `retrying without tags and applying them with CreateTags`
+      );
+      try {
+        return { response: await send(undefined), tagsApplied: false };
+      } catch (untaggedError) {
+        if (
+          !tagsDenied ||
+          !(taggedError instanceof Error) ||
+          !isNamedError(untaggedError, CREATE_TAGS_DENIAL_NAMES)
+        ) {
+          throw untaggedError;
+        }
+        this.logger.debug(
+          safeMsg`Create of ${logicalId} without tags was denied too; reporting the ec2:CreateTags denial`
+        );
+        // The re-send's AWS text names the caller's session and may carry a
+        // policy ARN, so it goes to debug only; the thrown message gets a
+        // FIXED note, the policy type taken from a constant list (the S3
+        // #4972 shape, `explicitDenyPolicyKind`).
+        const untaggedDetail = describeAwsFailure(untaggedError).detail;
+        this.logger.debug(
+          safeMsg`Create of ${logicalId} without tags was refused: ${untaggedDetail}`
+        );
+        const explicit = isExplicitDenyError(untaggedDetail);
+        const kind = explicit ? explicitDenyPolicyKind(untaggedDetail) : undefined;
+        taggedError.message =
+          `${taggedError.message} The create without tags was refused too (UnauthorizedOperation)` +
+          `${explicit ? `; explicit deny${kind !== undefined ? ` (${kind})` : ''}` : ''}.`;
+        if (explicit) markNonRetryable(taggedError);
+        throw taggedError;
+      }
+    }
+  }
+
+  /**
    * Apply tags to an EC2 resource (create-time, no removal).
    *
-   * Used by `create*` paths. Update paths should use `applyTagDiff` instead
-   * to handle tag removal too.
+   * Used by a `create*` path whose create did not carry the tags
+   * ({@link sendTaggedCreate}'s `tagsApplied`). Update paths should use
+   * `applyTagDiff` instead to handle tag removal too.
    */
   private async applyTags(
     resourceId: string,
@@ -7333,7 +7600,9 @@ export class EC2Provider implements ResourceProvider {
    * Returns `RESOURCE_NOT_FOUND` when the resource is gone (any `*NotFound` /
    * `Invalid*` error from the EC2 SDK matches `isNotFoundError`, or the
    * describe / parent walk no longer carries it); `undefined` for an
-   * unsupported type or an unparseable physicalId.
+   * unsupported type or an unparseable physicalId. Right after cdkd's own
+   * write (`afterOwnWrite`) a gone answer is first re-read a few times
+   * (`OWN_WRITE_READ_ATTEMPTS`, go-to-k/cdkd#4971).
    */
   async readCurrentState(
     physicalId: string,
@@ -7341,6 +7610,27 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const attempts = context?.afterOwnWrite === true ? OWN_WRITE_READ_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt++) {
+      const read = await this.readCurrentStateOnce(
+        physicalId,
+        logicalId,
+        resourceType,
+        properties,
+        context
+      );
+      if (read !== RESOURCE_NOT_FOUND || attempt >= attempts) return read;
+      await new Promise((r) => setTimeout(r, OWN_WRITE_READ_DELAY_MS));
+    }
+  }
+
+  private async readCurrentStateOnce(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    context: ReadCurrentStateContext | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       switch (resourceType) {

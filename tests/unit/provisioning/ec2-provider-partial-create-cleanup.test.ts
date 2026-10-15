@@ -170,7 +170,8 @@ describe('EC2Provider createSubnet partial-create cleanup (Issue #376)', () => {
     mockSend.mockResolvedValueOnce({
       Subnet: { SubnetId: 'subnet-aaa', AvailabilityZone: 'us-east-1a' },
     }); // CreateSubnetCommand
-    mockSend.mockResolvedValueOnce({}); // applyTags -> CreateTagsCommand (no tags property, so skipped... actually applyTags only runs if Tags is present — see provider)
+    // The tags ride on CreateSubnet's TagSpecifications (go-to-k/cdkd#4971),
+    // so no CreateTagsCommand sits between the create and the modify.
     mockSend.mockRejectedValueOnce(new Error('ModifySubnetAttribute boom')); // ModifySubnetAttributeCommand
     mockSend.mockResolvedValueOnce({}); // DeleteSubnetCommand cleanup
 
@@ -179,18 +180,17 @@ describe('EC2Provider createSubnet partial-create cleanup (Issue #376)', () => {
         VpcId: 'vpc-aaa',
         CidrBlock: '10.0.1.0/24',
         MapPublicIpOnLaunch: true,
-        Tags: [{ Key: 'k', Value: 'v' }], // ensures applyTags fires
+        Tags: [{ Key: 'k', Value: 'v' }],
       })
     ).rejects.toThrow('Failed to create Subnet');
 
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
     expect(names).toEqual([
       'CreateSubnetCommand',
-      'CreateTagsCommand',
       'ModifySubnetAttributeCommand',
       'DeleteSubnetCommand',
     ]);
-    expect(mockSend.mock.calls[3][0].input).toEqual({ SubnetId: 'subnet-aaa' });
+    expect(mockSend.mock.calls[2][0].input).toEqual({ SubnetId: 'subnet-aaa' });
   });
 
   it('does NOT issue DeleteSubnetCommand when CreateSubnet itself fails', async () => {

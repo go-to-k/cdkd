@@ -87,59 +87,10 @@ describe('SSMParameterProvider masked log sinks (issue #2176)', () => {
     provider = new SSMParameterProvider();
   });
 
-  it('SUPPRESSES the cleanup command when the Name is secret-bearing, and still names the resource (#2176, re-pointed by #3136)', async () => {
-    mockSend.mockResolvedValueOnce({}); // PutParameter
-    mockSend.mockRejectedValueOnce(new Error('AddTags boom')); // AddTagsToResource
-    mockSend.mockRejectedValueOnce(new Error('DeleteParameter also failed')); // cleanup
-
-    await expect(
-      provider.create(
-        'MyParam',
-        RESOURCE_TYPE,
-        { Name: SECRET_NAME, Type: 'String', Value: 'v', Tags: [{ Key: 'k', Value: 'v' }] },
-        { maskSecrets }
-      )
-    ).rejects.toThrow('AddTags boom');
-
-    const warnMsg = String(warnSpy.mock.calls[0]?.[0]);
-    // POSITIVE marker first: "the plaintext is absent" is equally true of a
-    // warning that never fired, or one that dropped the name entirely.
-    //
-    // RE-POINTED, not deleted (issue #3136): this case used to assert the
-    // command was PRESENT with a masked name. Since the hand-quoted sites took
-    // the #2610 / #3137 treatment, sanitizing a value that CHANGES under it
-    // suppresses the whole command — and a masked name always changes, because
-    // the command would then act on a parameter literally called `***` rather
-    // than the one that leaked. So the positive marker moves to the suppression
-    // sentence; dropping the assertion instead would leave this direction
-    // unfenced, which is the over-determined shape `verify.md` §8-d warns about.
-    expect(warnMsg).toContain('the parameter name cannot be reproduced safely on a command line');
-    expect(warnMsg).not.toContain('aws ssm delete-parameter');
-    expect(warnMsg).toContain(SECRET_MASK);
-    expect(warnMsg).not.toContain(SECRET_NAME);
-  });
-
-  it('still RENDERS the cleanup command for an ordinary Name (the control for the suppression above)', async () => {
-    // Without this, "the command is absent" would pass for a build that
-    // suppressed the command unconditionally — the suppression has to be
-    // caused by the masking, not by the code path.
-    mockSend.mockResolvedValueOnce({}); // PutParameter
-    mockSend.mockRejectedValueOnce(new Error('AddTags boom')); // AddTagsToResource
-    mockSend.mockRejectedValueOnce(new Error('DeleteParameter also failed')); // cleanup
-
-    await expect(
-      provider.create(
-        'MyParam',
-        RESOURCE_TYPE,
-        { Name: '/app/ordinary-name', Type: 'String', Value: 'v', Tags: [{ Key: 'k', Value: 'v' }] },
-        { maskSecrets }
-      )
-    ).rejects.toThrow('AddTags boom');
-
-    const warnMsg = String(warnSpy.mock.calls[0]?.[0]);
-    expect(warnMsg).toContain('aws ssm delete-parameter --name');
-    expect(warnMsg).toContain('/app/ordinary-name');
-  });
+  // The partial-create cleanup warning these cases used to pin (its pasteable
+  // `aws ssm delete-parameter` command, suppressed for a secret-bearing Name)
+  // is gone: the tags ride on PutParameter (go-to-k/cdkd#4971), so no call
+  // follows it whose failure needs a cleanup.
 
   it('masks the Name across EVERY create() line, not just the one under test', async () => {
     mockSend.mockResolvedValue({});

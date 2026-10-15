@@ -42,18 +42,43 @@ handling differs between the two paths, so this fixture exercises both:
   `state.resources.*.provisionedBy == 'cc-api'` for it and `'sdk'` for the
   rest (heterogeneous routing in one stack).
 
-No VPC / NAT / instances — every resource is control-plane-only and cheap,
-so the fixture stays fast and quota-free.
+One VPC with no NAT gateway, Elastic IP or instance, and an on-demand
+Kinesis stream: nothing waits on capacity, so the fixture stays fast.
+
+### Tags on the create call (issue [#4971](https://github.com/go-to-k/cdkd/issues/4971))
+
+The deploy runs as a throwaway role (`CdkdTagsPropagationExample-TagRequired`)
+that may do anything except create an IAM Role, SSM Parameter, Kinesis
+Stream, EC2 VPC, Subnet, InternetGateway, RouteTable, NetworkAcl or
+SecurityGroup whose create request lacks the `CdkdTagOwner` tag: an explicit
+deny on `aws:RequestTag/CdkdTagOwner`, the shape of an organization SCP that
+requires tags on create. A provider that creates a resource untagged and tags
+it afterwards is refused there, where `cdk deploy` succeeds. Each EC2 deny
+names only the resource type its create makes, as such an SCP does: a create
+is also authorized against its parent VPC, which carries no request tag.
+Before the deploy, `verify.sh` proves every deny statement binds: an untagged
+create of each of the nine types meets the explicit deny (EC2 as dry runs).
+It deletes the role at the end, and after each destroy checks that the stream
+and the EC2 resources are gone.
+
+After the first destroy, the same role is rewritten to deny only
+`ec2:CreateTags`, and the stack is deployed again as it. A tagged EC2 create
+needs `ec2:CreateTags`, while the old post-create `CreateTags` only warned, so
+such a role used to create the EC2 resources untagged. The deploy must still
+succeed: each EC2 create is re-sent once without its tags and the follow-up
+`CreateTags` warns. `verify.sh` asserts the re-send and the warning for each of
+the six EC2 resources, and that none carries the stack tags.
 
 ## What it does
 
-1. `cdkd deploy CdkdTagsPropagationExample` — applies 3 stack-level tags
+1. `cdkd deploy CdkdTagsPropagationExample`, as the tag-requiring role above
+   — applies 3 stack-level tags
    (`CdkdTagOwner=cdkd-integ`, `CdkdTagEnv=test`, `CdkdTagCostCenter=cc-1234`,
-   set via `cdk.Tags.of(app)` in `bin/app.ts`) to all 9 taggable resources.
-   A wrong-Tags-shape crash on any type (e.g. the SSM map regression) fails
-   the deploy here with specifics.
-2. Reads `state.json` and asserts the routing split (8 `sdk` + 1 `cc-api`).
-3. For **each** of the 9 types, reads the live AWS-side tags via that
+   set via `cdk.Tags.of(app)` in `bin/app.ts`) to all 16 taggable resources.
+   A wrong-Tags-shape crash on any type (e.g. the SSM map regression), or a
+   create sent without its tags, fails the deploy here with specifics.
+2. Reads `state.json` and asserts the routing split (15 `sdk` + 1 `cc-api`).
+3. For **each** of the 16 types, reads the live AWS-side tags via that
    type's type-specific list/describe API and asserts **all 3** stack-level
    tags are present with the correct value. A type missing a tag (a dropped
    tag) **FAILs naming the type**.
@@ -61,7 +86,10 @@ so the fixture stays fast and quota-free.
    reorder from AWS must not show as a false-positive drift (issue
    [#802](https://github.com/go-to-k/cdkd/issues/802)
    `canonicalizeTagListsDeep`), nor a map-vs-list readback-shape mismatch.
-5. `cdkd destroy --force` — clean up.
+5. `cdkd destroy --force`.
+6. Redeploy as the role with only `ec2:CreateTags` denied (above), assert each
+   EC2 create was re-sent untagged and warned, then `cdkd destroy --force` and
+   delete the role.
 
 ### Per-type tag-read API
 
@@ -75,6 +103,8 @@ so the fixture stays fast and quota-free.
 | `AWS::Logs::LogGroup`    | sdk    | `logs list-tags-for-resource --resource-arn`                       | `tags{ k: v }` map     |
 | `AWS::Lambda::Function`  | sdk    | `lambda list-tags --resource <arn>`                                | `Tags{ k: v }` map     |
 | `AWS::DynamoDB::Table`   | sdk    | `dynamodb list-tags-of-resource --resource-arn`                    | `Tags[{Key,Value}]`    |
+| `AWS::Kinesis::Stream`   | sdk    | `kinesis list-tags-for-stream --stream-name`                       | `Tags[{Key,Value}]`    |
+| `AWS::EC2::*` (6 types)  | sdk    | `ec2 describe-tags --filters Name=resource-id,Values=<id>`         | `Tags[{Key,Value}]`    |
 | `AWS::Athena::WorkGroup` | cc-api | `athena list-tags-for-resource --resource-arn`                     | `Tags[{Key,Value}]`    |
 
 ## Run

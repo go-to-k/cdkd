@@ -96,7 +96,14 @@ import {
 } from '../../../src/provisioning/auxiliary-failure.js';
 
 const TYPE = 'AWS::Kinesis::Stream';
-const PROPS = { Name: 'orders', ShardCount: 1, Tags: [{ Key: 'team', Value: 'a' }] };
+// The tags ride on CreateStream (go-to-k/cdkd#4971); the retention change is
+// the follow-up call the cases below watch for.
+const PROPS = {
+  Name: 'orders',
+  ShardCount: 1,
+  RetentionPeriodHours: 48,
+  Tags: [{ Key: 'team', Value: 'a' }],
+};
 
 /** The shape `isTransientServerError` / `isAmbiguousOutcomeError` classify (issue #2026). */
 const transient500 = (): Error =>
@@ -202,7 +209,7 @@ describe('KinesisStreamProvider create retry safety (issue #3978)', () => {
       )
     ).toBe(true);
     // Never adopted: a name is not attribution.
-    expect(aws.calls).not.toContain('AddTagsToStreamCommand');
+    expect(aws.calls).not.toContain('IncreaseStreamRetentionPeriodCommand');
   });
 
   it('a stream that already existed before any ambiguous attempt is still a name collision', async () => {
@@ -212,14 +219,16 @@ describe('KinesisStreamProvider create retry safety (issue #3978)', () => {
 
     expect(aws.calls.filter((c) => c === 'CreateStreamCommand')).toHaveLength(1);
     expect(isNameCollisionErrorFrom(error, 'Stream')).toBe(true);
-    expect(aws.calls).not.toContain('AddTagsToStreamCommand');
+    expect(aws.calls).not.toContain('IncreaseStreamRetentionPeriodCommand');
   });
 
   it('a create with no failure still completes through the follow-up calls', async () => {
     const result = await createWithRetry();
 
     expect(result.physicalId).toBe('orders');
-    expect(aws.calls).toContain('AddTagsToStreamCommand');
+    expect(aws.calls).toContain('IncreaseStreamRetentionPeriodCommand');
+    // go-to-k/cdkd#4971: the tags rode on CreateStream.
+    expect(aws.calls).not.toContain('AddTagsToStreamCommand');
   });
 
   it('sends CreateStream through a client that refuses the SDK retry of a 5xx, and nothing else', async () => {
@@ -234,7 +243,7 @@ describe('KinesisStreamProvider create retry safety (issue #3978)', () => {
       strategy.refreshRetryTokenForRetry('t', { error: throttled() } as never)
     ).resolves.toBe('retry-token');
 
-    for (const name of ['DescribeStreamCommand', 'AddTagsToStreamCommand']) {
+    for (const name of ['DescribeStreamCommand', 'IncreaseStreamRetentionPeriodCommand']) {
       const config = sentVia.find(([n]) => n === name)![1];
       expect(await config.retryStrategy()).toBe(baseStrategy);
     }

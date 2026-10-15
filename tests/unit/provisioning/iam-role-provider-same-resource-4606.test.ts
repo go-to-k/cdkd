@@ -41,7 +41,6 @@ import {
   ListRolePoliciesCommand,
   NoSuchEntityException,
   PutRolePolicyCommand,
-  TagRoleCommand,
 } from '@aws-sdk/client-iam';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import {
@@ -321,7 +320,10 @@ describe("the created-before-failure mark carries CreateRole's RoleId (go-to-k/c
   const PROPS = {
     RoleName: 'role-a',
     AssumeRolePolicyDocument: ASSUME,
-    Policies: [{ PolicyName: 'inline', PolicyDocument: { Version: '2012-10-17', Statement: [] } }],
+    Policies: [
+      { PolicyName: 'inline', PolicyDocument: { Version: '2012-10-17', Statement: [] } },
+      { PolicyName: 'second', PolicyDocument: { Version: '2012-10-17', Statement: [] } },
+    ],
     Tags: [{ Key: 'k', Value: 'v' }],
   };
 
@@ -333,8 +335,9 @@ describe("the created-before-failure mark carries CreateRole's RoleId (go-to-k/c
 
   /**
    * CreateRole answers `roleId` on the first call (a later one
-   * EntityAlreadyExists); PutRolePolicy succeeds, TagRole is denied, and so is
-   * the cleanup's DeleteRolePolicy unless `cleanupSucceeds`.
+   * EntityAlreadyExists); the first PutRolePolicy succeeds, the second is
+   * denied, and so is the cleanup's DeleteRolePolicy unless `cleanupSucceeds`.
+   * (The tags ride on CreateRole, go-to-k/cdkd#4971, so no TagRole is sent.)
    */
   function aws(opts: { roleId: string | undefined; cleanupSucceeds?: boolean }): void {
     let creates = 0;
@@ -350,8 +353,10 @@ describe("the created-before-failure mark carries CreateRole's RoleId (go-to-k/c
           Role: { RoleName: 'role-a', Arn: 'arn:aws:iam::1:role/role-a', RoleId: opts.roleId },
         };
       }
-      if (cmd instanceof PutRolePolicyCommand) return {};
-      if (cmd instanceof TagRoleCommand) throw denied('TagRole');
+      if (cmd instanceof PutRolePolicyCommand) {
+        if (cmd.input.PolicyName === 'inline') return {};
+        throw denied('PutRolePolicy');
+      }
       if (cmd instanceof ListAttachedRolePoliciesCommand) return { AttachedPolicies: [] };
       if (cmd instanceof ListRolePoliciesCommand) return { PolicyNames: ['inline'] };
       if (cmd instanceof DeleteRolePolicyCommand) {

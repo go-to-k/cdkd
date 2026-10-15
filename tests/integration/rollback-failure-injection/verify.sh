@@ -77,8 +77,9 @@ FAILING_QUEUE_NAME="${STACK}-failing-queue"
 # VPC / SG / Role / Lambda. A `tag:aws:cdk:path` filter therefore always returns
 # empty — it would FALSELY FAIL the "VPC created" assertion (step 5a) and
 # VACUOUSLY PASS the "gone" assertions (steps 3c/3d/7), masking real orphans.
-# cdkd DOES apply this non-reserved tag (EC2 CreateTags / IAM TagRole /
-# Lambda TagResource), so every resource-existence query below is reliable.
+# cdkd DOES apply this non-reserved tag (on the EC2 / IAM create call itself
+# since go-to-k/cdkd#4971, Lambda TagResource), so every resource-existence
+# query below is reliable.
 FIXTURE_TAG_KEY="cdkd:integ-fixture"
 FIXTURE_TAG_VALUE="rollback-failure-injection"
 

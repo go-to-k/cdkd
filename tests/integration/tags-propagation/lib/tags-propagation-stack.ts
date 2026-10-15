@@ -11,6 +11,8 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as athena from 'aws-cdk-lib/aws-athena';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,18 +36,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * fixture deliberately tags an SSM Parameter so that regression is caught
  * end-to-end against real AWS.
  *
+ * go-to-k/cdkd#4971: the IAM Role, SSM Parameter, Kinesis Stream and six EC2
+ * types are created by a role that EXPLICITLY denies each of those creates
+ * unless the request carries the `CdkdTagOwner` tag (an SCP's
+ * `aws:RequestTag` guardrail, see verify.sh), so each create must send its
+ * tags on the create call itself rather than tag the resource afterwards.
+ *
  * Path split:
  *   - SDK-provider path (registered in register-providers.ts): S3 Bucket,
  *     SNS Topic, SQS Queue, SSM Parameter, IAM Role, Logs LogGroup,
- *     Lambda Function, DynamoDB Table.
+ *     Lambda Function, DynamoDB Table, Kinesis Stream, EC2 VPC, Subnet,
+ *     InternetGateway, RouteTable, NetworkAcl, SecurityGroup.
  *   - Cloud Control API path: Athena WorkGroup has NO SDK provider, so
  *     cdkd routes it through Cloud Control, which forwards the full CFn
  *     `Tags` property. This proves the stack-level tags also land on a
  *     CC-API-provisioned resource (verified via `provisionedBy: 'cc-api'`
  *     in state + `athena list-tags-for-resource`).
  *
- * No VPC / NAT / instances — every resource here is control-plane-only
- * and cheap, so the fixture stays fast and quota-free.
+ * One VPC with no NAT gateway, Elastic IP or instance, and an on-demand
+ * stream: nothing here waits on capacity, so the fixture stays fast.
  *
  * The stack-level tags themselves are added in bin/app.ts via
  * `cdk.Tags.of(app).add(...)` so they propagate to ALL stacks/resources.
@@ -121,6 +130,27 @@ export class TagsPropagationStack extends cdk.Stack {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // --- go-to-k/cdkd#4971: creates that must carry their tags ---
+
+    // Kinesis Stream — Tags on CreateStream ({ k: v } map on the wire;
+    // kinesis list-tags-for-stream). On-demand, so no shard count to size.
+    new kinesis.CfnStream(this, 'TaggedStream', {
+      streamModeDetails: { streamMode: 'ON_DEMAND' },
+    });
+
+    // EC2 — TagSpecifications on each create (ec2 describe-tags). L1s, so
+    // the stack holds exactly one resource of each type and nothing else
+    // (no routes, attachments or default rules a VPC L2 would add).
+    const vpc = new ec2.CfnVPC(this, 'TaggedVpc', { cidrBlock: '10.97.0.0/16' });
+    new ec2.CfnSubnet(this, 'TaggedSubnet', { vpcId: vpc.ref, cidrBlock: '10.97.1.0/24' });
+    new ec2.CfnInternetGateway(this, 'TaggedInternetGateway');
+    new ec2.CfnRouteTable(this, 'TaggedRouteTable', { vpcId: vpc.ref });
+    new ec2.CfnNetworkAcl(this, 'TaggedNetworkAcl', { vpcId: vpc.ref });
+    new ec2.CfnSecurityGroup(this, 'TaggedSecurityGroup', {
+      groupDescription: 'cdkd tags-propagation',
+      vpcId: vpc.ref,
     });
 
     // --- Cloud Control API-path taggable resource ---

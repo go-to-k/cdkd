@@ -149,8 +149,10 @@ same family, in the same window.
 
 ## A warning that an EC2 VPC, subnet, internet gateway or Elastic IP may be an orphan
 
-cdkd tags these resources only after the create returns, so an orphan has no
-tags. It reports each untagged match this deploy did not record:
+cdkd sends the template's tags on the create call, so an orphan carries
+exactly those tags, or none when the template declares none or the create was
+the untagged re-send of a role without `ec2:CreateTags`. It reports each match
+with no tags or exactly the template's tags that this deploy did not record:
 
 | Call | Candidate cdkd reports | Read command | Lookup permission |
 | --- | --- | --- | --- |
