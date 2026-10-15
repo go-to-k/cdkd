@@ -2439,7 +2439,7 @@
       "shapeEntries": [],
       "shapeCleanCount": 3,
       "unmatchedDefinitions": [
-        "Configuration"
+        "MetricConfiguration"
       ],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []
