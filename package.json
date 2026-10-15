@@ -76,6 +76,7 @@
     "@aws-sdk/client-kinesis": "^3.1018.0",
     "@aws-sdk/client-kms": "^3.1018.0",
     "@aws-sdk/client-lambda": "^3.0.0",
+    "@aws-sdk/client-lambda-core": "^3.1151.0",
     "@aws-sdk/client-lambda-microvms": "^3.1092.0",
     "@aws-sdk/client-lambda-web": "^3.1151.0",
     "@aws-sdk/client-neptune": "^3.1045.0",

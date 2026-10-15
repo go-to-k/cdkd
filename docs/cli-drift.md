@@ -365,7 +365,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::Kinesis` | `Stream`, `StreamConsumer` |
 | `AWS::KinesisFirehose` | `DeliveryStream` |
 | `AWS::KMS` | `Alias`, `Key` |
-| `AWS::Lambda` | `EventInvokeConfig`, `EventSourceMapping`, `Function`, `LayerVersion`, `MicrovmImage`, `Permission`, `Url`, `WebFunctionEndpoint`, `WebFunctionRevision` |
+| `AWS::Lambda` | `EventInvokeConfig`, `EventSourceMapping`, `Function`, `LayerVersion`, `MicrovmImage`, `NetworkConnector`, `Permission`, `Url`, `WebFunctionEndpoint`, `WebFunctionRevision` |
 | `AWS::Logs` | `LogGroup` |
 | `AWS::Neptune` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::Pipes` | `Pipe` |

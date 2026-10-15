@@ -218,6 +218,7 @@ prints the manual wait command, and continues.
 | NAT gateway | Until `deleted` |
 | CloudFront distribution | Disable, then wait |
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
+| Lambda network connector | Until the connector is gone |
 
 Each wait is there for a reason:
 
@@ -228,6 +229,9 @@ Each wait is there for a reason:
 - A Kinesis or Firehose stream keeps its name while it is `DELETING`, so a
   deploy right after the destroy would fail with `already exists`. If this
   wait runs out, cdkd warns and moves on.
+- A Lambda network connector reports `DELETING` before it is gone, so cdkd
+  waits until AWS no longer returns it, about 3 seconds, before reporting it
+  deleted. A connector that ends in `DELETE_FAILED` fails the destroy.
 
 RDS and ElastiCache deletes do not wait, because nothing in a destroy depends
 on them.

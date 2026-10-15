@@ -69,6 +69,7 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
   'AWS::KinesisFirehose::DeliveryStream': flat('DeliveryStreamName'),
   'AWS::KMS::Alias': flat('AliasName'),
   'AWS::Lambda::MicrovmImage': flat('Name'),
+  'AWS::Lambda::NetworkConnector': flat('Name'),
   'AWS::Lambda::WebFunctionEndpoint': { name: [['EndpointName']], scope: [['FunctionName']] },
   // The schema's create-only `Name` is the pipe's physical id (issue #4423).
   'AWS::Pipes::Pipe': flat('Name'),

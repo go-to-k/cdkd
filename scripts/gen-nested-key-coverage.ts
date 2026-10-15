@@ -1901,6 +1901,20 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     minWriteScopes: 11,
   },
   {
+    // go-to-k/cdkd#4928: `Configuration.VpcEgressConfiguration` is hand-built
+    // member by member (Lambda Core's model is PascalCase, like CloudFormation).
+    // Measured at opt-in: 7 audited paths, 23 written member names and 2
+    // non-empty write scopes in the test walk, 0 findings.
+    resourceType: 'AWS::Lambda::NetworkConnector',
+    providerFile: 'lambda-network-connector-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-lambda-core',
+    keyStyle: 'exact',
+    minNestedKeys: 5,
+    freshObjectMapper: true,
+    minWrittenMembers: 12,
+    minWriteScopes: 1,
+  },
+  {
     // go-to-k/cdkd#4926: `RevisionWeights` / `ScalingConfig` /
     // `ThrottleConfig` are hand-built, as for the revision above.
     // Measured at opt-in: 4 audited paths, 30 written member names, 3
@@ -2288,6 +2302,24 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
       rationale:
         'Same list-to-map fold as Tags.Key: the CFn tag list becomes the SDK `tags` ' +
         'Record<string, string>, so no `Value` member exists on the SDK side.',
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::Lambda::NetworkConnector', 'Tags.Key'),
+    {
+      rationale:
+        "Same list-to-map fold as the AppSync entries: Lambda Core's CreateNetworkConnector " +
+        'takes `Tags` as a Record<string, string>, and the provider folds the CFn list into ' +
+        'it (`Object.fromEntries(tagList.map((t) => [t.Key, t.Value]))`); updates go through ' +
+        "Lambda's TagResource / UntagResource. No `Key` member exists in the SDK model.",
+      passes: ['key', 'shape', 'write'],
+    },
+  ],
+  [
+    allowKey('AWS::Lambda::NetworkConnector', 'Tags.Value'),
+    {
+      rationale: 'Same list-to-map fold as Tags.Key: no `Value` member exists in the SDK model.',
       passes: ['key', 'shape', 'write'],
     },
   ],

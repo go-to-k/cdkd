@@ -1498,6 +1498,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-network-connector",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-reserved-concurrency",
       "annotated": false,
       "scenarios": []
@@ -3389,6 +3394,7 @@
     "lambda-layer-version-update",
     "lambda-log-retention",
     "lambda-microvm-image",
+    "lambda-network-connector",
     "lambda-reserved-concurrency",
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",

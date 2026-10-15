@@ -202,6 +202,7 @@ lambda-fix-forward-orphan	2026-10-13T08:00:58Z	PASS	150	verify.sh	rc ok, destroy
 lambda-layer-version-update	2026-10-08T06:25:38Z	PASS	75	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-10-06T02:22:44Z	PASS	852	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+lambda-network-connector	2026-10-15T02:25:04Z	PASS	972	verify.sh	rc ok, orph clean; cc-api to sdk (same ARN), tag key swap, subnet update v1 to v2, drift 2/2, destroy, fresh SDK create + destroy
 lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-07T21:11:42Z	PASS	150	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean

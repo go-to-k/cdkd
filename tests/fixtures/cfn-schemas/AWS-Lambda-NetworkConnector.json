@@ -1,0 +1,122 @@
+{
+  "resourceType": "AWS::Lambda::NetworkConnector",
+  "generatedAt": "2026-10-15",
+  "properties": [
+    "Arn",
+    "Configuration",
+    "LatestVersion",
+    "LatestVersionArn",
+    "Name",
+    "OperatorRole",
+    "State",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "LatestVersion",
+    "LatestVersionArn",
+    "State"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Arn"
+  ],
+  "nestedProperties": {
+    "Configuration": [
+      "AssociatedComputeResourceTypes",
+      "NetworkProtocol",
+      "SecurityGroupIds",
+      "SubnetIds",
+      "VpcEgressConfiguration"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Configuration": [
+      "VpcEgressConfiguration",
+      "VpcEgressConfiguration.AssociatedComputeResourceTypes",
+      "VpcEgressConfiguration.NetworkProtocol",
+      "VpcEgressConfiguration.SecurityGroupIds",
+      "VpcEgressConfiguration.SubnetIds"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "Name": "scalar",
+      "Configuration": "object",
+      "OperatorRole": "scalar",
+      "State": "scalar",
+      "LatestVersionArn": "scalar",
+      "LatestVersion": "scalar",
+      "Tags": "array"
+    },
+    "VpcEgressConfiguration": {
+      "SubnetIds": "array",
+      "SecurityGroupIds": "array",
+      "NetworkProtocol": "scalar",
+      "AssociatedComputeResourceTypes": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "Config": {
+      "VpcEgressConfiguration": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Configuration"
+    ],
+    "VpcEgressConfiguration": [
+      "AssociatedComputeResourceTypes",
+      "NetworkProtocol",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "Tag": [
+      "Key"
+    ],
+    "Config": [
+      "VpcEgressConfiguration"
+    ]
+  },
+  "nestedRequired": {
+    "Configuration": [
+      "VpcEgressConfiguration"
+    ],
+    "Configuration.VpcEgressConfiguration": [
+      "AssociatedComputeResourceTypes",
+      "NetworkProtocol",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "Tags": [
+      "Key"
+    ]
+  },
+  "propertyShapes": {
+    "Configuration": "object",
+    "Configuration.VpcEgressConfiguration": "object",
+    "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes": "array",
+    "Configuration.VpcEgressConfiguration.SecurityGroupIds": "array",
+    "Configuration.VpcEgressConfiguration.SubnetIds": "array",
+    "Tags": "array",
+    "Tags[]": "object"
+  }
+}

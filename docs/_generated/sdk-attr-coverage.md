@@ -12,8 +12,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **137**
-- Covered (every Arn/Url readOnly resolvable): **66**
+- SDK-backed types classified: **138**
+- Covered (every Arn/Url readOnly resolvable): **67**
 - No Arn/Url readOnly attribute: **71**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
@@ -67,6 +67,7 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::Lambda::Function` | covered | `Arn` (cached) |
 | `AWS::Lambda::LayerVersion` | covered | `LayerVersionArn` (cached) |
 | `AWS::Lambda::MicrovmImage` | covered | `ImageArn` (cached) |
+| `AWS::Lambda::NetworkConnector` | covered | `Arn` (cached), `LatestVersionArn` (cached) |
 | `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |
 | `AWS::Lambda::WebFunctionEndpoint` | covered | `EndpointArn` (cached), `FunctionArn` (cached) |
 | `AWS::Lambda::WebFunctionRevision` | covered | `FunctionArn` (cached), `RevisionArn` (cached) |

@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **90**
-- Wrapped: **83**
+- Provider classes with `update()`: **91**
+- Wrapped: **84**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -87,6 +87,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `LambdaFunctionProvider` | `lambda-function-provider.ts` | wrapped |
 | `LambdaLayerVersionProvider` | `lambda-layer-provider.ts` | no-aws |
 | `LambdaMicrovmImageProvider` | `lambda-microvm-image-provider.ts` | wrapped |
+| `LambdaNetworkConnectorProvider` | `lambda-network-connector-provider.ts` | wrapped |
 | `LambdaPermissionProvider` | `lambda-permission-provider.ts` | wrapped |
 | `LambdaUrlProvider` | `lambda-url-provider.ts` | wrapped |
 | `LambdaWebFunctionEndpointProvider` | `lambda-web-function-endpoint-provider.ts` | wrapped |

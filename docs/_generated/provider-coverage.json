@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-09-04T22:38:29.272Z",
   "summary": {
-    "tier1Count": 137,
-    "tier2Count": 1468,
+    "tier1Count": 138,
+    "tier2Count": 1467,
     "tier3Count": 268,
     "totalCount": 1873
   },
@@ -107,6 +107,7 @@
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
     "AWS::Lambda::MicrovmImage",
+    "AWS::Lambda::NetworkConnector",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
@@ -988,7 +989,6 @@
     "AWS::Lambda::CapacityProvider",
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::LayerVersionPermission",
-    "AWS::Lambda::NetworkConnector",
     "AWS::Lambda::ResourcePolicy",
     "AWS::Lambda::Version",
     "AWS::LaunchWizard::Deployment",

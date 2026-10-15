@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 88,
-    "declaredProperties": 1170,
-    "wiredProperties": 1168,
-    "wired": 86,
+    "classifiedCount": 89,
+    "declaredProperties": 1174,
+    "wiredProperties": 1172,
+    "wired": 87,
     "gap": 0,
     "allowListed": 2,
     "classesWithBlindSpots": 38
@@ -14703,6 +14703,75 @@
       "blindSpots": [
         "computed key in update()"
       ]
+    },
+    {
+      "file": "lambda-network-connector-provider.ts",
+      "className": "LambdaNetworkConnectorProvider",
+      "bucket": "wired",
+      "declaredCount": 4,
+      "properties": [
+        {
+          "name": "Configuration",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::NetworkConnector"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "readVpcEgress",
+            "update"
+          ]
+        },
+        {
+          "name": "Name",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::NetworkConnector"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create"
+          ]
+        },
+        {
+          "name": "OperatorRole",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::NetworkConnector"
+          ],
+          "evidence": [
+            "delegated",
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "readOperatorRole",
+            "update"
+          ]
+        },
+        {
+          "name": "Tags",
+          "status": "wired",
+          "types": [
+            "AWS::Lambda::NetworkConnector"
+          ],
+          "evidence": [
+            "element-read"
+          ],
+          "seededBy": [
+            "create",
+            "update"
+          ]
+        }
+      ],
+      "gaps": [],
+      "blindSpots": []
     },
     {
       "file": "lambda-permission-provider.ts",

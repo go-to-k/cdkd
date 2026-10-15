@@ -12,17 +12,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **27**
-- Nested CFn key paths audited: **1456**
-- Same spelling in SDK model: **1355**
+- Audited targets: **28**
+- Nested CFn key paths audited: **1463**
+- Same spelling in SDK model: **1360**
 - Explicitly handled in provider: **80**
-- Allow-listed pass-throughs (does NOT block CI): **21**
+- Allow-listed pass-throughs (does NOT block CI): **23**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
-- Write-evidence pass — fresh-object targets audited: **17**
+- Write-evidence pass — fresh-object targets audited: **18**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **175**
-- Shape pass — explicitly handled in provider: **48**
+- Shape pass — bare-array pairs clean: **178**
+- Shape pass — explicitly handled in provider: **49**
 - Shape pass — allow-listed (does NOT block CI): **9**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -51,6 +51,8 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::ECS::Service` | `ForceNewDeployment.ForceNewDeploymentNonce` | Same single-boolean collapse as ForceNewDeployment.EnableForceNewDeployment: the nonce has no SDK member of its own — a nonce CHANGE is what resolveForceNewDeployment turns into `forceNewDeployment: true` (issue #609). |
 | `AWS::Lambda::EventSourceMapping` | `Tags.Key` | Same list-to-map fold as the AppSync entries: Lambda models an event source mapping's tags as a flat Record<string, string> (`Tags`), not as CFn's [{Key, Value}] list, and the provider folds the list into that map on create (`Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]))`). No `Key` member exists anywhere in the SDK model to spell-match. READ THE VERDICT WITH CARE: the key pass reports this as `case-divergence` ("SDK has KEY") rather than `no-sdk-member`, because the member index also carries enum const-object keys and `@aws-sdk/client-lambda`'s `KafkaSchemaValidationAttribute` declares `KEY` / `VALUE` — a Kafka schema-validation attribute with nothing to do with tagging. A case fold would NOT fix this key; there is no member to fold onto. |
 | `AWS::Lambda::EventSourceMapping` | `Tags.Value` | Same list-to-map fold as Tags.Key, and the same spurious enum near-miss — `VALUE` is the other `KafkaSchemaValidationAttribute` member, not a tag member the provider could write. |
+| `AWS::Lambda::NetworkConnector` | `Tags.Key` | Same list-to-map fold as the AppSync entries: Lambda Core's CreateNetworkConnector takes `Tags` as a Record<string, string>, and the provider folds the CFn list into it (`Object.fromEntries(tagList.map((t) => [t.Key, t.Value]))`); updates go through Lambda's TagResource / UntagResource. No `Key` member exists in the SDK model. |
+| `AWS::Lambda::NetworkConnector` | `Tags.Value` | Same list-to-map fold as Tags.Key: no `Value` member exists in the SDK model. |
 | `AWS::S3::Bucket` | `CorsConfiguration.CorsRules` | Delivered by applyCorsConfiguration, which reads the CFn key via typed property access (`corsConfig.CorsRules.map(...)`) and writes the SDK spelling `CORSRules` — the literal walk deliberately counts neither a property ACCESS nor a type-literal member, and the only literal mention of the CFn spelling is `readCors`, excluded as a reverse map by the #1520 widening. Key pass only; the members BENEATH it need no entry — the per-level case fold resolves `CorsConfiguration.CorsRules` onto the written `CORSConfiguration.CORSRules` scope, so they stay write-audited (issue #1520). |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-`lifecycleRuleScope` shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry. |
 | `AWS::S3::Bucket` | `LifecycleConfiguration.Rules.TagFilters.Key` | Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration, but through a chain the hand-off taint walk deliberately does not cross: the array reaches the write as a DESTRUCTURED member of the `lifecycleRuleScope` helper's returned literal (module-level since issue #1755, in-method `gatherScope` before it — the shape is unchanged), and member-level taint through a returned literal is a materially bigger analysis (issue #1540; same wrapper-level class as the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent per-item-config forwards (Analytics / Metrics / IntelligentTiering) ARE wildcard-credited via the for-of taint hop. |
@@ -186,6 +188,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Events::Rule` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
 | `AWS::Glue::Crawler` | `DynamoDBTarget` | `ScanAll` | definition | SDK interface `DynamoDBTarget` has no `ScanAll` member |
 | `AWS::Lambda::EventSourceMapping` | `#top` | `Tags` | wrapper | — |
+| `AWS::Lambda::NetworkConnector` | `#top` | `Tags` | wrapper | — |
 | `AWS::Pipes::Pipe` | `EcsEnvironmentFile` | `Type` | definition | SDK interface `EcsEnvironmentFile` has no `Type` member |
 | `AWS::Pipes::Pipe` | `EcsEnvironmentFile` | `Value` | definition | SDK interface `EcsEnvironmentFile` has no `Value` member |
 | `AWS::Pipes::Pipe` | `EcsEnvironmentVariable` | `Name` | definition | SDK interface `EcsEnvironmentVariable` has no `Name` member |
@@ -235,6 +238,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 38 | 6 |
+| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | yes | 7 | 3 |
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 4 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | yes | 17 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | no | 208 | 0 |

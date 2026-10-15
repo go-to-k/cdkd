@@ -4690,6 +4690,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       // nothing left to find.
       'AWS::Lambda::EventSourceMapping': 0,
       // 0 at opt-in (go-to-k/cdkd#4926): both providers hand-build every member.
+      'AWS::Lambda::NetworkConnector': 0,
       'AWS::Lambda::WebFunctionRevision': 0,
       'AWS::Lambda::WebFunctionEndpoint': 0,
       // The mixed-case-island slice of issue #1393 item 3, measured under the

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 137,
-    "covered": 66,
+    "classifiedCount": 138,
+    "covered": 67,
     "noArnAttr": 71,
     "gap": 0,
     "knownGap": 0
@@ -826,6 +826,21 @@
       "arnAttributes": [
         {
           "name": "ImageArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        },
+        {
+          "name": "LatestVersionArn",
           "status": "cached"
         }
       ],

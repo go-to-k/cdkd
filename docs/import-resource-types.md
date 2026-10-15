@@ -206,6 +206,7 @@ and the rule id as the `Id` attribute. You cannot pass that stored form to
 | `AWS::Lambda::MicrovmImage` | The image ARN. |
 | `AWS::Lambda::WebFunctionRevision` | The revision ARN. |
 | `AWS::Lambda::WebFunctionEndpoint` | The endpoint ARN. |
+| `AWS::Lambda::NetworkConnector` | The connector ARN or name. |
 
 These types take the plain physical id: `AWS::SNS::Subscription`,
 `AWS::SNS::TopicPolicy`, `AWS::SQS::QueuePolicy`, `AWS::S3::BucketPolicy`,

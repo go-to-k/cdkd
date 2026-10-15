@@ -274,6 +274,10 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     '{"AdditionalOsCapabilities":"array","CodeArtifact":"object","CpuConfigurations":"array","CpuConfigurations[]":"object","EgressNetworkConnectors":"array","EnvironmentVariables":"array","EnvironmentVariables[]":"object","Hooks":"object","Hooks.MicrovmHooks":"object","Hooks.MicrovmImageHooks":"object","Logging":"object","Logging.CloudWatch":"object","Resources":"array","Resources[]":"object","Tags":"array","Tags[]":"object"}',
   ],
   [
+    'AWS::Lambda::NetworkConnector',
+    '{"Configuration":"object","Configuration.VpcEgressConfiguration":"object","Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes":"array","Configuration.VpcEgressConfiguration.SecurityGroupIds":"array","Configuration.VpcEgressConfiguration.SubnetIds":"array","Tags":"array","Tags[]":"object"}',
+  ],
+  [
     'AWS::Lambda::Url',
     '{"Cors":"object","Cors.AllowHeaders":"array","Cors.AllowMethods":"array","Cors.AllowOrigins":"array","Cors.ExposeHeaders":"array"}',
   ],

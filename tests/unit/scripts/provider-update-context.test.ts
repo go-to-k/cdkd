@@ -239,6 +239,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaFunctionProvider',
       'LambdaLayerVersionProvider',
       'LambdaMicrovmImageProvider',
+      'LambdaNetworkConnectorProvider',
       'LambdaPermissionProvider',
       'LambdaUrlProvider',
       'LambdaWebFunctionEndpointProvider',

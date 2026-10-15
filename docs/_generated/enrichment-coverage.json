@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 137,
+    "classifiedCount": 138,
     "enriched": 47,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 72,
-    "allowListedTypes": 86
+    "sdkFallbackGap": 73,
+    "allowListedTypes": 87
   },
   "types": [
     {
@@ -2305,6 +2305,42 @@
         "LatestFailedImageVersion",
         "State",
         "UpdatedAt"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "LatestVersion",
+        "LatestVersionArn",
+        "State"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        },
+        {
+          "name": "LatestVersion",
+          "status": "gap"
+        },
+        {
+          "name": "LatestVersionArn",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "LatestVersion",
+        "LatestVersionArn",
+        "State"
       ]
     },
     {

@@ -99,6 +99,7 @@
     "AWS::Lambda::Function",
     "AWS::Lambda::LayerVersion",
     "AWS::Lambda::MicrovmImage",
+    "AWS::Lambda::NetworkConnector",
     "AWS::Lambda::Permission",
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
@@ -4425,6 +4426,7 @@
         "lambda-esm-self-managed-kafka",
         "lambda-fix-forward-orphan",
         "lambda-microvm-image",
+        "lambda-network-connector",
         "lambda-snapstart",
         "lambda-web-function-revision-replace",
         "local-invoke-dotnet",
@@ -4634,6 +4636,9 @@
           "l1"
         ],
         "lambda-microvm-image": [
+          "l2"
+        ],
+        "lambda-network-connector": [
           "l2"
         ],
         "lambda-snapstart": [
@@ -5613,6 +5618,18 @@
       ],
       "signals": {
         "lambda-microvm-image": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "integs": [
+        "lambda-network-connector"
+      ],
+      "signals": {
+        "lambda-network-connector": [
+          "l1",
           "literal"
         ]
       }

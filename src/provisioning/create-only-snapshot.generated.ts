@@ -374,6 +374,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     ],
   ],
   ['AWS::Lambda::MicrovmImage', [['Name']]],
+  ['AWS::Lambda::NetworkConnector', [['Name']]],
   [
     'AWS::Lambda::Permission',
     [

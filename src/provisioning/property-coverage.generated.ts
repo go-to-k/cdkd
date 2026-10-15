@@ -2405,6 +2405,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Lambda::NetworkConnector',
+    {
+      handled: new Set<string>(['Configuration', 'Name', 'OperatorRole', 'Tags']),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn', 'LatestVersion', 'LatestVersionArn', 'State']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::Lambda::Permission',
     {
       handled: new Set<string>([

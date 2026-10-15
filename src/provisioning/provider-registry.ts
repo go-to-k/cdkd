@@ -344,6 +344,20 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     },
   ],
   [
+    'AWS::Lambda::NetworkConnector',
+    {
+      // Every connector created before its SDK provider (go-to-k/cdkd#4928) is
+      // pinned to cc-api; this lets the next deploy that changes it move it.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the connector ARN: the schema primaryIdentifier is ' +
+        'Arn and LambdaNetworkConnectorProvider.create records the ' +
+        'CreateNetworkConnector Arn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/4928',
+      integFixture: 'lambda-network-connector',
+    },
+  ],
+  [
     'AWS::ElasticLoadBalancingV2::Listener',
     {
       // Pinned to cc-api: every listener first deployed while tagged, before

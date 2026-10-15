@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 27,
-    "nestedKeyCount": 1456,
-    "sameSpelling": 1355,
+    "targetCount": 28,
+    "nestedKeyCount": 1463,
+    "sameSpelling": 1360,
     "providerHandled": 80,
-    "allowListed": 21,
+    "allowListed": 23,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
-    "freshObjectTargets": 17,
-    "shapeClean": 175,
-    "shapeHandled": 48,
+    "freshObjectTargets": 18,
+    "shapeClean": 178,
+    "shapeHandled": 49,
     "shapeAllowListed": 9,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -7572,6 +7572,86 @@
         "SchemaRegistryConfig",
         "SchemaValidationConfig",
         "Tag"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "providerFile": "lambda-network-connector-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-lambda-core",
+      "keyStyle": "exact",
+      "freshObjectMapper": true,
+      "nestedKeyCount": 7,
+      "entries": [
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "VpcEgressConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "AssociatedComputeResourceTypes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.NetworkProtocol",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "NetworkProtocol",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.SecurityGroupIds",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "SecurityGroupIds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Configuration.VpcEgressConfiguration.SubnetIds",
+          "topLevelProperty": "Configuration",
+          "terminalKey": "SubnetIds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Tags.Key",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Key",
+          "bucket": "allow-listed",
+          "rationale": "Same list-to-map fold as the AppSync entries: Lambda Core's CreateNetworkConnector takes `Tags` as a Record<string, string>, and the provider folds the CFn list into it (`Object.fromEntries(tagList.map((t) => [t.Key, t.Value]))`); updates go through Lambda's TagResource / UntagResource. No `Key` member exists in the SDK model.",
+          "allowMatchKey": "AWS::Lambda::NetworkConnector#Tags.Key"
+        },
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Tags.Value",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Value",
+          "bucket": "allow-listed",
+          "rationale": "Same list-to-map fold as Tags.Key: no `Value` member exists in the SDK model.",
+          "allowMatchKey": "AWS::Lambda::NetworkConnector#Tags.Value"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Lambda::NetworkConnector",
+          "nestedKey": "Tags",
+          "definition": "#top",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        }
+      ],
+      "shapeCleanCount": 3,
+      "unmatchedDefinitions": [
+        "Config",
+        "Tag",
+        "VpcEgressConfiguration"
       ],
       "usedSegmentRenames": [],
       "usedTerminalRenames": []

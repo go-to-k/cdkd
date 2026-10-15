@@ -1141,6 +1141,17 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
     ]),
   ],
   [
+    'AWS::Lambda::NetworkConnector',
+    new Map<string, readonly string[]>([
+      ['Configuration', ['VpcEgressConfiguration']],
+      [
+        'Configuration.VpcEgressConfiguration',
+        ['AssociatedComputeResourceTypes', 'NetworkProtocol', 'SecurityGroupIds', 'SubnetIds'],
+      ],
+      ['Tags', ['Key']],
+    ]),
+  ],
+  [
     'AWS::Lambda::WebFunctionEndpoint',
     new Map<string, readonly string[]>([['RevisionWeights', ['RevisionId', 'Weight']]]),
   ],

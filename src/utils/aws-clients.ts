@@ -21,6 +21,7 @@ import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { LambdaWebClient } from '@aws-sdk/client-lambda-web';
+import { LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 
@@ -94,6 +95,7 @@ export class AwsClients {
   private acmClient?: ACMClient;
   private lambdaMicrovmsClient?: LambdaMicrovmsClient;
   private lambdaWebClient?: LambdaWebClient;
+  private lambdaCoreClient?: LambdaCoreClient;
   private config: AwsClientConfig;
 
   constructor(config: AwsClientConfig = {}) {
@@ -626,6 +628,29 @@ export class AwsClients {
   }
 
   /**
+   * Get Lambda Core client.
+   *
+   * Backs `AWS::Lambda::NetworkConnector`: Lambda Core is the service model for
+   * the network connectors Web Functions and MicroVMs share, NOT
+   * `@aws-sdk/client-lambda`.
+   */
+  getLambdaCoreClient(): LambdaCoreClient {
+    if (!this.lambdaCoreClient) {
+      this.lambdaCoreClient = new LambdaCoreClient({
+        ...this.clientOptions,
+      });
+    }
+    return this.lambdaCoreClient;
+  }
+
+  /**
+   * Convenience getter for Lambda Core client
+   */
+  get lambdaCore(): LambdaCoreClient {
+    return this.getLambdaCoreClient();
+  }
+
+  /**
    * Get CloudWatch client
    */
   getCloudWatchClient(): CloudWatchClient {
@@ -748,6 +773,7 @@ export class AwsClients {
     this.acmClient?.destroy();
     this.lambdaMicrovmsClient?.destroy();
     this.lambdaWebClient?.destroy();
+    this.lambdaCoreClient?.destroy();
   }
 }
 

@@ -633,8 +633,9 @@ conditional the escape is:
   *removal* deploy correct — a property applied under Cloud Control and since
   deleted from the template still needs Cloud Control to unset it, so the flip
   waits one deploy. `AWS::SNS::Topic`,
-  `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`
-  and `AWS::Lambda::WebFunctionEndpoint` are the members today. The listener
+  `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`,
+  `AWS::Lambda::WebFunctionEndpoint` and `AWS::Lambda::NetworkConnector` are
+  the members today. The listener
   has one more reason to leave: Cloud Control leaves a `ListenerAttributes`
   key removed from the template at its old value, and the SDK provider resets
   it, on the same deploy that flips the record.

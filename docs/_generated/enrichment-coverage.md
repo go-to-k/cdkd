@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **137**
+- Classified types (cached schema): **138**
 - Fully enriched: **47**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **72**
-- Types with allow-listed (not-a-gap) attributes: **86**
+- SDK-fallback gaps (informational, #614 path only): **73**
+- Types with allow-listed (not-a-gap) attributes: **87**
 
 ## Pure-CC latent gaps
 
@@ -81,6 +81,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::EventSourceMapping` | `EventSourceMappingArn` |
 | `AWS::Lambda::Function` | `Arn`, `SnapStartResponse` |
 | `AWS::Lambda::MicrovmImage` | `CreatedAt`, `LatestActiveImageVersion`, `LatestFailedImageVersion`, `State`, `UpdatedAt` |
+| `AWS::Lambda::NetworkConnector` | `LatestVersion`, `LatestVersionArn`, `State` |
 | `AWS::Lambda::WebFunctionEndpoint` | `CreatedAt`, `DomainName`, `FunctionArn`, `RegionalEndpoints`, `State`, `StateReason`, `UpdatedAt`, `UpdateStatus`, `UpdateStatusReason` |
 | `AWS::Lambda::WebFunctionRevision` | `CreatedAt`, `FunctionArn`, `RevisionId`, `State`, `StateReason` |
 | `AWS::Logs::LogGroup` | `Arn` |
@@ -209,6 +210,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
 | `AWS::Lambda::LayerVersion` | yes | enriched | `LayerVersionArn` (allow) |
 | `AWS::Lambda::MicrovmImage` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `ImageArn` (allow), `LatestActiveImageVersion` (GAP), `LatestFailedImageVersion` (GAP), `State` (GAP), `UpdatedAt` (GAP) |
+| `AWS::Lambda::NetworkConnector` | yes | sdk-fallback-gap | `Arn` (allow), `LatestVersion` (GAP), `LatestVersionArn` (GAP), `State` (GAP) |
 | `AWS::Lambda::Permission` | yes | enriched | `Id` (allow) |
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
 | `AWS::Lambda::WebFunctionEndpoint` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `DomainName` (GAP), `EndpointArn` (allow), `FunctionArn` (GAP), `RegionalEndpoints` (GAP), `State` (GAP), `StateReason` (GAP), `UpdatedAt` (GAP), `UpdateStatus` (GAP), `UpdateStatusReason` (GAP) |
