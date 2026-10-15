@@ -29,6 +29,7 @@ import { basename, dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile as execFileCb } from 'node:child_process';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { resolveDockerContextDirectory } from '../assets/docker-build.js';
 import { describeDockerExecFailure, getDockerCmd } from '../utils/docker-cmd.js';
 import { CdkdError } from '../utils/error-handler.js';
@@ -218,7 +219,7 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
       } catch (err) {
         logger.warn(
           `Reload: classifier context unavailable ` +
-            `(${err instanceof Error ? err.message : String(err)}); falling back to rebuild.`
+            `(${describeAwsFailure(err).detail}); falling back to rebuild.`
         );
         verdict = {
           kind: 'rebuild',
@@ -258,7 +259,7 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
           return;
         }
         logger.error(
-          `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Reload failed: ${describeAwsFailure(err).detail}. ` +
             'The previous container may already be torn down; exiting --watch loop. ' +
             'Re-run cdkd local invoke-agentcore --watch to recover.'
         );
@@ -267,7 +268,7 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
       }
     });
     reloadChain = next.catch((err) => {
-      logger.error(`Reload chain threw: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`Reload chain threw: ${describeAwsFailure(err).detail}`);
     });
   });
 
@@ -309,7 +310,7 @@ export async function runAgentCoreWatchLoop(args: RunAgentCoreWatchLoopArgs): Pr
     try {
       await watcher.close();
     } catch (err) {
-      logger.warn(`Watcher close failed: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn(`Watcher close failed: ${describeAwsFailure(err).detail}`);
     }
   }
 }
