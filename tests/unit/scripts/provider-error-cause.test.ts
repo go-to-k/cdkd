@@ -745,14 +745,15 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     expect(runCheck(dir).status).toBe(1);
   }, SPAWN_TIMEOUT_MS);
 
-  // BLOCKER 3's shape, on real code: the cause is DERIVED from the caught error.
+  // BLOCKER 3's shape, on real code: the cause is DERIVED from the caught error,
+  // inside the wrap helper every SQS queue policy catch goes through.
   it('FAILS when a real provider derives a new Error from the caught one', () => {
     const dir = copySrcTree();
     mutate(
       dir,
       `${PROVIDERS}/sqs-queue-policy-provider.ts`,
-      '      const cause = error instanceof Error ? error : undefined;\n      const thrown = new ProvisioningError(\n        `Failed to create SQS queue policy',
-      '      const cause = new Error(error instanceof Error ? error.message : String(error));\n      const thrown = new ProvisioningError(\n        `Failed to create SQS queue policy'
+      '    const cause = error instanceof Error ? error : undefined;\n    const wrapped = new ProvisioningError(\n      `Failed to ${operation} SQS queue policy',
+      '    const cause = new Error(error instanceof Error ? error.message : String(error));\n    const wrapped = new ProvisioningError(\n      `Failed to ${operation} SQS queue policy'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);

@@ -171,7 +171,7 @@ When cdkd can see how the AWS SDK parsed the failing response, the line ends
 with a bracketed summary:
 
 ```text
-MyQueuePolicy: gave up after 5 IAM-propagation retries over 5.75s of propagation backoff - Failed to create SQS queue policy MyQueuePolicy: UnknownError [name=InternalFailure http=500 requestId=ebf581cc-6072-5ffc-943a-e33312488615]
+MyQueuePolicy: gave up after 5 IAM-propagation retries over 5.75s of propagation backoff - Failed to create SQS queue policy MyQueuePolicy: InternalFailure. Re-run with --verbose for AWS's own message. [name=InternalFailure http=500 requestId=ebf581cc-6072-5ffc-943a-e33312488615]
 ```
 
 What the line tells you:
@@ -197,9 +197,13 @@ What the line tells you:
 
 Details of the line:
 
-- `UnknownError` is the AWS SDK's placeholder for a response with no message
-  text. The bracket is then the whole diagnosis: `name` and `http` are what
-  cdkd classifies on, and `requestId` is what AWS support needs.
+- `Re-run with --verbose for AWS's own message.` means cdkd shows only the
+  error's name, because AWS's text can name your account and role. `--verbose`
+  prints the full text.
+- `UnknownError` in place of a message is the AWS SDK's placeholder for a
+  response with no message text.
+- The bracket is often the whole diagnosis: `name` and `http` are what cdkd
+  classifies on, and `requestId` is what AWS support needs.
 - `no-$metadata` in place of `http=` means the failure never reached the SDK's
   error parsing: a network or protocol failure.
 - The seconds count propagation backoff only. A throttle in between uses an
