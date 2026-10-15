@@ -150,6 +150,12 @@ depends on the kind of error:
 | IAM propagation | `cannot be assumed`, `not authorized to perform`, `Invalid IAM Instance Profile`, `not authorized to access the Log Destination` | 26, every 0.25s to 2s | 47.75s |
 | A name still held by a deleted resource | `QueueDeletedRecently`, Step Functions `StateMachineDeleting` | 8, backing off 2s to 10s | 64s |
 
+An access denial that says the call was refused `with an explicit deny` (by a
+service control policy, a permissions boundary, a bucket policy or any other
+policy's `Deny` statement) is never retried, even though its message contains
+`not authorized to perform`: waiting does not lift a `Deny`. cdkd fails on the
+first answer, and an S3 bucket error names the policy type.
+
 Two kinds of resource are outside this retry: custom resources (`Custom::*`
 and `AWS::CloudFormation::CustomResource`) and nested stacks
 (`AWS::CloudFormation::Stack`).
