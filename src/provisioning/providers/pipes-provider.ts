@@ -56,6 +56,7 @@ import type {
   ResourceImportResult,
   CreateContext,
   UpdateContext,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 
 /**
@@ -82,6 +83,68 @@ import type {
  */
 
 const PIPE_TYPE = 'AWS::Pipes::Pipe';
+
+/**
+ * A pipe NAME (1-64 of `. - _ A-Z a-z 0-9`, the API's `Name` pattern): the
+ * physical id this provider records. The identity answers (`isSameResource`,
+ * `resourceIdentity`) refuse anything else, an ARN included: this provider
+ * never records one.
+ */
+function isPipeName(id: string): boolean {
+  return /^[.\-_A-Za-z0-9]{1,64}$/.test(id);
+}
+
+/**
+ * Every state a pipe that still holds its name can report, `DELETING` left
+ * out (go-to-k/cdkd#4606): a pipe on its way out is not read as the live
+ * resource a token names, and a state this list does not know (one AWS adds
+ * later) is not either, so both answer no token.
+ */
+const IDENTITY_STATES: ReadonlySet<string> = new Set([
+  'CREATING',
+  'CREATE_FAILED',
+  'CREATE_ROLLBACK_FAILED',
+  'RUNNING',
+  'STARTING',
+  'START_FAILED',
+  'STOPPED',
+  'STOPPING',
+  'STOP_FAILED',
+  'UPDATING',
+  'UPDATE_FAILED',
+  'UPDATE_ROLLBACK_FAILED',
+  'DELETE_FAILED',
+  'DELETE_ROLLBACK_FAILED',
+]);
+
+/**
+ * go-to-k/cdkd#4606: the identity token of the pipe `name`,
+ * `<pipeArn>@<creationTime epoch seconds>`, or `undefined` unless the ARN is
+ * the pipe ARN of `name` and the creation time a valid, positive time.
+ *
+ * The ARN is built from the name, so a pipe re-created under the name
+ * repeats it; the creation time tells the two apart (the
+ * `pipes-fix-forward-orphan` fixture measures the re-create). Whole seconds,
+ * because `CreatePipe`'s answer (the failed CREATE's mark) and
+ * `DescribePipe`'s (the settle's live read) must spell the same token
+ * whatever fraction each carries, and no re-create can fall in the second
+ * of the create it follows in practice: the name is freed only after the
+ * earlier pipe's asynchronous delete finished. That is an assumption about
+ * AWS's timing, not a guarantee: a residual risk.
+ */
+function pipeIdentityToken(
+  name: string,
+  arn: string | undefined,
+  creationTime: Date | undefined
+): string | undefined {
+  if (typeof arn !== 'string' || !arn.startsWith('arn:') || !arn.endsWith(`:pipe/${name}`)) {
+    return undefined;
+  }
+  if (!(creationTime instanceof Date)) return undefined;
+  const ms = creationTime.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  return `${arn}@${Math.floor(ms / 1000)}`;
+}
 
 /** States a pipe rests in. */
 const SETTLED_STATES: ReadonlySet<string> = new Set(['RUNNING', 'STOPPED']);
@@ -487,8 +550,12 @@ export class PipesPipeProvider implements ResourceProvider {
     const tags = desiredTagMap(properties['Tags'], logicalId);
     this.logger.debug(mask(`Creating Pipe ${logicalId}: ${name}`));
 
+    // go-to-k/cdkd#4606: the token a failed settle's mark carries, from
+    // CreatePipe's own answer: a settle that failed because DescribePipe
+    // cannot run fails the engine's journaling-time read too.
+    let createdIdentity: string | undefined;
     try {
-      await this.getCreateClient().send(
+      const created = await this.getCreateClient().send(
         new CreatePipeCommand({
           Name: name,
           RoleArn: properties['RoleArn'] as string,
@@ -521,6 +588,7 @@ export class PipesPipeProvider implements ResourceProvider {
           ...(Object.keys(tags).length > 0 && { Tags: tags }),
         })
       );
+      createdIdentity = pipeIdentityToken(name, created?.Arn, created?.CreationTime);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -541,7 +609,14 @@ export class PipesPipeProvider implements ResourceProvider {
     try {
       settled = await this.waitForSettled(name, logicalId, resourceType, 'create', mask);
     } catch (error) {
-      throw await this.retireFailedCreate(name, logicalId, resourceType, error, mask);
+      throw await this.retireFailedCreate(
+        name,
+        logicalId,
+        resourceType,
+        error,
+        mask,
+        createdIdentity
+      );
     }
     return { physicalId: name, attributes: this.attributesOf(settled) };
   }
@@ -723,9 +798,7 @@ export class PipesPipeProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(
-          safeMsg`Pipe ${logicalId} already deleted (not found), treating as success`
-        );
+        this.logGoneOnDelete(logicalId, physicalId, context);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -750,6 +823,112 @@ export class PipesPipeProvider implements ResourceProvider {
       sleep: this.sleep,
       now: this.now,
     });
+  }
+
+  /**
+   * The not-found arm of `delete`. A journaled failed-CREATE orphan already
+   * gone settles with exit 0 (go-to-k/cdkd#4606), so it is said once at info;
+   * the name is interpolated verbatim for the caller's printing bag to mask.
+   */
+  private logGoneOnDelete(
+    logicalId: string,
+    physicalId: string,
+    context: DeleteContext | undefined
+  ): void {
+    if (context?.failedCreateOrphan === true) {
+      this.logger.info(
+        safeMsg`  Pipe ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
+      );
+    } else {
+      this.logger.debug(
+        safeMsg`Pipe ${logicalId} already deleted (not found), treating as success`
+      );
+    }
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the pipe a failed CREATE journaled is the one
+   * the record under the same logical id holds (a fix-forward that created a
+   * new one there under another name).
+   *
+   * Only `AWS::Pipes::Pipe`; both ids must be pipe NAMES (the physical id
+   * this provider records), else `'unknown'`, and so are two names differing
+   * only in case: this check does not decide on the Pipes API's case rules.
+   * Equal names are `'same'` without a read: whatever holds the name now is
+   * the record's, and deleting by that name would delete it. A pipe name is
+   * unique per account and region and cannot be changed (`Name` is
+   * create-only). After the region check the record's pipe must read back
+   * (else `'unknown'`); the journaled one is `'same'` when it reads back
+   * under the record's ARN, `'different'` under another, and `'different'`
+   * when AWS answers not-found: the record's pipe answers to its own, other,
+   * name. Any other read failure throws, which the caller reads as
+   * `'unknown'`.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== PIPE_TYPE) return 'unknown';
+    if (!isPipeName(journaledPhysicalId) || !isPipeName(record.physicalId)) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    if (journaledPhysicalId.toLowerCase() === record.physicalId.toLowerCase()) return 'unknown';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordPipe = await this.describeIfExists(record.physicalId);
+    if (recordPipe === undefined) return 'unknown';
+    const recordArn = recordPipe.Arn;
+    if (typeof recordArn !== 'string' || recordArn === '') return 'unknown';
+    const journaledPipe = await this.describeIfExists(journaledPhysicalId);
+    if (journaledPipe === undefined) return 'different';
+    const journaledArn = journaledPipe.Arn;
+    if (typeof journaledArn !== 'string' || journaledArn === '') return 'unknown';
+    // Unreachable as 'same' while the names differ beyond case (the ARN ends
+    // in the name); kept so the verdict rests on AWS's answer.
+    return journaledArn === recordArn ? 'same' : 'different';
+  }
+
+  /**
+   * go-to-k/cdkd#4655 / #4606: the pipe's identity token,
+   * `<pipeArn>@<creationTime epoch seconds>` ({@link pipeIdentityToken}),
+   * from `DescribePipe`. A failed CREATE's token rides its mark from
+   * `CreatePipe`'s answer; this read is the settle's, made before it deletes
+   * the journaled pipe, so no ordinary deploy pays for it.
+   *
+   * `undefined` for another type, an id that is not a pipe name, a client in
+   * another region than `expectedRegion`, an answer for another name, a pipe
+   * in `DELETING` or a state {@link IDENTITY_STATES} does not list, and an
+   * answer without a usable ARN or creation time. `RESOURCE_NOT_FOUND` only
+   * when AWS answers `NotFoundException`; any other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== PIPE_TYPE || !isPipeName(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    const pipe = await this.describeIfExists(physicalId);
+    if (pipe === undefined) return RESOURCE_NOT_FOUND;
+    if (pipe.Name !== physicalId) return undefined;
+    if (pipe.CurrentState === undefined || !IDENTITY_STATES.has(pipe.CurrentState)) {
+      return undefined;
+    }
+    return pipeIdentityToken(physicalId, pipe.Arn, pipe.CreationTime);
+  }
+
+  /** `DescribePipe`, or `undefined` on AWS's `NotFoundException`; any other failure throws. */
+  private async describeIfExists(name: string): Promise<DescribePipeCommandOutput | undefined> {
+    try {
+      return await this.describe(name);
+    } catch (error) {
+      if (error instanceof NotFoundException) return undefined;
+      throw error;
+    }
   }
 
   /**
@@ -981,15 +1160,22 @@ export class PipesPipeProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     error: unknown,
-    mask: MaskerFn
+    mask: MaskerFn,
+    createdIdentity: string | undefined
   ): Promise<Error> {
     // The settle wait throws only Errors; the fallback keeps the type honest.
     const original = error instanceof Error ? error : new Error(String(error));
     // go-to-k/cdkd#4583: CreatePipe returned, so `name` (the id delete() takes)
     // is this create's pipe; name it for the failed-CREATE journal whenever it
-    // may still be there.
+    // may still be there, with CreatePipe's identity token (#4606). Terminal:
+    // the pipe left behind holds the name, so a replayed CreatePipe can only
+    // collide with it, and the engine's retry (an AccessDenied settle read
+    // matches its IAM-propagation pattern) would replace this message, and
+    // the delete advice in it, with "already exists".
     const leftBehind = (): Error =>
-      markCreatedBeforeFailure(original, logicalId, resourceType, name);
+      markNonRetryable(
+        markCreatedBeforeFailure(original, logicalId, resourceType, name, createdIdentity)
+      );
     // The pipe survives, live and journaled: say so and how to delete it,
     // named with the client's region (the name alone would address a
     // same-named pipe in the profile's default region).
