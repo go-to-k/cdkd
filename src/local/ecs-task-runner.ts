@@ -9,6 +9,7 @@ import {
   resolveDynamicReferencesInEnv,
 } from 'cdk-local/internal';
 import { createCallerDynamicReferenceResolver } from './dynamic-reference.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
@@ -340,7 +341,7 @@ async function runAfterContainersStopped(
     await hook();
   } catch (err) {
     logger.debug(
-      safeMsg`afterContainersStopped hook failed: ${err instanceof Error ? err.message : String(err)}`
+      safeMsg`afterContainersStopped hook failed: ${describeAwsFailure(err).detail}`
     );
   }
 }
@@ -371,7 +372,7 @@ async function settleInFlightStep(
     await step.abandon();
   } catch (err) {
     logger.debug(
-      safeMsg`in-flight step removal failed: ${err instanceof Error ? err.message : String(err)}`
+      safeMsg`in-flight step removal failed: ${describeAwsFailure(err).detail}`
     );
   }
   logger.warn(
@@ -490,7 +491,7 @@ export async function cleanupEcsRun(
       try {
         stream.stop();
       } catch (err) {
-        logger.debug(`log stream stop failed: ${err instanceof Error ? err.message : String(err)}`);
+        logger.debug(`log stream stop failed: ${describeAwsFailure(err).detail}`);
       }
     }
     await runAfterContainersStopped(options.afterContainersStopped, logger);
@@ -517,7 +518,7 @@ export async function cleanupEcsRun(
           await stream.drain(CONTAINER_LOG_DRAIN_TIMEOUT_MS);
         } catch (err) {
           logger.debug(
-            safeMsg`log stream drain failed: ${err instanceof Error ? err.message : String(err)}`
+            safeMsg`log stream drain failed: ${describeAwsFailure(err).detail}`
           );
         }
       })
