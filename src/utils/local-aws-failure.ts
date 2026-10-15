@@ -1,7 +1,6 @@
-import { describeAwsFailureForWarn, describeCredentialLoadFailure } from 'cdk-local/internal';
-import { displaySafe, safeMsg } from './display-safe.js';
+import { describeAwsFailureForWarn } from 'cdk-local/internal';
+import { displaySafe } from './display-safe.js';
 import { CdkdError } from './error-handler.js';
-import { getLogger } from './logger.js';
 import { redactedCause } from './docker-cmd.js';
 
 /**
@@ -17,13 +16,10 @@ import { redactedCause } from './docker-cmd.js';
  * vouch for: `credential_process` copies the failed command line into its
  * error, and an `err.name` read off `x-amzn-errortype` can carry a newline.
  *
- * The one part that does not carry over is WHERE the withheld text goes.
- * cdk-local writes it to its OWN logger (go-to-k/cdkd#2429), whose level
- * cdkd's `--verbose` never raises, so the rendered line's "logged at debug
- * level under --verbose" would be false. This emits that line through cdkd's
- * logger instead. The withheld branch is recognised by equality with
- * `describeCredentialLoadFailure` -- exactly what cdk-local returns there --
- * rather than by matching its wording.
+ * The withheld text goes to cdk-local's logger at `debug`, which hands it to
+ * cdkd's own logger through the embed config `createLocalCommand` installs
+ * (go-to-k/cdkd#2429), so the rendered line's "logged at debug level under
+ * --verbose" holds under cdkd's `--verbose`.
  *
  * A `CdkdError` is the one exception to the withhold: cdkd wrote that text
  * (`AssumeRole(<arn>) returned no usable credentials.`), so it is the
@@ -35,11 +31,6 @@ import { redactedCause } from './docker-cmd.js';
 export function describeLocalAwsFailureForWarn(err: unknown, operation: string): string {
   if (err instanceof CdkdError) return withoutTrailingPeriod(displaySafe(err.message));
   const rendered = describeAwsFailureForWarn(err, operation);
-  if (rendered === describeCredentialLoadFailure(err)) {
-    getLogger().debug(
-      safeMsg`${operation}: the AWS SDK's own failure message was: ${thrownText(err)}`
-    );
-  }
   return withoutTrailingPeriod(displaySafe(rendered));
 }
 
@@ -87,13 +78,4 @@ export function redactedAwsCause(err: unknown, message: string): Error | undefin
 
 function hasSdkMetadata(error: Error): boolean {
   return (error as { $metadata?: unknown }).$metadata !== undefined;
-}
-
-/** `err.message` for an `Error`, `String(err)` otherwise -- without the throw. */
-function thrownText(err: unknown): string {
-  try {
-    return err instanceof Error ? String(err.message) : String(err);
-  } catch {
-    return '[unstringifiable throw]';
-  }
 }

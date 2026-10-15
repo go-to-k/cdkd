@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-start-cloudfront-from-state",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-AWS integ for cdkd local start-cloudfront --from-state: a cdkd-deployed S3 origin with no BucketDeployment is served from the deployed bucket only when cdkd's state names it",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

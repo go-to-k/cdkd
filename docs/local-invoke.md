@@ -341,8 +341,8 @@ the handler logs.
 # ZIP Lambda: stdout is the payload
 cdkd local invoke MyStack/Handler --event event.json | jq .id
 
-# container image: take the last line
-cdkd local invoke MyStack/ImageFn --event event.json | tail -1 | jq .
+# container image: the build lines go to stderr too
+cdkd local invoke MyStack/ImageFn --event event.json | jq .
 
 # logs to a file
 cdkd local invoke MyStack/Handler --event event.json 2> invoke.log
@@ -352,11 +352,14 @@ The handler's log lines always come before the response. cdkd stops the
 container and waits up to 5 seconds for Docker to relay the remaining output,
 and only then prints the response.
 
-### Edge case: build lines on stdout
+### Edge case: `CDKL_LOG_LEVEL` or `CDKL_LOG_STREAM` set
 
-For a container-image Lambda, the lines `Building container image
-(platform=...)` and `Skipping docker build ...` also print on stdout. Pipe
-through `tail -1` to take the payload.
+cdkd routes the bundled cdk-local engine's log lines, such as
+`Building container image (platform=...)`, through its own logger, so they go
+to stderr like cdkd's. With `CDKL_LOG_LEVEL` or `CDKL_LOG_STREAM` exported in
+the environment (variables of the standalone `cdkl` CLI), the engine keeps its
+own logger instead, and those lines print on stdout again. Unset them, or
+pipe through `tail -1`.
 
 ## Exit codes
 

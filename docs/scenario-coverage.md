@@ -232,6 +232,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`local-start-alb`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-alb/)
 - [`local-start-alb-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-alb-from-state/)
 - [`local-start-cloudfront`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-cloudfront/)
+- [`local-start-cloudfront-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-cloudfront-from-state/)
 - [`local-start-service-watch-fast`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-service-watch-fast/)
 - [`loggroup-class-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-class-guard/)
 - [`loggroup-kms-associate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-kms-associate/)

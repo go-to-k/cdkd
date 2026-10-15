@@ -15,7 +15,7 @@ cdkd synth MyStack > template.yaml 2> progress.log
 cdkd synth MyStack | yq '.Resources | keys'
 cdkd list --long --json | jq -r '.[].name'
 cdkd state list | while read -r ref; do echo "state for: $ref"; done
-cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
+cdkd local invoke MyStack/Handler --event event.json | jq .body
 ```
 
 ## Commands whose stdout is always the document
@@ -54,14 +54,12 @@ table or container logs, so there is no document to capture.
 - **`cdkd state list --long` and `--tree`.** These print a formatted view, not
   a record per line. The view still goes to stdout, and cdkd's progress lines
   go to stderr as they do on the plain listing.
-- **Container-image builds on the two `local invoke` commands.** For a
-  container-image Lambda, or an AgentCore runtime that cdkd builds,
-  `cdkd local invoke` and `cdkd local invoke-agentcore` print
-  `Building container image (platform=...)` and `Skipping docker build ...` on
-  stdout. The response is then the last stdout line, which is why the example
-  at the top of the page uses `tail -1`.
-- **The container's own output.** It is not affected by the build lines. The
-  Lambda runtime emulator's `START`, `END` and `REPORT` lines and every
+- **`CDKL_LOG_LEVEL` or `CDKL_LOG_STREAM` set on the two `local invoke`
+  commands.** The bundled cdk-local engine's lines, such as
+  `Building container image (platform=...)`, go to stderr through cdkd's
+  logger. With either variable exported, the engine keeps its own logger and
+  prints them on stdout, ahead of the response.
+- **The container's own output.** The Lambda runtime emulator's `START`, `END` and `REPORT` lines and every
   handler log line go to stderr.
 
 ## Related

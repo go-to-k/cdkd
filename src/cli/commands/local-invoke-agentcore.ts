@@ -290,19 +290,14 @@ async function localInvokeAgentCoreCommand(
   // streamed body on the same stream — worse here than on a buffered payload,
   // because a prose line can land BETWEEN two frames of one document.
   //
-  // Lines are MOVED, not suppressed. ONE mechanism this does NOT reach, a
-  // raw write that never passes through cdkd's logger — so a consumer piping
-  // this command still needs `| tail -1` for a BUILT image today:
-  // **cdk-local's own `ConsoleLogger`**, a SECOND logger module with its own
-  // state and no reservation concept — every shim under `src/local/` that
-  // re-exports cdk-local (`buildContainerImage`, `buildAgentCoreCodeImage`,
-  // `downloadAndExtractS3Bundle`) emits its `logger.info` straight to
-  // `console.info` ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
-  // This is why a container-image Lambda still prints `Building container
-  // image (platform=...)` on stdout.
-  //
-  // Two raw writers used to be listed here and are now CLOSED, both by
-  // consulting this reservation: `docker pull` progress under
+  // Lines are MOVED, not suppressed. Three writers that bypass cdkd's own
+  // call sites are CLOSED by this same reservation. cdk-local's OWN
+  // `ConsoleLogger` (the `Building container image (platform=...)` line every
+  // re-exported shim such as `buildContainerImage` / `buildAgentCoreCodeImage`
+  // / `downloadAndExtractS3Bundle` emits) hands each line to cdkd's logger
+  // through the embed config `createLocalCommand` installs
+  // ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), and two raw
+  // writers consult the reservation directly: `docker pull` progress under
   // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
   // fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
   // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and

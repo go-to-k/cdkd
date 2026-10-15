@@ -140,13 +140,6 @@ row that is not a resource record is skipped. Each case prints a warning
 naming the stack. Run [`cdkd state show`](cli-state.md) with `--json` to see
 what is stored.
 
-### Commands that restrict the state flags
-
-| Command | Restriction |
-| --- | --- |
-| [`local start-cloudfront`](local-start-cloudfront.md) | Refuses `--from-state`, `--state-bucket` and `--state-prefix`. Use `--from-cfn-stack`. |
-| [`local start-alb`](local-start-alb.md) | `--from-state` resolves the ECS services but not a Lambda target group's environment. |
-
 ## `--stack-region`: choosing between records
 
 Pass `--stack-region` when the same stack name has state in more than one

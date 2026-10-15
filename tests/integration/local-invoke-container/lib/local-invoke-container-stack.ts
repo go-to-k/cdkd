@@ -26,7 +26,11 @@ export class LocalInvokeContainerStack extends cdk.Stack {
     super(scope, id, props);
 
     new lambda.DockerImageFunction(this, 'EchoHandler', {
-      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../docker')),
+      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, '../docker'), {
+        // Obviously fake. `verify.sh` asserts a `--verbose` build log masks
+        // it (go-to-k/cdkd#4967): a real app passes an `NPM_TOKEN` here.
+        buildArgs: { CDKD_SENTINEL_ARG: 'FAKE-SENTINEL-NOT-A-SECRET-7f1e' },
+      }),
       environment: {
         GREETING: 'hello',
       },

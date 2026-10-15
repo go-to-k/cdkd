@@ -1771,6 +1771,11 @@
       "scenarios": []
     },
     {
+      "name": "local-start-cloudfront-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-service",
       "annotated": true,
       "scenarios": [
@@ -3431,6 +3436,7 @@
     "local-start-alb",
     "local-start-alb-from-state",
     "local-start-cloudfront",
+    "local-start-cloudfront-from-state",
     "local-start-service-watch-fast",
     "loggroup-class-guard",
     "loggroup-kms-associate",

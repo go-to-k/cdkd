@@ -2,7 +2,9 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as elbv2Targets from 'aws-cdk-lib/aws-elasticloadbalancingv2-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
@@ -15,7 +17,9 @@ import { Construct } from 'constructs';
  *   └── ALB (internet-facing, HTTP listener on :80)
  *       └── Listener
  *           ├── default action  → forward → WebTargetGroup
- *           └── rule path=/orders/* → forward → OrdersTargetGroup
+ *           ├── rule path=/orders/* → forward → OrdersTargetGroup
+ *           └── rule path=/fn/*     → forward → FnTargetGroup (TargetType: lambda)
+ *                                               └── FnTarget (env: ALB_DNS_NAME)
  *   ECS Fargate Cluster
  *   ├── WebService (desiredCount: 0, attached to WebTargetGroup)
  *   │   └── TaskDefinition: busybox httpd on container-port 80
@@ -58,6 +62,13 @@ import { Construct } from 'constructs';
  * covers: AWS::ECS::Service
  * covers: AWS::IAM::Role
  * covers: AWS::Logs::LogGroup
+ * covers: AWS::Lambda::Function
+ * covers: AWS::Lambda::Permission
+ *
+ * The Lambda target group is the go-to-k/cdkd#2602 arm: cdk-local 0.151.0
+ * carries cdkd's `--from-state` fields into a Lambda target's container env.
+ * Before it, `ALB_DNS_NAME` was dropped as an unresolved intrinsic, and the
+ * body read `alb=` with nothing after it.
  */
 export class LocalStartAlbFromStateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -207,6 +218,28 @@ export class LocalStartAlbFromStateStack extends cdk.Stack {
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [serviceSg],
+    });
+
+    // Inline code: the RIE runs it locally from the synthesized template.
+    const fn = new lambda.Function(this, 'FnTarget', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(
+        'exports.handler = async () => ({ statusCode: 200, statusDescription: "200 OK", ' +
+          'isBase64Encoded: false, headers: { "content-type": "text/plain" }, ' +
+          'body: "service=fn alb=" + (process.env.ALB_DNS_NAME || "") + "\\n" });'
+      ),
+      environment: { ALB_DNS_NAME: alb.loadBalancerDnsName },
+    });
+    const fnTg = new elbv2.ApplicationTargetGroup(this, 'FnTargetGroup', {
+      targetType: elbv2.TargetType.LAMBDA,
+      targets: [new elbv2Targets.LambdaTarget(fn)],
+    });
+    new elbv2.ApplicationListenerRule(this, 'FnRule', {
+      listener,
+      priority: 2,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/fn/*'])],
+      action: elbv2.ListenerAction.forward([fnTg]),
     });
 
     webService.attachToApplicationTargetGroup(webTg);

@@ -117,6 +117,14 @@ describe.each([
     await synthesizer.synthesize({ app: 'node app.js' });
     expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js' });
   });
+
+  it("passes the command's --state-bucket to the synthesizer (#2600)", async () => {
+    const cmd = create();
+    cmd.setOptionValue('stateBucket', 'my-bucket');
+    const synthesizer = seen.factoryOptions[0]!['synthesizer'] as Synth;
+    await synthesizer.synthesize({ app: 'node app.js' });
+    expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js', stateBucket: 'my-bucket' });
+  });
 });
 
 describe.each([

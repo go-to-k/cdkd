@@ -21,6 +21,7 @@ import {
   createLocalStateProvider,
   engineCredentialTripleChannel,
   engineFromCfnStackChannel,
+  engineFromStateChannel,
   CFN_PROVIDER_PROTOTYPE_MEMBERS,
   ENGINE_ASSUME_ROLE_CHANNEL,
   engineRoleExposureWarning,
@@ -562,6 +563,20 @@ describe('engineRoleExposureWarning (#3240, engine channels)', () => {
     ).not.toContain('KeyValueStore');
   });
 
+  it('names the --from-state engine reads only when the flag is set and the command passes them (#2600)', () => {
+    const fs = engineFromStateChannel("a deployed S3 origin's objects and KeyValueStore entries");
+    expect(fs.flagOnly).toBe(false);
+    expect(
+      engineRoleExposureWarning('start-cloudfront', [], CFN, { ...base, fromState: true }, fs)
+    ).toContain("--from-state makes the engine read a deployed S3 origin's objects");
+    // No flag: the channel stays out (and with no other channel, no warning).
+    expect(engineRoleExposureWarning('start-cloudfront', [], CFN, base, fs)).toBe(undefined);
+    // A command that passes no from-state channel is unaffected by the flag.
+    expect(
+      engineRoleExposureWarning('start-alb', albChannels, CFN, { ...base, fromState: true })
+    ).not.toContain('--from-state makes');
+  });
+
   it('names the {{resolve:...}} channel (#2056), which is not flag-only', () => {
     expect(ENGINE_DYNAMIC_REFERENCE_CHANNEL.flagOnly).toBe(false);
     expect(
@@ -636,6 +651,19 @@ describe('the four engine commands install the warning', () => {
     quiet(cmd);
     await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy'], { from: 'user' });
     expect(warned('start-cloudfront').some((w) => w.includes('CloudFormation dynamic references'))).toBe(true);
+  });
+
+  it('start-cloudfront: names the --from-state engine reads under --role-arn (#2600)', async () => {
+    const cmd = createLocalStartCloudFrontCommand();
+    quiet(cmd);
+    await cmd.parseAsync(['--role-arn', 'arn:aws:iam::222222222222:role/deploy', '--from-state'], {
+      from: 'user',
+    });
+    const said = warned('start-cloudfront').join('\n');
+    expect(said).toContain('--from-state makes the engine read');
+    // The Function URL / Lambda@Edge env resolves ${AWS::AccountId} through the
+    // engine's own STS client, i.e. as the role.
+    expect(said).toContain("${AWS::AccountId} in the Function URL / Lambda@Edge environment resolves to the role's account");
   });
 
   it('start-service: warns under CDKD_ROLE_ARN with no profile', async () => {

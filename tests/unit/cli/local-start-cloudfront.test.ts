@@ -1,6 +1,9 @@
-import type { Command, CommanderError } from 'commander';
+import type { Command } from 'commander';
 import { describe, expect, it } from 'vite-plus/test';
+import { createLocalStateProvider as createCdkLocalStateProvider } from 'cdk-local';
 import { createLocalStartCloudFrontCommand } from '../../../src/cli/commands/local-start-cloudfront.js';
+import { cdkdExtraStateProviders } from '../../../src/cli/commands/local-state-source.js';
+import { S3LocalStateProvider } from '../../../src/local/s3-local-state-provider.js';
 
 // Unit coverage for the cdkd `local start-cloudfront` wrapper. start-cloudfront
 // is a THIN pass-through to cdk-local's factory: the serve behavior + the
@@ -106,129 +109,68 @@ describe('createLocalStartCloudFrontCommand', () => {
 });
 
 /**
- * Issue [#2528](https://github.com/go-to-k/cdkd/issues/2528): the three cdkd
- * state-source flags declared above PARSE and do NOTHING on this command.
- *
- * Verified against the installed bundle, cited by symbol rather than by file
- * and line — the chunk is content-hashed and the offsets move every release,
- * so the previous citation named a file that no longer exists
- * (go-to-k/cdkd#3551). Re-check with `grep -n 'function resolveDeployedS3Origins'
- * node_modules/cdk-local/dist/local-studio-*.js`.
- * Last verified against cdk-local 0.149.1: all three
- * consumers miss cdkd's registered provider — `resolveDeployedS3Origins` and
- * `attachKvsModules` both gate on `isCfnFlagPresent(options)` (i.e.
- * `--from-cfn-stack` specifically, where `start-api` has no such gate at all
- * and skips only on a falsy provider), and the two Lambda boot paths call
- * `resolveLambdaContainerEnv` without its `extraStateProviders` argument at all.
- * A user emulating a cdkd-deployed distribution therefore got the same `502`
- * from an unresolved origin with the flag as without it, on exactly the command
- * where they were already troubleshooting.
- *
- * The issue settles that "a flag that parses and does nothing is worse than one
- * that errors", so cdkd REFUSES them until go-to-k/cdk-local#699 lands. What is
- * pinned here is the issue's own verification bar for the refusal branch: a
- * parse-level case per flag, WITH the `--from-cfn-stack` path still accepted
- * beside it — otherwise a refusal that rejected everything would pass too.
+ * Issue [#2600](https://github.com/go-to-k/cdkd/issues/2600): cdk-local 0.151.0
+ * (go-to-k/cdk-local#699) consults a host's `extraStateProviders` on every
+ * state-backed path of start-cloudfront — the deployed-S3 origin, the KVS
+ * bindings and the Function URL / Lambda@Edge container env — and hands the
+ * factory the FULL parsed options bag. That consultation is upstream's and is
+ * tested there; what cdkd owns, and what is pinned here, is that the flags are
+ * ACCEPTED again (the #2528 refusal is gone) and that the registry cdkd hands
+ * the factory selects cdkd's S3 provider from the bag this command parses,
+ * companions included. Real end to end: the `local-start-cloudfront-from-state`
+ * integ, which serves a cdkd-deployed S3 origin under `--from-state`.
  */
-describe('start-cloudfront refuses the state-source flags it cannot honor (#2528)', () => {
-  /** A command whose action is stubbed and whose exit/stderr are captured. */
-  function refusable(): Command {
+describe('start-cloudfront honors --from-state (#2600)', () => {
+  function parsed(argv: string[]): Command {
     const cmd = createLocalStartCloudFrontCommand();
     cmd.action(() => {});
     cmd.exitOverride();
     cmd.configureOutput({ writeErr: () => {} });
+    cmd.parse(['My/Dist', ...argv], { from: 'user' });
     return cmd;
   }
 
-  function refusalFor(argv: string[]): CommanderError {
-    const cmd = refusable();
-    try {
-      cmd.parse(['My/Dist', ...argv], { from: 'user' });
-    } catch (error) {
-      return error as CommanderError;
-    }
-    throw new Error(`expected ${argv.join(' ')} to be refused, but parse() returned normally`);
-  }
-
-  it.each([
-    [['--from-state'], '--from-state'],
-    [['--state-bucket', 'my-bucket'], '--state-bucket'],
-    [['--state-prefix', 'custom'], '--state-prefix'],
-  ])('refuses %s', (argv, flag) => {
-    const error = refusalFor(argv as string[]);
-    expect(error.code).toBe('cdkd.startCloudFrontStateFlagUnsupported');
-    expect(error.message).toContain(flag as string);
-    // The remedy's holes are quoted (go-to-k/cdkd#4295).
-    expect(error.message).toContain("--from-cfn-stack '<name>' for a CloudFormation-deployed stack");
-    expect(error.message).toContain("--origin '<originId>'='<dir>' to serve");
-    // The message must point somewhere: a refusal with no remedy just moves the
-    // dead end earlier.
-    expect(error.message).toContain('--from-cfn-stack');
-    // The EXIT CODE, not just the message. `Command.error` was chosen over a
-    // thrown CdkdError precisely because a hook throw escapes `withErrorHandling`
-    // and surfaces as `Fatal error:` plus a stack; asserting only the text would
-    // leave that choice unfenced.
-    expect(error.exitCode).toBe(1);
+  it('accepts --from-state with its companion flags', () => {
+    const cmd = parsed(['--from-state', '--state-bucket', 'my-bucket', '--state-prefix', 'p']);
+    expect(cmd.opts()).toMatchObject({
+      fromState: true,
+      stateBucket: 'my-bucket',
+      statePrefix: 'p',
+    });
   });
 
-  it('names EVERY offending flag, and agrees with itself on plurality', () => {
-    const one = refusalFor(['--from-state']);
-    expect(one.message).toMatch(/--from-state is not supported/);
-    const many = refusalFor(['--from-state', '--state-bucket', 'b', '--state-prefix', 'p']);
-    expect(many.message).toContain('--from-state');
-    expect(many.message).toContain('--state-bucket');
-    expect(many.message).toContain('--state-prefix');
-    // The singular/plural arm is a real branch in a rendered string, so it gets
-    // an assertion rather than riding along on a `toContain` of the flag names.
-    expect(many.message).toMatch(/--state-prefix are not supported/);
-  });
-
-  it('tells the user to DROP the flags, not merely to add --from-cfn-stack', () => {
-    // Adding `--from-cfn-stack` while leaving `--from-state` on re-triggers this
-    // same refusal, so a remedy naming only the replacement sends the user in a
-    // circle.
-    expect(refusalFor(['--from-state']).message).toMatch(/DROP the flag/);
-  });
-
-  it('marks the three flags as unsupported in their own --help descriptions', () => {
-    // The parser and the help must not drift apart again — reverting these three
-    // descriptions to the pre-fix wording re-creates exactly the class of defect
-    // this PR fixes, and every other case here would stay green.
+  it('no longer marks the flags unsupported in --help', () => {
     const cmd = createLocalStartCloudFrontCommand();
     for (const long of ['--from-state', '--state-bucket', '--state-prefix']) {
       const option = cmd.options.find((o) => o.long === long);
       expect(option, `${long} is no longer declared`).toBeDefined();
-      expect(
-        option?.description,
-        `${long}'s help does not say it is unsupported on this command`
-      ).toContain('[not supported on start-cloudfront]');
+      expect(option?.description).not.toContain('not supported');
     }
   });
 
-  it('does NOT refuse the commander-supplied --state-prefix default', () => {
-    // The discriminator for the `getOptionValueSource` check: `--state-prefix`
-    // carries a default, so a presence test on its VALUE would refuse every
-    // invocation of this command, including one passing no state flag at all.
-    const cmd = refusable();
-    cmd.action(() => {}); // no-op stub — `refusable()` sets one, restated for the gate
-    expect(() => cmd.parse(['My/Dist'], { from: 'user' })).not.toThrow();
-    expect(cmd.opts().statePrefix).toBe('cdkd');
+  it("selects cdkd's S3 provider from the parsed bag, through cdk-local's dispatcher", () => {
+    const cmd = parsed(['--from-state', '--state-bucket', 'my-bucket', '--state-prefix', 'p']);
+    // The same dispatcher cdk-local's start-cloudfront calls on each path, with
+    // the same registry the command was built with.
+    const provider = createCdkLocalStateProvider(
+      cmd.opts() as never,
+      'MyStack',
+      'us-east-1',
+      cdkdExtraStateProviders
+    );
+    expect(provider).toBeInstanceOf(S3LocalStateProvider);
+    // The companions reached the factory: it reads them from the same bag.
+    expect((provider as unknown as { opts: unknown }).opts).toMatchObject({
+      stateBucket: 'my-bucket',
+      statePrefix: 'p',
+    });
+    provider?.dispose();
   });
 
-  it('still accepts --from-cfn-stack, the state source that DOES work here', () => {
-    // Without this arm the refusal could pass by rejecting everything.
-    const cmd = refusable();
-    cmd.action(() => {}); // no-op stub — `refusable()` sets one, restated for the gate
+  it('keeps --from-state and --from-cfn-stack mutually exclusive', () => {
+    const cmd = parsed(['--from-state', '--from-cfn-stack', 'MyStack']);
     expect(() =>
-      cmd.parse(['My/Dist', '--from-cfn-stack', 'MyStack'], { from: 'user' })
-    ).not.toThrow();
-    expect(cmd.opts().fromCfnStack).toBe('MyStack');
-  });
-
-  it('keeps the flags DECLARED, so the refusal can explain instead of "unknown option"', () => {
-    const longs = createLocalStartCloudFrontCommand().options.map((o) => o.long);
-    expect(longs).toContain('--from-state');
-    expect(longs).toContain('--state-bucket');
-    expect(longs).toContain('--state-prefix');
+      createCdkLocalStateProvider(cmd.opts() as never, 'MyStack', 'us-east-1', cdkdExtraStateProviders)
+    ).toThrow(/mutually exclusive/);
   });
 });

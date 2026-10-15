@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { CdkdError, StateError } from '../../../src/utils/error-handler.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 
 /**
  * go-to-k/cdkd#4857: the three `--from-state` state-bucket warns render a
@@ -47,11 +48,22 @@ const NO_BUCKET = new StateError(
   "No cdkd state bucket found for account 123456789012. Run 'cdkd bootstrap' to create 'cdkd-state-123456789012'."
 );
 
+// cdk-local logs the withheld text at debug on its own logger, which cdkd's
+// embed config hands to cdkd's logger (go-to-k/cdkd#2429): install it the way
+// every `cdkd local` command does.
+createLocalCommand();
 const warnSpy = vi.spyOn(getLogger(), 'warn');
 const debugSpy = vi.spyOn(getLogger(), 'debug');
 const warned = (needle: string): string[] =>
   warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes(needle));
 const debugged = (): string => debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
+// The other polarity: the withheld text reaches cdkd's logger and NOT the
+// console through cdk-local's own logger.
+const consoleSpies = (['log', 'info', 'debug', 'warn', 'error'] as const).map((m) =>
+  vi.spyOn(console, m)
+);
+const consoled = (): string =>
+  consoleSpies.flatMap((spy) => spy.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
 
 beforeEach(() => {
   mocks.resolveBucket.mockReset();
@@ -60,6 +72,10 @@ beforeEach(() => {
   warnSpy.mockImplementation(() => {});
   debugSpy.mockReset();
   debugSpy.mockImplementation(() => {});
+  for (const spy of consoleSpies) {
+    spy.mockReset();
+    spy.mockImplementation(() => {});
+  }
 });
 
 const resolutionSites = [
@@ -84,6 +100,7 @@ describe.each(resolutionSites)('$name: state-bucket resolution failure', ({ need
     expect(lines[0]).toContain(`${needle}CredentialsProviderError; `);
     expect(lines[0]).not.toContain('hunter2');
     expect(debugged()).toContain(SECRET_CMD);
+    expect(consoled()).not.toContain(SECRET_CMD);
   });
 
   it("prints cdkd's own 'cdkd bootstrap' remedy in full", async () => {
@@ -108,6 +125,7 @@ describe('buildCrossStackResolver: state-bucket access failure', () => {
     expect(lines[0]).toContain(`${needle}CredentialsProviderError; `);
     expect(lines[0]).not.toContain('hunter2');
     expect(debugged()).toContain(SECRET_CMD);
+    expect(consoled()).not.toContain(SECRET_CMD);
   });
 });
 

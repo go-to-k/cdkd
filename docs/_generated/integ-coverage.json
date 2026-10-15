@@ -775,6 +775,7 @@
         "bench-cdk-sample",
         "cloudfront-function-url",
         "local-start-cloudfront",
+        "local-start-cloudfront-from-state",
         "s3-cloudfront"
       ],
       "signals": {
@@ -786,6 +787,10 @@
         ],
         "local-start-cloudfront": [
           "l2"
+        ],
+        "local-start-cloudfront-from-state": [
+          "l2",
+          "literal"
         ],
         "s3-cloudfront": [
           "l2",
@@ -5188,6 +5193,7 @@
         "local-invoke-python",
         "local-invoke-ruby",
         "local-invoke-stage",
+        "local-start-alb-from-state",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy",
@@ -5484,6 +5490,10 @@
         "local-invoke-stage": [
           "l2"
         ],
+        "local-start-alb-from-state": [
+          "l2",
+          "literal"
+        ],
         "local-start-api": [
           "l2"
         ],
@@ -5677,6 +5687,7 @@
         "cloudfront-function-url",
         "cognito-lambda-triggers",
         "export",
+        "local-start-alb-from-state",
         "migrate-from-cfn",
         "propagation-races-2",
         "recreate-parent-child-permission",
@@ -5701,6 +5712,9 @@
           "literal"
         ],
         "export": [
+          "literal"
+        ],
+        "local-start-alb-from-state": [
           "literal"
         ],
         "migrate-from-cfn": [
@@ -6155,6 +6169,7 @@
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
         "local-start-cloudfront",
+        "local-start-cloudfront-from-state",
         "log-pipeline",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
@@ -6275,6 +6290,10 @@
         ],
         "local-start-cloudfront": [
           "l2"
+        ],
+        "local-start-cloudfront-from-state": [
+          "l2",
+          "literal"
         ],
         "log-pipeline": [
           "l2"

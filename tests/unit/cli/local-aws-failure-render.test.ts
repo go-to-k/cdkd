@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import { resetAwsClientDefaults } from '../../../src/utils/aws-client-defaults.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
 
 /**
  * Issue go-to-k/cdkd#2300: every STS failure the `cdkd local *` commands relay
@@ -197,6 +198,10 @@ const ENV_KEYS = [
   'AWS_SESSION_TOKEN',
 ] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+// cdk-local logs the withheld text at debug on its own logger; cdkd's embed
+// config hands that to cdkd's logger (go-to-k/cdkd#2429). Install it the way
+// every `cdkd local` command does, so the debug spy sees what a user would.
+createLocalCommand();
 const warnSpy = vi.spyOn(getLogger(), 'warn');
 const debugSpy = vi.spyOn(getLogger(), 'debug');
 

@@ -8,10 +8,23 @@ import {
   cdkdExtraStateProviders,
   engineCredentialTripleChannel,
   engineFromCfnStackChannel,
+  engineFromStateChannel,
   ENGINE_DYNAMIC_REFERENCE_CHANNEL,
   warnEngineRoleExposure,
 } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
+
+/**
+ * What the engine fetches with its own `{region, profile}` clients once a state
+ * source names the deployed stack: the S3 origin's objects (and, for an origin
+ * whose bucket is a pure intrinsic, the distribution config naming it), the
+ * KeyValueStore entries, and the `${AWS::AccountId}` an intrinsic in a Function
+ * URL / Lambda@Edge environment needs (an STS call). Named on whichever state
+ * flag is set, since both reach the same engine paths.
+ */
+const STATE_SOURCE_ENGINE_READS =
+  "a deployed S3 origin's objects and distribution config and the KeyValueStore entries, " +
+  "and the ${AWS::AccountId} in the Function URL / Lambda@Edge environment resolves to the role's account";
 
 /**
  * `cdkd local start-cloudfront <distribution>` — serve a CloudFront distribution
@@ -38,46 +51,17 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * its canonical spelling before cdk-local's handler builds an SDK client from it
  * ([#2522](https://github.com/go-to-k/cdkd/issues/2522)).
  *
- * ## Why cdkd's own state-source flags are REFUSED here
+ * ## cdkd's state-source flags
  *
- * The `extraStateProviders` seam cdk-local's factory accepts (go-to-k/cdk-local#426)
- * is wired in below, and cdkd's S3-backed `--from-state` factory reaches it — but
- * NOTHING in this command's code path consults it. Verified against the
- * installed bundle — cited by VERSION AND SYMBOL NAME, never by file and line: the
- * chunk name is content-hashed and the offsets move on any upstream edit, so a
- * citation naming them is born stale at the next release
- * (go-to-k/cdkd#3551 — these lines named `cdk-local@0.147.7` and a chunk that
- * no longer exists). Re-check with
- * `grep -n 'function resolveDeployedS3Origins' node_modules/cdk-local/dist/local-studio-*.js`
- * (and the same for each symbol named below).
- * Last verified: **cdk-local 0.149.1**. All three consumers miss, for two
- * independent reasons:
- *
- *   1. `resolveDeployedS3Origins` and `attachKvsModules`
- *      both gate on `isCfnFlagPresent(options)` — i.e. `--from-cfn-stack`
- *      specifically. With `--from-state` alone they return BEFORE a provider
- *      is constructed, so cdkd's registered factory is never consulted.
- *      `start-api` has no such gate: it calls `createLocalStateProvider`
- *      unconditionally and skips only on a falsy result, which is why the same
- *      flags work there. (An earlier revision called that an "any state source
- *      is active" PREDICATE — there is no such symbol; the difference is a
- *      gate versus no gate.)
- *   2. `bootLambdaUrlOrigins` and `bootLambdaEdgeFunctions`
- *      call `resolveLambdaContainerEnv` WITHOUT its fourth `extraStateProviders`
- *      parameter, and the `envOptions` bag they hand it is an
- *      allow-list of five keys that drops cdkd's state fields anyway.
- *
- * So the flags parse and do nothing, on exactly the command where a user is
- * already troubleshooting a `502` from an unresolved origin. Issue
- * [#2528](https://github.com/go-to-k/cdkd/issues/2528) settles that a flag that
- * parses and does nothing is worse than one that errors, so they are declared
- * (to keep the error actionable, and to keep the option set discoverable) and
- * REFUSED at `preAction` with a message naming `--from-cfn-stack` as today's
- * working state source. The upstream fix is go-to-k/cdk-local#699; when it
- * lands, delete {@link refuseUnwiredCdkdStateFlags} and the `[not supported…]`
- * prefixes — nothing else has to change, because the seam below is already
- * correct. Tracked for cdkd as
- * [#2600](https://github.com/go-to-k/cdkd/issues/2600).
+ * cdkd's S3-backed `--from-state` / `--state-bucket` / `--state-prefix` ride
+ * through cdk-local's `LocalStateSourceOptions` index signature to
+ * `cdkdExtraStateProviders`' `fromState` factory, which cdk-local consults on
+ * every state-backed path of this command: the deployed-S3 origin, the
+ * `cf.kvs()` bindings and the Function URL / Lambda@Edge container
+ * environment (go-to-k/cdk-local#699, cdk-local 0.151.0). Until that release
+ * these flags parsed and did nothing here, so they were refused
+ * ([#2528](https://github.com/go-to-k/cdkd/issues/2528)); the refusal is gone
+ * ([#2600](https://github.com/go-to-k/cdkd/issues/2600)).
  *
  * The active cdkd embed config is re-handed to the factory so branding stays
  * cdkd: cdk-local's factory calls `setEmbedConfig(opts.embedConfig)`, and
@@ -89,37 +73,33 @@ export function createLocalStartCloudFrontCommand(): Command {
   const cmd: Command = createCdkLocalStartCloudFrontCommand({
     embedConfig: getEmbedConfig(),
     extraStateProviders: cdkdExtraStateProviders,
-    // `--state-bucket` is refused on this command, so there is none to pass.
-    synthesizer: cdkdHostSynthesizer(() => {
-      const { verbose, roleArn } = cmd.opts<{ verbose?: boolean; roleArn?: string }>();
-      return { verbose, roleArn };
-    }),
+    synthesizer: cdkdHostSynthesizer(() =>
+      cmd.opts<{ stateBucket?: string; verbose?: boolean; roleArn?: string }>()
+    ),
   });
 
-  // Declared, then refused (see the module doc): keeping the declarations is
-  // what lets the refusal say WHY and point at `--from-cfn-stack`, instead of
-  // commander's bare `unknown option '--from-state'`. They also stay wired to
-  // `cdkdExtraStateProviders` above, so the day cdk-local#699 lands the only
-  // change here is deleting the refusal.
+  // Layer cdkd's S3-backed state-source flags on top of cdk-local's inherited
+  // `--from-cfn-stack` / `--stack-region` (see the module doc).
   cmd.addOption(
     new Option(
       '--from-state',
-      "[not supported on start-cloudfront] Read cdkd's S3 state for the target stack. Refused at " +
-        'startup: the CloudFront emulator consults a state source only under --from-cfn-stack. Use --from-cfn-stack ' +
-        'instead.'
+      "Read cdkd's S3 state for the target stack: resolve a deployed S3 origin's bucket and the " +
+        'KeyValueStores cf.kvs() reads, and substitute Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue / ' +
+        'Fn::GetStackOutput intrinsics in the Function URL origin and Lambda@Edge environment variables. ' +
+        'Mutually exclusive with --from-cfn-stack.'
     ).default(false)
   );
   cmd.addOption(
     new Option(
       '--state-bucket <bucket>',
-      '[not supported on start-cloudfront] S3 bucket for --from-state. Refused at startup with --from-state.'
+      'S3 bucket for --from-state. Falls back to CDKD_STATE_BUCKET env or cdk.json context.cdkd.stateBucket. ' +
+        'Also receives the transient upload of a CloudFormation-macro template too large to expand inline.'
     )
   );
   cmd.addOption(
-    new Option(
-      '--state-prefix <prefix>',
-      '[not supported on start-cloudfront] S3 key prefix for --from-state state files. Refused at startup with --from-state.'
-    ).default('cdkd')
+    new Option('--state-prefix <prefix>', 'S3 key prefix for --from-state state files.').default(
+      'cdkd'
+    )
   );
 
   // cdk-local's own `--assume-role [arn]` help advertises `(3) --no-assume-role`
@@ -138,7 +118,6 @@ export function createLocalStartCloudFrontCommand(): Command {
     )
   );
 
-  refuseUnwiredCdkdStateFlags(cmd);
   warnEngineRoleExposure(
     cmd,
     'start-cloudfront',
@@ -146,45 +125,9 @@ export function createLocalStartCloudFrontCommand(): Command {
       engineCredentialTripleChannel('the Function URL and Lambda@Edge containers'),
       ENGINE_DYNAMIC_REFERENCE_CHANNEL,
     ],
-    engineFromCfnStackChannel("a deployed S3 origin's objects and KeyValueStore entries")
+    engineFromCfnStackChannel(STATE_SOURCE_ENGINE_READS),
+    engineFromStateChannel(STATE_SOURCE_ENGINE_READS)
   );
 
   return adoptDeprecatedRegionFlag(cmd);
-}
-
-/**
- * Refuse cdkd's three state-source flags on `start-cloudfront` before anything
- * runs, rather than accepting them and silently emulating against nothing.
- *
- * `commander`'s `Command.error` is used rather than a thrown `CdkdError`
- * because the check runs in a `preAction` hook, OUTSIDE the `withErrorHandling`
- * wrapper cdk-local puts around its action — a throw there escapes to
- * the CLI's top-level rejection handler (`runCli`), which prints `Fatal error:`
- * plus a stack. `error()` prints the message the way every other option error
- * on this CLI is printed and exits 1.
- *
- * `--state-prefix` carries a commander default, so its presence is decided by
- * `getOptionValueSource` (`'cli'` only when the user typed it) rather than by
- * the value — pinning the default string here would go inert the moment the
- * default changed.
- */
-function refuseUnwiredCdkdStateFlags(cmd: Command): void {
-  cmd.hook('preAction', (_thisCommand, actionCommand) => {
-    const options = actionCommand.opts<{ fromState?: boolean; stateBucket?: string }>();
-    const passed: string[] = [];
-    if (options.fromState === true) passed.push('--from-state');
-    if (options.stateBucket !== undefined) passed.push('--state-bucket');
-    if (actionCommand.getOptionValueSource('statePrefix') === 'cli') passed.push('--state-prefix');
-    if (passed.length === 0) return;
-    actionCommand.error(
-      `error: ${passed.join(' / ')} ${passed.length === 1 ? 'is' : 'are'} not supported by ` +
-        '`cdkd local start-cloudfront`. The CloudFront emulator resolves its deployed-S3 origins, ' +
-        "its cf.kvs() bindings and its Function URL / Lambda@Edge containers' environment through " +
-        'cdk-local, which consults a state source only under --from-cfn-stack. DROP the flag(s) above, ' +
-        "then use --from-cfn-stack '<name>' for a CloudFormation-deployed stack, or --origin " +
-        "'<originId>'='<dir>' to serve an origin from a local directory. Adding --from-cfn-stack while " +
-        'leaving these on hits this same refusal.',
-      { code: 'cdkd.startCloudFrontStateFlagUnsupported' }
-    );
-  });
 }

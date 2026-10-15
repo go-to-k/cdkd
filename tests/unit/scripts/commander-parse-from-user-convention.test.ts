@@ -714,8 +714,6 @@ const KNOWN_DARK: Record<string, number> = {
   // Three `shim()` receivers built with `new Command`, and one subcommand
   // named by a loop variable.
   'tests/unit/cli/local-shim-region-fold.test.ts': 4,
-  // `...(argv as string[])`: a cast parameter fed from `it.each` rows.
-  'tests/unit/cli/local-start-cloudfront.test.ts': 1,
   // A receiver built per case, and a spread of a loop variable.
   'tests/unit/cli/options.test.ts': 2,
   // Stack paths built as `${HOSTILE...}/A` templates, which may begin with `-`.

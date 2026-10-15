@@ -145,7 +145,12 @@ function dockerCalls(): Array<{ cwd: string; argv: string }> {
 const builds = (): Array<{ cwd: string; argv: string }> =>
   dockerCalls().filter((c) => c.argv.startsWith('build '));
 
-/** What the engine printed through `console.warn`, from a spy set up first. */
+/**
+ * What reached `console.warn` directly, from a spy set up first. Since the
+ * go-to-k/cdkd#2429 logger bridge (`createLocalCommand` above), the engine's own
+ * warnings go through cdkd's logger into `cdkdWarns`, so this is the NEGATIVE
+ * polarity: an engine line arriving here bypassed cdkd's logger.
+ */
 function captureEngineWarns(): string[] {
   const said: string[] = [];
   vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
@@ -441,12 +446,13 @@ describe('the engine judges the path it opens', () => {
     const { cdkOut } = flatAssembly();
     writeFileSync(join(cdkOut, 'build.sh'), '#!/bin/sh\necho built:tag\n');
     chmodSync(join(cdkOut, 'build.sh'), 0o755);
-    const engineWarns = captureEngineWarns();
+    const consoleWarns = captureEngineWarns();
 
     await build(cdkOut, source);
 
-    const whole = engineWarns.filter((w) => w.includes("naming the assembly's output directory ITSELF"));
+    const whole = cdkdWarns.filter((w) => w.includes("naming the assembly's output directory ITSELF"));
     expect(whole).toHaveLength(1);
+    expect(consoleWarns).toEqual([]);
     expect(whole[0]).toContain(`cdkd will ${sink}`);
   });
 });
@@ -721,10 +727,11 @@ describe('the ECS emulator commands contain their builds through the engine', ()
     const forged = "x'. Contained and healthy. Nothing 'y";
     const { cdkOut, app } = ecsAssembly(`../asset.${HASH}`, { stage: true, outerName: forged });
 
-    const { engineWarns } = await failureOf(await commands[0]!.argv(app));
+    const { engineWarns: consoleWarns } = await failureOf(await commands[0]!.argv(app));
 
-    const climbed = engineWarns.filter((w) => w.includes('is a cdk.Stage sub-assembly'));
+    const climbed = cdkdWarns.filter((w) => w.includes('is a cdk.Stage sub-assembly'));
     expect(climbed).toHaveLength(1);
+    expect(consoleWarns).toEqual([]);
     expect(climbed[0]).toContain(`${literal(app)} is a cdk.Stage sub-assembly, so cdkd is treating`);
     expect(climbed[0]).toContain(`its parent ${literal(cdkOut)} as the assembly root`);
     const rest = [app, cdkOut].reduce((t, v) => t.split(literal(v)).join(''), climbed[0]!);

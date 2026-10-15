@@ -17,9 +17,10 @@ import { getLogger } from '../../utils/logger.js';
  * to expand inline, and the profile for that upload. `readOptions` is read at
  * synth time, after Commander has parsed the command's flags.
  *
- * `--verbose` raises cdk-local's logger only; cdkd's synthesizer logs through
- * cdkd's, so it is raised here too, or the app's output and the synth's debug
- * lines would be lost.
+ * `--verbose` on a cdk-local-owned command reaches cdkd's logger through the
+ * embed-config bridge (go-to-k/cdkd#2429). It is raised here as well, so the
+ * synth's debug lines do not depend on the engine having parsed the flag
+ * before synthesis.
  *
  * `--role-arn` is assumed by cdk-local, which writes the role's credentials to
  * the `AWS_*` environment (channel 2 in `src/utils/role-arn.ts`). Under

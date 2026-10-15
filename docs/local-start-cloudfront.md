@@ -86,7 +86,8 @@ cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch
 | `--tls` | off | Serve HTTPS. |
 | `--tls-cert <path>` | — | PEM server certificate. Requires `--tls-key`. |
 | `--tls-key <path>` | — | PEM private key. Requires `--tls-cert`. |
-| `--from-cfn-stack [name]` | off | Read the deployed stack. |
+| `--from-state` | off | Read the stack from cdkd's S3 state. |
+| `--from-cfn-stack [name]` | off | Read the deployed CloudFormation stack. |
 | `--cache-origin` | off | Keep objects read from a deployed S3 origin in memory. |
 | `--assume-role [arn]` | off | Run a Lambda origin under its deployed execution role. |
 | `--no-assume-role` | — | Explicitly decline the role assumption. |
@@ -107,14 +108,16 @@ line each:
 
 The command also accepts the common flags listed in
 [Local Execution](local-emulation.md), with these differences: it does not
-accept `--env-vars` or `--container-host`, and it refuses the flags that read
-cdkd's own state, as [State sources](#state-sources) describes.
+accept `--env-vars` or `--container-host`. The flags that read cdkd's own
+state work as [State sources](#state-sources) describes.
 
 > [!WARNING]
 > Do not pass `--role-arn` here without the `--profile` flag. `--role-arn` is
 > the role cdkd assumes for its own AWS calls. On this command the role's
 > credentials also reach the Function URL and Lambda@Edge containers, so your
 > code runs as that role. An exported `AWS_PROFILE` does not prevent this.
+> Under `--from-state` or `--from-cfn-stack`, a deployed S3 origin's objects
+> and KeyValueStore entries are also read as that role.
 > cdkd warns at startup when this applies. See the `--role-arn` section of
 > the [CLI Reference](cli-reference.md).
 
@@ -181,8 +184,8 @@ CDK generates these IDs with a hash suffix, so copy the ID from the startup
 warning: for an unresolved S3 origin, the warning prints the whole flag with
 the ID filled in.
 
-For an S3 bucket you can also pass `--from-cfn-stack`, which reads the files
-from the deployed bucket. See [State sources](#state-sources).
+For an S3 bucket you can also pass `--from-state` or `--from-cfn-stack`, which
+reads the files from the deployed bucket. See [State sources](#state-sources).
 
 ### Files outside the origin directory
 
@@ -269,7 +272,7 @@ choose where those reads are answered from:
 | Source | Flag |
 | --- | --- |
 | A local JSON file, with no AWS calls | `--kvs-file <key>=<file.json>` |
-| The deployed store, read on demand | `--from-cfn-stack` |
+| The deployed store, read on demand | `--from-state` or `--from-cfn-stack` |
 
 The file is one JSON object that maps each key to its value:
 
@@ -297,8 +300,10 @@ its construct ID (`RoutesKvs`).
 
 ## State sources
 
-`--from-cfn-stack [name]` makes cdkd read the deployed CloudFormation stack,
-for the parts of a distribution that exist only after a deploy. With it, cdkd:
+`--from-state` (a stack deployed with `cdkd deploy`) and `--from-cfn-stack
+[name]` (a deployed CloudFormation stack) make cdkd read the deployed stack,
+for the parts of a distribution that exist only after a deploy. The two are
+mutually exclusive. With either, cdkd:
 
 - reads an S3 origin's files from the deployed bucket,
 - answers `cf.kvs()` reads from the deployed KeyValueStore,
@@ -306,28 +311,23 @@ for the parts of a distribution that exist only after a deploy. With it, cdkd:
   and Lambda@Edge functions.
 
 ```bash
+cdkd local start-cloudfront MyStack/MyDistribution --from-state
 cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack
 ```
 
-`--stack-region` sets the region of the CloudFormation client that reads the
-stack.
+`--state-bucket` and `--state-prefix` choose where `--from-state` reads cdkd's
+state. `--stack-region` sets the region of the state record, and of the
+CloudFormation client under `--from-cfn-stack`.
 
 ### Caching objects from the deployed bucket
 
-Under `--from-cfn-stack`, cdkd reads an S3 origin's object from S3 on every
+Under a state source, cdkd reads an S3 origin's object from S3 on every
 request, so you always see the bucket's current content. `--cache-origin`
 keeps each object in memory after the first read, which is faster. The cache
 lasts until a `--watch` reload or a restart.
 
-Without `--from-cfn-stack` there is nothing to cache, so `--cache-origin` does
+Without a state source there is nothing to cache, so `--cache-origin` does
 nothing and a warning says so.
-
-### `--from-state` is refused
-
-Other local commands can read deployed values from cdkd's own state with
-`--from-state`. This command reads nothing from that state. Passing
-`--from-state`, `--state-bucket` or `--state-prefix` therefore exits with
-code 1 and a message that points at `--from-cfn-stack`.
 
 ## `--watch`: hot reload of the routing model
 

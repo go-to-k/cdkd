@@ -21,6 +21,10 @@
 #   6. Probe http://127.0.0.1:8080/orders/ — assert body contains
 #      "service=orders alb=<deployed-alb-dns>". Proves both the
 #      multi-target boot + the ListenerRule path routing.
+#   6b. Probe http://127.0.0.1:8080/fn/x — a TargetType: lambda target group
+#      whose function's ALB_DNS_NAME must resolve under --from-state too
+#      (go-to-k/cdkd#2602). Before cdk-local 0.151.0 it was dropped, so the
+#      body read "service=fn alb=" with nothing after it.
 #   7. SIGTERM cdkd. Assert clean teardown.
 #   8. cdkd destroy. Assert 0 errors, 0 orphans.
 #
@@ -47,6 +51,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_BUCKET="${STATE_BUCKET:?STATE_BUCKET env var required}"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
+LAMBDA_IMAGE="public.ecr.aws/lambda/nodejs:20"
 
 # Track whether AWS resources were created so the trap can attempt a
 # destroy even if a curl assertion failed before the explicit destroy
@@ -102,6 +107,7 @@ docker version --format '{{.Server.Version}}' >/dev/null
 echo "==> Pulling fixture images"
 docker pull "${SIDECAR_IMAGE}"
 docker pull "${BUSYBOX_IMAGE}"
+docker pull "${LAMBDA_IMAGE}"
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
@@ -202,6 +208,9 @@ probe / web
 echo "==> Probing ListenerRule path (path /orders/ -> Orders service)"
 probe /orders/ orders
 
+echo "==> Probing the Lambda target group (path /fn/x -> FnTarget, go-to-k/cdkd#2602)"
+probe /fn/x fn
+
 echo "==> Sending SIGTERM to cdkd (${CDKD_PID})"
 kill -TERM "${CDKD_PID}"
 
@@ -271,6 +280,7 @@ echo "    - Deployed VPC + ALB + 2 ECS Fargate services to ${REGION}"
 echo "    - cdkd local start-alb --from-state substituted ALB DNS into both services' env vars"
 echo "    - Default route (path /) reached Web service with resolved env var"
 echo "    - ListenerRule path /orders/ reached Orders service with resolved env var"
+echo "    - Lambda target group /fn/x reached FnTarget with resolved env var"
 echo "    - --lb-port 80=8080 override took effect"
 echo "    - SIGTERM tore down every replica + network cleanly"
 echo "    - cdkd destroy left no state behind"

@@ -118,9 +118,10 @@ export function releaseStdoutForPayload(): void {
  * the long-running servers behind `container-pool.ts`, whose stdout IS the
  * human log surface, reserve nothing.
  *
- * What remains outside this predicate's reach is cdk-local's OWN
- * `ConsoleLogger` ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), a
- * second logger module with no reservation concept.
+ * cdk-local's OWN `ConsoleLogger` hands its lines to this logger through the
+ * embed config `createLocalCommand` installs
+ * ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), so they take the
+ * same route.
  *
  * That is the ONLY shape this predicate is for. A COMMAND must never branch
  * on it — a command's own prose already flows through the logger, so

@@ -14,7 +14,12 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../utils/local-aws-failure.js';
-import { displayIdent, ROLE_ARN_MAX_CODE_POINTS, safeMsg } from '../../utils/display-safe.js';
+import {
+  displayIdent,
+  ROLE_ARN_MAX_CODE_POINTS,
+  safeMsg,
+  terminalSafe,
+} from '../../utils/display-safe.js';
 import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-command.js';
 import {
   displayAssemblyPath,
@@ -94,7 +99,7 @@ import { createLocalInvokeAgentCoreCommand } from './local-invoke-agentcore.js';
 import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
-import { setEmbedConfig } from 'cdk-local';
+import { setEmbedConfig, type EmbedHostLogger } from 'cdk-local';
 import {
   type DynamicReferenceResolver,
   firstUsableRegion,
@@ -109,6 +114,60 @@ import {
   applyCallerIdentityCredentials,
   AWS_CREDENTIAL_ENV_KEYS,
 } from '../../utils/caller-credentials.js';
+
+/** True while a line is being handed to cdkd's logger (re-entry guard). */
+let hostLoggerForwarding = false;
+
+/**
+ * Hand one cdk-local line to cdkd's logger. A throw there (a `BigInt` or a
+ * circular arg its `JSON.stringify` cannot render) or a re-entry falls back
+ * to stderr, display-safe, with the args dropped. Never cdk-local's own
+ * console path, which would put an `info` line on the reserved stdout. No
+ * log-line masker is bound on `cdkd local` paths (the masker is deploy-side,
+ * per resource), so the fallback skipping it loses nothing.
+ */
+function forwardToCdkdLogger(
+  level: 'debug' | 'info' | 'warn' | 'error',
+  message: string,
+  args: unknown[]
+): void {
+  if (!hostLoggerForwarding) {
+    hostLoggerForwarding = true;
+    try {
+      getLogger()[level](message, ...args);
+      return;
+    } catch {
+      // fall through to the stderr fallback
+    } finally {
+      hostLoggerForwarding = false;
+    }
+  }
+  if (level === 'debug' && getLogger().getLevel() !== 'debug') return;
+  console.error(terminalSafe(String(message)));
+}
+
+/**
+ * cdk-local's own log lines, routed through cdkd's logger (go-to-k/cdkd#2429).
+ * cdk-local ships a second `ConsoleLogger` whose `info` goes to stdout through
+ * module state cdkd cannot reach, so without this a container-image
+ * `cdkd local invoke ... | jq` got `Building container image ...` mixed into
+ * the payload, and cdkd's `--verbose` never raised cdk-local's level (its
+ * "logged at debug level under --verbose" pointers led nowhere). Each call
+ * reads `getLogger()` at call time, so a later `setLogger` still applies; the
+ * stdout reservation, level filter, sanitization and formatting are then
+ * cdkd's. cdk-local skips the bridge while `CDKL_LOG_LEVEL` or
+ * `CDKL_LOG_STREAM` is set (the variables its studio sets on its children), so
+ * a user who exported either for standalone `cdkl` gets cdk-local's own
+ * console logger back, stdout included.
+ */
+const CDKD_LOCAL_HOST_LOGGER: EmbedHostLogger = {
+  debug: (message, ...args) => forwardToCdkdLogger('debug', message, args),
+  info: (message, ...args) => forwardToCdkdLogger('info', message, args),
+  warn: (message, ...args) => forwardToCdkdLogger('warn', message, args),
+  error: (message, ...args) => forwardToCdkdLogger('error', message, args),
+  setLevel: (level) => getLogger().setLevel(level),
+  getLevel: () => getLogger().getLevel(),
+};
 
 /**
  * cdkd's branding for cdk-local's embed-config. cdkd re-exports cdk-local's
@@ -134,6 +193,9 @@ const CDKD_EMBED_CONFIG = {
   // for the resolution history.
   sigV4StrictByDefault: false,
   sigV4OptFlag: '--strict-sigv4',
+  // Every factory cdkd hands an `embedConfig` passes `getEmbedConfig()`, which
+  // returns this logger too, so no later `setEmbedConfig` drops it.
+  logger: CDKD_LOCAL_HOST_LOGGER,
 } as const;
 
 interface LocalInvokeOptions {
@@ -278,19 +340,14 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // `cdkd local invoke MyStack/Fn | jq` corrupts on a DEFAULT run. `sam local
   // invoke` routes its status lines to stderr for exactly this reason.
   //
-  // Lines are MOVED, not suppressed. ONE mechanism this does NOT reach, a
-  // raw write that never passes through cdkd's logger — so a consumer piping
-  // this command still needs `| tail -1` for a BUILT image today:
-  // **cdk-local's own `ConsoleLogger`**, a SECOND logger module with its own
-  // state and no reservation concept — every shim under `src/local/` that
-  // re-exports cdk-local (`buildContainerImage`, `buildAgentCoreCodeImage`,
-  // `downloadAndExtractS3Bundle`) emits its `logger.info` straight to
-  // `console.info` ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
-  // This is why a container-image Lambda still prints `Building container
-  // image (platform=...)` on stdout.
-  //
-  // Two raw writers used to be listed here and are now CLOSED, both by
-  // consulting this reservation: `docker pull` progress under
+  // Lines are MOVED, not suppressed. Three writers that bypass cdkd's own
+  // call sites are CLOSED by this same reservation. cdk-local's OWN
+  // `ConsoleLogger` (the `Building container image (platform=...)` line every
+  // re-exported shim such as `buildContainerImage` / `buildAgentCoreCodeImage`
+  // / `downloadAndExtractS3Bundle` emits) hands each line to cdkd's logger
+  // through the embed config `createLocalCommand` installs
+  // ([#2429](https://github.com/go-to-k/cdkd/issues/2429)), and two raw
+  // writers consult the reservation directly: `docker pull` progress under
   // `runDockerForeground` (`docker-cmd.ts` redirects that child's fd 1 to
   // fd 2), and the CONTAINER's own stdout, piped in by `followContainerLogs`
   // (`src/local/docker-runner.ts`), where the RIE puts START/END/REPORT and

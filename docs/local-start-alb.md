@@ -244,30 +244,13 @@ authentication action is skipped as well, with a warning.
 
 `--from-state` and `--from-cfn-stack` replace references in the template, such
 as a table name written as a `Ref`, with the values of the deployed stack.
-[Local Execution](local-emulation.md) explains both flags. On this command
-they cover different targets:
-
-| Target kind | `--from-state` | `--from-cfn-stack` |
-| --- | --- | --- |
-| ECS service | Resolved | Resolved |
-| Lambda function | Not resolved | Environment variables resolved |
-
-For an ECS service, both flags resolve its images, environment variables,
-secrets, role ARNs and volumes. For a Lambda target, `--from-cfn-stack`
-resolves the function's `Environment.Variables` and `--from-state` resolves
-nothing.
-
-So to resolve both kinds of target at once, use `--from-cfn-stack` if the
-stack was deployed through CloudFormation. Otherwise use `--from-state` and
-supply the Lambda function's variables yourself with `--env-vars`.
+[Local Execution](local-emulation.md) explains both flags. For an ECS
+service, either flag resolves its images, environment variables, secrets,
+role ARNs and volumes. For a Lambda target, either flag resolves the
+function's `Environment.Variables`.
 
 ### Edge cases
 
-- **A Lambda target under `--from-state`.** Each of its environment variables
-  whose value is an intrinsic function (`Ref`, `Fn::GetAtt`, `Fn::Sub`,
-  `Fn::ImportValue`) is dropped, with one warning per variable. A warning at
-  startup also names the affected functions. The ECS services behind the same
-  load balancer are resolved normally.
 - **`Fn::GetAtt` under `--from-cfn-stack`.** An `Fn::GetAtt` in the value of
   an ECS container's environment variable is dropped with a warning.
 

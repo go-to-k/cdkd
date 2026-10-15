@@ -503,6 +503,17 @@ export function engineFromCfnStackChannel(alsoReads?: string): EngineRoleChannel
   };
 }
 
+/**
+ * cdkd's `--from-state` on an engine command whose ENGINE reads deployed data
+ * with its own clients once a state source names it: start-cloudfront's S3
+ * origins and KeyValueStore entries (go-to-k/cdk-local#699). cdkd's provider
+ * reads the state record itself; what the record names is fetched by the
+ * engine, from `{region, profile}`.
+ */
+export function engineFromStateChannel(reads: string): EngineRoleChannel {
+  return { what: `--from-state makes the engine read ${reads}`, flagOnly: false };
+}
+
 /** `${AWS::AccountId}` resolved through an STS hop answered by the role. */
 export const ENGINE_ACCOUNT_ID_CHANNEL: EngineRoleChannel = {
   what: "${AWS::AccountId} resolves to the role's account in the container's environment, secret references and image URIs",
@@ -534,26 +545,35 @@ export function warnEngineRoleExposure(
   cmd: Command,
   commandName: string,
   channels: readonly EngineRoleChannel[],
-  fromCfnStackChannel: EngineRoleChannel = engineFromCfnStackChannel()
+  fromCfnStackChannel: EngineRoleChannel = engineFromCfnStackChannel(),
+  fromStateChannel?: EngineRoleChannel
 ): Command {
   cmd.hook('preAction', (_thisCommand, actionCommand) => {
     const options = actionCommand.optsWithGlobals<{
       roleArn?: string;
       profile?: string;
       fromCfnStack?: string | boolean;
+      fromState?: boolean;
       assumeRole?: unknown;
       assumeTaskRole?: unknown;
     }>();
-    const message = engineRoleExposureWarning(commandName, channels, fromCfnStackChannel, {
-      roleArn: options.roleArn || process.env['CDKD_ROLE_ARN'],
-      profileFlag: options.profile,
-      envProfile: process.env['AWS_PROFILE'],
-      fromCfnStack: isCfnFlagPresentBase(options),
-      // `--assume-role` / `--assume-task-role` in any form but `--no-assume-role`
-      // (false): explicit ARN, bare `true`, or a per-Lambda map.
-      assumesForWorkload:
-        isAssumeRequested(options.assumeRole) || isAssumeRequested(options.assumeTaskRole),
-    });
+    const message = engineRoleExposureWarning(
+      commandName,
+      channels,
+      fromCfnStackChannel,
+      {
+        roleArn: options.roleArn || process.env['CDKD_ROLE_ARN'],
+        profileFlag: options.profile,
+        envProfile: process.env['AWS_PROFILE'],
+        fromCfnStack: isCfnFlagPresentBase(options),
+        // `--assume-role` / `--assume-task-role` in any form but `--no-assume-role`
+        // (false): explicit ARN, bare `true`, or a per-Lambda map.
+        assumesForWorkload:
+          isAssumeRequested(options.assumeRole) || isAssumeRequested(options.assumeTaskRole),
+        fromState: options.fromState === true,
+      },
+      fromStateChannel
+    );
     if (message !== undefined) getLogger().warn(message);
   });
   return cmd;
@@ -581,7 +601,10 @@ export function engineRoleExposureWarning(
     envProfile: string | undefined;
     fromCfnStack: boolean;
     assumesForWorkload: boolean;
-  }
+    /** cdkd's `--from-state` is set (only read when `fromStateChannel` is given). */
+    fromState?: boolean;
+  },
+  fromStateChannel?: EngineRoleChannel
 ): string | undefined {
   // A malformed ARN is refused by the engine before anything is assumed, so
   // nothing reaches the role and a warning would only precede that refusal.
@@ -590,6 +613,7 @@ export function engineRoleExposureWarning(
     ...channels,
     ...(input.assumesForWorkload ? [ENGINE_ASSUME_ROLE_CHANNEL] : []),
     ...(input.fromCfnStack ? [fromCfnStackChannel] : []),
+    ...(input.fromState && fromStateChannel ? [fromStateChannel] : []),
   ];
   const envProfileSet = !!input.envProfile;
   const open = envProfileSet ? all.filter((c) => c.flagOnly) : all;

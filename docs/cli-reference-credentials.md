@@ -160,19 +160,21 @@ The cases below have been confirmed. Treat the rule as wider than the table.
 | --- | --- | --- |
 | The role's credentials are copied into the container, so your code runs as the role | `start-alb`, `start-cloudfront`, `start-agentcore` | The `--profile` flag only |
 | ECS task secrets are fetched and injected into the container's environment | `start-service`, `start-alb` | `--profile`, or an exported `AWS_PROFILE` |
-| `${AWS::AccountId}` resolves to the role's account in environment variables, secret references and image URIs | `start-service`, `start-alb`, `start-agentcore` | `--profile`, or an exported `AWS_PROFILE` |
+| `${AWS::AccountId}` resolves to the role's account in environment variables, secret references and image URIs | `start-service`, `start-alb`, `start-agentcore`; `start-cloudfront` under `--from-state` or `--from-cfn-stack` | `--profile`, or an exported `AWS_PROFILE` |
 | `--from-cfn-stack` reads the stack, decrypted parameters included | All four | `--profile`, or an exported `AWS_PROFILE` |
+| `--from-state` makes the engine read a deployed S3 origin's objects and distribution config and the KeyValueStore entries | `start-cloudfront` | `--profile`, or an exported `AWS_PROFILE` |
 | A role named by `--assume-role` or `--assume-task-role` is assumed by the `--role-arn` role | All four, when that flag is passed | `--profile`, or an exported `AWS_PROFILE` |
 
 Three details about the table:
 
 - On `start-cloudfront`, the `--from-cfn-stack` row also covers a deployed S3
-  origin's objects and KeyValueStore entries.
+  origin's objects and distribution config and the KeyValueStore entries.
 - The ECS workload containers of `start-service` are not in the first row.
   They get credentials from a metadata sidecar that is seeded from `--profile`
   alone.
-- `--from-state` is cdkd's own state read, and it is not affected on any
-  command.
+- `--from-state`'s read of cdkd's own state runs as the role on purpose: the
+  state bucket is in the role's account. Only the engine reads it leads to on
+  `start-cloudfront` are a row above.
 
 Each of the four commands prints a warning at startup when `--role-arn` or
 `CDKD_ROLE_ARN` is set without the `--profile` flag. The warning names the

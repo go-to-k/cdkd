@@ -15,9 +15,9 @@ Issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)'s other half:
 overwrite is cdk-local's OWN `applyRoleArnIfSet` inside the emulator entry
 point — it returns only after every container started.
 
-**Reason from the RULE, not the list**: cdk-local builds its clients from the
-region and `options.profile` alone (no `ignoreAssumedRole`), so with
-`--role-arn` and no profile it resolves everything AS THE ROLE.
+**Reason from the RULE, not the list**: cdk-local builds clients from the region
+and `options.profile` alone, so with `--role-arn` and no profile everything
+resolves AS THE ROLE.
 
 1. **The credential triple** copied into the container (`start-alb`,
    `start-cloudfront`, `start-agentcore`), gated on the `options.profile` FLAG
@@ -28,10 +28,11 @@ region and `options.profile` alone (no `ignoreAssumedRole`), so with
 3. **`${AWS::AccountId}`**: cdk-local's `resolveCallerAccountId` takes
    `options.profile` only: the id in the env, `secrets` refs and ECR URIs.
 4. **`--from-cfn-stack`** — `GetParameters` with `WithDecryption: true`.
+   On `start-cloudfront` either state flag also has the ENGINE read S3 origins
+   and KVS.
    On the four cdkd-owned commands `bindCallerIdentityClients` shadows the
    provider's PRIVATE getters; `cfnProviderShapeDrift` refuses (under a role,
-   no profile) any change to the reviewed member ALLOWLIST — shape, not use: a
-   client built inline or cached at module level is undetectable.
+   no profile) any change to the reviewed member ALLOWLIST (shape, not use: an inline or module-cached client is undetectable).
 5. **`--assume-role` / `--assume-task-role`** for the workload: the STS
    AssumeRole call is made as the role.
 6. **A literal layer ARN** (`local invoke` / `start-api`): cdk-local's
@@ -41,8 +42,7 @@ region and `options.profile` alone (no `ignoreAssumedRole`), so with
    (`src/local/dynamic-reference.ts`, #2056).
 
 Either profile spelling mitigates 2-7. The fix is upstream
-(go-to-k/cdk-local#783); patching `CfnLocalStateProvider.prototype` would
-reach only 4, so `warnEngineRoleExposure` warns at startup meanwhile.
+(go-to-k/cdk-local#783); `warnEngineRoleExposure` warns at startup meanwhile.
 
 cdkd's `--from-state` twin runs as the role **deliberately** (its
 `cdkd-local-role-identity:` sites); do NOT "fix" them — the bucket name is
