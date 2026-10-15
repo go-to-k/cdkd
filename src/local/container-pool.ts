@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isPasteableIdent, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { quotedOrDescribed } from '../utils/pasteable-command.js';
@@ -523,14 +524,14 @@ export function createContainerPool(
       handle.stopLogStream();
     } catch (err) {
       logger.debug(
-        `stopLogStream(${handle.containerName}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `stopLogStream(${handle.containerName}) failed: ${describeAwsFailure(err).detail}`
       );
     }
     try {
       await removeContainer(handle.containerId);
     } catch (err) {
       logger.warn(
-        `Failed to remove container ${handle.containerName}: ${err instanceof Error ? err.message : String(err)}. Continuing cleanup.`
+        `Failed to remove container ${handle.containerName}: ${describeAwsFailure(err).detail}. Continuing cleanup.`
       );
     }
   }
@@ -727,7 +728,7 @@ export function createContainerPool(
           .catch((err: unknown) => {
             // `startOne` rejected — it removed whatever it started.
             logger.debug(
-              `In-flight startOne rejected during dispose: ${err instanceof Error ? err.message : String(err)}`
+              `In-flight startOne rejected during dispose: ${describeAwsFailure(err).detail}`
             );
             return { kind: 'rejected' as const };
           })
