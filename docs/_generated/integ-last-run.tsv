@@ -318,7 +318,7 @@ rollback-sqs-cooldown	2026-10-04T07:12:53Z	PASS	161	verify.sh	rc ok, orph clean 
 route53	2026-10-11T09:33:22Z	PASS	331	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-14T05:21:01Z	PASS	270	verify.sh	rc ok, orph clean
+s3-cloudfront	2026-10-15T06:00:27Z	PASS	250	verify.sh	rc ok, orph clean (us-west-2)
 s3-directory-bucket	2026-10-15T04:17:06Z	PASS	206	verify.sh	rc ok, orph clean
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-fix-forward-orphan	2026-10-09T01:46:35Z	PASS	326	verify.sh	rc ok, orph clean; us-west-2; #4754 destroy re-checked kept E/F (E deleted, F gone), exit 0
