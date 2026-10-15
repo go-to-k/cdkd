@@ -97,6 +97,20 @@ export function orphanDeleteNeedsIdentity(resourceType: string): boolean {
 }
 
 /**
+ * Whether the proven orphan `op` needs a journaled identity before a settle
+ * deletes it. A Cloud Control-routed one (go-to-k/cdkd#3252) is judged by
+ * its own proof only, never by the type tables above, which were established
+ * for the SDK providers' ids: it needs none exactly when its settle proved the
+ * identifier unique (`createdIdentifierUnique`, an AWS-minted component).
+ */
+export function orphanNeedsIdentity(
+  op: Pick<FailedOperation, 'resourceType' | 'provisionedBy' | 'createdIdentifierUnique'>
+): boolean {
+  if (op.provisionedBy === 'cc-api') return op.createdIdentifierUnique !== true;
+  return orphanDeleteNeedsIdentity(op.resourceType);
+}
+
+/**
  * How long one identity read may take. No SDK client here sets a request
  * timeout, and the write side runs where a hung read would hold back the
  * journal write that is the orphan's only record.
@@ -173,7 +187,7 @@ export async function createdResourceStillThere(
   ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>
 ): Promise<'proven' | 'mismatch' | 'gone' | 'unproven'> {
   if (op.deletionPolicy === 'Retain') return 'proven';
-  if (!orphanDeleteNeedsIdentity(op.resourceType)) return 'proven';
+  if (!orphanNeedsIdentity(op)) return 'proven';
   // Unreachable from the settle, which skips an op without one, and from the
   // replay, whose classifier does; a guard for any other caller.
   const physicalId = op.physicalId;

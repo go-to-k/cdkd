@@ -192,6 +192,11 @@ failed:
 cdkd rollback MyStack --stack-region us-east-1 --drop-failed MyQueuePolicy
 ```
 
+It also removes a Cloud Control create cdkd stopped waiting for whose status
+can no longer be read. Such an entry makes `cdkd deploy`, `cdkd destroy` and
+`cdkd rollback` refuse to run, and their refusal prints this command. See
+["cdkd stopped waiting for it"](troubleshooting-slow-deploys.md#cdkd-stopped-waiting-for-it-a-network-outage-during-a-cloud-control-operation).
+
 The command prints the entry and asks for confirmation. The entry shows the
 physical ID and, for a queue or topic policy, the queues or topics the policy
 was attached to. `--force` / `-y` skips the prompt, and without a terminal the

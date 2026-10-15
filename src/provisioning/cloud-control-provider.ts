@@ -85,6 +85,7 @@ import {
   getTopLevelDeployAttributeNames,
 } from './read-only-properties.js';
 import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-import-identifier.js';
+import { isInterruptedWaitError } from './interrupt-watch.js';
 import {
   errorCauseChain,
   maskSecretsInError,
@@ -288,8 +289,29 @@ export class CloudControlWaitAbandonedError extends ProvisioningError {
     // class. Marking per-throw is
     // one forgotten call from re-opening the state-drop, which is the reason
     // `ResourceUpdateNotSupportedError` marks in its constructor too.
-    markWaitAbandoned(this);
+    markWaitAbandoned(this, { requestToken, operation: ccOperation });
   }
+}
+
+/**
+ * How a re-polled abandoned request ended
+ * ({@link CloudControlProvider.resumeAbandonedRequest}, go-to-k/cdkd#3252).
+ */
+export type AbandonedRequestOutcome =
+  | { status: 'succeeded'; identifier: string }
+  | { status: 'failed'; remnant?: string }
+  | { status: 'cancelled'; remnant?: string }
+  | { status: 'not-found' }
+  /** Still running after the poll budget, or its status could not be read. */
+  | { status: 'unresolved'; error: unknown };
+
+function failedOutcome(
+  errorCode: string | undefined,
+  identifier: string | undefined
+): AbandonedRequestOutcome {
+  return identifier && errorCode !== 'AlreadyExists' && errorCode !== 'ResourceConflict'
+    ? { status: 'failed', remnant: identifier }
+    : { status: 'failed' };
 }
 
 /**
@@ -3063,15 +3085,23 @@ export class CloudControlProvider implements ResourceProvider {
           // it throws a plain ProvisioningError so cleanupFailedCreateRemnant
           // deliberately does not fire — cancellation is an explicit external
           // action, not a transient failure a retry should paper over.
-          throw new ProvisioningError(
-            `${operation} cancelled for ${logicalId}`,
-            progressEvent.TypeName || 'Unknown',
-            logicalId,
-            progressEvent.Identifier
+          throw Object.assign(
+            new ProvisioningError(
+              `${operation} cancelled for ${logicalId}`,
+              progressEvent.TypeName || 'Unknown',
+              logicalId,
+              progressEvent.Identifier
+            ),
+            // Typed, for `resumeAbandonedRequest` (go-to-k/cdkd#3252): the
+            // message carries the template-chosen logical id.
+            { ccOperationCancelled: true }
           );
 
         case 'IN_PROGRESS':
         case 'PENDING':
+        // A cancel on its way to CANCEL_COMPLETE (go-to-k/cdkd#3252's re-poll
+        // can meet one): waited on without the unknown-status warning.
+        case 'CANCEL_IN_PROGRESS':
           // Exponential backoff with 1.5x multiplier for flatter curve:
           // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
           // Most CC API operations complete in 1-5s, so slower ramp-up
@@ -3119,6 +3149,145 @@ export class CloudControlProvider implements ResourceProvider {
       // / `message` off any object, so a non-`Error` throw does reach here.
       lastTransientError
     );
+  }
+
+  /**
+   * The {@link create} result for a resource an earlier run's CREATE made
+   * after cdkd stopped waiting for it (go-to-k/cdkd#3252): `identifier` is
+   * what that request's SUCCESS event named. Nothing is sent but reads: the
+   * model comes from `GetResource` and then takes the create path's own
+   * attribute pipeline, so the record matches one a create that returned
+   * would have written. Throws when the resource cannot be read, so the
+   * caller falls back to an ordinary create.
+   */
+  async resumeCreatedResource(
+    logicalId: string,
+    resourceType: string,
+    identifier: string,
+    properties: Record<string, unknown>,
+    context?: CreateContext
+  ): Promise<ResourceCreateResult> {
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
+    // Read directly rather than through `readCcResourceModel`, which reads
+    // every failure as "no model": only NotFound may send the caller on to a
+    // create, since any other failure leaves the resource standing.
+    let raw: string | undefined;
+    try {
+      const response = await this.cloudControlClient.send(
+        new GetResourceCommand({ TypeName: resourceType, Identifier: identifier })
+      );
+      raw = response.ResourceDescription?.Properties;
+    } catch (error) {
+      if ((error as { name?: string }).name === 'ResourceNotFoundException') {
+        throw Object.assign(
+          new ProvisioningError(
+            `${logicalId}'s resource that an earlier CREATE made no longer exists`,
+            resourceType,
+            logicalId,
+            identifier,
+            error instanceof Error ? error : undefined
+          ),
+          { resumedResourceGone: true }
+        );
+      }
+      throw error;
+    }
+    const model = typeof raw === 'string' && raw !== '' ? this.parseResourceModel(raw) : {};
+    const modelKeys = Object.keys(model);
+    const enriched = await this.enrichResourceAttributes(resourceType, identifier, model);
+    return {
+      physicalId: identifier,
+      attributes: await this.maskDeployedNonAttributeKeys(
+        enriched,
+        modelKeys,
+        resourceType,
+        identifier,
+        attributeNamesLookup,
+        properties,
+        mask
+      ),
+    };
+  }
+
+  /**
+   * Re-poll a request an earlier run abandoned (go-to-k/cdkd#3252) and report
+   * how it ended. Never sends a write: `GetResourceRequestStatus` invokes no
+   * handler. A request still running is waited on through
+   * {@link waitForOperation}, with its usual budget and transport fence.
+   *
+   * `remnant` on a FAILED create is the identifier `cleanupFailedCreateRemnant`
+   * would delete in the original run: set only when the event named one and
+   * the error code says it is not another owner's (`AlreadyExists`) or under
+   * another operation (`ResourceConflict`).
+   */
+  async resumeAbandonedRequest(
+    requestToken: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<AbandonedRequestOutcome> {
+    let first: GetResourceRequestStatusCommandOutput;
+    try {
+      first = await this.cloudControlClient.send(
+        new GetResourceRequestStatusCommand({ RequestToken: requestToken })
+      );
+    } catch (error) {
+      if ((error as { name?: string }).name === 'RequestTokenNotFoundException') {
+        return { status: 'not-found' };
+      }
+      return { status: 'unresolved', error };
+    }
+    let event = first.ProgressEvent;
+    // The journal names the type; a request of another type or operation is
+    // not the one it recorded, and nothing it made is this resource.
+    if (
+      (event?.TypeName !== undefined && event.TypeName !== resourceType) ||
+      (event?.Operation !== undefined && event.Operation !== 'CREATE')
+    ) {
+      return {
+        status: 'unresolved',
+        error: new Error('the request is not a CREATE of the type the journal records'),
+      };
+    }
+    // Any status short of an end (PENDING, IN_PROGRESS, CANCEL_IN_PROGRESS)
+    // is waited on, as `waitForOperation` itself keeps polling one.
+    const ended = ['SUCCESS', 'FAILED', 'CANCEL_COMPLETE'];
+    if (event !== undefined && !ended.includes(String(event.OperationStatus))) {
+      try {
+        event = await this.waitForOperation(requestToken, logicalId, 'CREATE', resourceType);
+      } catch (error) {
+        if (error instanceof CloudControlOperationFailedError) {
+          return failedOutcome(error.ccErrorCode, error.physicalId);
+        }
+        if ((error as { ccOperationCancelled?: unknown }).ccOperationCancelled === true) {
+          const made = (error as ProvisioningError).physicalId;
+          return made ? { status: 'cancelled', remnant: made } : { status: 'cancelled' };
+        }
+        // Ctrl-C while waiting: the run is stopping, not the request unknown.
+        if (isInterruptedWaitError(error)) throw error;
+        // A `CloudControlWaitAbandonedError` (the poll budget ran out, or the
+        // status could not be read) or anything unexpected: still unknown.
+        return { status: 'unresolved', error };
+      }
+    }
+    switch (event?.OperationStatus) {
+      case 'SUCCESS':
+        return event.Identifier
+          ? { status: 'succeeded', identifier: event.Identifier }
+          : { status: 'unresolved', error: new Error('the SUCCESS event named no Identifier') };
+      case 'FAILED':
+        return failedOutcome(event.ErrorCode, event.Identifier);
+      case 'CANCEL_COMPLETE':
+        // A create cancelled after it materialized can leave its resource.
+        return event.Identifier
+          ? { status: 'cancelled', remnant: event.Identifier }
+          : { status: 'cancelled' };
+      default:
+        return {
+          status: 'unresolved',
+          error: new Error(`unexpected operation status ${String(event?.OperationStatus)}`),
+        };
+    }
   }
 
   /**
@@ -3199,7 +3368,9 @@ export class CloudControlProvider implements ResourceProvider {
     // failure preserves — only the OPERATION is unrecorded there.
     const consequence =
       operation === 'CREATE'
-        ? 'cdkd has NO state record for it, so any resource it creates is untracked by rollback and by cdkd destroy'
+        ? 'cdkd has NO state record for it: when the failed deploy records the request in the ' +
+          "stack's rollback journal, the next cdkd deploy, destroy or rollback checks how it ended, " +
+          'and otherwise any resource it creates is untracked'
         : operation === 'DELETE'
           ? 'the resource may or may not have been removed; its state record is kept so a re-run can finish the delete'
           : 'its state record still holds the PREVIOUS properties, so the record may no longer describe the live resource';
@@ -3264,7 +3435,7 @@ export class CloudControlProvider implements ResourceProvider {
    * that can throw (no credentials, no configured region), and a wait that
    * already failed must not fail a second time inside its own error message.
    */
-  private async buildResumeCommand(requestToken: string): Promise<string> {
+  async buildResumeCommand(requestToken: string): Promise<string> {
     const safeToken = displaySafe(requestToken, { asciiOnly: true });
     // The `!safeToken` arm matches `replacement-protection-advice.ts`'s
     // convention verbatim rather than being narrowed to the change test alone.

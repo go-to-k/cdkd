@@ -161,7 +161,9 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
     const live = liveSource('src/cli/commands/destroy-runner.ts');
     expect(live.split(/\.acquireLock(?:WithRetry)?\(/).length - 1).toBe(0);
     expect(live.includes(`process.on('SIGINT'`)).toBe(false);
-    expect(live.split(/\bacquireStackLock\(/).length - 1).toBe(2);
+    // The empty-state cleanup, the main destroy, and the settle of an abandoned
+    // Cloud Control request (go-to-k/cdkd#3252).
+    expect(live.split(/\bacquireStackLock\(/).length - 1).toBe(3);
   });
 
   it('the stack-lock guard gates its force-quit best-effort release on lock ownership', () => {

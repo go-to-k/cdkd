@@ -355,7 +355,7 @@ import { runDeleteAttempt } from '../provisioning/providers/deletion-protection-
 import {
   askForeignHolder,
   createdResourceStillThere,
-  orphanDeleteNeedsIdentity,
+  orphanNeedsIdentity,
 } from './rollback-executor/orphan-identity.js';
 import { removeProtectionTypes } from '../provisioning/remove-protection-types.js';
 import { replayStackRecordsView, withStackRecords } from './stack-records-scope.js';
@@ -373,9 +373,7 @@ import { replayStackRecordsView, withStackRecords } from './stack-records-scope.
 function protectionRemovalProven(op: FailedOperation, deleteProven: boolean): boolean {
   if (op.physicalIdRecoveredFromError !== true) return true;
   return (
-    deleteProven &&
-    (!orphanDeleteNeedsIdentity(op.resourceType) ||
-      removeProtectionTypes().includes(op.resourceType))
+    deleteProven && (!orphanNeedsIdentity(op) || removeProtectionTypes().includes(op.resourceType))
   );
 }
 

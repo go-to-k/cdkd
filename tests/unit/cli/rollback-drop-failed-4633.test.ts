@@ -270,6 +270,27 @@ describe('dropFailedJournalEntry (go-to-k/cdkd#4633)', () => {
     expect(lines.join('\n')).toContain("Dropped Policy's entry from the rollback journal of stack S (us-east-1)");
   });
 
+  // go-to-k/cdkd#3252: the way out of an abandoned Cloud Control CREATE that
+  // can never be settled, which refuses deploy and destroy.
+  it('drops an unsettled abandoned Cloud Control CREATE, which names no resource', async () => {
+    const pending = {
+      logicalId: 'Group',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Logs::LogGroup',
+      provisionedBy: 'cc-api',
+      pendingCloudControlRequest: { requestToken: 'tok-3252', abandonedAt: 1 },
+    };
+    // A plain failed CREATE of another id stays, and is not droppable.
+    const plain = { logicalId: 'Plain', changeType: 'CREATE', resourceType: 'AWS::SNS::Topic' };
+    const { backend, store } = backendOver(journalOf(seg([pending, plain])));
+    await run(backend, 'Group');
+    expect(store.journal!.segments[0]!.failedOperations).toEqual([plain]);
+    expect(lines.join('\n')).toContain('an abandoned Cloud Control request');
+    expect(codeOf(() => selectDropTarget([seg([plain])], 'Plain', STACK_SHOWN))).toBe(
+      'ROLLBACK_DROP_FAILED_NOT_ORPHAN'
+    );
+  });
+
   it("an older entry of the id naming the same resource is demoted by the newer one, so the newer one is dropped", async () => {
     const { backend, store } = backendOver(
       journalOf(seg([orphan('Policy')], { timestamp: 1, runId: 'run-0' }), seg([orphan('Policy')], { timestamp: 2 }))
@@ -679,6 +700,85 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
     expect(left.keepJournal).toBe(true);
     expect(provider.delete).not.toHaveBeenCalled();
     expect(warned(logger)).not.toContain('--drop-failed');
+  });
+
+  // go-to-k/cdkd#3252: an unsettled abandoned Cloud Control CREATE is no
+  // orphan, but the journal is its only record.
+  it.each([
+    ['alone', [] as unknown[]],
+    ['beside an orphan the settle deletes', [stream('Deleted')]],
+  ])('a successful deploy keeps a journal holding an unsettled request (%s)', async (_n, others) => {
+    const { ctx, logger } = ctxWith(async () => undefined);
+    const pending = {
+      logicalId: 'Group',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Logs::LogGroup',
+      pendingCloudControlRequest: { requestToken: 'tok', abandonedAt: 1 },
+    };
+    const journal = journalOf(seg([pending, ...others]));
+    const stateBackend = {
+      loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
+      reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+      markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+      dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+    };
+    const left = await settleJournaledOrphansOnSuccess({
+      stateBackend: stateBackend as never,
+      stackName: 'S',
+      region: REGION,
+      stateResources: {},
+      rollbackOrphans: undefined,
+      foreignHolder: async () => undefined,
+      ctx,
+      logger: logger as never,
+      newerOperations: [{ logicalId: 'Fresh', changeType: 'CREATE', resourceType: 'AWS::SNS::Topic' }],
+    } as never);
+    expect(left.keepJournal).toBe(true);
+    // Reduced to the request like any kept journal: stale completed ops go,
+    // a deleted orphan goes, the deploy's ids are superseded.
+    const [, , keep, superseded] = stateBackend.reduceRollbackJournalToFailedOperations.mock.calls[0]!;
+    const seg0 = journal.segments[0]!;
+    expect((keep as (op: unknown, s: unknown) => boolean)(pending, seg0)).toBe(true);
+    for (const other of others) {
+      expect((keep as (op: unknown, s: unknown) => boolean)(other, seg0)).toBe(false);
+    }
+    expect(superseded).toEqual(['Fresh']);
+  });
+
+  it('an orphan whose delete failed is kept beside an unsettled request, and so is the request', async () => {
+    const { ctx, logger } = ctxWith(async () => {
+      throw new Error('AccessDeniedException');
+    });
+    const pending = {
+      logicalId: 'Group',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Logs::LogGroup',
+      pendingCloudControlRequest: { requestToken: 'tok', abandonedAt: 1 },
+    };
+    const journal = journalOf(seg([pending, stream('Stuck')]));
+    const stateBackend = {
+      loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
+      reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+      markRollbackJournalSuperseded: vi.fn().mockResolvedValue(undefined),
+      dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+    };
+    const left = await settleJournaledOrphansOnSuccess({
+      stateBackend: stateBackend as never,
+      stackName: 'S',
+      region: REGION,
+      stateResources: {},
+      rollbackOrphans: undefined,
+      newerOperations: [],
+      foreignHolder: async () => undefined,
+      ctx,
+      logger: logger as never,
+    });
+    expect(left.keepJournal).toBe(true);
+    const keep = stateBackend.reduceRollbackJournalToFailedOperations.mock.calls[0]![2] as (
+      op: unknown,
+      s: unknown
+    ) => boolean;
+    expect(keep(pending, journal.segments[0])).toBe(true);
   });
 
   it("a successful deploy's kept-entry warning names it once, for the entry it kept", async () => {

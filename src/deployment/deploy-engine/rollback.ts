@@ -1,3 +1,5 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { withoutPendingRequest } from '../cc-pending-requests.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../state/deployment-events-store.js';
@@ -625,6 +627,7 @@ export async function settleJournalAfterSuccess(
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
+      await orphanUntakenResumes.call(this, stackName, finalResources);
       // The deploy read no journal under this lock, and nothing wrote one
       // since: no orphan to act on and nothing to delete. The key's leftover
       // versions were purged from the start of the deploy (step 1b).
@@ -1013,5 +1016,55 @@ export async function writeRollbackJournalSegment(
         `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
     );
     return false;
+  }
+}
+
+/**
+ * go-to-k/cdkd#3252: settle, after the state record is saved, every completed
+ * abandoned Cloud Control CREATE this deploy offered to resume. One its
+ * CREATE took over, which the saved record now holds, loses its token. One
+ * not taken (a condition pruned it, the template changed what it sends, or
+ * its identifier is a name) is what the failed deploy left behind: a proven
+ * orphan, which the settle that follows acts on. Best-effort: a failed
+ * rewrite leaves the request pending, which keeps the journal for the next
+ * run to settle.
+ */
+async function orphanUntakenResumes(
+  this: DeployEngine,
+  stackName: string,
+  finalResources: Record<string, ResourceState>
+): Promise<void> {
+  if (this.resumedCreates.size === 0) return;
+  const untaken = new Map([...this.resumedCreates.values()].map((r) => [r.requestToken, r]));
+  this.resumedCreates = new Map();
+  try {
+    await this.stateBackend.rewriteRollbackJournalFailedOperations(
+      stackName,
+      this.stackRegion,
+      (op) => {
+        const resumed =
+          op.pendingCloudControlRequest === undefined
+            ? undefined
+            : untaken.get(op.pendingCloudControlRequest.requestToken);
+        if (resumed === undefined) return op;
+        if (resumed.gone || finalResources[op.logicalId]?.physicalId === resumed.identifier) {
+          return withoutPendingRequest(op);
+        }
+        // Offered only when its identifier was proven unique (cc-pending-requests.ts).
+        return {
+          ...withoutPendingRequest(op),
+          provisionedBy: 'cc-api',
+          physicalId: resumed.identifier,
+          physicalIdRecoveredFromError: true,
+          createdIdentifierUnique: true,
+        };
+      }
+    );
+  } catch (error) {
+    this.logger.warn(
+      safeMsg`Could not settle the resumed Cloud Control requests in the rollback journal of ` +
+        safeMsg`${displayStackName(stackName)} (${displaySafe(describeAwsFailure(error).summary)}); ` +
+        'the next run settles them.'
+    );
   }
 }

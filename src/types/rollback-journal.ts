@@ -467,6 +467,38 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
       `${where}.physicalIdRecoveredFromError is only valid on a CREATE (got changeType ${kind(o['changeType'])}).`
     );
   }
+  // go-to-k/cdkd#3252: COMPUTED by the deploy engine. The token is SENT to
+  // Cloud Control on the next run and a SUCCESS turns the op into a proven
+  // orphan, so it is refused anywhere but a CREATE that names no resource yet.
+  const pending: unknown = o['pendingCloudControlRequest'];
+  if (pending !== undefined) {
+    const p = pending as Record<string, unknown>;
+    if (
+      typeof pending !== 'object' ||
+      pending === null ||
+      Array.isArray(pending) ||
+      typeof p['requestToken'] !== 'string' ||
+      !/^[-A-Za-z0-9+/=]{1,128}$/.test(p['requestToken']) ||
+      typeof p['abandonedAt'] !== 'number' ||
+      !Number.isFinite(p['abandonedAt'])
+    ) {
+      fail(
+        'pendingCloudControlRequest',
+        pending,
+        'an object with a Cloud Control requestToken and a numeric abandonedAt when present'
+      );
+    }
+    if (
+      o['changeType'] !== 'CREATE' ||
+      o['physicalId'] !== undefined ||
+      o['physicalIdRecoveredFromError'] !== undefined
+    ) {
+      refuseMalformed(
+        shownStack,
+        `${where}.pendingCloudControlRequest is only valid on a CREATE with no physicalId.`
+      );
+    }
+  }
   // go-to-k/cdkd#4655: COMPUTED from the provider's read, on a proven orphan
   // only; it is compared, never sent to AWS.
   const identity: unknown = o['createdResourceIdentity'];
@@ -478,6 +510,19 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
       refuseMalformed(
         shownStack,
         `${where}.createdResourceIdentity is only valid on a CREATE carrying physicalIdRecoveredFromError.`
+      );
+    }
+  }
+  // go-to-k/cdkd#3252: COMPUTED by the settle; it lets a delete skip the
+  // identity proof, so it is refused anywhere but a Cloud Control proven orphan.
+  const unique: unknown = o['createdIdentifierUnique'];
+  if (unique !== undefined) {
+    if (typeof unique !== 'boolean')
+      fail('createdIdentifierUnique', unique, 'a boolean when present');
+    if (typeof o['physicalIdRecoveredFromError'] !== 'boolean' || o['provisionedBy'] !== 'cc-api') {
+      refuseMalformed(
+        shownStack,
+        `${where}.createdIdentifierUnique is only valid on a Cloud Control CREATE carrying physicalIdRecoveredFromError.`
       );
     }
   }

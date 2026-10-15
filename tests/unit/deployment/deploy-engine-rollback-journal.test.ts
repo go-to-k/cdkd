@@ -4,6 +4,7 @@ import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
@@ -14,6 +15,21 @@ import { ccAlreadyExistsError } from '../_aws-sdk-error.js';
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
   (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
 );
+
+// go-to-k/cdkd#3252: the takeover needs a UNIQUE identifier, judged from the
+// type's registry schema; these tests pin it (a minted `Id`).
+const ccSchema = vi.hoisted(() => ({
+  fields: ['Id'] as readonly string[] | undefined,
+  readOnly: new Set(['Id']) as ReadonlySet<string> | undefined,
+}));
+vi.mock('../../../src/provisioning/cc-import-identifier.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/cc-import-identifier.js')>()),
+  getPrimaryIdentifierFields: () => Promise.resolve(ccSchema.fields),
+}));
+vi.mock('../../../src/provisioning/read-only-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/read-only-properties.js')>()),
+  getTopLevelReadOnlyProperties: () => Promise.resolve(ccSchema.readOnly),
+}));
 
 vi.mock('../../../src/utils/logger.js', () => {
   const l = {
@@ -59,6 +75,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     popRollbackJournalSegment: ReturnType<typeof vi.fn>;
     reduceRollbackJournalToFailedOperations: ReturnType<typeof vi.fn>;
     dropRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
+    rewriteRollbackJournalFailedOperations: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -118,6 +135,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
+      rewriteRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
 
     const mockStateBackend = {
@@ -628,6 +646,427 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     expect(infoCalls.some((m) => m.includes('automatically rolled back'))).toBe(true);
   });
 
+  // go-to-k/cdkd#3252: the next deploy settles a journaled abandoned Cloud
+  // Control CREATE before it plans anything.
+  describe('a journaled abandoned Cloud Control CREATE (go-to-k/cdkd#3252)', () => {
+    const pendingJournal = () => ({
+      journalVersion: 1,
+      stackName,
+      region: 'us-east-1',
+      segments: [
+        {
+          timestamp: 1,
+          reason: 'auto-rollback-clean',
+          initialDeploy: false,
+          operations: [],
+          failedOperations: [
+            {
+              logicalId: 'B',
+              changeType: 'CREATE',
+              resourceType: 'AWS::S3::Bucket',
+              provisionedBy: 'cc-api',
+              attemptedProperties: {},
+              pendingCloudControlRequest: { requestToken: 'tok-3252', abandonedAt: 1 },
+            },
+          ],
+        },
+      ],
+    });
+
+    function engineWithReader(outcome: unknown) {
+      const changes = new Map([['A', makeChange('A')]]);
+      const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
+      const reader = {
+        resumeAbandonedRequest: vi.fn().mockResolvedValue(outcome),
+        buildResumeCommand: vi.fn().mockResolvedValue('aws cloudcontrol get-resource-request-status'),
+      };
+      (
+        engine as unknown as { providerRegistry: { getCloudControlProvider: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getCloudControlProvider.mockReturnValue(reader);
+      journal.loadRollbackJournal.mockResolvedValue(pendingJournal());
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      return { engine, reader, provider };
+    }
+
+    it('re-polls the token and rewrites the op into a proven orphan before deploying', async () => {
+      const { engine, reader, provider } = engineWithReader({
+        status: 'succeeded',
+        identifier: 'bucket-made',
+      });
+      // B has left the template, so nothing will take it over.
+      await engine.deploy(stackName, { Resources: { A: { Type: 'AWS::S3::Bucket', Properties: {} } } });
+      expect(reader.resumeAbandonedRequest).toHaveBeenCalledWith('tok-3252', 'B', 'AWS::S3::Bucket');
+      const rewrite = journal.rewriteRollbackJournalFailedOperations.mock.calls[0]![2] as (
+        op: unknown
+      ) => unknown;
+      expect(rewrite(pendingJournal().segments[0]!.failedOperations[0])).toEqual({
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        provisionedBy: 'cc-api',
+        attemptedProperties: {},
+        physicalId: 'bucket-made',
+        physicalIdRecoveredFromError: true,
+        // A minted `Id` (the pinned schema): deletable without an identity.
+        createdIdentifierUnique: true,
+      });
+      // Settled BEFORE the first create.
+      expect(journal.rewriteRollbackJournalFailedOperations.mock.invocationCallOrder[0]!).toBeLessThan(
+        provider.create.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it('refuses the deploy, creating nothing, while the request is still unknown', async () => {
+      const { engine, provider } = engineWithReader({
+        status: 'unresolved',
+        error: new Error('IN_PROGRESS'),
+      });
+      await expect(engine.deploy(stackName, template)).rejects.toThrow(/cdkd deploy of .* refused/);
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(journal.rewriteRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    });
+
+    it('a --dry-run deploy reads and writes nothing for it', async () => {
+      const changes = new Map([['A', makeChange('A')]]);
+      const engine = buildEngine({
+        changes,
+        deps: { A: [] },
+        currentEtag: 'e0',
+        engineOptions: { dryRun: true },
+      });
+      journal.loadRollbackJournal.mockResolvedValue(pendingJournal());
+      const registry = (
+        engine as unknown as { providerRegistry: { getCloudControlProvider: ReturnType<typeof vi.fn> } }
+      ).providerRegistry;
+      await engine.deploy(stackName, template);
+      expect(registry.getCloudControlProvider).not.toHaveBeenCalled();
+      expect(journal.rewriteRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    });
+
+    it("a first deploy's state gate refuses before the request is polled or the journal written", async () => {
+      const changes = new Map([['A', makeChange('A')]]);
+      const gateError = new Error('prefix gate refused');
+      const engine = buildEngine({
+        changes,
+        deps: { A: [] },
+        engineOptions: { onCurrentStateLoaded: () => Promise.reject(gateError) },
+      });
+      const reader = {
+        resumeAbandonedRequest: vi.fn(),
+        buildResumeCommand: vi.fn(),
+      };
+      (
+        engine as unknown as { providerRegistry: { getCloudControlProvider: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getCloudControlProvider.mockReturnValue(reader);
+      journal.loadRollbackJournal.mockResolvedValue(pendingJournal());
+      await expect(engine.deploy(stackName, template)).rejects.toThrow('prefix gate refused');
+      expect(reader.resumeAbandonedRequest).not.toHaveBeenCalled();
+      expect(journal.rewriteRollbackJournalFailedOperations).not.toHaveBeenCalled();
+    });
+
+    it('a stack with nothing pending reads the journal once and builds no Cloud Control reader', async () => {
+      const changes = new Map([['A', makeChange('A')]]);
+      const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
+      const registry = (
+        engine as unknown as { providerRegistry: { getCloudControlProvider: ReturnType<typeof vi.fn> } }
+      ).providerRegistry;
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      await engine.deploy(stackName, template);
+      expect(registry.getCloudControlProvider).not.toHaveBeenCalled();
+      // One read before the first create: the deploy-start read is the peek.
+      const firstCreate = provider.create.mock.invocationCallOrder[0]!;
+      expect(
+        journal.loadRollbackJournal.mock.invocationCallOrder.filter((n) => n < firstCreate)
+      ).toHaveLength(1);
+    });
+
+    // The resume: the deploy's CREATE of the logical id takes the resource the
+    // abandoned CREATE made instead of making another.
+    function resumingEngine(
+      attemptedProperties: Record<string, unknown>,
+      identifier = 'bucket-made',
+      currentResources?: Record<string, ResourceState>
+    ) {
+      const changes = new Map([['B', makeChange('B')]]);
+      const engine = buildEngine({
+        changes,
+        deps: { B: [] },
+        currentEtag: 'e0',
+        ...(currentResources && { currentResources }),
+      });
+      const registry = (
+        engine as unknown as {
+          providerRegistry: {
+            getCloudControlProvider: ReturnType<typeof vi.fn>;
+            getProviderFor: ReturnType<typeof vi.fn<() => { provider: unknown; provisionedBy?: string }>>;
+          };
+        }
+      ).providerRegistry;
+      const provider = registry.getProviderFor().provider as {
+        create: ReturnType<typeof vi.fn>;
+        resumeCreatedResource?: ReturnType<typeof vi.fn>;
+      };
+      provider.resumeCreatedResource = vi
+        .fn()
+        .mockResolvedValue({ physicalId: identifier, attributes: { Arn: 'arn:b' } });
+      registry.getProviderFor.mockReturnValue({ provider, provisionedBy: 'cc-api' });
+      registry.getCloudControlProvider.mockReturnValue({
+        resumeAbandonedRequest: vi
+          .fn()
+          .mockResolvedValue({ status: 'succeeded', identifier }),
+        buildResumeCommand: vi.fn(),
+      });
+      const j = pendingJournal();
+      Object.assign(j.segments[0]!.failedOperations[0]!, { attemptedProperties });
+      journal.loadRollbackJournal.mockResolvedValue(j);
+      const saveState = (
+        engine as unknown as { stateBackend: { saveState: ReturnType<typeof vi.fn> } }
+      ).stateBackend.saveState;
+      return { engine, provider, saveState };
+    }
+
+    const rewrites = (): Array<(op: unknown) => unknown> =>
+      journal.rewriteRollbackJournalFailedOperations.mock.calls.map(
+        (c) => c[2] as (op: unknown) => unknown
+      );
+
+    it('takes over the resource the abandoned CREATE made, recording it, and drops the token', async () => {
+      const { engine, provider, saveState } = resumingEngine({});
+      await engine.deploy(stackName, template);
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(provider.resumeCreatedResource).toHaveBeenCalledWith(
+        'B',
+        'AWS::S3::Bucket',
+        'bucket-made',
+        expect.anything(),
+        expect.objectContaining({ maskSecrets: expect.any(Function) })
+      );
+      const saved = saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.resources['B']).toMatchObject({
+        physicalId: 'bucket-made',
+        provisionedBy: 'cc-api',
+        attributes: { Arn: 'arn:b' },
+      });
+      // The token is dropped, leaving a plain failed CREATE.
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const dropped = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(dropped).toBeDefined();
+      expect(dropped).not.toHaveProperty('pendingCloudControlRequest');
+      expect(dropped).not.toHaveProperty('physicalIdRecoveredFromError');
+    });
+
+    it('a CREATE that would send another bag creates as usual; the made resource becomes an orphan', async () => {
+      const { engine, provider } = resumingEngine({ p: 'what-the-earlier-create-sent' });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const orphaned = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op);
+      expect(orphaned).toMatchObject({
+        physicalId: 'bucket-made',
+        physicalIdRecoveredFromError: true,
+        provisionedBy: 'cc-api',
+        // Offered only because its id was proven unique: deletable.
+        createdIdentifierUnique: true,
+      });
+    });
+
+    it('a resource that is gone is created as usual, and its request is dropped, not orphaned', async () => {
+      // e.g. a takeover a failed deploy's rollback then deleted: nothing is left in AWS.
+      const { engine, provider } = resumingEngine({});
+      provider.resumeCreatedResource!.mockRejectedValue(
+        Object.assign(new Error('gone'), { resumedResourceGone: true })
+      );
+      await engine.deploy(stackName, template);
+      expect(provider.create).toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const settled = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(settled).not.toHaveProperty('pendingCloudControlRequest');
+      expect(settled).not.toHaveProperty('physicalIdRecoveredFromError');
+      const warned = vi.mocked(getLogger().warn).mock.calls.map(String).join('\n');
+      expect(warned).not.toContain('left in AWS');
+    });
+
+    it('a read that fails for any other reason fails the CREATE, creating nothing beside it', async () => {
+      const { engine, provider } = resumingEngine({});
+      // A non-retryable failure (a throttle would be retried first).
+      provider.resumeCreatedResource!.mockRejectedValue(
+        Object.assign(new Error('Malformed identifier'), { name: 'ValidationException' })
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    it('an identifier that is a name the CREATE sends is not taken over (the name refusals decide)', async () => {
+      const { engine, provider } = resumingEngine({ BucketName: 'bucket-made' });
+      const changes = new Map([
+        ['B', { ...makeChange('B'), desiredProperties: { BucketName: 'bucket-made' } } as ResourceChange],
+      ]);
+      (
+        engine as unknown as { diffCalculator: { calculateDiff: ReturnType<typeof vi.fn> } }
+      ).diffCalculator.calculateDiff.mockResolvedValue(changes);
+      await engine
+        .deploy(stackName, {
+          Resources: { B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-made' } } },
+        })
+        .catch(() => undefined);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+
+    it('a declined name takeover says what to do, and the CREATE that collides fails without looping on the request', async () => {
+      const { engine, provider } = resumingEngine({}, `${stackName}-B`);
+      provider.create.mockRejectedValue(
+        ccAlreadyExistsError(`CREATE failed for B: ${stackName}-B already exists`, 'AWS::S3::Bucket')
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const warned = vi.mocked(getLogger().warn).mock.calls.map(String).join('\n');
+      expect(warned).toContain('cdkd cannot prove its id is unique (it may be a name');
+      expect(warned).toContain('Adopt it with cdkd import');
+      // The request is settled now (a proven orphan), so the next run does
+      // not re-poll it and repeat this.
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const settled = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(settled).toMatchObject({ physicalId: `${stackName}-B`, physicalIdRecoveredFromError: true });
+      expect(settled).not.toHaveProperty('pendingCloudControlRequest');
+      expect(settled).not.toHaveProperty('createdIdentifierUnique');
+    });
+
+    it('an identifier that is the name cdkd generates for the resource is not taken over', async () => {
+      // `{stackName}-{logicalId}`: what cdkd generates for an unnamed resource,
+      // and what Cloud Control returns as a name-keyed type's identifier.
+      const { engine, provider } = resumingEngine({}, `${stackName}-B`);
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      expect(rewrites().map((r) => r(op)).find((r) => r !== op)).toMatchObject({
+        physicalId: `${stackName}-B`,
+        physicalIdRecoveredFromError: true,
+      });
+    });
+
+    it.each([
+      ['an ARN embedding it', 'arn:aws:s3:::my-bucket'],
+      ['a composite embedding it', 'parent-id|my-bucket'],
+    ])('an identifier that is %s, of a name the CREATE sends, is not taken over', async (_n, id) => {
+      const { engine, provider } = resumingEngine({ BucketName: 'my-bucket' }, id);
+      const changes = new Map([
+        ['B', { ...makeChange('B'), desiredProperties: { BucketName: 'my-bucket' } } as ResourceChange],
+      ]);
+      (
+        engine as unknown as { diffCalculator: { calculateDiff: ReturnType<typeof vi.fn> } }
+      ).diffCalculator.calculateDiff.mockResolvedValue(changes);
+      await engine.deploy(stackName, {
+        Resources: { B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'my-bucket' } } },
+      });
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+
+    it('an ARN of AWS-minted parts is still taken over (the split declines only names)', async () => {
+      const { engine, provider } = resumingEngine(
+        {},
+        'arn:aws:ec2:us-east-1:123456789012:prefix-list/pl-0abc1234def567890'
+      );
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).toHaveBeenCalled();
+      expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    it('an identifier another state record already holds is not taken over (no second owner)', async () => {
+      const { engine, provider } = resumingEngine({}, 'bucket-made', {
+        Other: {
+          physicalId: 'bucket-made',
+          resourceType: 'AWS::S3::Bucket',
+          properties: {},
+          attributes: {},
+        } as ResourceState,
+      });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      expect(rewrites().map((r) => r(op)).find((r) => r !== op)).toMatchObject({
+        physicalId: 'bucket-made',
+        physicalIdRecoveredFromError: true,
+      });
+    });
+
+    it('a logical id whose type changed is not offered for takeover', async () => {
+      const { engine, provider } = resumingEngine({});
+      await engine.deploy(stackName, {
+        Resources: { B: { Type: 'AWS::SQS::Queue', Properties: {} } },
+      });
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+    });
+
+    it("a failed settle of the deploy's resumes is warned about, and the deploy still succeeds", async () => {
+      const { engine } = resumingEngine({ p: 'changed' });
+      journal.rewriteRollbackJournalFailedOperations.mockRejectedValue(new Error('S3 down'));
+      await expect(engine.deploy(stackName, template)).resolves.toBeDefined();
+      const warned = vi.mocked(getLogger().warn).mock.calls.map(String).join('\n');
+      expect(warned).toContain('Could not settle the resumed Cloud Control requests');
+    });
+
+    it('a journal re-read that fails after the settle is advisory, as the first read is', async () => {
+      const { engine } = resumingEngine({});
+      const j = pendingJournal();
+      journal.loadRollbackJournal
+        .mockResolvedValueOnce(j)
+        .mockRejectedValueOnce(new Error('S3 down'))
+        .mockResolvedValue(null);
+      // The orphan settle (a cancelled request) rewrites, so 1b re-reads.
+      (
+        engine as unknown as { providerRegistry: { getCloudControlProvider: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getCloudControlProvider.mockReturnValue({
+        resumeAbandonedRequest: vi.fn().mockResolvedValue({ status: 'cancelled' }),
+        buildResumeCommand: vi.fn(),
+      });
+      await expect(engine.deploy(stackName, template)).resolves.toBeDefined();
+    });
+
+    it('a journaled bag carrying a secret mask is never offered for takeover', async () => {
+      const { engine, provider } = resumingEngine({ Secret: '****' });
+      const { SECRET_MASK } = await import('../../../src/deployment/secret-redaction.js');
+      const j = pendingJournal();
+      Object.assign(j.segments[0]!.failedOperations[0]!, { attemptedProperties: { Secret: SECRET_MASK } });
+      journal.loadRollbackJournal.mockResolvedValue(j);
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      const op = j.segments[0]!.failedOperations[0]!;
+      expect(rewrites().map((r) => r(op)).find((r) => r !== op)).toMatchObject({
+        physicalId: 'bucket-made',
+        physicalIdRecoveredFromError: true,
+      });
+    });
+
+    it('a CREATE that goes through an SDK provider now is not taken over', async () => {
+      const { engine, provider } = resumingEngine({});
+      (
+        engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } }
+      ).providerRegistry.getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+  });
+
   it('next deploy keeps the generic note for a journal that still has completed ops', async () => {
     const changes = new Map([['A', makeChange('A')]]);
     const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
@@ -1012,6 +1451,103 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(op.provisionedBy).toBe('sdk');
       expect(op.deletionPolicy).toBe('Retain');
       expect(op.attemptedProperties).toEqual({ p: 'new' });
+    });
+
+    // go-to-k/cdkd#3252: an abandoned Cloud Control CREATE may still make its
+    // resource; its token is journaled for the next run to re-poll.
+    it('journals the request token of an abandoned Cloud Control CREATE, on the cc-api route', async () => {
+      const op = await journaledB(
+        // The marker `CloudControlWaitAbandonedError`'s constructor stamps
+        // (the provider module is mocked in this file).
+        markWaitAbandoned(
+          new ProvisioningError('CREATE of B: cdkd stopped waiting', 'AWS::S3::Bucket', 'B', 'b-maybe'),
+          { requestToken: 'tok-3252', operation: 'CREATE' }
+        ),
+        { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Retain' } } }
+      );
+      expect(op.pendingCloudControlRequest).toEqual({
+        requestToken: 'tok-3252',
+        abandonedAt: expect.any(Number),
+      });
+      expect(op.provisionedBy).toBe('cc-api');
+      expect(op.deletionPolicy).toBe('Retain');
+      // The last-seen identifier (the error's physicalId) is message-only:
+      // nothing is recorded as made.
+      expect(op.physicalId).toBeUndefined();
+      expect(op.physicalIdRecoveredFromError).toBeUndefined();
+    });
+
+    it('an abandoned CREATE the provider also proved made its resource journals the proof, no token', async () => {
+      const op = await journaledB(
+        markCreatedBeforeFailure(
+          markWaitAbandoned(new ProvisioningError('x', 'AWS::S3::Bucket', 'B'), {
+            requestToken: 'tok-3252',
+            operation: 'CREATE',
+          }),
+          'B',
+          'AWS::S3::Bucket',
+          'b-1'
+        )
+      );
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+      expect(op.pendingCloudControlRequest).toBeUndefined();
+    });
+
+    it('a template with no DeletionPolicy journals none beside the token, and an odd token is not journaled', async () => {
+      const op = await journaledB(
+        markWaitAbandoned(new ProvisioningError('x', 'AWS::S3::Bucket', 'B'), {
+          requestToken: 'tok-3252',
+          operation: 'CREATE',
+        })
+      );
+      expect(op.pendingCloudControlRequest?.requestToken).toBe('tok-3252');
+      expect(op.deletionPolicy).toBeUndefined();
+      const odd = await journaledB(
+        markWaitAbandoned(new ProvisioningError('x', 'AWS::S3::Bucket', 'B'), {
+          requestToken: 'not a token',
+          operation: 'CREATE',
+        })
+      );
+      expect(odd.pendingCloudControlRequest).toBeUndefined();
+    });
+
+    it('a CREATE of a logical id state already records journals no token: a resource names it', async () => {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({
+        changes,
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: {
+          B: { physicalId: 'phys-B-old', resourceType: 'AWS::S3::Bucket', properties: {} } as ResourceState,
+        },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockRejectedValue(
+        markWaitAbandoned(new ProvisioningError('x', 'AWS::S3::Bucket', 'B'), {
+          requestToken: 'tok-3252',
+          operation: 'CREATE',
+        })
+      );
+      await expect(engine.deploy(stackName, template)).rejects.toThrow();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const op = seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B');
+      expect(op.physicalId).toBe('phys-B-old');
+      expect(op).not.toHaveProperty('pendingCloudControlRequest');
+    });
+
+    it('control: an abandoned DELETE-shaped wait carries no CREATE token', async () => {
+      const op = await journaledB(
+        markWaitAbandoned(new ProvisioningError('x', 'AWS::S3::Bucket', 'B'), {
+          requestToken: 'tok-del',
+          operation: 'DELETE',
+        })
+      );
+      expect(op.pendingCloudControlRequest).toBeUndefined();
     });
 
     // go-to-k/cdkd#4757: B's first attempt made its bucket and failed

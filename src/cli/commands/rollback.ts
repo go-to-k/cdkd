@@ -20,6 +20,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { resolvePendingCloudControlRequests } from '../../deployment/cc-pending-requests.js';
 import { AwsClients, runWithStackAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
@@ -877,6 +878,24 @@ export async function rollbackCommand(
         // error telling the user to upgrade cdkd.
         const stateData = await setup.stateBackend.getState(stackName, region);
         let journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
+        // go-to-k/cdkd#3252: settle the Cloud Control CREATEs a failed deploy
+        // stopped waiting for before the journal is planned: one that made its
+        // resource becomes a proven orphan `--revert-failed` deletes, one
+        // still unknown refuses the rollback. Re-read only when it rewrote.
+        if (
+          await resolvePendingCloudControlRequests({
+            journal: setup.stateBackend,
+            loaded: journal,
+            reader: () => providerRegistry.getCloudControlProvider(),
+            stackName,
+            region,
+            command: 'rollback',
+            logger,
+            stateResources: stateData?.state.resources,
+          })
+        ) {
+          journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
+        }
         // Issue #3754: `nested-pending-parent` records, judged BEFORE the plan and
         // the prompt, and written only after the confirmation (below).
         const orphanedPending = journal

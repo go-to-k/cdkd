@@ -70,6 +70,12 @@ export interface JournaledOrphans {
    * `newerOperations` and this run's `nested-pending-parent` segments.
    */
   deployLogicalIds?: Set<string>;
+  /**
+   * go-to-k/cdkd#3252: failed CREATEs still carrying an unsettled abandoned
+   * Cloud Control request. They are no orphan, but the journal is their only
+   * record, so a settle that finds one keeps the journal.
+   */
+  pendingRequests?: number;
 }
 
 const NONE: JournaledOrphans = { segments: [], count: 0 };
@@ -155,6 +161,9 @@ export async function loadJournaledOrphans(
   }
   const out: SegmentOrphans[] = [];
   let count = 0;
+  const pendingRequests = segments
+    .flatMap((segment) => segment.failedOperations ?? [])
+    .filter((op) => op.pendingCloudControlRequest !== undefined).length;
   for (let s = segments.length - 1; s >= 0; s--) {
     const segment = segments[s]!;
     if (segment.reason === NESTED_PENDING_PARENT_REASON) continue;
@@ -167,7 +176,12 @@ export async function loadJournaledOrphans(
     out.push({ segment, ops, ...(companions.length > 0 && { companions }) });
     count += ops.length;
   }
-  return { segments: out, count, deployLogicalIds };
+  return {
+    segments: out,
+    count,
+    deployLogicalIds,
+    ...(pendingRequests > 0 && { pendingRequests }),
+  };
 }
 
 /** One listing line per orphan, its physical id masked as a replay line masks it. */
@@ -480,7 +494,35 @@ export async function settleJournaledOrphansOnSuccess(args: {
     await markSuperseded(stateBackend, stackName, region, newerIds);
     return { unaddressed: 1, keepJournal: true };
   }
-  if (orphans.count === 0) return { unaddressed: 0, keepJournal: false };
+  // go-to-k/cdkd#3252: an unsettled abandoned Cloud Control request keeps the
+  // journal, its only record (a deploy whose start could not read it).
+  const pendingKept = (orphans.pendingRequests ?? 0) > 0;
+  // Reduced to those requests like any kept journal: the deploy moved the
+  // baseline, so every completed op goes. Returns false when the reduce
+  // failed (the deploy's ids are then marked superseded instead).
+  const keepPendingOnly = async (): Promise<boolean> => {
+    try {
+      await stateBackend.reduceRollbackJournalToFailedOperations(
+        stackName,
+        region,
+        (op) => op.pendingCloudControlRequest !== undefined,
+        newerIds,
+        () => false
+      );
+      return true;
+    } catch (err) {
+      logger.warn(
+        safeMsg`Failed to reduce the rollback journal of stack ${stack} to its unsettled Cloud ` +
+          safeMsg`Control requests: ${errorDetail(err)}. The whole journal is kept.`
+      );
+      await markSuperseded(stateBackend, stackName, region, newerIds);
+      return false;
+    }
+  };
+  if (orphans.count === 0) {
+    if (pendingKept) await keepPendingOnly();
+    return { unaddressed: 0, keepJournal: pendingKept };
+  }
   const all = orphans.segments.flatMap(({ segment, ops }) => ops.map((op) => ({ segment, op })));
   let kept: typeof all = all;
   // go-to-k/cdkd#4633: only an orphan whose delete was tried and failed is
@@ -590,9 +632,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
           }
         };
   if (kept.length === 0) {
+    // The kept journal must not still read the cleared entries as proven.
+    if (pendingKept && !(await keepPendingOnly())) await stripCleared?.();
     return {
       unaddressed: skipped + leftInPlace,
-      keepJournal: false,
+      keepJournal: pendingKept,
       ...(stripCleared && { stripCleared }),
     };
   }
@@ -605,7 +649,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
     stateBackend.reduceRollbackJournalToFailedOperations(
       stackName,
       region,
-      (op, segment) => isHandledOrphan(kept, segment, op),
+      (op, segment) =>
+        isHandledOrphan(kept, segment, op) || op.pendingCloudControlRequest !== undefined,
       supersededIds,
       (op, segment) => isHandledOrphan(demoted, segment, op)
     );

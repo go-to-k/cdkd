@@ -49,6 +49,18 @@
  */
 
 const WAIT_ABANDONED_MARKER = Symbol.for('cdkd.waitAbandoned');
+const ABANDONED_REQUEST = Symbol.for('cdkd.waitAbandoned.request');
+
+/**
+ * The Cloud Control request an abandoned wait was polling (go-to-k/cdkd#3252).
+ * The deploy engine journals a CREATE's token so the next deploy, destroy or
+ * rollback can re-poll it (`src/deployment/cc-pending-requests.ts`); it reads
+ * it through {@link abandonedRequestOf} because it cannot import the provider.
+ */
+export interface AbandonedCloudControlRequest {
+  requestToken: string;
+  operation: 'CREATE' | 'UPDATE' | 'DELETE';
+}
 
 /**
  * The `.cause` walk depth, the same bound `retryable-errors/marks.ts` uses. cdkd
@@ -66,7 +78,10 @@ const MAX_CAUSE_CHAIN_DEPTH = 5;
  * `TypeError` raised here would REPLACE the error the caller meant to raise.
  * Both rules are `markNonRetryable`'s, for its reasons.
  */
-export function markWaitAbandoned<E extends Error>(error: E): E {
+export function markWaitAbandoned<E extends Error>(
+  error: E,
+  request?: AbandonedCloudControlRequest
+): E {
   if (!Object.isExtensible(error)) return error;
   Object.defineProperty(error, WAIT_ABANDONED_MARKER, {
     value: true,
@@ -74,6 +89,14 @@ export function markWaitAbandoned<E extends Error>(error: E): E {
     configurable: true,
     writable: false,
   });
+  if (request !== undefined) {
+    Object.defineProperty(error, ABANDONED_REQUEST, {
+      value: Object.freeze({ ...request }),
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+  }
   return error;
 }
 
@@ -93,4 +116,19 @@ export function isWaitAbandonedError(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * The Cloud Control request carried by the nearest marked error on the bounded
+ * `.cause` chain, when {@link markWaitAbandoned} was given one. A wait that
+ * was not a Cloud Control poll (an EC2 volume delete) carries none.
+ */
+export function abandonedRequestOf(error: unknown): AbandonedCloudControlRequest | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
+    const request = (current as Record<symbol, unknown>)[ABANDONED_REQUEST];
+    if (request !== undefined) return request as AbandonedCloudControlRequest;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
 }

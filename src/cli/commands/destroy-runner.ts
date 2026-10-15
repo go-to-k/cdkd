@@ -46,6 +46,12 @@ import {
 import type { LockManager } from '../../state/lock-manager.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { acquireStackLock } from './stack-lock-guard.js';
+import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
+import {
+  pendingRequestCount,
+  resolvePendingCloudControlRequests,
+} from '../../deployment/cc-pending-requests.js';
+import type { RollbackJournal } from '../../types/rollback-journal.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
 import type { CrossPrefixSource } from './cross-prefix-gate.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -112,6 +118,7 @@ import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
 import { destroyStackRecordsView, withStackRecords } from '../../deployment/stack-records-scope.js';
 import {
   deleteJournaledOrphans,
+  dropFailedCommands,
   isHandledOrphan,
   journaledOrphanLines,
   loadJournaledOrphans,
@@ -120,7 +127,7 @@ import {
   type JournaledOrphans,
 } from '../../deployment/rollback-executor/journaled-orphans.js';
 import { producerRegionsFromState } from '../../deployment/rollback-executor.js';
-import { orphanDeleteNeedsIdentity } from '../../deployment/rollback-executor/orphan-identity.js';
+import { orphanNeedsIdentity } from '../../deployment/rollback-executor/orphan-identity.js';
 import {
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
@@ -588,7 +595,7 @@ export function countProtectedJournaledOrphans(
   for (const { ops } of orphans.segments) {
     for (const op of ops) {
       if (op.physicalIdRecoveredFromError !== true || op.deletionPolicy === 'Retain') continue;
-      if (orphanDeleteNeedsIdentity(op.resourceType) && !op.createdResourceIdentity) continue;
+      if (orphanNeedsIdentity(op) && !op.createdResourceIdentity) continue;
       const locator = perType(PROTECTION_PROPERTY_BY_TYPE, op.resourceType);
       if (
         locator &&
@@ -854,8 +861,85 @@ async function destroyStackInRegion(
   // is not empty: the fast path below would sweep it with no confirmation.
   // Read BELOW the orphans-container guards (it reads `state.orphans`) and
   // ABOVE the divergent-region refusal, which counts them: they reach AWS.
+  // go-to-k/cdkd#3252: a Cloud Control CREATE a failed deploy stopped waiting
+  // for is settled first, under the lock: one that made its resource becomes a
+  // journaled orphan the read below counts and deletes, and one still unknown
+  // refuses the destroy, which would otherwise sweep the journal holding the
+  // request's only record. The provider is built HERE, inside the stack's AWS
+  // scope, so a cross-region stack's request is read in its own region.
+  // The journal is read ONCE here: the settle peeks at that read, and the
+  // orphan read below replays it unless the settle rewrote the journal.
+  let journalAtEntry: { journal: RollbackJournal | null } | { error: unknown };
+  try {
+    journalAtEntry = {
+      journal: await ctx.stateBackend.loadRollbackJournal(stackName, regionForState),
+    };
+  } catch (error) {
+    journalAtEntry = { error };
+  }
+  // A record whose body names another region than its key: the request may
+  // live in either, and a token read in the wrong one answers "not found",
+  // which would drop it. Refuse rather than guess.
+  if (
+    ctx.divergentBodyRegion !== undefined &&
+    'journal' in journalAtEntry &&
+    pendingRequestCount(journalAtEntry.journal) > 0
+  ) {
+    const ids = (journalAtEntry.journal?.segments ?? [])
+      .flatMap((segment) => segment.failedOperations ?? [])
+      .filter((op) => op.pendingCloudControlRequest !== undefined)
+      .map((op) => op.logicalId);
+    const drop = dropFailedCommands(stackName, regionForState, ids);
+    throw new CdkdError(
+      `Stack ${displayStackName(stackName)}'s state record names another region than its key, and its ` +
+        `rollback journal records a Cloud Control CREATE a failed deploy stopped waiting for. cdkd cannot ` +
+        `tell which region to check it in. Nothing was deleted. Check the request in each region with ` +
+        `aws cloudcontrol get-resource-request-status --request-token <token> --region <region> (the ` +
+        `token is in the stack's rollback-journal.json), reconcile what it made by hand, then drop the ` +
+        `entry and re-run:` +
+        (drop === undefined ? '' : drop.commands.map((c) => `\n  ${c}`).join('')),
+      'DESTROY_CC_PENDING_REQUEST_DIVERGENT_REGION'
+    );
+  }
+  const journalRewritten = await resolvePendingCloudControlRequests({
+    journal: ctx.stateBackend,
+    loaded: 'journal' in journalAtEntry ? journalAtEntry.journal : null,
+    reader: () => new CloudControlProvider(),
+    stackName,
+    region: regionForState,
+    command: 'destroy',
+    logger,
+    stateResources: state.resources,
+    underLock: async (settle) => {
+      const held = await acquireStackLock({
+        ...stackLockBase,
+        onFirstSignal: () => {
+          process.stderr.write(
+            `\nInterrupt received - finishing the Cloud Control request check for ` +
+              `${displayStackName(stackName)} (press Ctrl-C again to force-quit)\n`
+          );
+        },
+      });
+      try {
+        return await settle();
+      } finally {
+        await held.release({
+          failureMessage:
+            'Failed to release lock after settling an abandoned Cloud Control request',
+        });
+      }
+    },
+  });
+  const entryRead = journalAtEntry;
   const journaledOrphans = await loadJournaledOrphans(
-    ctx.stateBackend,
+    journalRewritten
+      ? ctx.stateBackend
+      : {
+          loadRollbackJournal: () =>
+            'journal' in entryRead
+              ? Promise.resolve(entryRead.journal)
+              : Promise.reject(entryRead.error as Error),
+        },
     stackName,
     regionForState,
     state.orphans,
@@ -1003,16 +1087,16 @@ async function destroyStackInRegion(
       // go-to-k/cdkd#4584: the journal too, under the lock. A deploy that
       // failed between the first read and this lock may have journaled a
       // proven orphan, and `deleteState` below sweeps its only record.
-      const recheckJournaled = (
-        await loadJournaledOrphans(
-          ctx.stateBackend,
-          stackName,
-          regionForState,
-          recheck?.state.orphans,
-          // Warned once: silent only when the entry read already warned.
-          journaledOrphans.unreadable === true ? { warn: () => undefined } : logger
-        )
-      ).count;
+      const recheckRead = await loadJournaledOrphans(
+        ctx.stateBackend,
+        stackName,
+        regionForState,
+        recheck?.state.orphans,
+        // Warned once: silent only when the entry read already warned.
+        journaledOrphans.unreadable === true ? { warn: () => undefined } : logger
+      );
+      const recheckJournaled = recheckRead.count;
+      refuseNewPendingRequests(recheckRead, stackName, regionForState);
       if (recheckJournaled > 0) {
         throw new Error(
           `Stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) was empty when this run started but ` +
@@ -1765,6 +1849,7 @@ async function destroyStackInRegion(
           `Nothing was deleted; re-run the destroy once it can be read.`
       );
     }
+    refuseNewPendingRequests(journaledUnderLock, stackName, regionForState);
     if (!sameJournaledOrphans(journaledUnderLock, journaledOrphans)) {
       throw new Error(
         `The rollback journal of stack ${displayStackName(stackName)} (${displaySafe(regionForState, { asciiOnly: true })}) ` +
@@ -3041,4 +3126,23 @@ export async function scanActiveConsumers(
     })
   );
   return results.filter((r) => r !== null).flat();
+}
+
+/**
+ * go-to-k/cdkd#3252: a re-read under the destroy's lock that finds an
+ * unsettled abandoned Cloud Control CREATE refuses. The settle at the top of
+ * the run left none, so a deploy failing since journaled it, and this destroy
+ * would sweep the journal holding its only record.
+ */
+function refuseNewPendingRequests(
+  read: { pendingRequests?: number },
+  stackName: string,
+  region: string
+): void {
+  if ((read.pendingRequests ?? 0) === 0) return;
+  throw new Error(
+    `The rollback journal of stack ${displayStackName(stackName)} (${displaySafe(region, { asciiOnly: true })}) ` +
+      `now records a Cloud Control CREATE a failed deploy stopped waiting for — another cdkd process ` +
+      `wrote to it. Nothing was deleted; re-run the destroy, which checks how that CREATE ended first.`
+  );
 }

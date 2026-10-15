@@ -71,7 +71,7 @@ import { withProducerRegions } from '../producer-regions-scope.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../recreate-target-promotion.js';
 import { refuseStatefulReplacedReaders } from '../recreate-target-readers.js';
 import { markNonRetryable } from '../retryable-errors.js';
-import { hasMaskableValues } from '../secret-redaction.js';
+import { carriesSecretMask, hasMaskableValues } from '../secret-redaction.js';
 import {
   findNestedStackTypeChanges,
   renderNestedStackTypeChangeRefusal,
@@ -92,6 +92,7 @@ import { isKnownTokenFreeState } from '../../state/token-free-state.js';
 import { provenanceBaselineOf } from './provenance-capture.js';
 import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js';
 import type { CrossStackRead } from '../intrinsic-resolver/context.js';
+import { resolvePendingCloudControlRequests } from '../cc-pending-requests.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -341,13 +342,77 @@ export async function doDeployWithPrefetch(
     }
     this.absentJournalVersionPurge = undefined;
 
+    // 1b-pre. go-to-k/cdkd#3252: settle the Cloud Control CREATEs an earlier
+    // run stopped waiting for, before anything reads the journal or plans. A
+    // create that made its resource becomes a proven orphan; one still
+    // unknown refuses the deploy (a re-create beside it would duplicate it).
+    // Under the lock; after a first deploy's state gate, which must refuse
+    // before anything is written. It reads the journal step 1b reads, so a
+    // stack with nothing pending pays no extra read; the read error, if any,
+    // is 1b's to swallow.
+    let journalAtStart: Awaited<ReturnType<typeof this.stateBackend.loadRollbackJournal>> = null;
+    let journalReadError: unknown;
+    try {
+      journalAtStart = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+    } catch (error) {
+      journalReadError = error ?? new Error('unreadable rollback journal');
+    }
+    if (
+      !this.options.dryRun &&
+      (await resolvePendingCloudControlRequests({
+        journal: this.stateBackend,
+        loaded: journalAtStart,
+        reader: () => this.providerRegistry.getCloudControlProvider(),
+        stackName,
+        region: this.stackRegion,
+        command: 'deploy',
+        logger: this.logger,
+        stateResources: currentState.resources,
+        // A CREATE that completed is RESUMED when the template still declares
+        // its logical id with the type and the journal holds the bag it sent
+        // (no secret mask: the create path compares that bag with what it
+        // would send now, create.ts). Anything else becomes a proven orphan.
+        resume: (op, identifier) => {
+          const attempted = op.attemptedProperties;
+          if (
+            template.Resources?.[op.logicalId]?.Type !== op.resourceType ||
+            attempted === undefined ||
+            carriesSecretMask(attempted) ||
+            op.pendingCloudControlRequest === undefined ||
+            // Another record already holds it (a `cdkd import` under another
+            // logical id): taking it over would give it two owners.
+            Object.values(currentState.resources).some(
+              (r) => r.physicalId === identifier && r.resourceType === op.resourceType
+            )
+          ) {
+            return false;
+          }
+          this.resumedCreates.set(op.logicalId, {
+            requestToken: op.pendingCloudControlRequest.requestToken,
+            identifier,
+            resourceType: op.resourceType,
+            attemptedProperties: attempted,
+          });
+          return true;
+        },
+        ...(gate !== undefined && { beforeSettle: () => gate }),
+      }))
+    ) {
+      try {
+        journalAtStart = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+      } catch (error) {
+        journalReadError = error ?? new Error('unreadable rollback journal');
+      }
+    }
+
     // 1b. If a rollback journal exists, a previous deploy failed / was
     // interrupted and has not yet been reverted (issue #1183). Note that
     // `cdkd rollback` can revert it; the deploy proceeds (fix-forward is
     // still supported). Best-effort — a journal read failure must not
     // block the deploy.
     try {
-      const loaded = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+      if (journalReadError !== undefined) throw journalReadError;
+      const loaded = journalAtStart;
       // No journal: purge what an earlier delete's unfinished purge left, now,
       // beside the deploy, so the success settle need not touch the key.
       if (loaded === null && !this.options.parentStackInfo && !this.options.dryRun) {

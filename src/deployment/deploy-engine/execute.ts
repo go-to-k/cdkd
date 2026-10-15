@@ -36,14 +36,12 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import { abandonedRequestOf } from '../../provisioning/wait-abandoned.js';
 import {
   createdBeforeFailure,
   createdResourceIdentityBeforeFailure,
 } from '../../provisioning/auxiliary-failure.js';
-import {
-  orphanDeleteNeedsIdentity,
-  readResourceIdentity,
-} from '../rollback-executor/orphan-identity.js';
+import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
@@ -402,6 +400,23 @@ export async function executeDeployment(
             replacementCreatedId !== replaced.physicalId
               ? { record: replaced, createdId: replacementCreatedId }
               : undefined;
+          // go-to-k/cdkd#3252: a Cloud Control CREATE whose wait was
+          // abandoned may still make its resource. Its token is journaled so
+          // the next deploy, destroy or rollback re-polls it, with the policy
+          // a resource it turns out to have made is deleted under.
+          const abandoned =
+            change.changeType === 'CREATE' &&
+            statePhysicalId === undefined &&
+            createdId === undefined
+              ? abandonedRequestOf(provisionError)
+              : undefined;
+          // The parser refuses any other token shape, and an unreadable
+          // journal would cost every entry, so an odd one is not journaled.
+          const pendingRequest =
+            abandoned?.operation === 'CREATE' &&
+            /^[-A-Za-z0-9+/=]{1,128}$/.test(abandoned.requestToken)
+              ? { requestToken: abandoned.requestToken, abandonedAt: Date.now() }
+              : undefined;
           const failedOp: FailedOperation = {
             logicalId,
             changeType: change.changeType as 'CREATE' | 'UPDATE',
@@ -409,7 +424,15 @@ export async function executeDeployment(
             provisionedBy:
               createdId !== undefined
                 ? 'sdk'
-                : (newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy),
+                : pendingRequest !== undefined
+                  ? 'cc-api'
+                  : (newResources[logicalId]?.provisionedBy ?? previousState?.provisionedBy),
+            ...(pendingRequest !== undefined && {
+              pendingCloudControlRequest: pendingRequest,
+              deletionPolicy: journaledOrphanPolicy(
+                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+              ),
+            }),
             ...(previousState && { previousState }),
             physicalId: createdId ?? statePhysicalId,
             ...(createdId !== undefined && {
@@ -483,7 +506,7 @@ export async function executeDeployment(
           if (
             orphanOp?.physicalId !== undefined &&
             orphanOp.deletionPolicy !== 'Retain' &&
-            orphanDeleteNeedsIdentity(orphanOp.resourceType)
+            orphanNeedsIdentity(orphanOp)
           ) {
             const markedIdentity = createdResourceIdentityBeforeFailure(
               provisionError,

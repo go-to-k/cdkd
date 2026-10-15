@@ -5,7 +5,9 @@ import {
   CONTENT_COMPARED_DELETE_TYPES,
   RESOURCE_IDENTITY_TIMEOUT_MS,
   UNIQUE_PHYSICAL_ID_TYPES,
+  createdResourceStillThere,
   orphanDeleteNeedsIdentity,
+  orphanNeedsIdentity,
   readResourceIdentity,
 } from '../../../src/deployment/rollback-executor/orphan-identity.js';
 import type { RollbackExecutorContext } from '../../../src/deployment/rollback-executor.js';
@@ -275,5 +277,48 @@ describe('readResourceIdentity (go-to-k/cdkd#4655)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// go-to-k/cdkd#3252: a Cloud Control proven orphan is judged by its own proof
+// (`createdIdentifierUnique`), never by the SDK-proven type tables.
+describe('orphanNeedsIdentity on the Cloud Control route (go-to-k/cdkd#3252)', () => {
+  const unique = [...UNIQUE_PHYSICAL_ID_TYPES][0]!;
+  const contentCompared = [...CONTENT_COMPARED_DELETE_TYPES][0]!;
+
+  it('a unique identifier needs no identity: deletable', () => {
+    expect(
+      orphanNeedsIdentity({ resourceType: 'AWS::EC2::PrefixList', provisionedBy: 'cc-api', createdIdentifierUnique: true })
+    ).toBe(false);
+  });
+
+  it('a name identifier needs one: warned about, never deleted unproven', () => {
+    expect(orphanNeedsIdentity({ resourceType: 'AWS::Logs::LogGroup', provisionedBy: 'cc-api' })).toBe(true);
+  });
+
+  it.each([unique, contentCompared])(
+    'the SDK exemption for %s does not carry over to a Cloud Control orphan',
+    (resourceType) => {
+      expect(orphanDeleteNeedsIdentity(resourceType)).toBe(false);
+      expect(orphanNeedsIdentity({ resourceType, provisionedBy: 'cc-api' })).toBe(true);
+      expect(orphanNeedsIdentity({ resourceType, provisionedBy: 'sdk' })).toBe(false);
+    }
+  );
+
+  it('createdResourceStillThere: proven for a unique Cloud Control orphan, unproven without the flag', async () => {
+    const ctx = {
+      providerRegistry: { getProviderFor: () => ({ provider: {}, provisionedBy: 'cc-api' }) } as never,
+      region: REGION,
+    };
+    const op = {
+      logicalId: 'P',
+      changeType: 'CREATE' as const,
+      resourceType: 'AWS::EC2::PrefixList',
+      provisionedBy: 'cc-api' as const,
+      physicalId: 'pl-0abc',
+      physicalIdRecoveredFromError: true,
+    };
+    expect(await createdResourceStillThere({ ...op, createdIdentifierUnique: true }, ctx)).toBe('proven');
+    expect(await createdResourceStillThere(op, ctx)).toBe('unproven');
   });
 });

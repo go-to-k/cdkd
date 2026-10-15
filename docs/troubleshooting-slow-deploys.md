@@ -274,8 +274,10 @@ custom-named SQS queue can appear to hang for up to about 11 minutes.
 CREATE of Dbwriter9B286E50 was accepted by Cloud Control API, but cdkd stopped
 waiting for it (cdkd could not reach Cloud Control API for 121s: connect
 ECONNREFUSED 100.72.0.178:443). The operation may still be running in AWS, and
-cdkd has NO state record for it, so any resource it creates is untracked by
-rollback and by cdkd destroy. Check what it did with:
+cdkd has NO state record for it: when the failed deploy records the request in
+the stack's rollback journal, the next cdkd deploy, destroy or rollback checks
+how it ended, and otherwise any resource it creates is untracked. Check what it
+did with:
   aws cloudcontrol get-resource-request-status --request-token <token> --region ap-northeast-1
 ```
 
@@ -288,17 +290,24 @@ the operation continues whether or not cdkd can reach AWS. cdkd keeps trying
 for about two minutes without a connection. After that it gives up, and it
 does not know how the operation ended.
 
-Run the command the error prints and read `OperationStatus`:
+For a create, cdkd records the request token in the stack's rollback journal.
+The next `cdkd deploy`, `cdkd destroy` or `cdkd rollback` of the stack reads
+the request's status before doing anything else, waiting while it is still
+running:
 
-| `OperationStatus` | Meaning | Do |
-| --- | --- | --- |
-| `SUCCESS` | AWS did the operation; for a create, cdkd has no record of the resource | Adopt it with [`cdkd import`](import.md) using the response's `Identifier`, or delete it in AWS |
-| `FAILED` | Nothing was created | Re-run `cdkd deploy` |
-| `IN_PROGRESS` | Still running | Run the status command again until it settles |
+| How the create ended | What cdkd does |
+| --- | --- |
+| It made the resource, the next `cdkd deploy` still declares it with the same properties (none of them a secret), and AWS minted its id (it is not a name) | The deploy takes the resource over instead of creating another, and records it in state as if the create had returned |
+| It made the resource, and AWS minted its id, in any other case | Records it as a resource the failed deploy created, and prints its physical id. `cdkd destroy`, `cdkd rollback --revert-failed` and the next successful deploy delete it as its `DeletionPolicy` directs |
+| It made the resource, and its id is a name (one you or cdkd chose, or an ARN built from one) | Records it the same way, but cdkd cannot prove the resource under that name is still the one the create made, so every command names it in a warning instead of deleting or taking it over. A deploy that creates the resource again asks for the same name: [`cdkd import`](import.md) it (`--resource <LogicalId>=<id>`) or delete it in AWS, then re-run |
+| It made nothing | Forgets the request; the deploy creates the resource again |
+| Cloud Control no longer has the request | Warns and forgets it. Requests expire after seven days, and a request is not visible from another account or region. Look for the resource in the console, then import or delete it |
+| Still running, or its status cannot be read | Refuses the command and prints the status command. Re-run once the request has finished |
 
-A `RequestTokenNotFoundException` means the request has aged out of Cloud
-Control's status history. Look for the resource in the console or through the
-service's API, then import or delete it.
+If the status can never be read (the request belongs to an account you can no
+longer reach), check the resource by hand, then remove the request from the
+journal with the `cdkd rollback <stack> --drop-failed <logicalId>` command the
+refusal prints.
 
 ### After an update or a delete
 

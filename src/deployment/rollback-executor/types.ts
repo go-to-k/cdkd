@@ -147,6 +147,14 @@ export interface CompletedOperation {
  * state of the resource is unknown — reverting it is opt-in
  * (`cdkd rollback --revert-failed`).
  */
+/** A journaled abandoned Cloud Control CREATE (go-to-k/cdkd#3252). */
+export interface PendingCloudControlRequest {
+  /** The `RequestToken` Cloud Control returned for the CREATE. */
+  requestToken: string;
+  /** Local epoch ms at which cdkd stopped waiting. */
+  abandonedAt: number;
+}
+
 export interface FailedOperation {
   /** Logical ID of the resource */
   logicalId: string;
@@ -190,6 +198,24 @@ export interface FailedOperation {
    * what `Retain` / `Snapshot` promised to keep.
    */
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+  /**
+   * go-to-k/cdkd#3252: a Cloud Control CREATE whose wait cdkd abandoned. The
+   * next deploy, destroy or rollback re-polls the token before acting
+   * (`src/deployment/cc-pending-requests.ts`): a create that made its resource
+   * turns this op into a proven orphan, one that made nothing drops the field,
+   * and one still unknown refuses the command. Only on a CREATE with no
+   * physical id. ADDITIVE, no `journalVersion` bump: an older binary ignores it.
+   */
+  pendingCloudControlRequest?: PendingCloudControlRequest | undefined;
+  /**
+   * go-to-k/cdkd#3252: on a Cloud Control proven orphan, `true` when its
+   * settle proved the identifier unique — a component AWS minted (a
+   * `readOnlyProperties` field of the type's `primaryIdentifier`) that names
+   * nothing the CREATE sent — so no later resource can hold it. The
+   * alternative to {@link createdResourceIdentity} as the proof a delete
+   * needs (`orphanNeedsIdentity`). ADDITIVE, no `journalVersion` bump.
+   */
+  createdIdentifierUnique?: boolean | undefined;
   /**
    * go-to-k/cdkd#4604: set, with {@link replacedResourceType}, on a proven
    * orphan journaled beside a failed replacement UPDATE — the NEW resource the

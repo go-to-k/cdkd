@@ -78,7 +78,8 @@ export interface DropTarget {
  * Pick the ONE journal entry `--drop-failed <logicalId>` names, or throw the
  * refusal that says why there is none. Droppable: a failed CREATE whose
  * provider proved it made the resource (`physicalIdRecoveredFromError:
- * true`), in a segment that is not a nested child's pending record, of a
+ * true`) or whose abandoned Cloud Control request is still unsettled
+ * (`pendingCloudControlRequest`, go-to-k/cdkd#3252), in a segment that is not a nested child's pending record, of a
  * logical id no `cdkd import` adopted after the segment was recorded — the
  * entries `cdkd destroy` and a successful deploy act on and keep while acting
  * fails. Every other failed entry blocks neither, so it is refused, as are an
@@ -159,7 +160,13 @@ export function selectDropTarget(
 }
 
 function isDroppable(op: FailedOperation): boolean {
-  return isJournaledOrphan(op) && op.physicalIdRecoveredFromError === true;
+  return (
+    (isJournaledOrphan(op) && op.physicalIdRecoveredFromError === true) ||
+    // go-to-k/cdkd#3252: an abandoned Cloud Control CREATE that cannot be
+    // settled refuses deploy and destroy; this is its way out once the
+    // operator has reconciled it by hand.
+    (op.changeType === 'CREATE' && op.pendingCloudControlRequest !== undefined)
+  );
 }
 
 /**
@@ -185,7 +192,11 @@ export function dropTargetLines(
   const { op } = target;
   const lines = [
     `  - ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)})  ` +
-      `${displacedPhysicalIdShown(op, logger) ?? 'a physical id'}  ` +
+      `${
+        op.pendingCloudControlRequest !== undefined
+          ? 'an abandoned Cloud Control request'
+          : (displacedPhysicalIdShown(op, logger) ?? 'a physical id')
+      }  ` +
       `[failed CREATE, segment ${target.segmentNumber}/${segmentCount}]`,
   ];
   // `resourceType` is a journal value: own keys only, never the prototype's.

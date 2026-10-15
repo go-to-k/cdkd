@@ -1,4 +1,8 @@
+import { isDeepStrictEqual } from 'node:util';
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
+import type { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
+import type { FailedOperation } from '../rollback-executor.js';
+import { displacedPhysicalIdShown } from '../nested-child-journal.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -199,60 +203,79 @@ export async function provisionCreate(
       ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
-  // go-to-k/cdkd#4705: likewise a resource already holding the name cdkd
-  // GENERATES for it, unless this stack's own evidence names that resource.
-  await refuseUnlicensedGeneratedName.call(this, {
+  // go-to-k/cdkd#3252: an earlier run's CREATE of this logical id that cdkd
+  // stopped waiting for, and that completed in AWS, is TAKEN OVER instead of
+  // creating another. Before the name refusals below, which would refuse the
+  // very resource that create made.
+  const resumed = await resumeAbandonedCreate.call(this, {
     logicalId,
     resourceType,
     stackName,
-    createdVia: createDecision.provisionedBy,
     resolvedProps,
-  });
-
-  // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
-  // already holding its explicit name must not run onto one.
-  await refuseTakenCreateName.call(this, {
-    logicalId,
-    resourceType,
-    stackName,
+    createProps,
     createProvider,
     createdVia: createDecision.provisionedBy,
-    createProps,
-    secrets: createSecrets,
-    stateResources,
+    maskSecrets: createSecretMasker(createSecrets),
   });
-
-  // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent
-  // whose outcome is unknown) and drops (not sent, returned, or rejected).
-  this.generatedNameGuard?.noteSent(logicalId);
   let result: Awaited<ReturnType<typeof createProvider.create>>;
-  try {
-    result = await this.withRetry(
-      () =>
-        // Issue #1903: the SAME bag, bound to this call's async chain so
-        // `NestedStackProvider` can seed it into the child engine it
-        // builds. Inside the retry arrow, so every attempt is scoped.
-        withCurrentResourceSecrets(createSecrets, () =>
-          createProvider.create(logicalId, resourceType, createProps, {
-            // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
-            // so a `{{resolve:secretsmanager:...}}` property is plaintext by
-            // now; a provider that echoes one into its own warn is outside
-            // both existing masking boundaries (this engine's error/reason
-            // text and the resolver's debug line). Give it the capability
-            // rather than the bag — see `SecretMaskingContext`.
-            maskSecrets: createSecretMasker(createSecrets),
-          })
-        ),
+  if (resumed !== undefined) {
+    this.generatedNameGuard?.noteSent(logicalId);
+    result = resumed;
+  } else {
+    // go-to-k/cdkd#4705: likewise a resource already holding the name cdkd
+    // GENERATES for it, unless this stack's own evidence names that resource.
+    await refuseUnlicensedGeneratedName.call(this, {
       logicalId,
-      undefined,
-      undefined,
-      createProvider
-    );
-  } catch (error) {
-    // go-to-k/cdkd#4705: a create rejected outright made nothing, so its
-    // intent is dropped at the deploy's end; an unknown outcome keeps it.
-    this.generatedNameGuard?.noteFailed(logicalId, error);
-    throw error;
+      resourceType,
+      stackName,
+      createdVia: createDecision.provisionedBy,
+      resolvedProps,
+    });
+
+    // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
+    // already holding its explicit name must not run onto one.
+    await refuseTakenCreateName.call(this, {
+      logicalId,
+      resourceType,
+      stackName,
+      createProvider,
+      createdVia: createDecision.provisionedBy,
+      createProps,
+      secrets: createSecrets,
+      stateResources,
+    });
+
+    // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent
+    // whose outcome is unknown) and drops (not sent, returned, or rejected).
+    this.generatedNameGuard?.noteSent(logicalId);
+    try {
+      result = await this.withRetry(
+        () =>
+          // Issue #1903: the SAME bag, bound to this call's async chain so
+          // `NestedStackProvider` can seed it into the child engine it
+          // builds. Inside the retry arrow, so every attempt is scoped.
+          withCurrentResourceSecrets(createSecrets, () =>
+            createProvider.create(logicalId, resourceType, createProps, {
+              // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+              // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+              // now; a provider that echoes one into its own warn is outside
+              // both existing masking boundaries (this engine's error/reason
+              // text and the resolver's debug line). Give it the capability
+              // rather than the bag — see `SecretMaskingContext`.
+              maskSecrets: createSecretMasker(createSecrets),
+            })
+          ),
+        logicalId,
+        undefined,
+        undefined,
+        createProvider
+      );
+    } catch (error) {
+      // go-to-k/cdkd#4705: a create rejected outright made nothing, so its
+      // intent is dropped at the deploy's end; an unknown outcome keeps it.
+      this.generatedNameGuard?.noteFailed(logicalId, error);
+      throw error;
+    }
   }
 
   this.generatedNameGuard?.noteReturned(logicalId);
@@ -647,4 +670,113 @@ async function refuseTakenCreateName(
           `and adopting it hands that resource to this stack's \`cdkd destroy\`.` +
           `\nAdopt with: ${adopt.command}`)
   );
+}
+
+/**
+ * go-to-k/cdkd#3252: the create result for a CREATE an earlier run of this
+ * stack sent through Cloud Control and stopped waiting for, which completed
+ * in AWS (`engine.resumedCreates`, filled at deploy start). Taken only when
+ * this CREATE goes through Cloud Control too, its identifier is not a name
+ * (see below), and it would send exactly the bag that one sent (compared as
+ * the journal recorded it): a resource made from another bag is not what
+ * this deploy wants. One not taken becomes a proven orphan at the deploy's
+ * success (`orphanUntakenResumes`). `undefined` means "create as usual".
+ */
+async function resumeAbandonedCreate(
+  this: DeployEngine,
+  args: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    resolvedProps: Record<string, unknown>;
+    createProps: Record<string, unknown>;
+    createProvider: ResourceProvider;
+    createdVia: ProvisionedBy;
+    maskSecrets: (text: string) => string;
+  }
+): Promise<Awaited<ReturnType<ResourceProvider['create']>> | undefined> {
+  const { logicalId, resourceType } = args;
+  const resumed = this.resumedCreates.get(logicalId);
+  if (resumed === undefined || resumed.taken || resumed.resourceType !== resourceType) {
+    return undefined;
+  }
+  const reader = args.createProvider as Partial<CloudControlProvider>;
+  if (args.createdVia !== 'cc-api' || typeof reader.resumeCreatedResource !== 'function') {
+    return undefined;
+  }
+  // The resolver offers only an identifier it proved unique (an AWS-minted
+  // component, `ccIdentifierIsUnique`): a NAME may since belong to someone
+  // else, and is never taken over (go-to-k/cdkd#4180, #4705).
+  const probe: FailedOperation = {
+    logicalId,
+    changeType: 'CREATE',
+    resourceType,
+    attemptedProperties: args.resolvedProps,
+  };
+  const [redacted] = this.redactOperationsForJournal([probe]) as FailedOperation[];
+  const sentNow = redacted?.attemptedProperties;
+  // As JSON, which is what the journal holds: prototypes and undefined
+  // members do not survive the write, so they do not count here either.
+  const asJson = (value: unknown): unknown =>
+    value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as unknown);
+  if (!isDeepStrictEqual(asJson(sentNow), asJson(resumed.attemptedProperties))) {
+    this.logger.warn(
+      safeMsg`${logicalId}: the template changed since the CREATE cdkd stopped waiting for, so ` +
+        'this deploy creates the resource again; the one that CREATE made is kept in the rollback ' +
+        'journal as a resource the failed deploy created.'
+    );
+    return undefined;
+  }
+  let result: Awaited<ReturnType<ResourceProvider['create']>>;
+  try {
+    // Through the engine's retry, like the create it stands in for: a
+    // throttled read retries rather than failing the deploy.
+    result = await this.withRetry(
+      () =>
+        reader.resumeCreatedResource!(
+          logicalId,
+          resourceType,
+          resumed.identifier,
+          args.createProps,
+          {
+            maskSecrets: args.maskSecrets,
+          }
+        ),
+      logicalId,
+      undefined,
+      undefined,
+      args.createProvider
+    );
+  } catch (error) {
+    // Only a resource that is GONE is created again; any other read failure
+    // leaves it standing, and a create beside it would duplicate it.
+    if ((error as { resumedResourceGone?: unknown }).resumedResourceGone !== true) throw error;
+    // Nothing is left to orphan: the success settle drops the request.
+    resumed.gone = true;
+    this.logger.warn(
+      safeMsg`${logicalId}: the resource the earlier CREATE made no longer exists; creating it as usual.`
+    );
+    return undefined;
+  }
+  // The token stays in the journal until the state record holding the
+  // resource is saved: the success settle drops it then, and a run that dies
+  // first leaves it for the next one, which finds the resource in state.
+  resumed.taken = true;
+  const shown =
+    displacedPhysicalIdShown(
+      {
+        logicalId,
+        changeType: 'CREATE',
+        resourceType,
+        physicalId: resumed.identifier,
+        attemptedProperties: resumed.attemptedProperties,
+      },
+      this.logger,
+      resumed.identifier
+    ) ?? 'the resource';
+  this.logger.info(
+    safeMsg`${logicalId}: took over ${shown}, the resource the earlier CREATE made, instead of ` +
+      'creating another.'
+  );
+  return result;
 }

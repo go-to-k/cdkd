@@ -778,6 +778,28 @@ export class DeployEngine {
   attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * go-to-k/cdkd#3252: the Cloud Control CREATEs an earlier run stopped
+   * waiting for that completed in AWS, by logical id, which this deploy's
+   * CREATE of that logical id takes over instead of making another
+   * (`create.ts`). Filled at deploy start (`deploy-flow.ts` step 1b-pre);
+   * one left untaken by a successful deploy becomes a proven orphan.
+   */
+  /** @internal */
+  resumedCreates = new Map<
+    string,
+    {
+      requestToken: string;
+      identifier: string;
+      resourceType: string;
+      attemptedProperties: Record<string, unknown>;
+      /** Set when the CREATE took the resource over (`create.ts`). */
+      taken?: boolean;
+      /** Set when the takeover's read found the resource gone. */
+      gone?: boolean;
+    }
+  >();
+
+  /**
    * go-to-k/cdkd#4705: this deploy's plan-time check of the generated names
    * its name-adopting creates would take; each create awaits its verdict.
    * Reset per deploy.
@@ -1103,6 +1125,7 @@ export class DeployEngine {
     // otherwise journal the PREVIOUS run's bag against today's template and
     // pairs — and now mark it as today's.
     this.attemptedResolvedProps = new Map();
+    this.resumedCreates = new Map();
     this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();
     this.outputSecrets = new Map();

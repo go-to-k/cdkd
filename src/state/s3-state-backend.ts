@@ -2119,6 +2119,41 @@ export class S3StateBackend {
   }
 
   /**
+   * Replace failed ops in place, in ANY segment (go-to-k/cdkd#3252: a re-polled
+   * abandoned Cloud Control CREATE becomes a proven orphan or loses its token).
+   * `rewrite` returns the op unchanged (the same object) to keep it, a new op
+   * to replace it, or `null` to remove it; a segment left with no failed op
+   * loses the field. Writes nothing when nothing changed. Returns the number of
+   * ops changed.
+   */
+  async rewriteRollbackJournalFailedOperations(
+    stackName: string,
+    region: string,
+    rewrite: (op: FailedOperation, segment: RollbackJournalSegment) => FailedOperation | null
+  ): Promise<number> {
+    const journal = await this.loadRollbackJournal(stackName, region);
+    if (!journal) return 0;
+    let changed = 0;
+    for (const segment of journal.segments) {
+      if (!segment.failedOperations) continue;
+      const next: FailedOperation[] = [];
+      for (const op of segment.failedOperations) {
+        const out = rewrite(op, segment);
+        if (out !== op) changed++;
+        if (out !== null) next.push(out);
+      }
+      if (next.length === 0) delete segment.failedOperations;
+      else segment.failedOperations = next;
+    }
+    if (changed === 0) return 0;
+    await this.putRawObject(
+      this.getRollbackJournalKey(stackName, region),
+      JSON.stringify(journal, null, 2)
+    );
+    return changed;
+  }
+
+  /**
    * Reduce the journal to the failed ops `keep` answers `true` for
    * (go-to-k/cdkd#4600: a successful deploy whose journaled orphans could not
    * all be deleted keeps only those). The deploy moved the baseline, so every

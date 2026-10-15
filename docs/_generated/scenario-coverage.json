@@ -548,6 +548,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-abandoned-create-resume",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-api-fallback",
       "annotated": false,
       "scenarios": []
@@ -3340,6 +3345,7 @@
     "backup",
     "bootstrap-free-region",
     "bucket-deployment",
+    "cc-abandoned-create-resume",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",

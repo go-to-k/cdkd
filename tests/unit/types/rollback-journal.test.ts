@@ -412,6 +412,72 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(parsed.segments[0]!.failedOperations).toHaveLength(2);
   });
 
+  // go-to-k/cdkd#3252: the token is sent to Cloud Control and a SUCCESS makes
+  // the op a proven orphan, so it is valid only on a CREATE naming nothing yet.
+  it('accepts a pending Cloud Control request on a CREATE with no physical id, and refuses one elsewhere', () => {
+    const { physicalId: _p, ...noId } = op;
+    const pendingOp = {
+      ...noId,
+      changeType: 'CREATE',
+      pendingCloudControlRequest: { requestToken: 'a1b2-c3', abandonedAt: 1 },
+    };
+    const parsed = parseRollbackJournal(journalWith([], [pendingOp]), 'S');
+    expect(parsed.segments[0]!.failedOperations![0]!.pendingCloudControlRequest).toEqual({
+      requestToken: 'a1b2-c3',
+      abandonedAt: 1,
+    });
+    for (const bad of [
+      'tok',
+      null,
+      { requestToken: 'a b', abandonedAt: 1 },
+      { requestToken: 'x'.repeat(129), abandonedAt: 1 },
+      { requestToken: 'ok', abandonedAt: 'now' },
+      { abandonedAt: 1 },
+    ]) {
+      expect(
+        messageOf(journalWith([], [{ ...pendingOp, pendingCloudControlRequest: bad }]))
+      ).toContain('pendingCloudControlRequest must be an object with a Cloud Control requestToken');
+    }
+    for (const misplaced of [
+      { ...pendingOp, changeType: 'UPDATE' },
+      { ...pendingOp, physicalId: 'p' },
+      { ...pendingOp, physicalIdRecoveredFromError: true, physicalId: 'p' },
+      // The recovered flag alone, with no physical id.
+      { ...pendingOp, physicalIdRecoveredFromError: false },
+    ]) {
+      expect(messageOf(journalWith([], [misplaced]))).toContain(
+        'pendingCloudControlRequest is only valid on a CREATE with no physicalId.'
+      );
+    }
+  });
+
+  // go-to-k/cdkd#3252: lets a delete skip the identity proof, so only on a
+  // Cloud Control proven orphan.
+  it('accepts createdIdentifierUnique on a Cloud Control proven orphan only', () => {
+    const orphan = {
+      ...op,
+      changeType: 'CREATE',
+      provisionedBy: 'cc-api',
+      physicalIdRecoveredFromError: true,
+      createdIdentifierUnique: true,
+    };
+    expect(
+      parseRollbackJournal(journalWith([], [orphan]), 'S').segments[0]!.failedOperations![0]!
+        .createdIdentifierUnique
+    ).toBe(true);
+    expect(messageOf(journalWith([], [{ ...orphan, createdIdentifierUnique: 'yes' }]))).toContain(
+      'createdIdentifierUnique must be a boolean when present'
+    );
+    for (const misplaced of [
+      { ...orphan, provisionedBy: 'sdk' },
+      { ...orphan, physicalIdRecoveredFromError: undefined },
+    ]) {
+      expect(messageOf(journalWith([], [misplaced]))).toContain(
+        'createdIdentifierUnique is only valid on a Cloud Control CREATE carrying physicalIdRecoveredFromError.'
+      );
+    }
+  });
+
   // go-to-k/cdkd#4604: the pair lets the classifier delete an orphan beside
   // the record it names, so a value outside the engine's shape is planted.
   it('refuses a planted replacedPhysicalId / replacedResourceType pair', () => {
