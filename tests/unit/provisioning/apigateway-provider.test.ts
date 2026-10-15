@@ -378,6 +378,31 @@ describe('ApiGatewayProvider', () => {
           'old API Gateway Resource old-id could not be deleted: ConflictException: ' +
             'Resource is still referenced by a Method'
         );
+        // go-to-k/cdkd#4911: a conflict may be a delete in flight.
+        expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+      });
+
+      it('reports the old resource kept when AWS refused its delete by name (#4911)', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'new-id' });
+        vi.spyOn(
+          provider as unknown as { deleteResource: (...args: unknown[]) => Promise<void> },
+          'deleteResource'
+        ).mockRejectedValue(
+          Object.assign(new Error('not authorized to perform: apigateway:DELETE'), {
+            name: 'AccessDeniedException',
+          })
+        );
+
+        const result = await provider.update(
+          'MyResource',
+          'old-id',
+          resourceType,
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'orders' },
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'users' }
+        );
+
+        expect(result.outcome).toBe('partial');
+        expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBe('kept');
       });
 
       it('should still return new resource if old resource deletion fails during replacement', async () => {

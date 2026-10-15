@@ -327,6 +327,30 @@ describe('IAMManagedPolicyProvider', () => {
       // nothing else downstream still knows which policy survived.
       expect(result.reason).toContain(ARN);
       expect(result.reason).toContain('DeleteConflict');
+      // go-to-k/cdkd#4911: never kept, since `delete()` detaches the policy first.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+    });
+
+    it('never reports the old policy kept, even when AWS refused its delete by name (#4911)', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      const conflict = Object.assign(new Error('policy still attached'), { name: 'DeleteConflict' });
+      vi.spyOn(provider, 'delete').mockRejectedValue(
+        new Error('Failed to delete IAM managed policy MyManagedPolicy', { cause: conflict })
+      );
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Path: '/new/' },
+        { PolicyDocument: POLICY_DOC, Path: '/' }
+      );
+
+      expect(result.outcome).toBe('partial');
+      // `delete()` detaches every principal and deletes its versions before
+      // `DeletePolicy`, so a refused policy is not whole: never re-adopted.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
     });
 
     // The #1778 SKIP class: non-throwing, so it bypasses the catch entirely.
@@ -349,6 +373,7 @@ describe('IAMManagedPolicyProvider', () => {
       expect(result.outcome).toBe('partial');
       expect(result.reason).toContain(ARN);
       expect(result.reason).toContain('no delete issued');
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
     });
 
     it('replaces the policy when Description changes (Description is immutable)', async () => {

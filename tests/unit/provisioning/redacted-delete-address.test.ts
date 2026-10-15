@@ -629,6 +629,8 @@ describe('replacement paths that delete through the same address', () => {
     );
     expect(result).toMatchObject({ wasReplaced: true, outcome: 'partial' });
     expect((result as { reason?: string }).reason).toContain('RestApiId is redacted');
+    // go-to-k/cdkd#4911: never sent, so the old resource is whole.
+    expect((result as { oldResourceSurvivor?: string }).oldResourceSurvivor).toBe('kept');
     expect(send).toHaveBeenCalledTimes(1);
   });
 });

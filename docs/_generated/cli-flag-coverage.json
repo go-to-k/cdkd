@@ -2054,6 +2054,7 @@
     "--capacity-provider-name",
     "--category",
     "--certificate-arn",
+    "--certificate-statuses",
     "--cfn-stack-name",
     "--cidr-block",
     "--cli-binary-format",

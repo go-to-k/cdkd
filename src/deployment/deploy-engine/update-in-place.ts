@@ -361,6 +361,19 @@ export async function updateInPlace(
     // before anything below can throw, so a failed deploy can tell a re-put
     // child that wrote nothing from one that may have.
     if (result.sentNothing === true) this.updatesThatSentNothing.add(logicalId);
+    // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
+    // `update()` and reports `'partial'` could not delete the OLD one (its
+    // delete threw or was skipped), so the rollback must read AWS before
+    // re-creating it (go-to-k/cdkd#2631). Only this arm, the provider's own
+    // answer: the deliberate `Retain` survivor is the fallback's literal below,
+    // recorded through `retainedOldOnReplacement`. `'kept'` only on the
+    // provider's own word that AWS refused the delete outright.
+    if (result.wasReplaced === true && result.outcome === 'partial') {
+      this.replacedOldMaySurvive.set(
+        logicalId,
+        result.oldResourceSurvivor === 'kept' ? 'kept' : 'unconfirmed'
+      );
+    }
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
     if (removal.unhandled.length > 0) {

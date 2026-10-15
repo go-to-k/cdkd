@@ -536,6 +536,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           );
         }
       } catch (error) {
+        // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
+        // detaches the policy before `DeletePolicy` refuses, so it is not whole.
         orphanReason = log.mask(
           `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
         );

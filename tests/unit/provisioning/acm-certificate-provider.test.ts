@@ -1039,6 +1039,8 @@ describe('ACMCertificateProvider', () => {
       // now points at the new ARN and nothing else downstream knows the old.
       expect(result.outcome).toBe('partial');
       expect(result.reason).toContain(ARN);
+      // go-to-k/cdkd#4911: in use means whole, with no deletion running.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBe('kept');
       // Asserted on wording ONLY the classifier produces. The raw SDK message
       // also contains "still in use", so a looser assertion here passes even
       // with the classifier disabled -- it would be testing the error text
@@ -1111,6 +1113,8 @@ describe('ACMCertificateProvider', () => {
       );
 
       expect(result.outcome).toBe('partial');
+      // go-to-k/cdkd#4911: a skip never proves the delete was not sent.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
       // Prefixed with the OLD arn: the skip's own reason does not carry it, and
       // state now points at the replacement.
       expect(result.reason).toContain(ARN);
@@ -1173,6 +1177,46 @@ describe('ACMCertificateProvider', () => {
       expect(result.reason).toContain('AccessDeniedException');
       // Not misreported as the in-use case, whose remediation is different.
       expect(result.reason).not.toContain('still in use');
+      // go-to-k/cdkd#4911: an AWS name only in the message proves nothing.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+    });
+
+    it('never reads an in-use message as a kept verdict (#4911)', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      // The wording matches the classifier's message fallback; the name does not.
+      mockSend.mockRejectedValueOnce(new Error(`Certificate ${ARN} is in use.`));
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('still in use');
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+    });
+
+    it('reports the old certificate kept when AWS refused its delete by name (#4911)', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      const denied = new Error('User is not authorized to perform: acm:DeleteCertificate');
+      denied.name = 'AccessDeniedException';
+      mockSend.mockRejectedValueOnce(denied);
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBe('kept');
     });
 
     // The polarity that keeps the channel honest: a replacement whose delete

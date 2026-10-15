@@ -593,6 +593,8 @@ export class IAMRoleProvider implements ResourceProvider {
           );
         }
       } catch (error) {
+        // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
+        // strips the role before `DeleteRole` refuses, so it is not whole.
         orphanReason = log.mask(
           `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
         );

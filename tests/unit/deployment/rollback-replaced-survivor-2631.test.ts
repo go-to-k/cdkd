@@ -292,7 +292,7 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     expect(s['Topic']!.physicalId).toBe('topic-new');
     expect(result.failures).toBe(1);
     expect(warns.join('\n')).toContain(
-      'so it may still exist, and AWS still reports it, but the failed delete may have been accepted and still be running.'
+      'so it may still exist, and AWS still reports it, but its failed delete may have been accepted and still be running, or only partly ran.'
     );
   });
 

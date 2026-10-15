@@ -528,6 +528,8 @@ describe('IAMRoleProvider', () => {
       // has been re-pointed.
       expect(result.reason).toContain('old-role');
       expect(result.reason).toContain('DeleteConflict');
+      // go-to-k/cdkd#4911: never kept, since `delete()` strips the role first.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
     });
 
     // `reason` here is PERSISTED as the row's `outcome: 'partial'` text, so the
@@ -599,6 +601,32 @@ describe('IAMRoleProvider', () => {
       expect(result.outcome).toBe('partial');
       expect(result.reason).toContain('old-role');
       expect(result.reason).toContain('no delete issued');
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+    });
+
+    it('never reports the old role kept, even when AWS refused its delete by name (#4911)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      const conflict = Object.assign(new Error('role has attached entities'), {
+        name: 'DeleteConflict',
+      });
+      vi.spyOn(provider, 'delete').mockRejectedValue(
+        new Error('Failed to delete IAM role L', { cause: conflict })
+      );
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(result.outcome).toBe('partial');
+      // `delete()` detaches its policies and leaves its instance profiles
+      // before `DeleteRole`, so a refused role is not whole: never re-adopted.
+      expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
     });
 
     // The clean control: a replacement whose delete SUCCEEDS must carry no

@@ -277,6 +277,14 @@ export type ResourceUpdateOutcome =
        * {@link ResourceDeleteResult}.
        */
       readonly reason: string;
+      /**
+       * go-to-k/cdkd#4911: set by a provider that replaced the resource inside
+       * `update()` and could not delete the OLD one. `'kept'` only when AWS
+       * refused that delete outright, so no deletion is running; absent reads
+       * as `'unconfirmed'`. The deploy journals it as
+       * `oldResourceMaySurvive`, which a rollback reads before re-creating.
+       */
+      readonly oldResourceSurvivor?: 'kept' | 'unconfirmed';
     };
 
 /**

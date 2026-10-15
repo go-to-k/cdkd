@@ -450,7 +450,7 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
       printed.warn.some(
         (l) =>
           l.includes('Cannot reverse the replacement of Revision') &&
-          l.includes('the failed delete may have been accepted and still be running')
+          l.includes('its failed delete may have been accepted and still be running, or only partly ran')
       )
     ).toBe(true);
   });

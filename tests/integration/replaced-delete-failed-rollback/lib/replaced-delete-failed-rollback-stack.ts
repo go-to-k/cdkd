@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import type { Construct } from 'constructs';
 
@@ -19,9 +20,16 @@ import type { Construct } from 'constructs';
  * automatic rollback must find the old policy alive and re-adopt it, not
  * re-create it (which collides on its name).
  *
+ * go-to-k/cdkd#4911: `CERT_MODE=dns|email` adds `Cert`, an ACM certificate
+ * whose `ValidationMethod` is the mode. That key is not create-only, so
+ * changing it reaches the ACM provider's replacement inside its own
+ * `update()`; with `BREAK=true` the failing `Breaker` depends on it, so it
+ * runs after that replacement. A synthetic `.example.test` domain under
+ * `CDKD_NO_WAIT=true`: the certificate stays PENDING_VALIDATION.
+ *
  * L1 resources with explicit names, on the SDK route.
  *
- * covers: AWS::IAM::ManagedPolicy
+ * covers: AWS::IAM::ManagedPolicy, AWS::CertificateManager::Certificate
  */
 export class ReplacedDeleteFailedRollbackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -37,12 +45,26 @@ export class ReplacedDeleteFailedRollbackStack extends cdk.Stack {
       policyDocument: document,
     });
 
+    // L1 so the two modes differ in `ValidationMethod` and nothing else (the
+    // L2's email validation also emits the create-only DomainValidationOptions).
+    const certMode = process.env.CERT_MODE;
+    const cert =
+      certMode === 'dns' || certMode === 'email'
+        ? new acm.CfnCertificate(this, 'Cert', {
+            domainName: `cdkd-rdfr-${this.stackName.toLowerCase()}.example.test`,
+            validationMethod: certMode === 'dns' ? 'DNS' : 'EMAIL',
+            // verify.sh's role may delete and tag only certificates carrying it.
+            tags: [{ key: 'cdkd-integ', value: 'rdfr' }],
+          })
+        : undefined;
+
     if (process.env.BREAK === 'true') {
       const breaker = new iam.CfnManagedPolicy(this, 'Breaker', {
         managedPolicyName: 'cdkd-rdfr-breaker',
         policyDocument: document,
       });
       breaker.addDependency(target);
+      if (cert !== undefined) breaker.addDependency(cert);
     }
   }
 }

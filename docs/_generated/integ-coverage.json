@@ -643,11 +643,15 @@
     {
       "resourceType": "AWS::CertificateManager::Certificate",
       "integs": [
-        "acm-certificate"
+        "acm-certificate",
+        "replaced-delete-failed-rollback"
       ],
       "signals": {
         "acm-certificate": [
           "l2"
+        ],
+        "replaced-delete-failed-rollback": [
+          "literal"
         ]
       }
     },

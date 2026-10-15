@@ -212,6 +212,8 @@ resource that had just been deleted).
 When the deploy tried to delete the old resource but did not confirm it gone —
 the delete failed (including the retry cdkd makes after the rest of the
 deploy, or a deploy that failed before that retry), the provider skipped it,
+a provider that replaces the resource inside its own update (an ACM
+certificate whose `ValidationMethod` changes) could not delete the old one,
 or a failed `UpdateReplacePolicy: Snapshot` snapshot blocked it — the journal
 records that the old resource may still exist, and whether AWS refused the
 delete outright (access denied, a dependency) or the snapshot stopped it
@@ -223,10 +225,15 @@ re-adopted as a retained one is,
 with a `⚠` warning (exit `2`), since the provider may have run earlier steps
 of its delete (a managed policy's detaches): check it with `cdkd drift`. The
 same advice is recorded on the rollback's event, so `cdkd events` keeps it. Still
-there after any other failure — a skip, a resource AWS reports in use, or a
-wait that gave up on a delete AWS had accepted — the operation fails instead (exit `1`, journal kept, nothing
-sent): that delete may still be running, and re-adopting a resource about to
-disappear would leave neither; once AWS reports it gone, re-running
+there after any other failure — a skip, a resource AWS reports in use (except
+an ACM certificate, whose in-use refusal leaves it whole and is re-adopted), a
+wait that gave up on a delete AWS had accepted, or any refusal of an IAM role
+or managed policy that its provider replaced inside its own update (that
+delete detaches it before AWS refuses, so it is not whole) — the operation fails instead (exit `1`, journal kept, nothing
+sent): that delete may still be running, or may have stripped part of the
+resource before AWS refused it, and re-adopting a resource about to disappear
+would leave neither, while re-adopting a stripped one would keep it in place of
+the working new copy; once AWS reports it gone, re-running
 `cdkd rollback` re-creates it. The operation also fails when cdkd cannot tell
 — the type has no read, or the read fails or does not answer in time — since
 re-creating could duplicate the old resource or collide with it; a failed read

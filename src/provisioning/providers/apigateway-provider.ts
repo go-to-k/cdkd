@@ -86,6 +86,7 @@ import {
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
+import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
 
 /**
  * Retry-safety state for the two API Gateway creates that mint their id and
@@ -1106,6 +1107,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       // the OLD PathPart stays routable on the deployed API while cdkd's state
       // points only at the new one.
       let orphanReason: string | undefined;
+      // go-to-k/cdkd#4911: what the failed delete proves about the old one.
+      let oldResourceSurvivor: 'kept' | 'unconfirmed' = 'unconfirmed';
       try {
         // go-to-k/cdkd#3952: a redacted RestApiId would answer NotFound, which
         // `deleteResource` reads as "already deleted" -- report the survivor.
@@ -1113,6 +1116,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           redactedDeleteAddressFields({ RestApiId: previousProperties['RestApiId'] }).length > 0
         ) {
           orphanReason = `old API Gateway Resource ${physicalId} was not deleted: its recorded RestApiId is redacted`;
+          // Never sent: the old resource is whole.
+          oldResourceSurvivor = 'kept';
           log.warn(
             safeMsg`Old API Gateway Resource ${physicalId} was not deleted during replacement: its ` +
               `recorded RestApiId is redacted in state, which names no API. The old resource ` +
@@ -1122,6 +1127,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
         }
       } catch (error) {
+        oldResourceSurvivor = replacedDeleteFailureVerdict(error);
         // The delete error is AWS text that can quote the recorded RestApiId
         // back; the reason rides out on the update's result, so it is masked
         // here too, not only in the warning (issue #2177).
@@ -1140,7 +1146,12 @@ export class ApiGatewayProvider implements ResourceProvider {
         attributes: createResult.attributes ?? {},
       };
       return orphanReason !== undefined
-        ? { ...base, outcome: 'partial' as const, reason: orphanReason }
+        ? {
+            ...base,
+            outcome: 'partial' as const,
+            reason: orphanReason,
+            ...(oldResourceSurvivor === 'kept' && { oldResourceSurvivor }),
+          }
         : base;
     }
 

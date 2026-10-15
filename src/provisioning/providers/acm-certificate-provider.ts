@@ -37,6 +37,21 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { withRemovalDefaults } from '../update-removal.js';
+import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
+
+/**
+ * go-to-k/cdkd#4911: the name half of {@link isCertificateInUseError}, the one
+ * that may decide a verdict (`oldResourceSurvivor`): a message is never read
+ * for one.
+ */
+function certificateInUseByName(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.name === 'ResourceInUseException') return true;
+    current = current.cause;
+  }
+  return false;
+}
 
 /**
  * True for ACM's refusal to delete a certificate a consumer still references
@@ -62,11 +77,7 @@ function isCertificateInUseError(error: unknown): boolean {
   // timer could not fire and the deploy would hang at 100% CPU rather than time
   // out. Five levels is far more than any real wrap depth here (provider ->
   // ProvisioningError is one).
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
-    if (current.name === 'ResourceInUseException') return true;
-    current = current.cause;
-  }
+  if (certificateInUseByName(error)) return true;
   // Message fallback for a re-thrown error that kept the text but lost the
   // class. `/in use/i`, NOT `/still in use/`: ACM's own wording is
   // `Certificate arn:... is in use.` -- the stricter phrase matched nothing AWS
@@ -593,6 +604,8 @@ export class ACMCertificateProvider implements ResourceProvider {
       // deploy engine can record and count the survivor instead of the
       // warn-only treatment that preceded it (issue #1922).
       let orphanReason: string | undefined;
+      // go-to-k/cdkd#4911: what the failed delete proves about the old one.
+      let oldResourceSurvivor: 'kept' | 'unconfirmed' = 'unconfirmed';
       try {
         // go-to-k/cdkd#2007: the update's masker reaches the inner delete.
         const deleteResult = await this.delete(
@@ -622,6 +635,12 @@ export class ACMCertificateProvider implements ResourceProvider {
         // aborted: the honest outcome is "updated, and the old certificate
         // survives", which is what `'partial'` says.
         const inUse = isCertificateInUseError(error);
+        // go-to-k/cdkd#4911: ACM's in-use refusal leaves the certificate whole
+        // with no deletion running (the delete is one synchronous call), so a
+        // rollback may re-adopt it; by AWS error name only, never the message.
+        oldResourceSurvivor = certificateInUseByName(error)
+          ? 'kept'
+          : replacedDeleteFailureVerdict(error);
         orphanReason = inUse
           ? `old certificate ${physicalId} is still in use by another resource and was not deleted`
           : `old certificate ${physicalId} could not be deleted: ${safeStringify(error)}`;
@@ -643,7 +662,12 @@ export class ACMCertificateProvider implements ResourceProvider {
       // now points at the NEW certificate — nothing else downstream still
       // knows the ARN that survived.
       return orphanReason !== undefined
-        ? { ...base, outcome: 'partial', reason: orphanReason }
+        ? {
+            ...base,
+            outcome: 'partial',
+            reason: orphanReason,
+            ...(oldResourceSurvivor === 'kept' && { oldResourceSurvivor }),
+          }
         : base;
     }
 

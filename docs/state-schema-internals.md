@@ -221,7 +221,8 @@ port or name only one of them can hold does not collide. An absent value (an
 older binary's journal) keeps the create-first order. A failed UPDATE carries
 it too, so the rollback knows the old resource it names is gone. A replacement
 whose delete of the old resource the deploy did not confirm (it failed, was
-skipped, or a failed final snapshot blocked it) records `oldResourceMaySurvive`
+skipped, a provider replacing it inside its own `update()` reported it
+`partial`, or a failed final snapshot blocked it) records `oldResourceMaySurvive`
 (additive, no bump): `kept` when the delete was never sent or AWS refused it
 outright, `unconfirmed` otherwise. Its rollback reads AWS for the old resource
 before re-creating it, re-adopting one that is still there only on `kept`. An
