@@ -306,6 +306,7 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     ['MalformedXML', 'The XML you provided was not well-formed or did not validate against our published schema', 400],
     ['NotImplemented', 'A header you provided implies functionality that is not implemented', 501],
     ['InvalidArgument', 'Tags are not supported in this Region', 400],
+    ['InvalidRequest', 'Tags are not supported for this request', 400],
   ])('a %s refusal of the Tags member falls back to untagged create + PutBucketTagging', async (name, message, status) => {
     clientRegion.value = 'ap-northeast-1';
     answer([
