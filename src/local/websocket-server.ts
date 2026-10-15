@@ -3,6 +3,7 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { describeAwsFailure, safeStringify } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
 import type { ContainerPool } from './container-pool.js';
 import { invokeRie } from './rie-client.js';
@@ -191,7 +192,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     wss.handleUpgrade(req, socket, head, (ws) => {
       void onConnect(ws, req, cfg).catch((err) => {
         logger.error(
-          `WebSocket $connect dispatch failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+          `WebSocket $connect dispatch failed: ${err instanceof Error ? (err.stack ?? err.message) : safeStringify(err)}`
         );
         try {
           ws.close(1011, 'internal error');
@@ -359,7 +360,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
         dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
           (err) => {
             logger.error(
-              `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+              `WebSocket message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : safeStringify(err)}`
             );
             try {
               ws.send(
@@ -386,7 +387,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
       const disconnectPromise = enqueueDispatch(connectionId, () =>
         onDisconnect(connectionId, cfg, handshakeSnapshot, code, reasonText).catch((err) => {
           logger.warn(
-            `WebSocket $disconnect dispatch failed (connection ${connectionId}): ${err instanceof Error ? err.message : String(err)}`
+            `WebSocket $disconnect dispatch failed (connection ${connectionId}): ${describeAwsFailure(err).detail}`
           );
         })
       );
@@ -412,7 +413,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
         dispatchMessage(connectionId, cfg, body, isBase64Encoded, handshakeSnapshot).catch(
           (err) => {
             logger.error(
-              `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+              `WebSocket buffered-message dispatch failed (connection ${connectionId}): ${err instanceof Error ? (err.stack ?? err.message) : safeStringify(err)}`
             );
           }
         )
