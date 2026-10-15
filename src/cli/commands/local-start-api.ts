@@ -23,6 +23,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import {
   applyRoleArnIfSet,
@@ -1403,21 +1404,39 @@ async function localStartApiCommand(
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM', 0);
   });
+  installFatalShutdownHandlers(logger, shutdown);
+
+  // Block forever — the signal handlers exit the process.
+  await new Promise<never>(() => undefined);
+}
+
+/**
+ * Route an uncaught exception or unhandled rejection into `start-api`'s
+ * graceful shutdown, so the warm containers and the profile credentials tmpdir
+ * are still removed.
+ *
+ * Its own function so a test can drive the real listeners (go-to-k/cdkd#3361).
+ * Each one receives whatever value nothing else caught, so it renders that value
+ * with `safeStringify`: a bare `String()` throws for a null-prototype object,
+ * and a throw from inside an `uncaughtException` listener ends the process at
+ * once, skipping the shutdown this exists to run.
+ */
+export function installFatalShutdownHandlers(
+  logger: Pick<ReturnType<typeof getLogger>, 'error'>,
+  shutdown: (signal: string, exitCode: number) => Promise<void>
+): void {
   process.on('uncaughtException', (err) => {
     logger.error(
-      `Uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
+      `Uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : safeStringify(err)}`
     );
     void shutdown('uncaughtException', 1);
   });
   process.on('unhandledRejection', (reason) => {
     logger.error(
-      `Unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`
+      `Unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : safeStringify(reason)}`
     );
     void shutdown('unhandledRejection', 1);
   });
-
-  // Block forever — the signal handlers exit the process.
-  await new Promise<never>(() => undefined);
 }
 
 /**
@@ -3373,7 +3392,7 @@ export async function reloadAllServers(args: {
     material = await synthesizeAndBuild();
   } catch (err) {
     logger.warn(
-      `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
+      `cdk synth failed during reload; keeping previous version. (${describeAwsFailure(err).detail})`
     );
     return;
   }
