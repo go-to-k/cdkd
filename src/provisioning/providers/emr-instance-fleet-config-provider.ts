@@ -44,6 +44,7 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 
 /**
  * Default polling budget for an instance fleet reaching RUNNING. Adding a
@@ -410,7 +411,13 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
             );
       // go-to-k/cdkd#4583: the fleet exists once AddInstanceFleet returned its
       // id (the id delete() takes); name it for --revert-failed.
-      if (createdFleetId) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFleetId);
+      if (createdFleetId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdFleetId);
+        // go-to-k/cdkd#4945: terminal. A cluster holds one fleet per type, so a
+        // replayed AddInstanceFleet can only collide with this one, and the
+        // engine's retry would replace this error with that collision.
+        markNonRetryable(thrown);
+      }
       throw thrown;
     }
   }

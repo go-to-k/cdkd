@@ -50,6 +50,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 type Responder = Record<string, () => Promise<unknown>>;
@@ -154,6 +155,9 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       expect((error as Error).message).toContain('wiring boom');
       expect(mockSend.mock.calls.map((x) => x[0].constructor.name)).toContain(c.cleanup);
       expect(createdBeforeFailure(error, `${c.label}Left`, c.type)).toBe(c.id);
+      // go-to-k/cdkd#4945: CreateVpc sends no name and no token, so its replay
+      // would make another VPC; the others collide or resume on a token.
+      expect(isMarkedNonRetryable(error)).toBe(c.type === 'AWS::EC2::VPC');
     });
 
     it('names nothing when the cleanup succeeded', async () => {
@@ -164,6 +168,7 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       expect((error as Error).message).toContain('wiring boom');
       expect(mockSend.mock.calls.map((x) => x[0].constructor.name)).toContain(c.cleanup);
       expect(createdBeforeFailure(error, `${c.label}Clean`, c.type)).toBeUndefined();
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
     it("names nothing when the create call's own failure is thrown", async () => {
@@ -222,12 +227,64 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
       respond(allocate);
       const success = await provider.create('EipOk', TYPE, {});
 
-      respond({ ...allocate, AssociateAddressCommand: boom('associate boom') });
+      respond({
+        ...allocate,
+        AssociateAddressCommand: boom('associate boom'),
+        ReleaseAddressCommand: boom('release refused'),
+      });
       const error = await failure(() => provider.create('EipLeft', TYPE, { InstanceId: 'i-aaa' }));
 
       expect((error as Error).message).toContain('associate boom');
       expect(createdBeforeFailure(error, 'EipLeft', TYPE)).toBe(success.physicalId);
+      // go-to-k/cdkd#4945: a replayed AllocateAddress would allocate another.
+      expect(isMarkedNonRetryable(error)).toBe(true);
       expect(success.physicalId).toBe('54.0.0.9|eipalloc-4583');
+    });
+
+    it('releases the address a transient association failure followed, leaving it retryable (#4945)', async () => {
+      const throttled = Object.assign(new Error('Request limit exceeded.'), {
+        name: 'RequestLimitExceeded',
+      });
+      respond({ ...allocate, AssociateAddressCommand: () => Promise.reject(throttled) });
+      const error = await failure(() => provider.create('EipRetry', TYPE, { InstanceId: 'i-aaa' }));
+
+      const release = mockSend.mock.calls.find((x) => x[0].constructor.name === 'ReleaseAddressCommand');
+      expect(release?.[0].input).toEqual({ AllocationId: 'eipalloc-4583' });
+      expect(createdBeforeFailure(error, 'EipRetry', TYPE)).toBeUndefined();
+      expect(isMarkedNonRetryable(error)).toBe(false);
+    });
+
+    it('retries a throttled release, then leaves the error retryable (#4945)', async () => {
+      const throttled = (): Error =>
+        Object.assign(new Error('Request limit exceeded.'), { name: 'RequestLimitExceeded' });
+      let releases = 0;
+      respond({
+        ...allocate,
+        AssociateAddressCommand: () => Promise.reject(throttled()),
+        ReleaseAddressCommand: () => (++releases === 1 ? Promise.reject(throttled()) : Promise.resolve({})),
+      });
+      const error = await failure(() => provider.create('EipThrottled', TYPE, { InstanceId: 'i-aaa' }));
+
+      expect(releases).toBe(2);
+      expect(createdBeforeFailure(error, 'EipThrottled', TYPE)).toBeUndefined();
+      expect(isMarkedNonRetryable(error)).toBe(false);
+    });
+
+    it('keeps the mark when the release reads NotFound (a just-allocated address can)', async () => {
+      respond({
+        ...allocate,
+        AssociateAddressCommand: boom('associate boom'),
+        ReleaseAddressCommand: () =>
+          Promise.reject(
+            Object.assign(new Error('The allocation ID does not exist'), {
+              name: 'InvalidAllocationID.NotFound',
+            })
+          ),
+      });
+      const error = await failure(() => provider.create('EipNotFound', TYPE, { InstanceId: 'i-aaa' }));
+
+      expect(createdBeforeFailure(error, 'EipNotFound', TYPE)).toBe('54.0.0.9|eipalloc-4583');
+      expect(isMarkedNonRetryable(error)).toBe(true);
     });
 
     it('names nothing when AllocateAddress itself fails', async () => {
@@ -252,6 +309,8 @@ describe('EC2Provider create marks a resource its cleanup left behind (go-to-k/c
 
       expect((error as Error).message).toContain('wait boom');
       expect(createdBeforeFailure(error, 'NatLeft', TYPE)).toBe('nat-4583');
+      // Its ClientToken makes the replay return the same gateway.
+      expect(isMarkedNonRetryable(error)).toBe(false);
     });
 
     it('names nothing when CreateNatGateway itself fails', async () => {

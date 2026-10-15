@@ -27,6 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { EMRClusterProvider } from '../../../src/provisioning/providers/emr-cluster-provider.js';
 import { TerminateJobFlowsCommand } from '@aws-sdk/client-emr';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::Cluster';
 const CLUSTER_ID = 'j-1A2B3C4D5E6F7';
@@ -92,6 +93,7 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
 
     expect(terminateCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'ClusterA', TYPE)).toBe(CLUSTER_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('marks the cluster id when the protection flip fails before the terminate (pass-through arm)', async () => {
@@ -105,6 +107,7 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
 
     expect(terminateCalls()).toHaveLength(0);
     expect(createdBeforeFailure(error, 'ClusterB', TYPE)).toBe(CLUSTER_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('marks the cluster id when a raw failure follows RunJobFlow and the terminate FAILS (wrap arm)', async () => {
@@ -120,6 +123,7 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
     expect((error as Error).message).toMatch(/^Failed to create EMR Cluster ClusterC/);
     expect(terminateCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'ClusterC', TYPE)).toBe(CLUSTER_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('does not mark when the terminate succeeded (pass-through arm)', async () => {
@@ -134,6 +138,7 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
 
     expect(terminateCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'ClusterD', TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
   it('does not mark when the terminate succeeded (wrap arm)', async () => {
@@ -149,6 +154,7 @@ describe('EMRClusterProvider.create — created-before-failure mark (#4583)', ()
     expect((error as Error).message).toMatch(/^Failed to create EMR Cluster ClusterE/);
     expect(terminateCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'ClusterE', TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
   it("does not mark RunJobFlow's own failure", async () => {

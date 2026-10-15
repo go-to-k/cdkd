@@ -44,7 +44,11 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+  markSupersedesEarlierCreate,
+} from '../auxiliary-failure.js';
 import { createHash } from 'node:crypto';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
@@ -86,6 +90,15 @@ const pendingKeys = new Map<
   { keyId: string; keyArn: string; inputDigest: string; heldAtMs: number }
 >();
 
+/**
+ * go-to-k/cdkd#4945: attempt keys whose held key a retry DECLINED (and named
+ * in a warning). The next key `CreateKey` makes for that attempt key replaces
+ * it, so its error is stamped `markSupersedesEarlierCreate` even when the
+ * declining attempt's own `CreateKey` failed first. Consumed by that key, and
+ * aged out like `pendingKeys` (`AMBIGUOUS_LATCH_TTL_MS`).
+ */
+const supersededAttempts = new Map<string, number>();
+
 /** Key states a resumed key may be in. `PendingImport` is an `EXTERNAL`-origin key's normal state before material is imported. */
 const RESUMABLE_KEY_STATES: ReadonlySet<string> = new Set(['Enabled', 'Disabled', 'PendingImport']);
 
@@ -107,6 +120,7 @@ export function resetKmsCreateRetryStateForTests(): void {
   createKeyLatch.resetForTests();
   keysCreatedByThisProcess.resetForTests();
   pendingKeys.clear();
+  supersededAttempts.clear();
 }
 
 /**
@@ -313,11 +327,12 @@ export class KMSProvider implements ResourceProvider {
     // Set once the key exists: a later failure is an auxiliary call's, not
     // this key's collision (#3826).
     let createdKeyId: string | undefined;
+    let supersededPending = false;
     try {
       const resumed = await this.resumeKeyFromFailedAttempt(logicalId, attemptKey, inputDigest);
       let keyId: string;
       let keyArn: string;
-      if (resumed) {
+      if (resumed && resumed !== 'superseded') {
         ({ keyId, keyArn } = resumed);
       } else {
         const orphanWindow = createKeyLatch.take(logicalId);
@@ -339,6 +354,12 @@ export class KMSProvider implements ResourceProvider {
         setBounded(pendingKeys, attemptKey, { keyId, keyArn, inputDigest, heldAtMs: Date.now() });
         // Before the lookup below, so a throw in it still marks the key created.
         createdKeyId = keyId;
+        // go-to-k/cdkd#4945: this key replaces a held one a retry declined.
+        // Same age limit as the held key it replaced.
+        const declinedAtMs = supersededAttempts.get(attemptKey);
+        supersededAttempts.delete(attemptKey);
+        supersededPending =
+          declinedAtMs !== undefined && Date.now() - declinedAtMs <= AMBIGUOUS_LATCH_TTL_MS;
         // Issue #4687: the SDK replayed this CreateKey, so an earlier attempt
         // may have made a key too. Report only; the held key above is excluded.
         const replayWindow = replayedSendWindow(result, attemptStartMs);
@@ -406,6 +427,9 @@ export class KMSProvider implements ResourceProvider {
       // of it minted and this one resumed) is left behind; name it for the journal.
       if (createdKeyId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdKeyId);
+        // The retry resumes THIS key, so `withRetry` must not read it as a
+        // second key minted over the one an earlier attempt marked.
+        if (supersededPending) markSupersedesEarlierCreate(thrown);
       }
       throw thrown;
     }
@@ -455,7 +479,7 @@ export class KMSProvider implements ResourceProvider {
     logicalId: string,
     attemptKey: string,
     inputDigest: string
-  ): Promise<{ keyId: string; keyArn: string } | undefined> {
+  ): Promise<{ keyId: string; keyArn: string } | 'superseded' | undefined> {
     const pending = pendingKeys.get(attemptKey);
     if (!pending) return undefined;
     pendingKeys.delete(attemptKey);
@@ -466,11 +490,12 @@ export class KMSProvider implements ResourceProvider {
     const region = await this.regionArg(aws);
     const deletion =
       aws`aws kms schedule-key-deletion --key-id ${pending.keyId}${region} --pending-window-in-days 7`.render();
-    const notReused = (reason: string): undefined => {
+    const notReused = (reason: string): 'superseded' => {
       this.logger.warn(
         safeMsg`KMS key ${pending.keyId} was created for ${logicalId} by an earlier attempt of this deploy, but ${reason}, so this attempt creates a new key and that one is not recorded in cdkd state. If it is unused, schedule its deletion with: ${deletion}`
       );
-      return undefined;
+      setBounded(supersededAttempts, attemptKey, Date.now());
+      return 'superseded';
     };
     if (pending.inputDigest !== inputDigest) {
       return notReused('this attempt was asked for a key with different inputs');

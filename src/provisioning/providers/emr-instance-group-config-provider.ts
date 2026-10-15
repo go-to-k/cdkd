@@ -45,6 +45,7 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 
 /**
  * Default polling budget for an instance group reaching RUNNING. Adding a
@@ -350,9 +351,41 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
               undefined,
               error instanceof Error ? error : undefined
             );
+      // go-to-k/cdkd#4945: a TASK group a later step (the readiness wait)
+      // failed after is scaled to 0, what delete() does (EMR has no delete
+      // API), so a transient failure stays retryable and the empty group bills
+      // nothing. MASTER / CORE cannot be scaled to 0; a replay of either
+      // collides with the one this attempt added.
+      let leftBehindGroupId = createdGroupId;
+      if (leftBehindGroupId && properties['InstanceRole'] === 'TASK') {
+        // Masked like the orphan report: the cluster id is a template value.
+        const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+        try {
+          await this.getClient().send(
+            new ModifyInstanceGroupsCommand({
+              ClusterId: jobFlowId,
+              InstanceGroups: [{ InstanceGroupId: leftBehindGroupId, InstanceCount: 0 }],
+            })
+          );
+          log.warn(
+            safeMsg`Scaled partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0; EMR has no delete API, so the empty group stays on cluster ${log.value(jobFlowId)} until it terminates`
+          );
+          leftBehindGroupId = undefined;
+        } catch (cleanupError) {
+          log.warn(
+            safeMsg`Failed to scale partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0: ${describeAwsFailure(cleanupError).detail} — its instances are released when the parent cluster terminates`
+          );
+        }
+      }
       // go-to-k/cdkd#4583: the group exists once AddInstanceGroups returned its
       // id (the id delete() takes); name it for --revert-failed.
-      if (createdGroupId) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdGroupId);
+      if (leftBehindGroupId) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindGroupId);
+        // go-to-k/cdkd#4945: terminal. AddInstanceGroups sends no token, so the
+        // engine's retry would add another TASK group (or collide on a MASTER /
+        // CORE one) while the journal names one.
+        markNonRetryable(thrown);
+      }
       throw thrown;
     }
   }

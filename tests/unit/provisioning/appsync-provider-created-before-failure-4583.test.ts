@@ -42,6 +42,7 @@ import {
 } from '@aws-sdk/client-appsync';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::AppSync::GraphQLApi';
 const PROPS = {
@@ -89,7 +90,10 @@ describe('AppSyncProvider GraphQLApi createdBeforeFailure mark (go-to-k/cdkd#458
 
   it('marks the API id when the env-var put fails and the rollback delete fails', async () => {
     prime('fail');
-    expect(createdBeforeFailure(await failure(provider), 'Api', TYPE)).toBe('api-1');
+    const error = await failure(provider);
+    expect(createdBeforeFailure(error, 'Api', TYPE)).toBe('api-1');
+    // go-to-k/cdkd#4945: a replayed CreateGraphqlApi would make another API.
+    expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
   it('does not mark when the rollback delete succeeded', async () => {
@@ -97,6 +101,7 @@ describe('AppSyncProvider GraphQLApi createdBeforeFailure mark (go-to-k/cdkd#458
     const error = await failure(provider);
     expect(mockSend.mock.calls.some((c) => c[0] instanceof DeleteGraphqlApiCommand)).toBe(true);
     expect(createdBeforeFailure(error, 'Api', TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
   it('does not mark when CreateGraphqlApi itself fails', async () => {

@@ -325,6 +325,95 @@ export function hasCreatedBeforeFailure(error: unknown): boolean {
   return false;
 }
 
+/** The first {@link markCreatedBeforeFailure} mark on `error`'s bounded cause chain. */
+function firstCreatedMark(error: unknown): CreatedMark | undefined {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null;
+    depth++
+  ) {
+    const mark = createdMarkOn(current);
+    if (mark) return mark;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+const SUPERSEDES_EARLIER_CREATE = Symbol.for('cdkd.supersedesEarlierCreate');
+
+/**
+ * Declare that the create raising `error` knowingly replaced the resource an
+ * earlier attempt left behind, rather than replaying blindly: KMS creates a
+ * new key when the pending one cannot be resumed (warning that the old one is
+ * unrecorded), and a retry then resumes the NEW one. {@link
+ * replayMadeAnotherResource} does not read such an error as a mint. Same
+ * descriptor shape as the created mark; returns `error`. Never throws.
+ */
+export function markSupersedesEarlierCreate<E>(error: E): E {
+  try {
+    if (typeof error !== 'object' || error === null || !Object.isExtensible(error)) return error;
+    Object.defineProperty(error, SUPERSEDES_EARLIER_CREATE, {
+      value: true,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  } catch {
+    // Unmarkable: left as it is.
+  }
+  return error;
+}
+
+function supersedesEarlierCreate(error: unknown): boolean {
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < MAX_DEPTH * 2 && typeof current === 'object' && current !== null;
+    depth++
+  ) {
+    if ((current as Record<symbol, unknown>)[SUPERSEDES_EARLIER_CREATE] === true) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Whether `later` carries a {@link markCreatedBeforeFailure} mark for the same
+ * logical id and type as `earlier`'s that shares NO member with it
+ * (go-to-k/cdkd#4945). That is proof the replay made a second resource
+ * instead of resuming the one the earlier attempt left behind.
+ *
+ * Members, not the whole id: the SNS / SQS policy providers mark the
+ * comma-joined set of targets written so far, which grows (or, failing
+ * earlier, shrinks) across attempts of one idempotent create. A provider that
+ * resumes (a remembered id, an idempotency token, its own leftover hold) marks
+ * the same id again, and every type whose create mints per replay marks a
+ * single AWS-generated id with no comma. An error stamped
+ * {@link markSupersedesEarlierCreate} is never read as a mint. Never throws.
+ */
+export function replayMadeAnotherResource(earlier: unknown, later: unknown): boolean {
+  try {
+    const before = firstCreatedMark(earlier);
+    const after = firstCreatedMark(later);
+    if (
+      before === undefined ||
+      after === undefined ||
+      before.logicalId !== after.logicalId ||
+      before.resourceType !== after.resourceType ||
+      supersedesEarlierCreate(later)
+    ) {
+      return false;
+    }
+    // Empty members dropped, so `a,` and `b,` do not share a member.
+    const members = (id: string): string[] => id.split(',').filter((member) => member !== '');
+    const earlierMembers = new Set(members(before.physicalId));
+    return !members(after.physicalId).some((member) => earlierMembers.has(member));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Carry a {@link markCreatedBeforeFailure} mark from an EARLIER attempt's
  * error onto the error a retry loop finally throws, unless that one carries a

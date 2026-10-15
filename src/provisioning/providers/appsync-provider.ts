@@ -119,7 +119,11 @@ import {
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { isSecretDerivedValue } from '../masked-retry-logger.js';
-import { markRedactedCause, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 
 /**
  * Retry-safety state for `CreateGraphqlApi`, which has no idempotency token
@@ -2988,6 +2992,9 @@ export class AppSyncProvider implements ResourceProvider {
       // record; name it for the failed-CREATE journal.
       if (apiLeftBehind && createdApiId) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdApiId);
+        // go-to-k/cdkd#4945: terminal. CreateGraphqlApi sends no name and no token, so the
+        // engine's retry would make another API while the journal names one.
+        markNonRetryable(thrown);
       }
       throw thrown;
     }

@@ -382,6 +382,15 @@ implementation. Three details are worth copying:
     a provider whose delete would reach beyond what the create wrote (`AWS::IAM::Policy`
     walks every listed principal) removes its own writes in the catch instead
     (issue [#4583](https://github.com/go-to-k/cdkd/issues/4583)).
+    A create that sends no name and no idempotency token, and does not resume
+    its leftover on the next attempt, also marks that error `markNonRetryable`
+    (`AWS::IAM::AccessKey`): the engine's retry would make another resource,
+    and the journal names one per failed CREATE. Like any mark, only after its
+    own cleanup failed, so a transient failure stays retryable. `withRetry`
+    stops by itself only once a replay's mark shares no comma-separated member
+    with the earlier one, after the second resource is made; a create that
+    knowingly replaces its leftover stamps `markSupersedesEarlierCreate` (KMS)
+    (issue [#4945](https://github.com/go-to-k/cdkd/issues/4945)).
 
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared

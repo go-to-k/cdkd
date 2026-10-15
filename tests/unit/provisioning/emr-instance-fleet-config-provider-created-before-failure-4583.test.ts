@@ -46,6 +46,7 @@ import {
   resetEMRInstanceFleetCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/emr-instance-fleet-config-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::InstanceFleetConfig';
 const FLEET_ID = 'if-ABC123';
@@ -91,6 +92,7 @@ describe('EMRInstanceFleetConfigProvider create marks a created-before-failure f
     );
     const error = await createError();
     expect(createdBeforeFailure(error, 'Fleet', TYPE)).toBe(FLEET_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('marks the fleet id when the readiness poll throws a non-transient error', async () => {
@@ -104,6 +106,7 @@ describe('EMRInstanceFleetConfigProvider create marks a created-before-failure f
     );
     const error = await createError();
     expect(createdBeforeFailure(error, 'Fleet', TYPE)).toBe(FLEET_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('leaves no mark when AddInstanceFleet itself fails', async () => {

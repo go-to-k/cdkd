@@ -20,12 +20,13 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from './retryable-errors.js';
-import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+import { displaySafe, safeMsg, UNRENDERABLE } from '../utils/display-safe.js';
 import {
   carryCreatedBeforeFailure,
   hasCreatedBeforeFailure,
   isAuxiliaryFailure,
   markAuxiliaryFailure,
+  replayMadeAnotherResource,
   RETRY_AUXILIARY_OWNER,
 } from '../provisioning/auxiliary-failure.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
@@ -429,6 +430,14 @@ export async function withRetry<T>(
       return await operation();
     } catch (error) {
       lastError = error;
+      // go-to-k/cdkd#4945: this attempt's create made a resource OTHER than the
+      // one an earlier attempt left behind (marks sharing no member), so every
+      // further replay mints one more: a create that takes no name to collide
+      // on, which its provider did not declare terminal. A provider that knowingly
+      // replaced its leftover (KMS) stamps the error so it is not read as one.
+      // Read before `previousError` moves on. The journal keeps one id per
+      // failed CREATE: this error's own mark, as before.
+      const replayMadeAnother = replayMadeAnotherResource(previousError, error);
       // Kept as the mark's source when this error could not take it (a
       // frozen or primitive throw), so a later attempt's error still can.
       const carried = carryCreatedBeforeFailure(previousError, error);
@@ -472,6 +481,20 @@ export async function withRetry<T>(
       // Hoisting the check above the branch fences every caller at once,
       // without widening a single classifier signature.
       if (isMarkedNonRetryable(error)) {
+        throw settle(error);
+      }
+      // Terminal for every classifier, like the marker above: a replay that
+      // cannot resume is never retried again. Names no id: a physical id can be
+      // secret-derived, and this logger has no mask; the provider's own line
+      // names what it left.
+      if (replayMadeAnother) {
+        try {
+          opts.logger?.warn?.(
+            safeMsg`${shownId}: not retrying - a retried create made another resource instead of resuming the one an earlier attempt left behind, and only the latest is recorded for \`cdkd rollback --revert-failed\`. Find the earlier one and delete it by hand`
+          );
+        } catch {
+          // ignore -- the error below is what matters
+        }
         throw settle(error);
       }
 

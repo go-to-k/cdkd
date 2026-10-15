@@ -43,7 +43,11 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  isTransientServerError,
+  markNonRetryable,
+} from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import {
@@ -2105,6 +2109,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // record; name it for the failed-CREATE journal.
       if (poolLeftBehind && createdUserPoolId) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdUserPoolId);
+        // go-to-k/cdkd#4945: terminal. CreateUserPool sends no name and no token, so the
+        // engine's retry would make another pool while the journal names one.
+        markNonRetryable(thrown);
       }
       throw thrown;
     }

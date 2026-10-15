@@ -64,6 +64,7 @@ import {
 } from '../../../src/provisioning/providers/lambda-web-function-arns.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 const FN_ARN = 'arn:aws:lambda:us-east-1:123456789012:web-function/my-fn';
@@ -206,7 +207,27 @@ describe('LambdaWebFunctionRevisionProvider', () => {
     );
     const error = await provider.create('Rev', REV_TYPE, props).catch((e: unknown) => e);
     expect(String(error)).toContain('entered Failed: build failed (E1 bad zip)');
+    // Premise: the cleanup delete was refused (no DeleteWebFunctionRevision answer).
+    expect(callsOf(DeleteWebFunctionRevisionCommand)).toHaveLength(1);
     expect(createdBeforeFailure(error, 'Rev', REV_TYPE)).toBe(REV_ARN);
+    // go-to-k/cdkd#4945: a replayed CreateWebFunctionRevision would make another.
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('create deletes the revision a later step failed after, leaving the error retryable (#4945)', async () => {
+    const throttled = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
+        ['GetWebFunctionRevisionCommand', [throttled, notFound()]],
+        ['DeleteWebFunctionRevisionCommand', [{}]],
+      ])
+    );
+    const error = await provider.create('Rev', REV_TYPE, props).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(callsOf(DeleteWebFunctionRevisionCommand)).toHaveLength(1);
+    expect(createdBeforeFailure(error, 'Rev', REV_TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
   it('create marks nothing when CreateWebFunctionRevision itself fails', async () => {

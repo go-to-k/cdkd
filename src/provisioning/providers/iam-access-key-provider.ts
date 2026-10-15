@@ -13,7 +13,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
@@ -356,6 +356,11 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       );
       if (leftBehindKeyId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindKeyId);
+        // go-to-k/cdkd#4945: terminal. `CreateAccessKey` takes no name and no
+        // token, so the engine's retry (a denied `UpdateAccessKey` reads like
+        // IAM propagation) would mint a second key, filling the user's 2-key
+        // quota while the journal names one of them.
+        markNonRetryable(thrown);
       }
       throw thrown;
     }

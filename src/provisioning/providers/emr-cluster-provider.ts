@@ -34,6 +34,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   pasteableAwsCommand,
@@ -604,6 +605,9 @@ export class EMRClusterProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) {
         if (survivorId !== undefined) {
           markCreatedBeforeFailure(error, logicalId, resourceType, survivorId);
+          // go-to-k/cdkd#4945: terminal. RunJobFlow sends no name and no token, so the
+          // engine's retry would make another cluster while the journal names one.
+          markNonRetryable(error);
         }
         throw error;
       }
@@ -612,6 +616,7 @@ export class EMRClusterProvider implements ResourceProvider {
       if (survivorId !== undefined) {
         const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
         markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
+        markNonRetryable(thrown);
         throw thrown;
       }
       throw new ProvisioningError(message, resourceType, logicalId, undefined, cause);

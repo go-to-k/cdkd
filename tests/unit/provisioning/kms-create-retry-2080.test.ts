@@ -62,6 +62,8 @@ import {
   resetKmsCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/kms-provider.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { replayMadeAnotherResource } from '../../../src/provisioning/auxiliary-failure.js';
+import { AMBIGUOUS_LATCH_TTL_MS } from '../../../src/provisioning/providers/ambiguous-create.js';
 
 /** The shape `isTransientServerError` / `isAmbiguousOutcomeError` classify (issue #2026). */
 const transient500 = (): Error =>
@@ -377,6 +379,86 @@ describe('KMSProvider CreateKey retry safety (issue #2080)', () => {
 
       expect(aws.keys.map((k) => k.KeyState)).toEqual(['PendingImport']);
       expect(result.physicalId).toBe('key-001');
+    });
+
+    it('a fresh key made over a declined held one is resumed by the next retry (#4945)', async () => {
+      // Attempt 1 makes key-001, attempt 2 declines it (DescribeKey refused)
+      // and makes key-002; both follow-ups are denied. The two marks name
+      // different keys, and `withRetry` must still resume key-002 on attempt 3.
+      aws.failNext.set('EnableKeyRotationCommand', [propagationDenied(), propagationDenied()]);
+      aws.failNext.set('DescribeKeyCommand', [
+        Object.assign(new Error('not found'), {
+          name: 'NotFoundException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-002');
+      expect(aws.count('CreateKeyCommand')).toBe(2);
+      expect(aws.count('EnableKeyRotationCommand')).toBe(3);
+    });
+
+    it("the replacement stays a resume when the declining attempt's own CreateKey failed (#4945)", async () => {
+      // Attempt 1 makes key-001 (follow-up denied); attempt 2 declines it and
+      // its CreateKey is throttled; attempt 3 makes key-002 (follow-up denied);
+      // attempt 4 resumes key-002.
+      aws.failNext.set('EnableKeyRotationCommand', [propagationDenied(), propagationDenied()]);
+      aws.failNext.set('DescribeKeyCommand', [
+        Object.assign(new Error('not found'), {
+          name: 'NotFoundException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+      const throttled = Object.assign(new Error('Rate exceeded'), {
+        name: 'ThrottlingException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      });
+      const sendKms = aws.send;
+      let creates = 0;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'CreateKeyCommand' && ++creates === 2) {
+          return Promise.reject(throttled);
+        }
+        return sendKms(command as never);
+      });
+
+      const result = await createWithRetry();
+
+      expect(result.physicalId).toBe('key-002');
+      expect(creates).toBe(3);
+    });
+
+    it('a declined hold older than the TTL no longer marks the next key a replacement (#4945)', async () => {
+      aws.failNext.set('EnableKeyRotationCommand', [propagationDenied(), propagationDenied()]);
+      const first = await provider.create('Key', 'AWS::KMS::Key', KEY_PROPS).catch((e: unknown) => e);
+      aws.failNext.set('DescribeKeyCommand', [
+        Object.assign(new Error('not found'), {
+          name: 'NotFoundException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        }),
+      ]);
+      // The declining attempt's own CreateKey fails, leaving the decline remembered.
+      const sendKms = aws.send;
+      let creates = 0;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'CreateKeyCommand' && ++creates === 1) {
+          return Promise.reject(new Error('CreateKey refused'));
+        }
+        return sendKms(command as never);
+      });
+      await expect(provider.create('Key', 'AWS::KMS::Key', KEY_PROPS)).rejects.toThrow();
+      vi.setSystemTime(Date.now() + AMBIGUOUS_LATCH_TTL_MS + 1);
+
+      const later = await provider.create('Key', 'AWS::KMS::Key', KEY_PROPS).catch((e: unknown) => e);
+
+      expect(creates).toBe(2);
+      expect(replayMadeAnotherResource(first, later)).toBe(true);
     });
 
     it('a DEFINITE DescribeKey failure on the held key creates a fresh key and names the old one', async () => {

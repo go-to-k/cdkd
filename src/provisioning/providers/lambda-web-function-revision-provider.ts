@@ -31,12 +31,14 @@ import {
 } from './orphan-report.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { definedAttributes } from '../attribute-map.js';
 import { coerceCfnInteger } from '../config-shape.js';
 import type {
@@ -188,9 +190,28 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
       return { physicalId: createdArn, attributes: buildAttributes(active) };
     } catch (error) {
       const thrown = this.wrapError('create', logicalId, resourceType, undefined, error);
+      // go-to-k/cdkd#4945: delete the revision a later step (the readiness
+      // wait) failed after, so a transient failure stays retryable.
+      let leftBehindArn = createdArn;
+      if (leftBehindArn) {
+        try {
+          await this.delete(logicalId, leftBehindArn, resourceType);
+          leftBehindArn = undefined;
+        } catch (cleanupError) {
+          log.warn(
+            safeMsg`Failed to delete partially-created Lambda web function revision ${logicalId}: ${describeAwsFailure(cleanupError).detail}. The failed deploy records it for \`cdkd rollback --revert-failed\`, or delete it by hand`
+          );
+        }
+      }
       // The revision exists once CreateWebFunctionRevision returned its ARN (the
       // id delete() takes); name it for --revert-failed (go-to-k/cdkd#4583).
-      if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
+      if (leftBehindArn) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
+        // go-to-k/cdkd#4945: terminal. CreateWebFunctionRevision sends no name
+        // and no token, so the engine's retry would make another revision while
+        // the journal names one.
+        markNonRetryable(thrown);
+      }
       throw thrown;
     }
   }

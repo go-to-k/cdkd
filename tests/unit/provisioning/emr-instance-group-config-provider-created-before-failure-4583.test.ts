@@ -46,6 +46,7 @@ import {
   resetEMRInstanceGroupCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/emr-instance-group-config-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::InstanceGroupConfig';
 const GROUP_ID = 'ig-ABC123';
@@ -56,7 +57,10 @@ const PROPS = {
   InstanceCount: 1,
 };
 
-/** Route by command name: `AddInstanceGroupsCommand` and `ListInstanceGroupsCommand` answer from the given handlers. */
+/**
+ * Route by command name: `AddInstanceGroupsCommand` and `ListInstanceGroupsCommand` answer from the
+ * given handlers. Anything else (the #4945 scale-to-0 cleanup) is refused, so a TASK group stays marked.
+ */
 function routeSend(add: () => unknown, list: () => unknown): void {
   mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
     if (command.constructor.name === 'AddInstanceGroupsCommand') return add();
@@ -91,6 +95,46 @@ describe('EMRInstanceGroupConfigProvider create marks a created-before-failure g
     );
     const error = await createError();
     expect(createdBeforeFailure(error, 'Group', TYPE)).toBe(GROUP_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
+  });
+
+  it('scales a TASK group to 0 after a later failure, leaving the error retryable (#4945)', async () => {
+    const modify: unknown[] = [];
+    mockSend.mockImplementation(async (command: { constructor: { name: string }; input: unknown }) => {
+      if (command.constructor.name === 'AddInstanceGroupsCommand') return { InstanceGroupIds: [GROUP_ID] };
+      if (command.constructor.name === 'ListInstanceGroupsCommand') {
+        return {
+          InstanceGroups: [
+            { Id: GROUP_ID, Status: { State: 'ARRESTED', StateChangeReason: { Message: 'boom' } } },
+          ],
+        };
+      }
+      if (command.constructor.name === 'ModifyInstanceGroupsCommand') {
+        modify.push(command.input);
+        return {};
+      }
+      throw new Error(`unexpected command ${command.constructor.name}`);
+    });
+    const error = await createError();
+    expect(modify).toEqual([
+      { ClusterId: 'j-CLUSTER', InstanceGroups: [{ InstanceGroupId: GROUP_ID, InstanceCount: 0 }] },
+    ]);
+    expect(createdBeforeFailure(error, 'Group', TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it('marks a CORE group, which cannot be scaled to 0, without trying', async () => {
+    routeSend(
+      () => ({ InstanceGroupIds: [GROUP_ID] }),
+      () => ({
+        InstanceGroups: [
+          { Id: GROUP_ID, Status: { State: 'ARRESTED', StateChangeReason: { Message: 'boom' } } },
+        ],
+      })
+    );
+    const error = await createError({ ...PROPS, InstanceRole: 'CORE' });
+    expect(createdBeforeFailure(error, 'Group', TYPE)).toBe(GROUP_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
   it('marks the group id when the readiness poll throws a non-transient error', async () => {
@@ -104,6 +148,7 @@ describe('EMRInstanceGroupConfigProvider create marks a created-before-failure g
     );
     const error = await createError();
     expect(createdBeforeFailure(error, 'Group', TYPE)).toBe(GROUP_ID);
+    expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
   });
 
   it('leaves no mark when AddInstanceGroups itself fails', async () => {

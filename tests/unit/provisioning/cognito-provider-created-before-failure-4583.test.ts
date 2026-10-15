@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::Cognito::UserPool';
 const POOL_ID = 'us-east-1_abc123';
@@ -71,7 +72,10 @@ describe('CognitoUserPoolProvider createdBeforeFailure mark (go-to-k/cdkd#4583)'
 
   it('marks the pool id when SetUserPoolMfaConfig fails and the rollback delete fails', async () => {
     prime('fail');
-    expect(createdBeforeFailure(await failure(provider, MFA_PROPS), 'Pool', TYPE)).toBe(POOL_ID);
+    const error = await failure(provider, MFA_PROPS);
+    expect(createdBeforeFailure(error, 'Pool', TYPE)).toBe(POOL_ID);
+    // go-to-k/cdkd#4945: a replayed CreateUserPool would make another pool.
+    expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
   it('does not mark when the rollback delete succeeded', async () => {
@@ -79,6 +83,7 @@ describe('CognitoUserPoolProvider createdBeforeFailure mark (go-to-k/cdkd#4583)'
     const error = await failure(provider, MFA_PROPS);
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteUserPoolCommand');
     expect(createdBeforeFailure(error, 'Pool', TYPE)).toBeUndefined();
+    expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
   it('does not mark when CreateUserPool itself fails', async () => {

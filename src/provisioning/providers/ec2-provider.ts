@@ -182,7 +182,13 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
-import { markNonRetryable, THROTTLING_ERROR_NAMES } from '../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  markNonRetryable,
+  THROTTLING_ERROR_NAMES,
+} from '../../deployment/retryable-errors.js';
+import { withRetry } from '../../deployment/retry.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
 import {
   getPriorAttempts,
   markRefusedBeforeApplying,
@@ -1755,6 +1761,9 @@ export class EC2Provider implements ResourceProvider {
       );
       if (leftBehindId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
+        // go-to-k/cdkd#4945: terminal. CreateVpc sends no name and no token, so the
+        // engine's retry would make another VPC while the journal names one.
+        markNonRetryable(thrown);
       }
       throw thrown;
     }
@@ -2560,6 +2569,7 @@ export class EC2Provider implements ResourceProvider {
     // call's (the association), not this address's (#3826).
     let created = false;
     let createdId: string | undefined;
+    let allocatedId: string | undefined;
     try {
       const input: AllocateAddressCommandInput = {
         Domain: requireConfigString(
@@ -2589,6 +2599,7 @@ export class EC2Provider implements ResourceProvider {
 
       created = true;
       allocationId = response.AllocationId!;
+      allocatedId = allocationId;
       publicIp = response.PublicIp!;
       // go-to-k/cdkd#4583: the id delete() takes, should a later call fail.
       // `deleteEip` also accepts a bare allocation id, the fallback if the
@@ -2646,6 +2657,39 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully created EIP ${logicalId}: ${allocationId} (${publicIp})`);
     } catch (error) {
       if (created) markAuxiliaryFailure(error, logicalId);
+      // go-to-k/cdkd#4945: release the address a later call (tags, the
+      // association) failed after, so a transient failure stays retryable.
+      // An address the association did attach is refused here and kept.
+      if (createdId !== undefined && allocatedId !== undefined) {
+        try {
+          // Throttles retried: the usual failure here is a `RequestLimitExceeded`
+          // the SDK gave up on, which this call would hit too. A NotFound is
+          // NOT read as released: a just-allocated address can read so.
+          const releaseId = allocatedId;
+          const watch = startInterruptWatch(`EIP ${logicalId} release`);
+          try {
+            await withRetry(
+              () => this.ec2Client.send(new ReleaseAddressCommand({ AllocationId: releaseId })),
+              logicalId,
+              {
+                maxRetries: 4,
+                initialDelayMs: 500,
+                isRetryable: (_text, releaseError) => isThrottlingError(releaseError),
+                isInterrupted: watch.isInterrupted,
+                onInterrupted: watch.onInterrupted,
+              }
+            );
+          } finally {
+            watch.dispose();
+          }
+          createdId = undefined;
+          this.logger.debug(safeMsg`Released partially-created EIP ${logicalId} (${allocatedId})`);
+        } catch (cleanupError) {
+          this.logger.warn(
+            safeMsg`Failed to release partially-created EIP ${logicalId} (${allocatedId}): ${describeAwsFailure(cleanupError).detail}. Manual release may be required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 release-address --allocation-id ${allocatedId}`.render()}`
+          );
+        }
+      }
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
         `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2654,9 +2698,11 @@ export class EC2Provider implements ResourceProvider {
         undefined,
         cause
       );
-      // No cleanup releases the address on a later failure (go-to-k/cdkd#4583).
       if (createdId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdId);
+        // go-to-k/cdkd#4945: terminal. AllocateAddress sends no token, so the
+        // engine's retry would allocate another address while the journal names one.
+        markNonRetryable(thrown);
       }
       throw thrown;
     }
