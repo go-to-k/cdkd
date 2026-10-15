@@ -78,6 +78,10 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // sentence) failing fast.
   'Received Exception while reading from provided stream. The security token included in the request is invalid',
   'role defined for the function',
+  // Matches an EXPLICIT deny's wording too ("... is not authorized to perform:
+  // s3:CreateBucket ... with an explicit deny in a service control policy"),
+  // which no wait lifts: `isExplicitDenyError` (transient.ts) vetoes that
+  // case before this table is consulted (go-to-k/cdkd#4969).
   'not authorized to perform',
   'execution role',
   'trust policy',

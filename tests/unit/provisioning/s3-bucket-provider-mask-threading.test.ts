@@ -249,7 +249,8 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
       // Every applier ran: its own line is in the transcript, masked.
       for (const line of [
         'Applied versioning',
-        'tags to bucket',
+        // No tags line: `CreateBucket` carries the tags (go-to-k/cdkd#4969),
+        // so the create path issues no `PutBucketTagging`.
         'Applied CORS configuration',
         'Applied lifecycle configuration',
         'Applied public access block',
@@ -859,7 +860,7 @@ describe('S3BucketProvider masked log sinks (issue #2177)', () => {
 
         const text = transcript();
         expect(names(text, SHORT)).toBe(false);
-        expect(text).toContain(`Applied 1 tags to bucket ${SHORT_ID}`);
+        expect(text).toContain(`Created S3 bucket: ${SHORT_ID}`);
       }
 
       // Nothing was cached on the singleton: it carries no masker, a later

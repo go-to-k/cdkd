@@ -456,6 +456,8 @@ export function formatRetryClassificationSignals(error: unknown): string {
  *      declaration, ahead of every message / name heuristic below. FIRST on
  *      purpose: the marker states the error cannot succeed on a retry, so
  *      nothing a later check reads out of the message can overturn it.
+ *   0b. {@link isExplicitDenyError} — a policy's explicit `Deny` is terminal
+ *      too (go-to-k/cdkd#4969); retrying cannot lift it.
  *   1. Rate-limit signal on the error or any wrapped cause — throttling error
  *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
  *      429, so the name check carries most of the weight). See
@@ -468,6 +470,9 @@ export function formatRetryClassificationSignals(error: unknown): string {
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {
   if (isMarkedNonRetryable(error)) return false;
+  // go-to-k/cdkd#4969: a policy's `Deny` statement does not lift with time, so
+  // it must not reach the `not authorized to perform` propagation pattern below.
+  if (isExplicitDenyError(message)) return false;
   if (isThrottlingError(error)) return true;
   // Issue #2026: a transient SERVER error (HTTP 500 / 502 / 503 / 504). Placed
   // after the throttle check and before the message patterns because it is the
@@ -617,5 +622,76 @@ export function retryClassificationText(error: unknown): string {
  * original error in a `ProvisioningError` that preserves it.
  */
 export function isIamPropagationError(message: string): boolean {
+  if (isExplicitDenyError(message)) return false;
   return IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
+}
+
+/**
+ * The phrase AWS puts in an access-denied message when a policy's `Deny`
+ * statement refused the call (IAM User Guide, "Troubleshoot access denied
+ * error messages": "AWS includes the phrase `with an explicit deny in a {type}
+ * policy`"). Kept without the trailing `in`: the older format ended the
+ * sentence at `with an explicit deny`, and the role-trust form reads `in the`.
+ */
+const EXPLICIT_DENY_PHRASE = 'with an explicit deny';
+
+/**
+ * The policy types that IAM User Guide page names after
+ * {@link EXPLICIT_DENY_PHRASE}, in the spelling AWS uses. Fixed constants, so
+ * {@link explicitDenyPolicyKind} can name the type in a thrown message
+ * without echoing anything else from AWS's text (which names the caller's
+ * account, role and session, and may carry a policy ARN).
+ */
+const EXPLICIT_DENY_POLICY_KINDS: readonly string[] = [
+  'service control policy',
+  'resource control policy',
+  'identity-based policy',
+  'resource-based policy',
+  'permissions boundary',
+  'session policy',
+  'VPC endpoint policy',
+  'role trust policy',
+];
+
+/**
+ * True when an access-denied message says a policy EXPLICITLY denied the call
+ * (go-to-k/cdkd#4969).
+ *
+ * An explicit deny -- from an SCP, an RCP, an identity- or resource-based
+ * policy, a permissions boundary, a session policy, a VPC endpoint policy or a
+ * role trust policy -- is not an IAM-propagation race: waiting does not remove
+ * a `Deny` statement. Without this check the generic `not authorized to
+ * perform` propagation pattern matched it, and the call spent the whole dense
+ * propagation budget (~47.75s) before surfacing; an SCP requiring tags on
+ * `s3:CreateBucket` was the reported case. {@link isRetryableTransientError}
+ * and {@link isIamPropagationError} both answer `false` for it.
+ *
+ * The cost, recorded here as the site where it was decided: a deny being
+ * REMOVED in the same deploy (an updated permissions boundary, say) and still
+ * propagating now fails on its first answer instead of being waited out. That
+ * shape is rare, its retry is a re-run, and the common one -- a standing
+ * organization or account guardrail -- is what this fails fast on.
+ *
+ * Read it on {@link retryClassificationText}, never on a redacted top-level
+ * message: S3's wrapper withholds AWS's wording (issue #2302), so the phrase is
+ * only on the `cause` chain there.
+ */
+export function isExplicitDenyError(message: string): boolean {
+  return message.includes(EXPLICIT_DENY_PHRASE);
+}
+
+/**
+ * Which policy type an explicit deny names ({@link EXPLICIT_DENY_POLICY_KINDS}),
+ * or `undefined` when the message is not an explicit deny or names no type
+ * this list knows. Returns one of the fixed constants, never AWS's text, so the
+ * result is safe for a thrown message that must not carry caller identity.
+ */
+export function explicitDenyPolicyKind(message: string): string | undefined {
+  const at = message.indexOf(EXPLICIT_DENY_PHRASE);
+  if (at < 0) return undefined;
+  const rest = message.slice(at + EXPLICIT_DENY_PHRASE.length);
+  const article = /^ in (?:a|an|the) /.exec(rest);
+  if (article === null) return undefined;
+  const tail = rest.slice(article[0].length);
+  return EXPLICIT_DENY_POLICY_KINDS.find((kind) => tail.startsWith(kind));
 }

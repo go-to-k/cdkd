@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateBucketCommand,
   DeleteBucketTaggingCommand,
   GetBucketLocationCommand,
   GetBucketTaggingCommand,
@@ -226,10 +227,12 @@ describe('S3BucketProvider Tags (go-to-k/cdkd#3994)', () => {
     }
   });
 
-  it('creates with the desired tags', async () => {
+  it('creates with the desired tags, on CreateBucket itself (go-to-k/cdkd#4969)', async () => {
     await provider.create('B', TYPE, { ...BASE, Tags: DESIRED });
-    expect(tagWrites()).toEqual([
-      ['PutBucketTaggingCommand', { Bucket: BUCKET, Tagging: { TagSet: DESIRED } }],
-    ]);
+    const create = commands().find((c) => c instanceof CreateBucketCommand) as
+      | CreateBucketCommand
+      | undefined;
+    expect(create?.input.CreateBucketConfiguration?.Tags).toEqual(DESIRED);
+    expect(tagWrites()).toEqual([]);
   });
 });
