@@ -36,6 +36,8 @@ export {
   isRetryableTransientError,
   retryClassificationText,
   isIamPropagationError,
+  isExplicitDenyError,
+  explicitDenyPolicyKind,
 } from './retryable-errors/transient.js';
 export {
   isNameCollisionError,

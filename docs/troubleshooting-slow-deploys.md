@@ -152,9 +152,12 @@ depends on the kind of error:
 
 An access denial that says the call was refused `with an explicit deny` (by a
 service control policy, a permissions boundary, a bucket policy or any other
-policy's `Deny` statement) is never retried, even though its message contains
-`not authorized to perform`: waiting does not lift a `Deny`. cdkd fails on the
-first answer, and an S3 bucket error names the policy type.
+policy's `Deny` statement) is not retried on the schedules above, even though
+its message contains `not authorized to perform`: waiting does not lift a
+`Deny`. cdkd fails on the first answer, and an S3 bucket error names the policy
+type. A few resources keep a small retry of their own outside these schedules,
+such as the `AWS::ApiGateway::Account` CloudWatch-role update and a custom resource's re-invoke
+described below.
 
 Two kinds of resource are outside this retry: custom resources (`Custom::*`
 and `AWS::CloudFormation::CustomResource`) and nested stacks

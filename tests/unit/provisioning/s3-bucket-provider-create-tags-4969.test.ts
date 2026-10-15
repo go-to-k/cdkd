@@ -44,6 +44,7 @@ import {
 import {
   isRetryableTransientError,
   isIamPropagationError,
+  isMarkedNonRetryable,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 
@@ -215,13 +216,18 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     expect(creates()).toHaveLength(1);
   });
 
-  it('when both creates are denied, the s3:TagResource denial surfaces (the cause to fix), keeping its retry', async () => {
+  it('when both creates are denied implicitly, the s3:TagResource denial surfaces (the cause to fix), keeping its retry', async () => {
     answer([
       () => {
         throw TAG_RESOURCE_DENIAL();
       },
       () => {
-        throw SCP_DENIAL();
+        throw awsError(
+          'AccessDenied',
+          `User: arn:aws:sts::${ACCOUNT}:assumed-role/Deployer/s is not authorized to perform: ` +
+            `s3:CreateBucket on resource: "arn:aws:s3:::${BUCKET}" because no identity-based ` +
+            `policy allows the s3:CreateBucket action`
+        );
       },
     ]);
 
@@ -272,6 +278,91 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     expect(retryClassificationText(err)).not.toContain('s3:TagResource');
     expect(err.message).toContain('BucketAlreadyExists');
     expect(err.message).not.toContain('needs s3:TagResource');
+  });
+
+  it('a role without s3:TagResource under an SCP requiring tags fails fast, naming both causes', async () => {
+    answer([
+      () => {
+        throw TAG_RESOURCE_DENIAL();
+      },
+      () => {
+        throw SCP_DENIAL();
+      },
+    ]);
+
+    const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    expect(creates()).toHaveLength(2);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(isRetryableTransientError(err, retryClassificationText(err))).toBe(false);
+    expect(err.message).toContain('Creating a bucket with tags needs s3:TagResource.');
+    expect(err.message).toContain(
+      'The untagged retry was refused by an explicit deny (service control policy), which retrying cannot clear.'
+    );
+    expect(err.message).not.toContain(ACCOUNT);
+    expect(err.message).not.toContain('arn:aws:organizations');
+  });
+
+  it.each([
+    ['MalformedXML', 'The XML you provided was not well-formed or did not validate against our published schema', 400],
+    ['NotImplemented', 'A header you provided implies functionality that is not implemented', 501],
+    ['InvalidArgument', 'Tags are not supported in this Region', 400],
+  ])('a %s refusal of the Tags member falls back to untagged create + PutBucketTagging', async (name, message, status) => {
+    clientRegion.value = 'ap-northeast-1';
+    answer([
+      () => {
+        throw awsError(name, message, status);
+      },
+    ]);
+
+    await provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS });
+
+    expect(creates()).toHaveLength(2);
+    expect(creates()[1]!.input.CreateBucketConfiguration).toEqual({
+      LocationConstraint: 'ap-northeast-1',
+    });
+    expect(puts().map((c) => c.input)).toEqual([{ Bucket: BUCKET, Tagging: { TagSet: TAGS } }]);
+  });
+
+  it.each([
+    ['InvalidArgument', 'Invalid storage class'],
+    ['InvalidTag', 'The TagValue you have provided is invalid'],
+  ])('a %s refusal not about the Tags member is not retried untagged', async (name, message) => {
+    answer([
+      () => {
+        throw awsError(name, message, 400);
+      },
+    ]);
+
+    await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    expect(creates()).toHaveLength(1);
+    expect(puts()).toEqual([]);
+  });
+
+  it('a shape refusal on an UNTAGGED create is not retried', async () => {
+    answer([
+      () => {
+        throw awsError('MalformedXML', 'not well-formed', 400);
+      },
+    ]);
+
+    await failure(() => provider.create('B', TYPE, { BucketName: BUCKET }));
+    expect(creates()).toHaveLength(1);
+  });
+
+  it('after a shape refusal, the untagged create\'s own AccessDenied surfaces as itself', async () => {
+    answer([
+      () => {
+        throw awsError('MalformedXML', 'not well-formed', 400);
+      },
+      () => {
+        throw SCP_DENIAL();
+      },
+    ]);
+
+    const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    expect(retryClassificationText(err)).toContain('s3:CreateBucket');
+    expect(err.message).toContain('Refused by an explicit deny (service control policy)');
+    expect(err.message).not.toContain('untagged retry');
   });
 
   it('an explicit deny names the policy type in the thrown message, without AWS\'s identity-bearing text', async () => {
