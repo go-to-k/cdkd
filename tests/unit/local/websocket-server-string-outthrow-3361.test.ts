@@ -138,7 +138,12 @@ describe('WebSocket dispatch with an unconvertible failure (#3361)', () => {
     spy.mock.calls.map((c: unknown[]) => String(c[0]));
 
   beforeEach(() => {
-    invokeRieMock.mockClear();
+    // `mockReset`, not `mockClear`: a hold left queued by a failed case must not
+    // leak into the next one.
+    invokeRieMock.mockReset();
+    invokeRieMock.mockImplementation(
+      async () => ({ payload: { statusCode: 200 }, raw: '{"statusCode":200}' }) as never
+    );
     errorSpy = vi.spyOn(ConsoleLogger.prototype, 'error').mockImplementation(() => undefined);
     warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => undefined);
   });

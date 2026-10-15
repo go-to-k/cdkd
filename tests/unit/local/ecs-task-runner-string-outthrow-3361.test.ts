@@ -57,12 +57,13 @@ const removedVolume = (): boolean =>
 
 describe('cleanupEcsRun with an unconvertible failure (#3361)', () => {
   let debugSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
   const debugs = (): string[] => debugSpy.mock.calls.map((c: unknown[]) => String(c[0]));
 
   beforeEach(() => {
     execFileCalls.length = 0;
     debugSpy = vi.spyOn(ConsoleLogger.prototype, 'debug').mockImplementation(() => undefined);
-    vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => undefined);
+    warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => undefined);
     vi.spyOn(ConsoleLogger.prototype, 'info').mockImplementation(() => undefined);
   });
 
@@ -112,6 +113,9 @@ describe('cleanupEcsRun with an unconvertible failure (#3361)', () => {
     expect(removedVolume()).toBe(true);
     expect(debugs()).toContainEqual(
       expect.stringContaining(`in-flight step removal failed: ${PLACEHOLDER}`)
+    );
+    expect(warnSpy.mock.calls.map((c: unknown[]) => String(c[0]))).toContainEqual(
+      expect.stringContaining('The in-flight docker command did not finish within')
     );
   });
 

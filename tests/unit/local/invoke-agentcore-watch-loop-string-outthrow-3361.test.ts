@@ -45,8 +45,11 @@ function invokeFiring(
     .mockImplementationOnce(async ({ abortSignal }): Promise<AgentCoreWatchInvokeOutcome> => {
       process.nextTick(fire);
       await new Promise<void>((res) => {
-        abortSignal.addEventListener('abort', () => res());
-        setTimeout(res, 300);
+        const bound = setTimeout(res, 300);
+        abortSignal.addEventListener('abort', () => {
+          clearTimeout(bound);
+          res();
+        });
       });
       return { pendingReload: abortSignal.aborted };
     })
