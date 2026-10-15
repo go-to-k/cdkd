@@ -77,9 +77,12 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   lane's inputs, so regenerate before the push (go-to-k/cdkd#4460).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
-  each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge),
-  and with every other pre-merge step done arm `gh pr merge --auto` right after
-  that push so it lands before the next peer merge (#4966); the turn holds to `MERGED`.
+  each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
+  Once every other pre-merge step is done and the post-rebase push leaves
+  `git status --porcelain` empty, arm `gh pr merge <n> --squash --delete-branch
+  --auto` so it lands before the next peer merge (#4966). It merges whatever head
+  goes green, so `--disable-auto` before any push or body edit; the turn holds
+  to `MERGED`.
 
 ### Merge
 
@@ -133,8 +136,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 
 ### Pull, then rebuild the linked binary
 
-The global `pnpm link --global` points at this repo's `dist/cli.js`, so a build
-on updated `main` is all the linked binary needs. MAIN-CHECKOUT (SKILL.md
+The linked binary is the main checkout's `dist/cli.js`. MAIN-CHECKOUT (SKILL.md
 "Launch mode") — run THIS block, and not the next one:
 
 ```bash
