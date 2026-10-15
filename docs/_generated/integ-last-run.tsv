@@ -60,7 +60,7 @@ cognito-resource-server	2026-10-11T15:28:51Z	PASS	108	verify.sh	PR #4796, rc ok,
 cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc ok, orph clean
 composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 conditions	2026-10-11T09:33:22Z	PASS	35	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-conditions-and-if	2026-10-15T16:22:03Z	PASS	66	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean
+conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
 conditions-update-2	2026-10-14T05:21:01Z	PASS	85	verify.sh	rc ok, orph clean
 context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 created-before-failure-revert	2026-10-15T12:20:43Z	PASS	121	verify.sh	PR #4956 us-east-1 own state bucket; rc 0, destroy clean, orph clean
@@ -94,9 +94,9 @@ dlm-lifecycle-policy	2026-10-14T14:47:46Z	PASS	115	verify.sh	PR #4899 (#2613 upd
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-15T18:48:28Z	PASS	291	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4972 post-create HeadBucket 404 retried, observed baseline kept (failed before the fix, main A/B passed)
+drift-revert	2026-10-15T19:32:45Z	PASS	298	verify.sh	broad set, re-run after a live peer (integ-4972-driftrev) collided on the shared stack name; clean on retry, 0 orphans
 drift-revert-arrays	2026-10-14T22:42:50Z	PASS	165	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
-drift-revert-vpc	2026-10-15T15:41:34Z	PASS	340	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean, ENIs/VPC confirmed deleted (BROAD set, building fixture ran alone)
+drift-revert-vpc	2026-10-15T19:32:45Z	PASS	342	verify.sh	broad set, clean destroy, 0 orphans
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-14T08:07:57Z	PASS	265	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -137,7 +137,7 @@ eventbridge-pipes	2026-10-11T09:33:22Z	PASS	171	verify.sh	PR #4720 (#4705) final
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-15T15:45:47Z	PASS	236	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean, 0 surviving state versions (BROAD set, building fixture ran alone)
+export	2026-10-15T19:32:45Z	PASS	237	verify.sh	broad set, clean destroy, 0 orphans
 export-nested-stack	2026-10-14T22:50:02Z	PASS	185	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
 fallback-recreate-children	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 fifo-sqs-event-source	2026-10-11T09:33:22Z	PASS	116	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -190,7 +190,7 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-03T04:26:36Z	PASS	78	verify.sh	rc ok, orph clean (#4283 PR #4449)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-15T16:22:43Z	PASS	106	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean (BROAD set)
+lambda	2026-10-15T19:32:45Z	PASS	103	verify.sh	RecursiveLoop + ReservedConcurrentExecutions backfills verified, clean destroy
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -266,7 +266,7 @@ nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504
 nested-stack-deep	2026-10-12T05:34:47Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-rollback	2026-10-12T05:37:53Z	PASS	105	verify.sh	PR #4812 head build, rc ok, orph clean
-nested-stack-secret	2026-10-15T16:25:58Z	PASS	301	verify.sh	PR #4961 (#4954); own state bucket; rc ok, no seeded secret in any version, orph clean; exercises the new FallthroughIfTwoWays/FallthroughIfAttribute/FallthroughShrinkTwo #4954 arms on real AWS, each persists its own literal/expression (not the survivor spelling); separate discrimination-only sibling worktree on origin/main confirmed RED at the exact #4954 FAIL line
+nested-stack-secret	2026-10-15T19:32:45Z	PASS	312	verify.sh	PR #4974 (#4962); own state bucket; #4962 FallthroughPseudoSub arm now PASSES (was FAIL on a detached main build per the discrimination proof: FallthroughPseudoSub persisted the survivor's spelling (fall2:AWSCURRENT:), so FallConnA2's literal was withdrawn for the child: the re-read did not bind AWS::Region / AWS::Partition); child plan shows no spurious UPDATE row; 0 surviving state versions, orph clean
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-named-producer	2026-10-13T09:55:40Z	PASS	135	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
@@ -295,7 +295,7 @@ recreate-via-cc-api	2026-10-14T12:12:31Z	PASS	140	verify.sh	rc ok, orph clean; P
 recreate-via-sdk-provider	2026-10-14T12:12:31Z	PASS	110	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-15T17:25:51Z	PASS	2054	verify.sh	PR #4965 (#4149) 7e3711376; ap-northeast-1 + own ap-northeast-1 state bucket (not us-east-1 shared); rc ok, orph clean; intermediate partial-destroy errors in steps 3/4b are the fixture's own protection-blocking assertions, final --remove-protection destroy 0 errors (batch with remove-protection-compensation)
+remove-protection	2026-10-15T19:32:45Z	PASS	2097	verify.sh	broad set, run in us-west-2 on its own bucket per instructions, clean destroy, 0 orphans
 remove-protection-compensation	2026-10-15T17:25:51Z	PASS	236	verify.sh	PR #4965 (#4149) 7e3711376; us-east-1 + own us-east-1 state bucket, default VPC t3.nano; rc ok, orph clean, all 3 phases (batch with remove-protection)
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -340,11 +340,11 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
 schema-v8-to-v9-migration	2026-10-12T05:46:57Z	FAIL	160	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
 schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#3466) b48362d regression run; rc 0, 54 assertions, destroy clean, 0 state versions, orph clean
-scrub-nested-child	2026-10-15T16:23:33Z	PASS	156	verify.sh	PR #4961 (#4954); own state bucket; rc ok, no seeded secret in any version, orph clean
+scrub-nested-child	2026-10-15T19:32:45Z	PASS	157	verify.sh	0 surviving object versions on both parent and child state prefixes
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-15T02:06:45Z	PASS	225	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 secret-derived-immutable-names	2026-10-15T09:24:20Z	PASS	1033	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
-secrets-array-nested	2026-10-15T16:26:03Z	PASS	306	verify.sh	PR #4961 (#4954); own state bucket; rc ok, no secret in any version, orph clean
+secrets-array-nested	2026-10-15T19:32:45Z	PASS	307	verify.sh	0 surviving object versions
 secrets-dynamic-ref	2026-10-15T16:31:59Z	PASS	662	verify.sh	PR #4961 (#4954); own state bucket; rc ok, no seeded secret in any version, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
