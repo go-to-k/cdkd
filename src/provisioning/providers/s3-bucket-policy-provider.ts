@@ -299,12 +299,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         );
         this.logger.debug(`Successfully deleted S3 bucket policy ${logicalId}`);
       } catch (error) {
-        // By name too: the wrap below no longer carries AWS's `does not exist`
-        // text, so a miss here would turn an idempotent re-destroy into a failure.
-        if (
-          error instanceof NoSuchBucket ||
-          (error instanceof Error && error.name === 'NoSuchBucket')
-        ) {
+        if (error instanceof NoSuchBucket) {
           const clientRegion = await this.s3Client.config.region();
           assertRegionMatch(
             clientRegion,
@@ -360,7 +355,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    * convert, which used to replace the failure (go-to-k/cdkd#3341).
    *
    * Nothing else reads this message by substring: the not-found arms in
-   * `delete` match by error name before the wrap. The retry classifiers do, so the cause is
+   * `delete` match by error class or name before the wrap. The retry classifiers do, so the cause is
    * kept and a redaction is stamped for them to read it instead -- only when
    * the cause IS the error whose text was withheld.
    */

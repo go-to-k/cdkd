@@ -225,9 +225,11 @@ describe('S3BucketPolicyProvider thrown-failure identity redaction (go-to-k/cdkd
     });
   });
 
-  it('reads a bucket that is gone by error NAME too, so the redacted wrap is never reached', async () => {
+  it('reads a bucket that is gone by error NAME, so the redacted wrap is never reached', async () => {
     // The wrap no longer carries AWS's `does not exist`, which the engine's
-    // already-deleted substring match used to rescue a guard miss with.
+    // already-deleted substring match used to rescue a guard miss with. The
+    // SDK's `instanceof NoSuchBucket` matches on the error name today; this
+    // pins that a plain error with that name still takes the gone arm.
     mockSend.mockRejectedValue(
       Object.assign(new Error('The specified bucket does not exist'), {
         name: 'NoSuchBucket',
