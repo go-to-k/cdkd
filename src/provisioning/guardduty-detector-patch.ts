@@ -43,6 +43,10 @@ export function withGuardDutyDetectorReadBackOps(
   for (const key of READ_BACK_KEYS) {
     // The generator emits top-level ops only (`json-patch-generator.ts`).
     if (patch.some((op) => op.path === `/${key}`)) continue;
+    // A `remove` fails (RFC 6902) if the read model lacks the key. Both keys
+    // were present on every read measured, but only in the aws partition's
+    // us-east-1 and us-west-2: a missing-path error from another region or
+    // partition starts here.
     extra.push(
       Object.prototype.hasOwnProperty.call(desired, key)
         ? { op: 'add', path: `/${key}`, value: desired[key] }

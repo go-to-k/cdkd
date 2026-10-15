@@ -10,7 +10,8 @@
 # Phases:
 #   1. Deploy a detector declaring only RDS_LOGIN_EVENTS. Require RDS_DATA_RISK
 #      ENABLED (GuardDuty's default, so a reset to DISABLED is visible) and
-#      record the status of every feature the template omits.
+#      record the status and additional configurations of every feature the
+#      template omits.
 #   2. Re-deploy with CDKD_TEST_UPDATE=scalar (FindingPublishingFrequency only).
 #      Assert ONE_HOUR reached AWS, the id is unchanged, RDS_DATA_RISK is still
 #      ENABLED, the omitted features are unchanged, and `cdkd drift` is clean.
@@ -99,12 +100,14 @@ detector_tag() {
 }
 aws_partition() { case "${REGION}" in cn-*) echo aws-cn ;; us-gov-*) echo aws-us-gov ;; *) echo aws ;; esac; }
 
-# "Name=Status" of every feature on detector $1 except RDS_LOGIN_EVENTS and the
-# names in $2 (a JMESPath condition suffix, e.g. " && Name!='EKS_AUDIT_LOGS'"),
-# sorted, tab-separated on one line.
+# "Name=Status;<additional configurations>" of every feature on detector $1
+# except RDS_LOGIN_EVENTS and the names in $2 (a JMESPath condition suffix, e.g.
+# " && Name!='EKS_AUDIT_LOGS'"), sorted, tab-separated on one line. The
+# additional configurations are "Name:Status" pairs, sorted, comma-separated,
+# so a reset of e.g. EKS_ADDON_MANAGEMENT shows too.
 omitted_features() {
   aws guardduty get-detector --detector-id "$1" --region "${REGION}" \
-    --query "sort_by(Features[?Name!='RDS_LOGIN_EVENTS'${2:-}], &Name)[].join('=', [Name, Status])" \
+    --query "sort_by(Features[?Name!='RDS_LOGIN_EVENTS'${2:-}], &Name)[].join('=', [Name, join(';', [Status, join(',', sort_by(AdditionalConfiguration || \`[]\`, &Name)[].join(':', [Name, Status]))])])" \
     --output text
 }
 NOT_EKS_AUDIT=" && Name!='EKS_AUDIT_LOGS'"

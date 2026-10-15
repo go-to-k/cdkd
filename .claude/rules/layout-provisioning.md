@@ -71,7 +71,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (issue [#3455](https://github.com/go-to-k/cdkd/issues/3455)). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because the already-deleted arm matches substrings of the logical id.
 
-- **guardduty-detector-patch.ts** - `CloudControlProvider.update` overrides a GuardDuty detector's read-back `Features` / `DataSources`, which `UpdateDetector` refuses together: on a non-empty patch, each key the patch has no op on is set to the declared value or removed ([#4910](https://github.com/go-to-k/cdkd/issues/4910)).
+- **guardduty-detector-patch.ts** - a GuardDuty detector's Cloud Control update patch ([#4910](https://github.com/go-to-k/cdkd/issues/4910)).
 
 - **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; issue [#3872](https://github.com/go-to-k/cdkd/issues/3872)). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 
@@ -106,7 +106,3 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **create-only-properties.ts** - Create-only resolution for REPLACEMENT detection, compared at PATH granularity so a nested entry forces replacement only when the value AT that path changed. **The fallback is only as good as the registry schema**: some types declare NO `createOnlyProperties` though AWS rejects the update (`AWS::EC2::Volume`, issue [#1356](https://github.com/go-to-k/cdkd/issues/1356)), so they need a hand-authored `ReplacementRulesRegistry` entry, plus a `STATEFUL_TYPES` one if data-bearing. A FAILED lookup resolves the committed `create-only-snapshot.generated.ts` (the fixtures' `createOnlyPropertyPaths`, parsed by the same `create-only-paths.ts` leaf as the live schema) and is NOT cached, so the live answer wins once it returns. **A prefetch's owner must `cancel()` it when its diff is done**, on every path: an in-flight request holds the event loop until it answers, and an uncancelled prefetch competes with the deploy's own write-only lookups for the account's DescribeType quota.
 
 - **stateful-types.ts** - The data-loss guard list and its verdict helpers (issue [#615](https://github.com/go-to-k/cdkd/issues/615)): a wrong edit here silently DELETEs + CREATEs a user's data. Its two mechanical LOWER BOUNDS miss the residual — a delete that destroys data with no opt-in — so such entries are hand-added with the reason AT the entry. Conditional reasons stay HEDGED — `renderStatefulReason` renders where no probe ran.
-
-## SDK Providers
-
-SDK Providers live in `src/provisioning/providers/`; Cloud Control is the fallback for types without one. Full list: [docs/supported-resources.md](../../docs/supported-resources.md).

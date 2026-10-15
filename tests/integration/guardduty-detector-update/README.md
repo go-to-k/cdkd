@@ -22,8 +22,8 @@ template does not declare it, to a non-empty patch.
 ## Phases
 
 1. **Deploy** a detector declaring only `RDS_LOGIN_EVENTS`; require
-   `RDS_DATA_RISK: ENABLED` (GuardDuty's default) and record the status of every
-   feature the template omits.
+   `RDS_DATA_RISK: ENABLED` (GuardDuty's default) and record the status and
+   additional configurations of every feature the template omits.
 2. **Scalar update** (`CDKD_TEST_UPDATE=scalar`): `FindingPublishingFrequency:
    ONE_HOUR` reaches AWS, the detector id is unchanged, `RDS_DATA_RISK` is still
    `ENABLED`, the omitted features are unchanged and `cdkd drift` is clean.
@@ -33,7 +33,7 @@ template does not declare it, to a non-empty patch.
 5. **`DataSources` shape** (`CDKD_TEST_SHAPE=datasources`, `S3Logs` disabled):
    deploy, scalar update, destroy; `ONE_HOUR` reaches AWS, the id is
    unchanged, `S3Logs` stays `DISABLED`, every feature but `RDS_LOGIN_EVENTS`
-   keeps its status and `cdkd drift` is clean.
+   keeps its status and additional configurations, and `cdkd drift` is clean.
 6. **Bare shape** (`CDKD_TEST_SHAPE=bare`, neither key declared): the same
    cycle.
 
