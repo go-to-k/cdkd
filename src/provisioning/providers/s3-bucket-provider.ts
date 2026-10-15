@@ -7294,11 +7294,15 @@ export class S3BucketProvider implements ResourceProvider {
                 // SCP requiring request tags, say): the missing `s3:TagResource`
                 // is the cause to report, since granting it lets the tagged
                 // create through, so the tagged create's denial surfaces. When
-                // the re-send's denial is EXPLICIT, no wait lifts the pair:
-                // without the mark the tagged (implicit) denial would spend the
-                // whole propagation budget, two CreateBucket calls an attempt --
-                // the wait #4969 removes. So it is marked non-retryable and the
-                // wrap names both causes. Any other answer -- the 409s the outer
+                // the re-send's denial is EXPLICIT, it is marked non-retryable
+                // and the wrap names both causes. A TRADE-OFF, recorded here: a
+                // `TagResource` grant made earlier in the same deploy and still
+                // propagating would let a later tagged attempt through, and
+                // that rare case now fails instead of waiting. It gave way to
+                // the common case -- `TagResource` never granted -- which would
+                // otherwise spend the whole ~47.75s propagation budget at two
+                // CreateBucket calls an attempt, the wait #4969 removes. An
+                // IMPLICIT untagged denial keeps the retry. Any other answer -- the 409s the outer
                 // catch adopts or refuses, a throttle, or anything after a
                 // shape refusal -- is the untagged create's own.
                 if (
