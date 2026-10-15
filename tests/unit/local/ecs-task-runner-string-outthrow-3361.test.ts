@@ -100,10 +100,15 @@ describe('cleanupEcsRun with an unconvertible failure (#3361)', () => {
       subject: { what: 'container x', remedy: 'docker rm -f x' },
     };
 
-    const cleanup = cleanupEcsRun(state, { keepRunning: false });
+    // Settled into a value up front, so a rejection while the timers advance is
+    // this case's failure rather than an unhandled one.
+    const outcome = cleanupEcsRun(state, { keepRunning: false }).then(
+      () => 'resolved',
+      (err: unknown) => err
+    );
     await vi.advanceTimersByTimeAsync(IN_FLIGHT_STEP_TIMEOUT_MS);
 
-    await expect(cleanup).resolves.toBeUndefined();
+    expect(await outcome).toBe('resolved');
     expect(removedVolume()).toBe(true);
     expect(debugs()).toContainEqual(
       expect.stringContaining(`in-flight step removal failed: ${PLACEHOLDER}`)
