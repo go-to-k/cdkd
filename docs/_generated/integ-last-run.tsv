@@ -164,7 +164,7 @@ iam-role-prefixed-name-update	2026-10-13T11:42:44Z	PASS	145	verify.sh	PR #4862 (
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
 iam-user-group-fix-forward-orphan	2026-10-13T22:59:15Z	PASS	134	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket, after §8-d probe; PR #4883 0f38dec93 (src+fixture = ebc59f508)
 import-attribute-readback	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-import-attribute-readback-final	2026-10-15T04:17:06Z	FAIL	236	verify.sh	step 6b fixture bug: aws --output json prints nothing for {} so Block read as empty; ACL updated in place; destroy 0 errors, orph clean
+import-attribute-readback-final	2026-10-15T04:24:59Z	PASS	286	verify.sh	rc ok, orph clean; #2613 step 6b in-place web ACL DefaultAction update
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback-network	2026-10-11T09:33:22Z	PASS	306	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
