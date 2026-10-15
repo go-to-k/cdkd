@@ -92,7 +92,9 @@ verify, clean up.
    `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
    `STATE_BUCKET=<unique>`, then after step 6 delete it, every version and
    delete marker with it, via `cls3 -b <unique> -r <region> -f` (`.mise.toml`
-   pins it; far faster than a `list-object-versions` loop). A fixture already deploying under its own `--state-prefix`
+   pins it; far faster than a `list-object-versions` loop). A set's buckets in
+   one region go in ONE call, deleted in parallel: `cls3 -b <b1> -b <b2> -r
+   <region> -f -c`. A fixture already deploying under its own `--state-prefix`
    (`remove-protection-journaled-orphan`) is immune.
 
 5. **Run the test(s)**
