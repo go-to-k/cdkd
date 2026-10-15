@@ -972,6 +972,31 @@ export interface ResolverContext {
   skipDynamicReferences?: boolean;
 
   /**
+   * Receives every SECRET `{{resolve:...}}` token a
+   * {@link skipDynamicReferences} pass leaves unresolved: exactly the tokens
+   * the real pass replaces with their plaintext (issue
+   * [#4929](https://github.com/go-to-k/cdkd/issues/4929)). `cdkd diff
+   * --recursive` reads it off a nested-stack row's `Parameters` resolution to
+   * learn which tokens in a child's parameter values stand for a secret
+   * ({@link secretStandInTokens}). Write-only; the deploy never sets it.
+   */
+  skippedSecretReferences?: Set<string>;
+
+  /**
+   * Token spellings that stand for a plaintext the REAL pass holds where this
+   * {@link skipDynamicReferences} pass holds the token (issue
+   * [#4929](https://github.com/go-to-k/cdkd/issues/4929)): a nested child's
+   * parameter value its parent's real pass resolved. The comparison twin of a
+   * pair on {@link inheritedSecrets}, for a pass that fetched no secret and so
+   * holds no pair (`cdkd diff --recursive`). Read by `Fn::Split` alone, which
+   * keeps such a token whole as the real split keeps its plaintext. Never set
+   * from a token's spelling alone: token TEXT the real pass passes through as
+   * text (a `Ref` to a parameter spelling one, an `Fn::FindInMap` value) is
+   * split as text there.
+   */
+  secretStandInTokens?: ReadonlySet<string>;
+
+  /**
    * The FOREIGN-region evidence for the secret-region classification issue
    * [#2134](https://github.com/go-to-k/cdkd/issues/2134) performs inside
    * {@link IntrinsicFunctionResolver.resolveDynamicReferences} -- the producer

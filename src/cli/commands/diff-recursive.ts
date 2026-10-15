@@ -65,6 +65,7 @@ import { bindingSkippedOutputs } from '../../analyzer/skipped-outputs.js';
 import {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   SECRET_MASK,
+  dynamicReferenceTokens,
   createUnionSecretMasker,
   hasMaskableValues,
   isSingleDynamicReferenceToken,
@@ -1020,6 +1021,31 @@ function tokenValueForComparison(token: unknown, declaredType: string | undefine
 }
 
 /**
+ * Per nested-child parameter, the `{{resolve:...}}` tokens in its value that
+ * the deploy's parent resolves to plaintext (go-to-k/cdkd#4929). Keyed by
+ * parameter for the HAND-DOWN only: a row passes a token on to a grandchild
+ * only through a `Ref` to a parameter that holds it as a secret, as the
+ * deploy's parent copies a pair only for such a `Ref`.
+ */
+type SecretTokensByParameter = ReadonlyMap<string, ReadonlySet<string>>;
+
+/**
+ * Every token of a {@link SecretTokensByParameter}, merged BY SPELLING, as a
+ * resolver pass reads them: inside the child a named token stays whole in any
+ * `Fn::Split`, even one over another parameter that received the same
+ * spelling as text. The deploy's `standsForInheritedSecret` reads its
+ * inherited bag the same way, keyed by token, not by parameter.
+ */
+function standInTokensOf(
+  byParameter: SecretTokensByParameter | undefined
+): ReadonlySet<string> | undefined {
+  if (byParameter === undefined) return undefined;
+  const all = new Set<string>();
+  for (const tokens of byParameter.values()) for (const token of tokens) all.add(token);
+  return all.size > 0 ? all : undefined;
+}
+
+/**
  * The PRINTING corpus of one `cdkd diff` node (go-to-k/cdkd#4049), as one bag
  * of log-only needles: every needle of the diff resolver's own bag, of the
  * node's `NoEcho` parameter values, and of the bag a nested child inherits
@@ -1341,6 +1367,15 @@ export async function computeStackDiff(
      */
     inheritedSecrets?: RecordedSecretValues;
     /**
+     * Per parameter, the `{{resolve:...}}` tokens in this nested child's
+     * parameter values that its parent's REAL pass resolves
+     * (go-to-k/cdkd#4929), from `resolveChildStackParameters`. Handed to this
+     * node's resolver passes as `secretStandInTokens`, so a child `Fn::Split`
+     * keeps such a token whole as the deploy's child keeps its plaintext.
+     * Absent at the root.
+     */
+    inheritedSecretTokens?: SecretTokensByParameter;
+    /**
      * The needles of the secret-named resources the parent row read for this
      * nested child's parameters (go-to-k/cdkd#3869), and its ancestors' too.
      * MASK-ONLY, like this node's own `derivedNames`: never part of
@@ -1412,6 +1447,7 @@ export async function computeStackDiff(
     consumerAccount,
     inheritSecretBearingTemplate,
     inheritedSecrets,
+    inheritedSecretTokens,
     inheritedDerivedNames,
     attributeHealer: unboundAttributeHealer,
     parentUnresolvedParameters,
@@ -1439,6 +1475,7 @@ export async function computeStackDiff(
     inheritedSecrets !== undefined && hasMaskableValues(inheritedSecrets)
       ? inheritedSecrets
       : undefined;
+  const secretStandInTokens = standInTokensOf(inheritedSecretTokens);
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
     ...(producerLookup && { producerLookup }),
@@ -1858,6 +1895,7 @@ export async function computeStackDiff(
         secretNameNeedles: stateSecretNameNeedles(currentState.resources, diffSecrets),
         secretNameSink: derivedNames,
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
+        ...(secretStandInTokens && { secretStandInTokens }),
         template: effectiveTemplate,
         resources: currentState.resources,
         stateBackend,
@@ -3094,12 +3132,29 @@ async function resolveChildStackParameters(
   /** As `computeStackDiff`'s `producerLookup`. */
   producerLookup?: ProducerLookup,
   /** As `computeStackDiff`'s `consumerAccount`. */
-  consumerAccount?: string
+  consumerAccount?: string,
+  /**
+   * go-to-k/cdkd#4929. `inherited`: this parent node's own
+   * `inheritedSecretTokens`, so an `Fn::Split` in the row keeps such a token
+   * whole as this node's resource diff does. `child`: filled, per row key,
+   * with each `{{resolve:...}}` token in its resolved value that the deploy's
+   * parent resolves to plaintext -- one this pass left unresolved as a secret
+   * (the real pass resolves it), or one the row passes on through a `Ref` to
+   * a parameter `inherited` names it for (the deploy's parent holds its
+   * plaintext there, and the child inherits the pair).
+   * Token TEXT a `Ref` / `Fn::FindInMap` hands over is neither, as on the
+   * deploy, where the real pass passes it through as text.
+   */
+  secretTokens?: {
+    inherited: SecretTokensByParameter | undefined;
+    child: Map<string, ReadonlySet<string>>;
+  }
 ): Promise<Record<string, unknown>> {
   const rawParams = parentStackRow.Properties?.['Parameters'];
   if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
     return {};
   }
+  const inheritedStandIns = standInTokensOf(secretTokens?.inherited);
   const resolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
     ...(producerLookup && { producerLookup }),
@@ -3114,6 +3169,10 @@ async function resolveChildStackParameters(
     if (trust === undefined || !rowValueTrusted(value, parentState, parentConditions, trust)) {
       unresolvedKeys?.add(name);
     }
+    // Per row key (go-to-k/cdkd#4929): the deploy's child holds a plaintext
+    // only in the parameters whose value the parent RESOLVED, so the same
+    // spelling another key passes as text is no evidence for this one.
+    const skippedSecretReferences = new Set<string>();
     try {
       const resolvedValue = await resolver.resolve(value, {
         template: parentTemplate,
@@ -3145,14 +3204,36 @@ async function resolveChildStackParameters(
         // perpetual change on every run — which is why the issue's two halves
         // could not be split.
         skipDynamicReferences: true,
+        skippedSecretReferences,
+        ...(inheritedStandIns && { secretStandInTokens: inheritedStandIns }),
         ...(attributeHealer && { attributeHealer }),
       });
       // An `Fn::If` selecting `AWS::NoValue`: the deploy's resolver drops the
       // key from the row's `Parameters`, so the child binds its own Default.
       if (resolvedValue === AWS_NO_VALUE) continue;
-      resolved[name] = isScalarList(resolvedValue)
+      const childValue = isScalarList(resolvedValue)
         ? resolvedValue.map((element) => String(element)).join(',')
         : resolvedValue;
+      resolved[name] = childValue;
+      if (secretTokens !== undefined && typeof childValue === 'string') {
+        // An inherited token is passed on only by a row value that READS,
+        // by `Ref`, a parameter it stands for a secret in: the deploy's parent
+        // copies a pair into the row's bag when a `Ref` to a parameter holding
+        // the plaintext resolves, never for the same spelling another
+        // parameter holds as text (an `Fn::FindInMap` value).
+        const refs = new Set<string>();
+        collectRefTargets(value, refs);
+        const tokens = new Set<string>();
+        for (const token of dynamicReferenceTokens(childValue)) {
+          if (
+            skippedSecretReferences.has(token) ||
+            [...refs].some((ref) => secretTokens.inherited?.get(ref)?.has(token) === true)
+          ) {
+            tokens.add(token);
+          }
+        }
+        if (tokens.size > 0) secretTokens.child.set(name, tokens);
+      }
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so
       // the child diff falls back to the intrinsic-vs-resolved comparison.
@@ -3397,6 +3478,8 @@ export async function buildDiffTree(args: {
   refusalRecovery?: LockRecoveryContext;
   /** go-to-k/cdkd#4852: as `computeStackDiff`'s; absent at the root. */
   inheritedReferenceProvenance?: ReadonlyMap<string, ReferenceProvenance>;
+  /** go-to-k/cdkd#4929: as `computeStackDiff`'s; absent at the root. */
+  inheritedSecretTokens?: SecretTokensByParameter;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -3425,6 +3508,7 @@ export async function buildDiffTree(args: {
     inheritedNoEchoParametersAnyVerdict,
     refusalRecovery,
     inheritedReferenceProvenance,
+    inheritedSecretTokens,
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
 
@@ -3491,6 +3575,7 @@ export async function buildDiffTree(args: {
         ...(inheritedNoEchoParameters && { inheritedNoEchoParameters }),
         ...(inheritedNoEchoParametersAnyVerdict && { inheritedNoEchoParametersAnyVerdict }),
         ...(inheritedReferenceProvenance && { inheritedReferenceProvenance }),
+        ...(inheritedSecretTokens && { inheritedSecretTokens }),
         ...(attributeHealer && { attributeHealer }),
         ...(refusalRecovery && { refusalRecovery }),
         // A live template of its own, so this node decides for itself; the
@@ -3680,6 +3765,10 @@ export async function buildDiffTree(args: {
     // so its whole walk runs under these needles, and its rows mask with them.
     // Mask-only: never the child's `inheritedSecrets`, as on the deploy path.
     const rowDerivedNames: RecordedSecretValues = new Map();
+    // go-to-k/cdkd#4929: the tokens in the child's parameter values that the
+    // deploy's parent resolves to plaintext, so the child's `Fn::Split` keeps
+    // them whole as the deploy's child keeps the plaintext.
+    const childSecretTokens = new Map<string, ReadonlySet<string>>();
     const childParameters = await resolveChildStackParameters(
       resource,
       effectiveTemplate,
@@ -3702,7 +3791,8 @@ export async function buildDiffTree(args: {
       trust,
       rowDerivedNames,
       producerLookup,
-      consumerAccount
+      consumerAccount,
+      { inherited: inheritedSecretTokens, child: childSecretTokens }
     );
     // The parent's own secret-named records too (go-to-k/cdkd#3869): the
     // child's stored values can hold a name a row USED to pass down.
@@ -3755,6 +3845,7 @@ export async function buildDiffTree(args: {
         }),
         ...(refusalRecovery && { refusalRecovery }),
         ...(childReferenceProvenance && { inheritedReferenceProvenance: childReferenceProvenance }),
+        ...(childSecretTokens.size > 0 && { inheritedSecretTokens: childSecretTokens }),
       });
     node.children.push(
       await (hasMaskableValues(childDerivedNames)

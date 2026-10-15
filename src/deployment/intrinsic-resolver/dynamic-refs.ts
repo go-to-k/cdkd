@@ -294,6 +294,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       // through to the lookup below, which asks for the type WITHOUT decrypting.
       // (GHSA fix + issue #1901.)
       if (isKnownSecret && context?.skipDynamicReferences) {
+        context.skippedSecretReferences?.add(fullMatch);
         complete = false;
         continue;
       }
@@ -646,6 +647,7 @@ export async function resolveDynamicReferencesWithLogTwin(
             // a SecureString verdict is pinned above, later passes
             // short-circuit before the lookup (a TEMPLATE token assembled from
             // a secret is not pinned, so it is looked up again, issue #4166).
+            context?.skippedSecretReferences?.add(fullMatch);
             complete = false;
             continue;
           }

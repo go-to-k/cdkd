@@ -172,21 +172,37 @@ function carryListElementFragments(
  * log-only needles, `exportNameSecretExposure`, reads these too. An empty
  * delimiter records nothing: it would make every character a needle, so
  * `resolveSplit` masks that line's pieces whole instead.
+ *
+ * `printed` is the split the caller actually returns when it is not the plain
+ * one: a comparison pass keeps a `{{resolve:...}}` token whole in its piece
+ * (go-to-k/cdkd#4929), so a plain piece's share can sit below the floor inside
+ * a larger printed piece (`}}Z` of `<token>Z`). Each piece of BOTH splits
+ * records its share, so every printed piece holding part of a needle is masked.
  */
 export function recordLogOnlySplitFragments(
   from: ReadonlyArray<RecordedSecretValues | undefined>,
   to: RecordedSecretValues,
   text: string,
-  delimiter: string
+  delimiter: string,
+  printed?: readonly string[]
 ): void {
   if (delimiter === '') return;
+  const splits: Array<readonly string[]> = [text.split(delimiter)];
+  if (
+    printed !== undefined &&
+    (printed.length !== splits[0]!.length || printed.some((piece, i) => piece !== splits[0]![i]))
+  ) {
+    splits.push(printed);
+  }
   for (const bag of from) {
     if (bag === undefined) continue;
     // A snapshot: `to` is usually one of `from`, and a fragment recorded
     // mid-walk must not be re-scanned as a needle of this call.
     for (const needle of [...(logOnlyValuesOf.get(bag) ?? [])]) {
-      for (const fragment of fragmentsOfNeedleIn(text, delimiter, needle)) {
-        if (fragment !== needle) recordLogOnlyValue(to, fragment);
+      for (const pieces of splits) {
+        for (const fragment of fragmentsOfNeedleIn(text, delimiter, needle, pieces)) {
+          if (fragment !== needle) recordLogOnlyValue(to, fragment);
+        }
       }
     }
   }
@@ -194,11 +210,17 @@ export function recordLogOnlySplitFragments(
 
 /**
  * The parts of `needle`'s occurrences in `text` that fall in each piece of
- * `text.split(delimiter)`. An occurrence is the whole text at any length, or
- * an embedded one at or above {@link MIN_NEEDLE_LENGTH}. Empty when the
- * needle does not occur.
+ * `pieces` (by default `text.split(delimiter)`; any split of `text` whose
+ * pieces are consecutive and separated by one `delimiter`). An occurrence is
+ * the whole text at any length, or an embedded one at or above
+ * {@link MIN_NEEDLE_LENGTH}. Empty when the needle does not occur.
  */
-function fragmentsOfNeedleIn(text: string, delimiter: string, needle: string): Set<string> {
+function fragmentsOfNeedleIn(
+  text: string,
+  delimiter: string,
+  needle: string,
+  pieces: readonly string[] = text.split(delimiter)
+): Set<string> {
   const fragments = new Set<string>();
   if (needle === '') return fragments;
   const starts: number[] = [];
@@ -211,7 +233,7 @@ function fragmentsOfNeedleIn(text: string, delimiter: string, needle: string): S
   if (starts.length === 0) return fragments;
   const spans: Array<[number, number]> = [];
   let offset = 0;
-  for (const piece of text.split(delimiter)) {
+  for (const piece of pieces) {
     spans.push([offset, offset + piece.length]);
     offset += piece.length + delimiter.length;
   }

@@ -508,6 +508,15 @@ and **not** for the JSON-key slot —
 fed such a reference reports a phantom change on every
 `cdkd diff --recursive`. Nothing is written and no plaintext is exposed by it.
 
+A child `Fn::Split` over such a parameter keeps each reference whole in its
+piece, as the deploy's child keeps the secret, when the parent's deploy
+resolves that reference before handing the value down: one the parent's row
+spells in a literal, `Fn::Join` or `Fn::Sub`, or one the parent itself received
+that way. Reference text the parent passes down as plain text (a `Ref` to its
+own parameter, an `Fn::FindInMap` value) is split as text, as the deploy splits
+it. A secret whose value itself holds the delimiter splits differently on the
+deploy, so a resource reading such a split reports a change on every run.
+
 `cdkd diff` additionally warns for any parameter whose declared `Type` **could**
 lose the plaintext under coercion, because `cdkd deploy` refuses that parameter
 when the coercion actually destroys it.

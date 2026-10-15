@@ -632,7 +632,9 @@ export async function resolveSplit(
   // is a template literal (`resolveValue`'s string arm) or an `Fn::Join` /
   // `Fn::Sub` (each re-resolves references in its assembled string, whatever
   // part they came from), otherwise one a nested child's parent resolved (a
-  // pair on the inherited bag). Token text that arrives as text (a `Ref` to a
+  // pair on the inherited bag, or -- in `cdkd diff --recursive`, which fetches
+  // no secret and so holds no pair -- a token named on `secretStandInTokens`,
+  // go-to-k/cdkd#4929). Token text that arrives as text (a `Ref` to a
   // parameter spelling one, an `Fn::FindInMap` value) is split as text on both
   // sides. A pass with real values splits as CloudFormation does.
   const result =
@@ -642,7 +644,9 @@ export async function resolveSplit(
           delimiter,
           splitValueResolvesReferences(value)
             ? () => true
-            : (token) => standsForInheritedSecret(context.inheritedSecrets, token)
+            : (token) =>
+                standsForInheritedSecret(context.inheritedSecrets, token) ||
+                context.secretStandInTokens?.has(token) === true
         )
       : resolvedValue.split(delimiter);
   // go-to-k/cdkd#4049: a piece holding part of a LOG-ONLY needle (a `NoEcho`
@@ -663,7 +667,8 @@ export async function resolveSplit(
         [context.inheritedSecrets, context.recordedSecretValues],
         context.recordedSecretValues,
         resolvedValue,
-        String(delimiter)
+        String(delimiter),
+        result
       );
     } else {
       const linePieces: RecordedSecretValues = new Map();
@@ -674,7 +679,8 @@ export async function resolveSplit(
         [context.inheritedSecrets],
         linePieces,
         resolvedValue,
-        String(delimiter)
+        String(delimiter),
+        result
       );
       lineContext = { ...context, printingSecrets: linePieces };
     }
@@ -684,7 +690,8 @@ export async function resolveSplit(
       [context.printingSecrets],
       context.printingSecrets,
       resolvedValue,
-      String(delimiter)
+      String(delimiter),
+      result
     );
   }
   // go-to-k/cdkd#3869: a piece of a secret-derived name a command recorded
@@ -695,7 +702,8 @@ export async function resolveSplit(
       [context.secretNameSink],
       context.secretNameSink,
       resolvedValue,
-      String(delimiter)
+      String(delimiter),
+      result
     );
   }
   // Issue #3100: a piece of a string an earlier write masked keeps its part

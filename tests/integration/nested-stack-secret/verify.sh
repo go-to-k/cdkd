@@ -1467,6 +1467,31 @@ assert_eq "FallthroughMixedReversed.Description persists the literal's own token
 assert_eq "FallthroughMixedReversed.Value persists FallSecretB2's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughMixedReversed.properties.Value')" "${FALL2_EXPR_B}"
 
+# --- #4914 / #4929: FallConnA2 split on ':', a delimiter inside every token --
+# `FallthroughColonReversed` is deployed from phase 1 so phases 2 and 2c's
+# `cdkd diff --recursive --fail` diff it (#4929); phase 2d redeploys the child
+# around it (#4914). The deploy persists each piece with its token WHOLE.
+echo "==> #4914 / #4929: FallthroughColonReversed splits FallConnA2 on ':'"
+assert_eq "premise: FallthroughColonReversed's Description selects piece 1 and its Value joins every piece of FallConnA2 split on ':'" \
+  "$(jq -c '.Resources.FallthroughColonReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::Select":[1,{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]},{"Fn::Join":["|",{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]}]'
+assert_eq "premise: the parent row passes FallConnA2 as a literal of {{resolve:...}} tokens (its real pass resolves them)" \
+  "$(jq -r '.Resources.Child.Properties.Parameters.FallConnA2' "${SYNTH_TEMPLATE}")" \
+  "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host"
+assert_eq "the LIVE FallthroughColonReversed Description holds the resolved piece 1" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_COLON_REV_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "//${FALL2_USER_VALUE}"
+assert_eq "the LIVE FallthroughColonReversed Value holds the resolved pieces joined" \
+  "$(aws ssm get-parameter --name "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" --region "${REGION}" \
+    --query 'Parameter.Value' --output text)" "postgres|//${FALL2_USER_VALUE}|${FALL2_PW_VALUE}@host"
+assert_eq "FallthroughColonReversed.Description persists the piece with the user token whole" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughColonReversed.properties.Description')" \
+  "//${FALL2_USER_EXPR}"
+assert_eq "FallthroughColonReversed.Value persists every piece with its token whole" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughColonReversed.properties.Value')" \
+  "postgres|//${FALL2_USER_EXPR}|${FALL2_EXPR_A}@host"
+
 # --- #4644: the two-token literal keeps its own spelling in the REVERSED order -
 # `FallthroughPairReversed` is `FallthroughPair` with the PARENT order flipped:
 # `FallConnA2` resolves first and `FallSecretB2` last, so the password's parent
@@ -1633,6 +1658,15 @@ DIFF_OUT="$(node "${LOCAL_DIST}" diff "${STACK}" --recursive --fail \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
 DIFF_RC=$?
 set -e
+# THE #4929 ASSERTION, before the exit code so a regression names its issue:
+# `FallthroughColonReversed` is unchanged, so no row may name it. The diff
+# used to split the parent-built `{{resolve:...}}` spelling into token
+# fragments (`//{{resolve`) no deploy persists.
+if grep -qF "] FallthroughColonReversed (" <<<"${DIFF_OUT}"; then
+  echo "FAIL: 'cdkd diff --recursive' reports a change on FallthroughColonReversed, which nothing changed: it split a parent-resolved {{resolve:...}} token on ':' (issue #4929)" >&2
+  diag_output "${DIFF_OUT}"
+  exit 1
+fi
 if [ "${DIFF_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff --recursive --fail' exited ${DIFF_RC} on an unchanged tree (expected 0)" >&2
   diag_output "${DIFF_OUT}"
@@ -1873,16 +1907,15 @@ fi
 echo "    OK: the updated tree also converges"
 
 # --- Phase 2d: #4914, a split on a delimiter inside every token's text ------
-# `colon-split` adds `FallthroughColonReversed` (`FallConnA2` split on `:`) and
-# a plain `ColonTouch`; `colon-touch` then changes ONLY `ColonTouch`, so the
-# child redeploys and diffs `FallthroughColonReversed` with nothing of its own
-# changed. The deploy's diff side used to split the bound spelling into token
+# `FallthroughColonReversed` (`FallConnA2` split on `:`) and a plain
+# `ColonTouch` exist since phase 1; `colon-touch` changes ONLY `ColonTouch`, so
+# the child redeploys and diffs `FallthroughColonReversed` with nothing of its
+# own changed. The deploy's diff side used to split the bound spelling into token
 # fragments (`//{{resolve`), so its plan carried an UPDATE row for it on every
 # child redeploy (`--require-approval` asked about it; a create-only property
 # planned a replacement). The engine's post-resolution re-check then skipped
 # the call, so AWS never moved: the discriminator is the PLAN, read from the
-# diff calculator's `--verbose` line. Kept out of `cdkd diff --recursive`
-# (phases 2 and 2c), which still splits the token text (#4929).
+# diff calculator's `--verbose` line.
 echo "==> Phase 2d: #4914, FallConnA2 split on ':' is not planned as a change by a child redeploy"
 DEPLOY_2D_OUT=""
 deploy_2d() { # deploy_2d <CDKD_TEST_UPDATE> <label> -- sets DEPLOY_2D_OUT
@@ -1908,30 +1941,10 @@ colon_touch_desc() {
     --parameter-filters "Key=Name,Values=${CHILD_COLON_TOUCH_PARAM}" \
     --query 'Parameters[0].Description' --output text
 }
-deploy_2d "child-property,colon-split" "add the #4914 arm"
-CHILD_TEMPLATE_FILE_2D="$(jq -r '.Resources.Child.Metadata["aws:asset:path"] // empty' "${SYNTH_TEMPLATE}")"
-assert_eq "premise: FallthroughColonReversed's Description selects piece 1 and its Value joins every piece of FallConnA2 split on ':'" \
-  "$(jq -c '.Resources.FallthroughColonReversed.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE_2D}")" \
-  '[{"Fn::Select":[1,{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]},{"Fn::Join":["|",{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]}]'
-assert_eq "the LIVE FallthroughColonReversed Description holds the resolved piece 1" \
-  "$(aws ssm describe-parameters --region "${REGION}" \
-    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_COLON_REV_PARAM}" \
-    --query 'Parameters[0].Description' --output text)" "//${FALL2_USER_VALUE}"
-assert_eq "the LIVE FallthroughColonReversed Value holds the resolved pieces joined" \
-  "$(aws ssm get-parameter --name "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" --region "${REGION}" \
-    --query 'Parameter.Value' --output text)" "postgres|//${FALL2_USER_VALUE}|${FALL2_PW_VALUE}@host"
-CHILD_STATE_2D="$(aws s3 cp "s3://${STATE_BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
-assert_eq "FallthroughColonReversed.Description persists the piece with the user token whole" \
-  "$(jq_state "${CHILD_STATE_2D}" '.resources.FallthroughColonReversed.properties.Description')" \
-  "//${FALL2_USER_EXPR}"
-assert_eq "FallthroughColonReversed.Value persists every piece with its token whole" \
-  "$(jq_state "${CHILD_STATE_2D}" '.resources.FallthroughColonReversed.properties.Value')" \
-  "postgres|//${FALL2_USER_EXPR}|${FALL2_EXPR_A}@host"
-assert_child_state_carries_no_plaintext "after the #4914 arm's deploy" "${CHILD_STATE_2D}"
 COLON_VERSION_BEFORE="$(colon_version)"
 [ -n "${COLON_VERSION_BEFORE}" ] || { echo "FAIL: could not read FallthroughColonReversed's SSM version" >&2; exit 1; }
 
-deploy_2d "child-property,colon-split,colon-touch" "change only ColonTouch"
+deploy_2d "child-property,colon-touch" "change only ColonTouch"
 # PROOF THE CHILD REDEPLOYED AND DIFFED: its plan names `ColonTouch` (the
 # positive control for the line's format), and AWS took the change. The
 # description read retries: `DescribeParameters` lags a successful update.
