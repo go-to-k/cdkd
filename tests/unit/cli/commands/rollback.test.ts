@@ -1049,7 +1049,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         '[the deploy did not confirm deleting the old resource: re-create it if AWS reports it gone, ' +
           (verdict === 'kept'
             ? 're-adopt it if AWS still has it (its delete was refused or never sent), '
-            : 'REFUSED if AWS still has it (its delete may still be running), ') +
+            : 'REFUSED if AWS still has it (its delete may still be running, or only partly ran), ') +
           'REFUSED if cdkd cannot tell; ' +
           tail
       );

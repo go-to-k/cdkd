@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { markDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
@@ -277,6 +278,35 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
     expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('kept');
   });
 
+  it('marks the op unconfirmed when the refused delete had already stripped the old resource (#4946)', async () => {
+    endpointFails = true;
+    refusal = () =>
+      markDeleteStarted(
+        Object.assign(new Error('Failed to delete IAM managed policy Revision: denied'), {
+          cause: awsError('AccessDenied', 'not authorized to perform: DeletePolicy'),
+        })
+      );
+    await expect(deploy()).rejects.toThrow();
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('unconfirmed');
+  });
+
+  it('a deferred retry whose refused delete stripped the old resource turns a kept mark unconfirmed (#4946)', async () => {
+    provider.update = vi.fn(async (_l: string, physicalId: string) => ({
+      physicalId,
+      wasReplaced: false,
+      attributes: {},
+    })) as unknown as ResourceProvider['update'];
+    // The first attempt is refused before any strip; the retry strips, then is refused.
+    let attempts = 0;
+    refusal = () => {
+      const error = awsError('AccessDenied', 'denied');
+      return ++attempts === 1 ? error : markDeleteStarted(error);
+    };
+    const result = await deploy();
+    expect(oldDeletes()).toBe(2);
+    expect(revisionOp(result.completedOperations).oldResourceMaySurvive).toBe('unconfirmed');
+  });
+
   it('marks the op when the deferred retry fails too, after running it', async () => {
     // The endpoint update lands, but the old revision stays refused.
     provider.update = vi.fn(async (_l: string, physicalId: string) => ({
@@ -451,6 +481,26 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
         (l) =>
           l.includes('Cannot reverse the replacement of Revision') &&
           l.includes('its failed delete may have been accepted and still be running, or only partly ran')
+      )
+    ).toBe(true);
+  });
+
+  it('the automatic rollback refuses an alive old revision its refused delete had stripped (#4946)', async () => {
+    endpointFails = true;
+    refusal = () => markDeleteStarted(awsError('AccessDenied', 'denied'));
+    await expect(deploy({ noRollback: false })).rejects.toThrow();
+
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    // Not re-adopted: the new revision stays and state is not re-pointed.
+    expect([...live].sort()).toEqual(['rev-new', 'rev-old']);
+    expect(printed.warn.some((l) => l.includes('re-adopted instead of re-created'))).toBe(false);
+    expect(
+      printed.warn.some(
+        (l) =>
+          l.includes('Cannot reverse the replacement of Revision') &&
+          l.includes('or only partly ran') &&
+          // A refused delete is not running: the step is a delete by hand.
+          l.includes('if its delete was refused, delete it by hand, then re-run')
       )
     ).toBe(true);
   });

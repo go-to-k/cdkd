@@ -473,7 +473,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // #4606's dynamodb-fix-forward-orphan fixture crossed the old ceiling).
     // Raised 6060 -> 6240 with the ceiling below at a re-measured 6711 (issue
     // #4705's cross-bucket and registry phases on top of #4606's fixture).
-    expect(stats.total).toBeGreaterThan(6240);
+    // Raised 6240 -> 7090 with the ceiling below at a re-measured 7624 (issue
+    // #4946's replaced-delete-failed-rollback arm crossed the old ceiling).
+    expect(stats.total).toBeGreaterThan(7090);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
     // silently — the same argument the total's floor rests on. A floor is only
@@ -524,7 +526,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     // #4606). Same ~1.135x headroom.
     // Raised 7400 -> 7620 with the floor above, at a re-measured 6711 (issue
     // #4705). Same ~1.135x headroom.
-    expect(stats.total).toBeLessThan(7620);
+    // Raised 7620 -> 8650 with the floor above, at a re-measured 7624 (issue
+    // #4946). Same ~1.135x headroom.
+    expect(stats.total).toBeLessThan(8650);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);

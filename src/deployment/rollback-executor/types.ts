@@ -88,7 +88,9 @@ export interface CompletedOperation {
    *   is whole and is not being deleted.
    * - `'unconfirmed'`: any other failure or a provider skip. The delete may
    *   have been accepted and still be running (a waiter that gave up), so a
-   *   live read cannot license re-adopting a resource about to disappear.
+   *   live read cannot license re-adopting a resource about to disappear. So
+   *   is a refusal after the provider's delete stripped the resource
+   *   (`markDeleteStarted`, go-to-k/cdkd#4946): the survivor is not whole.
    *
    * ADDITIVE, no `journalVersion` bump: absent (an older binary's journal,
    * or a delete that succeeded) keeps the re-create.

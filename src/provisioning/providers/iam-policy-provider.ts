@@ -14,6 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1044,7 +1045,12 @@ export class IAMPolicyProvider implements ResourceProvider {
     // is not that: `detached` remembers those.
     let secretPrincipalLacksGrant = false;
     const detached = context?.resolveSecretDerivedPrincipals?.retryMemo?.detached;
+    // go-to-k/cdkd#4946: each removal is part of the delete itself, so a
+    // refusal after one leaves the policy on only some principals, never a
+    // whole survivor.
+    let removedAny = false;
     const onDetached = (kind: string, name: string): void => {
+      removedAny = true;
       if (fromSecret(kind, name)) detached?.add(injectiveKey(kind, name));
     };
     // go-to-k/cdkd#4156: a principal another resource of this deploy already
@@ -1185,15 +1191,15 @@ export class IAMPolicyProvider implements ResourceProvider {
       // clone keeps each link's prototype, `$metadata` and markers, so the
       // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      throw maskError(
-        new ProvisioningError(
-          `Failed to delete IAM policy ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
+      // The mark survives `maskError`'s clone of the chain.
+      const failure = new ProvisioningError(
+        `Failed to delete IAM policy ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
       );
+      throw maskError(removedAny ? markDeleteStarted(failure) : failure);
     }
   }
 

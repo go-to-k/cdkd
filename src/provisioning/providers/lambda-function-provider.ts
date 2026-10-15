@@ -52,6 +52,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
 import {
   isRetryableTransientError,
   markNonRetryable,
@@ -1584,6 +1585,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     this.logger.debug(`Deleting Lambda function ${logicalId}: ${physicalId}`);
 
     const hasVpcConfig = this.hasVpcConfig(properties?.['VpcConfig']);
+    // go-to-k/cdkd#4946: set once the VPC detach may have landed, so a refused
+    // `DeleteFunction` is never read as a whole survivor.
+    let stripped = false;
 
     // For VPC-attached functions, detach the VPC config BEFORE deletion.
     // DeleteFunction does not synchronously release Lambda hyperplane ENIs;
@@ -1593,6 +1597,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // letting downstream Subnet / SecurityGroup deletes proceed.
     if (hasVpcConfig) {
       try {
+        stripped = true;
         await this.lambdaClient.send(
           new UpdateFunctionConfigurationCommand({
             FunctionName: physicalId,
@@ -1617,6 +1622,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         }
         // Best-effort: don't fail the entire delete if pre-detach errors.
         // The post-DeleteFunction ENI wait below remains as a safety net.
+        // A swallowed failure may still have landed, unless AWS refused it by
+        // name (go-to-k/cdkd#4946).
+        if (isRefusedByName(error)) stripped = false;
         this.logger.warn(
           `Pre-delete VPC detach failed for ${physicalId}: ${
             describeAwsFailure(error).detail
@@ -1651,13 +1659,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
 
     if (hasVpcConfig) {

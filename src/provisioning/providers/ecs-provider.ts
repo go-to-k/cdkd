@@ -88,6 +88,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { generateResourceName } from '../resource-name.js';
@@ -2315,6 +2316,9 @@ export class ECSProvider implements ResourceProvider {
     } else {
       cluster = recordedCluster as string | undefined;
     }
+    // go-to-k/cdkd#4946: set once the scale-down is accepted, so a refused
+    // `DeleteService` is never read as a whole survivor.
+    let stripped = false;
 
     try {
       // First scale down to 0
@@ -2326,6 +2330,9 @@ export class ECSProvider implements ResourceProvider {
             desiredCount: 0,
           })
         );
+        // A service its record already sets to 0 is what the record describes.
+        const recordedCount = properties?.['DesiredCount'];
+        stripped = !(recordedCount === 0 || recordedCount === '0');
         this.logger.debug(`Scaled down ECS service ${physicalId} to 0`);
       } catch (error) {
         // If service not found during scale down, it's already gone
@@ -2369,13 +2376,14 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete ECS service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

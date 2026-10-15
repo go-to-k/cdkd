@@ -1352,12 +1352,14 @@ function survivorUnprovenRefusal(
           ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
             `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
             `with it`
-          : // go-to-k/cdkd#4911: also an IAM role or policy whose delete ran its
-            // detaches before AWS refused it, so "accepted" is not the only cause.
+          : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
+            // the resource before AWS refused it, so "accepted" is not the only cause.
             `AWS still reports it, but its failed delete may have been accepted and still be ` +
             `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
             `running delete finishes, or one that delete already stripped; once ` +
-            `AWS reports it gone, re-running ${rerun} re-creates it`;
+            `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
+            `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
+            `then re-run ${rerun}`;
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(

@@ -84,6 +84,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
@@ -6136,13 +6137,24 @@ export class GlueTriggerProvider implements ResourceProvider {
       physicalId,
       'pre-delete'
     );
+    // go-to-k/cdkd#4946: set once a stop is sent, so a refused
+    // `DeleteTrigger` is never read as a whole (still firing) survivor.
+    let stripped = false;
     try {
       // An ACTIVATED scheduled / conditional trigger should be stopped before
       // deletion so a firing trigger does not race the delete.
       try {
         const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
         if (cur.Trigger?.State === 'ACTIVATED') {
-          await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          // Before the stop: its failure is swallowed below and may have landed,
+          // unless AWS refused it by name (then nothing changed).
+          stripped = true;
+          try {
+            await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+          } catch (stopError) {
+            if (isRefusedByName(stopError)) stripped = false;
+            throw stopError;
+          }
           await this.waitForTriggerDeactivated(physicalId);
         }
       } catch (err) {
@@ -6171,13 +6183,14 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

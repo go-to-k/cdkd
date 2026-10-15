@@ -20,6 +20,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -350,10 +351,13 @@ export class EventBridgeBusProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EventBus ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#4946: set once the cleanup has sent a rule or target
+    // removal, so a refused `DeleteEventBus` is never read as a whole survivor.
+    let stripped = false;
 
     try {
       // First, clean up all rules on this bus (they block deletion)
-      await this.cleanupRulesOnBus(physicalId);
+      stripped = await this.cleanupRulesOnBus(physicalId);
 
       // Then delete the bus
       await this.eventBridgeClient.send(new DeleteEventBusCommand({ Name: physicalId }));
@@ -392,13 +396,14 @@ export class EventBridgeBusProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete EventBus ${logicalId}: ${msg}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 
@@ -415,15 +420,18 @@ export class EventBridgeBusProvider implements ResourceProvider {
 
   /**
    * Remove all rules and their targets from an event bus before deletion.
+   * Returns whether it found any rule to remove (and so may have removed one).
    */
-  private async cleanupRulesOnBus(busName: string): Promise<void> {
+  private async cleanupRulesOnBus(busName: string): Promise<boolean> {
+    let found = false;
     try {
       const rulesResponse = await this.eventBridgeClient.send(
         new ListRulesCommand({ EventBusName: busName })
       );
 
       const rules = rulesResponse.Rules ?? [];
-      if (rules.length === 0) return;
+      if (rules.length === 0) return false;
+      found = true;
 
       this.logger.debug(`Cleaning up ${rules.length} rule(s) on bus ${busName}`);
 
@@ -469,11 +477,12 @@ export class EventBridgeBusProvider implements ResourceProvider {
         }
       }
     } catch (error) {
-      if (error instanceof ResourceNotFoundException) return;
+      if (error instanceof ResourceNotFoundException) return found;
       this.logger.debug(
         `Failed to list rules on bus ${busName}: ${describeAwsFailure(error).detail}`
       );
     }
+    return found;
   }
 
   /**

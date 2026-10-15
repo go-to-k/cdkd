@@ -12,44 +12,21 @@
  * meets the same answer) and `'unknown'` (an error, no usable old id, or a
  * read that did not answer in time — a re-run reads again).
  */
+import { isDeleteStarted, isRefusedByName } from '../../provisioning/delete-started.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { withReplayDeletePrinting, type ReplayOpScope } from './replay-scope.js';
 
 /**
- * AWS error names that refuse a delete outright: the call changed nothing and
- * no deletion is running. Deliberately narrow — a `Conflict`, a
- * `ResourceInUse` (DynamoDB / Kinesis answer it for a resource already
- * DELETING, e.g. an SDK resend of an accepted delete) or an invalid state can
- * mean "already being deleted", and a waiter that gave up after an
- * accepted delete carries no AWS name at all; both stay `'unconfirmed'`.
- */
-const DELETE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
-  'AccessDenied',
-  'AccessDeniedException',
-  'UnauthorizedOperation',
-  'AuthorizationError',
-  'DependencyViolation',
-  'DeleteConflict',
-  'DeleteConflictException',
-]);
-
-/**
  * go-to-k/cdkd#2631: whether a replaced resource's failed delete was refused
- * by AWS outright (`'kept'`), read off the error's bounded `.cause` chain by
- * NAME (`name` / `Code` / `code`), never by message. Anything else is
+ * by AWS outright (`'kept'`), by NAME (`isRefusedByName`). Anything else is
  * `'unconfirmed'`: the delete may have been accepted and still be running.
+ * So is a refusal from a delete that had already stripped the resource
+ * (`markDeleteStarted`, go-to-k/cdkd#4946): what survives is not what the
+ * old record describes, so it is never re-adopted.
  */
 export function replacedDeleteFailureVerdict(error: unknown): 'kept' | 'unconfirmed' {
-  let current: unknown = error;
-  for (let depth = 0; depth < 10 && current != null; depth++) {
-    if (typeof current !== 'object') break;
-    const link = current as { name?: unknown; Code?: unknown; code?: unknown; cause?: unknown };
-    for (const name of [link.name, link.Code, link.code]) {
-      if (typeof name === 'string' && DELETE_REFUSAL_NAMES.has(name)) return 'kept';
-    }
-    current = link.cause;
-  }
-  return 'unconfirmed';
+  if (isDeleteStarted(error)) return 'unconfirmed';
+  return isRefusedByName(error) ? 'kept' : 'unconfirmed';
 }
 
 /** How long the read may take; no SDK client here sets a request timeout. */

@@ -392,6 +392,18 @@ implementation. Three details are worth copying:
     knowingly replaces its leftover stamps `markSupersedesEarlierCreate` (KMS)
     (issue [#4945](https://github.com/go-to-k/cdkd/issues/4945)).
 
+    A `delete()` that changes the resource before the call that deletes it
+    (detaches its policies, removes a rule's targets, disables a distribution,
+    scales a service to 0) must mark the error it throws once such a step may
+    have landed, with `markDeleteStarted(error)`
+    (`src/provisioning/delete-started.ts`, issue
+    [#4946](https://github.com/go-to-k/cdkd/issues/4946)). A replacement reads
+    an unmarked AWS refusal (`AccessDenied`, `DeleteConflict`) as "the old
+    resource is whole", and a rollback re-adopts it in place of the working
+    new copy. Set the flag after a strip call that succeeded when its failure
+    propagates, and before it when its failure is swallowed; a refusal before
+    any strip stays unmarked.
+
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared
     `SecretMaskingContext`, whose one optional field is

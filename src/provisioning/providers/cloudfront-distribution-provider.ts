@@ -19,6 +19,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
@@ -554,6 +555,9 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CloudFront Distribution ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#4946: set once the disable is accepted, so a refused
+    // `DeleteDistribution` is never read as a whole (serving) survivor.
+    let stripped = false;
 
     try {
       // Step 1: Get current config
@@ -593,6 +597,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
             DistributionConfig: config,
           })
         );
+        stripped = true;
         etag = updateResponse.ETag!;
 
         // Wait until the disable is fully propagated. We must check BOTH
@@ -660,13 +665,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

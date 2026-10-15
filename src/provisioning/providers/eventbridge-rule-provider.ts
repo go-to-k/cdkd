@@ -41,6 +41,7 @@ import {
   type NameHeldBefore,
 } from './create-ownership.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markDeleteStarted } from '../delete-started.js';
 
 /**
  * Target definition from CloudFormation AWS::Events::Rule
@@ -601,6 +602,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     // DeleteRule would report ResourceNotFound and the delete would
     // silently no-op, orphaning the rule (issue #955).
     const busParam = this.busParamFromArn(physicalId);
+    // go-to-k/cdkd#4946: set once targets are removed, so a refused
+    // `DeleteRule` is never read as a whole survivor.
+    let stripped = false;
 
     try {
       // List all targets for this rule
@@ -637,6 +641,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
             ...busParam,
           })
         );
+        stripped = true;
         this.logger.debug(`Removed ${targetIds.length} targets from rule ${ruleName}`);
       }
 
@@ -658,13 +663,14 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete EventBridge rule ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

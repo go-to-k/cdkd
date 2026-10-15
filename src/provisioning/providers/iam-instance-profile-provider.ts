@@ -13,6 +13,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
@@ -463,6 +464,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting IAM instance profile ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#4946: set once a role is removed, so a refused
+    // `DeleteInstanceProfile` is never read as a whole survivor.
+    let stripped = false;
 
     try {
       // Get current instance profile to find attached roles
@@ -500,6 +504,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
               RoleName: roleName,
             })
           );
+          stripped = true;
           this.logger.debug(`Removed role ${roleName} from instance profile ${physicalId}`);
         } catch (error) {
           if (!(error instanceof NoSuchEntityException)) {
@@ -528,13 +533,14 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete IAM instance profile ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

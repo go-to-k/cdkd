@@ -52,6 +52,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
@@ -682,6 +683,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     // the ARN (go-to-k/cdkd#4339).
     const mask = maskerOrIdentity(context?.maskSecrets);
     this.logger.debug(mask(`Deleting IAM managed policy ${logicalId}: ${physicalId}`));
+    // go-to-k/cdkd#4946: set once a principal is detached, so a refused
+    // `DeletePolicy` is never read as a whole survivor. Deleting non-default
+    // versions is not a strip: the record describes only the default one.
+    const progress: DeleteProgress = { stripped: false };
 
     try {
       try {
@@ -698,7 +703,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       //    attached managed policy). Use ListEntitiesForPolicy as the source
       //    of truth rather than state's Groups/Roles/Users so a console-side
       //    attach made after deploy is also cleaned up.
-      await this.detachAllPrincipals(physicalId);
+      await this.detachAllPrincipals(physicalId, progress);
 
       // 2. Delete every non-default policy version (AWS refuses to delete a
       //    policy with non-default versions).
@@ -716,7 +721,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const failure = this.wrapMaskedError(
         mask,
         error,
         (text) =>
@@ -728,6 +733,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             cause
           )
       );
+      throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
   }
 
@@ -1166,7 +1172,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return live;
   }
 
-  private async detachAllPrincipals(policyArn: string): Promise<void> {
+  private async detachAllPrincipals(policyArn: string, progress?: DeleteProgress): Promise<void> {
     try {
       let marker: string | undefined;
       // eslint-disable-next-line no-constant-condition
@@ -1183,6 +1189,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DetachGroupPolicyCommand({ GroupName: g.GroupName, PolicyArn: policyArn })
             );
+            if (progress) progress.stripped = true;
           } catch (err) {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
@@ -1193,6 +1200,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DetachRolePolicyCommand({ RoleName: r.RoleName, PolicyArn: policyArn })
             );
+            if (progress) progress.stripped = true;
           } catch (err) {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
@@ -1203,6 +1211,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             await this.iamClient.send(
               new DetachUserPolicyCommand({ UserName: u.UserName, PolicyArn: policyArn })
             );
+            if (progress) progress.stripped = true;
           } catch (err) {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }

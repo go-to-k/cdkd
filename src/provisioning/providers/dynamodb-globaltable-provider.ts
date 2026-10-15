@@ -51,6 +51,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -4205,7 +4206,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // auto-scaling settings bag. Defaults to IDENTITY, which is what the DELETE
     // path takes: its teardown passes EMPTY settings, so that warning cannot
     // fire there and there is no value to mask.
-    maskSecrets: SecretMasker = (text) => text
+    maskSecrets: SecretMasker = (text) => text,
+    // go-to-k/cdkd#4946: the delete's flag, set once the teardown may have
+    // removed a policy or target. Absent on every create / update caller.
+    progress?: DeleteProgress
   ): Promise<void> {
     // ONE masked sink (issue #1997) — see `update()` for why both layers.
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
@@ -4485,6 +4489,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
           }
         );
+        if (progress) progress.stripped = true;
       } catch (err) {
         // A user abort is not an AWS failure (issue #2053 review). Swallowing it
         // printed up to two "Could not ... Run: aws application-autoscaling ..."
@@ -4492,6 +4497,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // -- and then carried straight on to the next teardown WRITE. Re-throwing
         // stops the burst; `delete()`'s catch passes it through unwrapped.
         if (isInterruptedWaitError(err)) throw err;
+        // Swallowed: it may still have landed, unless nothing was there or AWS
+        // refused it by name.
+        if (progress && !isObjectNotFound(err) && !isRefusedByName(err)) progress.stripped = true;
         if (!isObjectNotFound(err)) {
           warn(
             `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
@@ -4524,6 +4532,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
           }
         );
+        if (progress) progress.stripped = true;
         this.logger.debug(
           maskSecrets(`Deregistered auto-scaling target ${resourceId} (${dimension})`)
         );
@@ -4534,6 +4543,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // -- and then carried straight on to the next teardown WRITE. Re-throwing
         // stops the burst; `delete()`'s catch passes it through unwrapped.
         if (isInterruptedWaitError(err)) throw err;
+        if (progress && !isObjectNotFound(err) && !isRefusedByName(err)) progress.stripped = true;
         if (!isObjectNotFound(err)) {
           warn(
             `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
@@ -4833,9 +4843,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // keeping every gap inside it, and asserts the latch survived.
       resolveDynamoDbDeleteBudgetClock()
     );
+    // go-to-k/cdkd#4946: set once a step before `DeleteTable` may have changed
+    // the table, so a refused delete is never read as a whole survivor.
+    const progress: DeleteProgress = { stripped: false };
     try {
-      await this.deleteGlobalTableResource(logicalId, physicalId, resourceType, context, flip);
+      await this.deleteGlobalTableResource(
+        logicalId,
+        physicalId,
+        resourceType,
+        context,
+        flip,
+        progress
+      );
     } catch (error) {
+      if (progress.stripped) markDeleteStarted(error);
       // The outcome DEFAULTS to `failed` and the release sits in a `finally`,
       // so an unknown outcome retains the record -- the safe direction.
       // `compensateRemovedDeletionProtection` documents that it never throws
@@ -4985,7 +5006,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     context: DeleteContext | undefined,
-    flip: ProtectionFlipRecord
+    flip: ProtectionFlipRecord,
+    progress: DeleteProgress
   ): Promise<void> {
     // go-to-k/cdkd#2007: the table name can be secret-derived. The name is
     // masked as a VALUE too, so one below the substring floor is caught.
@@ -5139,7 +5161,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             undefined /* newSettings — undefined triggers Delete+Deregister */,
             this.getRegionalAutoScalingClient(region),
             undefined /* indexName — table level */,
-            budget
+            budget,
+            undefined,
+            progress
           );
           // Index names come from the TABLE's index list, not the replica's
           // own `GlobalSecondaryIndexes`. A GlobalTable replicates every
@@ -5158,7 +5182,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               undefined,
               this.getRegionalAutoScalingClient(region),
               indexName,
-              budget
+              budget,
+              undefined,
+              progress
             );
           }
           await this.dynamoDBClient.send(
@@ -5167,6 +5193,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               ReplicaUpdates: [{ Delete: { RegionName: region } }],
             })
           );
+          progress.stripped = true;
           await this.waitForReplicaGone(
             physicalId,
             region,
@@ -5195,7 +5222,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         undefined,
         localAsClient,
         undefined /* indexName — table level */,
-        budget
+        budget,
+        undefined,
+        progress
       );
       await this.applyAutoScalingDiff(
         physicalId,
@@ -5204,7 +5233,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         undefined,
         localAsClient,
         undefined /* indexName — table level */,
-        budget
+        budget,
+        undefined,
+        progress
       );
       // Per-index targets in the local region (Issue #1419). Without this
       // the index-level targets registered by `create()` / step 6b survive
@@ -5219,7 +5250,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           localAsClient,
           indexName,
-          budget
+          budget,
+          undefined,
+          progress
         );
         await this.applyAutoScalingDiff(
           physicalId,
@@ -5228,7 +5261,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           localAsClient,
           indexName,
-          budget
+          budget,
+          undefined,
+          progress
         );
       }
     } catch (describeErr) {

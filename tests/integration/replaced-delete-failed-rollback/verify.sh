@@ -3,26 +3,34 @@
 # go-to-k/cdkd#2631: a replacement whose delete of the OLD resource is refused,
 # followed by a failure later in the same deploy. The rollback journal records
 # that the old resource may still exist (`oldResourceMaySurvive`), and the
-# automatic rollback reads AWS for it before re-creating it: it is alive, so
-# it is re-adopted and the replacement's new resource deleted. Before #2631
-# the rollback re-created it, which for this named policy collided with the
-# live one (EntityAlreadyExists) and failed the rollback of `Target`, leaving
-# state on the new policy and the old one untracked.
+# automatic rollback reads AWS for it before re-creating it. Before #2631 the
+# rollback re-created it, which for this named policy collided with the live
+# one (EntityAlreadyExists). The old policy's delete detaches it from `Holder`
+# before `DeletePolicy` is refused, so what survives is a stripped policy:
+# go-to-k/cdkd#4946 refuses to re-adopt it (before that fix the rollback
+# re-adopted it attached to nothing and deleted the working new one). The
+# re-adopt arm is step 5's, a certificate whose refused delete changed nothing.
 #
 # Phases:
-#   1. Baseline deploy: `Target` = managed policy `cdkd-rdfr-target-a`.
+#   1. Baseline deploy: `Target` = managed policy `cdkd-rdfr-target-a`,
+#      attached to the role `Holder` (`cdkd-rdfr-holder`).
 #   2. A role is created that may create, read and delete this run's policies
 #      (`cdkd-rdfr-*`) and use the state bucket, but may NOT delete
 #      `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`. As that role,
 #      `TARGET_SUFFIX=b BREAK=true` deploys with the automatic rollback:
 #      `Target` is replaced by `cdkd-rdfr-target-b`, the old policy's delete is
-#      refused (deferred to the post-deploy retry, go-to-k/cdkd#4900), and
-#      `Breaker`'s create is refused, failing the deploy before that retry.
-#      Asserted: the deploy failed; it deferred the refused delete; the
-#      rollback re-adopted the old policy (the #2631 line) and did not fail on
-#      `Target`; `cdkd-rdfr-target-a` exists, `cdkd-rdfr-target-b` and
-#      `cdkd-rdfr-breaker` do not; state's `Target` names `cdkd-rdfr-target-a`.
-#   3. `cdkd destroy`: every policy, the state file and the role are gone.
+#      refused after its detach from `Holder` (deferred to the post-deploy
+#      retry, go-to-k/cdkd#4900), and `Breaker`'s create is refused, failing
+#      the deploy before that retry. Asserted: the deploy failed; it deferred
+#      the refused delete; the rollback did NOT re-adopt the old policy but
+#      refused `Target` (#4946), sending nothing; both target policies exist,
+#      the old one attached to nothing and the new one to `Holder`;
+#      `cdkd-rdfr-breaker` does not; state's `Target` names the new policy and
+#      the journal is kept. Then, as the refusal advises, the old policy is
+#      deleted by hand and `cdkd rollback` re-runs: it re-creates the old
+#      policy on `Holder` and deletes the new one.
+#   3. `cdkd destroy`: every policy, `Holder`, the state file, the journal and
+#      the role are gone.
 #   4. go-to-k/cdkd#4911, the provider's own replacement: baseline deploy with
 #      `Cert`, a DNS-validated ACM certificate (`CERT_MODE=dns`).
 #   5. As a role that may not delete that certificate nor create Breaker,
@@ -34,11 +42,11 @@
 #      the old certificate alive and re-adopted it, deleting the replacement;
 #      only the old certificate exists and state names it. Before #4911 the
 #      rollback requested a new copy of the old certificate (a duplicate).
-#   6. `cdkd destroy`: every policy and certificate, the state file, the
-#      journal and the role are gone, and the state prefix's object versions
+#   6. `cdkd destroy`: every policy and certificate, `Holder`, the state file,
+#      the journal and the role are gone, and the state prefix's object versions
 #      are swept.
 #
-# Cost: up to three IAM managed policies, two ACM certificates (three on a
+# Cost: up to three IAM managed policies and one role of the stack, two ACM certificates (three on a
 # pre-#4911 binary) left in
 # PENDING_VALIDATION on a synthetic `.example.test` domain under
 # `CDKD_NO_WAIT=true` (free, no DNS) and one role at a time. On any failure,
@@ -124,6 +132,7 @@ TARGET_A="${POLICY_ARN_PREFIX}cdkd-rdfr-target-a"
 TARGET_B="${POLICY_ARN_PREFIX}cdkd-rdfr-target-b"
 BREAKER="${POLICY_ARN_PREFIX}cdkd-rdfr-breaker"
 ALL_POLICIES=("${TARGET_A}" "${TARGET_B}" "${BREAKER}")
+HOLDER="cdkd-rdfr-holder"
 # The certificate's domain the stack derives from the stack name.
 CERT_DOMAIN="cdkd-rdfr-$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]').example.test"
 # Every status, so a certificate in any state is counted.
@@ -162,6 +171,34 @@ delete_certs() { ( # usage: delete_certs  (best-effort)
   done
   true
 ); }
+delete_holder_role() { ( # usage: delete_holder_role  (best-effort; detaches first)
+  set +eu
+  for a in $(aws iam list-attached-role-policies --role-name "${HOLDER}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+    aws iam detach-role-policy --role-name "${HOLDER}" --policy-arn "${a}" >/dev/null 2>&1
+  done
+  aws iam delete-role --role-name "${HOLDER}" >/dev/null 2>&1
+  true
+); }
+# The roles a managed policy is attached to, sorted, one per line.
+policy_roles() { # usage: policy_roles <arn>  (fails on a failed listing)
+  local out
+  out="$(aws iam list-entities-for-policy --policy-arn "$1" --entity-filter Role \
+    --query 'PolicyRoles[].RoleName' --output text)" || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^None$' | grep -v '^$' | sort || true
+}
+# IAM attachments are eventually consistent: wait until the policy's roles
+# read exactly <expected> ('' for none). A failed listing FAILS the run rather
+# than reading as "no roles". Sets ROLES_SEEN to the last answer.
+roles_eventually() { # usage: roles_eventually <arn> <expected>  (0 = matched)
+  ROLES_SEEN=""
+  for _ in $(seq 1 12); do
+    ROLES_SEEN="$(policy_roles "$1")" \
+      || { echo "[verify] FAIL: could not list the roles ${1} is attached to" >&2; exit 1; }
+    [ "${ROLES_SEEN}" = "$2" ] && return 0
+    sleep 5
+  done
+  return 1
+}
 delete_deny_role() { ( # usage: delete_deny_role
   set +eu
   aws iam delete-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
@@ -189,11 +226,17 @@ cleanup() {
     # a new one a failed rollback left) first, by ARN; the destroy below then
     # deletes what the records hold and the journal.
     for a in "${ALL_POLICIES[@]}"; do
+      ( set +eu; for r in $(aws iam list-entities-for-policy --policy-arn "${a}" --entity-filter Role --query 'PolicyRoles[].RoleName' --output text 2>/dev/null); do
+          aws iam detach-role-policy --role-name "${r}" --policy-arn "${a}" >/dev/null 2>&1
+        done; true )
       delete_policy_by_arn "${a}"
     done
     delete_certs
     (cd "${TEST_DIR}" && env -u TARGET_SUFFIX -u BREAK -u CERT_MODE ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
     delete_certs
+    delete_holder_role
+    ( gone_probe aws iam get-role --role-name "${HOLDER}" ) \
+      || echo "[verify] WARN: role ${HOLDER} could not be confirmed deleted; delete it by hand" >&2
     [ -z "$(cert_arns 2>/dev/null)" ] \
       || echo "[verify] WARN: ACM certificates for ${CERT_DOMAIN} may remain; delete them by hand" >&2
     for a in "${ALL_POLICIES[@]}"; do
@@ -245,6 +288,8 @@ for a in "${ALL_POLICIES[@]}"; do
 done
 assert_gone "precondition: role ${DENY_ROLE} already exists (left by an earlier run); delete it first" \
   aws iam get-role --role-name "${DENY_ROLE}"
+assert_gone "precondition: role ${HOLDER} already exists (left by an earlier run); delete it first" \
+  aws iam get-role --role-name "${HOLDER}"
 PRE_CERTS="$(cert_arns)"
 if [ -n "${PRE_CERTS}" ]; then
   echo "[verify] FAIL: precondition -- ACM certificates for ${CERT_DOMAIN} already exist (left by an earlier run); delete them first: ${PRE_CERTS}" >&2
@@ -328,19 +373,26 @@ if [ "${STATE_1_ID}" != "${TARGET_A}" ]; then
   echo "[verify] FAIL: state's Target is '${STATE_1_ID}' after step 1 (expected ${TARGET_A})" >&2
   exit 1
 fi
+# The premise of step 2: the old policy's delete has something to strip.
+if ! roles_eventually "${TARGET_A}" "${HOLDER}"; then
+  echo "[verify] FAIL: ${TARGET_A} is not attached to exactly ${HOLDER} after step 1 (attached: '${ROLES_SEEN}')" >&2
+  exit 1
+fi
 
 echo "[verify] step 2: a role that may not delete ${TARGET_A} nor create ${BREAKER}"
 TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
 # Scoped to what this deploy and its rollback call: only read-only
 # CloudFormation verbs, iam:ListPolicies and sts:GetCallerIdentity (which take
-# no resource) are `*`; SSM is the CDK bootstrap parameters, KMS only through
+# no resource) are `*`; on `cdkd-rdfr-holder` it may attach and detach this
+# run's policies only (the new policy's create attaches, the old one's delete
+# detaches); SSM is the CDK bootstrap parameters, KMS only through
 # S3 (the state bucket's encryption). The S3 verbs on the state bucket are the
 # state path's. On this run's policies (`cdkd-rdfr-*`) the role may create,
 # tag, read and delete (the rollback deletes `cdkd-rdfr-target-b`), but the
 # explicit denies refuse the delete of `cdkd-rdfr-target-a` (the replacement's
 # old policy) and the create of `cdkd-rdfr-breaker` (the failure after it). No
-# statement allows a credential, a PassRole or a role or user write.
-DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const p=`arn:aws:iam::${acct}:policy/`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreatePolicy","iam:TagPolicy","iam:GetPolicy","iam:GetPolicyVersion","iam:ListPolicyVersions","iam:ListPolicyTags","iam:ListEntitiesForPolicy","iam:DeletePolicy","iam:DeletePolicyVersion"],Resource:`${p}cdkd-rdfr-*`},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeletePolicy","iam:DeletePolicyVersion"],Resource:`${p}cdkd-rdfr-target-a`},{Effect:"Deny",Action:"iam:CreatePolicy",Resource:`${p}cdkd-rdfr-breaker`},{Effect:"Deny",Action:["iam:PassRole","sts:AssumeRole"],Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
+# statement allows a credential, a PassRole or any other role or user write.
+DENY_POLICY="$(node -e 'const [bucket,stack,acct]=process.argv.slice(1);const p=`arn:aws:iam::${acct}:policy/`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreatePolicy","iam:TagPolicy","iam:GetPolicy","iam:GetPolicyVersion","iam:ListPolicyVersions","iam:ListPolicyTags","iam:ListEntitiesForPolicy","iam:DeletePolicy","iam:DeletePolicyVersion"],Resource:`${p}cdkd-rdfr-*`},{Effect:"Allow",Action:["iam:AttachRolePolicy","iam:DetachRolePolicy"],Resource:`arn:aws:iam::${acct}:role/cdkd-rdfr-holder`,Condition:{ArnLike:{"iam:PolicyARN":`${p}cdkd-rdfr-*`}}},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["iam:DeletePolicy","iam:DeletePolicyVersion"],Resource:`${p}cdkd-rdfr-target-a`},{Effect:"Deny",Action:"iam:CreatePolicy",Resource:`${p}cdkd-rdfr-breaker`},{Effect:"Deny",Action:["iam:PassRole","sts:AssumeRole"],Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}")"
 make_deny_role "${DENY_POLICY}"
 # The EXPLICIT deny must already bind, or the old policy's delete would go
 # through and the rollback would have nothing to re-adopt. Probed on the old
@@ -409,36 +461,96 @@ if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to create IAM managed polic
   echo "[verify] FAIL: precondition -- the deploy did not fail on the role's explicit deny of Breaker's create (output above)" >&2
   exit 1
 fi
-# go-to-k/cdkd#2631: the rollback read AWS, found the old policy alive and
-# re-adopted it. Before the fix it re-created it, which collided on its name.
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "the old resource of Target (${TARGET_A}) still exists"; then
-  echo "[verify] FAIL: the rollback did not report re-adopting the surviving old Target (${TARGET_A}) -- go-to-k/cdkd#2631: a rollback re-creates an old resource whose delete failed (output above)" >&2
-  exit 1
-fi
-if printf '%s' "${DEPLOY_FLAT}" | grep -qF "Rollback failed for Target"; then
-  echo "[verify] FAIL: the rollback of Target failed (output above)" >&2
-  exit 1
-fi
+# The premise first, so a fixture problem (the deny role's Allow not yet bound,
+# say) never reads as a #4946 regression: the old policy survived its refused
+# delete, and that delete had already detached it from Holder.
 if ! present_eventually aws iam get-policy --policy-arn "${TARGET_A}"; then
-  echo "[verify] FAIL: ${TARGET_A} is gone after step 2 (it must survive the refused delete and be re-adopted)" >&2
+  echo "[verify] FAIL: ${TARGET_A} is gone after step 2 (its delete was refused)" >&2
   exit 1
 fi
-assert_gone_eventually "the replacement's new policy ${TARGET_B} survived the rollback (its reversal must delete it)" \
-  aws iam get-policy --policy-arn "${TARGET_B}"
+if ! roles_eventually "${TARGET_A}" ""; then
+  echo "[verify] FAIL: precondition -- ${TARGET_A} is still attached to '${ROLES_SEEN}' after step 2: its delete did not strip it before the refusal, so the step proves nothing" >&2
+  exit 1
+fi
+# go-to-k/cdkd#4946: the old policy's delete detached it from Holder before
+# AWS refused DeletePolicy, so the survivor is a stripped policy and must not be
+# re-adopted. Before the fix the refusal by name read as `kept`: the rollback
+# re-adopted the detached policy and deleted the working new one.
+if printf '%s' "${DEPLOY_FLAT}" | grep -qF "the old resource of Target (${TARGET_A}) still exists"; then
+  echo "[verify] FAIL: the rollback re-adopted the old Target (${TARGET_A}) although its delete had already detached it from ${HOLDER} -- go-to-k/cdkd#4946: a refused delete that stripped the resource is read as a whole survivor (output above)" >&2
+  exit 1
+fi
+# Both phrases on ONE refusal line of the log, not anywhere in the output.
+if ! sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" \
+  | grep -F "Cannot reverse the replacement of Target (AWS::IAM::ManagedPolicy)" | grep -qF "or only partly ran"; then
+  echo "[verify] FAIL: the rollback did not refuse Target as a survivor whose delete only partly ran -- go-to-k/cdkd#4946 (output above)" >&2
+  exit 1
+fi
+# The refusal sent nothing: the old policy survives detached, the new one
+# stays attached to Holder, state is not re-pointed, the journal is kept.
+if ! present_eventually aws iam get-policy --policy-arn "${TARGET_B}"; then
+  echo "[verify] FAIL: the replacement's new policy ${TARGET_B} is gone after the refused rollback (the refusal must send nothing)" >&2
+  exit 1
+fi
+if ! roles_eventually "${TARGET_B}" "${HOLDER}"; then
+  echo "[verify] FAIL: ${TARGET_B} is attached to '${ROLES_SEEN}' after step 2 (expected ${HOLDER})" >&2
+  exit 1
+fi
 assert_gone "${BREAKER} exists after step 2 (its create must be refused)" \
   aws iam get-policy --policy-arn "${BREAKER}"
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 STATE_2_ID="$(printf '%s' "${STATE_2}" | jq -r '.resources.Target.physicalId // "<absent>"')"
-STATE_2_NAME="$(printf '%s' "${STATE_2}" | jq -r '.resources.Target.properties.ManagedPolicyName // "<absent>"')"
-if [ "${STATE_2_ID}" != "${TARGET_A}" ] || [ "${STATE_2_NAME}" != "cdkd-rdfr-target-a" ]; then
-  echo "[verify] FAIL: state's Target is '${STATE_2_ID}' named '${STATE_2_NAME}' after the rollback (expected ${TARGET_A}, cdkd-rdfr-target-a)" >&2
+if [ "${STATE_2_ID}" != "${TARGET_B}" ]; then
+  echo "[verify] FAIL: state's Target is '${STATE_2_ID}' after the refused rollback (expected ${TARGET_B}: the refusal re-points nothing)" >&2
   exit 1
 fi
 if [ "$(printf '%s' "${STATE_2}" | jq '.resources | has("Breaker")')" != "false" ]; then
   echo "[verify] FAIL: state records Breaker after the rollback" >&2
   exit 1
 fi
-echo "[verify] step 2 ok: the rollback re-adopted ${TARGET_A} instead of re-creating it, and deleted ${TARGET_B} (deploy rc=${DEPLOY_RC})"
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: the refused rollback dropped the journal ${JOURNAL_KEY}" >&2
+  exit 1
+fi
+echo "[verify] step 2: the refusal held; delete the stripped ${TARGET_A} by hand and re-run cdkd rollback, as it advises"
+delete_policy_by_arn "${TARGET_A}"
+assert_gone_eventually "${TARGET_A} still exists after its delete by hand" \
+  aws iam get-policy --policy-arn "${TARGET_A}"
+# IAM is eventually consistent: the rollback's own read may still see the
+# deleted policy and refuse again, so a refusal on Target is retried.
+RB_RC=1
+for attempt in 1 2 3; do
+  set +e
+  env -u TARGET_SUFFIX -u BREAK -u CERT_MODE ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force \
+    > "${LOG_DIR}/rollback.log" 2>&1
+  RB_RC=$?
+  set -e
+  sed 's/^/  /' "${LOG_DIR}/rollback.log" || true
+  [ "${RB_RC}" -eq 0 ] && break
+  grep -qF "Cannot reverse the replacement of Target" "${LOG_DIR}/rollback.log" || break
+  echo "[verify] rollback attempt ${attempt} still saw ${TARGET_A}; retrying in 15s"
+  sleep 15
+done
+if [ "${RB_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: cdkd rollback exited ${RB_RC} after the old policy was deleted by hand (output above)" >&2
+  exit 1
+fi
+if ! present_eventually aws iam get-policy --policy-arn "${TARGET_A}"; then
+  echo "[verify] FAIL: cdkd rollback did not re-create ${TARGET_A}" >&2
+  exit 1
+fi
+if ! roles_eventually "${TARGET_A}" "${HOLDER}"; then
+  echo "[verify] FAIL: the re-created ${TARGET_A} is attached to '${ROLES_SEEN}' (expected ${HOLDER})" >&2
+  exit 1
+fi
+assert_gone_eventually "the replacement's new policy ${TARGET_B} survived cdkd rollback (its reversal must delete it)" \
+  aws iam get-policy --policy-arn "${TARGET_B}"
+STATE_2B_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Target.physicalId // "<absent>"')"
+if [ "${STATE_2B_ID}" != "${TARGET_A}" ]; then
+  echo "[verify] FAIL: state's Target is '${STATE_2B_ID}' after cdkd rollback (expected ${TARGET_A})" >&2
+  exit 1
+fi
+echo "[verify] step 2 ok: the rollback refused to re-adopt the stripped ${TARGET_A}; after its delete by hand, cdkd rollback re-created it on ${HOLDER} and deleted ${TARGET_B} (deploy rc=${DEPLOY_RC})"
 
 echo "[verify] step 3: destroy"
 env -u TARGET_SUFFIX -u BREAK -u CERT_MODE ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
@@ -452,6 +564,8 @@ assert_gone "rollback journal ${JOURNAL_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 assert_gone "role ${DENY_ROLE} still exists after the run" \
   aws iam get-role --role-name "${DENY_ROLE}"
+assert_gone_eventually "role ${HOLDER} still exists after destroy" \
+  aws iam get-role --role-name "${HOLDER}"
 
 echo "[verify] step 4: baseline deploy with Cert (a DNS-validated ACM certificate)"
 env -u TARGET_SUFFIX -u BREAK CERT_MODE=dns CDKD_NO_WAIT=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
@@ -595,10 +709,12 @@ assert_gone "rollback journal ${JOURNAL_KEY} still exists after step 6's destroy
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
 assert_gone "role ${DENY_ROLE} still exists after the run" \
   aws iam get-role --role-name "${DENY_ROLE}"
+assert_gone_eventually "role ${HOLDER} still exists after destroy" \
+  aws iam get-role --role-name "${HOLDER}"
 
 trap - EXIT INT TERM
 rm -rf "${LOG_DIR}"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "replaced-delete-failed-rollback state teardown"
 
-echo "[verify] PASS -- the rollback re-adopted a replaced resource whose delete was refused instead of re-creating it (go-to-k/cdkd#2631), and read a provider-replaced survivor before re-creating it (go-to-k/cdkd#4911)"
+echo "[verify] PASS -- the rollback refused to re-adopt a replaced policy its refused delete had already stripped (go-to-k/cdkd#4946) and re-created it once it was gone (go-to-k/cdkd#2631), and re-adopted a provider-replaced certificate whose refused delete changed nothing (go-to-k/cdkd#4911)"

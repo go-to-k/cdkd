@@ -21,6 +21,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -746,17 +747,26 @@ export class CloudTrailProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CloudTrail Trail ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#4946: set once a StopLogging may have landed, so a refused
+    // `DeleteTrail` is never read as a whole survivor. A trail its record says
+    // is not logging is what the record describes even once stopped.
+    const recordedIsLogging = properties?.['IsLogging'];
+    const recordedStopped = recordedIsLogging === false || recordedIsLogging === 'false';
+    let stripped = false;
 
     try {
       // Stop logging before deletion (ignore errors)
       try {
+        stripped = !recordedStopped;
         await this.getClient().send(new StopLoggingCommand({ Name: physicalId }));
-      } catch {
-        // Ignore errors when stopping logging
+      } catch (stopError) {
+        // Ignore errors when stopping logging. A swallowed failure may still
+        // have landed, unless AWS refused it by name.
+        if (isRefusedByName(stopError)) stripped = false;
       }
 
       await this.getClient().send(new DeleteTrailCommand({ Name: physicalId }));
@@ -775,13 +785,14 @@ export class CloudTrailProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete CloudTrail Trail ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
         cause
       );
+      throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
 

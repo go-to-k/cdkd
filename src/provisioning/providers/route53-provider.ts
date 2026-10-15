@@ -28,6 +28,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNameCollision } from '../../deployment/retryable-errors.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -932,10 +933,13 @@ export class Route53Provider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Route 53 hosted zone ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#4946: set by either helper once it sends a change, so a
+    // refused `DeleteHostedZone` is never read as a whole survivor.
+    const progress: DeleteProgress = { stripped: false };
 
     try {
       // Delete query logging config before deleting hosted zone
-      await this.deleteQueryLoggingConfigForZone(physicalId, logicalId);
+      await this.deleteQueryLoggingConfigForZone(physicalId, logicalId, progress);
 
       // AWS rejects DeleteHostedZone when Accelerated Recovery is ENABLED
       // (or ENABLING / any non-DISABLED state) with
@@ -944,7 +948,7 @@ export class Route53Provider implements ResourceProvider {
       // plane API (UpdateHostedZoneFeatures) and the transition takes
       // ~2-10 minutes to settle. Issue the disable + poll for DISABLED
       // BEFORE attempting the zone delete so the destroy path is closed.
-      await this.ensureAcceleratedRecoveryDisabledForDelete(physicalId, logicalId);
+      await this.ensureAcceleratedRecoveryDisabledForDelete(physicalId, logicalId, progress);
 
       await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }));
       this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
@@ -967,15 +971,18 @@ export class Route53Provider implements ResourceProvider {
       // them with the generic "Failed to delete hosted zone" prefix
       // would bury the actionable text in the `cause` chain. Mirrors
       // the same guard in `createHostedZone`.
-      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
+      const failure =
+        error instanceof ProvisioningError
+          ? error
+          : new ProvisioningError(
+              `Failed to delete hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            );
+      throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
   }
 
@@ -1012,7 +1019,8 @@ export class Route53Provider implements ResourceProvider {
    */
   private async ensureAcceleratedRecoveryDisabledForDelete(
     physicalId: string,
-    logicalId: string
+    logicalId: string,
+    progress: DeleteProgress
   ): Promise<void> {
     const client = this.getClient();
     const pollIntervalMs = Number.parseInt(
@@ -1126,6 +1134,7 @@ export class Route53Provider implements ResourceProvider {
           EnableAcceleratedRecovery: false,
         })
       );
+      progress.stripped = true;
     } else if (current === 'DISABLING' || current === 'DISABLING_HOSTED_ZONE_LOCKED') {
       this.logger.debug(
         `Hosted zone ${physicalId} AcceleratedRecovery is already ${current} (a disabling phase); waiting for settle`
@@ -2087,7 +2096,11 @@ export class Route53Provider implements ResourceProvider {
   /**
    * Delete query logging config(s) for a hosted zone.
    */
-  private async deleteQueryLoggingConfigForZone(zoneId: string, logicalId: string): Promise<void> {
+  private async deleteQueryLoggingConfigForZone(
+    zoneId: string,
+    logicalId: string,
+    progress?: DeleteProgress
+  ): Promise<void> {
     try {
       const listResponse = await this.getClient().send(
         new ListQueryLoggingConfigsCommand({ HostedZoneId: zoneId })
@@ -2095,7 +2108,18 @@ export class Route53Provider implements ResourceProvider {
       const configs = listResponse.QueryLoggingConfigs ?? [];
       for (const config of configs) {
         if (config.Id) {
-          await this.getClient().send(new DeleteQueryLoggingConfigCommand({ Id: config.Id }));
+          // go-to-k/cdkd#4946: before the call, whose failure is swallowed below
+          // and may have landed; restored when AWS refused it by name.
+          const before = progress?.stripped;
+          if (progress) progress.stripped = true;
+          try {
+            await this.getClient().send(new DeleteQueryLoggingConfigCommand({ Id: config.Id }));
+          } catch (deleteError) {
+            if (progress && before !== undefined && isRefusedByName(deleteError)) {
+              progress.stripped = before;
+            }
+            throw deleteError;
+          }
           this.logger.debug(
             `Deleted query logging config ${config.Id} for hosted zone ${logicalId}`
           );

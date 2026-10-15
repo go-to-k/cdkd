@@ -23,6 +23,7 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -1054,6 +1055,10 @@ export class RDSProvider implements ResourceProvider {
     // Issue #4029: set once a global-cluster detach was issued, so a delete
     // failing after it says the cluster is already standalone.
     let detachedFrom: string | undefined;
+    // go-to-k/cdkd#4946: set once the detach is accepted, even when its wait
+    // then fails: a detached cluster is not the global member its record
+    // describes, so a refused delete is never read as a whole survivor.
+    const progress: DeleteProgress = { stripped: false };
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -1100,7 +1105,8 @@ export class RDSProvider implements ResourceProvider {
           logicalId,
           physicalId,
           globalClusterId,
-          context?.removeProtection === true
+          context?.removeProtection === true,
+          progress
         ))
           ? globalClusterId
           : undefined;
@@ -1138,7 +1144,7 @@ export class RDSProvider implements ResourceProvider {
         // Non-retryable so the destroy / deploy classifiers never read an AWS
         // "not found" in the detail as the cluster being gone; a re-run of the
         // destroy repeats the detach.
-        throw markNonRetryable(
+        const detachFailure = markNonRetryable(
           new ProvisioningError(
             `Failed to delete DBCluster ${logicalId}: ${error.message}`,
             resourceType,
@@ -1147,6 +1153,7 @@ export class RDSProvider implements ResourceProvider {
             error
           )
         );
+        throw progress.stripped ? markDeleteStarted(detachFailure) : detachFailure;
       }
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
@@ -1169,7 +1176,7 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         `Failed to delete DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
           (detachedFrom !== undefined
             ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
@@ -1179,6 +1186,7 @@ export class RDSProvider implements ResourceProvider {
         physicalId,
         cause
       );
+      throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
   }
 
@@ -1712,7 +1720,8 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     globalClusterId: string,
-    removeProtection: boolean
+    removeProtection: boolean,
+    progress: DeleteProgress
   ): Promise<boolean> {
     let cluster = await this.describeDBCluster(physicalId);
     for (let i = 0; removeProtection && cluster?.DeletionProtection === true && i < 6; i++) {
@@ -1752,6 +1761,7 @@ export class RDSProvider implements ResourceProvider {
             DbClusterIdentifier: clusterArn,
           })
         );
+        progress.stripped = true;
         this.logger.info(
           safeMsg`Detaching DBCluster ${logicalId} from global cluster ${globalClusterId} before the delete`
         );

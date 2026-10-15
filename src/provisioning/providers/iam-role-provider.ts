@@ -42,6 +42,7 @@ import {
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import type {
   CreateContext,
@@ -775,6 +776,9 @@ export class IAMRoleProvider implements ResourceProvider {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     const { value: v } = log;
     log.debug(`Deleting IAM role ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#4946: set once a step below changes the role, so a refused
+    // `DeleteRole` is never read as a whole survivor.
+    const progress: DeleteProgress = { stripped: false };
 
     try {
       // Check if role exists
@@ -806,13 +810,13 @@ export class IAMRoleProvider implements ResourceProvider {
       }
 
       // Step 1: Detach all managed policies
-      await this.detachAllManagedPolicies(physicalId, log);
+      await this.detachAllManagedPolicies(physicalId, log, progress);
 
       // Step 2: Delete all inline policies
-      await this.deleteAllInlinePolicies(physicalId, log);
+      await this.deleteAllInlinePolicies(physicalId, log, progress);
 
       // Step 3: Remove role from all instance profiles
-      await this.removeFromAllInstanceProfiles(physicalId, log);
+      await this.removeFromAllInstanceProfiles(physicalId, log, progress);
 
       // Step 4: Delete the role
       await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
@@ -820,7 +824,7 @@ export class IAMRoleProvider implements ResourceProvider {
       log.debug(`Successfully deleted IAM role ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
+      const failure = new ProvisioningError(
         log.mask(
           `Failed to delete IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
         ),
@@ -829,6 +833,7 @@ export class IAMRoleProvider implements ResourceProvider {
         physicalId,
         cause
       );
+      throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
   }
 
@@ -839,7 +844,8 @@ export class IAMRoleProvider implements ResourceProvider {
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
     // unmasked sink; the delete path passes its own (issue #2007).
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    progress?: DeleteProgress
   ): Promise<void> {
     const { value: v } = log;
     log.debug(`Detaching all managed policies from role ${v(roleName)}`);
@@ -864,6 +870,7 @@ export class IAMRoleProvider implements ResourceProvider {
                 PolicyArn: policy.PolicyArn,
               })
             );
+            if (progress) progress.stripped = true;
             log.debug(`Detached managed policy ${v(policy.PolicyArn)} from role ${v(roleName)}`);
           } catch (error) {
             if (error instanceof NoSuchEntityException) {
@@ -894,7 +901,8 @@ export class IAMRoleProvider implements ResourceProvider {
     roleName: string,
     // REQUIRED, so a create-path caller cannot silently fall back to an
     // unmasked sink; the delete path passes its own (issue #2007).
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    progress?: DeleteProgress
   ): Promise<void> {
     const { value: v } = log;
     log.debug(`Deleting all inline policies from role ${v(roleName)}`);
@@ -918,6 +926,7 @@ export class IAMRoleProvider implements ResourceProvider {
               PolicyName: policyName,
             })
           );
+          if (progress) progress.stripped = true;
           log.debug(`Deleted inline policy ${v(policyName)} from role ${v(roleName)}`);
         } catch (error) {
           if (error instanceof NoSuchEntityException) {
@@ -943,7 +952,8 @@ export class IAMRoleProvider implements ResourceProvider {
    */
   private async removeFromAllInstanceProfiles(
     roleName: string,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    progress?: DeleteProgress
   ): Promise<void> {
     const { value: v } = log;
     log.debug(`Removing role ${v(roleName)} from all instance profiles`);
@@ -968,6 +978,7 @@ export class IAMRoleProvider implements ResourceProvider {
                 InstanceProfileName: profile.InstanceProfileName,
               })
             );
+            if (progress) progress.stripped = true;
             log.debug(
               `Removed role ${v(roleName)} from instance profile ${v(profile.InstanceProfileName)}`
             );

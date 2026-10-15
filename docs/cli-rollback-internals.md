@@ -220,21 +220,23 @@ delete outright (access denied, a dependency) or the snapshot stopped it
 before it was sent. Before re-creating it, the rollback
 reads AWS for it through the resource type's drift read (an ordinary reverse
 replacement makes no such read). Reported gone, it is re-created as usual.
-Still there after an outright refusal or a delete that was never sent, it is
-re-adopted as a retained one is,
-with a `⚠` warning (exit `2`), since the provider may have run earlier steps
-of its delete (a managed policy's detaches): check it with `cdkd drift`. The
+Still there after an outright refusal that came before the delete changed
+anything, or a delete that was never sent, it is re-adopted as a retained one
+is, with a `⚠` warning (exit `2`): check it with `cdkd drift`. The
 same advice is recorded on the rollback's event, so `cdkd events` keeps it. Still
 there after any other failure — a skip, a resource AWS reports in use (except
 an ACM certificate, whose in-use refusal leaves it whole and is re-adopted), a
-wait that gave up on a delete AWS had accepted, or any refusal of an IAM role
-or managed policy that its provider replaced inside its own update (that
-delete detaches it before AWS refuses, so it is not whole) — the operation fails instead (exit `1`, journal kept, nothing
+wait that gave up on a delete AWS had accepted, a refusal that came after the
+provider's delete had already stripped the resource (an IAM role's detached
+policies, an EventBridge rule's removed targets, a CloudFront distribution it
+disabled), or any refusal of an IAM role or managed policy that its provider
+replaced inside its own update — the operation fails instead (exit `1`, journal kept, nothing
 sent): that delete may still be running, or may have stripped part of the
 resource before AWS refused it, and re-adopting a resource about to disappear
 would leave neither, while re-adopting a stripped one would keep it in place of
 the working new copy; once AWS reports it gone, re-running
-`cdkd rollback` re-creates it. The operation also fails when cdkd cannot tell
+`cdkd rollback` re-creates it. A refused delete is not running, so waiting does
+not help there: delete the old resource by hand, then re-run `cdkd rollback`. The operation also fails when cdkd cannot tell
 — the type has no read, or the read fails or does not answer in time — since
 re-creating could duplicate the old resource or collide with it; a failed read
 is retried by re-running `cdkd rollback`. In every refusal, the `--orphan`

@@ -4471,6 +4471,7 @@
         "recreate-parent-child-permission",
         "recreate-via-cc-api",
         "recreate-via-sdk-provider",
+        "replaced-delete-failed-rollback",
         "require-approval-broadening",
         "retain-orphan-redeploy",
         "rollback-explicit-name-rewrite",
@@ -4741,6 +4742,10 @@
         ],
         "recreate-via-sdk-provider": [
           "l2"
+        ],
+        "replaced-delete-failed-rollback": [
+          "l1",
+          "literal"
         ],
         "require-approval-broadening": [
           "l2",

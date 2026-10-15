@@ -128,10 +128,11 @@ resource back under management, with its data.
 If the deploy could not delete the old resource, the rollback first checks
 whether the old resource is still there. If it is gone, cdkd re-creates it. If
 it is still there and AWS had refused the delete (access denied, for example)
-or the delete was never sent (a failed `UpdateReplacePolicy: Snapshot`
+before cdkd changed anything, or the delete was never sent (a failed `UpdateReplacePolicy: Snapshot`
 snapshot), cdkd takes it back under management instead of creating a second one, and
 warns you to check it with `cdkd drift`. Otherwise — the delete may still be
-running, or cdkd cannot tell — it changes nothing for that resource, keeps the
+running, it had already removed part of the resource (an IAM role's policies,
+for example) before AWS refused it, or cdkd cannot tell — it changes nothing for that resource, keeps the
 rollback journal, and prints what to do next.
 
 ### Nested stacks

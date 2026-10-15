@@ -2,6 +2,7 @@ import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/c
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
 import { isPasteableIdent, safeMsg } from '../../utils/display-safe.js';
@@ -315,20 +316,28 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#4946: set once a topic's policy is cleared, so a refusal on a
+    // later one is never read as a whole survivor: the policy is then on only
+    // some of its topics.
+    let clearedAny = false;
     for (const topicArn of topicArns) {
       try {
         await this.resetTopicPolicy(topicArn, resourceType, logicalId, context?.expectedRegion);
+        clearedAny = true;
       } catch (error) {
         // The region refusal is already a complete ProvisioningError.
-        if (error instanceof ProvisioningError) throw error;
-        throw this.wrapOperationError(
-          'delete',
-          logicalId,
-          resourceType,
-          physicalId,
-          error,
-          context?.maskSecrets
-        );
+        const failure =
+          error instanceof ProvisioningError
+            ? error
+            : this.wrapOperationError(
+                'delete',
+                logicalId,
+                resourceType,
+                physicalId,
+                error,
+                context?.maskSecrets
+              );
+        throw clearedAny ? markDeleteStarted(failure) : failure;
       }
     }
 

@@ -11,14 +11,17 @@ import type { Construct } from 'constructs';
  * - `Target` is a managed policy whose `ManagedPolicyName` (create-only) is
  *   `cdkd-rdfr-target-${TARGET_SUFFIX ?? 'a'}`, so `TARGET_SUFFIX=b` replaces
  *   it: the new policy is created first, then the old one's delete runs.
+ * - `Holder` is a role `Target` is attached to, so the old policy's delete
+ *   detaches it before `DeletePolicy` (go-to-k/cdkd#4946).
  * - `BREAK=true` adds `Breaker`, a managed policy that depends on `Target`.
  *
  * verify.sh deploys `TARGET_SUFFIX=b BREAK=true` as a role that may not
  * delete `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`: the old
  * policy's delete is refused, and `Breaker`'s create then fails the deploy
  * before the post-deploy retry of that delete (go-to-k/cdkd#4900). The
- * automatic rollback must find the old policy alive and re-adopt it, not
- * re-create it (which collides on its name).
+ * automatic rollback must find the old policy alive and, since its delete had
+ * already detached it from `Holder`, refuse rather than re-adopt that stripped
+ * policy (go-to-k/cdkd#4946) or re-create it (which collides on its name).
  *
  * go-to-k/cdkd#4911: `CERT_MODE=dns|email` adds `Cert`, an ACM certificate
  * whose `ValidationMethod` is the mode. That key is not create-only, so
@@ -29,7 +32,7 @@ import type { Construct } from 'constructs';
  *
  * L1 resources with explicit names, on the SDK route.
  *
- * covers: AWS::IAM::ManagedPolicy, AWS::CertificateManager::Certificate
+ * covers: AWS::IAM::ManagedPolicy, AWS::IAM::Role, AWS::CertificateManager::Certificate
  */
 export class ReplacedDeleteFailedRollbackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -40,9 +43,24 @@ export class ReplacedDeleteFailedRollbackStack extends cdk.Stack {
       Statement: [{ Effect: 'Deny', Action: 'logs:CreateLogGroup', Resource: '*' }],
     };
 
+    const holder = new iam.CfnRole(this, 'Holder', {
+      roleName: 'cdkd-rdfr-holder',
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'lambda.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      },
+    });
+
     const target = new iam.CfnManagedPolicy(this, 'Target', {
       managedPolicyName: `cdkd-rdfr-target-${process.env.TARGET_SUFFIX ?? 'a'}`,
       policyDocument: document,
+      roles: [holder.ref],
     });
 
     // L1 so the two modes differ in `ValidationMethod` and nothing else (the
