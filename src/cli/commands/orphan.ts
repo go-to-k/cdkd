@@ -19,7 +19,7 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { buildLockContentionMessage } from '../../state/lock-contention-message.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   exportInferredRegionForSdk,
@@ -294,6 +294,9 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
+  // The target stack's own set when its region differs from the CLI's; see
+  // the scope below. Destroyed in the outer finally.
+  let stackAwsClients: AwsClients | undefined;
 
   try {
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
@@ -494,13 +497,34 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         );
       }
 
-      const providerRegistry = new ProviderRegistry();
-      registerAllProviders(providerRegistry, providerClasses);
+      // go-to-k/cdkd#4937: the registry AND the rewrite's live `getAttribute`
+      // reads run inside the target stack's AWS scope, as deploy does. A
+      // provider reads its region from `getAwsClients()` or `ambientRegion()`,
+      // and outside a scope both are the CLI's `--region` / `AWS_REGION` — so
+      // a stack pinned to another region had its GetAtt values read there,
+      // aborting on a NotFound or writing a same-named resource's value into a
+      // sibling's state. Built inside so every provider captures the stack's
+      // region. The state backend and lock keep `awsClients.s3`: the state
+      // bucket's region is not the stack's. An empty `targetRegion` (a legacy
+      // record naming no region, for an env-agnostic stack) keeps the CLI's
+      // set, the region such a record was written for.
+      stackAwsClients =
+        !targetRegion || targetRegion === awsClients.configuredRegion
+          ? undefined
+          : new AwsClients({
+              region: targetRegion,
+              ...(options.profile && { profile: options.profile }),
+            });
+      const scopeClients = stackAwsClients ?? awsClients;
 
       // go-to-k/cdkd#3869: see `orphanPrintingBag`.
       const rewriteResult = await withPrintingSecrets(orphanPrintingBag(state), async () => {
-        const result = await rewriteResourceReferences(state, orphanLogicalIds, providerRegistry, {
-          force: options.force,
+        const result = await runWithStackAwsClients(scopeClients, async () => {
+          const providerRegistry = new ProviderRegistry();
+          registerAllProviders(providerRegistry, providerClasses);
+          return rewriteResourceReferences(state, orphanLogicalIds, providerRegistry, {
+            force: options.force,
+          });
         });
 
         printRewriteSummary(result.rewrites, orphanLogicalIds);
@@ -577,6 +601,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       }
     }
   } finally {
+    stackAwsClients?.destroy();
     awsClients.destroy();
   }
 }

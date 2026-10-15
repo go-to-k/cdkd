@@ -5775,6 +5775,7 @@
         "loggroup-never-expire-guard",
         "logs-loggroup-fix-forward-orphan",
         "monitoring",
+        "orphan-getatt-takeover",
         "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
@@ -5864,6 +5865,10 @@
         ],
         "monitoring": [
           "l2"
+        ],
+        "orphan-getatt-takeover": [
+          "l2",
+          "literal"
         ],
         "perf-cross-backend-check": [
           "l2",

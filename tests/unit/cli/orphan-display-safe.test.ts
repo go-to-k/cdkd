@@ -62,6 +62,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
   })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(),
+  runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
 }));
 
 const mockGetState = vi.hoisted(() => vi.fn());

@@ -17,13 +17,22 @@
 #      id, not the intrinsic. The rewrite acts on a row whose intrinsic
 #      SURVIVED (a `cdkd import` that could not resolve it, a pre-v3 record),
 #      so the row is put in that shape by hand: its `Value` becomes
-#      `{"Fn::GetAtt": [<role>, "RoleId"]}` again.
+#      `{"Fn::GetAtt": [<role>, "RoleId"]}` again. The log-group-ARN
+#      parameter's row likewise, and the log group's recorded `Arn` is
+#      removed (a record that predates the attribute).
 #   2. Take the name over: delete the role out of band and create another under
 #      the same name. Assert its RoleId DIFFERS from the recorded one (premise).
 #   3. `cdkd orphan <stack>/Role`.
 #   4. LOAD-BEARING: the parameter's state row holds the RECORDED RoleId as a
 #      literal, never the newcomer's.
-#   5. Destroy, delete the takeover role, assert nothing is left.
+#   4b. LOAD-BEARING (issue #4937): `cdkd orphan <stack>/LogGroup` with the
+#      shell's AWS_REGION pointed at ANOTHER region. Phase 1b stripped the log
+#      group's recorded `Arn`, so the rewrite reads it live; the provider
+#      builds the ARN from its client's region, which before the fix was the
+#      shell's. The second parameter's state row must hold the deployed ARN,
+#      in the stack's region.
+#   5. Destroy, delete the takeover role and the orphaned log group, assert
+#      nothing is left.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -70,6 +79,10 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ROLE_NAME="cdkd-orphan-getatt-takeover-role"
 PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/role-id"
+LOG_GROUP_NAME="/cdkd-integ/orphan-getatt-takeover/region-probe"
+LG_PARAMETER_NAME="/cdkd-integ/orphan-getatt-takeover/log-group-arn"
+# Phase 4b's shell region: any region other than the stack's (issue #4937).
+if [ "${REGION}" = "us-west-2" ]; then OTHER_REGION="us-east-1"; else OTHER_REGION="us-west-2"; fi
 TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG="${TMPDIR:-/tmp}/cdkd-4186-orphan.$$.log"
@@ -78,6 +91,9 @@ DEPLOYED=0
 # Set only once the pre-flight proved the role name free, so an early exit
 # never deletes a role this run did not create (a concurrent run's included).
 ROLE_OWNED=0
+# Likewise for the log group: `cdkd orphan` leaves it in AWS, so the fixture
+# deletes it.
+LOG_GROUP_OWNED=0
 
 # Best-effort, subshell under `set +eu` so the trap never re-arms strict mode.
 delete_role_best_effort() {
@@ -98,10 +114,13 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     aws ssm delete-parameter --region "${REGION}" --name "${PARAMETER_NAME}" >/dev/null 2>&1
+    aws ssm delete-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}" >/dev/null 2>&1
   fi
   # The fixed name covers the stack's role AND the takeover role: at most one
   # of them exists at a time.
   [ "${ROLE_OWNED}" = "1" ] && delete_role_best_effort
+  [ "${LOG_GROUP_OWNED}" = "1" ] &&
+    aws logs delete-log-group --region "${REGION}" --log-group-name "${LOG_GROUP_NAME}" >/dev/null 2>&1
   rm -f "${LOG}" 2>/dev/null
   set -e
   exit "${rc}"
@@ -129,6 +148,16 @@ state_query() {
 logical_id_of_type() {
   state_query "Object.keys(st.resources).find((k) => st.resources[k].resourceType === '$1')"
 }
+# The stack holds two parameters, so each is found by its NAME.
+logical_id_of_parameter() {
+  state_query "Object.keys(st.resources).find((k) => st.resources[k].resourceType === 'AWS::SSM::Parameter' && st.resources[k].properties?.Name === '$1')"
+}
+# How many log groups carry exactly LOG_GROUP_NAME in REGION. A failed call
+# fails the run (set -e), never reads as zero.
+log_group_count() {
+  aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "${LOG_GROUP_NAME}" \
+    --query "length(logGroups[?logGroupName=='${LOG_GROUP_NAME}'])" --output text
+}
 
 echo "==> Installing fixture deps"
 [ -d node_modules ] || pnpm install --ignore-workspace --prefer-offline
@@ -148,10 +177,20 @@ if ! gone_probe aws ssm get-parameter --region "${REGION}" --name "${PARAMETER_N
   echo "FAIL: parameter ${PARAMETER_NAME} already exists - clean up first." >&2
   exit 1
 fi
+if ! gone_probe aws ssm get-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}"; then
+  echo "FAIL: parameter ${LG_PARAMETER_NAME} already exists - clean up first." >&2
+  exit 1
+fi
+LG_COUNT="$(log_group_count)"
+if [ "${LG_COUNT}" != "0" ]; then
+  echo "FAIL: log group ${LOG_GROUP_NAME} already exists (count '${LG_COUNT}') - clean up first." >&2
+  exit 1
+fi
 
 echo "==> Phase 1: deploy"
 DEPLOYED=1
 ROLE_OWNED=1
+LOG_GROUP_OWNED=1
 AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" > "${LOG}" 2>&1 || {
   echo "FAIL: deploy failed" >&2
@@ -159,9 +198,11 @@ AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${ST
   exit 1
 }
 ROLE_LID="$(logical_id_of_type 'AWS::IAM::Role')"
-PARAM_LID="$(logical_id_of_type 'AWS::SSM::Parameter')"
-if [ -z "${ROLE_LID}" ] || [ -z "${PARAM_LID}" ]; then
-  echo "FAIL: state lacks the role or the parameter row (role='${ROLE_LID}', param='${PARAM_LID}')" >&2
+PARAM_LID="$(logical_id_of_parameter "${PARAMETER_NAME}")"
+LG_LID="$(logical_id_of_type 'AWS::Logs::LogGroup')"
+LG_PARAM_LID="$(logical_id_of_parameter "${LG_PARAMETER_NAME}")"
+if [ -z "${ROLE_LID}" ] || [ -z "${PARAM_LID}" ] || [ -z "${LG_LID}" ] || [ -z "${LG_PARAM_LID}" ]; then
+  echo "FAIL: state lacks a row (role='${ROLE_LID}', param='${PARAM_LID}', log group='${LG_LID}', log-group-arn param='${LG_PARAM_LID}')" >&2
   exit 1
 fi
 RECORDED_ID="$(state_query "st.resources['${ROLE_LID}'].attributes?.RoleId")"
@@ -177,6 +218,22 @@ if [ "${PARAM_VALUE}" != "${RECORDED_ID}" ]; then
   exit 1
 fi
 echo "    OK: RoleId ${RECORDED_ID} recorded, live, and deployed into the parameter"
+# Phase 4b's expected value: the ARN the stack deployed, which names REGION.
+RECORDED_LG_ARN="$(state_query "st.resources['${LG_LID}'].attributes?.Arn")"
+case "${RECORDED_LG_ARN}" in
+  arn:*:logs:"${REGION}":*:log-group:"${LOG_GROUP_NAME}":*) ;;
+  *)
+    echo "FAIL: premise: the log group's recorded Arn '${RECORDED_LG_ARN}' is not in ${REGION}" >&2
+    exit 1
+    ;;
+esac
+LG_PARAM_VALUE="$(aws ssm get-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${LG_PARAM_VALUE}" != "${RECORDED_LG_ARN}" ]; then
+  echo "FAIL: ${LG_PARAMETER_NAME} holds '${LG_PARAM_VALUE}', expected '${RECORDED_LG_ARN}'" >&2
+  exit 1
+fi
+echo "    OK: log group Arn ${RECORDED_LG_ARN} recorded and deployed into the second parameter"
 
 echo "==> Phase 1b: put the parameter row back into its unresolved-intrinsic shape"
 STATE_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
@@ -184,8 +241,10 @@ printf '%s' "${STATE_BODY}" | node -e '
   let s = ""; process.stdin.on("data", (c) => (s += c)).on("end", () => {
     const st = JSON.parse(s);
     st.resources[process.argv[1]].properties.Value = { "Fn::GetAtt": [process.argv[2], "RoleId"] };
+    st.resources[process.argv[3]].properties.Value = { "Fn::GetAtt": [process.argv[4], "Arn"] };
+    delete st.resources[process.argv[4]].attributes.Arn;
     process.stdout.write(JSON.stringify(st));
-  });' "${PARAM_LID}" "${ROLE_LID}" > "${LOG}"
+  });' "${PARAM_LID}" "${ROLE_LID}" "${LG_PARAM_LID}" "${LG_LID}" > "${LOG}"
 aws s3 cp "${LOG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
 PARAM_BEFORE="$(state_query "JSON.stringify(st.resources['${PARAM_LID}'].properties.Value)")"
 case "${PARAM_BEFORE}" in
@@ -196,6 +255,20 @@ case "${PARAM_BEFORE}" in
     ;;
 esac
 echo "    OK: ${PARAM_LID}.Value = ${PARAM_BEFORE}"
+LG_PARAM_BEFORE="$(state_query "JSON.stringify(st.resources['${LG_PARAM_LID}'].properties.Value)")"
+LG_ARN_LEFT="$(state_query "st.resources['${LG_LID}'].attributes?.Arn")"
+case "${LG_PARAM_BEFORE}" in
+  *Fn::GetAtt*) ;;
+  *)
+    echo "FAIL: premise: the log-group-arn parameter's row holds no Fn::GetAtt (${LG_PARAM_BEFORE})" >&2
+    exit 1
+    ;;
+esac
+if [ -n "${LG_ARN_LEFT}" ]; then
+  echo "FAIL: premise: the log group's recorded Arn survived the strip (${LG_ARN_LEFT})" >&2
+  exit 1
+fi
+echo "    OK: ${LG_PARAM_LID}.Value = ${LG_PARAM_BEFORE}; ${LG_LID} records no Arn"
 
 echo "==> Phase 2: take the role's name over out of band"
 aws iam delete-role --role-name "${ROLE_NAME}"
@@ -243,7 +316,35 @@ if [ "${PARAM_AFTER}" != "${RECORDED_ID}" ]; then
 fi
 echo "    OK: ${PARAM_LID}.Value = ${PARAM_AFTER}"
 
-echo "==> Phase 5: destroy, then remove the takeover role"
+echo "==> Phase 4b (LOAD-BEARING, issue #4937): cdkd orphan ${STACK}/LogGroup with AWS_REGION=${OTHER_REGION}"
+# The shell's region points AWAY from the stack's; `--stack-region` selects
+# the record. Before the fix the rewrite's providers were built on the
+# shell-region clients, so the live `Arn` read named ${OTHER_REGION}.
+AWS_REGION="${OTHER_REGION}" AWS_DEFAULT_REGION="${OTHER_REGION}" env -u CDKD_TEST_UPDATE \
+  node "${LOCAL_DIST}" orphan "${STACK}/LogGroup" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes > "${LOG}" 2>&1 || {
+  echo "FAIL: cdkd orphan of the log group failed" >&2
+  tail -60 "${LOG}" >&2
+  exit 1
+}
+if [ -n "$(logical_id_of_type 'AWS::Logs::LogGroup')" ]; then
+  echo "FAIL: the log group row is still in state after 'cdkd orphan'" >&2
+  exit 1
+fi
+LG_PARAM_AFTER="$(state_query "st.resources['${LG_PARAM_LID}'].properties.Value")"
+case "${LG_PARAM_AFTER}" in
+  *":${OTHER_REGION}:"*)
+    echo "FAIL: 'cdkd orphan' read the log group's Arn in the shell's region: ${LG_PARAM_AFTER}" >&2
+    exit 1
+    ;;
+esac
+if [ "${LG_PARAM_AFTER}" != "${RECORDED_LG_ARN}" ]; then
+  echo "FAIL: ${LG_PARAM_LID}'s Value is '${LG_PARAM_AFTER}', expected '${RECORDED_LG_ARN}'" >&2
+  exit 1
+fi
+echo "    OK: ${LG_PARAM_LID}.Value = ${LG_PARAM_AFTER}"
+
+echo "==> Phase 5: destroy, then remove the takeover role and the orphaned log group"
 AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --force > "${LOG}" 2>&1 || {
   echo "FAIL: destroy failed" >&2
@@ -253,12 +354,21 @@ AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGIO
 DEPLOYED=0
 # `cdkd orphan` leaves the role in AWS by design; this one is the takeover.
 aws iam delete-role --role-name "${ROLE_NAME}"
+# The orphaned log group, left in AWS by design.
+aws logs delete-log-group --region "${REGION}" --log-group-name "${LOG_GROUP_NAME}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 assert_gone "parameter ${PARAMETER_NAME} still exists after destroy" \
   aws ssm get-parameter --region "${REGION}" --name "${PARAMETER_NAME}"
+assert_gone "parameter ${LG_PARAMETER_NAME} still exists after destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${LG_PARAMETER_NAME}"
 assert_gone "role ${ROLE_NAME} still exists" aws iam get-role --role-name "${ROLE_NAME}"
+LG_COUNT="$(log_group_count)"
+if [ "${LG_COUNT}" != "0" ]; then
+  echo "FAIL: log group ${LOG_GROUP_NAME} still exists (count '${LG_COUNT}')" >&2
+  exit 1
+fi
 
 trap - EXIT INT TERM
 rm -f "${LOG}"
-echo "[verify] PASS — cdkd orphan substituted the recorded RoleId after a name takeover"
+echo "[verify] PASS — cdkd orphan substituted the recorded RoleId after a name takeover, and read a live Arn in the stack's region"
