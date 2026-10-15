@@ -66,12 +66,17 @@ attributes are `NameServers` of `AWS::Route53::HostedZone` and
 `Ipv6CidrBlocks` of `AWS::EC2::VPC`. Remove the `Fn::Split` and use the
 `Fn::GetAtt` directly.
 
+[Use Another Stack's Outputs](cross-stack-references.md) explains
+`Fn::ImportValue` and `Fn::GetStackOutput`, including how they read from
+CloudFormation-managed stacks.
+
 ### S3 bucket `DomainName` outside the commercial partition
 
 `Fn::GetAtt <Bucket>.DomainName` on an `AWS::S3::Bucket` returns S3's global
 host, `<bucket>.s3.<url-suffix>`. This is the spelling `aws-cdk-lib` uses for
 the `bucketDomainName` of a bucket imported with `Bucket.fromBucketAttributes`.
-The global host serves the bucket only in the commercial (`aws`) partition:
+The global host serves the bucket in the commercial (`aws`) partition, but not
+in `aws-cn` or `aws-us-gov`:
 
 | Partition | `DomainName` cdkd returns | Reaches the bucket? |
 | --- | --- | --- |
@@ -83,10 +88,6 @@ In `aws-cn` and `aws-us-gov`, reference `RegionalDomainName` instead
 (`bucket.bucketRegionalDomainName` in CDK). It returns
 `<bucket>.s3.<region>.<url-suffix>`, the bucket's regional endpoint, which
 exists in those partitions too.
-
-[Use Another Stack's Outputs](cross-stack-references.md) explains
-`Fn::ImportValue` and `Fn::GetStackOutput`, including how they read from
-CloudFormation-managed stacks.
 
 ## Pseudo Parameters
 
