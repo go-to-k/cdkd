@@ -107,7 +107,10 @@ import {
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
-import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from '../../../src/deployment/retryable-errors.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 describe('CloudControlProvider delete region verification', () => {
@@ -2463,6 +2466,24 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
         { op: 'remove', path: '/DataSources' },
       ],
     ]);
+  });
+
+  it('drift --revert refuses, non-retryably and sending nothing, a Features drift that is order only (go-to-k/cdkd#4935 M1)', async () => {
+    const live = [
+      { Name: 'RDS_LOGIN_EVENTS', Status: 'ENABLED' },
+      { Name: 'RUNTIME_MONITORING', Status: 'ENABLED' },
+    ];
+    const snapshot = { Enable: true, Features: live, DataSources: { S3Logs: { Enable: true } } };
+    const failure = await provider
+      .update('Detector', 'det', TYPE, { ...snapshot, Features: [live[1], live[0]] }, snapshot, {
+        desiredFromAwsReadback: true,
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/cannot revert Features: .*cdkd drift --accept/);
+    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(updateCalls()).toEqual([]);
   });
 
   it('drift --revert narrows a drifted Features list to the changed entry (go-to-k/cdkd#4921)', async () => {

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { markNonRetryable } from '../deployment/retryable-errors.js';
 import type { JsonPatchOp } from './json-patch-generator.js';
 
 const DETECTOR_TYPE = 'AWS::GuardDuty::Detector';
@@ -37,11 +38,14 @@ const READ_BACK_KEYS = ['Features', 'DataSources'] as const;
  * read measured). It is removed instead of added: `UpdateDetector` leaves an omitted
  * setting as it is. A drifted `Features` op carries the whole baseline list,
  * read back too (both runtime features), so its value is narrowed to the
- * entries that differ, by `Name`, from the `previous` (AWS-current) list (none
- * differing removes the key; an entry without a string `Name`, a non-list
- * current value, or an op with no list value, such as a `remove`, keeps the
- * op as it was), and a drifted `DataSources` beside a
- * surviving `Features` op is removed. Not handled: a drift that
+ * entries that differ, by `Name`, from the `previous` (AWS-current) list (an
+ * entry without a string `Name`, a non-list current value, or an op with no
+ * list value, such as a `remove`, keeps the op as it was), and a drifted
+ * `DataSources` beside a surviving `Features` op is removed. When NO entry
+ * differs, the drift is only in order or in entries GuardDuty added, which
+ * `UpdateDetector` cannot undo, so the revert is refused rather than reported
+ * as done (go-to-k/cdkd#4935 M1). An undrifted key the AWS-current bag lacks
+ * gets no `remove`, which would fail on a missing path (RFC 6902). Not handled: a drift that
  * switched the runtime monitoring mode changes both runtime features, and
  * reverting it still sends both.
  *
@@ -79,8 +83,14 @@ export function withGuardDutyDetectorReadBackOps(
     // were present on every read measured, but only in the aws partition's
     // us-east-1 and us-west-2: a missing-path error from another region or
     // partition starts here.
+    if (readback) {
+      if (Object.prototype.hasOwnProperty.call(readback.previous, key)) {
+        extra.push({ op: 'remove', path: `/${key}` });
+      }
+      continue;
+    }
     extra.push(
-      !readback && Object.prototype.hasOwnProperty.call(desired, key)
+      Object.prototype.hasOwnProperty.call(desired, key)
         ? { op: 'add', path: `/${key}`, value: desired[key] }
         : { op: 'remove', path: `/${key}` }
     );
@@ -90,8 +100,9 @@ export function withGuardDutyDetectorReadBackOps(
 
 /**
  * Keep only the `Features` entries that differ from the same-`Name` entry of
- * the AWS-current list; none differing removes the key. An entry without a
- * string `Name`, or a current value that is not a list, keeps the op as it was.
+ * the AWS-current list; none differing is refused (see the caller's doc). An
+ * entry without a string `Name`, or a current value that is not a list, keeps
+ * the op as it was.
  */
 function narrowToChangedFeatures(op: JsonPatchOp, current: unknown): JsonPatchOp {
   if (!Array.isArray(op.value) || !Array.isArray(current)) return op;
@@ -105,7 +116,16 @@ function narrowToChangedFeatures(op: JsonPatchOp, current: unknown): JsonPatchOp
     if (name === undefined) return op;
     if (!isDeepStrictEqual(entry, byName.get(name))) changed.push(entry);
   }
-  return changed.length === 0 ? { op: 'remove', path: '/Features' } : { ...op, value: changed };
+  if (changed.length === 0) {
+    throw markNonRetryable(
+      new Error(
+        'cannot revert Features: the live list differs from the recorded baseline only in the ' +
+          'order of its entries or in entries GuardDuty added, which UpdateDetector cannot undo. ' +
+          'Run cdkd drift --accept to record the live list as the baseline.'
+      )
+    );
+  }
+  return { ...op, value: changed };
 }
 
 function featureName(entry: unknown): string | undefined {
