@@ -23,6 +23,7 @@ import {
 } from '../deployment/secret-redaction.js';
 import { stripForDisplay } from '../utils/regexp.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { safeStringify } from '../utils/aws-failure-text.js';
 import { isReadableBag } from '../state/malformed-resources-bag.js';
 import { isSecretBearingReferenceString as isSecretDynamicReference } from '../deployment/no-change-outputs-merge.js';
 import { keepsSecretReferenceToken } from '../deployment/intrinsic-resolver/context.js';
@@ -962,7 +963,7 @@ export async function resolveTemplateOutputs(
       value = await resolveValue(structuredClone(output.Value));
     } catch (error) {
       logger.debug(
-        `Diff could not resolve output ${stripForDisplay(outputKey)}: ${stripForDisplay(String(error))}`
+        `Diff could not resolve output ${stripForDisplay(outputKey)}: ${stripForDisplay(safeStringify(error))}`
       );
       resolutionFailed = true;
       recordFailure(outputKey, output);
@@ -1035,7 +1036,7 @@ export async function resolveTemplateOutputs(
           );
         } catch (error) {
           logger.debug(
-            `Diff could not resolve Export.Name of ${stripForDisplay(outputKey)}: ${stripForDisplay(String(error))}`
+            `Diff could not resolve Export.Name of ${stripForDisplay(outputKey)}: ${stripForDisplay(safeStringify(error))}`
           );
           resolutionFailed = true;
           // The value resolved, so deploy records no failure for this output,

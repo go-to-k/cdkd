@@ -45,6 +45,7 @@ import {
 } from '../config-loader.js';
 import { matchStacks, describeStack, renderNoStackMatch } from '../stack-matcher.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { safeStringify } from '../../utils/aws-failure-text.js';
 
 interface PublishAssetsOptions {
   app?: string;
@@ -366,7 +367,7 @@ async function publishAssetsCommand(
           `  ✓ Published ${assetCount} asset(s) in ${((Date.now() - startedAt) / 1000).toFixed(2)}s`
         );
       } catch (err) {
-        error = err instanceof Error ? err : new Error(String(err));
+        error = err instanceof Error ? err : new Error(safeStringify(err));
         logger.error(`  ✗ ${stack.stackName}: ${error.message}`);
       }
 

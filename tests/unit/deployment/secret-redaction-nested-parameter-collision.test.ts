@@ -352,12 +352,15 @@ describe('a slot read no re-read answers keeps the pre-#4644 answer (#4731)', ()
     });
   }
 
-  it('counts the Outputs as one reader, every read a slot read', () => {
-    for (const outputs of [
-      { OA: { Value: SEL_A }, OB: { Value: { Ref: PARAM_B } } },
-      // Two BARE reads: positioned in a resource, not in the Outputs.
-      { OA: { Value: { Ref: PARAM_A } }, OB: { Value: { Ref: PARAM_B } } },
-    ]) {
+  // The Outputs are one reader whose leaves are each `Value`, classified as a
+  // resource's (#4913; the persist side is
+  // `secret-redaction-nested-outputs-collision.test.ts`).
+  it('counts the Outputs as one reader, each Value read as a resource leaf', () => {
+    for (const [outputs, withdrawn] of [
+      [{ OA: { Value: SEL_A }, OB: { Value: { Ref: PARAM_B } } }, false],
+      [{ OA: { Value: { Ref: PARAM_A } }, OB: { Value: { Ref: PARAM_B } } }, false],
+      [{ OA: { Value: SUB_SEL_A }, OB: { Value: { Ref: PARAM_B } } }, true],
+    ] as const) {
       const parent = parentRow(true);
       const template = {
         ...childTemplate({ X: { A: SEL_A } }),
@@ -365,7 +368,7 @@ describe('a slot read no re-read answers keeps the pre-#4644 answer (#4731)', ()
       } as CloudFormationTemplate;
       poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
       expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
-        `postgres://${USER_EXPR}:${EXPR_B}@host`
+        withdrawn ? `postgres://${USER_EXPR}:${EXPR_B}@host` : SPELLING
       );
     }
   });

@@ -388,6 +388,11 @@ export type RegionCheckPhase = 'not-found' | 'pre-delete' | 'pre-update';
  * @param phase Which call is being guarded — see {@link RegionCheckPhase}.
  *   Defaults to the historical `'not-found'` so every pre-#2301 call site
  *   keeps its exact wording.
+ * @param endpoint `'global'` for a service whose SDK sends every region to
+ *   one endpoint (CloudFront, issue #2613). Its mismatch still refuses, but
+ *   the pre-flight message does not claim the call would reach a different
+ *   resource: it would reach the same one, through a client that was not
+ *   built for the stack the record belongs to.
  */
 export function assertRegionMatch(
   clientRegion: string | undefined,
@@ -395,7 +400,8 @@ export function assertRegionMatch(
   resourceType: string,
   logicalId: string,
   physicalId?: string,
-  phase: RegionCheckPhase = 'not-found'
+  phase: RegionCheckPhase = 'not-found',
+  endpoint: 'regional' | 'global' = 'regional'
 ): void {
   if (!expectedRegion) {
     // Back-compat: caller did not supply state region, preserve previous
@@ -412,8 +418,11 @@ export function assertRegionMatch(
             `be silently removed from state if this NotFound were trusted.`
         : `Refusing to ${phaseVerb(phase)} ${logicalId} (${resourceType}): AWS client ` +
             `region is unknown but stack state records the resource in ${expectedRegion}. ` +
-            `cdkd cannot confirm that the physical id recorded in state names the resource ` +
-            `this client would act on, so the ${phaseVerb(phase)} is not issued. Point the ` +
+            (endpoint === 'global'
+              ? `cdkd cannot confirm that this client was built for the stack this record ` +
+                `belongs to, so the ${phaseVerb(phase)} is not issued. Point the `
+              : `cdkd cannot confirm that the physical id recorded in state names the resource ` +
+                `this client would act on, so the ${phaseVerb(phase)} is not issued. Point the `) +
             `AWS client at ${expectedRegion} (AWS_REGION or your AWS profile) and re-run.`,
       resourceType,
       logicalId,
@@ -431,10 +440,16 @@ export function assertRegionMatch(
             `--region ${expectedRegion}).`
         : `Refusing to ${phaseVerb(phase)} ${logicalId} (${resourceType}): AWS client ` +
             `region ${clientRegion} does not match stack state region ${expectedRegion}. ` +
-            `The physical id recorded in cdkd state names a resource in ${expectedRegion}, ` +
-            `so this ${phaseVerb(phase)} would act on whatever carries that id in ` +
-            `${clientRegion} instead — which for a name-shaped physical id is a different ` +
-            `resource that usually exists. Point the AWS client at ${expectedRegion} ` +
+            (endpoint === 'global'
+              ? `This service has one global endpoint, so the call would reach the same ` +
+                `resource, but a client in ${clientRegion} was not built for the stack ` +
+                `this ${expectedRegion} record belongs to, so the ${phaseVerb(phase)} is ` +
+                `not issued. `
+              : `The physical id recorded in cdkd state names a resource in ${expectedRegion}, ` +
+                `so this ${phaseVerb(phase)} would act on whatever carries that id in ` +
+                `${clientRegion} instead — which for a name-shaped physical id is a different ` +
+                `resource that usually exists. `) +
+            `Point the AWS client at ${expectedRegion} ` +
             `(AWS_REGION or your AWS profile) and re-run; when the run spans several ` +
             `regions at once (cdkd drift --all), select the stacks in one region per run, ` +
             `because no single client region is correct for all of them. If the recorded ` +

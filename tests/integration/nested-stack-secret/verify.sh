@@ -1406,6 +1406,39 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4913: the child's OUTPUTS read the literal beside the sibling ---------
+# `ChildFallConnOutput` (bare) and `ChildFallSelectOutput` (Select over Split)
+# read `FallConnA2`, `ChildFallSecretOutput` reads `FallSecretB2`: one
+# plaintext between them. Before #4913 no output leaf was positioned per
+# parameter and every output read counted a slot read, so cdkd withdrew
+# `FallConnA2`'s literal spelling for the WHOLE child: these outputs, and the
+# #4731 / #4644 arms below, persisted the survivor (`fall2:AWSCURRENT:`).
+# Checked BEFORE those arms, so a regression names this issue.
+echo "==> #4913: the child's Outputs read FallConnA2 (bare and through Fn::Select) beside FallSecretB2"
+assert_eq "premise: the child's synthesized fall2 Outputs are a Ref to FallConnA2, a Select over a Split of it, and a Ref to FallSecretB2" \
+  "$(jq -c '.Outputs | [.ChildFallConnOutput.Value, .ChildFallSelectOutput.Value, .ChildFallSecretOutput.Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Ref":"FallConnA2"},{"Fn::Select":[0,{"Fn::Split":["@",{"Ref":"FallConnA2"}]}]},{"Ref":"FallSecretB2"}]'
+FALL2_CONN_OUTPUT="$(jq_state "${CHILD_STATE}" '.outputs.ChildFallConnOutput')"
+FALL2_SELECT_OUTPUT="$(jq_state "${CHILD_STATE}" '.outputs.ChildFallSelectOutput')"
+if [ "${FALL2_CONN_OUTPUT}" = "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}@host" ] ||
+  [ "${FALL2_SELECT_OUTPUT}" = "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}" ]; then
+  echo "FAIL: the child's Outputs persisted the survivor's spelling for FallConnA2, so its literal was withdrawn for the child (issue #4913)" >&2
+  exit 1
+fi
+assert_eq "ChildFallConnOutput persists the literal's own tokens" \
+  "${FALL2_CONN_OUTPUT}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host"
+assert_eq "ChildFallSelectOutput persists the piece before the @ in the literal's own tokens" \
+  "${FALL2_SELECT_OUTPUT}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
+assert_eq "ChildFallSecretOutput persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildFallSecretOutput')" "${FALL2_EXPR_B}"
+FALL2_OUTPUTS_JSON="$(jq_state "${CHILD_STATE}" '.outputs | {ChildFallConnOutput, ChildFallSelectOutput, ChildFallSecretOutput} | tojson')"
+case "${FALL2_OUTPUTS_JSON}" in
+  *"${FALL2_PW_VALUE}"* | *"${FALL2_USER_VALUE}"*)
+    echo "FAIL: the child's fall2 Outputs hold a resolved fall2 plaintext (issue #4913)" >&2
+    exit 1
+    ;;
+esac
+
 # --- #4731: one resource reading the literal through Fn::Select beside the sibling
 # `FallthroughMixedReversed`: the Select/Split read of `FallConnA2` beside a read of
 # `FallSecretB2` in ONE resource. Before #4731 cdkd withdrew `FallConnA2`'s

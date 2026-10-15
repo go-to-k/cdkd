@@ -42,6 +42,7 @@ import {
   DEFAULT_STATE_PREFIX,
 } from './state-file-keys.js';
 import { displayIdent } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 
@@ -581,7 +582,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       }
       logger.warn(
         `Could not list bootstrap markers under '${BOOTSTRAP_MARKER_PREFIX}' ` +
-          `(${error instanceof Error ? error.message : String(error)}). Continuing — this ` +
+          `(${describeAwsFailure(error).detail}). Continuing — this ` +
           `only means a marker for this region under another spelling of its name would ` +
           `not be reported.`
       );

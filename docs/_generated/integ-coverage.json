@@ -4450,6 +4450,7 @@
         "multi-stack-deps",
         "nested-stack",
         "orphan-getatt-takeover",
+        "pipes-fix-forward-orphan",
         "propagation-races-2",
         "rds-aurora",
         "rds-dbinstance-backfill",
@@ -4701,6 +4702,9 @@
         "orphan-getatt-takeover": [
           "l2",
           "literal"
+        ],
+        "pipes-fix-forward-orphan": [
+          "l1"
         ],
         "propagation-races-2": [
           "l2"
@@ -6784,6 +6788,7 @@
         "noecho-named-producer",
         "noecho-parameter-masking",
         "perf-cross-backend-check",
+        "pipes-fix-forward-orphan",
         "rename-refactor",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6944,6 +6949,9 @@
         "perf-cross-backend-check": [
           "l2",
           "literal"
+        ],
+        "pipes-fix-forward-orphan": [
+          "l1"
         ],
         "rename-refactor": [
           "l2",

@@ -116,6 +116,13 @@ import { Construct } from 'constructs';
  *    literal spelling for the WHOLE child: every arm above persisted the
  *    survivor while `cdkd diff --recursive` rendered the literal. The leaf is
  *    now re-read with the diff side's bindings.
+ *  - `ChildFallConnOutput` / `ChildFallSelectOutput` / `ChildFallSecretOutput`
+ *    (child Outputs) — THE #4913 ARM. The #4731 arm's reads in the child's
+ *    `Outputs`: `FallConnA2` bare and through `Fn::Select` / `Fn::Split`,
+ *    beside a bare `FallSecretB2`. No output leaf was positioned per
+ *    parameter and every output read counted a slot read, so cdkd withdrew
+ *    `FallConnA2`'s literal spelling for the whole child and the outputs
+ *    persisted the survivor while `cdkd diff --recursive` rendered the literal.
  *  - `FallthroughColonReversed` (child, phase 2d only) — THE #4914 ARM.
  *    `FallConnA2` split on `:`, which occurs inside every `{{resolve:...}}`
  *    token's text: a piece (`Fn::Select [1, ...]`, the `Description`) and the
@@ -686,6 +693,25 @@ class SecretBearingChild extends cdk.NestedStack {
       description: 'cdkd nested-stack-secret integ - sub-floor framed child output (issue #2745)',
     });
     pinOutput.overrideLogicalId('ChildPinOutput');
+
+    // THE #4913 ARM: the #4731 arm's two parameters read by the child's
+    // OUTPUTS, the literal first and the sibling last. Not consumed by the
+    // parent: the arm is about what the child's own outputs persist.
+    const fallConnOutput = new cdk.CfnOutput(this, 'ChildFallConnOutput', {
+      value: fallConn2.valueAsString,
+      description: 'cdkd nested-stack-secret integ - literal parameter read by an output (issue #4913)',
+    });
+    fallConnOutput.overrideLogicalId('ChildFallConnOutput');
+    const fallSelectOutput = new cdk.CfnOutput(this, 'ChildFallSelectOutput', {
+      value: cdk.Fn.select(0, cdk.Fn.split('@', fallConn2.valueAsString)),
+      description: 'cdkd nested-stack-secret integ - Select/Split of the literal in an output (issue #4913)',
+    });
+    fallSelectOutput.overrideLogicalId('ChildFallSelectOutput');
+    const fallSecretOutput = new cdk.CfnOutput(this, 'ChildFallSecretOutput', {
+      value: fallSecret2.valueAsString,
+      description: 'cdkd nested-stack-secret integ - the same-plaintext sibling in an output (issue #4913)',
+    });
+    fallSecretOutput.overrideLogicalId('ChildFallSecretOutput');
 
     const output = new cdk.CfnOutput(this, 'ChildSecretOutput', {
       value: stage.valueAsString,
