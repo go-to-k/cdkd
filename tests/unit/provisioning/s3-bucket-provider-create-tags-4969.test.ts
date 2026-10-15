@@ -198,9 +198,10 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
       },
     ]);
 
-    await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
     expect(creates()).toHaveLength(1);
     expect(puts()).toEqual([]);
+    expect(err.message).not.toContain('needs s3:TagResource');
   });
 
   it('a TagResource denial on an UNTAGGED create (nothing to drop) is not retried', async () => {
@@ -232,6 +233,8 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     // An implicit TagResource deny may still be propagating: it keeps the retry.
     expect(isRetryableTransientError(err, classify)).toBe(true);
     expect(err.message).not.toContain('explicit deny');
+    expect(err.message).toContain('Creating a bucket with tags needs s3:TagResource.');
+    expect(err.message).not.toContain(ACCOUNT);
   });
 
   it('an explicit s3:TagResource deny with the untagged create also denied fails fast, naming TagResource', async () => {
@@ -268,6 +271,7 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
     expect(retryClassificationText(err)).not.toContain('s3:TagResource');
     expect(err.message).toContain('BucketAlreadyExists');
+    expect(err.message).not.toContain('needs s3:TagResource');
   });
 
   it('an explicit deny names the policy type in the thrown message, without AWS\'s identity-bearing text', async () => {

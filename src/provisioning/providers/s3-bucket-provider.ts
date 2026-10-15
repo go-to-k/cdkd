@@ -7894,8 +7894,14 @@ export class S3BucketProvider implements ResourceProvider {
       failure.redacted && isExplicitDenyError(failure.detail)
         ? ` Refused by an explicit deny${denyKind !== undefined ? ` (${denyKind})` : ''}, which retrying cannot clear.`
         : '';
+    // go-to-k/cdkd#4969: a tagged CreateBucket needs `s3:TagResource`, and the
+    // redacted summary alone does not say which action was refused.
+    const tagResourceNote =
+      failure.redacted && isCreateTagResourceDenial(error)
+        ? ' Creating a bucket with tags needs s3:TagResource.'
+        : '';
     const wrapped = new ProvisioningError(
-      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${this.maskRaw(failure.summary)}${denyNote}`,
+      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${this.maskRaw(failure.summary)}${denyNote}${tagResourceNote}`,
       resourceType,
       logicalId,
       physicalId,
