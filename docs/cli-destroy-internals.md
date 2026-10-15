@@ -208,11 +208,11 @@ advanced security. So cdkd does not turn the guard off with that flag alone:
 | --- | --- |
 | The pool reads `INACTIVE` already | Sends no `UpdateUserPool`. |
 | The pool reads `ACTIVE` | Sends `DeletionProtection='INACTIVE'` with the pool's own reset-prone settings sent back, so nothing else changes. |
-| AWS refuses the write while it carries a `DEVELOPER` (SES) email configuration | Sends the settings again without that email configuration (the refusal may have been about it), and warns that the email configuration may have been reset. |
+| AWS refuses the write while it carries a `DEVELOPER` (SES) email configuration | Sends the settings again without that email configuration (the refusal may have been about it), and warns that this resets the email configuration to Cognito's default sender (`COGNITO_DEFAULT`). If that second write gets no clear answer, the warn says the reset happened if the write landed. If the delete then fails, cdkd reports at ERROR when the live pool reads back on the default sender, since a redeploy does not restore it. Turning the guard back on, cdkd sends no write without the SES settings to a pool that already reads it on, unless this run's write without them is known to have landed (the settings are reset already) or the guard-only write in the row below is licensed. |
 | AWS refuses those settings on validation | Warns and turns the guard off alone, so the delete can still run. If that delete then fails, cdkd reports at ERROR which settings the pool held, since the pool stays live without them. |
 | AWS refuses for any other reason, or the pool cannot be read first | Leaves the guard on and warns. The delete is then refused. |
 | The read or the `UpdateUserPool` is throttled or hits a server error | Retries the whole delete, without deleting anything first. A server error on the `UpdateUserPool` may still have landed, so it is remembered for the retry. |
-| The `UpdateUserPool` gets no answer from AWS (a timeout), so it may have landed | Warns that the outcome is unknown. |
+| The `UpdateUserPool` gets no answer from AWS (a timeout), so it may have landed | Warns that the outcome is unknown, and, when that write left out a `DEVELOPER` email configuration, that the email configuration was reset if it landed. |
 | The delete then fails after a write that may have landed | Reads the pool again and writes the guard back on, with the pool's own settings. Reports at ERROR any settings a lone `DeletionProtection` write reset. If the pool reads the guard on but the write-back is refused, it warns and names the check command. |
 
 Reading the pool first needs `cognito-idp:DescribeUserPool` alongside

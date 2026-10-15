@@ -118,6 +118,12 @@ import {
  *   verification of `email`: "All attributes in
  *   AttributesRequireVerificationBeforeUpdate must exist in
  *   AutoVerifiedAttributes" -- the bare flip could not turn the guard off.
+ * - RESET too, MEASURED us-east-1 2026-10-15 (issue #4149): a `DEVELOPER`
+ *   (SES) `EmailConfiguration` went to `{ EmailSendingAccount:
+ *   COGNITO_DEFAULT }`, its `SourceArn` and `ReplyToEmailAddress` dropped.
+ *   Echoed back unchanged it was ACCEPTED and kept. It is echoed apart from
+ *   this list, because a `COGNITO_DEFAULT` one is KEPT (see
+ *   {@link USER_POOL_KEPT_ON_OMISSION}).
  * - Not measured, so echoed: `SmsVerificationMessage`,
  *   `EmailVerificationMessage`, `EmailVerificationSubject`, and
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
@@ -153,8 +159,9 @@ export const USER_POOL_ECHO_MEMBERS = [
  * `SmsConfiguration` (with an SNS role), `EmailConfiguration`
  * (`COGNITO_DEFAULT`) and `MfaConfiguration` (`OFF`, `OPTIONAL` and `ON`, the
  * factor configuration included) were each measured unchanged. One exception
- * is ECHOED anyway: a `DEVELOPER` (SES) `EmailConfiguration`, which could not
- * be measured (see {@link userPoolDeletionProtectionUpdate}).
+ * is ECHOED: a `DEVELOPER` (SES) `EmailConfiguration`, measured to RESET to
+ * `COGNITO_DEFAULT` on omission (issue #4149; see
+ * {@link userPoolDeletionProtectionUpdate}).
  */
 export const USER_POOL_KEPT_ON_OMISSION = [
   'Policies',
@@ -187,11 +194,10 @@ export function userPoolDeletionProtectionUpdate(
   const acr = customAcrLevels(pool.AcrConfiguration);
   if (acr === undefined) delete input.AcrConfiguration;
   else input.AcrConfiguration = acr;
-  // A `DEVELOPER` EmailConfiguration (SES) is NOT measured to survive
-  // omission -- only `COGNITO_DEFAULT` is, and no verified SES identity was
-  // available to measure the other. So it is echoed: if AWS re-validates it
-  // and refuses, the flip falls back LOUDLY (a warn, and an ERROR report if
-  // the delete then fails), where a reset on omission would be silent.
+  // A `DEVELOPER` EmailConfiguration (SES) RESETS to `COGNITO_DEFAULT` when
+  // omitted (measured, #4149), so it is echoed. If AWS re-validates it and
+  // refuses, `sendEchoedDeletionProtection` re-sends without it and says at
+  // warn that the email configuration was reset.
   if (echoesDeveloperEmail(pool) && opts.withoutDeveloperEmail !== true) {
     input.EmailConfiguration = pool.EmailConfiguration;
   }
@@ -218,6 +224,25 @@ function customAcrLevels(acr: UserPoolType['AcrConfiguration']): UserPoolType['A
   );
   return Object.keys(custom).length > 0 ? custom : undefined;
 }
+
+/**
+ * What a write omitting a `DEVELOPER` `EmailConfiguration` did to it (measured,
+ * #4149), and how to put it back without the restore resetting the rest. For
+ * a LIVE pool: the re-enable, and the report after a failed delete.
+ */
+const EMAIL_RESET_CLAUSE =
+  "reset to Cognito's default sender (EmailSendingAccount COGNITO_DEFAULT), dropping its SES " +
+  'SourceArn, and a redeploy will not restore it. Put the SES settings back with an ' +
+  "UpdateUserPool that also carries the pool's other settings, since that call resets " +
+  'what it omits.';
+
+/**
+ * {@link EMAIL_RESET_CLAUSE} for the flip-off, said BEFORE the delete: once
+ * the pool is deleted there is nothing to restore, so it only says what stays.
+ */
+const EMAIL_RESET_BEFORE_DELETE_CLAUSE =
+  "reset to Cognito's default sender (EmailSendingAccount COGNITO_DEFAULT), dropping its SES " +
+  'SourceArn, which stays that way if the delete fails.';
 
 /** Failures of a write sent WITHOUT the pool's SES EmailConfiguration. */
 const sentWithoutEmail = new WeakSet<object>();
@@ -1564,6 +1589,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private readonly preFlipPools = new WeakMap<
     ProtectionFlipRecord,
     { readonly pool: UserPoolType; ambiguous: boolean; echoedSince?: boolean }
+  >();
+
+  /**
+   * Flips whose flip-off went out WITHOUT the pool's `DEVELOPER` (SES)
+   * `EmailConfiguration` and landed or may have landed, resetting it to
+   * `COGNITO_DEFAULT` (#4149). If the delete then fails, the re-enable's
+   * fresh read settles it and a pool left LIVE without its SES sender is
+   * reported at ERROR, like a bare flip's reset. `definite`: the write
+   * landed, so the sender is reset already and a re-enable re-sent without it
+   * loses nothing more; `ambiguous`: it got no clear answer. A definite
+   * record is never downgraded, and a later flip-off that lands WITH the SES
+   * sender drops the record.
+   */
+  private readonly emailOmittedFlips = new WeakMap<
+    ProtectionFlipRecord,
+    'definite' | 'ambiguous'
   >();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -3344,12 +3385,36 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           // stays "MAY": a read can lag the write it is meant to reflect.
           if (bareFlip)
             this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+          // A flip-off sent without the SES EmailConfiguration that the read
+          // shows LANDED: the pool is live on Cognito's default sender. A
+          // bare flip's own report already names it.
+          if (
+            flipRecord &&
+            this.emailOmittedFlips.has(flipRecord) &&
+            !echoesDeveloperEmail(pool) &&
+            !(bareFlip && echoesDeveloperEmail(bareFlip.pool))
+          ) {
+            this.logger.error(
+              safeMsg`Cognito User Pool ${physicalId} is LIVE with its SES email configuration reset: ` +
+                safeMsg`--remove-protection turned DeletionProtection off with an UpdateUserPool that left ` +
+                safeMsg`out its DEVELOPER EmailConfiguration (sending it was refused), and the delete then ` +
+                safeMsg`failed. The pool's email configuration was ${EMAIL_RESET_CLAUSE}`
+            );
+          }
           // A bare re-enable loses nothing only while the reset is the pool's
           // latest state: not after an echo flip has landed since.
           const bareLicensed = resetConfirmed && bareFlip.echoedSince !== true;
           const readOn = pool.DeletionProtection === 'ACTIVE';
           try {
-            await this.sendEchoedDeletionProtection(physicalId, pool, 'ACTIVE');
+            // A guard that already reads ON is not worth the SES sender: the
+            // write without it would reset it (#4149) -- unless this flip's
+            // email-less flip-off definitely landed, so the sender is reset
+            // already and the read is stale.
+            const emailAlreadyReset =
+              flipRecord !== undefined && this.emailOmittedFlips.get(flipRecord) === 'definite';
+            await this.sendEchoedDeletionProtection(physicalId, pool, 'ACTIVE', {
+              emailFallback: !readOn || emailAlreadyReset,
+            });
           } catch (echoError) {
             let failure: unknown = echoError;
             if (bareLicensed && isRefusedEcho(echoError)) {
@@ -3421,19 +3486,26 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     }
     const mode = before.UserPoolAddOns?.AdvancedSecurityMode;
     if (mode) held.push(`AdvancedSecurityMode=${mode}`);
+    // The bare write omits it too, which resets it to COGNITO_DEFAULT (#4149).
+    // Named by its sending account only: the SourceArn embeds an address.
+    if (echoesDeveloperEmail(before))
+      held.push('EmailConfiguration.EmailSendingAccount=DEVELOPER (SES)');
     const heldText = held.length > 0 ? held.join(', ') : 'none of these settings';
+    const what = echoesDeveloperEmail(before)
+      ? 'self sign-up, Lambda triggers, advanced security and SES email configuration'
+      : 'self sign-up, Lambda triggers and advanced security';
     const state =
       kind === 'unclear'
-        ? safeMsg`is LIVE and its self sign-up, Lambda triggers and advanced security MAY have been reset: ` +
+        ? safeMsg`is LIVE and its ${what} MAY have been reset: ` +
           safeMsg`--remove-protection sent UpdateUserPool with DeletionProtection alone (the pool's own ` +
           safeMsg`configuration was refused) and got no clear answer, and the delete then failed. Check it ` +
           safeMsg`with aws cognito-idp describe-user-pool.`
         : kind === 'earlier'
-          ? safeMsg`is LIVE; its self sign-up, Lambda triggers and advanced security were reset by an ` +
+          ? safeMsg`is LIVE; its ${what} were reset by an ` +
             safeMsg`earlier UpdateUserPool that --remove-protection sent with DeletionProtection alone (the ` +
             safeMsg`pool's own configuration was refused); they may have been restored since. Check it with ` +
             safeMsg`aws cognito-idp describe-user-pool.`
-          : safeMsg`is LIVE with its self sign-up, Lambda triggers and advanced security reset: ` +
+          : safeMsg`is LIVE with its ${what} reset: ` +
             safeMsg`--remove-protection had to turn DeletionProtection off with UpdateUserPool alone (the ` +
             safeMsg`pool's own configuration was refused), and the delete then failed.`;
     this.logger.error(
@@ -3567,24 +3639,29 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
   /**
    * Send the echoed `DeletionProtection` write. When the echo carried a
-   * `DEVELOPER` (SES) `EmailConfiguration` -- echoed only because it is not
-   * measured to survive omission -- and AWS refuses it on validation, it is
-   * re-sent ONCE without that member before anything falls back to the bare
-   * write: a stale SES identity must not cost the pool its self sign-up,
-   * Lambda triggers and advanced security. That second write may reset the
-   * email configuration (unmeasured), so it says so at warn.
+   * `DEVELOPER` (SES) `EmailConfiguration` and AWS refuses it on validation,
+   * it is re-sent ONCE without that member before anything falls back to the
+   * bare write: a stale SES identity must not cost the pool its self sign-up,
+   * Lambda triggers and advanced security. That second write resets the
+   * email configuration to `COGNITO_DEFAULT` (measured, #4149), so a re-send
+   * that lands -- or may have landed -- says so at warn.
    */
   private async sendEchoedDeletionProtection(
     physicalId: string,
     pool: UserPoolType,
-    value: DeletionProtectionType
-  ): Promise<void> {
+    value: DeletionProtectionType,
+    opts: { readonly emailFallback?: boolean } = {}
+  ): Promise<'echoed' | 'without-email'> {
     try {
       await this.getClient().send(
         new UpdateUserPoolCommand(userPoolDeletionProtectionUpdate(physicalId, pool, value))
       );
+      return 'echoed';
     } catch (echoError) {
       if (!echoesDeveloperEmail(pool) || !isRefusedEcho(echoError)) throw echoError;
+      if (opts.emailFallback === false) throw echoError;
+      const resetClause =
+        value === 'ACTIVE' ? EMAIL_RESET_CLAUSE : EMAIL_RESET_BEFORE_DELETE_CLAUSE;
       // Kept at debug: if the re-send fails too, the caller's warn names only
       // that second failure.
       this.logger.debug(
@@ -3600,9 +3677,23 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         );
       } catch (resendError) {
         // The write that failed OMITTED the SES EmailConfiguration: if it
-        // landed after all, that member may have been reset.
+        // landed after all, that member was reset.
         if (typeof resendError === 'object' && resendError !== null) {
           sentWithoutEmail.add(resendError);
+        }
+        // `warnGuardLeftOn` names that for a no-answer flip-off that is not
+        // transient. Every other no-answer failure -- a transient flip-off
+        // (retried silently) or any re-enable -- would never say it.
+        if (
+          isAmbiguousWriteFailure(resendError) &&
+          (value === 'ACTIVE' || isTransientCognitoFailure(resendError))
+        ) {
+          this.logger.warn(
+            safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write carrying the ` +
+              safeMsg`pool's SES EmailConfiguration (${describeAwsFailure(echoError).summary}), and the ` +
+              safeMsg`write re-sent without it answered ${describeAwsFailure(resendError).summary}. If ` +
+              safeMsg`that write landed, the pool's email configuration was ${resetClause}`
+          );
         }
         throw resendError;
       }
@@ -3610,9 +3701,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write (possibly the ` +
           safeMsg`pool's SES EmailConfiguration, ${describeAwsFailure(echoError).summary}), so ` +
           safeMsg`DeletionProtection was set to ${value} with the pool's other settings but without ` +
-          safeMsg`that EmailConfiguration. Whether that resets the email configuration is not ` +
-          safeMsg`measured; check it with aws cognito-idp describe-user-pool.`
+          safeMsg`that EmailConfiguration. The pool's email configuration was ${resetClause}`
       );
+      return 'without-email';
     }
   }
 
@@ -3647,8 +3738,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // but nothing is owed back.
     const observedOn = pool.DeletionProtection === 'ACTIVE';
     try {
-      await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE');
-      // The echo landed and reset nothing. A DEFINITE reset an earlier
+      const sent = await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE');
+      if (sent === 'without-email') this.emailOmittedFlips.set(flip, 'definite');
+      // An echo that CARRIED the DEVELOPER sender landed: it holds it again.
+      else if (echoesDeveloperEmail(pool)) this.emailOmittedFlips.delete(flip);
+      // The echo landed and reset nothing beyond, on the re-send arm, the SES
+      // EmailConfiguration (recorded above). A DEFINITE reset an earlier
       // attempt or run recorded on this (retained) record still happened and
       // is still reported, but no longer licenses a bare re-enable: the pool
       // may hold settings again since.
@@ -3657,6 +3752,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       return;
     } catch (echoError) {
       if (echoError instanceof ResourceNotFoundException) throw echoError;
+      // A write without the SES EmailConfiguration that may have landed.
+      if (
+        typeof echoError === 'object' &&
+        echoError !== null &&
+        sentWithoutEmail.has(echoError) &&
+        isAmbiguousWriteFailure(echoError) &&
+        !this.emailOmittedFlips.has(flip)
+      ) {
+        this.emailOmittedFlips.set(flip, 'ambiguous');
+      }
       // An answer that does not prove the write was REFUSED (a timeout, a
       // 5xx) may have landed server-side: the guard may be off. Latch it, so
       // a terminal delete failure still turns it back on (the re-enable
@@ -3754,7 +3859,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             (echoError === undefined
               ? typeof error === 'object' && error !== null && sentWithoutEmail.has(error)
                 ? safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
-                  safeMsg`not reset, except possibly the SES EmailConfiguration, which that write omitted.`
+                  safeMsg`not reset, except the SES EmailConfiguration, which that write omitted: if it ` +
+                  safeMsg`landed, the pool's email configuration was ${EMAIL_RESET_BEFORE_DELETE_CLAUSE}`
                 : safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
                   safeMsg`not reset.`
               : safeMsg`, so whether DeletionProtection was turned off ALONE is unknown; if it was, the ` +

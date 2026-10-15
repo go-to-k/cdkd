@@ -357,7 +357,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     ]);
   });
 
-  it('echoes a DEVELOPER (SES) EmailConfiguration -- not measured to survive omission -- but not a COGNITO_DEFAULT one', () => {
+  it('echoes a DEVELOPER (SES) EmailConfiguration -- measured to RESET on omission (#4149) -- but not a COGNITO_DEFAULT one', () => {
     const ses = {
       EmailSendingAccount: 'DEVELOPER',
       SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/example.com',
@@ -584,6 +584,37 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
         )
       )
     );
+  });
+
+  it('the ERROR report names a DEVELOPER EmailConfiguration the bare flip reset (#4149), without its SourceArn', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/sender@example.com' };
+    script({
+      reads: [{ ...livePool('ACTIVE'), EmailConfiguration: ses }],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    await expect(del()).rejects.toThrow('domain configured');
+    // Flip: echo with SES, echo without it, then bare -- all before the delete.
+    expect(
+      updates()
+        .filter((u) => u['DeletionProtection'] === 'INACTIVE')
+        .map((u) => [isEcho(u), u['EmailConfiguration'] !== undefined])
+    ).toEqual([
+      [true, true],
+      [true, false],
+      [false, false],
+    ]);
+    const errors = childLogger.error.mock.calls.map((c) => String(c[0]));
+    expect(errors).toContainEqual(
+      expect.stringContaining('AdvancedSecurityMode=AUDIT, EmailConfiguration.EmailSendingAccount=DEVELOPER (SES).')
+    );
+    // The bare report names the SES sender in its state line too, and no
+    // separate SES ERROR repeats it.
+    expect(errors).toContainEqual(
+      expect.stringContaining('is LIVE with its self sign-up, Lambda triggers, advanced security and SES email configuration reset')
+    );
+    expect(errors.join('\n')).not.toContain('is LIVE with its SES email configuration reset');
+    expect(errors.join('\n')).not.toContain('sender@example.com');
   });
 
   it('the ERROR report lists EVERY trigger slot sharing one function', async () => {
@@ -1057,7 +1088,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('EmailConfiguration'));
   });
 
-  it('a no-answer failure of the write sent WITHOUT the SES EmailConfiguration does not claim every setting was kept', async () => {
+  it('a no-answer failure of the write sent WITHOUT the SES EmailConfiguration says the email configuration was reset if it landed', async () => {
     const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     cognitoSend.mockImplementation(async (cmd: Cmd) => {
@@ -1070,9 +1101,310 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       throw new Error(`unexpected ${name}`);
     });
     await expect(del()).rejects.toThrow();
-    expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('except possibly the SES EmailConfiguration, which that write omitted')
+    const warns = childLogger.warn.mock.calls.map((c) => String(c[0]));
+    // The flip-off: `warnGuardLeftOn` names it, and nothing else does (one line).
+    const flipOff = warns.filter((w) => w.includes('whether DeletionProtection was turned off is unknown'));
+    expect(flipOff).toHaveLength(1);
+    expect(flipOff[0]).toContain(
+      "except the SES EmailConfiguration, which that write omitted: if it landed, the pool's email " +
+        "configuration was reset to Cognito's default sender (EmailSendingAccount COGNITO_DEFAULT), " +
+        'dropping its SES SourceArn, which stays that way if the delete fails.'
     );
+    // No second line for the flip-off's re-send; and the re-enable reads the
+    // guard ON, so it sends no write without the SES sender at all (#4149).
+    expect(warns.filter((w) => w.includes('the write re-sent without it'))).toEqual([]);
+    expect(
+      updates()
+        .filter((u) => u['DeletionProtection'] === 'ACTIVE')
+        .map((u) => u['EmailConfiguration'] !== undefined)
+    ).toEqual([true]);
+    expect(warns.join('\n')).not.toContain('possibly');
+  });
+
+  it('a re-enable on a pool reading OFF re-sends without the SES EmailConfiguration, and a no-answer there gets its own line', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    let liveDp: Dp = 'ACTIVE';
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool(liveDp), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        if (cmd.input['DeletionProtection'] === 'ACTIVE') throw timeout;
+        liveDp = 'INACTIVE';
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow('domain configured');
+    expect(
+      updates()
+        .filter((u) => u['DeletionProtection'] === 'ACTIVE')
+        .map((u) => u['EmailConfiguration'] !== undefined)
+    ).toEqual([true, false]);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /re-sent without it answered socket hang up\. If that write landed, the pool's email configuration was reset to Cognito's default sender \(EmailSendingAccount COGNITO_DEFAULT\), dropping its SES SourceArn, and a redeploy will not restore it/
+      )
+    );
+  });
+
+  it('a flip-off that landed WITHOUT the SES EmailConfiguration and a failed delete: the re-enable read settles it at ERROR', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/sender@example.com' };
+    let liveDp: Dp = 'ACTIVE';
+    let liveEmail: Record<string, unknown> = ses;
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool(liveDp), EmailConfiguration: liveEmail } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        liveDp = cmd.input['DeletionProtection'] as Dp;
+        liveEmail = { EmailSendingAccount: 'COGNITO_DEFAULT' };
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow('domain configured');
+    const errors = childLogger.error.mock.calls.map((c) => String(c[0]));
+    expect(errors).toContainEqual(
+      expect.stringMatching(
+        /us-east-1_abc is LIVE with its SES email configuration reset: .*reset to Cognito's default sender \(EmailSendingAccount COGNITO_DEFAULT\).*a redeploy will not restore it/
+      )
+    );
+    // The flip-off's own warn speaks of the delete, not of restoring.
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('without that EmailConfiguration. The pool\'s email configuration was reset')
+    );
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('which stays that way if the delete fails.'));
+    expect([...errors, ...childLogger.warn.mock.calls.map((c) => String(c[0]))].join('\n')).not.toContain(
+      'sender@example.com'
+    );
+  });
+
+  it('an email-less flip-off that answered 5xx but LANDED is settled at ERROR by the re-enable after an outer-loop re-entry', async () => {
+    const provider = new CognitoUserPoolProvider();
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    const fiveHundred = Object.assign(named('ServiceUnavailableException', 'boom'), {
+      $metadata: { httpStatusCode: 503 },
+    });
+    let liveDp: Dp = 'ACTIVE';
+    let liveEmail: Record<string, unknown> = ses;
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool(liveDp), EmailConfiguration: liveEmail } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        // Attempt 1's email-less flip-off LANDS, then answers 503.
+        liveDp = cmd.input['DeletionProtection'] as Dp;
+        liveEmail = { EmailSendingAccount: 'COGNITO_DEFAULT' };
+        if (liveDp === 'INACTIVE') throw fiveHundred;
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del(CTX, provider)).rejects.toThrow('boom');
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('which stays that way if the delete fails.'));
+    expect(childLogger.error).not.toHaveBeenCalled();
+    // Attempt 2: reads INACTIVE on the default sender, no flip, terminal delete failure.
+    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    expect(childLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining('us-east-1_abc is LIVE with its SES email configuration reset')
+    );
+  });
+
+  it('the unclear and earlier bare-flip wordings name the SES email configuration on a DEVELOPER pool', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    const dev = { ...livePool('ACTIVE'), EmailConfiguration: ses };
+    const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    // unclear: both echoes refused, the bare flip gets no answer.
+    script({
+      reads: [dev],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      bareError: { INACTIVE: timeout },
+      dels: [named('InvalidParameterException', 'deletion protection is activated')],
+    });
+    await expect(del()).rejects.toThrow('deletion protection is activated');
+    expect(childLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'is LIVE and its self sign-up, Lambda triggers, advanced security and SES email configuration MAY have been reset'
+      )
+    );
+    // earlier: run 1's bare flip lands, run 2's echo flip lands.
+    vi.clearAllMocks();
+    cognitoSend.mockReset();
+    const provider = new CognitoUserPoolProvider();
+    script({ reads: [dev], echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
+    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    cognitoSend.mockReset();
+    script({ reads: [dev], echoError: { ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
+    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    expect(childLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'is LIVE; its self sign-up, Lambda triggers, advanced security and SES email configuration were reset by an earlier'
+      )
+    );
+  });
+
+  it('a DEFINITE email-less flip-off licenses the email-less re-enable even when the fresh read is stale (ACTIVE + DEVELOPER)', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      // Every read is the stale pre-flip one.
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool('ACTIVE'), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow('domain configured');
+    expect(
+      updates()
+        .filter((u) => u['DeletionProtection'] === 'ACTIVE')
+        .map((u) => u['EmailConfiguration'] !== undefined)
+    ).toEqual([true, false]);
+  });
+
+  it('an AMBIGUOUS email-less flip-off keeps the read-on skip: no email-less re-enable', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool('ACTIVE'), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        if (cmd.input['DeletionProtection'] === 'INACTIVE') throw timeout;
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow();
+    expect(
+      updates()
+        .filter((u) => u['DeletionProtection'] === 'ACTIVE')
+        .map((u) => u['EmailConfiguration'] !== undefined)
+    ).toEqual([true]);
+  });
+
+  it.each([
+    ['a landed email-less write (definite record)', 'landed'],
+    ['an email-less write answering 503 (ambiguous record)', '503'],
+    ['an email-less write timing out (ambiguous record)', 'timeout'],
+  ] as const)(
+    'a later flip-off echo that CARRIED the DEVELOPER sender and landed drops the record after %s: a stale read-on re-enable sends no email-less write',
+    async (_label, attempt1) => {
+      const provider = new CognitoUserPoolProvider();
+      const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+      const fiveHundred = Object.assign(named('ServiceUnavailableException', 'boom'), {
+        $metadata: { httpStatusCode: 503 },
+      });
+      const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+      let attempt = 1;
+      cognitoSend.mockImplementation(async (cmd: Cmd) => {
+        const name = cmd.constructor.name;
+        // Every read: ACTIVE on the DEVELOPER sender (stale on attempt 2's re-enable).
+        if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool('ACTIVE'), EmailConfiguration: ses } };
+        if (name === 'UpdateUserPoolCommand') {
+          const withSes = cmd.input['EmailConfiguration'] !== undefined;
+          const dp = cmd.input['DeletionProtection'];
+          if (attempt === 1) {
+            if (withSes) throw echoRefusal();
+            if (attempt1 === '503') throw fiveHundred;
+            if (attempt1 === 'timeout') throw timeout;
+            return {};
+          }
+          // Attempt 2: the flip-off echo WITH the SES sender lands; the
+          // re-enable's echo with it is refused.
+          if (withSes && dp === 'INACTIVE') return {};
+          if (withSes) throw echoRefusal();
+          return {};
+        }
+        if (name === 'DeleteUserPoolCommand') {
+          if (attempt === 1) throw throttle();
+          throw domainRefusal();
+        }
+        throw new Error(`unexpected ${name}`);
+      });
+      await expect(del(CTX, provider)).rejects.toThrow();
+      attempt = 2;
+      cognitoSend.mockClear();
+      await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+      const sent = updates();
+      expect(sent.filter((u) => u['DeletionProtection'] === 'INACTIVE').map((u) => u['EmailConfiguration'] !== undefined)).toEqual([
+        true,
+      ]);
+      expect(
+        sent.filter((u) => u['DeletionProtection'] === 'ACTIVE').map((u) => u['EmailConfiguration'] !== undefined)
+      ).toEqual([true]);
+    }
+  );
+
+  it('no SES ERROR when the re-enable still reads the DEVELOPER sender (the email-less write did not take)', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    let liveDp: Dp = 'ACTIVE';
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool(liveDp), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        if (cmd.input['EmailConfiguration'] !== undefined) throw echoRefusal();
+        liveDp = cmd.input['DeletionProtection'] as Dp;
+        return {};
+      }
+      if (name === 'DeleteUserPoolCommand') throw domainRefusal();
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow('domain configured');
+    expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('SES email configuration reset'));
+  });
+
+  it('a TRANSIENT failure of the flip-off re-sent WITHOUT the SES EmailConfiguration warns of the reset before the retry', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    const fiveHundred = Object.assign(named('ServiceUnavailableException', 'boom'), {
+      $metadata: { httpStatusCode: 503 },
+    });
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool('ACTIVE'), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        throw cmd.input['EmailConfiguration'] !== undefined ? echoRefusal() : fiveHundred;
+      }
+      throw new Error(`unexpected ${name}`);
+    });
+    const thrown = await del()
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    expect(isRetryableTransientError(thrown, (thrown as Error).message)).toBe(true);
+    expect(deleteCalls()).toBe(0);
+    expect(updates().map((u) => u['EmailConfiguration'] !== undefined)).toEqual([true, false]);
+    expect(childLogger.warn).toHaveBeenCalledTimes(1);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /us-east-1_abc: UpdateUserPool refused the write carrying the pool's SES EmailConfiguration \(InvalidParameterException.*re-sent without it answered ServiceUnavailableException.*If that write landed, the pool's email configuration was reset to Cognito's default sender \(EmailSendingAccount COGNITO_DEFAULT\), dropping its SES SourceArn, which stays that way if the delete fails\.$/
+      )
+    );
+  });
+
+  it('a REFUSED re-send WITHOUT the SES EmailConfiguration did not land, so no reset is claimed for it', async () => {
+    const ses = { EmailSendingAccount: 'DEVELOPER', SourceArn: 'arn:aws:ses:us-east-1:123456789012:identity/x.com' };
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === 'DescribeUserPoolCommand') return { UserPool: { ...livePool('ACTIVE'), EmailConfiguration: ses } };
+      if (name === 'UpdateUserPoolCommand') {
+        throw cmd.input['EmailConfiguration'] !== undefined
+          ? echoRefusal()
+          : named('NotAuthorizedException', 'not allowed');
+      }
+      if (name === 'DeleteUserPoolCommand') throw named('InvalidParameterException', 'deletion protection is activated');
+      throw new Error(`unexpected ${name}`);
+    });
+    await expect(del()).rejects.toThrow();
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('DeletionProtection was left on'));
+    expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('COGNITO_DEFAULT'));
   });
 
   it('a re-enable that reads ON but whose echoed ACTIVE answers not-found takes the not-found arm', async () => {
@@ -1133,8 +1465,11 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       [false, true, 'ACTIVE'],
     ]);
     expect(childLogger.warn).toHaveBeenCalledWith(
-      expect.stringMatching(/refused the write \(possibly the pool's SES EmailConfiguration.*without that EmailConfiguration/)
+      expect.stringMatching(
+        /refused the write \(possibly the pool's SES EmailConfiguration.*without that EmailConfiguration\. The pool's email configuration was reset to Cognito's default sender \(EmailSendingAccount COGNITO_DEFAULT\), dropping its SES SourceArn/
+      )
     );
+    expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('not measured'));
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('turned off alone'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('is LIVE with'));
   });
