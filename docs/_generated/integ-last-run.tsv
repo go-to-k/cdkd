@@ -255,7 +255,7 @@ migrate-from-cfn	2026-10-14T22:59:17Z	PASS	391	run.sh	PR #4916 (#3869) 958f7bc5f
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
-multi-resource	2026-10-09T06:36:26Z	PASS	75	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
+multi-resource	2026-10-15T07:41:09Z	PASS	65	standard	rc ok, orph clean; PR #4952 policy-provider thrown-identity wrap
 multi-stack-deps	2026-10-09T07:59:51Z	PASS	90	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
 neptune-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	2295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -354,7 +354,7 @@ sg-circular-dependency	2026-10-06T05:56:08Z	PASS	471	verify.sh	rc ok, orph clean
 sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
 sns-pending-subscription	2026-10-13T05:13:33Z	PASS	85	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
-sns-sqs-event	2026-10-13T05:13:33Z	PASS	245	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
+sns-sqs-event	2026-10-15T07:41:09Z	PASS	230	verify.sh	rc ok, orph clean; PR #4952 policy-provider thrown-identity wrap
 sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95, re-run on b9a821718 after #4842)
 sns-subscription-update	2026-10-13T11:42:44Z	PASS	135	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
