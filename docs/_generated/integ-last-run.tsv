@@ -230,7 +230,7 @@ local-invoke-provided	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; 
 local-invoke-python	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-ruby	2026-10-04T07:04:58Z	PASS	40	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-invoke-stage	2026-10-04T07:04:58Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
-local-run-task	2026-10-04T11:29:20Z	PASS	20	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
+local-run-task	2026-10-15T16:20:37Z	PASS	25	verify.sh	rc ok, docker sweep clean (#2190)
 local-run-task-awsvpc	2026-10-04T07:04:58Z	PASS	15	verify.sh	cdk-local 0.149.8; rc ok, docker clean, orph clean
 local-run-task-cdkd-assets	2026-10-13T15:16:38Z	PASS	15	verify.sh	rc ok, docker sweep clean (no AWS deploy); PR #4865 a5e626acc
 local-run-task-from-state	2026-10-13T15:34:02Z	PASS	150	verify.sh	rc ok, orph clean, docker sweep clean, own state bucket, after §8-d probe; PR #4865 a5e626acc
