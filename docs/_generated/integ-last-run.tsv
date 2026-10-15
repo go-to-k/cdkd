@@ -270,7 +270,7 @@ nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 
 noecho-named-producer	2026-10-13T09:55:40Z	PASS	135	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
 noecho-parameter-masking	2026-10-15T06:27:57Z	PASS	1754	verify.sh	PR #4933 (#4913) 6d78deb2d; own state bucket; rc ok, versions 0, orph clean; a first attempt died rc=127 in 5s (aws CLI absent during a host brew upgrade), nothing created
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
-orphan-getatt-takeover	2026-10-06T05:40:05Z	PASS	50	verify.sh	rc ok, orph clean (#4602 PR #4609)
+orphan-getatt-takeover	2026-10-15T07:48:13Z	PASS	60	verify.sh	rc ok, orph clean (#4937 PR #4943; pre-fix probe RED at Phase 4b)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 output-never-resolved-diff	2026-10-14T10:23:51Z	PASS	175	verify.sh	rc ok, orph clean; PR #4889 5fa11b8fd kept-whole warning kept one contiguous literal
 outputs-only-export	2026-10-12T05:06:49Z	PASS	121	verify.sh	PR #4812 head build, rc ok, orph clean
