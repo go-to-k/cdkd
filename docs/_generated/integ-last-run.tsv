@@ -5,12 +5,12 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-10-06T02:22:44Z	PASS	115	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
+acm-certificate	2026-10-15T09:01:04Z	PASS	120	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
 agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
 alb	2026-10-14T14:46:11Z	PASS	550	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
-apigateway	2026-10-08T06:25:38Z	PASS	70	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
+apigateway	2026-10-15T09:01:04Z	PASS	65	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
 apigatewayv2-update-removal	2026-10-11T16:48:28Z	PASS	208	verify.sh	PR #4796, rc ok, orph clean
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-props	2026-10-11T09:33:22Z	PASS	160	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -299,7 +299,7 @@ remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, or
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-replaced-delete-failed-rollback	2026-10-15T03:35:40Z	PASS	125	verify.sh	rc ok, orph clean; #2631 first run, own state bucket: rollback re-adopted target-a, target-b deleted; pre-fix probe RED (re-create collided)
+replaced-delete-failed-rollback	2026-10-15T09:01:04Z	PASS	246	verify.sh	PR #4938 (#4911 provider in-update replacement survivor mark); rc 0, own state bucket, destroy clean, orph clean; ACM arm first run: rollback re-adopted old cert; pre-fix probe RED at step 5 re-adopt (rollback re-created a copy)
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-immutable-name	2026-10-14T12:12:31Z	PASS	146	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-rename-onto-holder	2026-10-14T12:12:31Z	PASS	611	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
