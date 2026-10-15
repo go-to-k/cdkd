@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-access-key-cloudmap-fix-forward-orphan	2026-10-15T12:20:43Z	PASS	206	verify.sh	PR #4956 us-east-1 own state bucket; step 2 minted 1 key, step 2b deleted none (#4945), rc 0, orph clean
+access-key-cloudmap-fix-forward-orphan	2026-10-15T18:48:28Z	PASS	221	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4972 implicit denies on UpdateAccessKey / UpdateServiceAttributes
 acm-certificate	2026-10-15T09:01:04Z	PASS	120	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
 agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
 alb	2026-10-14T14:46:11Z	PASS	550	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
@@ -94,7 +94,7 @@ dlm-lifecycle-policy	2026-10-14T14:47:46Z	PASS	115	verify.sh	PR #4899 (#2613 upd
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-15T15:35:44Z	PASS	285	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean, 0 surviving state versions (BROAD set, building fixture ran alone)
+drift-revert	2026-10-15T18:48:28Z	PASS	291	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4972 post-create HeadBucket 404 retried, observed baseline kept (failed before the fix, main A/B passed)
 drift-revert-arrays	2026-10-14T22:42:50Z	PASS	165	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
 drift-revert-vpc	2026-10-15T15:41:34Z	PASS	340	verify.sh	PR #4961 (#4954); own state bucket; rc ok, orph clean, ENIs/VPC confirmed deleted (BROAD set, building fixture ran alone)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
@@ -323,11 +323,11 @@ s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 
 s3-cloudfront	2026-10-15T06:00:27Z	PASS	250	verify.sh	rc ok, orph clean (us-west-2)
 s3-directory-bucket	2026-10-15T04:17:06Z	PASS	206	verify.sh	rc ok, orph clean
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-fix-forward-orphan	2026-10-09T01:46:35Z	PASS	326	verify.sh	rc ok, orph clean; us-west-2; #4754 destroy re-checked kept E/F (E deleted, F gone), exit 0
+s3-fix-forward-orphan	2026-10-15T18:48:28Z	PASS	291	verify.sh	rc ok, orph clean; us-west-2 own state bucket; PR #4972 PutBucketTagging implicit deny keeps the #4758 retry path
 s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-object-lock	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-replication-and-filter	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-retry-own-bucket	2026-10-09T01:10:20Z	PASS	86	verify.sh	rc ok, orph clean; us-west-2; #4758 retry took its own bucket
+s3-retry-own-bucket	2026-10-15T18:48:28Z	PASS	70	verify.sh	rc ok, orph clean; us-west-2 own state bucket; PR #4972 tagged CreateBucket denied s3:TagResource -> untagged re-send + Put
 s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-tables	2026-10-15T04:17:06Z	PASS	75	verify.sh	rc ok, orph clean; #2613 Phase 1b in-place tag update
 s3-vectors	2026-10-07T13:48:36Z	PASS	66	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
@@ -373,7 +373,7 @@ stepfunctions-logging	2026-10-14T05:21:01Z	PASS	215	verify.sh	rc ok, orph clean
 stepfunctions-s3-definition	2026-10-11T09:33:22Z	PASS	60	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stream-delete-redeploy	2026-10-14T14:47:46Z	PASS	225	verify.sh	PR #4899 (#2613) beef2d5, new Phase 3b Firehose tag in-place update arm (CreateTimestamp unchanged); rc 0, destroy clean, orph clean
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-tags-propagation	2026-10-11T09:33:22Z	PASS	81	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+tags-propagation	2026-10-15T18:48:28Z	PASS	60	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4972 bucket tags set by CreateBucket read back
 throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 type-change-replacement	2026-10-14T12:12:31Z	PASS	200	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
