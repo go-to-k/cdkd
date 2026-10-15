@@ -45,6 +45,7 @@ import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { plainIdentOr } from '../../utils/display-safe.js';
 import { plainOrDescribed } from '../../utils/pasteable-command.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * One downstream consumer of a recreate target's outputs.
@@ -142,7 +143,7 @@ export async function findDownstreamConsumers(input: {
   } catch (err) {
     logger.debug(
       `findDownstreamConsumers: listStacks failed; ` +
-        `falling back to empty enumeration. ${err instanceof Error ? err.message : String(err)}`
+        `falling back to empty enumeration. ${describeAwsFailure(err).detail}`
     );
     return [];
   }
@@ -222,7 +223,7 @@ export async function findDownstreamConsumers(input: {
         // renders whatever consumers were found in other stacks.
         logger.debug(
           `findDownstreamConsumers: skip ${ref.stackName} (${region}); ` +
-            `${err instanceof Error ? err.message : String(err)}`
+            `${describeAwsFailure(err).detail}`
         );
         return null;
       }
