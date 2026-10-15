@@ -9,7 +9,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * (retried as IAM propagation) and cannot clean the bucket up. verify.sh then
  * allows tagging, and the retry of the same CREATE must take the bucket its
  * own first attempt made instead of refusing it as an explicit name already
- * held.
+ * held. The role never holds `s3:TagResource`, so the first, tagged
+ * `CreateBucket` is refused and re-sent untagged (go-to-k/cdkd#4969).
  */
 export class S3RetryOwnBucketStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

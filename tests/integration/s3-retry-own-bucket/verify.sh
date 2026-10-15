@@ -6,20 +6,25 @@
 #
 # Phases:
 #   1. A role that may create the fixture's bucket and read it, but may
-#      neither tag nor delete it (explicit denies, probed until bound).
+#      neither tag nor delete it (an explicit deny on DeleteBucket, probed
+#      until bound; no grant for PutBucketTagging or TagResource).
 #   2. `cdkd deploy --no-rollback` as that role, in the background. The
-#      CREATE makes the bucket, enables its versioning (a configuration
+#      tagged CreateBucket is refused for s3:TagResource (go-to-k/cdkd#4969),
+#      so the provider re-sends it untagged. The CREATE makes the bucket,
+#      enables its versioning (a configuration
 #      write, which outside us-east-1 moves the bucket's CreationDate before
-#      the identity is recorded), fails on its tagging call (an AccessDenied the
-#      deploy engine retries as IAM propagation), and its cleanup DeleteBucket
+#      the identity is recorded), fails on its tagging call (an implicit-deny
+#      AccessDenied the deploy engine retries as IAM propagation; an EXPLICIT
+#      deny would fail fast since go-to-k/cdkd#4969), and its cleanup DeleteBucket
 #      is denied, so the bucket stays. Once the bucket exists, the role's
 #      policy is rewritten to allow tagging (DeleteBucket stays denied). Each
 #      retry meets its own bucket (`BucketAlreadyOwnedByYou`); the provider
 #      proves it is the bucket the failed attempt left (name, region and
 #      ListBuckets CreationDate) and takes it, and once the tagging allow
 #      propagates the deploy exits 0. Asserted: exit 0, the first attempt's
-#      cleanup failed (the premise), no "Refusing to adopt", the state record
-#      holds the bucket, the bucket carries the fixture tag.
+#      cleanup failed (the premise), the untagged re-send fired
+#      (go-to-k/cdkd#4969), no "Refusing to adopt", the state record holds the
+#      bucket, the bucket carries the fixture tag.
 #      Before #4758 the first retry refused the bucket and the deploy failed.
 #      A deploy that gives up on IAM propagation WITHOUT that refusal is
 #      reported INCONCLUSIVE (the allow did not propagate within the retry
@@ -211,17 +216,21 @@ TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Stat
 # Scoped to what this deploy calls, never `*`. The S3 verbs on the state
 # bucket are the state path's. On this run's buckets the role may create and
 # read (HeadBucket is ListBucket; the identity read is GetBucketLocation plus
-# ListAllMyBuckets). `tagging` is "Deny" first and "Allow" after the lift;
-# DeleteBucket stays denied throughout, so the provider's own cleanup cannot
-# remove the bucket its failed attempt made.
-role_policy() { # usage: role_policy <Deny|Allow>   (the PutBucketTagging effect)
-  node -e 'const [bucket,stack,acct,tagging]=process.argv.slice(1);const ours=`arn:aws:s3:::cdkd-s3rob-*${acct}`;const st=[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:PutBucketVersioning","s3:ListBucket","s3:GetBucketLocation","s3:GetBucketTagging"],Resource:ours},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Deny",Action:["s3:DeleteBucket"],Resource:ours},{Effect:tagging,Action:["s3:PutBucketTagging"],Resource:ours}];process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:st}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "$1"
+# ListAllMyBuckets). PutBucketTagging is ungranted (an IMPLICIT deny) first
+# and allowed after the lift -- an explicit deny is not retried
+# (go-to-k/cdkd#4969), so it would end the deploy before the lift.
+# s3:TagResource is never granted, so the tagged CreateBucket is always
+# refused and the provider's untagged re-send runs. DeleteBucket stays
+# explicitly denied throughout, so the provider's own cleanup cannot remove
+# the bucket its failed attempt made.
+role_policy() { # usage: role_policy <None|Allow>   (the PutBucketTagging grant)
+  node -e 'const [bucket,stack,acct,tagging]=process.argv.slice(1);const ours=`arn:aws:s3:::cdkd-s3rob-*${acct}`;const st=[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["s3:CreateBucket","s3:PutBucketVersioning","s3:ListBucket","s3:GetBucketLocation","s3:GetBucketTagging"],Resource:ours},{Effect:"Allow",Action:["s3:ListAllMyBuckets","cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Deny",Action:["s3:DeleteBucket"],Resource:ours},...(tagging==="Allow"?[{Effect:"Allow",Action:["s3:PutBucketTagging"],Resource:ours}]:[])];process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:st}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "$1"
 }
 aws iam create-role --role-name "${ROLE}" --assume-role-policy-document "${TRUST}" \
   --tags Key=cdkd-integ,Value=s3-retry-own-bucket >/dev/null
 ROLE_CREATED=1
 aws iam put-role-policy --role-name "${ROLE}" --policy-name "${POLICY_NAME}" \
-  --policy-document "$(role_policy Deny)"
+  --policy-document "$(role_policy None)"
 ROLE_CREDS=""
 for _ in $(seq 1 24); do
   if ROLE_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE}" \
@@ -265,9 +274,10 @@ case "${ROLE_ARN}" in
     exit 1
     ;;
 esac
-# Both explicit denies must already bind, or the deploy below fails before any
-# CREATE for the wrong reason (an implicit deny on everything) or tags the
-# bucket on its first attempt. Probed on PROBE_BUCKET, which exists.
+# The policy must already bind, or the deploy below fails before any CREATE
+# for the wrong reason (an implicit deny on everything): the DeleteBucket
+# explicit deny is the proof it bound, and tagging must then be refused too, or
+# the first attempt tags the bucket. Probed on PROBE_BUCKET, which exists.
 probe_explicit_deny() { # usage: probe_explicit_deny <aws s3api args...>
   local out=""
   for _ in $(seq 1 24); do
@@ -283,7 +293,14 @@ probe_explicit_deny() { # usage: probe_explicit_deny <aws s3api args...>
   return 1
 }
 probe_explicit_deny delete-bucket
-probe_explicit_deny put-bucket-tagging --tagging 'TagSet=[{Key=probe,Value=1}]'
+if TAG_PROBE="$(as_role aws s3api put-bucket-tagging --tagging 'TagSet=[{Key=probe,Value=1}]' \
+  --bucket "${PROBE_BUCKET}" --region "${REGION}" 2>&1)"; then
+  echo "[verify] FAIL: precondition -- ${ROLE} was ALLOWED: put-bucket-tagging (its policy must not grant it)" >&2
+  exit 1
+elif ! printf '%s' "${TAG_PROBE}" | grep -qF 'not authorized to perform: s3:PutBucketTagging'; then
+  echo "[verify] FAIL: precondition -- put-bucket-tagging as ${ROLE} failed for another reason: ${TAG_PROBE}" >&2
+  exit 1
+fi
 
 echo "[verify] step 2: deploy as ${ROLE}; tagging is allowed once the bucket exists"
 set +e
@@ -363,6 +380,14 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
     exit 1
   fi
   echo "[verify] FAIL: the deploy exited ${DEPLOY_RC} for another reason (output above)" >&2
+  exit 1
+fi
+# go-to-k/cdkd#4969: the tags went on the first CreateBucket, the role's
+# missing s3:TagResource refused it, and the provider re-sent it untagged
+# (the --verbose debug line). Without that re-send the CREATE never makes the
+# bucket and the premise below fails instead.
+if ! printf '%s' "${FLAT}" | grep -qF 'CreateBucket with tags was denied s3:TagResource for Bucket'; then
+  echo "[verify] FAIL: the tagged CreateBucket was not re-sent untagged after its s3:TagResource denial (go-to-k/cdkd#4969 -- output above)" >&2
   exit 1
 fi
 # The premise: the first attempt made the bucket and could not delete it, so
