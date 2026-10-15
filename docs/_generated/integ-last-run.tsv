@@ -148,8 +148,8 @@ gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean;
 getatt-fallback-guard	2026-10-14T09:23:37Z	PASS	160	verify.sh	rc ok, orph clean; PR #4889 f7a89df87
 getstackoutput-crossregion	2026-10-14T11:39:31Z	PASS	466	verify.sh	rc ok, orph clean; PR #4901 852369c02 (main-merged) lone nested child destroy resolves a recorded-region principal (Phase 8); pre-fix arm red at 8b (exit 2)
 globaltable-fix-forward-orphan	2026-10-11T15:56:32Z	PASS	200	verify.sh	rc ok, orph clean; pre-fix arm red at step 2 (journal lacks TableId)
-glue-securityconfig-replace	2026-10-07T13:48:36Z	PASS	75	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
-glue-update-hardening	2026-10-13T11:42:44Z	PASS	316	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
+glue-securityconfig-replace	2026-10-15T04:17:06Z	PASS	65	verify.sh	rc ok, orph clean
+glue-update-hardening	2026-10-15T04:17:06Z	PASS	286	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-10-15T01:34:55Z	PASS	161	verify.sh	PR #4922 (#4910) maintainer run on 542a814c5; own state bucket; all 6 phases; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-08T06:25:38Z	PASS	75	verify.sh	PR #4697 (#4687 replayed-create duplicate reconcile); rc 0, destroy clean, orph clean
@@ -164,7 +164,7 @@ iam-role-prefixed-name-update	2026-10-13T11:42:44Z	PASS	145	verify.sh	PR #4862 (
 iam-secret-derived-principals	2026-10-07T06:43:47Z	PASS	171	verify.sh	rc ok, orph clean (#4639)
 iam-user-group-fix-forward-orphan	2026-10-13T22:59:15Z	PASS	134	verify.sh	rc ok, orph clean, IAM sweep clean, own state bucket, after §8-d probe; PR #4883 0f38dec93 (src+fixture = ebc59f508)
 import-attribute-readback	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-import-attribute-readback-final	2026-10-11T09:33:22Z	PASS	295	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+import-attribute-readback-final	2026-10-15T04:17:06Z	FAIL	236	verify.sh	step 6b fixture bug: aws --output json prints nothing for {} so Block read as empty; ACL updated in place; destroy 0 errors, orph clean
 import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, orph clean (PR #3862 IAM masking)
 import-attribute-readback-network	2026-10-11T09:33:22Z	PASS	306	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
@@ -318,7 +318,7 @@ route53	2026-10-11T09:33:22Z	PASS	331	verify.sh	PR #4720 (#4705) final c53f78f r
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
 s3-cloudfront	2026-10-14T05:21:01Z	PASS	270	verify.sh	rc ok, orph clean
-s3-directory-bucket	2026-10-13T11:49:55Z	PASS	165	verify.sh	PR #4862 (#2007) 594d838ab, re-run after §8-d probe (pre-fix red at Phase 5a); rc ok, destroy 0 errors, orph clean, own state bucket
+s3-directory-bucket	2026-10-15T04:17:06Z	PASS	206	verify.sh	rc ok, orph clean
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-fix-forward-orphan	2026-10-09T01:46:35Z	PASS	326	verify.sh	rc ok, orph clean; us-west-2; #4754 destroy re-checked kept E/F (E deleted, F gone), exit 0
 s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -326,7 +326,7 @@ s3-object-lock	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53
 s3-replication-and-filter	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-retry-own-bucket	2026-10-09T01:10:20Z	PASS	86	verify.sh	rc ok, orph clean; us-west-2; #4758 retry took its own bucket
 s3-subconfig-removal	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-s3-tables	2026-10-07T13:48:36Z	PASS	70	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
+s3-tables	2026-10-15T04:17:06Z	PASS	75	verify.sh	rc ok, orph clean; #2613 Phase 1b in-place tag update
 s3-vectors	2026-10-07T13:48:36Z	PASS	66	verify.sh	PR #4664 (#4639 data/streaming slice create client); rc 0, destroy clean, orph clean
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

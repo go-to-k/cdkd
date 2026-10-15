@@ -39,6 +39,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
@@ -243,8 +244,26 @@ export class S3TablesProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: a table or table bucket is addressed by an ARN read
+    // from the state record, and every call goes through the one S3 Tables
+    // client, so a client in another region than the record would send the
+    // lookup and the tag writes to a region this record was not written
+    // through. Refused for all three types, Namespace included although its
+    // update sends nothing, so a stack whose client region disagrees with its
+    // state stops at its first update rather than partway through. Outside the
+    // try: a refusal is not an AWS failure to re-label. The client's region is
+    // resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags on a taggable type is
     // refused before any call (read as empty, it would untag every recorded
     // key). Namespaces are not taggable.
@@ -326,6 +345,19 @@ export class S3TablesProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
+    // go-to-k/cdkd#2613: a table bucket delete first EMPTIES the bucket
+    // (deleting every namespace and table in it), so a client in another
+    // region than the state record would empty and delete there. Refuse before
+    // any call, for all three types, not only on NotFound; the client's region
+    // is resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     switch (resourceType) {
       case 'AWS::S3Tables::TableBucket':
         return this.deleteTableBucket(logicalId, physicalId, resourceType, context);

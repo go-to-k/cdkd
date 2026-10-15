@@ -11,6 +11,9 @@
 #      id, but CFn `Ref` for a Table returns the table NAME. Asserts the Ref
 #      resolves to the table name (via a CfnOutput AND a consuming SSM
 #      parameter round-trip), not the bare ARN.
+#   3. (issue #2613) Phase 1b redeploys with changed tag values: the
+#      TableBucket and the SDK-routed Table update in place, through the
+#      provider's update() and its recorded-region guard.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -119,7 +122,8 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+# CDKD_S3T_TEAM unset: Phase 1 asserts the base `platform` tag value.
+env -u CDKD_S3T_TEAM node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -298,6 +302,56 @@ if [ "${SSM_VALUE}" != "${EXPECTED_TABLE_NAME}" ]; then
   exit 1
 fi
 echo "    OK: consuming SSM parameter value == table name '${EXPECTED_TABLE_NAME}' (Ref reached AWS correctly)"
+
+# --- Phase 1b: in-place tag update (issue #2613) ---------------------
+# Only the `bucket-team` / `team` tag values change, so the redeploy reaches
+# the S3 Tables provider's update() for the TableBucket and the SDK-routed
+# Table, and its recorded-region guard. The physical ids pin that both were
+# updated, not replaced. Each read is its own assignment so a failed `aws` /
+# `jq` trips `set -e` instead of comparing as an empty string.
+UPDATED_TEAM_TAG="platform-updated"
+state_physical_id() { # usage: state_physical_id <logical id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "$1" '.resources[$id].physicalId // ""'
+}
+tag_value() { # usage: tag_value <resource arn> <tag key>
+  aws s3tables list-tags-for-resource --region "${REGION}" --resource-arn "$1" --output json \
+    | jq -r --arg k "$2" '.tags[$k] // "MISSING"'
+}
+require_value() { # usage: require_value <description> <value>
+  case "$2" in
+    ""|None|null) echo "FAIL: $1 is empty (got '$2')" >&2; exit 1 ;;
+  esac
+}
+PRE_BUCKET_ID="$(state_physical_id TableBucket)"
+require_value "TableBucket physicalId before Phase 1b" "${PRE_BUCKET_ID}"
+PRE_TABLE_ID="$(state_physical_id Table)"
+require_value "Table physicalId before Phase 1b" "${PRE_TABLE_ID}"
+
+echo "==> Phase 1b: redeploy with changed bucket-team / team tag values"
+CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+POST_BUCKET_ID="$(state_physical_id TableBucket)"
+require_value "TableBucket physicalId after Phase 1b" "${POST_BUCKET_ID}"
+POST_TABLE_ID="$(state_physical_id Table)"
+require_value "Table physicalId after Phase 1b" "${POST_TABLE_ID}"
+if [ "${POST_BUCKET_ID}" != "${PRE_BUCKET_ID}" ] || [ "${POST_TABLE_ID}" != "${PRE_TABLE_ID}" ]; then
+  echo "FAIL: Phase 1b replaced a resource (TableBucket ${PRE_BUCKET_ID} -> ${POST_BUCKET_ID}, Table ${PRE_TABLE_ID} -> ${POST_TABLE_ID}); a tag change must update in place (issue #2613)" >&2
+  exit 1
+fi
+POST_BUCKET_TEAM="$(tag_value "${TABLE_BUCKET_ARN}" bucket-team)"
+if [ "${POST_BUCKET_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
+  echo "FAIL: bucket-team tag is '${POST_BUCKET_TEAM}' after Phase 1b, expected '${UPDATED_TEAM_TAG}' (issue #2613: the TableBucket update() did not apply)" >&2
+  exit 1
+fi
+POST_TABLE_TEAM="$(tag_value "${TABLE_ARN}" team)"
+if [ "${POST_TABLE_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
+  echo "FAIL: team tag is '${POST_TABLE_TEAM}' after Phase 1b, expected '${UPDATED_TEAM_TAG}' (issue #2613: the Table update() did not apply)" >&2
+  exit 1
+fi
+echo "    OK: TableBucket and Table tags updated in place (issue #2613)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

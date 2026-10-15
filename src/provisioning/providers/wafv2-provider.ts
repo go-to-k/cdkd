@@ -31,6 +31,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
@@ -626,9 +627,26 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating WAFv2 WebACL ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the update addresses the web ACL by the name, id and
+    // scope inside the recorded ARN, so a client in another region than the
+    // state record would send `GetWebACL`, `UpdateWebACL` and the tag writes to
+    // a region this record was not written through. A CLOUDFRONT-scope web ACL
+    // goes through the same client (there is no us-east-1 routing here), so it
+    // is compared the same way. Outside the try: a refusal is not an AWS
+    // failure to re-label. Refuse before any call; the client's region is
+    // resolved only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-update'
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
@@ -719,6 +737,19 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting WAFv2 WebACL ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#2613: the delete addresses the web ACL by the name, id and
+    // scope inside the recorded ARN, so a client in another region than the
+    // state record would send `GetWebACL` and `DeleteWebACL` there. Refuse
+    // before any call, not only on NotFound; the client's region is resolved
+    // only when there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
 
     try {
       const { id, name, scope } = parseWebACLArn(physicalId);

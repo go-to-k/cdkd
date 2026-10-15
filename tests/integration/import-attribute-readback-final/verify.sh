@@ -16,6 +16,8 @@
 #      left not-found or failed.
 #   5. Assert each imported SSM parameter record equals the oracle.
 #   6. `cdkd deploy` (no template change): nothing updated, no "Unknown attribute".
+#   6b. `cdkd deploy` with the web ACL's DefaultAction changed: updated in
+#      place (issue #2613).
 #   7. `cdkd destroy --force`; gone-probes for the state and the key resources.
 set -euo pipefail
 
@@ -113,7 +115,7 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --regio
 fi
 
 echo "[verify] step 3: cdk deploy (the CloudFormation stack to migrate)"
-(cd "${TEST_DIR}" && cdk deploy "${STACK}" \
+(cd "${TEST_DIR}" && env -u CDKD_IARF_ACL_BLOCK cdk deploy "${STACK}" \
   --require-approval never \
   --no-version-reporting \
   --no-asset-metadata \
@@ -198,7 +200,7 @@ PY
 [ "${IMPORT_FAILED}" = 0 ] || exit 1
 
 echo "[verify] step 6: cdkd deploy with an unchanged template"
-(cd "${TEST_DIR}" && ${CLI} deploy "${STACK}" \
+(cd "${TEST_DIR}" && env -u CDKD_IARF_ACL_BLOCK ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}") 2>&1 | tee "${WORK}/deploy.log"
 if grep -q 'Unknown attribute' "${WORK}/deploy.log"; then
   echo "[verify] FAIL: deploy fell back to the physical id for an attribute (issue #3627)"
@@ -210,6 +212,41 @@ if sed 's/\x1b\[[0-9;]*m//g' "${WORK}/deploy.log" | grep -qE '✓ .* updated'; t
   exit 1
 fi
 echo "[verify] step 6 ok"
+
+# Issue #2613: an in-place web ACL update through the WAFv2 provider's update()
+# and its recorded-region guard. Each read is its own assignment so a failed
+# `aws` / `jq` trips `set -e` instead of comparing as an empty string.
+ACL_NAME="${ACL_ID_COMPOUND%%|*}"; ACL_REST="${ACL_ID_COMPOUND#*|}"; ACL_ID="${ACL_REST%%|*}"
+acl_state_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | jq -r '.resources.Acl.physicalId // ""'
+}
+acl_block_action() { # prints `{}` when DefaultAction is Block, `null` otherwise
+  # Query the parent, not `.Block` itself: the CLI's JSON formatter prints
+  # NOTHING for an empty-object result, so `{}` would read back as ''.
+  aws wafv2 get-web-acl --name "${ACL_NAME}" --id "${ACL_ID}" --scope REGIONAL --region "${REGION}" \
+    --query 'WebACL.DefaultAction' --output json | jq -c '.Block'
+}
+PRE_ACL_STATE_ID="$(acl_state_id)"
+case "${PRE_ACL_STATE_ID}" in ""|None|null) echo "[verify] FAIL: Acl has no physicalId in state before step 6b"; exit 1 ;; esac
+PRE_ACL_BLOCK="$(acl_block_action)"
+if [ "${PRE_ACL_BLOCK}" != "null" ]; then
+  echo "[verify] FAIL: web ACL ${ACL_ID} DefaultAction is already Block before step 6b (got '${PRE_ACL_BLOCK}')"
+  exit 1
+fi
+echo "[verify] step 6b: cdkd deploy with the web ACL DefaultAction changed to Block (issue #2613)"
+(cd "${TEST_DIR}" && CDKD_IARF_ACL_BLOCK=true ${CLI} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}")
+POST_ACL_STATE_ID="$(acl_state_id)"
+if [ "${POST_ACL_STATE_ID}" != "${PRE_ACL_STATE_ID}" ]; then
+  echo "[verify] FAIL: the web ACL was replaced in step 6b (${PRE_ACL_STATE_ID} -> ${POST_ACL_STATE_ID}); a DefaultAction change must update it in place (issue #2613)"
+  exit 1
+fi
+POST_ACL_BLOCK="$(acl_block_action)"
+if [ "${POST_ACL_BLOCK}" != "{}" ]; then
+  echo "[verify] FAIL: web ACL ${ACL_ID} DefaultAction.Block is '${POST_ACL_BLOCK}' after step 6b, expected '{}' (issue #2613: the WAFv2 update() did not apply)"
+  exit 1
+fi
+echo "[verify] step 6b ok: web ACL DefaultAction updated in place"
 
 echo "[verify] step 7: cdkd destroy --force"
 (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)
@@ -224,7 +261,6 @@ for _ in $(seq 1 30); do
   sleep 5
 done
 [ "${machine_gone}" = 1 ] || { echo "FAIL: state machine ${MACHINE_ARN} still exists 150 seconds after destroy" >&2; exit 1; }
-ACL_NAME="${ACL_ID_COMPOUND%%|*}"; ACL_REST="${ACL_ID_COMPOUND#*|}"; ACL_ID="${ACL_REST%%|*}"
 assert_gone "web ACL ${ACL_ID} still exists after destroy" aws wafv2 get-web-acl --name "${ACL_NAME}" --id "${ACL_ID}" --scope REGIONAL --region "${REGION}"
 assert_gone "user pool ${POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${POOL_ID}" --region "${REGION}"
 case "${VECTORS_ID}" in

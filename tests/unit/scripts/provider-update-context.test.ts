@@ -223,6 +223,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'GlueCrawlerProvider',
       'GlueJobProvider',
       'GlueProvider',
+      'GlueSecurityConfigurationProvider',
       'GlueTriggerProvider',
       'GlueWorkflowProvider',
       'IAMAccessKeyProvider',
@@ -255,6 +256,8 @@ describe('provider UpdateContext fence — the real tree', () => {
       'Route53Provider',
       'S3BucketPolicyProvider',
       'S3BucketProvider',
+      'S3DirectoryBucketProvider',
+      'S3TablesProvider',
       'S3VectorsProvider',
       'SNSSubscriptionProvider',
       'SNSTopicPolicyProvider',
@@ -266,6 +269,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'SecretsManagerSecretProvider',
       'ServiceDiscoveryProvider',
       'StepFunctionsProvider',
+      'WAFv2WebACLProvider',
       'WaitConditionHandleProvider',
     ]);
   });

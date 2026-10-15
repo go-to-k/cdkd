@@ -35,6 +35,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
@@ -419,8 +420,31 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#2613: the tag writes name the bucket by an ARN whose region
+    // is the shared S3 client's and go out through the S3 Control client, so
+    // both are compared with the recorded region: either one in another region
+    // than the state record would aim the writes at a region this record was
+    // not written through. Ahead of the STS lookup and every write, outside the
+    // try so a refusal is not re-labelled as an AWS failure. The clients'
+    // regions are resolved only when there is one to compare with.
+    if (context?.expectedRegion) {
+      for (const clientRegion of [
+        await this.s3Client.config.region(),
+        await this.getS3ControlClient().config.region(),
+      ]) {
+        assertRegionMatch(
+          clientRegion,
+          context.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId,
+          'pre-update'
+        );
+      }
+    }
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
     // (read as empty, it would untag every recorded key).
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -506,6 +530,19 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     const mask = maskerOrIdentity(context?.maskSecrets);
     this.logger.debug(
       mask(`Deleting S3 Express Directory Bucket ${logicalId}: ${mask(physicalId)}`)
+    );
+    // go-to-k/cdkd#2613: the empty-and-delete goes through the shared S3
+    // client, so a client in another region than the state record would aim
+    // it at a region this record was not written through. Refuse before any
+    // call, not only on NoSuchBucket; the client's region is resolved only when
+    // there is one to compare with.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.s3Client.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
     );
 
     const allowAutoEmpty =

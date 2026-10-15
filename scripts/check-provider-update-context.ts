@@ -231,10 +231,6 @@ export const OMITS_UPDATE_CONTEXT: readonly string[] = [
   'CloudFrontDistributionProvider',
   'CloudFrontOACProvider',
   'CloudFrontOAIProvider',
-  'GlueSecurityConfigurationProvider',
-  'S3DirectoryBucketProvider',
-  'S3TablesProvider',
-  'WAFv2WebACLProvider',
 ];
 
 /**

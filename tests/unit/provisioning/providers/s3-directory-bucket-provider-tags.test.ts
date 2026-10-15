@@ -24,6 +24,7 @@ vi.mock('@aws-sdk/client-s3-control', async (importOriginal) => {
     ...actual,
     S3ControlClient: vi.fn().mockImplementation(() => ({
       send: mockControlSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });
@@ -294,5 +295,83 @@ describe('S3DirectoryBucketProvider Tags (issue #609)', () => {
       const listCmd = mockControlSend.mock.calls[0][0];
       expect(listCmd.input).toEqual({ AccountId: '123456789012', ResourceArn: ARN });
     });
+  });
+});
+
+describe('S3DirectoryBucketProvider update region guard (issue #2613)', () => {
+  let provider: S3DirectoryBucketProvider;
+  const desired = { Tags: [{ Key: 'team', Value: 'new' }] };
+  const previous = { Tags: [{ Key: 'team', Value: 'old' }] };
+  type RegionHolder = { config: { region: unknown } };
+  const s3ClientOf = (p: S3DirectoryBucketProvider): RegionHolder =>
+    (p as unknown as { s3Client: RegionHolder }).s3Client;
+  const controlClientOf = (p: S3DirectoryBucketProvider): RegionHolder =>
+    (p as unknown as { getS3ControlClient(): RegionHolder }).getS3ControlClient();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStsSend.mockResolvedValue({ Account: '123456789012' });
+    mockControlSend.mockResolvedValue({});
+    provider = new S3DirectoryBucketProvider();
+  });
+
+  const expectNoSend = (): void => {
+    expect(mockStsSend).not.toHaveBeenCalled();
+    expect(mockControlSend).not.toHaveBeenCalled();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  };
+
+  it('refuses an update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('DirectoryBucket', PHYSICAL_ID, RESOURCE_TYPE, desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update DirectoryBucket .*does not match stack state region us-west-2/);
+    expectNoSend();
+  });
+
+  it('refuses when only the S3 Control client is in another region', async () => {
+    // The ARN's region comes from the shared S3 client and the write goes out
+    // through the S3 Control client: a disagreement in either is refused.
+    controlClientOf(provider).config.region = () => Promise.resolve('us-west-2');
+    await expect(
+      provider.update('DirectoryBucket', PHYSICAL_ID, RESOURCE_TYPE, desired, previous, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(/Refusing to update DirectoryBucket .*us-west-2.*does not match stack state region us-east-1/);
+    expectNoSend();
+  });
+
+  it('refuses when only the shared S3 client is in another region', async () => {
+    s3ClientOf(provider).config.region = () => Promise.resolve('us-west-2');
+    await expect(
+      provider.update('DirectoryBucket', PHYSICAL_ID, RESOURCE_TYPE, desired, previous, {
+        expectedRegion: 'us-east-1',
+      })
+    ).rejects.toThrow(/Refusing to update DirectoryBucket .*us-west-2.*does not match stack state region us-east-1/);
+    expectNoSend();
+  });
+
+  it('updates when both clients match the recorded region', async () => {
+    await provider.update('DirectoryBucket', PHYSICAL_ID, RESOURCE_TYPE, desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockControlSend).toHaveBeenCalledTimes(1);
+    expect(mockControlSend.mock.calls[0]![0]).toBeInstanceOf(TagResourceCommand);
+  });
+
+  it('without a recorded region proceeds and never resolves either client region', async () => {
+    const s3Region = vi.fn(() => Promise.resolve('us-west-2'));
+    const controlRegion = vi.fn(() => Promise.resolve('us-west-2'));
+    s3ClientOf(provider).config.region = s3Region;
+    controlClientOf(provider).config.region = controlRegion;
+    await expect(
+      provider.update('DirectoryBucket', PHYSICAL_ID, RESOURCE_TYPE, desired, previous)
+    ).resolves.toEqual({ physicalId: PHYSICAL_ID, wasReplaced: false });
+    expect(controlRegion).not.toHaveBeenCalled();
+    expect(mockControlSend.mock.calls[0]![0]).toBeInstanceOf(TagResourceCommand);
+    // The shared S3 client's region still builds the ARN on this path; the
+    // guard itself adds no read of it.
+    expect(s3Region).toHaveBeenCalledTimes(1);
   });
 });

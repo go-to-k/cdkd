@@ -296,3 +296,66 @@ describe('S3TablesProvider', () => {
     });
   });
 });
+
+describe('S3TablesProvider update region guard (issue #2613)', () => {
+  let provider: S3TablesProvider;
+  const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
+  const desired = { TableBucketName: 'my-bucket', Tags: [{ Key: 'team', Value: 'new' }] };
+  const previous = { TableBucketName: 'my-bucket', Tags: [{ Key: 'team', Value: 'old' }] };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockResolvedValue({});
+    provider = new S3TablesProvider();
+  });
+
+  it('refuses a table bucket update from a wrong-region client before any call', async () => {
+    await expect(
+      provider.update('MyTableBucket', BUCKET_ARN, 'AWS::S3Tables::TableBucket', desired, previous, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyTableBucket .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a table update from a wrong-region client before the GetTable lookup', async () => {
+    await expect(
+      provider.update(
+        'MyTbl',
+        `${BUCKET_ARN}|ns|tbl`,
+        'AWS::S3Tables::Table',
+        { Tags: [{ Key: 'team', Value: 'new' }] },
+        { Tags: [{ Key: 'team', Value: 'old' }] },
+        { expectedRegion: 'us-west-2' }
+      )
+    ).rejects.toThrow(/Refusing to update MyTbl .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a namespace update from a wrong-region client too', async () => {
+    await expect(
+      provider.update('MyNs', `${BUCKET_ARN}|ns`, 'AWS::S3Tables::Namespace', {}, {}, {
+        expectedRegion: 'us-west-2',
+      })
+    ).rejects.toThrow(/Refusing to update MyNs .*does not match stack state region us-west-2/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('updates when the client region matches the recorded one', async () => {
+    await provider.update('MyTableBucket', BUCKET_ARN, 'AWS::S3Tables::TableBucket', desired, previous, {
+      expectedRegion: 'us-east-1',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('TagResourceCommand');
+  });
+
+  it('without a recorded region proceeds and never resolves the client region', async () => {
+    const region = vi.fn(() => Promise.resolve('us-west-2'));
+    (provider as unknown as { getClient(): { config: { region: unknown } } }).getClient().config.region =
+      region;
+    await provider.update('MyTableBucket', BUCKET_ARN, 'AWS::S3Tables::TableBucket', desired, previous);
+    expect(region).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0]![0].constructor.name).toBe('TagResourceCommand');
+  });
+});
