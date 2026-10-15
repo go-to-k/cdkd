@@ -297,6 +297,8 @@ redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clea
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-15T16:20:30Z	PASS	2063	verify.sh	PR #4961 (#4954); ap-northeast-1 + own ap-northeast-1 state bucket (not us-east-1 shared); rc ok, orph clean; intermediate partial-destroy errors are the fixture's own protection-blocking assertions, final --remove-protection retry destroyed clean, 0 errors (BROAD set, building fixture ran alone)
 remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+remove-protection	2026-10-15T17:25:51Z	PASS	2054	verify.sh	PR #4965 (#4149) 7e3711376; ap-northeast-1 + own ap-northeast-1 state bucket (not us-east-1 shared); rc ok, orph clean; intermediate partial-destroy errors in steps 3/4b are the fixture's own protection-blocking assertions, final --remove-protection destroy 0 errors (batch with remove-protection-compensation)
+remove-protection-compensation	2026-10-15T17:25:51Z	PASS	236	verify.sh	PR #4965 (#4149) 7e3711376; us-east-1 + own us-east-1 state bucket, default VPC t3.nano; rc ok, orph clean, all 3 phases (batch with remove-protection)
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
