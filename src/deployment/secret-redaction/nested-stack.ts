@@ -32,7 +32,7 @@ import {
   renderedTokenOf,
 } from './positions.js';
 import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
-import { SPELLED_SECRET_REFERENCE_PREFIXES } from './anchors.js';
+import { SPELLED_SECRET_REFERENCE_PREFIXES, spanNamesResolvableService } from './anchors.js';
 import { wholeStringLeavesOf } from './mask-only.js';
 import { substringNeedlesOf } from './fresh-noecho.js';
 
@@ -1374,17 +1374,94 @@ const REREAD_TRIGGERS: ReadonlySet<string> = new Set(['Fn::Select', 'Fn::Split']
 const MAX_REREAD_DEPTH = 16;
 
 /**
+ * `Fn::Split` as a COMPARISON pass evaluates it (issue
+ * [#4914](https://github.com/go-to-k/cdkd/issues/4914)): `text` split on
+ * `delimiter` everywhere EXCEPT inside a complete `{{resolve:...}}` token of a
+ * service cdkd resolves that `standsForSecret` accepts, which stays whole in
+ * its piece.
+ *
+ * Such a token stands for a plaintext the comparison pass does not hold
+ * (`skipDynamicReferences`, or a nested child's parameter bound to its
+ * spelling), and `:` is in every one, so a plain split cut it into fragments
+ * (`//{{resolve`) that no persisted value ever holds: a change on every
+ * deploy. Kept whole, each piece is the real piece with its plaintext replaced
+ * by the token -- exactly what the persist side writes -- whenever the
+ * plaintext itself holds no delimiter, whole or straddling its boundary (a
+ * delimiter `a{` before a JSON secret starting with `{`); where it does, the
+ * real split cuts there and nothing the comparison side can compute agrees
+ * anyway. An
+ * empty delimiter splits per character there too, so it keeps the plain split.
+ *
+ * `standsForSecret` is the caller's PROVENANCE test: only a token the real
+ * pass replaces with its plaintext before splitting may stay whole. Token
+ * TEXT the real pass passes through as text (a `Ref` to a parameter whose
+ * value spells one, an `Fn::FindInMap` value) is split there as text, so it
+ * must be split here the same way. The resolver's diff pass and the
+ * nested-stack re-read ({@link rereadParameterExpression}) share this one
+ * function.
+ */
+export function splitOutsideDynamicReferences(
+  text: string,
+  delimiter: string,
+  standsForSecret: (token: string) => boolean
+): string[] {
+  if (delimiter === '') return text.split(delimiter);
+  const spans = dynamicReferenceSpans(text).filter((span) => {
+    const token = text.slice(span.start, span.end);
+    return spanNamesResolvableService(token) && standsForSecret(token);
+  });
+  if (spans.length === 0) return text.split(delimiter);
+  const pieces: string[] = [];
+  let cursor = 0;
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(delimiter, from);
+    if (at === -1) break;
+    const end = at + delimiter.length;
+    // An occurrence overlapping a token: every later one starting before the
+    // token's end overlaps it too, so resume the search past it.
+    const token = spans.find((span) => span.start < end && at < span.end);
+    if (token !== undefined) {
+      from = token.end;
+      continue;
+    }
+    pieces.push(text.slice(cursor, at));
+    cursor = end;
+    from = end;
+  }
+  pieces.push(text.slice(cursor));
+  return pieces;
+}
+
+/**
+ * Does `token` stand for a plaintext the parent resolved, so the child's real
+ * pass holds that plaintext where its comparison pass holds the token? A pair
+ * recorded on the parent's bag ({@link resolvedPlaintextOf}) is the evidence.
+ */
+export function standsForInheritedSecret(
+  parentSecrets: RecordedSecretValues | undefined,
+  token: string
+): boolean {
+  return parentSecrets !== undefined && resolvedPlaintextOf(parentSecrets, token) !== undefined;
+}
+
+/** `Fn::Split` as a pass holding REAL values evaluates it. */
+const plainSplit = (text: string, delimiter: string): string[] => text.split(delimiter);
+
+/**
  * Evaluate a PURE parameter expression -- string literals, arrays, `{Ref}` to
  * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join` -- as the
  * resolver does (`string-functions.ts`), or `undefined` for anything else: a
  * `{{resolve:` literal (the resolver would resolve it), a number outside a
  * `Fn::Select` index, a non-literal index or delimiter, an index out of
  * bounds, any other intrinsic (`Fn::If`, `Fn::Sub`, `Fn::GetAtt`, a pseudo
- * parameter).
+ * parameter). `split` is the pass's `Fn::Split`: {@link plainSplit} over real
+ * values, {@link splitOutsideDynamicReferences} as the diff side splits.
  */
 function evaluatePureRead(
   node: unknown,
   bind: ParameterBinding,
+  split: (text: string, delimiter: string) => string[],
   depth = 0
 ): { value: unknown } | undefined {
   if (depth > MAX_REREAD_DEPTH) return undefined;
@@ -1392,7 +1469,7 @@ function evaluatePureRead(
   if (Array.isArray(node)) {
     const out: unknown[] = [];
     for (const element of node) {
-      const evaluated = evaluatePureRead(element, bind, depth + 1);
+      const evaluated = evaluatePureRead(element, bind, split, depth + 1);
       if (evaluated === undefined) return undefined;
       out.push(evaluated.value);
     }
@@ -1416,7 +1493,7 @@ function evaluatePureRead(
           ? Number(index)
           : undefined;
     if (position === undefined || !Number.isSafeInteger(position) || position < 0) return undefined;
-    const list = evaluatePureRead(args[1], bind, depth + 1);
+    const list = evaluatePureRead(args[1], bind, split, depth + 1);
     if (list === undefined || !Array.isArray(list.value) || position >= list.value.length) {
       return undefined;
     }
@@ -1425,12 +1502,12 @@ function evaluatePureRead(
   const delimiter = args[0];
   if (typeof delimiter !== 'string') return undefined;
   if (key === 'Fn::Split') {
-    const value = evaluatePureRead(args[1], bind, depth + 1);
+    const value = evaluatePureRead(args[1], bind, split, depth + 1);
     if (value === undefined || typeof value.value !== 'string') return undefined;
-    return { value: value.value.split(delimiter) };
+    return { value: split(value.value, delimiter) };
   }
   if (key === 'Fn::Join') {
-    const parts = evaluatePureRead(args[1], bind, depth + 1);
+    const parts = evaluatePureRead(args[1], bind, split, depth + 1);
     if (parts === undefined || !Array.isArray(parts.value)) return undefined;
     if (!parts.value.every((part) => typeof part === 'string')) return undefined;
     return { value: parts.value.join(delimiter) };
@@ -1476,10 +1553,13 @@ function rendersReadTo(
  * source evaluated with `bind`'s real values, `redacted` with each value as
  * {@link redactInheritedParameterValue} answers it -- the function
  * `DeployEngine.redactParametersForDiff` binds -- so `redacted` is what the
- * diff side computes for the leaf. `undefined` unless the source is pure
- * ({@link evaluatePureRead}) and `redacted` renders, through the parent's own
- * pairs, to exactly `resolved` ({@link rendersReadTo}): a delimiter cutting a
- * token, a piece left holding a plaintext, an unpaired token all refuse.
+ * diff side computes for the leaf, splitting as it does
+ * ({@link splitOutsideDynamicReferences}: a token stays whole, issue
+ * [#4914](https://github.com/go-to-k/cdkd/issues/4914)). `undefined` unless
+ * the source is pure ({@link evaluatePureRead}) and `redacted` renders,
+ * through the parent's own pairs, to exactly `resolved` ({@link rendersReadTo}):
+ * a delimiter cutting a PLAINTEXT, a piece left holding a plaintext, an
+ * unpaired token all refuse.
  *
  * Shared by the persist arm ({@link positionByParameterReread}) and the
  * collision walk (`poisonRenderedSpellingsCollidingIn`), which reads such a
@@ -1491,12 +1571,21 @@ export function rereadParameterExpression(
   parentSecrets: RecordedSecretValues
 ): { readonly resolved: unknown; readonly redacted: unknown } | undefined {
   if (!holdsRereadTrigger(source)) return undefined;
-  const resolved = evaluatePureRead(source, bind);
+  const resolved = evaluatePureRead(source, bind, plainSplit);
   if (resolved === undefined) return undefined;
-  const redacted = evaluatePureRead(source, (name) => {
-    const bound = bind(name);
-    return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
-  });
+  const redacted = evaluatePureRead(
+    source,
+    (name) => {
+      const bound = bind(name);
+      return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
+    },
+    // A token the parent resolved stands for its plaintext; any other is text
+    // the child received as text. The resolver's diff pass asks the same bag.
+    (text, delimiter) =>
+      splitOutsideDynamicReferences(text, delimiter, (token) =>
+        standsForInheritedSecret(parentSecrets, token)
+      )
+  );
   if (redacted === undefined) return undefined;
   if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) return undefined;
   return { resolved: resolved.value, redacted: redacted.value };
