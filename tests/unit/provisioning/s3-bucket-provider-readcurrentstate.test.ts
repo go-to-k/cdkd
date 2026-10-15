@@ -40,6 +40,9 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+const providerDebug = () => vi.mocked(getLogger().child('S3BucketProvider').debug);
 
 /**
  * Convenience: build a "feature not configured" error matching the AWS error
@@ -202,6 +205,9 @@ describe('S3BucketProvider.readCurrentState', () => {
         expect(await pending).toBe(RESOURCE_NOT_FOUND);
         const heads = mockSend.mock.calls.filter(([c]) => c instanceof HeadBucketCommand);
         expect(heads).toHaveLength(5);
+        expect(providerDebug()).toHaveBeenCalledWith(
+          expect.stringContaining('HeadBucket still answered 404 after 5 attempts')
+        );
       } finally {
         vi.useRealTimers();
       }
@@ -215,6 +221,9 @@ describe('S3BucketProvider.readCurrentState', () => {
       expect(result).toBe(RESOURCE_NOT_FOUND);
       const heads = mockSend.mock.calls.filter(([c]) => c instanceof HeadBucketCommand);
       expect(heads).toHaveLength(1);
+      expect(providerDebug()).not.toHaveBeenCalledWith(
+        expect.stringContaining('HeadBucket still answered 404')
+      );
     });
   });
 

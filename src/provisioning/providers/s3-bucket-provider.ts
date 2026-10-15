@@ -1706,8 +1706,9 @@ const BUCKET_LIST_IDENTITY_BUDGET_MS = 6_000;
  * made a moment ago. The deploy's observed capture reads right after cdkd's own
  * write (`afterOwnWrite`), and a 404 there would discard the drift baseline.
  * Before tags rode `CreateBucket`, the `PutBucketTagging` call sat between the
- * two and hid the race. The capture is off the deploy's critical path, so a
- * short wait costs a deploy nothing.
+ * two and hid the race. The capture is off the dependency path, so no other
+ * resource waits on it; only the final state save does, at most ~2s, and only
+ * when `HeadBucket` lags.
  */
 const OWN_WRITE_HEAD_ATTEMPTS = 5;
 const OWN_WRITE_HEAD_DELAY_MS = 500;
@@ -8093,7 +8094,7 @@ export class S3BucketProvider implements ResourceProvider {
    */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
+    logicalId: string,
     _resourceType: string,
     _properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
@@ -8118,6 +8119,14 @@ export class S3BucketProvider implements ResourceProvider {
           if (attempt < headAttempts) {
             await new Promise((r) => setTimeout(r, OWN_WRITE_HEAD_DELAY_MS));
             continue;
+          }
+          if (headAttempts > 1) {
+            // The capture maps this to "no baseline" without a word, so a lag
+            // past the retry window would otherwise be invisible.
+            this.logger.debug(
+              safeMsg`HeadBucket still answered 404 after ${String(headAttempts)} attempts right after cdkd's own write; ` +
+                safeMsg`no observed baseline is captured for ${displaySafe(logicalId)}`
+            );
           }
           return RESOURCE_NOT_FOUND;
         }
