@@ -46,7 +46,8 @@
 #         the stream, and the journal is gone.
 #     O4. The same with ORPHAN_RETAIN=true (DeletionPolicy: Retain): the
 #         automatic rollback keeps the stream in AWS; the fixture deletes it.
-#     O5. --no-rollback again, then a PLAIN `cdkd rollback --force`: exit 0,
+#     O5. --no-rollback again, then a PLAIN `cdkd rollback --force` run with
+#         AWS_REGION pointed at ANOTHER region (go-to-k/cdkd#4932): exit 0,
 #         the stream is gone, journal gone.
 #     O6. --no-rollback again, then a deploy WITHOUT INJECT_ORPHAN_CREATE and
 #         with a Marker change (go-to-k/cdkd#4600): it succeeds, deletes the
@@ -189,6 +190,9 @@ FIX_FORWARD_STREAM_NAME="${STACK}-orphan-stream-b"
 # PHASE P's replaced stream (suffix a) and the replacement's new one (suffix b).
 REPLACE_STREAM_A_NAME="${STACK}-replace-stream-a"
 REPLACE_STREAM_B_NAME="${STACK}-replace-stream-b"
+# PHASE O step O5's ambient region: any region other than the stack's
+# (go-to-k/cdkd#4932).
+if [ "${REGION}" = "us-west-2" ]; then O5_AMBIENT_REGION="us-east-1"; else O5_AMBIENT_REGION="us-west-2"; fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-command"
@@ -908,8 +912,15 @@ if [ "${O5_RC}" -eq 0 ]; then
 fi
 # PREMISE: --no-rollback deleted nothing, and the journal holds the proven id.
 assert_orphan_stream_journaled "after the --no-rollback deploy of step O5"
+# go-to-k/cdkd#4932: the rollback runs with the shell's region pointed AWAY
+# from the stack's. The Kinesis provider builds its client from
+# `ambientRegion()`; before the fix that was the shell's AWS_REGION, so the
+# replay's identity read and delete went to ${O5_AMBIENT_REGION}, where no
+# such stream exists. Whether that skipped the delete, refused it, or took the
+# NotFound as done, the checks below fail.
 set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-plain-rb.log 2>&1
+AWS_REGION="${O5_AMBIENT_REGION}" AWS_DEFAULT_REGION="${O5_AMBIENT_REGION}" \
+  ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > /tmp/rollback-cmd-orphan-plain-rb.log 2>&1
 O5_RB_RC=$?
 set -e
 sed 's/^/  /' /tmp/rollback-cmd-orphan-plain-rb.log || true

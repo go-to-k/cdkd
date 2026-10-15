@@ -305,12 +305,12 @@ replacement-rename-onto-holder	2026-10-14T12:12:31Z	PASS	611	verify.sh	rc ok, or
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-11T09:33:22Z	PASS	251	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-13T11:42:44Z	PASS	852	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean, own state bucket
+rollback-command	2026-10-15T06:52:24Z	PASS	887	verify.sh	rc ok, orph clean, own bucket; O5 ambient us-west-2 green; pre-fix probe red at O5 (exit 2)
 rollback-cross-region-secret	2026-10-14T08:07:57Z	PASS	376	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
-rollback-deletion-policy-snapshot	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+rollback-deletion-policy-snapshot	2026-10-15T06:52:24Z	PASS	130	verify.sh	rc ok, orph clean, own bucket
 rollback-explicit-name-rewrite	2026-10-14T11:28:29Z	PASS	210	verify.sh	rc ok, orph clean; PR #4901 d4e2f0273 destroy-path broad set
 rollback-failure-injection	2026-10-13T11:42:44Z	PASS	1449	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean, own state bucket
-rollback-nested-cross-region-secret	2026-10-15T05:44:28Z	PASS	441	verify.sh	PR #4933 (#4913) 6d78deb2d; own state bucket; rc ok, orph clean
+rollback-nested-cross-region-secret	2026-10-15T06:52:24Z	PASS	451	verify.sh	rc ok, orph clean (us-east-1 + us-west-2), own bucket
 rollback-replacement-retain	2026-10-14T12:12:31Z	PASS	70	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 rollback-replay-cc-generated-name	2026-10-11T09:33:22Z	PASS	175	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 rollback-replay-effective-props	2026-10-11T09:33:22Z	PASS	296	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

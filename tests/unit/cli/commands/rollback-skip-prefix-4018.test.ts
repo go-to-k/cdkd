@@ -36,6 +36,7 @@ const iamSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({ iam: { send: iamSend, config: { region: async () => 'us-east-1' } } }),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
   AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
 }));
 

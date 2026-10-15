@@ -69,6 +69,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({ destroy: vi.fn() })),
   setAwsClients: vi.fn(),
+  runWithStackAwsClients: (_c: unknown, fn: () => unknown) => fn(),
   getAwsClients: vi.fn(() => ({})),
 }));
 
