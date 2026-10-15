@@ -207,7 +207,7 @@ lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph 
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-07T21:11:42Z	PASS	150	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
-lambda-web-function-revision-replace	2026-10-14T23:52:07Z	PASS	205	verify.sh	rc ok, orph clean; #4926 final head: cc-api to sdk flip, sdk to sdk, endpoint rename, drift 4/4
+lambda-web-function-revision-replace	2026-10-15T03:35:40Z	PASS	200	verify.sh	rc ok, orph clean; #2631 rebased head: replaced revision deleted after endpoint moved
 launchtemplate-asg-inplace	2026-10-11T09:33:22Z	PASS	185	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
@@ -297,6 +297,7 @@ remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, or
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+replaced-delete-failed-rollback	2026-10-15T03:35:40Z	PASS	125	verify.sh	rc ok, orph clean; #2631 first run, own state bucket: rollback re-adopted target-a, target-b deleted; pre-fix probe RED (re-create collided)
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-immutable-name	2026-10-14T12:12:31Z	PASS	146	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-rename-onto-holder	2026-10-14T12:12:31Z	PASS	611	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
