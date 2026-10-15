@@ -86,6 +86,7 @@ deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Re
 deployment-events	2026-10-13T02:41:29Z	PASS	35	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 destroy-data-guard	2026-10-11T09:33:22Z	PASS	110	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 destroy-interrupt	2026-10-11T09:33:22Z	PASS	390	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+destroy-nested-cross-region	2026-10-15T08:22:32Z	PASS	195	verify.sh	PR #4944 (#4941) 00dc00c2b; rc ok, arms D/S/R green, orph clean in us-east-1 and us-west-2
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-14T14:47:46Z	PASS	115	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
