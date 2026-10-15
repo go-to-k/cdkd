@@ -105,7 +105,7 @@ describe('runDestroyForStack + LogsLogGroupProvider: compensation at the attempt
         timeline.push('delete');
         throw Object.assign(
           new Error(
-            'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: logs:DeleteLogGroup with an explicit deny'
+            'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: logs:DeleteLogGroup because no identity-based policy allows the logs:DeleteLogGroup action'
           ),
           { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
         );

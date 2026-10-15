@@ -7245,7 +7245,7 @@ export class S3BucketProvider implements ResourceProvider {
               // (the SCP's explicit deny, which fails fast) is what surfaces.
               // The extra call is spent only on this failure path.
               this.logger.debug(
-                `CreateBucket with tags was denied s3:TagResource for ${displaySafe(logicalId)}; ` +
+                safeMsg`CreateBucket with tags was denied s3:TagResource for ${displaySafe(logicalId)}; ` +
                   `retrying without tags and applying them with PutBucketTagging`
               );
               const { Tags: _omitted, ...rest } = createParams.CreateBucketConfiguration ?? {};

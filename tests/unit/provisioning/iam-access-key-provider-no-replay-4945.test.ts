@@ -16,8 +16,9 @@ import { withRetry } from '../../../src/deployment/retry.js';
  * go-to-k/cdkd#4945: `CreateAccessKey` takes no name and no idempotency token,
  * so a replay of a create that left its key behind mints a second key, which
  * fills the user's 2-key quota while the journal records one of them. An
- * explicit deny on `UpdateAccessKey` reads `not authorized to perform`, the
- * IAM-propagation pattern `withRetry` retries.
+ * implicit deny on `UpdateAccessKey` reads `not authorized to perform`, the
+ * IAM-propagation pattern `withRetry` retries (an EXPLICIT deny is terminal
+ * since go-to-k/cdkd#4969).
  */
 
 const TYPE = 'AWS::IAM::AccessKey';
@@ -25,7 +26,7 @@ const TYPE = 'AWS::IAM::AccessKey';
 const keyId = (n: number): string => ['AK', 'IA', `KEY${n}`].join('');
 const DENY =
   'User: arn:aws:iam::123456789012:user/deployer is not authorized to perform: ' +
-  'iam:UpdateAccessKey on resource: user alice with an explicit deny';
+  'iam:UpdateAccessKey on resource: user alice because no identity-based policy allows the iam:UpdateAccessKey action';
 
 let minted: string[];
 let deleteFails: boolean;
@@ -84,7 +85,7 @@ describe('IAMAccessKeyProvider: a create that left its key behind is not replaye
 
     expect(minted).toEqual([keyId(1)]);
     expect(createdBeforeFailure(error, 'MyKey', TYPE)).toBe(keyId(1));
-    expect(String(error)).toContain('explicit deny');
+    expect(String(error)).toContain('no identity-based policy allows');
     expect(String(error)).not.toContain('AccessKeysPerUser');
   });
 

@@ -169,7 +169,7 @@ function throttle(): Error {
 function iamDeny(): Error {
   return Object.assign(
     new Error(
-      'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: the delete with an explicit deny'
+      'User: arn:aws:iam::123456789012:user/ci is not authorized to perform: the delete because no identity-based policy allows the delete action'
     ),
     { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
   );
