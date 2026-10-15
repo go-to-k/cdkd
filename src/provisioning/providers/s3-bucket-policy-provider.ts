@@ -10,6 +10,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
 import {
@@ -111,6 +112,7 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  CreateContext,
   UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
@@ -144,7 +146,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 bucket policy ${logicalId}`);
 
@@ -187,13 +190,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+      throw this.wrapOperationError(
+        'create',
         logicalId,
+        resourceType,
         bucketName,
-        cause
+        error,
+        context?.maskSecrets
       );
     }
   }
@@ -264,13 +267,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+      throw this.wrapOperationError(
+        'update',
         logicalId,
+        resourceType,
         physicalId,
-        cause
+        error,
+        context?.maskSecrets
       );
     }
   }
@@ -327,15 +330,61 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         throw error;
       }
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+      throw this.wrapOperationError(
+        'delete',
         logicalId,
+        resourceType,
         physicalId,
-        cause
+        error,
+        context?.maskSecrets
       );
     }
+  }
+
+  /**
+   * Wrap what `create` / `update` / `delete` caught into the error they throw
+   * (go-to-k/cdkd#2319, the S3 bucket provider's twin from go-to-k/cdkd#2302).
+   *
+   * A thrown message is persisted to `deployments/{runId}.jsonl`, and S3 words
+   * an `AccessDenied` on `PutBucketPolicy` / `DeleteBucketPolicy` as `User:
+   * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
+   * ...`. So an AWS-authored failure is reduced to its class here, and AWS's
+   * own text goes to `logger.debug`, where it still separates a missing grant
+   * from a bucket-policy `Deny`. A cdkd-authored error keeps its text.
+   * `describeAwsFailure` also cannot throw on a value `String()` cannot
+   * convert, which used to replace the failure (go-to-k/cdkd#3341).
+   *
+   * Nothing else reads this message by substring: the not-found arms in
+   * `delete` match before the wrap. The retry classifiers do, so the cause is
+   * kept and a redaction is stamped for them to read it instead -- only when
+   * the cause IS the error whose text was withheld.
+   */
+  private wrapOperationError(
+    operation: 'create' | 'update' | 'delete',
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    error: unknown,
+    maskSecrets: ((text: string) => string) | undefined
+  ): ProvisioningError {
+    const mask = maskSecrets ?? ((t: string) => t);
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(
+        mask(
+          `Failed to ${operation} S3 bucket policy ${logicalId} (${physicalId}): ${failure.detail}`
+        )
+      );
+    }
+    const cause = error instanceof Error ? error : undefined;
+    const wrapped = new ProvisioningError(
+      `Failed to ${operation} S3 bucket policy ${logicalId}: ${failure.summary}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      cause
+    );
+    return failure.redacted && cause !== undefined ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
