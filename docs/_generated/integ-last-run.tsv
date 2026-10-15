@@ -5,6 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
+access-key-cloudmap-fix-forward-orphan	2026-10-15T09:27:56Z	PASS	215	verify.sh	PR #4949 us-east-1 own state bucket; fix-forward deleted journaled key+service, rc 0, orph clean
 acm-certificate	2026-10-15T09:01:04Z	PASS	120	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
 agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
 alb	2026-10-14T14:46:11Z	PASS	550	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
