@@ -22,7 +22,9 @@ const {
   mockExecuteNode,
   mockModeResolve,
   mockLoggerError,
+  mockLoggerInfo,
 } = vi.hoisted(() => ({
+  mockLoggerInfo: vi.fn(),
   mockSynthesize: vi.fn(),
   mockAddAssetsToGraph: vi.fn(),
   mockExecuteNode: vi.fn(),
@@ -75,7 +77,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
-    info: vi.fn(),
+    info: mockLoggerInfo,
     warn: vi.fn(),
     error: mockLoggerError,
     setLevel: vi.fn(),
@@ -150,6 +152,9 @@ describe('cdkd publish-assets with an unconvertible per-stack rejection (#3361)'
     expect(exitCode).toBe(2);
     expect(mockLoggerError.mock.calls.map((c) => String(c[0]))).toContain(
       `  ✗ StackA: ${PLACEHOLDER}`
+    );
+    expect(mockLoggerInfo.mock.calls.map((c) => String(c[0]))).toContain(
+      `  ✗ StackA — failed: ${PLACEHOLDER}`
     );
   });
 });
