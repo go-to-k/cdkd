@@ -94,7 +94,6 @@ dlm-lifecycle-policy	2026-10-14T14:47:46Z	PASS	115	verify.sh	PR #4899 (#2613 upd
 docdb-fix-forward-orphan	2026-10-11T09:33:22Z	PASS	1778	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-drift-revert	2026-10-15T19:32:45Z	PASS	298	verify.sh	broad set, re-run after a live peer (integ-4972-driftrev) collided on the shared stack name; clean on retry, 0 orphans
 drift-revert	2026-10-15T20:03:28Z	PASS	291	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4976 exhausted HeadBucket retry logs at debug (safeMsg)
 drift-revert-arrays	2026-10-14T22:42:50Z	PASS	165	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
 drift-revert-vpc	2026-10-15T19:32:45Z	PASS	342	verify.sh	broad set, clean destroy, 0 orphans
