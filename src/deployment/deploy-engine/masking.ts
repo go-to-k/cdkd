@@ -292,7 +292,10 @@ export function rememberRecoverableMaskedOutputs(
  * Fold every outputs-pass recording map into `outputSecrets` — the entries,
  * and the uncollapsed evidence beside them (issue #2485: without it a
  * literal Output embedding one of two same-plaintext references would lose
- * its span positioning and persist the sibling's expression). Only what the
+ * its span positioning and persist the sibling's expression). A nested
+ * child's parameter reads are not folded here: `resolveOutputs` mirrors them
+ * onto `outputSecrets` as they are recorded (`mirrorInheritedParameterReads`,
+ * issue [#4913](https://github.com/go-to-k/cdkd/issues/4913)). Only what the
  * outputs pass itself resolved, so the outputs redaction (GHSA fix) uses
  * only outputs-substituted references: a literal output equal to a secret
  * nothing resolved is not recorded, and is not touched.

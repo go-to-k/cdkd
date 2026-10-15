@@ -160,9 +160,14 @@ export function recordInheritedParameterSecrets(
   if (inherited && recorded)
     recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
+  // go-to-k/cdkd#4913: the bag that PERSISTS this pass's leaves, when it is
+  // another one (the outputs pass's `outputSecrets`), takes every reads-table
+  // record too.
+  const mirror = parameterReadMirrors.get(recorded);
   // Issue #4731: every parameter this resource reads, with its value, so the
   // persist walk can re-read an `Fn::Select` / `Fn::Split` leaf over them.
   recordInheritedParameterValue(recorded, inherited, parameterName, value);
+  if (mirror) recordInheritedParameterValue(mirror, inherited, parameterName, value);
   // Issue #2291 round 2. THIS parameter's own expression, when the parent
   // certified one, rather than the collapsed map's survivor. See the
   // "WHICH EXPRESSION" section of the doc above for why the survivor is the
@@ -204,11 +209,40 @@ export function recordInheritedParameterSecrets(
     // resource from the parent bag, as the diff side does, and only for a
     // parameter recorded here -- the #2087 scope this loop already applies.
     recordInheritedParameterRead(recorded, inherited, parameterName);
+    if (mirror) recordInheritedParameterRead(mirror, inherited, parameterName);
     // go-to-k/cdkd#3717: a `NoEcho` value the parent supplied in THIS deploy
     // stays fresh in the child resource's bag, or its no-change skip reads
     // the new value's `***` as equal to the recorded `***`.
     carryFreshNoEchoMark(inherited, recorded, plaintext);
   }
+}
+
+/**
+ * The bag each pass bag's nested-stack parameter reads are ALSO recorded on
+ * ({@link mirrorInheritedParameterReads}).
+ */
+const parameterReadMirrors = new WeakMap<RecordedSecretValues, RecordedSecretValues>();
+
+/**
+ * Record every nested-stack parameter read the pass owning `passSecrets` makes
+ * (`recordInheritedParameterRead` / `recordInheritedParameterValue`) on
+ * `persistSecrets` too (issue
+ * [#4913](https://github.com/go-to-k/cdkd/issues/4913)), so the walk that
+ * persists the pass's leaves with `persistSecrets` positions a `{Ref}`, a
+ * re-read and a placeholder per parameter as a resource's walk does.
+ *
+ * The deploy's outputs pass records into its own bag, which
+ * `absorbOutputsPassSecrets` folds into `outputSecrets` entry by entry; the
+ * reads table is keyed by the bag object, so the fold could not carry it, and
+ * every output leaf fell to the value scan's one slot per plaintext. The same
+ * recorder calls on both bags give `persistSecrets` the table the pass bag
+ * has, its poisoning included. Registered before the pass resolves anything.
+ */
+export function mirrorInheritedParameterReads(
+  passSecrets: RecordedSecretValues,
+  persistSecrets: RecordedSecretValues
+): void {
+  if (passSecrets !== persistSecrets) parameterReadMirrors.set(passSecrets, persistSecrets);
 }
 
 /**
@@ -291,7 +325,9 @@ function carriedExpressionFor(
  * [#4731](https://github.com/go-to-k/cdkd/issues/4731)) is no slot read
  * either. An untaken
  * `Fn::If` branch counts; over-reading only withdraws more, which is the
- * pre-#4644 answer. `Outputs` count as one resource, every read a slot read.
+ * pre-#4644 answer. `Outputs` count as one resource whose leaves are each
+ * output's `Value` (issue [#4913](https://github.com/go-to-k/cdkd/issues/4913):
+ * the outputs bag carries the outputs pass's reads, `mirrorInheritedParameterReads`).
  */
 export function poisonRenderedSpellingsCollidingIn(
   template: { Resources?: unknown; Outputs?: unknown } | undefined,
@@ -301,15 +337,19 @@ export function poisonRenderedSpellingsCollidingIn(
   if (!inherited || inherited.size === 0 || template === undefined) return;
   const names = new Set(Object.keys(parameterValues));
   if (names.size < 2) return;
-  // `[node, slotOnly]`: every output read is a slot read, a bare `{Ref}`
-  // included, since nothing positions an output leaf per parameter.
-  const groups: Array<[unknown, boolean]> = [];
+  // Each group is one persist bag's reads, as parts: a resource is one part;
+  // the `Outputs` are one bag (`outputSecrets`), whose leaves are each
+  // output's `Value`, walked like a resource's except that the outputs
+  // redaction walks no array positionally (`TEMPLATE_SOURCED_RULES`). Every
+  // other read there (an `Export.Name`, which writes the slot through the
+  // name's forwarding bag) is a slot read.
+  const groups: ReadsGroupPart[][] = [];
   if (template.Resources !== null && typeof template.Resources === 'object') {
     for (const resource of Object.values(template.Resources as Record<string, unknown>)) {
-      groups.push([resource, false]);
+      groups.push([{ node: resource, mode: 'resource' }]);
     }
   }
-  if (template.Outputs !== undefined) groups.push([template.Outputs, true]);
+  if (template.Outputs !== undefined) groups.push(outputsGroupParts(template.Outputs));
   const bind = (name: string): { value: unknown } | undefined =>
     Object.hasOwn(parameterValues, name) ? { value: parameterValues[name] } : undefined;
   // To a FIXED POINT: a withdrawal moves a parameter's carry to the survivor,
@@ -321,9 +361,16 @@ export function poisonRenderedSpellingsCollidingIn(
   const withdrawn = new Set<string>();
   for (;;) {
     const readsByGroup = groups
-      .map(([group, slotOnly]) =>
-        parameterReadsOf(group, names, slotOnly ? undefined : { bind, inherited })
-      )
+      .map((parts) => {
+        const reads = new Map<string, boolean>();
+        for (const { node, mode } of parts) {
+          const reread = mode === 'slot' ? undefined : { bind, inherited };
+          for (const [name, slotRead] of parameterReadsOf(node, names, reread, mode !== 'output')) {
+            reads.set(name, slotRead || reads.get(name) === true);
+          }
+        }
+        return reads;
+      })
       .filter((reads) => reads.size >= 2);
     const fresh = [...collidingRenderedNames(readsByGroup, parameterValues, inherited)].filter(
       (name) => !withdrawn.has(name)
@@ -403,7 +450,9 @@ const POSITIONED_INTRINSICS: ReadonlySet<string> = new Set(['Fn::Join', 'Fn::Sub
 function parameterReadsOf(
   node: unknown,
   names: ReadonlySet<string>,
-  reread: { bind: ParameterBinding; inherited: RecordedSecretValues } | undefined
+  reread: { bind: ParameterBinding; inherited: RecordedSecretValues } | undefined,
+  /** Does the persist walk descend this bag's arrays positionally? */
+  positionsArrays: boolean
 ): Map<string, boolean> {
   const reads = new Map<string, boolean>();
   const add = (name: string, slotRead: boolean): void => {
@@ -418,15 +467,20 @@ function parameterReadsOf(
       // An element that can resolve to `AWS::NoValue` (an `Fn::If`, or the
       // `Ref` itself) drops out of the bag, so the persist walk's lengths
       // differ and it value-scans the WHOLE array from the slot: every read
-      // in it is a slot read, a bare `{Ref}` and a re-read included.
-      const mayShrink = value.some(
-        (element) =>
-          element !== null &&
-          typeof element === 'object' &&
-          !Array.isArray(element) &&
-          (Object.hasOwn(element, 'Fn::If') ||
-            (element as Record<string, unknown>)['Ref'] === 'AWS::NoValue')
-      );
+      // in it is a slot read, a bare `{Ref}` and a re-read included. So is
+      // an array ON the walk's path (`atLeaf`) in a bag it never descends
+      // positionally (the outputs); one inside an intrinsic is the
+      // intrinsic's argument, not a bag array.
+      const mayShrink =
+        (atLeaf && !positionsArrays) ||
+        value.some(
+          (element) =>
+            element !== null &&
+            typeof element === 'object' &&
+            !Array.isArray(element) &&
+            (Object.hasOwn(element, 'Fn::If') ||
+              (element as Record<string, unknown>)['Ref'] === 'AWS::NoValue')
+        );
       for (const element of value) {
         visit(element, slotRead || mayShrink, atLeaf && !mayShrink);
       }
@@ -446,25 +500,138 @@ function parameterReadsOf(
     }
     const ref = record['Ref'];
     if (typeof ref === 'string' && names.has(ref)) add(ref, slotRead);
+    // In a bag the walk positions by template parse alone (the outputs: the
+    // resolver's recorded spans stay on the pass bag), an `Fn::Join` /
+    // `Fn::Sub` with two parts the parse cannot key is refused to the slot.
+    const placeholderSlot =
+      !positionsArrays &&
+      unkeyedPlaceholderParts(record, (name) => certifiesPlaceholder(name, reread)) >
+        MAX_UNKEYED_PARTS;
     const sub = record['Fn::Sub'];
     const text = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
     if (typeof text === 'string') {
       for (const match of text.matchAll(/\$\{([^}!][^}]*)\}/g)) {
         const name = match[1]!.trim();
-        if (names.has(name)) add(name, slotRead);
+        if (names.has(name)) add(name, slotRead || placeholderSlot);
       }
     }
     for (const [key, child] of Object.entries(record)) {
       visit(
         child,
-        slotRead || (key.startsWith('Fn::') && !POSITIONED_INTRINSICS.has(key)),
+        slotRead || placeholderSlot || (key.startsWith('Fn::') && !POSITIONED_INTRINSICS.has(key)),
         atLeaf && !intrinsic
       );
     }
   };
-  // An output group is all slot reads: no leaf there is re-read either.
+  // A slot-only part is all slot reads: no leaf there is re-read either.
   visit(node, reread === undefined, true);
   return reads;
+}
+
+/** The unkeyed parts `positionByParameterPlaceholders`' template parse accepts. */
+const MAX_UNKEYED_PARTS = 1;
+
+/**
+ * Can the placeholder arm's template parse key a `{Ref}` / `${}` part reading
+ * parameter `name`? Only where it certifies an expression for it: the
+ * parameter's value carries an inherited plaintext (so the persist bag holds
+ * it) and the parent answers the parameter with an expression, its
+ * association or its rendered spelling (`inheritedParameterExpression`, the
+ * function the arm's two readers share). A parameter carrying no secret, or
+ * one whose answer was withdrawn, is UNKNOWN there.
+ */
+function certifiesPlaceholder(
+  name: string,
+  reread: { bind: ParameterBinding; inherited: RecordedSecretValues } | undefined
+): boolean {
+  if (reread === undefined) return false;
+  const bound = reread.bind(name);
+  if (bound === undefined) return false;
+  if (inheritedSecretsCarriedBy(bound.value, reread.inherited).length === 0) return false;
+  return typeof inheritedParameterExpression(reread.inherited, name, bound.value) === 'string';
+}
+
+/**
+ * How many parts of an `Fn::Join` / `Fn::Sub` `record` are neither literal
+ * text nor a read of a parameter `certified` keys (issue
+ * [#4913](https://github.com/go-to-k/cdkd/issues/4913)): the parts the
+ * placeholder arm's template parse holds UNKNOWN when no resolver span is on
+ * the persist bag. Over-counts (a nested intrinsic, a cross-stack read, a
+ * malformed shape), which only withdraws more; `0` for any other intrinsic.
+ */
+function unkeyedPlaceholderParts(
+  record: Record<string, unknown>,
+  certified: (name: string) => boolean
+): number {
+  const keyed = (value: unknown): boolean =>
+    typeof value === 'string' ||
+    (value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 1 &&
+      typeof (value as Record<string, unknown>)['Ref'] === 'string' &&
+      certified((value as Record<string, unknown>)['Ref'] as string));
+  if (Object.hasOwn(record, 'Fn::Join')) {
+    const args = record['Fn::Join'];
+    if (!Array.isArray(args) || args.length !== 2 || !Array.isArray(args[1])) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return (args[1] as unknown[]).filter((part) => !keyed(part)).length;
+  }
+  if (Object.hasOwn(record, 'Fn::Sub')) {
+    const args = record['Fn::Sub'];
+    const [template, variables] =
+      typeof args === 'string' ? [args, {}] : Array.isArray(args) ? [args[0], args[1]] : [];
+    if (typeof template !== 'string' || variables === null || typeof variables !== 'object') {
+      return Number.POSITIVE_INFINITY;
+    }
+    let unkeyed = 0;
+    for (const hit of template.matchAll(/\$\{(!)?([^}]*)\}/g)) {
+      const name = hit[2] ?? '';
+      if (hit[1] === '!' || name === '') continue;
+      const bound = Object.hasOwn(variables, name)
+        ? keyed((variables as Record<string, unknown>)[name])
+        : certified(name);
+      if (!bound) unkeyed += 1;
+    }
+    return unkeyed;
+  }
+  return 0;
+}
+
+/**
+ * One part of a persist bag's reads in {@link poisonRenderedSpellingsCollidingIn}:
+ * a `resource`'s properties, an `output`'s `Value` (a leaf of the outputs
+ * bag, whose arrays the walk does not descend), or a `slot`-only remainder.
+ */
+interface ReadsGroupPart {
+  readonly node: unknown;
+  readonly mode: 'resource' | 'output' | 'slot';
+}
+
+/**
+ * The `Outputs` section as one group (issue
+ * [#4913](https://github.com/go-to-k/cdkd/issues/4913)): each output's `Value`
+ * is a leaf of the persisted outputs bag, which `redactOutputs` (and scrub's
+ * outputs pass) walks with the outputs pass's parameter reads, so a bare
+ * `{Ref}`, a re-read and an `Fn::Join` / `Fn::Sub` placeholder there are
+ * positioned per parameter as in a resource. Everything else an output
+ * declares is a slot read.
+ */
+function outputsGroupParts(outputs: unknown): ReadsGroupPart[] {
+  if (outputs === null || typeof outputs !== 'object' || Array.isArray(outputs)) {
+    return [{ node: outputs, mode: 'slot' }];
+  }
+  const parts: ReadsGroupPart[] = [];
+  for (const output of Object.values(outputs as Record<string, unknown>)) {
+    if (output === null || typeof output !== 'object' || Array.isArray(output)) {
+      parts.push({ node: output, mode: 'slot' });
+      continue;
+    }
+    const { Value: value, ...rest } = output as Record<string, unknown>;
+    parts.push({ node: value, mode: 'output' }, { node: rest, mode: 'slot' });
+  }
+  return parts;
 }
 
 /** The parameter names `node` reads through `{Ref}`, at any depth. */

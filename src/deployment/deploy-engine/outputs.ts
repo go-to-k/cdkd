@@ -16,7 +16,9 @@ import {
   secretBearingExportNameWarning,
 } from '../outputs-export-alias.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { mirrorInheritedParameterReads } from '../intrinsic-resolver/parameter-secrets.js';
 import {
+  inheritNestedStackParameterAssociations,
   markSameGenerationBag,
   maskSecretsInError,
   maskSecretsInText,
@@ -404,6 +406,16 @@ export async function resolveOutputs(
   // anything does.
   if (context.recordedSecretValues) {
     this.outputsPassSecretMaps.push(context.recordedSecretValues);
+    // go-to-k/cdkd#4913: the fold copies entries, not the nested-stack
+    // parameter reads keyed by this bag, which position an output leaf per
+    // parameter; they are recorded on `outputSecrets` as they happen. Nor
+    // the parent's per-parameter associations `buildResolverContext` copied
+    // onto this bag, which the placeholder arm reads for an `Fn::Sub` /
+    // `Fn::Join` part: copied onto `outputSecrets` the same way.
+    mirrorInheritedParameterReads(context.recordedSecretValues, this.outputSecrets);
+    if (this.options.inheritedSecrets && this.options.inheritedSecrets.size > 0) {
+      inheritNestedStackParameterAssociations(this.outputSecrets, this.options.inheritedSecrets);
+    }
   }
 
   // The names this deploy PUBLISHES. Owns keys in both this bag and the
