@@ -100,9 +100,8 @@ unreached ones stood down with a four-field comment.
   no reason).
 
 **Resolve every premise against the tree at CLAIM time**, the issue's OWN
-record included (its comments; a body's "conditional on #N": read N's `state`,
-#2179's #2012 had closed) — already-done, not-yet-true and WRONG look identical
-from the title. Grep the asserted SYMBOL, not the body's paths or line numbers;
+record included (its comments; a body's "conditional on #N": read N's `state`) —
+already-done, not-yet-true and WRONG look identical from the title. Grep the asserted SYMBOL, not the body's paths or line numbers;
 a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
 `origin/main` already produces it (#2286). On an empty grep,
 `gh pr list --state all --search <symbol>` separates "premise wrong" from
@@ -114,8 +113,10 @@ may refuse what CFn or the AWS CDK CLI rejects, never what they accept; MEASURE
 a CDK CLI premise by running the inputs through its parser from `node_modules`
 — one read off its source refused more (#2221).
 
-**A decision-blocked issue is a candidate, not an exclusion**: return its
-options with each fix and what CFn / the CDK CLI do, for ONE
+**An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
+design choice, a go-ahead (a real-AWS re-measure, a sibling repo's fix and
+release, a step only the maintainer can take) or closing an AWS-side limit with
+docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
 `AskUserQuestion` at triage (gotchas.md).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it

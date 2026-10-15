@@ -42,8 +42,8 @@ repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
 when the harness denies the `git reset`, the rebase or the `--force-with-lease`
-push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327), spelled
-here as a denial blocks re-reading §7, in `<LANE_TREE>` by literal path:
+push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327) in
+`<LANE_TREE>` by literal path:
 `checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
 generators and `vp run integ-ledger-normalize` (`merge=union` hides the ledger
 conflict locally), commit what changed, push plainly. When the arm's checkout
@@ -76,8 +76,10 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   commit ITS output. Upstream whole only clears the conflict: it lacks this
   lane's inputs, so regenerate before the push (go-to-k/cdkd#4460).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
-  upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so a
-  `main` ledger row turns the PR CONFLICTING: rebase locally, normalize (Merge).
+  upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
+  each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge),
+  and with every other pre-merge step done arm `gh pr merge --auto` right after
+  that push so it lands before the next peer merge (#4966); the turn holds to `MERGED`.
 
 ### Merge
 
