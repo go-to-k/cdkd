@@ -1,5 +1,6 @@
 [tools]
 "ubi:go-to-k/markgate" = "0.4.1"
+"ubi:go-to-k/cls3" = "0.32.4"
 
 [tools."http:vp"]
 version = "0.2.5"

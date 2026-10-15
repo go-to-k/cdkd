@@ -22,7 +22,9 @@ are installed with pnpm 12 through Vite+.
 The global `vp` CLI itself is pinned by `.mise.toml` via mise's HTTP backend
 against Vite+'s platform CLI tarball. `mise install` also installs
 [markgate](https://github.com/go-to-k/markgate), which the merge-time
-integ gates depend on.
+integ gates depend on, and [cls3](https://github.com/go-to-k/cls3), which
+integration-test cleanup uses to purge versioned S3 state and delete
+per-run state buckets.
 
 ```bash
 # Clone the repository

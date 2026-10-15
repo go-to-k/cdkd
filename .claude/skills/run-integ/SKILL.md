@@ -90,8 +90,9 @@ verify, clean up.
    prefix, and fails closed on one it cannot read**, such as a peer session's
    newer-schema record. Give such a run its own bucket:
    `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
-   `STATE_BUCKET=<unique>`, then empty its object versions and delete it after
-   step 6. A fixture already deploying under its own `--state-prefix`
+   `STATE_BUCKET=<unique>`, then after step 6 delete it, every version and
+   delete marker with it, via `cls3 -b <unique> -r <region> -f` (`.mise.toml`
+   pins it; far faster than a `list-object-versions` loop). A fixture already deploying under its own `--state-prefix`
    (`remove-protection-journaled-orphan`) is immune.
 
 5. **Run the test(s)**
@@ -197,7 +198,8 @@ verify, clean up.
      hyperplane ENIs (`describe-network-interfaces --filters
      "Name=vpc-id,Values=<vpc>"` → `delete-network-interface`; re-poll `in-use`
      until `available`), (2) SecurityGroups, (3) Subnets, (4) VPC.
-   - S3 state orphans: `aws s3 rm s3://<bucket>/cdkd/<StackName>/ --recursive`
+   - S3 state orphans: `cls3 -b <bucket> -r <region> -k cdkd/<StackName>/`,
+     which also purges the versions `aws s3 rm` would leave readable
      (or `cdkd state orphan '<StackName>'`, which also handles the lock key).
    - Other types: infer delete order from CFn dependency rules (children before
      parents). Always pass `--region`. Re-run step 6 after cleanup.

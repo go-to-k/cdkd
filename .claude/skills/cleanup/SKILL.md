@@ -57,7 +57,8 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
 
    Report the orphan list, confirm via `AskUserQuestion` (unless `--detect-only`), then
    delete each confirmed orphan prefix with
-   `aws s3 rm "s3://${BUCKET}/cdkd/${p}" --recursive --region us-east-1`. Re-run the
+   `cls3 -b "${BUCKET}" -r us-east-1 -k "cdkd/${p}"` (pinned in `.mise.toml`;
+   it purges every version, unlike `aws s3 rm`'s delete marker). Re-run the
    `has_state` check immediately before each delete to guard against a concurrent deploy
    that re-created the stack. The per-stack product-level equivalent (for a user who
    knows the stack name) is `cdkd events prune '<stack>' --all`; this skill step is the
