@@ -145,6 +145,11 @@ import { Construct } from 'constructs';
  *    droppable elements drop or one element is an intrinsic nothing
  *    classifies. The resolver now records the branch and the dropped
  *    elements, so the persist walk positions each.
+ *  - `FallthroughPseudoSub` (child) — THE #4962 ARM, the shape #4954 still
+ *    left to the slot: `FallConnA2` read through an `Fn::Sub` naming
+ *    `AWS::Region` and `AWS::Partition` inside `Fn::Select` / `Fn::Split`,
+ *    beside `FallSecretB2`. The child's parameter resolution now records the
+ *    pseudo values its resolver answers, so the re-read binds them.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -231,6 +236,7 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughIfTwoWaysParamName: string;
       fallthroughIfAttributeParamName: string;
       fallthroughShrinkTwoRuleName: string;
+      fallthroughPseudoSubParamName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -687,6 +693,23 @@ class SecretBearingChild extends cdk.NestedStack {
       ],
     });
 
+    // THE #4962 ARM: the issue's own shape, a piece of an `Fn::Sub` naming
+    // pseudo parameters beside `FallConnA2`, with the pseudo values kept IN
+    // the piece so a wrong binding shows in the persisted leaf.
+    const fallthroughPseudoSub = new ssm.StringParameter(this, 'FallthroughPseudoSub', {
+      parameterName: names.fallthroughPseudoSubParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: 'replaced by the override below',
+    });
+    const pseudoSubCfn = fallthroughPseudoSub.node.defaultChild as ssm.CfnParameter;
+    pseudoSubCfn.overrideLogicalId('FallthroughPseudoSub');
+    pseudoSubCfn.addPropertyOverride('Description', {
+      'Fn::Select': [
+        0,
+        { 'Fn::Split': ['@', { 'Fn::Sub': '${AWS::Region}.${AWS::Partition}.${FallConnA2}' }] },
+      ],
+    });
+
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
     // parse refuses, so only the resolver's recorded parameter spans can
     // position it. `Description` before `Value` for the reason given above.
@@ -1127,6 +1150,7 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughIfTwoWaysParamName: `cdkd-nested-child-fallthroughiftwoways-${account}`,
         fallthroughIfAttributeParamName: `cdkd-nested-child-fallthroughifattr-${account}`,
         fallthroughShrinkTwoRuleName: `cdkd-nested-child-fallshrinktwo-${account}`,
+        fallthroughPseudoSubParamName: `cdkd-nested-child-fallthroughpseudosub-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

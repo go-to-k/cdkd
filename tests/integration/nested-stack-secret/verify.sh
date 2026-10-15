@@ -205,6 +205,7 @@ CHILD_FALL_SHRINK_RULE="cdkd-nested-child-fallshrink-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM="cdkd-nested-child-fallthroughiftwoways-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_IF_ATTR_PARAM="cdkd-nested-child-fallthroughifattr-${ACCOUNT_ID}"
 CHILD_FALL_SHRINK_TWO_RULE="cdkd-nested-child-fallshrinktwo-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_PSEUDO_SUB_PARAM="cdkd-nested-child-fallthroughpseudosub-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -654,6 +655,7 @@ cleanup() {
              "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
              "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
              "${CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM}" "${CHILD_FALLTHROUGH_IF_ATTR_PARAM}" \
+             "${CHILD_FALLTHROUGH_PSEUDO_SUB_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -1416,6 +1418,45 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4962: an Fn::Sub naming pseudo parameters inside Fn::Select ---------
+# `FallthroughPseudoSub` reads `FallConnA2` through `Fn::Select` / `Fn::Split`
+# over an `Fn::Sub` naming `AWS::Region` and `AWS::Partition`, beside
+# `FallSecretB2`. Before #4962 the re-read refused every `AWS::` placeholder,
+# so the leaf was a slot read and cdkd withdrew `FallConnA2`'s literal
+# spelling for the WHOLE child: this arm, the #4954 arms and the #4919 arms
+# below all persisted the survivor `fall2:AWSCURRENT:`. Checked FIRST, so a
+# regression of this arm names this issue rather than one it takes down with it.
+# `PARTITION_TABLE` (src/utils/aws-partition.ts), the map `AWS::Partition` resolves through.
+case "${REGION}" in
+  cn-*) FALL4962_PARTITION="aws-cn" ;;
+  us-gov-*) FALL4962_PARTITION="aws-us-gov" ;;
+  us-iso-*) FALL4962_PARTITION="aws-iso" ;;
+  us-isob-*) FALL4962_PARTITION="aws-iso-b" ;;
+  us-isof-*) FALL4962_PARTITION="aws-iso-f" ;;
+  eu-isoe-*) FALL4962_PARTITION="aws-iso-e" ;;
+  eusc-*) FALL4962_PARTITION="aws-eusc" ;;
+  *) FALL4962_PARTITION="aws" ;;
+esac
+echo "==> #4962: FallConnA2 read through an Fn::Sub naming AWS::Region and AWS::Partition inside Fn::Select"
+assert_eq "premise: FallthroughPseudoSub's synthesized Description is a Select over a Split of an Fn::Sub naming two pseudo parameters, its Value a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughPseudoSub.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::Select":[0,{"Fn::Split":["@",{"Fn::Sub":"${AWS::Region}.${AWS::Partition}.${FallConnA2}"}]}]},{"Ref":"FallSecretB2"}]'
+assert_eq "the LIVE FallthroughPseudoSub Description holds the region, the partition and the resolved text before the @" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_PSEUDO_SUB_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" \
+  "${REGION}.${FALL4962_PARTITION}.postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}"
+FALL4962_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughPseudoSub.properties.Description')"
+case "${FALL4962_STATE}" in
+  *"${FALL2_EXPR_B}"*)
+    echo "FAIL: FallthroughPseudoSub persisted the survivor's spelling (fall2:AWSCURRENT:), so FallConnA2's literal was withdrawn for the child: the re-read did not bind AWS::Region / AWS::Partition (issue #4962)" >&2
+    exit 1 ;;
+esac
+assert_eq "FallthroughPseudoSub.Description persists the pseudo values and the literal's own tokens" \
+  "${FALL4962_STATE}" "${REGION}.${FALL4962_PARTITION}.postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
+assert_eq "FallthroughPseudoSub.Value persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPseudoSub.properties.Value')" "${FALL2_EXPR_B}"
+
 # --- #4954: the shapes #4919 still left to the slot ------------------------
 # `FallthroughIfTwoWays` (an Fn::If whose branches resolve to one plaintext
 # spelled two ways), `FallthroughIfAttribute` (an Fn::If whose other branch is
@@ -2109,6 +2150,11 @@ for id in FallthroughIfTwoWays FallthroughIfAttribute FallthroughShrinkTwo; do
   fi
 done
 echo "    OK: the child's plan carries no row for the #4954 arms"
+if grep -qF "UPDATE: FallthroughPseudoSub (" <<<"${DEPLOY_2D_OUT}"; then
+  echo "FAIL: the child's plan carries an UPDATE for FallthroughPseudoSub, which nothing changed: its persisted spelling disagrees with the diff side (issue #4962)" >&2
+  exit 1
+fi
+echo "    OK: the child's plan carries no row for the #4962 arm"
 # ...and nothing was sent for it either.
 COLON_VERSION_AFTER="$(colon_version)"
 if [ "${COLON_VERSION_AFTER}" != "${COLON_VERSION_BEFORE}" ]; then
@@ -2137,6 +2183,7 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
          "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
          "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
          "${CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM}" "${CHILD_FALLTHROUGH_IF_ATTR_PARAM}" \
+         "${CHILD_FALLTHROUGH_PSEUDO_SUB_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do

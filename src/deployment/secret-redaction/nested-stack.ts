@@ -1392,6 +1392,75 @@ export function positionByInheritedParameter(
 export type ParameterBinding = (name: string) => { readonly value: unknown } | undefined;
 
 /**
+ * The pseudo parameters a re-read may bind (issue
+ * [#4962](https://github.com/go-to-k/cdkd/issues/4962)): each a pure function
+ * of the child resolver's region, so every pass over one child -- this deploy,
+ * the next one, `cdkd scrub` -- binds the same string and reaches the same
+ * collision-walk verdict. `AWS::AccountId` is NOT: without an AWS call it is
+ * known only once something in the process has looked the account up, so its
+ * binding would flip the verdict between two deploys of an unchanged tree
+ * (#4975). `AWS::StackName` and `AWS::StackId` follow the pass's own stack
+ * name (and the id is absent on a first deploy), `AWS::NotificationARNs` is a
+ * list and `AWS::NoValue` drops the value: none is bound.
+ */
+const REREAD_PSEUDO_PARAMETERS: ReadonlySet<string> = new Set([
+  'AWS::Region',
+  'AWS::Partition',
+  'AWS::URLSuffix',
+]);
+
+/**
+ * The pseudo-parameter values a nested child's resolver answers, keyed by the
+ * INHERITED bag the child was handed (issue #4962), as
+ * {@link withdrawRenderedParameterSpelling}'s table is: the collision walk,
+ * which runs before any resource resolves, and the persist re-read
+ * ({@link positionByParameterReread}, through the reads record's parent) both
+ * reach that bag. A second recording with a different value for a name
+ * poisons the table: no binding at all.
+ */
+const inheritedPseudoParameters = new WeakMap<
+  RecordedSecretValues,
+  Map<string, string> | typeof POISONED_PSEUDO_PARAMETERS
+>();
+const POISONED_PSEUDO_PARAMETERS: unique symbol = Symbol(
+  'cdkd.inherited-pseudo-parameters.poisoned'
+);
+
+/**
+ * Record the pseudo-parameter values the child resolver handed
+ * `inheritedSecrets` resolves (issue #4962). Called by the child's
+ * `resolveParameters`, before the collision walk; names outside
+ * {@link REREAD_PSEUDO_PARAMETERS} and non-string values are ignored.
+ */
+export function recordInheritedPseudoParameters(
+  inheritedSecrets: RecordedSecretValues,
+  values: ReadonlyMap<string, unknown>
+): void {
+  let table = inheritedPseudoParameters.get(inheritedSecrets);
+  if (table === POISONED_PSEUDO_PARAMETERS) return;
+  if (table === undefined) {
+    table = new Map();
+    inheritedPseudoParameters.set(inheritedSecrets, table);
+  }
+  for (const [name, value] of values) {
+    if (!REREAD_PSEUDO_PARAMETERS.has(name) || typeof value !== 'string') continue;
+    const known = table.get(name);
+    if (known !== undefined && known !== value) {
+      inheritedPseudoParameters.set(inheritedSecrets, POISONED_PSEUDO_PARAMETERS);
+      return;
+    }
+    table.set(name, value);
+  }
+}
+
+/** The pseudo-parameter binding recorded for `parentSecrets` (issue #4962). */
+function pseudoBindingOf(parentSecrets: RecordedSecretValues): ParameterBinding {
+  const table = inheritedPseudoParameters.get(parentSecrets);
+  return (name) =>
+    table instanceof Map && table.has(name) ? { value: table.get(name) } : undefined;
+}
+
+/**
  * The intrinsics a re-read ({@link rereadParameterExpression}) evaluates. Only
  * a source holding `Fn::Select`, `Fn::Split` or `Fn::If` (issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)) is re-read: a `{Ref}`
@@ -1491,13 +1560,15 @@ type IfBranchChoice = (condition: string, node: object) => boolean | undefined;
 
 /**
  * Evaluate a PURE parameter expression -- string literals, arrays, `{Ref}` to
- * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join`, `Fn::Sub`
- * over such values, and `Fn::If` taking the branch `choose` names -- as the
- * resolver does (`string-functions.ts`, `sub.ts`, `functions.ts`), or
- * `undefined` for anything else: a `{{resolve:` literal (the resolver would
- * resolve it), a number outside a `Fn::Select` index, a non-literal index or
- * delimiter, an index out of bounds, a non-string `Fn::Sub` value, any other
- * intrinsic (`Fn::GetAtt`, a pseudo parameter, a dotted `${X.Y}`). `split` is
+ * a parameter `bind` answers or a pseudo parameter `pseudo` answers (issue
+ * [#4962](https://github.com/go-to-k/cdkd/issues/4962)), `Fn::Select`,
+ * `Fn::Split`, `Fn::Join`, `Fn::Sub` over such values, and `Fn::If` taking
+ * the branch `choose` names -- as the resolver does (`string-functions.ts`,
+ * `sub.ts`, `functions.ts`), or `undefined` for anything else: a `{{resolve:`
+ * literal (the resolver would resolve it), a number outside a `Fn::Select`
+ * index, a non-literal index or delimiter, an index out of bounds, a
+ * non-string `Fn::Sub` value, any other intrinsic (`Fn::GetAtt`, a pseudo
+ * parameter `pseudo` does not answer, a dotted `${X.Y}`). `split` is
  * the pass's `Fn::Split`: {@link plainSplit} over real values,
  * {@link splitOutsideDynamicReferences} as the diff side splits.
  *
@@ -1508,13 +1579,14 @@ type IfBranchChoice = (condition: string, node: object) => boolean | undefined;
 function evaluatePureRead(
   node: unknown,
   bind: ParameterBinding,
+  pseudo: ParameterBinding,
   split: (text: string, delimiter: string) => string[],
   choose: IfBranchChoice,
   depth = 0
 ): { value: unknown } | undefined {
   if (depth > MAX_REREAD_DEPTH) return undefined;
   const evaluate = (child: unknown): { value: unknown } | undefined =>
-    evaluatePureRead(child, bind, split, choose, depth + 1);
+    evaluatePureRead(child, bind, pseudo, split, choose, depth + 1);
   if (typeof node === 'string') return node.includes('{{resolve:') ? undefined : { value: node };
   if (Array.isArray(node)) {
     const out: unknown[] = [];
@@ -1532,7 +1604,7 @@ function evaluatePureRead(
   const args = node[key];
   if (key === 'Ref') {
     if (args === 'AWS::NoValue') return { value: REREAD_NO_VALUE };
-    return typeof args === 'string' ? bind(args) : undefined;
+    return typeof args === 'string' ? bindReadName(args, bind, pseudo) : undefined;
   }
   if (key === 'Fn::If') {
     // `resolveIf`: the evaluated condition picks the branch, which is
@@ -1542,7 +1614,7 @@ function evaluatePureRead(
     if (tookTrue === undefined) return undefined;
     return evaluate(tookTrue ? args[1] : args[2]);
   }
-  if (key === 'Fn::Sub') return evaluatePureSub(args, bind, evaluate);
+  if (key === 'Fn::Sub') return evaluatePureSub(args, bind, pseudo, evaluate);
   if (!Array.isArray(args) || args.length !== 2) return undefined;
   if (key === 'Fn::Select') {
     // `selectIndexPosition`'s rule (`intrinsic-resolver/context.ts`), spelled
@@ -1582,13 +1654,15 @@ function evaluatePureRead(
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)), over string values
  * only: `${!X}` renders `${X}`, an empty `${}` stays, a name bound in the
  * variable map takes that variable (every one evaluated, as the resolver
- * resolves the map), and any other name is a `{Ref}` to a parameter `bind`
- * answers. A pseudo parameter (`AWS::`), a dotted attribute read, a
- * non-string value (`String()` of a number or a list's refusal) all refuse.
+ * resolves the map), and any other name is read as {@link bindReadName}
+ * answers it: a pseudo parameter `pseudo` binds (issue #4962) or a parameter
+ * `bind` does. A dotted attribute read, an unbound name, a non-string value
+ * (`String()` of a number or a list's refusal) all refuse.
  */
 function evaluatePureSub(
   args: unknown,
   bind: ParameterBinding,
+  pseudo: ParameterBinding,
   evaluate: (child: unknown) => { value: unknown } | undefined
 ): { value: unknown } | undefined {
   const [text, variables] =
@@ -1616,11 +1690,9 @@ function evaluatePureSub(
     else if (bound.has(name)) replacement = bound.get(name)!;
     else {
       // The resolver's order: a pseudo parameter, then a `Ref`, then a dotted
-      // `Fn::GetAtt`. UNFALSIFIABLE while every binding answers template
-      // parameter names only, which hold neither form; stated so a binding
-      // that ever answers one cannot turn a pseudo or attribute read into it.
-      if (name.startsWith('AWS::') || name.includes('.')) return undefined;
-      const value = bind(name);
+      // `Fn::GetAtt`, which no re-read evaluates.
+      if (name.includes('.')) return undefined;
+      const value = bindReadName(name, bind, pseudo);
       if (value === undefined || typeof value.value !== 'string') return undefined;
       replacement = value.value;
     }
@@ -1628,6 +1700,21 @@ function evaluatePureSub(
     cursor = match.index + match[0].length;
   }
   return { value: out + text.slice(cursor) };
+}
+
+/**
+ * A `{Ref}` or `Fn::Sub` placeholder `name` as a re-read binds it: an `AWS::`
+ * name from `pseudo` alone (issue #4962), any other from `bind`. An `AWS::`
+ * name `bind` answers too refuses: `resolveRef` takes a declared parameter
+ * first and `resolveSub` the pseudo parameter, so the two disagree on it.
+ */
+function bindReadName(
+  name: string,
+  bind: ParameterBinding,
+  pseudo: ParameterBinding
+): { value: unknown } | undefined {
+  if (!name.startsWith('AWS::')) return bind(name);
+  return bind(name) === undefined ? pseudo(name) : undefined;
 }
 
 /**
@@ -1740,10 +1827,13 @@ function rereadUnder(
   parentSecrets: RecordedSecretValues,
   choose: IfBranchChoice
 ): ParameterReread | typeof REREAD_NO_VALUE | undefined {
-  const resolved = evaluatePureRead(source, bind, plainSplit, choose);
+  // The pseudo values are the resolver's own (issue #4962) and carry no
+  // secret, so both sides bind them as they are.
+  const pseudo = pseudoBindingOf(parentSecrets);
+  const resolved = evaluatePureRead(source, bind, pseudo, plainSplit, choose);
   if (resolved === undefined) return undefined;
   const diffSide = diffSideReading(bind, parentSecrets);
-  const redacted = evaluatePureRead(source, diffSide.bind, diffSide.split, choose);
+  const redacted = evaluatePureRead(source, diffSide.bind, pseudo, diffSide.split, choose);
   if (redacted === undefined) return undefined;
   if (resolved.value === REREAD_NO_VALUE || redacted.value === REREAD_NO_VALUE) {
     return resolved.value === redacted.value ? REREAD_NO_VALUE : undefined;

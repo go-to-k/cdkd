@@ -221,3 +221,86 @@ describe('cdkd scrub positions an Fn::If by the branch its resolution took (#495
     }
   }
 });
+
+describe('cdkd scrub re-reads a leaf naming a pseudo parameter the child resolver records (#4962)', () => {
+  // `AWS::Region` is bound from the region scrub's resolver answers, as the
+  // deploy binds it; `AWS::StackName` is never bound, so it still withdraws.
+  for (const pseudo of ['AWS::Region', 'AWS::StackName']) {
+    for (const siblingLast of [true, false]) {
+      it(`${pseudo === 'AWS::Region' ? 'keeps' : 'withdraws'} ConnA's spelling for an Fn::Sub naming ${pseudo} (${siblingLast ? 'sibling' : 'literal'} read last)`, async () => {
+        const parent = parentRow();
+        const leaf = { 'Fn::Select': [0, [{ 'Fn::Sub': `\${ConnA}-\${${pseudo}}` }]] };
+        const suffix = pseudo === 'AWS::Region' ? 'us-east-1' : 'MyStack~Child';
+        const template = {
+          Parameters: { ConnA: { Type: 'String' }, SecretB: { Type: 'String' } },
+          Resources: {
+            R: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: siblingLast
+                ? { Value: { Ref: 'ConnA' }, Description: leaf, Name: { Ref: 'SecretB' } }
+                : { Name: { Ref: 'SecretB' }, Description: leaf, Value: { Ref: 'ConnA' } },
+            },
+          },
+          Outputs: {},
+        } as unknown as CloudFormationTemplate;
+        const state: StackState = {
+          version: 9,
+          region: 'us-east-1',
+          stackName: 'MyStack~Child',
+          resources: {
+            R: {
+              physicalId: 'r',
+              resourceType: 'AWS::SSM::Parameter',
+              properties: { Value: CONN, Description: `${CONN}-${suffix}`, Name: SHARED },
+              attributes: {},
+              dependencies: [],
+            },
+          },
+          outputs: {},
+          lastModified: 0,
+        } as StackState;
+        const saveState = vi.fn().mockResolvedValue('etag-2');
+        await scrubStack(
+          { stackName: 'MyStack~Child', template } as never,
+          'us-east-1',
+          {
+            getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
+            saveState,
+            purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+            listStacks: vi.fn().mockResolvedValue([]),
+          } as never,
+          {
+            acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+            releaseLock: vi.fn().mockResolvedValue(undefined),
+          } as never,
+          {
+            dryRun: false,
+            logger,
+            nestedChild: {
+              logicalId: 'Child',
+              stackName: 'MyStack~Child',
+              input: { parameters: { ConnA: CONN, SecretB: SHARED }, inheritedSecrets: parent },
+            },
+          } as never
+        );
+        const saved = saveState.mock.calls.at(-1)![2] as StackState;
+        const props = saved.resources['R']!.properties as Record<string, unknown>;
+        expect(JSON.stringify(props)).not.toContain(SHARED);
+        if (pseudo === 'AWS::Region') {
+          expect(redactInheritedParameterValue(parent, 'ConnA', CONN)).toBe(SPELLING);
+          expect(props).toEqual({ Value: SPELLING, Description: `${SPELLING}-us-east-1`, Name: EXPR_B });
+        } else {
+          // The pre-#4644 answer: ConnA reads the parent map's survivor.
+          const survivor = `postgres://plainuser:${EXPR_B}@host`;
+          expect(redactInheritedParameterValue(parent, 'ConnA', CONN)).toBe(survivor);
+          // Every leaf reading ConnA, the bare `Ref` too, persists the survivor.
+          expect(props).toEqual({
+            Value: survivor,
+            Description: `${survivor}-MyStack~Child`,
+            Name: EXPR_B,
+          });
+        }
+      });
+    }
+  }
+});

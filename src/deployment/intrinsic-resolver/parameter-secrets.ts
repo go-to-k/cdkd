@@ -1,6 +1,7 @@
 import { recordReferenceProvenanceEntry } from '../secret-redaction/reference-provenance.js';
 import {
   recordInheritedParameterValue,
+  recordInheritedPseudoParameters,
   rereadParameterExpression,
   type ParameterBinding,
 } from '../secret-redaction/nested-stack.js';
@@ -224,6 +225,33 @@ export function recordInheritedParameterSecrets(
 }
 
 /**
+ * Record on a nested child's inherited bag the pseudo-parameter values this
+ * resolver answers (issue [#4962](https://github.com/go-to-k/cdkd/issues/4962)),
+ * so the collision walk (`poisonRenderedSpellingsCollidingIn`), which runs
+ * before any resource resolves, and the persist re-read
+ * (`positionByParameterReread`) bind the values the pass substitutes, and
+ * which the diff pass, resolving through this resolver, substitutes too.
+ * Called by `resolveParameters` with the bag, the step right before the walk
+ * on both callers (`deploy-flow.ts`, `scrub.ts`); a stack inheriting nothing
+ * pays nothing.
+ *
+ * `AWS::Region`, `AWS::Partition` and `AWS::URLSuffix` only, each a pure
+ * function of `resolverRegion` read through `resolvePseudoParameter` itself,
+ * so no AWS call is made and every pass binds the same value.
+ */
+export async function recordInheritedPseudoParameterValues(
+  resolver: IntrinsicFunctionResolver,
+  inherited: RecordedSecretValues
+): Promise<void> {
+  if (inherited.size === 0) return;
+  const values = new Map<string, unknown>();
+  for (const name of ['AWS::Region', 'AWS::Partition', 'AWS::URLSuffix']) {
+    values.set(name, await resolver.resolvePseudoParameter(name));
+  }
+  recordInheritedPseudoParameters(inherited, values);
+}
+
+/**
  * The parameter names the template being resolved declares (issue #4919),
  * cached per `Parameters` object; `undefined` without one.
  */
@@ -365,7 +393,7 @@ function carriedExpressionFor(
  *
  * The carry holds ONE expression per plaintext per resource, so in such a
  * resource whichever parameter resolved last decides every value-scanned leaf
- * (a read beside a `Fn::GetAtt`, an `Fn::Sub` naming a pseudo parameter under
+ * (a read beside a `Fn::GetAtt`, an `Fn::Sub` naming `AWS::StackName` under
  * `Fn::Select`): the other parameter's leaf persists
  * a token its diff side does not render, a change on every deploy. Before
  * #4644 the literal parameter carried the survivor, which the diff side bound
@@ -388,7 +416,10 @@ function carriedExpressionFor(
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919) also `Fn::Sub` inside
  * one, and an `Fn::If` each of whose branches re-reads or names no parameter,
  * the persist walk reading the branch the resolver recorded, issue
- * [#4954](https://github.com/go-to-k/cdkd/issues/4954)) is no slot read
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954); since issue
+ * [#4962](https://github.com/go-to-k/cdkd/issues/4962) one naming a pseudo
+ * parameter `resolveParameters` recorded on `inherited`,
+ * `recordInheritedPseudoParameterValues`) is no slot read
  * either, nor is a read in a bag array the persist walk pairs whatever drops
  * out of it (`arrayPairsWhateverDrops`, by the resolver's record of what
  * dropped). Any other `Fn::If` branch counts, untaken ones included;

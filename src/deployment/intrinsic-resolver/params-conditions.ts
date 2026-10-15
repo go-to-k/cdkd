@@ -11,6 +11,7 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
+import { recordInheritedPseudoParameterValues } from './parameter-secrets.js';
 import {
   type AbandonedResolution,
   type ResolverContext,
@@ -67,6 +68,9 @@ export async function resolveParameters(
   }
 ): Promise<Record<string, unknown>> {
   const inheritedSecrets = options?.inheritedSecrets;
+  // Issue #4962: the pseudo values a nested child's re-read binds, on the bag
+  // the collision walk right after this call reads.
+  if (inheritedSecrets) await recordInheritedPseudoParameterValues(this, inheritedSecrets);
   // SANITIZED as well as masked (go-to-k/cdkd#3426). The three lines below
   // print a template-supplied PARAMETER VALUE, so the control-character class
   // reaches them exactly as it reached the `Fn::ImportValue` bindings; they
