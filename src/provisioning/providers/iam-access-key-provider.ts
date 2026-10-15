@@ -32,10 +32,17 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { replayFollowedAmbiguousAttempt } from './ambiguous-create.js';
+
+/**
+ * The id form `CreateAccessKey` answers with: a long-term key's `AKIA` prefix
+ * and 16 more characters. A temporary (`ASIA`) id is never a physical id here.
+ */
+const ACCESS_KEY_ID_PATTERN = /^AKIA[A-Z0-9]{16}$/;
 
 /**
  * How far before an attempt's start a key's `CreateDate` may fall and still be
@@ -772,10 +779,28 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const found = await this.findAccessKey(physicalId);
+    if (found === undefined || found === RESOURCE_NOT_FOUND) return found;
+    const result: Record<string, unknown> = { UserName: found.userName };
+    if (found.status !== undefined) result['Status'] = found.status;
+    return result;
+  }
+
+  /**
+   * The owning user and `Status` of access key `accessKeyId`:
+   * `GetAccessKeyLastUsed` names the owner, and the key must then appear in
+   * that user's `ListAccessKeys`. `RESOURCE_NOT_FOUND` on IAM's
+   * `NoSuchEntityException` from either call, or when the owner lists no such
+   * key (go-to-k/cdkd#4283); `undefined` when IAM names no owner. Any other
+   * failure throws.
+   */
+  private async findAccessKey(
+    accessKeyId: string
+  ): Promise<{ userName: string; status: string | undefined } | ResourceNotFound | undefined> {
     let userName: string | undefined;
     try {
       const lastUsed = await this.iamClient.send(
-        new GetAccessKeyLastUsedCommand({ AccessKeyId: physicalId })
+        new GetAccessKeyLastUsedCommand({ AccessKeyId: accessKeyId })
       );
       userName = lastUsed.UserName;
     } catch (err) {
@@ -796,16 +821,56 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         throw err;
       }
       for (const key of page.AccessKeyMetadata ?? []) {
-        if (key.AccessKeyId === physicalId) {
-          const result: Record<string, unknown> = { UserName: userName };
-          if (key.Status !== undefined) result['Status'] = key.Status;
-          return result;
-        }
+        if (key.AccessKeyId === accessKeyId) return { userName, status: key.Status };
       }
       marker = page.IsTruncated ? page.Marker : undefined;
     } while (marker);
-    // The owner lists no such key: it is gone (go-to-k/cdkd#4283).
     return RESOURCE_NOT_FOUND;
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the access key a failed CREATE journaled (one
+   * whose `Status: Inactive` wiring failed and whose cleanup delete failed
+   * too) is the one the record under the same logical id holds (a fix-forward
+   * that minted a new key there).
+   *
+   * The identity is the `AccessKeyId` IAM generates: the physical id the
+   * create and the import record, unique and never reassigned, so two
+   * distinct ids name two distinct keys. Both ids must have the
+   * `CreateAccessKey` form (`AKIA` and 16 more characters), else `'unknown'`.
+   * Equal ids are `'same'` without a read. After the region check (IAM is
+   * global, but every identity read stays on the stack's own client), the
+   * record's key must read back, listed by its owner, else `'unknown'`; the
+   * journaled one is then `'different'` whether it reads back or IAM reports
+   * it gone. A key IAM names no owner for, and any other read failure, is
+   * `'unknown'` (a failure throws, which the caller reads as `'unknown'`).
+   *
+   * The type is never Cloud Control-routed (`disableCcApiFallback`), so every
+   * journaled key reaches this method.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    if (resourceType !== 'AWS::IAM::AccessKey') return 'unknown';
+    if (
+      !ACCESS_KEY_ID_PATTERN.test(journaledPhysicalId) ||
+      !ACCESS_KEY_ID_PATTERN.test(record.physicalId)
+    ) {
+      return 'unknown';
+    }
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.iamClient.config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    const recordKey = await this.findAccessKey(record.physicalId);
+    if (recordKey === undefined || recordKey === RESOURCE_NOT_FOUND) return 'unknown';
+    // Gone (RESOURCE_NOT_FOUND) or listed by its owner: either way another key.
+    const journaledKey = await this.findAccessKey(journaledPhysicalId);
+    return journaledKey === undefined ? 'unknown' : 'different';
   }
 
   /**

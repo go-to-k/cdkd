@@ -113,6 +113,7 @@
     {
       "flag": "--force",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "acm-certificate",
         "agentcore-tools",
         "alb",
@@ -464,6 +465,7 @@
     {
       "flag": "--no-rollback",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "alb",
         "appsync",
         "created-before-failure-revert",
@@ -518,6 +520,7 @@
     {
       "flag": "--output",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "acm-certificate",
         "agentcore-tools",
         "alb",
@@ -1250,6 +1253,7 @@
     {
       "flag": "--role-arn",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "docdb-fix-forward-orphan",
         "dynamodb-fix-forward-orphan",
         "emr-cluster",
@@ -1310,6 +1314,7 @@
     {
       "flag": "--state-bucket",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "acm-certificate",
         "agentcore-tools",
         "alb",

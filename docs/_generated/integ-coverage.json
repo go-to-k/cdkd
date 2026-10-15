@@ -4190,9 +4190,13 @@
     {
       "resourceType": "AWS::IAM::AccessKey",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "iam-access-key"
       ],
       "signals": {
+        "access-key-cloudmap-fix-forward-orphan": [
+          "l1"
+        ],
         "iam-access-key": [
           "literal"
         ]
@@ -4816,6 +4820,7 @@
     {
       "resourceType": "AWS::IAM::User",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "iam-access-key",
         "iam-managed-policy",
         "iam-recreate-reattach",
@@ -4826,6 +4831,9 @@
         "infra-security"
       ],
       "signals": {
+        "access-key-cloudmap-fix-forward-orphan": [
+          "l1"
+        ],
         "iam-access-key": [
           "l2"
         ],
@@ -7675,9 +7683,13 @@
     {
       "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "servicediscovery-namespaces"
       ],
       "signals": {
+        "access-key-cloudmap-fix-forward-orphan": [
+          "l1"
+        ],
         "servicediscovery-namespaces": [
           "l1",
           "literal"
@@ -7719,10 +7731,14 @@
     {
       "resourceType": "AWS::ServiceDiscovery::Service",
       "integs": [
+        "access-key-cloudmap-fix-forward-orphan",
         "local-ecs-service-connect",
         "servicediscovery"
       ],
       "signals": {
+        "access-key-cloudmap-fix-forward-orphan": [
+          "l1"
+        ],
         "local-ecs-service-connect": [
           "literal"
         ],

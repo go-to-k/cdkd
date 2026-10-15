@@ -379,6 +379,11 @@
   ],
   "fixtures": [
     {
+      "name": "access-key-cloudmap-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "acm-certificate",
       "annotated": false,
       "scenarios": []
@@ -3323,6 +3328,7 @@
   ],
   "orphanScenarios": [],
   "unannotatedFixtures": [
+    "access-key-cloudmap-fix-forward-orphan",
     "acm-certificate",
     "apigatewayv2-update-removal",
     "apigw-stage-props",

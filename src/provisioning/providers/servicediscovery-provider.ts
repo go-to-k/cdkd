@@ -62,6 +62,7 @@ import type {
   UpdateContext,
   SecretMasker,
   ResourceNotFound,
+  ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -95,6 +96,17 @@ const NAMESPACE_TYPES = [
   'AWS::ServiceDiscovery::HttpNamespace',
   'AWS::ServiceDiscovery::PublicDnsNamespace',
 ] as const;
+
+/** Each namespace kind's `Namespace.Type` (go-to-k/cdkd#4606). */
+const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['AWS::ServiceDiscovery::PrivateDnsNamespace', 'DNS_PRIVATE'],
+  ['AWS::ServiceDiscovery::PublicDnsNamespace', 'DNS_PUBLIC'],
+  ['AWS::ServiceDiscovery::HttpNamespace', 'HTTP'],
+]);
+
+/** The id forms Cloud Map generates: `ns-` / `srv-` and 16 lowercase alphanumerics. */
+const NAMESPACE_ID_PATTERN = /^ns-[a-z0-9]{16}$/;
+const SERVICE_ID_PATTERN = /^srv-[a-z0-9]{16}$/;
 
 /**
  * AWS Service Discovery Provider
@@ -1724,6 +1736,105 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       default:
         return undefined;
     }
+  }
+
+  // ─── Identity (go-to-k/cdkd#4606) ─────────────────────────────────
+
+  /**
+   * go-to-k/cdkd#4606: whether the namespace or service a failed CREATE
+   * journaled (a namespace whose create operation succeeded before a later
+   * step failed; a service whose `ServiceAttributes` wiring failed and whose
+   * cleanup delete failed too) is the one the record under the same logical
+   * id holds (a fix-forward that created a new one there).
+   *
+   * The identity is the id Cloud Map generates: a namespace's `ns-…` and a
+   * service's `srv-…` id, the physical id the create and the import record,
+   * unique per account and region and never reassigned, so two distinct ids in
+   * the stack's region name two distinct resources. Any other form is
+   * `'unknown'`. Equal ids are `'same'` without a read. After the region
+   * check, the record's resource must read back under its own id (a
+   * namespace also of the record's kind: `DNS_PRIVATE`, `DNS_PUBLIC` or
+   * `HTTP`), else `'unknown'`; the journaled one is then `'different'`
+   * whether it reads back under its own id or Cloud Map reports it gone (a
+   * read answering the record's id or a third one is `'unknown'`). Any other read failure throws,
+   * which the caller reads as `'unknown'`.
+   *
+   * SDK-routed resources only: the settle asks the provider the journaled
+   * operation was provisioned by, so a Cloud Control-routed namespace or
+   * service never reaches this method and keeps the warning.
+   */
+  async isSameResource(
+    journaledPhysicalId: string,
+    record: { physicalId: string },
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<ResourceIdentityVerdict> {
+    let pattern: RegExp;
+    let read: (id: string) => Promise<string | undefined>;
+    const namespaceKind = NAMESPACE_KIND_BY_TYPE.get(resourceType);
+    if (namespaceKind !== undefined) {
+      pattern = NAMESPACE_ID_PATTERN;
+      read = (id) => this.readNamespaceIdForIdentity(id, namespaceKind);
+    } else if (resourceType === 'AWS::ServiceDiscovery::Service') {
+      pattern = SERVICE_ID_PATTERN;
+      read = (id) => this.readServiceIdForIdentity(id);
+    } else {
+      return 'unknown';
+    }
+    if (!pattern.test(journaledPhysicalId) || !pattern.test(record.physicalId)) return 'unknown';
+    if (journaledPhysicalId === record.physicalId) return 'same';
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return 'unknown';
+    if ((await read(record.physicalId)) !== record.physicalId) return 'unknown';
+    const journaledRead = await read(journaledPhysicalId);
+    // Gone, or read back under its own id. Any other answer (the record's id,
+    // or a third one) is a state Cloud Map should not produce: 'unknown', so
+    // the settle keeps the entry and warns rather than dropping it as tracked.
+    return journaledRead === undefined || journaledRead === journaledPhysicalId
+      ? 'different'
+      : 'unknown';
+  }
+
+  /**
+   * The id `GetNamespace` reports for `namespaceId` when the namespace is of
+   * `kind`; `undefined` when Cloud Map reports it gone (`NamespaceNotFound`).
+   * A response naming no namespace, or one of another kind, throws: "could
+   * not read" never reads as "gone".
+   */
+  private async readNamespaceIdForIdentity(
+    namespaceId: string,
+    kind: string
+  ): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.getClient().send(new GetNamespaceCommand({ Id: namespaceId }));
+    } catch (error) {
+      if (error instanceof NamespaceNotFound) return undefined;
+      throw error;
+    }
+    const namespace = response.Namespace;
+    if (typeof namespace?.Id !== 'string' || namespace.Type !== kind) {
+      throw new Error('GetNamespace did not return a namespace of the kind asked for');
+    }
+    return namespace.Id;
+  }
+
+  /**
+   * The id `GetService` reports for `serviceId`; `undefined` when Cloud Map
+   * reports it gone (`ServiceNotFound`). A response naming no service throws.
+   */
+  private async readServiceIdForIdentity(serviceId: string): Promise<string | undefined> {
+    let response;
+    try {
+      response = await this.getClient().send(new GetServiceCommand({ Id: serviceId }));
+    } catch (error) {
+      if (error instanceof ServiceNotFound) return undefined;
+      throw error;
+    }
+    if (typeof response.Service?.Id !== 'string') {
+      throw new Error('GetService did not return the service asked for');
+    }
+    return response.Service.Id;
   }
 
   // ─── Import dispatch ──────────────────────────────────────────────
