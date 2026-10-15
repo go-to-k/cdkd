@@ -102,7 +102,8 @@ export function s3BucketArn(bucketName: string, region: string): string {
  * exists to keep. This spelling matches `aws-cdk-lib`'s own
  * `Bucket.fromBucketAttributes` (`bucketDomainName: <bucket>.s3.<urlSuffix>`),
  * the only AWS-authored answer available without a non-commercial account.
- * Settling it against real CloudFormation is issue
+ * Kept as-is and documented instead (docs/supported-features.md points aws-cn /
+ * aws-us-gov users at `RegionalDomainName`) — issue
  * [#1809](https://github.com/go-to-k/cdkd/issues/1809).
  */
 export function s3BucketDomainName(bucketName: string, region: string): string {

@@ -77,9 +77,10 @@ describe('S3 bucket endpoint construction (issue #1745)', () => {
     // resolves to COMMERCIAL S3. cdkd emits the same spelling `aws-cdk-lib`'s
     // own `Bucket.fromBucketAttributes` does, because inventing the regional
     // form would diverge from whatever CloudFormation returns there. Pinned so
-    // the behavior is deliberate and visible; settling it against real CFn is
-    // issue #1809, and a future fix should CHANGE these lines, not work around
-    // them.
+    // the behavior is deliberate and visible; the limitation is documented in
+    // docs/supported-features.md, which points aws-cn / aws-us-gov users at
+    // RegionalDomainName (issue #1809). Changing the value should CHANGE these
+    // lines and that doc section, not work around them.
     it('pins the known-unresolvable global DomainName outside commercial (issue #1809)', () => {
       expect(s3BucketDomainName('my-bucket', 'cn-north-1')).toBe('my-bucket.s3.amazonaws.com.cn');
       expect(s3BucketDomainName('my-bucket', 'us-gov-west-1')).toBe('my-bucket.s3.amazonaws.com');
