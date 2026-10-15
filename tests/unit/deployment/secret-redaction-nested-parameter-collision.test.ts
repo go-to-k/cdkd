@@ -33,7 +33,16 @@ import {
   withdrawRenderedParameterSpelling,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
-import { poisonRenderedSpellingsCollidingIn } from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
+import {
+  mirrorInheritedParameterReads,
+  poisonRenderedSpellingsCollidingIn,
+} from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
+import {
+  droppedArrayElementsOf,
+  recordDroppedArrayElements,
+  recordTakenIfBranch,
+  takenIfBranchOf,
+} from '../../../src/deployment/secret-redaction/resolver-outcomes.js';
 import {
   positionByParameterReread,
   recordInheritedParameterValue,
@@ -509,36 +518,12 @@ describe('a child resource reading BOTH parameters through Fn::Select / Fn::Spli
     expect(JSON.stringify(ours.persisted)).not.toContain(USER);
   });
 
-  // An `Fn::If` is re-read only where its leaf names its branch (issue
-  // #4919). Here both branches resolve to the shared plaintext, spelled
-  // `EXPR_B` (SecretB) in one and `EXPR_A` (a piece of ConnA) in the other:
-  // the leaf cannot say which, so the collision walk counts it a slot read.
-  it('withdraws where an Fn::If leaf cannot name its branch', async () => {
-    const piece = {
-      'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }],
-    };
-    const properties = { A: { 'Fn::If': ['On', SEL_B, piece] }, B: SEL_B };
-    const template = childTemplate({ Mixed: properties });
-    const parent = parentRow(true);
-    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
-    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
-      `postgres://${USER_EXPR}:${EXPR_B}@host`
-    );
-    const before = parentRow(true);
-    withdrawRenderedParameterSpelling(before, PARAM_A);
-    withdrawRenderedParameterSpelling(before, PARAM_B);
-    const ours = await persistAndDesired(parent, template, properties);
-    expect(ours).toEqual(await persistAndDesired(before, template, properties));
-    expect(ours.persisted).toEqual(ours.desired);
-  });
-
   // An array holding an element that can resolve to `AWS::NoValue` shrinks
-  // in the bag. The persist walk pairs the rest only where the count says
-  // which dropped (issue #4919); with two `Fn::If` elements one of which
-  // drops, or an element it cannot classify, it value-scans the WHOLE array
-  // from the slot: a re-read or bare `{Ref}` inside it is a slot read, and the
-  // walk withdraws.
-  const IF_ON = { 'Fn::If': ['On', 'y', { Ref: 'AWS::NoValue' }] };
+  // in the bag. The persist walk pairs the rest by the resolver's record of
+  // what dropped (issue #4954), whatever drops, but only where every kept
+  // element corroborates its bag element; otherwise it value-scans the WHOLE
+  // array from the slot: a re-read or bare `{Ref}` inside it is a slot read,
+  // and the walk withdraws.
   const IF_OFF = { 'Fn::If': ['Off', 'x', { Ref: 'AWS::NoValue' }] };
   // A `{{resolve:` literal kept beside the drop (a public reference, or one
   // embedded in text) has no pair the persist pairing can corroborate, so
@@ -570,56 +555,6 @@ describe('a child resource reading BOTH parameters through Fn::Select / Fn::Spli
       });
     }
   }
-  for (const [shape, inner, shrinkers] of [
-    ['a re-readable Select beside two Fn::If elements', SEL_A, [IF_OFF, IF_ON]],
-    ['a bare Ref beside two Fn::If elements', { Ref: PARAM_A }, [IF_ON, IF_OFF]],
-    [
-      'a re-readable Select beside an intrinsic no count classifies',
-      SEL_A,
-      [IF_OFF, { 'Fn::Base64': 'x' }],
-    ],
-  ] as const) {
-    for (const reversed of [true, false]) {
-      it(`withdraws for ${shape} in an array that can shrink (${reversed ? 'reversed' : 'forward'})`, async () => {
-        const properties = {
-          L: [...shrinkers, inner],
-          B: SEL_B,
-        };
-        const template = {
-          ...childTemplate({ Mixed: properties }),
-          Conditions: { On: { 'Fn::Equals': ['a', 'a'] }, Off: { 'Fn::Equals': ['a', 'b'] } },
-        } as CloudFormationTemplate;
-        const parent = parentRow(reversed);
-        poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
-        const before = parentRow(reversed);
-        withdrawRenderedParameterSpelling(before, PARAM_A);
-        withdrawRenderedParameterSpelling(before, PARAM_B);
-        expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
-          redactInheritedParameterValue(before, PARAM_A, CONN)
-        );
-        const conditions = { On: true, Off: false };
-        const run = async (row: RecordedSecretValues) => {
-          const recordedSecretValues = new Map<string, string>();
-          inheritNestedStackParameterAssociations(recordedSecretValues, row);
-          const resolvedProps = await resolver.resolve(properties, {
-            template, resources: {}, parameters: PARAMETERS, recordedSecretValues,
-            inheritedSecrets: row, conditions,
-          } as unknown as ResolverContext);
-          const engine = { options: { inheritedSecrets: row } } as unknown as DeployEngine;
-          const desired = await resolver.resolve(properties, {
-            template, resources: {}, parameters: redactParametersForDiff.call(engine, PARAMETERS),
-            skipDynamicReferences: true, conditions,
-          } as unknown as ResolverContext);
-          return { persisted: redactSecretsForState(resolvedProps, recordedSecretValues, properties), desired };
-        };
-        const ours = await run(parent);
-        expect(ours).toEqual(await run(before));
-        if (reversed) expect(ours.persisted).toEqual(ours.desired);
-        expect(JSON.stringify(ours.persisted)).not.toContain(SHARED);
-      });
-    }
-  }
-
   // A PUBLIC parameter read beside the literal: the re-read must bind it
   // too, so every parameter this resource reads is recorded, secret or not.
   for (const reversed of [true, false]) {
@@ -956,13 +891,17 @@ describe('the #4919 re-read and array pairing refuse what they cannot certify', 
     ).toEqual({ resolved: SHARED, redacted: EXPR_B });
   });
 
-  it('refuses an Fn::If whose leaf cannot name its branch (equal values, different spellings)', () => {
+  it('re-reads an Fn::If whose branches resolve to one value spelled two ways: the persist walk reads the recorded branch (#4954)', () => {
     const parent = parentRow(true);
     const piece = {
       'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }],
     };
     expect(rereadParameterExpression(piece, bind, parent)).toEqual({ resolved: SHARED, redacted: EXPR_A });
-    expect(rereadParameterExpression({ 'Fn::If': ['On', SEL_B, piece] }, bind, parent)).toBeUndefined();
+    // The first assignment (`On` false) answers; the walk asks only whether one does.
+    expect(rereadParameterExpression({ 'Fn::If': ['On', SEL_B, piece] }, bind, parent)).toEqual({
+      resolved: SHARED,
+      redacted: EXPR_A,
+    });
     // One condition name takes one branch per pass: the same name twice is
     // never the mixed assignment.
     expect(
@@ -974,15 +913,43 @@ describe('the #4919 re-read and array pairing refuse what they cannot certify', 
     ).toBeDefined();
   });
 
-  it('refuses an Fn::If with a branch no re-read evaluates, or a malformed one', () => {
+  it('refuses an Fn::If with a branch that reads a parameter no re-read evaluates, or a malformed one', () => {
     const parent = parentRow(true);
+    // A branch naming no parameter (a resource or pseudo `Ref`, an attribute,
+    // a plain object): a pass taking it reads none in this leaf (#4954).
     for (const source of [
-      { 'Fn::If': ['On', SEL_A, OPAQUE_SEL_B] },
       { 'Fn::If': ['On', SEL_A, { K: 'object branch' }] },
-      // A branch reading something no binding answers (a resource, a pseudo
-      // parameter): if the pass took it, the leaf names no re-read.
       { 'Fn::If': ['On', SEL_A, { Ref: 'SomeResource' }] },
       { 'Fn::If': ['On', { Ref: 'AWS::Region' }, SEL_A] },
+      { 'Fn::If': ['On', { 'Fn::GetAtt': ['Res', 'Arn'] }, SEL_A] },
+      { 'Fn::If': ['On', { 'Fn::If': ['Off', { 'Fn::Base64': 'x' }, SEL_B] }, SEL_A] },
+    ]) {
+      expect(rereadParameterExpression(source, bind, parent)).toEqual({ resolved: CONN, redacted: SPELLING });
+    }
+    // A `{{resolve:` branch: `cdkd scrub` pins a cross-region one into a copy
+    // of the `Fn::If`, whose branch record the persist walk then cannot find.
+    for (const literal of [
+      '{{resolve:secretsmanager:arn:aws:secretsmanager:eu-west-1:123456789012:secret:x:SecretString:::}}',
+      `--x=${EXPR_A}`,
+    ]) {
+      expect(rereadParameterExpression({ 'Fn::If': ['On', SEL_A, literal] }, bind, parent)).toBeUndefined();
+      expect(
+        rereadParameterExpression({ 'Fn::If': ['On', SEL_A, { 'Fn::Base64': literal }] }, bind, parent)
+      ).toBeUndefined();
+    }
+    // No branch re-reads at all: nothing to position.
+    expect(
+      rereadParameterExpression({ 'Fn::If': ['On', { Ref: 'AWS::Region' }, { 'Fn::GetAtt': ['Res', 'Arn'] }] }, bind, parent)
+    ).toBeUndefined();
+    for (const source of [
+      { 'Fn::If': ['On', SEL_A, OPAQUE_SEL_B] },
+      // A parameter read the evaluator cannot follow, beside an attribute.
+      { 'Fn::If': ['On', SEL_A, { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Res', 'Arn'] }, { Ref: PARAM_B }]] }] },
+      { 'Fn::If': ['On', SEL_A, { 'Fn::Sub': `\${AWS::Region}-\${${PARAM_B}}` }] },
+      // A multi-key `Fn::If` in a branch is not the one `resolveValue` dispatches.
+      { 'Fn::If': ['On', SEL_A, { 'Fn::If': ['Off', 'a', 'b'], Ref: PARAM_B }] },
+      // A malformed `Fn::If` in a branch: no taken branch can be named.
+      { 'Fn::If': ['On', SEL_A, { 'Fn::If': ['Off', 'x'] }] },
       { 'Fn::If': ['On', SEL_A] },
       { 'Fn::If': [{ Condition: 'On' }, SEL_A, 'z'] },
       // `AWS::NoValue` inside an argument, not passed up by an `Fn::If`: the
@@ -1188,13 +1155,17 @@ describe('the #4919 re-read and array pairing refuse what they cannot certify', 
     expect(sourceElementsKeptFor([{ 'Fn::If': ['On', NO_VALUE, NO_VALUE] }, 'a'], 1)).toEqual(['a']);
 
     expect(arrayPairsWhateverDrops(['a', { 'Fn::FindInMap': ['M', 'a', 'b'] }])).toBe(true);
-    // `resolveFindInMap` can return `AWS::NoValue` through a `DefaultValue`.
+    // `resolveFindInMap` can return `AWS::NoValue` through a `DefaultValue`,
+    // which the resolver's drop record names (#4954).
     expect(
       arrayPairsWhateverDrops(['a', { 'Fn::FindInMap': ['M', 'a', 'b', { DefaultValue: NO_VALUE }] }])
-    ).toBe(false);
+    ).toBe(true);
     expect(arrayPairsWhateverDrops([IF_ON, NO_VALUE, NO_VALUE, 'a'])).toBe(true);
-    expect(arrayPairsWhateverDrops([IF_ON, IF_ON, 'a'])).toBe(false);
-    expect(arrayPairsWhateverDrops([IF_ON, { 'Fn::FindInMap': ['M', 'a', 'b'] }])).toBe(false);
+    // The resolver records what dropped (#4954): two droppable elements, or
+    // one beside an element nothing here classifies, pair too.
+    expect(arrayPairsWhateverDrops([IF_ON, IF_ON, 'a'])).toBe(true);
+    expect(arrayPairsWhateverDrops([IF_ON, { 'Fn::FindInMap': ['M', 'a', 'b'] }])).toBe(true);
+    expect(arrayPairsWhateverDrops([IF_ON, { 'Fn::Base64': 'x' }, { Ref: 'P' }])).toBe(true);
     expect(arrayPairsWhateverDrops([{ 'Fn::If': ['On', 'y', NO_VALUE], Extra: 1 }])).toBe(false);
     // A kept object the persist corroboration cannot accept on every outcome:
     // a property an `Fn::FindInMap` `DefaultValue` can drop, an intrinsic key
@@ -1318,5 +1289,315 @@ describe('the #4919 re-read and array pairing refuse what they cannot certify', 
       L: ['y', EXPR_B],
       M: EXPR_B,
     });
+  });
+});
+
+describe('the resolver records the Fn::If branch and the array elements a pass took, so the leftover #4919 shapes keep each spelling (#4954)', () => {
+  /** `C` and `D` are each other's negation, so of two elements gated on them exactly one drops. */
+  const conditioned = (resources: Record<string, unknown>): CloudFormationTemplate =>
+    ({
+      ...childTemplate(resources),
+      Conditions: { C: { 'Fn::Equals': ['a', 'a'] }, D: { 'Fn::Not': [{ Condition: 'C' }] } },
+    }) as CloudFormationTemplate;
+  const PIECE_A = {
+    'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }],
+  };
+  const NV = { Ref: 'AWS::NoValue' };
+
+  async function run(
+    parent: RecordedSecretValues,
+    template: CloudFormationTemplate,
+    properties: Record<string, unknown>,
+    conditions: Record<string, boolean>
+  ): Promise<{ persisted: Record<string, unknown>; desired: Record<string, unknown> }> {
+    const recordedSecretValues = new Map<string, string>();
+    inheritNestedStackParameterAssociations(recordedSecretValues, parent);
+    const resolvedProps = await resolver.resolve(properties, {
+      template,
+      resources: {},
+      parameters: PARAMETERS,
+      recordedSecretValues,
+      inheritedSecrets: parent,
+      conditions,
+    } as unknown as ResolverContext);
+    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+    const desired = (await resolver.resolve(properties, {
+      template,
+      resources: {},
+      parameters: redactParametersForDiff.call(engine, PARAMETERS),
+      inheritedSecrets: parent,
+      skipDynamicReferences: true,
+      conditions,
+    } as unknown as ResolverContext)) as Record<string, unknown>;
+    return {
+      persisted: redactSecretsForState(resolvedProps, recordedSecretValues, properties) as Record<
+        string,
+        unknown
+      >,
+      desired,
+    };
+  }
+
+  // Each shape reads ConnA in `A` or `Lit` and SecretB beside it. On `main`
+  // each was a slot read, and the collision walk withdrew ConnA's spelling for
+  // the whole child, so `Lit` persisted the survivor where
+  // `cdkd diff --recursive` renders the parent row's literal.
+  const SHAPES: Record<string, { A: unknown; B: unknown }> = {
+    'an Fn::If whose branches resolve to one plaintext spelled two ways': {
+      A: { 'Fn::If': ['C', SEL_B, PIECE_A] },
+      B: SEL_B,
+    },
+    'an Fn::If with a pseudo-parameter branch': {
+      A: { 'Fn::If': ['C', { Ref: 'AWS::Region' }, SEL_A] },
+      B: SEL_B,
+    },
+    'an Fn::If with a branch the re-read does not evaluate and that reads no parameter': {
+      A: { 'Fn::If': ['D', { 'Fn::Base64': 'x' }, { Ref: PARAM_A }] },
+      B: { Ref: PARAM_B },
+    },
+    'two droppable elements of which one drops, around Select ConnA': {
+      A: [{ 'Fn::If': ['C', 'x', NV] }, { 'Fn::If': ['D', 'y', NV] }, SEL_A],
+      B: SEL_B,
+    },
+    'two droppable elements of which one drops, around bare ConnA': {
+      A: [{ 'Fn::If': ['D', 'y', NV] }, { Ref: PARAM_A }, { 'Fn::If': ['C', 'x', NV] }],
+      B: { Ref: PARAM_B },
+    },
+    'an unclassified element beside a droppable one, around Select ConnA': {
+      A: [{ 'Fn::If': ['D', 'x', NV] }, { 'Fn::Base64': 'x' }, SEL_A],
+      B: SEL_B,
+    },
+  };
+  for (const c of [true, false]) {
+    for (const reversed of [true, false]) {
+      for (const literalLast of [true, false]) {
+        for (const [shape, { A, B }] of Object.entries(SHAPES)) {
+          it(`C=${c}, ${reversed ? 'reversed' : 'forward'} parent order, ${literalLast ? 'literal' : 'sibling'} read last, ${shape}`, async () => {
+            const properties = literalLast ? { B, A, Lit: { Ref: PARAM_A } } : { Lit: { Ref: PARAM_A }, A, B };
+            const template = conditioned({ Mixed: properties });
+            const parent = parentRow(reversed);
+            poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+            // Nothing withdrawn: the diff side binds the literal.
+            expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(SPELLING);
+            const { persisted, desired } = await run(parent, template, properties, { C: c, D: !c });
+            expect(persisted).toEqual(desired);
+            // What `cdkd diff --recursive` renders from the parent row's literal.
+            expect(persisted['Lit']).toBe(SPELLING);
+            expect(JSON.stringify(persisted['B'])).toContain(EXPR_B);
+            expect(JSON.stringify(persisted)).not.toContain(SHARED);
+            expect(JSON.stringify(persisted)).not.toContain(USER);
+          });
+        }
+      }
+    }
+  }
+
+  // The leaf of the two-spellings shape is the shared plaintext either way;
+  // only the recorded branch says which token it persists.
+  for (const reversed of [true, false]) {
+    it(`persists the taken branch's own token for one plaintext spelled two ways (${reversed ? 'reversed' : 'forward'})`, async () => {
+      const properties = { A: { 'Fn::If': ['C', SEL_B, PIECE_A] }, B: SEL_B, Lit: { Ref: PARAM_A } };
+      const template = conditioned({ Mixed: properties });
+      for (const c of [true, false]) {
+        const parent = parentRow(reversed);
+        poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+        const { persisted } = await run(parent, template, properties, { C: c, D: !c });
+        expect(persisted['A']).toBe(c ? EXPR_B : EXPR_A);
+      }
+    });
+  }
+
+  it('still withdraws where the taken branch could read a parameter the re-read cannot follow', () => {
+    const template = conditioned({
+      Mixed: {
+        A: { 'Fn::If': ['C', SEL_A, OPAQUE_SEL_B] },
+        B: { Ref: PARAM_B },
+      },
+    });
+    const parent = parentRow(true);
+    poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
+    expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(`postgres://${USER_EXPR}:${EXPR_B}@host`);
+  });
+});
+
+describe('the resolver outcome records (#4954)', () => {
+  const NV = { Ref: 'AWS::NoValue' };
+  /** A nested child's pass (`inherited`), or a top-level stack's (`null`). */
+  const resolveInto = async (
+    value: unknown,
+    bag: RecordedSecretValues,
+    conditions: Record<string, boolean>,
+    inherited: RecordedSecretValues | null = parentRow(true)
+  ): Promise<unknown> =>
+    resolver.resolve(value, {
+      template: childTemplate({}),
+      resources: {},
+      parameters: PARAMETERS,
+      recordedSecretValues: bag,
+      ...(inherited && { inheritedSecrets: inherited }),
+      conditions,
+    } as unknown as ResolverContext);
+
+  it('records Fn::If branches only in a nested child holding inherited secrets, and array drops in any stack', async () => {
+    const on = { 'Fn::If': ['On', 'a', NV] };
+    const list = [on, 'b'];
+    const topLevel: RecordedSecretValues = new Map();
+    await resolveInto(list, topLevel, { On: false }, null);
+    expect(takenIfBranchOf(topLevel, on)).toBeUndefined();
+    // The top-level array pairing reads the drops.
+    expect(droppedArrayElementsOf(topLevel, list)).toEqual([0]);
+    const emptyParent: RecordedSecretValues = new Map();
+    await resolveInto(list, emptyParent, { On: false }, new Map());
+    expect(takenIfBranchOf(emptyParent, on)).toBeUndefined();
+    const nested: RecordedSecretValues = new Map();
+    await resolveInto(list, nested, { On: false });
+    expect(takenIfBranchOf(nested, on)).toBe(false);
+    expect(droppedArrayElementsOf(nested, list)).toEqual([0]);
+  });
+
+  it('records the branch each Fn::If object took, per pass bag, and poisons one resolved two ways', async () => {
+    const on = { 'Fn::If': ['On', 'a', 'b'] };
+    const missing = { 'Fn::If': ['Nowhere', 'a', 'b'] };
+    const bag: RecordedSecretValues = new Map();
+    await resolveInto([on, missing], bag, { On: true });
+    expect(takenIfBranchOf(bag, on)).toBe(true);
+    // A condition the table lacks takes the false branch, as `resolveIf` warns.
+    expect(takenIfBranchOf(bag, missing)).toBe(false);
+    // Another bag holds nothing: the record is the pass's own.
+    expect(takenIfBranchOf(new Map(), on)).toBeUndefined();
+    // A structurally equal object is not the one resolved.
+    expect(takenIfBranchOf(bag, { 'Fn::If': ['On', 'a', 'b'] })).toBeUndefined();
+    await resolveInto(on, bag, { On: true });
+    expect(takenIfBranchOf(bag, on)).toBe(true);
+    await resolveInto(on, bag, { On: false });
+    expect(takenIfBranchOf(bag, on)).toBeUndefined();
+    recordTakenIfBranch(bag, on, true);
+    expect(takenIfBranchOf(bag, on)).toBeUndefined();
+  });
+
+  it('records which array elements dropped only when one did, and poisons a second answer', async () => {
+    const dropping = [{ 'Fn::If': ['On', NV, 'a'] }, 'b', NV];
+    const whole = ['a', { 'Fn::If': ['On', 'b', NV] }];
+    const bag: RecordedSecretValues = new Map();
+    // A top-level stack's pass: array drops are recorded in any stack.
+    await resolveInto({ L: dropping, M: whole }, bag, { On: true }, null);
+    expect(droppedArrayElementsOf(bag, dropping)).toEqual([0, 2]);
+    expect(droppedArrayElementsOf(bag, whole)).toBeUndefined();
+    await resolveInto(dropping, bag, { On: true }, null);
+    expect(droppedArrayElementsOf(bag, dropping)).toEqual([0, 2]);
+    await resolveInto(dropping, bag, { On: false }, null);
+    expect(droppedArrayElementsOf(bag, dropping)).toBeUndefined();
+  });
+
+  it('mirrors both records onto the persist bag the outputs pass registers', async () => {
+    const pass: RecordedSecretValues = new Map();
+    const persist: RecordedSecretValues = new Map();
+    mirrorInheritedParameterReads(pass, persist);
+    const on = { 'Fn::If': ['On', 'a', NV] };
+    const list = [on, 'b'];
+    await resolveInto(list, pass, { On: false });
+    expect(takenIfBranchOf(persist, on)).toBe(false);
+    expect(droppedArrayElementsOf(persist, list)).toEqual([0]);
+  });
+
+  it('positions an Fn::If leaf by the recorded branch alone, and falls back to the leaf only without one', async () => {
+    const parent = parentRow(true);
+    const source = { 'Fn::If': ['C', SEL_B, { Ref: PARAM_A }] };
+    const bag: RecordedSecretValues = new Map();
+    inheritNestedStackParameterAssociations(bag, parent);
+    // Both parameters read, so the leaf-alone reading could take either branch.
+    const value = (await resolver.resolve(
+      { A: source, O: { Ref: PARAM_B } },
+      {
+        template: childTemplate({}),
+        resources: {},
+        parameters: PARAMETERS,
+        recordedSecretValues: bag,
+        inheritedSecrets: parent,
+        conditions: { C: false },
+      } as unknown as ResolverContext
+    )) as Record<string, unknown>;
+    expect(positionByParameterReread(value['A'], source, bag)).toBe(SPELLING);
+    // A leaf the recorded branch does not evaluate to: refused, though the
+    // untaken branch evaluates to it.
+    expect(positionByParameterReread(SHARED, source, bag)).toBeUndefined();
+    // A poisoned record reads as none: the #4919 leaf reading answers.
+    recordTakenIfBranch(bag, source, true);
+    expect(positionByParameterReread(value['A'], source, bag)).toBe(SPELLING);
+    expect(positionByParameterReread(SHARED, source, bag)).toBe(EXPR_B);
+    // ...and refuses one plaintext spelled two ways, which only a record names.
+    const twoWays = { 'Fn::If': ['C', SEL_B, { 'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }] }] };
+    expect(positionByParameterReread(SHARED, twoWays, bag)).toBeUndefined();
+    recordTakenIfBranch(bag, twoWays, false);
+    expect(positionByParameterReread(SHARED, twoWays, bag)).toBe(EXPR_A);
+  });
+
+  it('keys the records by the template OBJECT resolved: a structural copy finds none, and the slot answers', async () => {
+    const parent = parentRow(true);
+    const twoWays = {
+      'Fn::If': [
+        'C',
+        SEL_B,
+        { 'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }] },
+      ],
+    };
+    const properties = { A: twoWays, B: SEL_B };
+    const resolveFrom = async (source: Record<string, unknown>): Promise<{ bag: RecordedSecretValues; value: unknown }> => {
+      const bag: RecordedSecretValues = new Map();
+      inheritNestedStackParameterAssociations(bag, parent);
+      const value = await resolver.resolve(source, {
+        template: childTemplate({}),
+        resources: {},
+        parameters: PARAMETERS,
+        recordedSecretValues: bag,
+        inheritedSecrets: parent,
+        conditions: { C: false },
+      } as unknown as ResolverContext);
+      return { bag, value };
+    };
+    const same = await resolveFrom(properties);
+    expect((redactSecretsForState(same.value, same.bag, properties) as Record<string, unknown>)['A']).toBe(EXPR_A);
+    // The persist source must be the objects resolved into the bag: a copy
+    // resolved in their place leaves the original unrecorded, the #4919 leaf
+    // reading refuses the two spellings, and the slot (SecretB, read last)
+    // answers -- which the collision walk's verdict does not predict.
+    const copied = await resolveFrom(structuredClone(properties));
+    expect(takenIfBranchOf(copied.bag, twoWays)).toBeUndefined();
+    expect((redactSecretsForState(copied.value, copied.bag, properties) as Record<string, unknown>)['A']).toBe(EXPR_B);
+  });
+
+  it('pairs a shrunken array by the recorded drops, and refuses a record the bag does not fit', () => {
+    const secrets: RecordedSecretValues = new Map();
+    for (const expression of [EXPR_A, EXPR_B]) {
+      secrets.set(SHARED, expression);
+      recordResolvedPair(secrets, expression, SHARED);
+    }
+    const IF_X = { 'Fn::If': ['C', 'x', NV] };
+    const IF_Y = { 'Fn::If': ['D', 'y', NV] };
+    const list = [IF_X, IF_Y, EXPR_A];
+    // No record: two droppable elements, one dropped -- the value scan's survivor.
+    expect(sourceElementsKeptFor(list, 2, secrets)).toBeUndefined();
+    expect(redactSecretsForState({ L: ['y', SHARED], M: SHARED }, secrets, { L: list, M: EXPR_B })).toEqual({
+      L: ['y', EXPR_B],
+      M: EXPR_B,
+    });
+    recordDroppedArrayElements(secrets, list, [0]);
+    expect(sourceElementsKeptFor(list, 2, secrets)).toEqual([IF_Y, EXPR_A]);
+    expect(redactSecretsForState({ L: ['y', SHARED], M: SHARED }, secrets, { L: list, M: EXPR_B })).toEqual({
+      L: ['y', EXPR_A],
+      M: EXPR_B,
+    });
+    // A bag of another length than the record leaves: no count fallback.
+    expect(sourceElementsKeptFor(list, 1, secrets)).toBeUndefined();
+    // A record whose kept literal disagrees with its bag element (a producer
+    // removed one): the corroboration still refuses.
+    const withLiteral = [IF_X, 'lit', EXPR_A];
+    recordDroppedArrayElements(secrets, withLiteral, [0]);
+    expect(
+      redactSecretsForState({ L: ['other', SHARED], M: SHARED }, secrets, { L: withLiteral, M: EXPR_B })
+    ).toEqual({ L: ['other', EXPR_B], M: EXPR_B });
+    expect(
+      redactSecretsForState({ L: ['lit', SHARED], M: SHARED }, secrets, { L: withLiteral, M: EXPR_B })
+    ).toEqual({ L: ['lit', EXPR_A], M: EXPR_B });
   });
 });

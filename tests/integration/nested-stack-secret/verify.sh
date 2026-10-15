@@ -202,6 +202,9 @@ CHILD_COLON_TOUCH_PARAM="cdkd-nested-child-colontouch-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_IF_REV_PARAM="cdkd-nested-child-fallthroughifrev-${ACCOUNT_ID}"
 CHILD_FALLTHROUGH_SUBSEL_REV_PARAM="cdkd-nested-child-fallthroughsubselrev-${ACCOUNT_ID}"
 CHILD_FALL_SHRINK_RULE="cdkd-nested-child-fallshrink-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM="cdkd-nested-child-fallthroughiftwoways-${ACCOUNT_ID}"
+CHILD_FALLTHROUGH_IF_ATTR_PARAM="cdkd-nested-child-fallthroughifattr-${ACCOUNT_ID}"
+CHILD_FALL_SHRINK_TWO_RULE="cdkd-nested-child-fallshrinktwo-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_PARAM="cdkd-nested-child-handoffspans-${ACCOUNT_ID}"
 CHILD_HANDOFF_SPANS_IF_PARAM="cdkd-nested-child-handoffspansif-${ACCOUNT_ID}"
 CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
@@ -650,6 +653,7 @@ cleanup() {
              "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
              "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
              "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
+             "${CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM}" "${CHILD_FALLTHROUGH_IF_ATTR_PARAM}" \
              "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" "${PARENT_CONSUMER_PARAM}" \
              "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" "${PARENT_EMBEDPAIR_PARAM}" \
              "${PARENT_MULTIPAIR_PARAM}" \
@@ -660,6 +664,7 @@ cleanup() {
     # only for rules a managed service owns.
     aws events delete-rule --name "${CHILD_LIST_RULE}" --region "${REGION}" >/dev/null 2>&1
     aws events delete-rule --name "${CHILD_FALL_SHRINK_RULE}" --region "${REGION}" >/dev/null 2>&1
+    aws events delete-rule --name "${CHILD_FALL_SHRINK_TWO_RULE}" --region "${REGION}" >/dev/null 2>&1
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
@@ -1411,6 +1416,68 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4954: the shapes #4919 still left to the slot ------------------------
+# `FallthroughIfTwoWays` (an Fn::If whose branches resolve to one plaintext
+# spelled two ways), `FallthroughIfAttribute` (an Fn::If whose other branch is
+# an attribute) and `FallthroughShrinkTwo` (lists of which only some droppable
+# elements drop, or one element is an intrinsic nothing classifies) each read
+# `FallConnA2` beside `FallSecretB2`. Before #4954 each was a slot read, so
+# cdkd withdrew `FallConnA2`'s literal spelling for the WHOLE child: every arm
+# here persisted the survivor `fall2:AWSCURRENT:`, and so did the #4919 arms
+# below. Checked FIRST, so a regression names this issue.
+echo "==> #4954: FallConnA2 read through an Fn::If the leaf cannot name, an Fn::If over an attribute, and lists that drop some elements"
+assert_eq "premise: FallthroughIfTwoWays's synthesized Description is an Fn::If between FallSecretB2 and a piece of FallConnA2, its Value a Ref to FallSecretB2" \
+  "$(jq -c '.Resources.FallthroughIfTwoWays.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::If":["Fall4919Off",{"Ref":"FallSecretB2"},{"Fn::Select":[0,{"Fn::Split":["@",{"Fn::Select":[2,{"Fn::Split":[":",{"Ref":"FallConnA2"}]}]}]}]}]},{"Ref":"FallSecretB2"}]'
+assert_eq "premise: FallthroughIfAttribute's synthesized Description is an Fn::If between a Select of FallConnA2 and an attribute" \
+  "$(jq -c '.Resources.FallthroughIfAttribute.Properties | [.Description, .Value]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"Fn::If":["Fall4919On",{"Fn::Select":[0,{"Fn::Split":["@",{"Ref":"FallConnA2"}]}]},{"Fn::GetAtt":["FallthroughShrinkTwo","Arn"]}]},{"Ref":"FallSecretB2"}]'
+assert_eq "premise: FallthroughShrinkTwo's synthesized matchers hold two droppable elements, and one beside an Fn::Base64" \
+  "$(jq -c '.Resources.FallthroughShrinkTwo.Properties | [.EventPattern.detail, .Description]' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '[{"twoIfs":[{"Fn::If":["Fall4919On","kept4954",{"Ref":"AWS::NoValue"}]},{"Fn::If":["Fall4919Off","never",{"Ref":"AWS::NoValue"}]},{"Ref":"FallConnA2"}],"unclassified":[{"Fn::If":["Fall4919Off","never",{"Ref":"AWS::NoValue"}]},{"Fn::Base64":"x4954"},{"Ref":"FallConnA2"}]},{"Ref":"FallSecretB2"}]'
+FALL4954_CONN_VALUE="postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}@host"
+assert_eq "the LIVE FallthroughIfTwoWays Description holds the resolved piece of FallConnA2" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "${FALL2_PW_VALUE}"
+assert_eq "the LIVE FallthroughIfAttribute Description holds the resolved text before the @" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${CHILD_FALLTHROUGH_IF_ATTR_PARAM}" \
+    --query 'Parameters[0].Description' --output text)" "postgres://${FALL2_USER_VALUE}:${FALL2_PW_VALUE}"
+LIVE_SHRINK_TWO_DETAIL=$(aws events describe-rule --name "${CHILD_FALL_SHRINK_TWO_RULE}" \
+  --region "${REGION}" --query 'EventPattern' --output text | jq -c '.detail | [.twoIfs, .unclassified]')
+assert_eq "the LIVE FallthroughShrinkTwo matchers hold the resolved FallConnA2, each false Fn::If dropped" \
+  "${LIVE_SHRINK_TWO_DETAIL}" "$(jq -cn --arg c "${FALL4954_CONN_VALUE}" '[["kept4954", $c], ["eDQ5NTQ=", $c]]')"
+FALL4954_TWO_WAYS_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughIfTwoWays.properties.Description')"
+FALL4954_ATTR_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughIfAttribute.properties.Description')"
+FALL4954_SHRINK_STATE="$(jq_state "${CHILD_STATE}" '.resources.FallthroughShrinkTwo.properties.EventPattern.detail | [.twoIfs, .unclassified] | tojson')"
+# Each arm alone withdraws the literal for the whole child, so all three go
+# red together; the line names every arm that persisted the survivor.
+FALL4954_WITHDRAWN=""
+for arm in "FallthroughIfTwoWays=${FALL4954_TWO_WAYS_STATE}" "FallthroughIfAttribute=${FALL4954_ATTR_STATE}" \
+           "FallthroughShrinkTwo=${FALL4954_SHRINK_STATE}"; do
+  case "${arm#*=}" in
+    *"${FALL2_EXPR_B}"*) FALL4954_WITHDRAWN="${FALL4954_WITHDRAWN} ${arm%%=*}" ;;
+  esac
+done
+if [ -n "${FALL4954_WITHDRAWN}" ]; then
+  echo "FAIL: #4954 arm(s)${FALL4954_WITHDRAWN} persisted the survivor's spelling (fall2:AWSCURRENT:), so FallConnA2's literal was withdrawn for the child (issue #4954)" >&2
+  exit 1
+fi
+assert_eq "FallthroughIfTwoWays.Description persists the taken branch's token, the literal's own" \
+  "${FALL4954_TWO_WAYS_STATE}" "${FALL2_EXPR_A}"
+assert_eq "FallthroughIfAttribute.Description persists the literal's own tokens" \
+  "${FALL4954_ATTR_STATE}" "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}"
+assert_eq "FallthroughShrinkTwo's matchers persist the literal's own tokens" \
+  "${FALL4954_SHRINK_STATE}" \
+  "$(jq -rn --arg c "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_A}@host" '[["kept4954", $c], ["eDQ5NTQ=", $c]] | tojson')"
+for id in FallthroughIfTwoWays FallthroughIfAttribute; do
+  assert_eq "${id}.Value persists FallSecretB2's OWN expression" \
+    "$(jq_state "${CHILD_STATE}" ".resources.${id}.properties.Value")" "${FALL2_EXPR_B}"
+done
+assert_eq "FallthroughShrinkTwo.Description persists FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.resources.FallthroughShrinkTwo.properties.Description')" "${FALL2_EXPR_B}"
+
 # --- #4919: one resource reading the literal through Fn::If, Fn::Sub in -----
 # Fn::Select, or a list an Fn::If element can shrink, beside the sibling.
 # `FallthroughIfReversed`, `FallthroughSubSelectReversed` and
@@ -2035,6 +2102,13 @@ for id in FallthroughIfReversed FallthroughSubSelectReversed FallthroughShrinkRu
   fi
 done
 echo "    OK: the child's plan carries no row for the #4919 arms"
+for id in FallthroughIfTwoWays FallthroughIfAttribute FallthroughShrinkTwo; do
+  if grep -qF "UPDATE: ${id} (" <<<"${DEPLOY_2D_OUT}"; then
+    echo "FAIL: the child's plan carries an UPDATE for ${id}, which nothing changed: its persisted spelling disagrees with the diff side (issue #4954)" >&2
+    exit 1
+  fi
+done
+echo "    OK: the child's plan carries no row for the #4954 arms"
 # ...and nothing was sent for it either.
 COLON_VERSION_AFTER="$(colon_version)"
 if [ "${COLON_VERSION_AFTER}" != "${COLON_VERSION_BEFORE}" ]; then
@@ -2062,6 +2136,7 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
          "${CHILD_FALLTHROUGH_SELECT_REV_PARAM}" "${CHILD_FALLTHROUGH_MIXED_REV_PARAM}" \
          "${CHILD_FALLTHROUGH_COLON_REV_PARAM}" "${CHILD_COLON_TOUCH_PARAM}" \
          "${CHILD_FALLTHROUGH_IF_REV_PARAM}" "${CHILD_FALLTHROUGH_SUBSEL_REV_PARAM}" \
+         "${CHILD_FALLTHROUGH_IF_TWO_WAYS_PARAM}" "${CHILD_FALLTHROUGH_IF_ATTR_PARAM}" \
          "${CHILD_PIN_TWIN_PARAM}" "${CHILD_PIN_JOIN_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}" \
          "${PARENT_EMBEDPAIR_PARAM}" "${PARENT_MULTIPAIR_PARAM}"; do
@@ -2070,10 +2145,10 @@ for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM
 done
 echo "    OK: every stack-owned SSM parameter is gone"
 
-# The #2327 and #4919 arms' rules are the non-SSM resources this stack owns, so
-# their destroy is asserted on its own terms rather than inferred from the loop
-# above.
-for r in "${CHILD_LIST_RULE}" "${CHILD_FALL_SHRINK_RULE}"; do
+# The #2327, #4919 and #4954 arms' rules are the non-SSM resources this stack
+# owns, so their destroy is asserted on its own terms rather than inferred from
+# the loop above.
+for r in "${CHILD_LIST_RULE}" "${CHILD_FALL_SHRINK_RULE}" "${CHILD_FALL_SHRINK_TWO_RULE}"; do
   assert_gone "EventBridge rule '${r}' still exists after destroy" \
     aws events describe-rule --name "${r}" --region "${REGION}"
 done

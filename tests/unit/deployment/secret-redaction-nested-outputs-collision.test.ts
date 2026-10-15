@@ -152,6 +152,9 @@ async function persistAndDesired(
         template,
         resources: {},
         parameters,
+        // As `buildResolverContext` sets it on the deploy's diff context, so
+        // an `Fn::Split` keeps a parent-resolved token whole (issue #4914).
+        inheritedSecrets: parent,
         skipDynamicReferences: true,
       } as unknown as ResolverContext);
     }
@@ -197,6 +200,23 @@ describe("a nested child's Outputs reading BOTH parameters keep each spelling (#
     'bare ConnA, Sub-in-Select SecretB': { OA: { Ref: PARAM_A }, OB: SUB_SEL_B },
     'Fn::If over ConnA, bare SecretB': {
       OA: { 'Fn::If': ['On', 'z', { Ref: PARAM_A }] },
+      OB: { Ref: PARAM_B },
+    },
+    // Issue #4954: the outputs pass's taken branch, mirrored onto the outputs
+    // bag. Its branches resolve to one plaintext spelled two ways (the taken
+    // one a piece of ConnA), or the untaken one is a pseudo parameter.
+    'Fn::If between SecretB and a piece of ConnA, bare SecretB': {
+      OA: {
+        'Fn::If': [
+          'On',
+          { Ref: PARAM_B },
+          { 'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: PARAM_A }] }] }] }] },
+        ],
+      },
+      OB: { Ref: PARAM_B },
+    },
+    'Fn::If between a pseudo parameter and ConnA, bare SecretB': {
+      OA: { 'Fn::If': ['On', { Ref: 'AWS::Region' }, { Ref: PARAM_A }] },
       OB: { Ref: PARAM_B },
     },
   };

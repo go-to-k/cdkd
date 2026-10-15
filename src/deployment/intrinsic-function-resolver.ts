@@ -553,7 +553,17 @@ export class IntrinsicFunctionResolver {
         () => value.map((v) => this.resolveValue(v, context)),
         (pending) => this.warnAbandonedParts(pending)
       );
-      return resolved.filter((v) => v !== AWS_NO_VALUE);
+      const kept = resolved.filter((v) => v !== AWS_NO_VALUE);
+      // Issue #4954: which elements dropped, for the persist walk pairing a
+      // shrunken bag array with its source; only when one did.
+      if (kept.length !== resolved.length) {
+        const dropped: number[] = [];
+        resolved.forEach((v, i) => {
+          if (v === AWS_NO_VALUE) dropped.push(i);
+        });
+        parameterSecretsMixin.recordDroppedArrayElementsIn(context, value, dropped);
+      }
+      return kept;
     }
 
     const obj = value as Record<string, unknown>;

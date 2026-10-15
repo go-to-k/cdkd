@@ -5,6 +5,10 @@ import {
   type ParameterBinding,
 } from '../secret-redaction/nested-stack.js';
 import { arrayPairsWhateverDrops } from '../secret-redaction/redact-path.js';
+import {
+  recordDroppedArrayElements,
+  recordTakenIfBranch,
+} from '../secret-redaction/resolver-outcomes.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -264,6 +268,46 @@ export function mirrorInheritedParameterReads(
 }
 
 /**
+ * Record the branch the pass took for the `Fn::If` object `source` (issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954)) on the pass bag and
+ * its persist mirror ({@link mirrorInheritedParameterReads}), as the
+ * parameter reads are, so the walk persisting the leaf reads the branch.
+ * Only in a nested child holding inherited secrets: its one reader,
+ * `positionByParameterReread`, needs the inherited-reads record, which
+ * {@link recordInheritedParameterSecrets} writes under the same condition, so
+ * an ordinary stack skips the work.
+ */
+export function recordTakenIfBranchIn(
+  context: ResolverContext,
+  source: object,
+  tookTrueBranch: boolean
+): void {
+  if (!context.inheritedSecrets || context.inheritedSecrets.size === 0) return;
+  const recorded = context.recordedSecretValues;
+  if (recorded === undefined) return;
+  recordTakenIfBranch(recorded, source, tookTrueBranch);
+  const mirror = parameterReadMirrors.get(recorded);
+  if (mirror) recordTakenIfBranch(mirror, source, tookTrueBranch);
+}
+
+/**
+ * Record which elements of the source array `source` the pass dropped as
+ * `AWS::NoValue` (issue [#4954](https://github.com/go-to-k/cdkd/issues/4954)),
+ * on the pass bag and its persist mirror; called only when one did.
+ */
+export function recordDroppedArrayElementsIn(
+  context: ResolverContext,
+  source: readonly unknown[],
+  dropped: readonly number[]
+): void {
+  const recorded = context.recordedSecretValues;
+  if (recorded === undefined) return;
+  recordDroppedArrayElements(recorded, source, dropped);
+  const mirror = parameterReadMirrors.get(recorded);
+  if (mirror) recordDroppedArrayElements(mirror, source, dropped);
+}
+
+/**
  * Record in `recorded` each physical id the PARENT row read
  * (`physicalNameCopiesOf`, go-to-k/cdkd#4810) that a string leaf of the
  * parameter's `value` contains (go-to-k/cdkd#4819). A child reader's
@@ -321,8 +365,8 @@ function carriedExpressionFor(
  *
  * The carry holds ONE expression per plaintext per resource, so in such a
  * resource whichever parameter resolved last decides every value-scanned leaf
- * (a read beside a `Fn::GetAtt`, an `Fn::If` whose branches the leaf cannot
- * tell apart): the other parameter's leaf persists
+ * (a read beside a `Fn::GetAtt`, an `Fn::Sub` naming a pseudo parameter under
+ * `Fn::Select`): the other parameter's leaf persists
  * a token its diff side does not render, a change on every deploy. Before
  * #4644 the literal parameter carried the survivor, which the diff side bound
  * too. Withdrawing its spelling restores exactly that for the parameter
@@ -342,11 +386,13 @@ function carriedExpressionFor(
  * parameters, `rereadParameterExpression`, issue
  * [#4731](https://github.com/go-to-k/cdkd/issues/4731); since issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919) also `Fn::Sub` inside
- * one, and an `Fn::If` whose every branch re-reads and whose leaf names its
- * branch) is no slot read either, nor is a read in a bag array the persist
- * walk pairs whatever drops out of it (`arrayPairsWhateverDrops`). Any other
- * `Fn::If` branch counts, untaken ones included; over-reading only withdraws
- * more, which is the pre-#4644 answer. `Outputs` count as one resource whose leaves are each
+ * one, and an `Fn::If` each of whose branches re-reads or names no parameter,
+ * the persist walk reading the branch the resolver recorded, issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954)) is no slot read
+ * either, nor is a read in a bag array the persist walk pairs whatever drops
+ * out of it (`arrayPairsWhateverDrops`, by the resolver's record of what
+ * dropped). Any other `Fn::If` branch counts, untaken ones included;
+ * over-reading only withdraws more, which is the pre-#4644 answer. `Outputs` count as one resource whose leaves are each
  * output's `Value` (issue [#4913](https://github.com/go-to-k/cdkd/issues/4913):
  * the outputs bag carries the outputs pass's reads, `mirrorInheritedParameterReads`).
  */

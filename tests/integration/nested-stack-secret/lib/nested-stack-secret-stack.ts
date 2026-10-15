@@ -138,6 +138,13 @@ import { Construct } from 'constructs';
  *    inside `Fn::Select`, and list matchers an `Fn::If` element can shrink.
  *    Before #4919 each was a slot read, and cdkd withdrew `FallConnA2`'s
  *    literal spelling for the whole child.
+ *  - `FallthroughIfTwoWays`, `FallthroughIfAttribute`, `FallthroughShrinkTwo`
+ *    (child) — THE #4954 ARMS, the shapes #4919 still left to the slot: an
+ *    `Fn::If` whose branches resolve to one plaintext spelled two ways, an
+ *    `Fn::If` whose other branch is an attribute, and lists of which only some
+ *    droppable elements drop or one element is an intrinsic nothing
+ *    classifies. The resolver now records the branch and the dropped
+ *    elements, so the persist walk positions each.
  *  - `ListPair` (child) — THE #2327 ARM. The `CommaDelimitedList` twin of
  *    `HandoffPair`: ONE `AWS::Events::Rule` whose two matchers are ARRAYS by
  *    the time redaction runs, beside a PUBLIC list-typed negative control.
@@ -221,6 +228,9 @@ class SecretBearingChild extends cdk.NestedStack {
       fallthroughIfReversedParamName: string;
       fallthroughSubSelectReversedParamName: string;
       fallthroughShrinkRuleName: string;
+      fallthroughIfTwoWaysParamName: string;
+      fallthroughIfAttributeParamName: string;
+      fallthroughShrinkTwoRuleName: string;
       pinParamName: string;
       pinParamDescription: string;
       pinTwinParamName: string;
@@ -613,6 +623,69 @@ class SecretBearingChild extends cdk.NestedStack {
       },
     });
     fallthroughShrinkRule.overrideLogicalId('FallthroughShrinkRule');
+
+    // THE #4954 ARMS, each overridden so the template spells the shape exactly.
+    // `FallthroughIfTwoWays`: both branches resolve to the shared password --
+    // `FallSecretB2` (spelled `fall2:AWSCURRENT:`) or the piece of
+    // `FallConnA2` between `:` and `@` (spelled `fall2::`) -- and the false
+    // condition takes the piece, so only the taken branch names the token.
+    const fallthroughIfTwoWays = new ssm.StringParameter(this, 'FallthroughIfTwoWays', {
+      parameterName: names.fallthroughIfTwoWaysParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: 'replaced by the override below',
+    });
+    const ifTwoWaysCfn = fallthroughIfTwoWays.node.defaultChild as ssm.CfnParameter;
+    ifTwoWaysCfn.overrideLogicalId('FallthroughIfTwoWays');
+    ifTwoWaysCfn.addPropertyOverride('Description', {
+      'Fn::If': [
+        'Fall4919Off',
+        { Ref: 'FallSecretB2' },
+        {
+          'Fn::Select': [
+            0,
+            { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: 'FallConnA2' }] }] }] },
+          ],
+        },
+      ],
+    });
+    // `FallthroughIfAttribute`: the untaken branch reads an attribute the
+    // re-read cannot evaluate.
+    const fallthroughShrinkTwo = new events.CfnRule(this, 'FallthroughShrinkTwo', {
+      name: names.fallthroughShrinkTwoRuleName,
+      description: fallSecret2.valueAsString,
+      eventPattern: {
+        source: ['cdkd.integ.nested-stack-secret'],
+        detail: {
+          // Two droppable elements, of which only the false one drops.
+          twoIfs: [
+            cdk.Fn.conditionIf(fall4919On.logicalId, 'kept4954', cdk.Aws.NO_VALUE),
+            cdk.Fn.conditionIf(fall4919Off.logicalId, 'never', cdk.Aws.NO_VALUE),
+            fallConn2.valueAsString,
+          ],
+          // A dropped element beside one no count classifies.
+          unclassified: [
+            cdk.Fn.conditionIf(fall4919Off.logicalId, 'never', cdk.Aws.NO_VALUE),
+            cdk.Fn.base64('x4954'),
+            fallConn2.valueAsString,
+          ],
+        },
+      },
+    });
+    fallthroughShrinkTwo.overrideLogicalId('FallthroughShrinkTwo');
+    const fallthroughIfAttribute = new ssm.StringParameter(this, 'FallthroughIfAttribute', {
+      parameterName: names.fallthroughIfAttributeParamName,
+      stringValue: fallSecret2.valueAsString,
+      description: 'replaced by the override below',
+    });
+    const ifAttributeCfn = fallthroughIfAttribute.node.defaultChild as ssm.CfnParameter;
+    ifAttributeCfn.overrideLogicalId('FallthroughIfAttribute');
+    ifAttributeCfn.addPropertyOverride('Description', {
+      'Fn::If': [
+        'Fall4919On',
+        { 'Fn::Select': [0, { 'Fn::Split': ['@', { Ref: 'FallConnA2' }] }] },
+        { 'Fn::GetAtt': ['FallthroughShrinkTwo', 'Arn'] },
+      ],
+    });
 
     // THE #4446 ARM: `HandoffMixed` with an embedding leaf the #2320 template
     // parse refuses, so only the resolver's recorded parameter spans can
@@ -1051,6 +1124,9 @@ export class NestedStackSecretStack extends cdk.Stack {
         fallthroughIfReversedParamName: `cdkd-nested-child-fallthroughifrev-${account}`,
         fallthroughSubSelectReversedParamName: `cdkd-nested-child-fallthroughsubselrev-${account}`,
         fallthroughShrinkRuleName: `cdkd-nested-child-fallshrink-${account}`,
+        fallthroughIfTwoWaysParamName: `cdkd-nested-child-fallthroughiftwoways-${account}`,
+        fallthroughIfAttributeParamName: `cdkd-nested-child-fallthroughifattr-${account}`,
+        fallthroughShrinkTwoRuleName: `cdkd-nested-child-fallshrinktwo-${account}`,
         pinParamName: `cdkd-nested-child-pin-${account}`,
         pinParamDescription,
         pinTwinParamName: `cdkd-nested-child-pintwin-${account}`,

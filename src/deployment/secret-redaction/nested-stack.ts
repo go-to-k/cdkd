@@ -34,6 +34,7 @@ import {
 import { dynamicReferenceSpans, deepEqualJsonValue } from './redact-path.js';
 import { SPELLED_SECRET_REFERENCE_PREFIXES, spanNamesResolvableService } from './anchors.js';
 import { wholeStringLeavesOf } from './mask-only.js';
+import { takenIfBranchOf } from './resolver-outcomes.js';
 import { substringNeedlesOf } from './fresh-noecho.js';
 
 /**
@@ -1483,6 +1484,12 @@ export function standsForInheritedSecret(
 const plainSplit = (text: string, delimiter: string): string[] => text.split(delimiter);
 
 /**
+ * Which branch an `Fn::If` object takes in one evaluation: `true` for its
+ * first, `undefined` to refuse (issue #4954: no recorded branch).
+ */
+type IfBranchChoice = (condition: string, node: object) => boolean | undefined;
+
+/**
  * Evaluate a PURE parameter expression -- string literals, arrays, `{Ref}` to
  * a parameter `bind` answers, `Fn::Select`, `Fn::Split`, `Fn::Join`, `Fn::Sub`
  * over such values, and `Fn::If` taking the branch `choose` names -- as the
@@ -1502,7 +1509,7 @@ function evaluatePureRead(
   node: unknown,
   bind: ParameterBinding,
   split: (text: string, delimiter: string) => string[],
-  choose: (condition: string) => boolean,
+  choose: IfBranchChoice,
   depth = 0
 ): { value: unknown } | undefined {
   if (depth > MAX_REREAD_DEPTH) return undefined;
@@ -1531,7 +1538,9 @@ function evaluatePureRead(
     // `resolveIf`: the evaluated condition picks the branch, which is
     // resolved as any other value.
     if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') return undefined;
-    return evaluate(choose(args[0]) ? args[1] : args[2]);
+    const tookTrue = choose(args[0], node);
+    if (tookTrue === undefined) return undefined;
+    return evaluate(tookTrue ? args[1] : args[2]);
   }
   if (key === 'Fn::Sub') return evaluatePureSub(args, bind, evaluate);
   if (!Array.isArray(args) || args.length !== 2) return undefined;
@@ -1685,11 +1694,121 @@ interface ParameterReread {
 const REREAD_UNBOUND: unique symbol = Symbol('cdkd.reread.unbound');
 
 /**
+ * What a re-read assignment that does not evaluate, but whose taken branches
+ * name no parameter, counts as for the collision walk (issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954)): a pass taking it
+ * reads no parameter in this leaf, so nothing there reads the carry's slot
+ * for one.
+ */
+const REREAD_PARAMETER_FREE: unique symbol = Symbol('cdkd.reread.parameter-free');
+
+type RereadOutcome =
+  | ParameterReread
+  | typeof REREAD_NO_VALUE
+  | typeof REREAD_UNBOUND
+  | typeof REREAD_PARAMETER_FREE
+  | undefined;
+
+/** The bindings and `Fn::Split` the DIFF side evaluates a re-read with. */
+function diffSideReading(
+  bind: ParameterBinding,
+  parentSecrets: RecordedSecretValues
+): { bind: ParameterBinding; split: (text: string, delimiter: string) => string[] } {
+  return {
+    bind: (name) => {
+      const bound = bind(name);
+      return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
+    },
+    // A token the parent resolved stands for its plaintext; any other is text
+    // the child received as text. The resolver's diff pass asks the same bag.
+    split: (text, delimiter) =>
+      splitOutsideDynamicReferences(text, delimiter, (token) =>
+        standsForInheritedSecret(parentSecrets, token)
+      ),
+  };
+}
+
+/**
+ * One evaluation of `source` under `choose`: the pair,
+ * {@link REREAD_NO_VALUE} where both sides drop out, or `undefined` where it
+ * does not re-read ({@link evaluatePureRead} refuses, or `redacted` does not
+ * render to `resolved`).
+ */
+function rereadUnder(
+  source: unknown,
+  bind: ParameterBinding,
+  parentSecrets: RecordedSecretValues,
+  choose: IfBranchChoice
+): ParameterReread | typeof REREAD_NO_VALUE | undefined {
+  const resolved = evaluatePureRead(source, bind, plainSplit, choose);
+  if (resolved === undefined) return undefined;
+  const diffSide = diffSideReading(bind, parentSecrets);
+  const redacted = evaluatePureRead(source, diffSide.bind, diffSide.split, choose);
+  if (redacted === undefined) return undefined;
+  if (resolved.value === REREAD_NO_VALUE || redacted.value === REREAD_NO_VALUE) {
+    return resolved.value === redacted.value ? REREAD_NO_VALUE : undefined;
+  }
+  if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) return undefined;
+  return { resolved: resolved.value, redacted: redacted.value };
+}
+
+/**
+ * Does `node` name, on the branches `choose` takes, a `{Ref}` or an `Fn::Sub`
+ * placeholder `isParameter` answers (issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954))? `true` for a
+ * malformed `Fn::If` or a source too deep, so a caller refuses. Every other
+ * intrinsic's arguments are walked whole, and a variable-map name counts:
+ * over-reading only refuses more.
+ *
+ * `true` for a `{{resolve:` string too: `cdkd scrub` resolves a COPY of every
+ * ancestor of a cross-region reference it pins (`pinCrossRegionSecrets`), so
+ * the `Fn::If` holding one records its branch on the copy while the persist
+ * walk reads the original, finds no record, and the slot answers. Refusing
+ * keeps the collision walk's verdict to what every pass positions.
+ */
+function namesParameterOnBranches(
+  node: unknown,
+  choose: IfBranchChoice,
+  isParameter: (name: string) => boolean,
+  depth = 0
+): boolean {
+  if (depth > MAX_REREAD_DEPTH) return true;
+  if (typeof node === 'string') return node.includes('{{resolve:');
+  if (Array.isArray(node)) {
+    return node.some((element) =>
+      namesParameterOnBranches(element, choose, isParameter, depth + 1)
+    );
+  }
+  if (!isPlainObject(node)) return false;
+  if (Object.hasOwn(node, 'Fn::If')) {
+    const args = node['Fn::If'];
+    if (Object.keys(node).length !== 1) return true;
+    if (!Array.isArray(args) || args.length !== 3 || typeof args[0] !== 'string') return true;
+    const tookTrue = choose(args[0], node);
+    if (tookTrue === undefined) return true;
+    return namesParameterOnBranches(tookTrue ? args[1] : args[2], choose, isParameter, depth + 1);
+  }
+  if (typeof node['Ref'] === 'string' && isParameter(node['Ref'])) return true;
+  const sub = node['Fn::Sub'];
+  const text = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
+  if (typeof text === 'string') {
+    for (const match of text.matchAll(/\$\{([^}!][^}]*)\}/g)) {
+      if (isParameter(match[1]!.trim()) || isParameter(match[1]!)) return true;
+    }
+  }
+  return Object.values(node).some((child) =>
+    namesParameterOnBranches(child, choose, isParameter, depth + 1)
+  );
+}
+
+/**
  * The source re-read under every assignment of its `Fn::If` conditions (issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)), one entry per
  * assignment: the pair, {@link REREAD_NO_VALUE} where both sides drop out,
  * {@link REREAD_UNBOUND} where it names a parameter `bind` does not answer,
- * or `undefined` where it does not re-read for any other reason. `undefined` overall
+ * {@link REREAD_PARAMETER_FREE} (only when `parameterFree` is given) where it
+ * does not re-read but its taken branches name no parameter that answers, or
+ * `undefined` where it does not re-read for any other reason. `undefined` overall
  * for a source with no {@link REREAD_TRIGGERS} intrinsic, a malformed
  * `Fn::If`, or more than {@link MAX_REREAD_CONDITIONS} condition names.
  *
@@ -1702,27 +1821,18 @@ function rereadAssignments(
   bind: ParameterBinding,
   parentSecrets: RecordedSecretValues,
   /** Names whose missing binding proves the assignment untaken; none by default. */
-  untakenWhenUnbound: (name: string) => boolean = () => false
-): Array<ParameterReread | typeof REREAD_NO_VALUE | typeof REREAD_UNBOUND | undefined> | undefined {
+  untakenWhenUnbound: (name: string) => boolean = () => false,
+  /** The parameter names for {@link REREAD_PARAMETER_FREE}; omitted, none is. */
+  parameterFree?: (name: string) => boolean
+): RereadOutcome[] | undefined {
   if (!holdsRereadTrigger(source)) return undefined;
   const conditions = new Set<string>();
   if (!collectRereadConditions(source, conditions)) return undefined;
   if (conditions.size > MAX_REREAD_CONDITIONS) return undefined;
   const names = [...conditions];
-  const redactedBind: ParameterBinding = (name) => {
-    const bound = bind(name);
-    return bound && { value: redactInheritedParameterValue(parentSecrets, name, bound.value) };
-  };
-  // A token the parent resolved stands for its plaintext; any other is text
-  // the child received as text. The resolver's diff pass asks the same bag.
-  const tokenSplit = (text: string, delimiter: string): string[] =>
-    splitOutsideDynamicReferences(text, delimiter, (token) =>
-      standsForInheritedSecret(parentSecrets, token)
-    );
-  const out: Array<ParameterReread | typeof REREAD_NO_VALUE | typeof REREAD_UNBOUND | undefined> =
-    [];
+  const out: RereadOutcome[] = [];
   for (let assignment = 0; assignment < 2 ** names.length; assignment++) {
-    const choose = (condition: string): boolean =>
+    const choose: IfBranchChoice = (condition) =>
       Math.floor(assignment / 2 ** names.indexOf(condition)) % 2 === 1;
     let unbound = false;
     const tracked: ParameterBinding = (name) => {
@@ -1730,14 +1840,15 @@ function rereadAssignments(
       if (bound === undefined && untakenWhenUnbound(name)) unbound = true;
       return bound;
     };
-    const resolved = evaluatePureRead(source, tracked, plainSplit, choose);
-    const redacted = resolved && evaluatePureRead(source, redactedBind, tokenSplit, choose);
+    const reread = rereadUnder(source, tracked, parentSecrets, choose);
     if (unbound) out.push(REREAD_UNBOUND);
-    else if (resolved === undefined || redacted === undefined) out.push(undefined);
-    else if (resolved.value === REREAD_NO_VALUE || redacted.value === REREAD_NO_VALUE) {
-      out.push(resolved.value === redacted.value ? REREAD_NO_VALUE : undefined);
-    } else if (!rendersReadTo(redacted.value, parentSecrets, resolved.value)) out.push(undefined);
-    else out.push({ resolved: resolved.value, redacted: redacted.value });
+    else if (reread !== undefined) out.push(reread);
+    else if (
+      parameterFree !== undefined &&
+      !namesParameterOnBranches(source, choose, parameterFree)
+    ) {
+      out.push(REREAD_PARAMETER_FREE);
+    } else out.push(undefined);
   }
   return out;
 }
@@ -1761,20 +1872,31 @@ function rereadAssignments(
  * STATIC, for the collision walk (`poisonRenderedSpellingsCollidingIn`),
  * which runs before any condition is evaluated and reads such a leaf as
  * answered per parameter rather than from the carry's slot: EVERY assignment
- * of the source's `Fn::If` conditions must re-read (or drop out on both
- * sides), and any two whose `resolved` values are equal must have equal
- * `redacted` ones. Then whichever branches the real pass takes, its leaf is
- * one of these `resolved` values, and {@link positionByParameterReread} finds
- * its diff-side value from the leaf alone -- no condition outcome is needed on
- * either side. The pair returned is the first assignment's that does not drop
- * out; `undefined` otherwise.
+ * of the source's `Fn::If` conditions must re-read, drop out on both sides,
+ * or name no parameter `bind` answers on its taken branches (a pass taking it
+ * reads none here), and at least one must re-read. The persist walk
+ * ({@link positionByParameterReread}) evaluates the branches the resolver
+ * RECORDED it took (issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954)), so two assignments
+ * resolving to one value spelled two ways need no telling apart. That holds
+ * only while the persist walk's source is the very template objects the pass
+ * resolved into its bag: without the record, the walk's leaf-based fallback
+ * refuses those shapes and the slot answers, which this verdict does not
+ * predict. The pair returned is the first assignment's that re-reads;
+ * `undefined` otherwise.
  */
 export function rereadParameterExpression(
   source: unknown,
   bind: ParameterBinding,
   parentSecrets: RecordedSecretValues
 ): ParameterReread | undefined {
-  const assignments = rereadAssignments(source, bind, parentSecrets);
+  const assignments = rereadAssignments(
+    source,
+    bind,
+    parentSecrets,
+    undefined,
+    (name) => bind(name) !== undefined
+  );
   if (
     assignments === undefined ||
     assignments.includes(undefined) ||
@@ -1782,12 +1904,13 @@ export function rereadParameterExpression(
   ) {
     return undefined;
   }
-  const rereads = assignments.filter(
+  return assignments.find(
     (entry): entry is ParameterReread =>
-      entry !== undefined && entry !== REREAD_NO_VALUE && entry !== REREAD_UNBOUND
+      entry !== undefined &&
+      entry !== REREAD_NO_VALUE &&
+      entry !== REREAD_UNBOUND &&
+      entry !== REREAD_PARAMETER_FREE
   );
-  if (rereads.length === 0 || ambiguousRereads(rereads)) return undefined;
-  return rereads[0];
 }
 
 /** Do two re-reads share a `resolved` value but differ in their `redacted` one? */
@@ -1816,14 +1939,20 @@ function ambiguousRereads(rereads: readonly ParameterReread[]): boolean {
  * `poisonRenderedSpellingsCollidingIn` had to withdraw the literal's spelling
  * for the whole child. Re-reading answers each leaf from its own parameters.
  *
- * An `Fn::If`'s branch is read off the LEAF: every condition assignment must
- * either re-read with this resource's recorded values or name a DECLARED
- * parameter this resource never read (one the pass did not take: it read
- * every parameter its taken branches name; a `Ref` to a resource or pseudo
- * parameter is no such proof), and those whose `resolved` value IS the
- * leaf must agree on one diff-side value. The taken assignment is among them,
- * so their agreed value is the diff side's. An assignment refused for any
- * other reason may be the taken one, so it refuses the leaf.
+ * An `Fn::If` takes the branch the resolver RECORDED this pass took
+ * (`takenIfBranchOf`, issue [#4954](https://github.com/go-to-k/cdkd/issues/4954)),
+ * the branch the diff side takes too, as it evaluates the same conditions.
+ * Only where some `Fn::If` the evaluation meets has no record (none was
+ * resolved into this bag, or one was resolved two ways) is the branch read off
+ * the LEAF (issue #4919): every condition assignment must either re-read with
+ * this resource's recorded values or name a DECLARED parameter this resource
+ * never read (one the pass did not take: it read every parameter its taken
+ * branches name; a `Ref` to a resource or pseudo parameter is no such proof),
+ * and those whose `resolved` value IS the leaf must agree on one diff-side
+ * value. An assignment refused for any other reason may be the taken one, so
+ * it refuses the leaf. The records are keyed by OBJECT: `source` must be the
+ * object the pass resolved into `secrets` (a structural copy finds none), or
+ * {@link rereadParameterExpression}'s verdict for the collision walk is wrong.
  *
  * {@link positionByInheritedParameter}'s conditions, over the re-read: this
  * resource's resolution read every parameter the taken source names (its
@@ -1839,26 +1968,48 @@ export function positionByParameterReread(
   const reads = inheritedParameterReads.get(secrets);
   if (reads === undefined || typeof reads === 'symbol') return undefined;
   if (typeof bag !== 'string' && !Array.isArray(bag)) return undefined;
-  const declared = reads.declared;
-  const assignments = rereadAssignments(
-    source,
-    (name) => (reads.values.has(name) ? { value: reads.values.get(name) } : undefined),
-    reads.parent,
-    (name) => declared?.has(name) === true
-  );
-  // An assignment refused for any reason but an unread parameter may be the
-  // one the pass took, whose leaf another assignment could merely equal.
-  if (assignments === undefined || assignments.includes(undefined)) return undefined;
-  const matching = assignments.filter(
-    (entry): entry is ParameterReread =>
-      entry !== undefined &&
-      entry !== REREAD_NO_VALUE &&
-      entry !== REREAD_UNBOUND &&
-      deepEqualJsonValue(entry.resolved, bag)
-  );
-  if (matching.length === 0 || ambiguousRereads(matching)) return undefined;
+  if (!holdsRereadTrigger(source)) return undefined;
+  const bind: ParameterBinding = (name) =>
+    reads.values.has(name) ? { value: reads.values.get(name) } : undefined;
+  let unrecorded = false;
+  const recorded = rereadUnder(source, bind, reads.parent, (_, node) => {
+    const taken = takenIfBranchOf(secrets, node);
+    if (taken === undefined) unrecorded = true;
+    return taken;
+  });
+  let answer: unknown;
+  if (!unrecorded) {
+    if (
+      recorded === undefined ||
+      recorded === REREAD_NO_VALUE ||
+      !deepEqualJsonValue(recorded.resolved, bag)
+    ) {
+      return undefined;
+    }
+    answer = recorded.redacted;
+  } else {
+    const declared = reads.declared;
+    const assignments = rereadAssignments(
+      source,
+      bind,
+      reads.parent,
+      (name) => declared?.has(name) === true
+    );
+    // An assignment refused for any reason but an unread parameter may be the
+    // one the pass took, whose leaf another assignment could merely equal.
+    if (assignments === undefined || assignments.includes(undefined)) return undefined;
+    const matching = assignments.filter(
+      (entry): entry is ParameterReread =>
+        entry !== undefined &&
+        entry !== REREAD_NO_VALUE &&
+        entry !== REREAD_UNBOUND &&
+        entry !== REREAD_PARAMETER_FREE &&
+        deepEqualJsonValue(entry.resolved, bag)
+    );
+    if (matching.length === 0 || ambiguousRereads(matching)) return undefined;
+    answer = matching[0]!.redacted;
+  }
   if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
-  const answer = matching[0]!.redacted;
   if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
   return answer;
 }

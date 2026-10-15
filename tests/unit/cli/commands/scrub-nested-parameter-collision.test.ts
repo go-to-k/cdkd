@@ -144,3 +144,80 @@ describe('cdkd scrub of a nested child withdraws a colliding literal spelling (#
     });
   }
 });
+
+describe('cdkd scrub positions an Fn::If by the branch its resolution took (#4954)', () => {
+  // The branches resolve to one plaintext spelled two ways: SecretB's token,
+  // or the piece of ConnA's literal. Only the recorded branch tells them apart.
+  const piece = {
+    'Fn::Select': [0, { 'Fn::Split': ['@', { 'Fn::Select': [2, { 'Fn::Split': [':', { Ref: 'ConnA' }] }] }] }],
+  };
+  // `siblingLast` reads SecretB after the `Fn::If`, so the slot holds its
+  // token and only the recorded branch answers the ConnA piece.
+  for (const taken of [true, false]) {
+    for (const siblingLast of [true, false]) {
+    it(`keeps ConnA's spelling and writes the ${taken ? 'SecretB' : 'ConnA piece'} token (${siblingLast ? 'sibling' : 'literal'} read last)`, async () => {
+      const parent = parentRow();
+      const template = {
+        Parameters: { ConnA: { Type: 'String' }, SecretB: { Type: 'String' } },
+        Conditions: { C: { 'Fn::Equals': ['a', taken ? 'a' : 'b'] } },
+        Resources: {
+          R: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: siblingLast
+              ? { Value: { Ref: 'ConnA' }, Description: { 'Fn::If': ['C', { Ref: 'SecretB' }, piece] }, Name: { Ref: 'SecretB' } }
+              : { Name: { Ref: 'SecretB' }, Description: { 'Fn::If': ['C', { Ref: 'SecretB' }, piece] }, Value: { Ref: 'ConnA' } },
+          },
+        },
+        Outputs: {},
+      } as unknown as CloudFormationTemplate;
+      const state: StackState = {
+        version: 9,
+        region: 'us-east-1',
+        stackName: 'MyStack~Child',
+        resources: {
+          R: {
+            physicalId: 'r',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Value: CONN, Description: SHARED, Name: SHARED },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      } as StackState;
+      const saveState = vi.fn().mockResolvedValue('etag-2');
+      await scrubStack(
+        { stackName: 'MyStack~Child', template } as never,
+        'us-east-1',
+        {
+          getState: vi.fn().mockResolvedValue({ state, etag: 'etag-1' }),
+          saveState,
+          purgeNoncurrentVersions: vi.fn().mockResolvedValue(undefined),
+          listStacks: vi.fn().mockResolvedValue([]),
+        } as never,
+        {
+          acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+          releaseLock: vi.fn().mockResolvedValue(undefined),
+        } as never,
+        {
+          dryRun: false,
+          logger,
+          nestedChild: {
+            logicalId: 'Child',
+            stackName: 'MyStack~Child',
+            input: { parameters: { ConnA: CONN, SecretB: SHARED }, inheritedSecrets: parent },
+          },
+        } as never
+      );
+      expect(redactInheritedParameterValue(parent, 'ConnA', CONN)).toBe(SPELLING);
+      const saved = saveState.mock.calls.at(-1)![2] as StackState;
+      expect(saved.resources['R']!.properties).toEqual({
+        Value: SPELLING,
+        Description: taken ? EXPR_B : EXPR_A,
+        Name: EXPR_B,
+      });
+    });
+    }
+  }
+});

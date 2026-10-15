@@ -23,6 +23,7 @@ import {
   isRecordedSecretExpression,
   provenPublicValue,
 } from './mask-only.js';
+import { droppedArrayElementsOf } from './resolver-outcomes.js';
 
 /**
  * Whether resolving a source ARRAY element can drop it from the resolved
@@ -65,16 +66,26 @@ function arrayElementDrop(element: unknown, depth = 0): ArrayElementDrop {
 
 /**
  * The elements of a source array that stay in a resolved bag of `bagLength`
- * elements, in order, when the count says which dropped (issue
+ * elements, in order. Where the pass owning `secrets` RECORDED which elements
+ * it dropped (`droppedArrayElementsOf`, issue
+ * [#4954](https://github.com/go-to-k/cdkd/issues/4954)), every other element,
+ * and `undefined` when that count is not `bagLength` (the bag is not that
+ * resolution). With no record, where the count says which dropped (issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): every `always`
- * element, and either none or all of the `maybe` ones. `undefined` for an
+ * element, and either none or all of the `maybe` ones; `undefined` for an
  * `unknown` element or any other count -- some but not all `maybe` elements,
  * which no count can tell apart.
  */
 export function sourceElementsKeptFor(
   source: readonly unknown[],
-  bagLength: number
+  bagLength: number,
+  secrets?: RecordedSecretValues
 ): unknown[] | undefined {
+  const recorded = secrets && droppedArrayElementsOf(secrets, source);
+  if (recorded !== undefined) {
+    if (source.length - recorded.length !== bagLength) return undefined;
+    return source.filter((_, i) => !recorded.includes(i));
+  }
   const drops = source.map((element) => arrayElementDrop(element));
   if (drops.includes('unknown')) return undefined;
   const always = drops.filter((drop) => drop === 'always').length;
@@ -178,10 +189,12 @@ function corroboratesWhateverResolves(source: unknown, depth = 0): boolean {
 /**
  * Does the shrunken-array pairing ({@link sourceElementsKeptFor} and
  * {@link keptLiteralsCorroborate}) pair a resolved bag of this source array
- * whatever its elements resolve to? So with no `unknown` element, at most one
- * `maybe`, and every element one the corroboration accepts from the template
- * alone: the collision walk (`poisonRenderedSpellingsCollidingIn`) runs
- * before conditions are evaluated and reads such an array as walked by
+ * whatever its elements resolve to? The resolver records which elements a
+ * pass dropped (issue [#4954](https://github.com/go-to-k/cdkd/issues/4954)),
+ * so how many can drop, and whether anything here classifies them, no longer
+ * matters: every element must be one the corroboration accepts from the
+ * template alone. The collision walk (`poisonRenderedSpellingsCollidingIn`)
+ * runs before conditions are evaluated and reads such an array as walked by
  * position. An array holding no element that can resolve to `AWS::NoValue`
  * -- an `Fn::If`, a `Ref` to it, an `Fn::FindInMap` with a `DefaultValue`
  * (`resolveFindInMap` can return it) -- is walked by position anyway.
@@ -195,12 +208,7 @@ export function arrayPairsWhateverDrops(source: readonly unknown[]): boolean {
         (Array.isArray(element['Fn::FindInMap']) && element['Fn::FindInMap'].length > 3))
   );
   if (!mayDrop) return true;
-  const drops = source.map((element) => arrayElementDrop(element));
-  return (
-    !drops.includes('unknown') &&
-    drops.filter((drop) => drop === 'maybe').length <= 1 &&
-    source.every((element) => corroboratesWhateverResolves(element))
-  );
+  return source.every((element) => corroboratesWhateverResolves(element));
 }
 
 /**
@@ -575,15 +583,16 @@ export function redactByPath(
     }
     // SHORTER than a source that resolving produced (issue
     // [#4919](https://github.com/go-to-k/cdkd/issues/4919)): the resolver
-    // drops an element that resolves to `AWS::NoValue`, so where the count
-    // alone says WHICH elements dropped, the rest pair in order. Every kept
+    // drops an element that resolves to `AWS::NoValue`, so where its record
+    // (issue #4954) or the count alone says WHICH elements dropped, the rest
+    // pair in order. Every kept
     // LITERAL element must equal its bag element, and every kept token must be
     // the one this pass resolved to it, the corroboration the length check
     // gives the positional arm: a producer that removed an element itself
     // (rules.ts) falls to the value scan. Any other shortfall
     // keeps the value scan.
     if (rules.descendArrays && bag.length < source.length) {
-      const kept = sourceElementsKeptFor(source, bag.length);
+      const kept = sourceElementsKeptFor(source, bag.length, secrets);
       if (kept !== undefined && keptLiteralsCorroborate(kept, bag, secrets)) {
         return bag.map((item, i) =>
           redactByPath(item, kept[i], secrets, rules, secretExpressions, bagIsSameGeneration)

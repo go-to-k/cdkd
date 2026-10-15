@@ -16,6 +16,7 @@ import {
   quotedRender,
 } from './support.js';
 import { keepsSecretReferenceToken } from './context.js';
+import { recordTakenIfBranchIn } from './parameter-secrets.js';
 import {
   SECRET_MASK,
   embedsFreshNoEchoValue,
@@ -119,6 +120,7 @@ export async function resolveIf(
     this.logger.warn(
       `Condition ${this.displayMasked(String(conditionName), context)} not found in context, assuming false`
     );
+    recordTakenIfBranchIn(context, source, false);
     return await resolveBranch(valueIfFalse);
   }
 
@@ -130,6 +132,9 @@ export async function resolveIf(
     `Resolved Fn::If: condition ${this.logRender(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
   );
 
+  // Issue #4954: the branch taken, for the persist walk of a leaf whose
+  // resolved value cannot name it (the diff side evaluates `conditions` too).
+  recordTakenIfBranchIn(context, source, Boolean(conditionValue));
   return await resolveBranch(selectedValue);
 }
 
