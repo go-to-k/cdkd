@@ -164,6 +164,60 @@ describe('S3BucketProvider.readCurrentState', () => {
     expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
+  describe('right after cdkd own write (go-to-k/cdkd#4969)', () => {
+    const notFound = () =>
+      Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+
+    it('retries a lagging HeadBucket 404 and returns the readback', async () => {
+      vi.useFakeTimers();
+      try {
+        mockSend.mockRejectedValueOnce(notFound());
+        mockSend.mockRejectedValueOnce(notFound());
+
+        const pending = provider.readCurrentState('b', 'Logical', 'AWS::S3::Bucket', {}, {
+          afterOwnWrite: true,
+        });
+        await vi.runAllTimersAsync();
+        const result = await pending;
+
+        expect(result).not.toBe(RESOURCE_NOT_FOUND);
+        expect(result).toMatchObject({ BucketName: 'b' });
+        const heads = mockSend.mock.calls.filter(([c]) => c instanceof HeadBucketCommand);
+        expect(heads).toHaveLength(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still reports RESOURCE_NOT_FOUND once every attempt answers 404', async () => {
+      vi.useFakeTimers();
+      try {
+        for (let i = 0; i < 5; i++) mockSend.mockRejectedValueOnce(notFound());
+
+        const pending = provider.readCurrentState('b', 'Logical', 'AWS::S3::Bucket', {}, {
+          afterOwnWrite: true,
+        });
+        await vi.runAllTimersAsync();
+
+        expect(await pending).toBe(RESOURCE_NOT_FOUND);
+        const heads = mockSend.mock.calls.filter(([c]) => c instanceof HeadBucketCommand);
+        expect(heads).toHaveLength(5);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not retry a 404 on a plain drift read', async () => {
+      mockSend.mockRejectedValueOnce(notFound());
+
+      const result = await provider.readCurrentState('b', 'Logical', 'AWS::S3::Bucket', {}, {});
+
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+      const heads = mockSend.mock.calls.filter(([c]) => c instanceof HeadBucketCommand);
+      expect(heads).toHaveLength(1);
+    });
+  });
+
   it('rethrows a 403 HeadBucket rather than reporting the bucket gone', async () => {
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('Forbidden'), { name: 'Forbidden', $metadata: { httpStatusCode: 403 } })

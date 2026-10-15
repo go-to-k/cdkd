@@ -134,6 +134,7 @@ import {
   type ResourceNotFound,
   type ResourceIdentityVerdict,
   type ResourceDeleteResult,
+  type ReadCurrentStateContext,
 } from '../../types/resource.js';
 
 /**
@@ -1699,6 +1700,17 @@ function isPlainBucketName(value: unknown): value is string {
 const BUCKET_LIST_IDENTITY_ATTEMPTS = 3;
 const BUCKET_LIST_IDENTITY_DELAY_MS = 1_500;
 const BUCKET_LIST_IDENTITY_BUDGET_MS = 6_000;
+
+/**
+ * go-to-k/cdkd#4969: `HeadBucket` can answer 404 for a bucket `CreateBucket`
+ * made a moment ago. The deploy's observed capture reads right after cdkd's own
+ * write (`afterOwnWrite`), and a 404 there would discard the drift baseline.
+ * Before tags rode `CreateBucket`, the `PutBucketTagging` call sat between the
+ * two and hid the race. The capture is off the deploy's critical path, so a
+ * short wait costs a deploy nothing.
+ */
+const OWN_WRITE_HEAD_ATTEMPTS = 5;
+const OWN_WRITE_HEAD_DELAY_MS = 500;
 
 /**
  * Whether an error from `GetBucketLocation` means "no bucket of that name".
@@ -8082,24 +8094,35 @@ export class S3BucketProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // Fast existence check. NotFound / NoSuchBucket (a HEAD's 404 carries no
     // body, so the status is its only answer) is the bucket deleted outside
-    // cdkd (go-to-k/cdkd#4283).
-    try {
-      await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
-    } catch (err) {
-      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-      if (
-        err instanceof NoSuchBucket ||
-        e.name === 'NotFound' ||
-        e.name === 'NoSuchBucket' ||
-        e.$metadata?.httpStatusCode === 404
-      ) {
-        return RESOURCE_NOT_FOUND;
+    // cdkd (go-to-k/cdkd#4283). Right after cdkd's own write, a 404 is first
+    // retried briefly (`OWN_WRITE_HEAD_ATTEMPTS`).
+    const headAttempts = context?.afterOwnWrite === true ? OWN_WRITE_HEAD_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
+        break;
+      } catch (err) {
+        const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+        if (
+          err instanceof NoSuchBucket ||
+          e.name === 'NotFound' ||
+          e.name === 'NoSuchBucket' ||
+          e.$metadata?.httpStatusCode === 404
+        ) {
+          if (attempt < headAttempts) {
+            await new Promise((r) => setTimeout(r, OWN_WRITE_HEAD_DELAY_MS));
+            continue;
+          }
+          return RESOURCE_NOT_FOUND;
+        }
+        throw err;
       }
-      throw err;
     }
 
     // Fire all 16 GET / List calls in parallel. Each helper handles its own
