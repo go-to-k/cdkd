@@ -340,9 +340,7 @@ async function runAfterContainersStopped(
   try {
     await hook();
   } catch (err) {
-    logger.debug(
-      safeMsg`afterContainersStopped hook failed: ${describeAwsFailure(err).detail}`
-    );
+    logger.debug(safeMsg`afterContainersStopped hook failed: ${describeAwsFailure(err).detail}`);
   }
 }
 
@@ -371,9 +369,7 @@ async function settleInFlightStep(
   try {
     await step.abandon();
   } catch (err) {
-    logger.debug(
-      safeMsg`in-flight step removal failed: ${describeAwsFailure(err).detail}`
-    );
+    logger.debug(safeMsg`in-flight step removal failed: ${describeAwsFailure(err).detail}`);
   }
   logger.warn(
     safeMsg`The in-flight docker command did not finish within ${IN_FLIGHT_STEP_TIMEOUT_MS / 1000}s; removed ${step.subject.what} if it existed, but a docker command that completes later can still create it -- run '${step.subject.remedy}' if it appears.`
@@ -517,9 +513,7 @@ export async function cleanupEcsRun(
         try {
           await stream.drain(CONTAINER_LOG_DRAIN_TIMEOUT_MS);
         } catch (err) {
-          logger.debug(
-            safeMsg`log stream drain failed: ${describeAwsFailure(err).detail}`
-          );
+          logger.debug(safeMsg`log stream drain failed: ${describeAwsFailure(err).detail}`);
         }
       })
     );
