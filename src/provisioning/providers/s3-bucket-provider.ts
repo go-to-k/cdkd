@@ -7241,9 +7241,8 @@ export class S3BucketProvider implements ResourceProvider {
               // path, so no such role regresses. Keyed on the denial NAMING
               // `s3:TagResource`, so it never fires for the case this issue is
               // about: an SCP requiring request tags lets the tagged create
-              // through, and when both deny, the untagged create's own refusal
-              // (the SCP's explicit deny, which fails fast) is what surfaces.
-              // The extra call is spent only on this failure path.
+              // through. The extra call is spent on every tagged create of a
+              // role lacking `s3:TagResource`, never by one holding it.
               this.logger.debug(
                 safeMsg`CreateBucket with tags was denied s3:TagResource for ${displaySafe(logicalId)}; ` +
                   `retrying without tags and applying them with PutBucketTagging`
@@ -7253,7 +7252,26 @@ export class S3BucketProvider implements ResourceProvider {
               if (Object.keys(rest).length > 0) untagged.CreateBucketConfiguration = rest;
               else delete untagged.CreateBucketConfiguration;
               tagsSent = false;
-              await createClient.send(new CreateBucketCommand(untagged));
+              try {
+                await createClient.send(new CreateBucketCommand(untagged));
+              } catch (untaggedError) {
+                // When the untagged create is DENIED too (an SCP requiring
+                // request tags, say), the missing `s3:TagResource` is the cause
+                // to report: granting it lets the tagged create through. So the
+                // tagged create's denial surfaces, keeping its classification
+                // (an implicit deny still propagating is retried, an explicit
+                // one fails fast). Any other answer -- the 409s the outer
+                // catch adopts or refuses, a throttle -- is the untagged
+                // create's own and surfaces as itself.
+                if (untaggedError instanceof Error && untaggedError.name === 'AccessDenied') {
+                  this.logger.debug(
+                    safeMsg`CreateBucket without tags was denied too for ${displaySafe(logicalId)}; ` +
+                      `reporting the s3:TagResource denial`
+                  );
+                  throw taggedError;
+                }
+                throw untaggedError;
+              }
             }
           } catch (sendError) {
             createBucketLatch.noteFailure(logicalId, sendError, attemptStartMs, ambiguousWindow);

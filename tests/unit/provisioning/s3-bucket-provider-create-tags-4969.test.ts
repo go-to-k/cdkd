@@ -214,7 +214,7 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     expect(creates()).toHaveLength(1);
   });
 
-  it('when both creates are denied, the untagged one\'s explicit deny is what surfaces, and it fails fast', async () => {
+  it('when both creates are denied, the s3:TagResource denial surfaces (the cause to fix), keeping its retry', async () => {
     answer([
       () => {
         throw TAG_RESOURCE_DENIAL();
@@ -227,9 +227,47 @@ describe('S3BucketProvider create sends tags on CreateBucket (go-to-k/cdkd#4969)
     const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
     expect(creates()).toHaveLength(2);
     const classify = retryClassificationText(err);
-    expect(classify).toContain('with an explicit deny in a service control policy');
+    expect(classify).toContain('s3:TagResource');
+    expect(classify).not.toContain('explicit deny');
+    // An implicit TagResource deny may still be propagating: it keeps the retry.
+    expect(isRetryableTransientError(err, classify)).toBe(true);
+    expect(err.message).not.toContain('explicit deny');
+  });
+
+  it('an explicit s3:TagResource deny with the untagged create also denied fails fast, naming TagResource', async () => {
+    answer([
+      () => {
+        throw awsError(
+          'AccessDenied',
+          `User: arn:aws:sts::${ACCOUNT}:assumed-role/Deployer/s is not authorized to perform: ` +
+            `s3:TagResource on resource: "arn:aws:s3:::${BUCKET}" with an explicit deny in an identity-based policy`
+        );
+      },
+      () => {
+        throw SCP_DENIAL();
+      },
+    ]);
+
+    const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    const classify = retryClassificationText(err);
+    expect(classify).toContain('s3:TagResource');
     expect(isRetryableTransientError(err, classify)).toBe(false);
-    expect(isIamPropagationError(classify)).toBe(false);
+    expect(err.message).toContain('Refused by an explicit deny (identity-based policy)');
+  });
+
+  it('a non-AccessDenied answer to the untagged create surfaces as itself', async () => {
+    answer([
+      () => {
+        throw TAG_RESOURCE_DENIAL();
+      },
+      () => {
+        throw awsError('BucketAlreadyExists', 'The requested bucket name is not available.', 409);
+      },
+    ]);
+
+    const err = await failure(() => provider.create('B', TYPE, { BucketName: BUCKET, Tags: TAGS }));
+    expect(retryClassificationText(err)).not.toContain('s3:TagResource');
+    expect(err.message).toContain('BucketAlreadyExists');
   });
 
   it('an explicit deny names the policy type in the thrown message, without AWS\'s identity-bearing text', async () => {
