@@ -300,7 +300,7 @@ remove-protection-compensation	2026-10-03T00:35:27Z	PASS	326	verify.sh	rc ok, or
 remove-protection-journaled-orphan	2026-10-13T02:41:29Z	PASS	737	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-replaced-delete-failed-rollback	2026-10-15T09:01:04Z	PASS	246	verify.sh	PR #4938 (#4911 provider in-update replacement survivor mark); rc 0, own state bucket, destroy clean, orph clean; ACM arm first run: rollback re-adopted old cert; pre-fix probe RED at step 5 re-adopt (rollback re-created a copy)
+replaced-delete-failed-rollback	2026-10-15T13:01:37Z	PASS	261	verify.sh	PR #4958 (#4946 stripped survivor refusal); rc 0, own state bucket, destroy clean, orph clean; step 2 refusal + manual delete + rollback --force re-create first run; pre-fix probe RED at step 2 (rollback re-adopted the stripped old Target)
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-immutable-name	2026-10-14T12:12:31Z	PASS	146	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 replacement-rename-onto-holder	2026-10-14T12:12:31Z	PASS	611	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
