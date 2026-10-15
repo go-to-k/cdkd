@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-destroy-nested-cross-region",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd destroy / state destroy of a nested stack recorded in a region other than the CLI's (#4941)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -657,6 +657,7 @@
         "created-before-failure-revert",
         "custom-resource-noecho-nested",
         "custom-resource-resolved-secret",
+        "destroy-nested-cross-region",
         "export-nested-stack",
         "import-nested-stack",
         "list-parameters",
@@ -681,6 +682,9 @@
           "literal"
         ],
         "custom-resource-resolved-secret": [
+          "literal"
+        ],
+        "destroy-nested-cross-region": [
           "literal"
         ],
         "export-nested-stack": [
@@ -4954,6 +4958,7 @@
       "integs": [
         "cache-streaming",
         "cc-write-only-create-only",
+        "destroy-nested-cross-region",
         "dynamodb-ondemand",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
@@ -4970,6 +4975,10 @@
         ],
         "cc-write-only-create-only": [
           "l2"
+        ],
+        "destroy-nested-cross-region": [
+          "l2",
+          "literal"
         ],
         "dynamodb-ondemand": [
           "l2"

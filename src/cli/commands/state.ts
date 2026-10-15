@@ -3074,6 +3074,16 @@ async function stateDestroyCommand(
   }
 
   const setup = await setupStateBackend(options);
+  // go-to-k/cdkd#4941: the registry below is built in the run's region, as
+  // `cdkd destroy` builds its own. A provider captures `ambientRegion()` when it
+  // is constructed, and the runner keeps this registry for a stack recorded in
+  // `setup.region`, so under `--region X` from a shell in another region it
+  // would delete by name in the shell's region. `--region` overrides
+  // `AWS_REGION` (`deprecatedRegionOption`), so the SDK is told so too.
+  if (options.region) {
+    process.env['AWS_REGION'] = setup.region;
+    process.env['AWS_DEFAULT_REGION'] = setup.region;
+  }
   const providerRegistry = new ProviderRegistry();
   registerAllProviders(providerRegistry, providerClasses);
   providerRegistry.setCustomResourceResponseBucket(setup.bucket);

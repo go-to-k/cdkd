@@ -108,9 +108,13 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   })),
 }));
 
+/** `AWS_REGION` when each registry was populated: what its providers capture. */
+const registeredUnder = vi.hoisted(() => [] as (string | undefined)[]);
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
   loadProviderClasses: vi.fn(async () => ({})),
-  registerAllProviders: vi.fn(),
+  registerAllProviders: vi.fn(() => {
+    registeredUnder.push(process.env['AWS_REGION']);
+  }),
 }));
 
 const runDestroyForStack = vi.hoisted(() => vi.fn());
@@ -163,6 +167,7 @@ beforeEach(() => {
   indexFiles.clear();
   indexRemovals.length = 0;
   bucketArgs.value.length = 0;
+  registeredUnder.length = 0;
   backend.stateExistsOwnedBy.mockImplementation(async (_stack: string, region: string) =>
     held.regions.has(region)
   );
@@ -344,5 +349,29 @@ describe('the store a destroy hands down also clears the OTHER candidate file (r
     await runStateDestroy(['MyStack', '--yes']);
     expect(indexRemovals).toHaveLength(2);
     expect(indexRemovals.every(([file]) => file === 'ap-northeast-1')).toBe(true);
+  });
+});
+
+/**
+ * go-to-k/cdkd#4941 (security review): `--region` names the run's region over
+ * `AWS_REGION`, and the runner keeps the command's registry for a stack in
+ * that region. A provider captures `ambientRegion()` when it is constructed,
+ * so the registry must be populated under the flag's region, or the destroy
+ * deletes by name in the shell's region.
+ */
+describe('under --region differing from AWS_REGION (go-to-k/cdkd#4941)', () => {
+  it("populates the provider registry in the flag's region", async () => {
+    process.env['AWS_REGION'] = 'us-east-1';
+    await runStateDestroy(['MyStack', '--region', 'us-west-2', '--yes']);
+
+    expect(runnerRegions()).toEqual(['us-west-2']);
+    expect(registeredUnder).toEqual(['us-west-2']);
+  });
+
+  it('THE OTHER POLARITY: leaves AWS_REGION alone without --region', async () => {
+    process.env['AWS_REGION'] = 'us-east-1';
+    await runStateDestroy(['MyStack', '--yes']);
+
+    expect(registeredUnder).toEqual(['us-east-1']);
   });
 });

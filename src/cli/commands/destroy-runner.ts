@@ -20,9 +20,14 @@ import {
   deleteSkipReason,
   UNSPECIFIED_SKIP_REASON,
 } from '../../deployment/delete-outcome.js';
-import { collectNestedChildUnaddressed } from '../../provisioning/nested-stack-context.js';
+import {
+  collectNestedChildUnaddressed,
+  getCurrentNestedStackContext,
+  withNestedStackContext,
+} from '../../provisioning/nested-stack-context.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { runInStackAwsScope } from '../../utils/stack-aws-scope.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -641,7 +646,9 @@ async function releaseRegistryMarkerAfterDestroy(
  * - Acquires (and releases) the stack's S3 lock.
  * - Switches `process.env.AWS_REGION` for the duration of the destroy when
  *   the stack's recorded region differs from `baseRegion`. Restored in the
- *   `finally` block.
+ *   `finally` block. Such a stack is also destroyed inside a stack AWS scope
+ *   for its region, with its own provider registry, and its nested children
+ *   are handed that registry and those clients (go-to-k/cdkd#4941).
  * - Persists state incrementally during the delete loop (issue #804):
  *   each successfully deleted resource is removed from the state object
  *   and the trimmed state is written back to S3, mirroring deploy's
@@ -661,6 +668,64 @@ export async function runDestroyForStack(
   stackName: string,
   state: StackState,
   ctx: DestroyRunnerContext
+): Promise<DestroyRunnerResult> {
+  const stackRegion = state.region;
+  if (!stackRegion || stackRegion === ctx.baseRegion) {
+    return destroyStackInRegion(stackName, state, ctx, undefined);
+  }
+  // go-to-k/cdkd#4941: a stack recorded in another region is destroyed inside
+  // a stack AWS scope for that region, as deploy and rollback run theirs, and
+  // its nested children get the same clients and registry. A provider that
+  // builds its own SDK client captures `ambientRegion()` when it is
+  // constructed, so the caller's registry (built in the CLI's region) would
+  // delete a nested child's resource by name in the CLI's region: a same-named
+  // resource cdkd does not manage there, irreversibly. The child runs with
+  // the parent's region as its base, so it never switches on its own, and
+  // reads its registry and clients from the nested context the CALLER set.
+  // Both are only constructed here; the registry is populated where the runner
+  // switches region, after its refusals and the prompt, as before.
+  const scopeClients = new AwsClients({
+    region: stackRegion,
+    ...(ctx.profile && { profile: ctx.profile }),
+  });
+  try {
+    const awsScope = { region: stackRegion, clients: scopeClients };
+    const registry = new ProviderRegistry();
+    const nestedContext = getCurrentNestedStackContext();
+    const destroyInScope = (): Promise<DestroyRunnerResult> =>
+      destroyStackInRegion(stackName, state, ctx, { clients: scopeClients, registry });
+    return await runInStackAwsScope(awsScope, () =>
+      nestedContext === undefined
+        ? destroyInScope()
+        : withNestedStackContext(
+            { ...nestedContext, providerRegistry: registry, awsClients: scopeClients },
+            destroyInScope
+          )
+    );
+  } finally {
+    // After `destroyStackInRegion` restored the process-global clients, so no
+    // later consumer reaches a destroyed client (issue #2161).
+    try {
+      scopeClients.destroy();
+    } catch (destroyError) {
+      getLogger().debug(
+        `Failed to destroy region-scoped AWS clients: ${describeAwsFailure(destroyError).detail}`
+      );
+    }
+  }
+}
+
+/** The stack-region clients and registry a cross-region destroy runs under. */
+interface StackRegionScope {
+  clients: AwsClients;
+  registry: ProviderRegistry;
+}
+
+async function destroyStackInRegion(
+  stackName: string,
+  state: StackState,
+  ctx: DestroyRunnerContext,
+  stackScope: StackRegionScope | undefined
 ): Promise<DestroyRunnerResult> {
   // Awaited first, so provider construction below stays synchronous once the
   // stack client scope / globals are set (see `loadProviderClasses`).
@@ -1287,14 +1352,16 @@ export async function runDestroyForStack(
     }
   }
 
-  // Switch region if stack was deployed to a different one.
+  // Switch region if stack was deployed to a different one. The clients and
+  // the (still empty) registry are `runDestroyForStack`'s, which entered the
+  // stack AWS scope this runs in and tears the clients down; the
+  // process-global switch below is kept for code outside that scope's reach.
   const stackRegion = state.region;
   let destroyProviderRegistry = ctx.providerRegistry;
   let destroyAwsClients: AwsClients | undefined;
   // Set the moment `AWS_REGION` is switched, so the restore below runs even
-  // when the switch is only PARTIAL — a throw while building the region-scoped
-  // clients / provider registry leaves the env vars switched but
-  // `destroyAwsClients` unbuilt (issue #2161).
+  // when the switch is only PARTIAL — a throw while populating the
+  // region-scoped provider registry leaves the env vars switched (issue #2161).
   let regionSwitched = false;
   // Restore the process-global region + AWS clients this function switched
   // (below) for a cross-region stack. Called from the main `finally` AND from
@@ -1305,43 +1372,30 @@ export async function runDestroyForStack(
   // client pointed at the target stack for the rest of a `--all` run.
   // Idempotent: `regionSwitched` is claimed (cleared) FIRST, so a repeated
   // call — the success path reaches it from the main `finally` after an exit
-  // path may already have run it — is a clean no-op and cannot double-destroy
-  // the client. The global region / clients are restored BEFORE `destroy()`, so
-  // a throwing `destroy()` cannot skip the restoration that actually matters.
+  // path may already have run it — is a clean no-op. The clients are
+  // `runDestroyForStack`'s to destroy, after this restore.
   const restoreBaseRegionAndClients = (): void => {
     if (!regionSwitched) return;
     regionSwitched = false;
-    const switchedClients = destroyAwsClients;
     destroyAwsClients = undefined;
     process.env['AWS_REGION'] = ctx.baseRegion;
     process.env['AWS_DEFAULT_REGION'] = ctx.baseRegion;
     setAwsClients(ctx.baseAwsClients);
-    // Swallow a teardown failure: this runs from exit paths (before the SIGINT
-    // listener is removed) and from the success `finally` (where a `releaseLock`
-    // rejection is propagating), so a throwing `destroy()` must not skip the
-    // listener removal NOR mask the error that actually matters (issue #2161).
-    try {
-      switchedClients?.destroy();
-    } catch (destroyError) {
-      logger.debug(
-        `Failed to destroy region-scoped AWS clients: ${describeAwsFailure(destroyError).detail}`
-      );
-    }
   };
-  if (stackRegion && stackRegion !== ctx.baseRegion) {
+  if (stackScope !== undefined && stackRegion) {
     logger.info(`Stack region: ${displaySafe(stackRegion, { asciiOnly: true })}`);
     process.env['AWS_REGION'] = stackRegion;
     process.env['AWS_DEFAULT_REGION'] = stackRegion;
     regionSwitched = true;
 
     try {
-      destroyAwsClients = new AwsClients({
-        region: stackRegion,
-        ...(ctx.profile && { profile: ctx.profile }),
-      });
+      destroyAwsClients = stackScope.clients;
       setAwsClients(destroyAwsClients);
 
-      destroyProviderRegistry = new ProviderRegistry();
+      // Populated HERE, inside the stack AWS scope `runDestroyForStack`
+      // entered, so every provider captures the stack's region; the nested
+      // context already holds this same registry (go-to-k/cdkd#4941).
+      destroyProviderRegistry = stackScope.registry;
       registerAllProviders(destroyProviderRegistry, providerClasses);
       destroyProviderRegistry.setCustomResourceResponseBucket(ctx.stateBucket);
       if (ctx.allowUnsupportedTypes?.length) {

@@ -847,6 +847,11 @@
       ]
     },
     {
+      "name": "destroy-nested-cross-region",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "diff-fail-on-destructive",
       "annotated": false,
       "scenarios": []
@@ -3348,6 +3353,7 @@
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "custom-resource-service-token-change",
+    "destroy-nested-cross-region",
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
     "dynamodb-autoscaling",
