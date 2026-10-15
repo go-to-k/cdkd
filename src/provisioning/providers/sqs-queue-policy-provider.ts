@@ -25,10 +25,13 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markRedactedCause } from '../../deployment/retryable-errors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
 
 /**
@@ -75,7 +78,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SQS queue policy ${logicalId}`);
 
@@ -130,13 +134,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         attributes: { [WRITTEN_QUEUES_KEY]: queues.join(',') },
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+      const thrown = this.wrapOperationError(
+        'create',
         logicalId,
+        resourceType,
         queues[0],
-        cause
+        error,
+        context?.maskSecrets
       );
       // go-to-k/cdkd#4583: name exactly the written queues, comma-joined (a
       // form delete() takes), so --revert-failed clears no queue this create
@@ -237,13 +241,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     } catch (error) {
       // The region refusal is already a complete ProvisioningError.
       if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+      throw this.wrapOperationError(
+        'update',
         logicalId,
+        resourceType,
         physicalId,
-        cause
+        error,
+        context?.maskSecrets
       );
     }
   }
@@ -306,13 +310,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       } catch (error) {
         // The region refusal is already a complete ProvisioningError.
         if (error instanceof ProvisioningError) throw error;
-        const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-          resourceType,
+        throw this.wrapOperationError(
+          'delete',
           logicalId,
+          resourceType,
           physicalId,
-          cause
+          error,
+          context?.maskSecrets
         );
       }
     }
@@ -439,12 +443,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
           await this.clearQueuePolicy(queueUrl, resourceType, logicalId, context.expectedRegion);
         } catch (error) {
           if (error instanceof ProvisioningError) throw error;
-          throw new ProvisioningError(
-            `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-            resourceType,
+          throw this.wrapOperationError(
+            'delete',
             logicalId,
+            resourceType,
             physicalId,
-            error instanceof Error ? error : undefined
+            error,
+            context.maskSecrets
           );
         }
       } else {
@@ -457,6 +462,49 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     if (unreadable) return { outcome: 'skipped', reason: QUEUE_POLICY_UNREADABLE_SKIP_REASON };
     if (mismatched) return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_MISMATCH_LEFT_REASON };
     return undefined;
+  }
+
+  /**
+   * Wrap what `create` / `update` / `delete` caught into the error they throw
+   * (go-to-k/cdkd#2319; the S3 bucket provider's twin is go-to-k/cdkd#2302).
+   *
+   * A thrown message is persisted to `deployments/{runId}.jsonl`, and SQS
+   * words an `AccessDenied` on `SetQueueAttributes` as `User:
+   * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
+   * ...`. So an AWS-authored failure is reduced to its class here and AWS's
+   * own text goes to `logger.debug`; a cdkd-authored error keeps its text.
+   * `describeAwsFailure` also cannot throw on a value `String()` cannot
+   * convert, which used to replace the failure (go-to-k/cdkd#3341).
+   *
+   * Nothing else reads this message by substring: `clearQueuePolicy` handles
+   * a gone queue before the wrap. The retry classifiers do, so the cause is
+   * kept and a redaction is stamped for them to read it instead -- only when
+   * the cause IS the error whose text was withheld.
+   */
+  private wrapOperationError(
+    operation: 'create' | 'update' | 'delete',
+    logicalId: string,
+    resourceType: string,
+    physicalId: string | undefined,
+    error: unknown,
+    maskSecrets: ((text: string) => string) | undefined
+  ): ProvisioningError {
+    const mask = maskSecrets ?? ((t: string) => t);
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(
+        mask(`Failed to ${operation} SQS queue policy ${logicalId}: ${failure.detail}`)
+      );
+    }
+    const cause = error instanceof Error ? error : undefined;
+    const wrapped = new ProvisioningError(
+      `Failed to ${operation} SQS queue policy ${logicalId}: ${failure.summary}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      cause
+    );
+    return failure.redacted && cause !== undefined ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
