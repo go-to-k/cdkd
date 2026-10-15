@@ -17,6 +17,10 @@
 #      ENABLED, the omitted features are unchanged, and `cdkd drift` is clean.
 #   3. Re-deploy with CDKD_TEST_UPDATE=scalar,features (adds EKS_AUDIT_LOGS:
 #      DISABLED). Same assertions, plus EKS_AUDIT_LOGS is DISABLED.
+#   3b. Drift FindingPublishingFrequency through the GuardDuty API, then
+#      `cdkd drift --revert` (go-to-k/cdkd#4921). Assert ONE_HOUR is back, with
+#      the same in-place checks as Phase 3. Then drift EKS_AUDIT_LOGS to
+#      ENABLED and revert it: DISABLED is back.
 #   4. Destroy; assert the detector and the state file are gone.
 #   5. CDKD_TEST_SHAPE=datasources (DataSources only, S3Logs disabled): deploy,
 #      scalar update, destroy. Assert ONE_HOUR, the same id, S3Logs still
@@ -258,6 +262,63 @@ if [ "${F}" != "ONE_HOUR" ]; then
 fi
 assert_updated_in_place "Phase 3" "${OMITTED_P3}" "${NOT_EKS_AUDIT}"
 echo "    Features update applied in place"
+
+# --- Phase 3b: drift --revert -------------------------------------------
+echo "==> Phase 3b: drift FindingPublishingFrequency live, then cdkd drift --revert"
+aws guardduty update-detector --detector-id "${DETECTOR_ID}" --region "${REGION}" \
+  --finding-publishing-frequency FIFTEEN_MINUTES
+F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
+if [ "${F}" != "FIFTEEN_MINUTES" ]; then
+  echo "FAIL: Phase 3b: premise: the live drift did not land, FindingPublishingFrequency is '${F}'" >&2; exit 1
+fi
+# Exit 1 is "drift found"; 0 (clean) and 2 (comparison incomplete) both mean
+# the revert below would not be exercised on a detected drift.
+DRIFT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" != "1" ]; then
+  echo "FAIL: Phase 3b: premise: cdkd drift exited ${DRIFT_RC} over a live FindingPublishingFrequency change, expected 1" >&2; exit 1
+fi
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
+if [ "${F}" != "ONE_HOUR" ]; then
+  echo "FAIL: Phase 3b: FindingPublishingFrequency is '${F}' after the revert, expected ONE_HOUR" >&2; exit 1
+fi
+assert_updated_in_place "Phase 3b" "${OMITTED_P3}" "${NOT_EKS_AUDIT}"
+
+# A drifted FEATURE: the revert's baseline Features list is read back too
+# (both runtime features), so this is the arm that narrows the op. Premise:
+# the RECORDED baseline the revert overlays (observedProperties in state, not
+# GetDetector) holds both runtime features.
+BASELINE_FEATURES="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+  | python3 -I -c 'import json,sys; r=json.load(sys.stdin)["resources"]["Detector"]; print(" ".join(sorted(f["Name"] for f in (r.get("observedProperties") or {}).get("Features",[]))))')"
+if [[ " ${BASELINE_FEATURES} " != *" EKS_RUNTIME_MONITORING "* ]] \
+  || [[ " ${BASELINE_FEATURES} " != *" RUNTIME_MONITORING "* ]]; then
+  echo "FAIL: Phase 3b: premise: the recorded observed baseline lacks a runtime feature: '${BASELINE_FEATURES}'" >&2; exit 1
+fi
+aws guardduty update-detector --detector-id "${DETECTOR_ID}" --region "${REGION}" \
+  --features '[{"Name":"EKS_AUDIT_LOGS","Status":"ENABLED"}]'
+EKS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='EKS_AUDIT_LOGS'] | [0].Status")"
+if [ "${EKS}" != "ENABLED" ]; then
+  echo "FAIL: Phase 3b: premise: the live feature drift did not land, EKS_AUDIT_LOGS is '${EKS}'" >&2; exit 1
+fi
+# Premise: the toggle drifts BOTH keys (EKS audit logs has a DataSources
+# counterpart), the case where the revert must leave DataSources out.
+DRIFT_RC=0
+DRIFT_JSON="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" != "1" ]; then
+  echo "FAIL: Phase 3b: premise: cdkd drift exited ${DRIFT_RC} over a live EKS_AUDIT_LOGS change, expected 1" >&2; exit 1
+fi
+DRIFT_KEYS="$(python3 -I -c 'import json,sys; print(" ".join(sorted({c["path"].split(".")[0].split("[")[0] for s in json.load(sys.stdin) for d in s["drifted"] for c in d["changes"]})))' <<<"${DRIFT_JSON}")"
+if [ "${DRIFT_KEYS}" != "DataSources Features" ]; then
+  echo "FAIL: Phase 3b: premise: expected drift on exactly DataSources and Features, got '${DRIFT_KEYS}'" >&2; exit 1
+fi
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+EKS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='EKS_AUDIT_LOGS'] | [0].Status")"
+if [ "${EKS}" != "DISABLED" ]; then
+  echo "FAIL: Phase 3b: EKS_AUDIT_LOGS is '${EKS}' after the revert, expected DISABLED" >&2; exit 1
+fi
+assert_updated_in_place "Phase 3b (feature)" "${OMITTED_P3}" "${NOT_EKS_AUDIT}"
+echo "    drift reverted in place"
 
 # --- Phase 4: destroy --------------------------------------------------
 echo "==> Phase 4: destroy"

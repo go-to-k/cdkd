@@ -87,6 +87,140 @@ describe('withGuardDutyDetectorReadBackOps (go-to-k/cdkd#4910)', () => {
     ).toBe(patch);
   });
 
+  describe('AWS readback (drift --revert, go-to-k/cdkd#4921)', () => {
+    // The read-back shape in miniature: both runtime features beside the one
+    // that drifts.
+    // Listed in a different order from the baseline: entries pair by Name.
+    const LIVE_FEATURES = [
+      { Name: 'RUNTIME_MONITORING', Status: 'ENABLED' },
+      { Name: 'EKS_RUNTIME_MONITORING', Status: 'DISABLED' },
+      { Name: 'RDS_LOGIN_EVENTS', Status: 'DISABLED' },
+    ];
+    const BASELINE_FEATURES = [
+      { Name: 'RDS_LOGIN_EVENTS', Status: 'ENABLED' },
+      { Name: 'EKS_RUNTIME_MONITORING', Status: 'DISABLED' },
+      { Name: 'RUNTIME_MONITORING', Status: 'ENABLED' },
+    ];
+    const previous = { Enable: true, Features: LIVE_FEATURES, DataSources: DATA_SOURCES };
+
+    it('removes both undrifted keys although the bag carries them', () => {
+      expect(
+        withGuardDutyDetectorReadBackOps(DETECTOR, [SCALAR], { ...previous }, { previous })
+      ).toEqual([
+        SCALAR,
+        { op: 'remove', path: '/Features' },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+
+    it('narrows a drifted Features op to the entries that differ, leaving the runtime pair out', () => {
+      const patch: JsonPatchOp[] = [
+        { op: 'replace', path: '/Features', value: BASELINE_FEATURES },
+      ];
+      expect(
+        withGuardDutyDetectorReadBackOps(
+          DETECTOR,
+          patch,
+          { ...previous, Features: BASELINE_FEATURES },
+          { previous }
+        )
+      ).toEqual([
+        { op: 'replace', path: '/Features', value: [{ Name: 'RDS_LOGIN_EVENTS', Status: 'ENABLED' }] },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+
+    it('removes a drifted DataSources beside a drifted Features (a feature toggle drifts both)', () => {
+      const patch: JsonPatchOp[] = [
+        { op: 'replace', path: '/DataSources', value: { S3Logs: { Enable: true } } },
+        { op: 'replace', path: '/Features', value: BASELINE_FEATURES },
+      ];
+      expect(
+        withGuardDutyDetectorReadBackOps(
+          DETECTOR,
+          patch,
+          { ...previous, Features: BASELINE_FEATURES },
+          { previous }
+        )
+      ).toEqual([
+        { op: 'remove', path: '/DataSources' },
+        { op: 'replace', path: '/Features', value: [{ Name: 'RDS_LOGIN_EVENTS', Status: 'ENABLED' }] },
+      ]);
+    });
+
+    it('keeps a drifted DataSources when the Features op narrows to nothing', () => {
+      const ds = { S3Logs: { Enable: true } };
+      const patch: JsonPatchOp[] = [
+        { op: 'replace', path: '/DataSources', value: ds },
+        { op: 'replace', path: '/Features', value: LIVE_FEATURES },
+      ];
+      expect(
+        withGuardDutyDetectorReadBackOps(DETECTOR, patch, { ...previous, DataSources: ds }, { previous })
+      ).toEqual([
+        { op: 'replace', path: '/DataSources', value: ds },
+        { op: 'remove', path: '/Features' },
+      ]);
+    });
+
+    it('turns a Features op with no differing entry into a remove', () => {
+      const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Features', value: LIVE_FEATURES }];
+      expect(
+        withGuardDutyDetectorReadBackOps(DETECTOR, patch, { ...previous }, { previous })
+      ).toEqual([
+        { op: 'remove', path: '/Features' },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+
+    it.each([
+      ['an object with no Name', { Status: 'ENABLED' }],
+      ['null', null],
+      ['a non-string Name', { Name: 7, Status: 'ENABLED' }],
+      ['a primitive', 'RDS_LOGIN_EVENTS'],
+    ])('keeps a Features op as it was when an entry is %s', (_label, entry) => {
+      // Beside an UNCHANGED named entry, so narrowing past the odd one would
+      // drop it.
+      const odd = [entry, LIVE_FEATURES[0]];
+      const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Features', value: odd }];
+      expect(
+        withGuardDutyDetectorReadBackOps(
+          DETECTOR,
+          patch,
+          { ...previous, Features: odd },
+          { previous }
+        )
+      ).toEqual([
+        { op: 'replace', path: '/Features', value: odd },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+
+    it('keeps a remove /Features op as it was (no list to narrow)', () => {
+      const patch: JsonPatchOp[] = [{ op: 'remove', path: '/Features' }];
+      expect(
+        withGuardDutyDetectorReadBackOps(DETECTOR, patch, { Enable: true }, { previous })
+      ).toEqual([
+        { op: 'remove', path: '/Features' },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+
+    it('keeps a Features op as it was when the AWS-current value is not a list', () => {
+      const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Features', value: BASELINE_FEATURES }];
+      expect(
+        withGuardDutyDetectorReadBackOps(
+          DETECTOR,
+          patch,
+          { ...previous, Features: BASELINE_FEATURES },
+          { previous: { Enable: true } }
+        )
+      ).toEqual([
+        { op: 'replace', path: '/Features', value: BASELINE_FEATURES },
+        { op: 'remove', path: '/DataSources' },
+      ]);
+    });
+  });
+
   it('leaves an empty patch empty', () => {
     const patch: JsonPatchOp[] = [];
     expect(

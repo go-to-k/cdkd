@@ -1431,7 +1431,12 @@ export class CloudControlProvider implements ResourceProvider {
 
       // go-to-k/cdkd#4910: a GuardDuty detector's read model carries keys
       // UpdateDetector refuses beside the declared ones; see the helper.
-      patch = withGuardDutyDetectorReadBackOps(resourceType, patch, cleanProperties);
+      patch = withGuardDutyDetectorReadBackOps(
+        resourceType,
+        patch,
+        cleanProperties,
+        context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
+      );
 
       // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
       // patch value can be a resolved secret (a Cloud-Control-routed
