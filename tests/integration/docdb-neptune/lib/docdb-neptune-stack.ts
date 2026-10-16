@@ -32,7 +32,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * (`deletionProtection: true` + `backupRetentionPeriod: 7`, plus
  * `iamAuthEnabled: true` on Neptune) and `autoMinorVersionUpgrade: false`
  * on the Neptune instance; the `CDKD_TEST_REMOVAL=true` redeploy DROPS them
- * entirely so cdkd's Modify* calls see ABSENT fields (removal), not a value
+ * entirely (while moving PreferredMaintenanceWindow tue -> wed on each
+ * modified resource as a companion change proving the Modify* call fired) so cdkd's Modify* calls see ABSENT fields (removal), not a value
  * change. A real CloudFormation A/B (#5004) showed CloudFormation KEEPS the
  * live value of every one of these on removal, so verify.sh asserts the
  * baseline values are still live after the removal redeploy (cdkd must not
@@ -119,6 +120,11 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // baseline values are RETAINED (CloudFormation keeps them).
       deletionProtection: isRemoval ? undefined : true,
       backupRetentionPeriod: isRemoval ? undefined : 7,
+      // Companion change (#5004): an immediately-applied, read-back-at-once
+      // property of the SAME ModifyDBCluster call, changed in the removal
+      // deploy, so verify.sh can prove the Modify call FIRED before it
+      // trusts the KEEP assertions (otherwise they pass vacuously).
+      preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
       storageEncrypted: true,
     });
     docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -161,6 +167,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
       deletionProtection: isRemoval ? undefined : true,
       backupRetentionPeriod: isRemoval ? undefined : 7,
       iamAuthEnabled: isRemoval ? undefined : true,
+      // Companion change (#5004): proves ModifyDBCluster fired (see DocDB).
+      preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
       storageEncrypted: true,
     });
     neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -172,6 +180,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // #5004: non-default (the API default is true); dropped on removal and
       // expected to stay false.
       autoMinorVersionUpgrade: isRemoval ? undefined : false,
+      // Companion change (#5004): proves ModifyDBInstance fired.
+      preferredMaintenanceWindow: isRemoval ? 'wed:06:00-wed:06:30' : 'tue:06:00-tue:06:30',
     });
     neptuneInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     neptuneInstance.addDependency(neptuneCluster);

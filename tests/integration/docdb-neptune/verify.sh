@@ -380,6 +380,7 @@ read_state() {
   DOCDB_STATUS=$(echo "${DOCDB_AFTER}" | jq -r '.Status // "null"') || return 1
   DOCDB_PROT=$(echo "${DOCDB_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
   DOCDB_RETENTION=$(echo "${DOCDB_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
+  DOCDB_MW=$(echo "${DOCDB_AFTER}" | jq -r '.PreferredMaintenanceWindow // "null"') || return 1
   NEPTUNE_AFTER=$(aws neptune describe-db-clusters \
     --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
     --region "${REGION}" \
@@ -387,13 +388,16 @@ read_state() {
   NEPTUNE_STATUS=$(echo "${NEPTUNE_AFTER}" | jq -r '.Status // "null"') || return 1
   NEPTUNE_PROT=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
   NEPTUNE_RETENTION=$(echo "${NEPTUNE_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
+  NEPTUNE_MW=$(echo "${NEPTUNE_AFTER}" | jq -r '.PreferredMaintenanceWindow // "null"') || return 1
   NEPTUNE_IAM=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end') || return 1
-  NEPTUNE_AMVU=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
-    --region "${REGION}" --query 'DBInstances[0]' --output json \
+  NEPTUNE_INST_AFTER=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+    --region "${REGION}" --query 'DBInstances[0]' --output json) || return 1
+  NEPTUNE_INST_MW=$(echo "${NEPTUNE_INST_AFTER}" | jq -r '.PreferredMaintenanceWindow // "null"') || return 1
+  NEPTUNE_AMVU=$(echo "${NEPTUNE_INST_AFTER}" \
     | jq -r 'if has("AutoMinorVersionUpgrade") then .AutoMinorVersionUpgrade | tostring else "null" end') || return 1
 }
-DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION=""
-NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM="" NEPTUNE_AMVU=""
+DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION="" DOCDB_MW=""
+NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM="" NEPTUNE_AMVU="" NEPTUNE_MW="" NEPTUNE_INST_MW=""
 SETTLED=""
 for i in $(seq 1 60); do
   read_state || exit 1
@@ -411,6 +415,17 @@ if [ -z "${SETTLED}" ]; then
 fi
 sleep 30
 read_state || exit 1
+# Companion-change guard (#5004): the maintenance window moved tue -> wed in
+# the SAME removal deploy, so these must already read the new value. If a
+# Modify* call was never sent, they still read tue and this fails BEFORE the
+# retention assertions below could pass vacuously.
+if [ "${DOCDB_MW}" != "wed:05:00-wed:05:30" ] || [ "${NEPTUNE_MW}" != "wed:05:00-wed:05:30" ] \
+  || [ "${NEPTUNE_INST_MW}" != "wed:06:00-wed:06:30" ]; then
+  echo "[verify] FAIL: the removal redeploy's companion change (PreferredMaintenanceWindow tue -> wed) is not live, so the Modify* calls did not fire and the KEEP assertions would be vacuous (#5004)" >&2
+  echo "  docdb cluster='${DOCDB_MW}' (expected wed:05:00-wed:05:30) neptune cluster='${NEPTUNE_MW}' (expected wed:05:00-wed:05:30) neptune instance='${NEPTUNE_INST_MW}' (expected wed:06:00-wed:06:30)" >&2
+  exit 1
+fi
+echo "[verify] step 3d: companion PreferredMaintenanceWindow change is live on DocDB cluster, Neptune cluster and Neptune instance — Modify* fired"
 if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "${DOCDB_RETENTION}" != "7" ] \
   || [ "${NEPTUNE_STATUS}" != "available" ] || [ "${NEPTUNE_PROT}" != "true" ] || [ "${NEPTUNE_RETENTION}" != "7" ] || [ "${NEPTUNE_IAM}" != "true" ] \
   || [ "${NEPTUNE_AMVU}" != "false" ]; then
