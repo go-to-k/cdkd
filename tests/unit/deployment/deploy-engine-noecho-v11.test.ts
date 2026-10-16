@@ -344,6 +344,37 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
   });
 
+  describe('condition verdicts reaching the positional NoEcho arm (deploy-flow.ts ~652)', () => {
+    it('opens only the NOT-taken branch of an Fn::If gated by an evaluated condition, leaving the selected plain literal unmasked', async () => {
+      stateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      const tpl: CloudFormationTemplate = {
+        Conditions: { UseSecret: { 'Fn::Equals': ['a', 'b'] } },
+        Parameters: {
+          Secret: { Type: 'String', NoEcho: true, Default: 'secret-value-v11-distinctive' },
+        },
+        Resources: {
+          Topic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: {
+              TopicName: TOPIC,
+              DisplayName: { 'Fn::If': ['UseSecret', { Ref: 'Secret' }, 'plain-display'] },
+            },
+          },
+        },
+      };
+
+      await makeEngine().deploy(STACK, tpl);
+
+      const saved = lastSaved();
+      // deploy-flow.ts ~652 (`this.noEchoRun.noEchoConditions = conditions`):
+      // the evaluated verdict (UseSecret: false) must reach the positional
+      // NoEcho arm, which then opens only the branch this deploy selected
+      // instead of reading the whole Fn::If and masking the plain literal.
+      expect(saved.resources['Topic']!.properties['DisplayName']).toBe('plain-display');
+      expect(saved.resources['Topic']!.noEchoLeaves ?? []).not.toContainEqual(['DisplayName']);
+    });
+  });
+
   describe('readers of a v11 record', () => {
     it('skips an unchanged readable value with ONE readback and no provider write', async () => {
       await makeEngine().deploy(STACK, template());
