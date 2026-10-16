@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
@@ -52,7 +53,7 @@ describe('DocDBProvider removal semantics (issues #1160 / #5004)', () => {
 
   describe('removal declaration (what deploy / rollback inject)', () => {
     it('declares no removalDefaults for DBCluster, so nothing is injected on removal (#5004)', () => {
-      expect(provider.removalDefaults?.get('AWS::DocDB::DBCluster')).toBeUndefined();
+      expect((provider as ResourceProvider).removalDefaults?.get('AWS::DocDB::DBCluster')).toBeUndefined();
       const prep = prepareRemovalForUpdate(
         provider,
         'AWS::DocDB::DBCluster',

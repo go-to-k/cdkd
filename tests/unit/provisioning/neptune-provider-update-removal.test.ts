@@ -40,6 +40,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 
 describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
@@ -61,7 +62,7 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
         { DeletionProtection: true, AutoMinorVersionUpgrade: false },
       ],
     ])('declares no removalDefaults for %s, so nothing is injected (#5004)', (type, previous) => {
-      expect(provider.removalDefaults?.get(type)).toBeUndefined();
+      expect((provider as ResourceProvider).removalDefaults?.get(type)).toBeUndefined();
       const prep = prepareRemovalForUpdate(provider, type, {}, previous);
       expect(prep.injected).toEqual([]);
       for (const key of Object.keys(previous)) {
