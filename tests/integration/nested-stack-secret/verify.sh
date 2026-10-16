@@ -1418,14 +1418,42 @@ assert_eq "FallthroughPair.Description persists the expression the diff side bin
 assert_eq "FallthroughPair.Value persists FallSecretB's OWN expression" \
   "$(jq_state "${CHILD_STATE}" '.resources.FallthroughPair.properties.Value')" "${FALL_EXPR_B}"
 
+# --- #4973: an output reading the sibling beside two pseudo parameters ----
+# `ChildFallPseudoOutput` reads `FallSecretB2` through an `Fn::Join` beside
+# `AWS::Region` and `AWS::AccountId`. The outputs bag is positioned by the
+# template parse alone, which accepts one part it cannot key; before #4973
+# both pseudo parameters were such parts, so the output was a slot read and
+# cdkd withdrew `FallConnA2`'s literal spelling for the WHOLE child: every arm
+# below persisted the survivor `fall2:AWSCURRENT:`. Checked FIRST, so a
+# regression names this issue (a #4962 / #4975 one that empties the child's
+# pseudo table reaches it too).
+echo "==> #4973: the child's Outputs read FallSecretB2 beside AWS::Region and AWS::AccountId"
+assert_eq "premise: ChildFallPseudoOutput's synthesized Value is an Fn::Join of AWS::Region, AWS::AccountId and FallSecretB2" \
+  "$(jq -c '.Outputs.ChildFallPseudoOutput.Value' "cdk.out/${CHILD_TEMPLATE_FILE}")" \
+  '{"Fn::Join":["",[{"Ref":"AWS::Region"},".",{"Ref":"AWS::AccountId"},".",{"Ref":"FallSecretB2"}]]}'
+FALL4973_CONN_OUTPUT="$(jq_state "${CHILD_STATE}" '.outputs.ChildFallConnOutput')"
+if [ "${FALL4973_CONN_OUTPUT}" = "postgres://${FALL2_USER_EXPR}:${FALL2_EXPR_B}@host" ]; then
+  echo "FAIL: ChildFallConnOutput persisted the survivor's spelling (fall2:AWSCURRENT:), so FallConnA2's literal was withdrawn for the child: the Outputs placeholder parse held ChildFallPseudoOutput's AWS::Region and AWS::AccountId unknown (issue #4973)" >&2
+  exit 1
+fi
+assert_eq "ChildFallPseudoOutput persists the pseudo values and FallSecretB2's OWN expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildFallPseudoOutput')" "${REGION}.${ACCOUNT_ID}.${FALL2_EXPR_B}"
+case "$(jq_state "${CHILD_STATE}" '.outputs.ChildFallPseudoOutput')" in
+  *"${FALL2_PW_VALUE}"*)
+    echo "FAIL: ChildFallPseudoOutput holds the resolved fall2 plaintext (issue #4973)" >&2
+    exit 1
+    ;;
+esac
+
 # --- #4962: an Fn::Sub naming pseudo parameters inside Fn::Select ---------
 # `FallthroughPseudoSub` reads `FallConnA2` through `Fn::Select` / `Fn::Split`
 # over an `Fn::Sub` naming `AWS::Region` and `AWS::Partition`, beside
 # `FallSecretB2`. Before #4962 the re-read refused every `AWS::` placeholder,
 # so the leaf was a slot read and cdkd withdrew `FallConnA2`'s literal
 # spelling for the WHOLE child: this arm, the #4954 arms and the #4919 arms
-# below all persisted the survivor `fall2:AWSCURRENT:`. Checked FIRST, so a
-# regression of this arm names this issue rather than one it takes down with it.
+# below all persisted the survivor `fall2:AWSCURRENT:`. Checked right after the
+# #4973 arm, so a regression of this arm names this issue rather than one it
+# takes down with it.
 # Since #4975 the Fn::Sub names `AWS::AccountId` too: #4962 left the account
 # unbound (binding it only once settled flipped the verdict between two
 # deploys), so on that tree this arm persists the survivor again.
