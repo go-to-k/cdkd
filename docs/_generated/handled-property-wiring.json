@@ -5203,7 +5203,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5220,7 +5219,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5237,7 +5235,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5250,11 +5247,9 @@
             "AWS::DLM::LifecyclePolicy"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "update"
           ]
@@ -5286,7 +5281,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5319,7 +5313,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5352,7 +5345,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"

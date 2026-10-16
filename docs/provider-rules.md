@@ -1385,7 +1385,8 @@ shared report is `orphan-report.ts`):
 
 CloudFormation resets a property **removed** from the template to its
 default for MANY types, but not all properties of all types (the reset
-premise is per type; see the A/B bullet below, issue #5004). Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+premise is per type; see the A/B bullet below, issue #5004). Most AWS
+`Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
