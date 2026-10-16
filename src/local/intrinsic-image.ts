@@ -34,9 +34,9 @@ export {
  * normalization point. This helper is a FOURTH derivation that the fix
  * structurally could not reach (issue
  * [#1814](https://github.com/go-to-k/cdkd/issues/1814)): the implementation is
- * cdk-local's, and it carries its own partition table whose prefix tests are
+ * cdk-local's, and it carried its own partition table whose prefix tests were
  * case-sensitive in the same direction. So an upper-cased `--region CN-NORTH-1`
- * still fell through to the commercial partition here and synthesized
+ * fell through to the commercial partition here and synthesized
  * `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a `cn-` region carrying the
  * commercial suffix, a host that does not exist — at the five call sites, across
  * three files, that reach this symbol:
