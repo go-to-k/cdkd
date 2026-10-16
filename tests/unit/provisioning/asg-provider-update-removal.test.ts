@@ -1,3 +1,9 @@
+// go-to-k/cdkd#5004: a real CloudFormation A/B shows CloudFormation KEEPS the live
+// value of nine removed properties (HealthCheckType, HealthCheckGracePeriod,
+// Cooldown, TerminationPolicies, NewInstancesProtectedFromScaleIn,
+// CapacityRebalance, DesiredCapacityType, DefaultInstanceWarmup,
+// DeletionProtection), so only InstanceMaintenancePolicy, MaxInstanceLifetime,
+// CapacityReservationSpecification and AvailabilityZoneDistribution reset.
 // issue #1160: absent-field removal reset to CFn defaults for
 // AWS::AutoScaling::AutoScalingGroup. UpdateAutoScalingGroup uses merge
 // semantics (an absent input field means "no change"), so a field DROPPED from
@@ -100,7 +106,7 @@ beforeEach(() => {
 });
 
 describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', () => {
-  it('resets every removed optional field to its CFn default / SDK clear sentinel', async () => {
+  it('resets only the four properties CloudFormation resets and sends nothing for the nine it keeps (#5004)', async () => {
     const provider = new ASGProvider();
     await provider.update(
       'MyAsg',
@@ -138,15 +144,22 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     );
 
     const input = updateCallInput();
-    expect(input['HealthCheckType']).toBe('EC2');
-    expect(input['HealthCheckGracePeriod']).toBe(0);
-    expect(input['DefaultCooldown']).toBe(300);
-    expect(input['TerminationPolicies']).toEqual(['Default']);
-    expect(input['NewInstancesProtectedFromScaleIn']).toBe(false);
-    expect(input['CapacityRebalance']).toBe(false);
+    // KEPT by CloudFormation (#5004): nothing is sent, so the live value stays.
+    for (const key of [
+      'HealthCheckType',
+      'HealthCheckGracePeriod',
+      'DefaultCooldown',
+      'TerminationPolicies',
+      'NewInstancesProtectedFromScaleIn',
+      'CapacityRebalance',
+      'DesiredCapacityType',
+      'DefaultInstanceWarmup',
+      'DeletionProtection',
+    ]) {
+      expect(input, key).not.toHaveProperty(key);
+    }
+    // RESET by CloudFormation (#5004 A/B).
     expect(input['MaxInstanceLifetime']).toBe(0);
-    expect(input['DesiredCapacityType']).toBe('units');
-    expect(input['DefaultInstanceWarmup']).toBe(-1);
     expect(input['InstanceMaintenancePolicy']).toEqual({
       MinHealthyPercentage: -1,
       MaxHealthyPercentage: -1,
@@ -157,13 +170,12 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     expect(input['AvailabilityZoneDistribution']).toEqual({
       CapacityDistributionStrategy: 'balanced-best-effort',
     });
-    expect(input['DeletionProtection']).toBe('none');
     // DEFERRED: no SDK-documented default for the sub-fields — removal keeps
     // the live value (stays absent from the SDK input).
     expect(input['AvailabilityZoneImpairmentPolicy']).toBeUndefined();
   });
 
-  it('resets a removed DefaultCooldown spelling too (dual-key logical field)', async () => {
+  it('sends nothing for a removed DefaultCooldown spelling (CloudFormation keeps it, #5004)', async () => {
     const provider = new ASGProvider();
     await provider.update(
       'MyAsg',
@@ -173,7 +185,7 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
       { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 0, DefaultCooldown: 240 }
     );
 
-    expect(updateCallInput()['DefaultCooldown']).toBe(300);
+    expect(updateCallInput()).not.toHaveProperty('DefaultCooldown');
   });
 
   it('does not misread a Cooldown -> DefaultCooldown spelling switch as a removal', async () => {
@@ -217,7 +229,7 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     expect(input['DeletionProtection']).toBeUndefined();
   });
 
-  it('passes kept/changed fields through unchanged while resetting only the removed ones', async () => {
+  it('passes kept/changed fields through unchanged while resetting only the removed ones CloudFormation resets', async () => {
     const provider = new ASGProvider();
     await provider.update(
       'MyAsg',
@@ -256,9 +268,10 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
       MinHealthyPercentage: 80,
       MaxHealthyPercentage: 120,
     });
-    // Removed fields: explicit resets.
+    // Removed fields: MaxInstanceLifetime is reset (CloudFormation resets it);
+    // CapacityRebalance is KEPT by CloudFormation, so nothing is sent (#5004).
     expect(input['MaxInstanceLifetime']).toBe(0);
-    expect(input['CapacityRebalance']).toBe(false);
+    expect(input).not.toHaveProperty('CapacityRebalance');
     // Never-present stays absent.
     expect(input['DesiredCapacityType']).toBeUndefined();
   });

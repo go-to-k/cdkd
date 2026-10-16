@@ -324,11 +324,16 @@ function itemsOf(read: ListRead): unknown[] {
  * DeletionProtection / MixedInstancesPolicy / LaunchTemplate.
  *
  * `UpdateAutoScalingGroup` has merge semantics (absent input field = "no
- * change"), so every optional mutable field has a removal reset — declared
- * in `removalDefaults`, or a local `clearOnUpdateRemoval` for a coerced or
- * aliased one: a property REMOVED from the template is reset to its CFn
- * default / SDK-documented clear sentinel, matching CloudFormation (issue
- * #1160).
+ * change"). Per the real CloudFormation A/B in go-to-k/cdkd#5004, a property
+ * REMOVED from the template is reset by CloudFormation for only four members
+ * (InstanceMaintenancePolicy, MaxInstanceLifetime,
+ * CapacityReservationSpecification, AvailabilityZoneDistribution) — those get
+ * a removal reset here, declared in `removalDefaults` or a local
+ * `clearOnUpdateRemoval`. Every other optional member (HealthCheckType,
+ * HealthCheckGracePeriod, Cooldown, TerminationPolicies,
+ * NewInstancesProtectedFromScaleIn, CapacityRebalance, DesiredCapacityType,
+ * DefaultInstanceWarmup, DeletionProtection) is KEPT at its live value by
+ * CloudFormation, so a removal sends nothing for it (issues #1160, #5004).
  *
  * Sub-shape diffs are applied via dedicated AWS APIs before the main
  * `UpdateAutoScalingGroup` call:
@@ -599,18 +604,15 @@ export class ASGProvider implements ResourceProvider {
     [
       'AWS::AutoScaling::AutoScalingGroup',
       new Map<string, unknown>([
-        // SDK doc: "EC2 is the default health check and cannot be disabled.
-        // ... Only specify EC2 if you must clear a value that was previously
-        // set."
-        ['HealthCheckType', 'EC2'],
-        // CFn/API default termination policy.
-        ['TerminationPolicies', ['Default']],
-        ['NewInstancesProtectedFromScaleIn', false],
-        ['CapacityRebalance', false],
-        // SDK doc: "By default, Amazon EC2 Auto Scaling specifies units".
-        ['DesiredCapacityType', 'units'],
-        // SDK doc (both sub-fields): "To clear a previously set value,
-        // specify a value of -1."
+        // go-to-k/cdkd#5004 (real CloudFormation A/B, us-east-1): CloudFormation
+        // RESETS exactly these four on removal, so cdkd resets them too. The
+        // other nine members of this type (HealthCheckType,
+        // HealthCheckGracePeriod, Cooldown, TerminationPolicies,
+        // NewInstancesProtectedFromScaleIn, CapacityRebalance,
+        // DesiredCapacityType, DefaultInstanceWarmup, DeletionProtection) are
+        // KEPT at their live value by CloudFormation, so they are deliberately
+        // absent from this table and from the local clears in `update()`.
+        // SDK doc: "To clear a previously set value, specify a value of -1."
         ['InstanceMaintenancePolicy', { MinHealthyPercentage: -1, MaxHealthyPercentage: -1 }],
         // SDK doc: "default - Auto Scaling uses the Capacity Reservation
         // preference from your launch template or an open Capacity
@@ -618,8 +620,6 @@ export class ASGProvider implements ResourceProvider {
         ['CapacityReservationSpecification', { CapacityReservationPreference: 'default' }],
         // SDK doc: "The default is balanced-best-effort."
         ['AvailabilityZoneDistribution', { CapacityDistributionStrategy: 'balanced-best-effort' }],
-        // SDK doc: "Default: none" — also the flip-off value delete() uses.
-        ['DeletionProtection', 'none'],
       ]),
     ],
   ]);
@@ -1328,8 +1328,10 @@ export class ASGProvider implements ResourceProvider {
       const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
 
       // issue #1160: `UpdateAutoScalingGroup` has merge semantics — an absent
-      // input field means "no change" — while CloudFormation resets a property
-      // REMOVED from the template to its default. A constant reset arrives in
+      // input field means "no change". Per the #5004 CloudFormation A/B,
+      // CloudFormation resets only InstanceMaintenancePolicy, MaxInstanceLifetime,
+      // CapacityReservationSpecification and AvailabilityZoneDistribution when
+      // removed (the rest keep the live value; see below). A constant reset arrives in
       // `properties` from `removalDefaults` (see its declaration for each
       // value's doc basis); the coerced / aliased fields below resolve theirs
       // locally through `clearOnUpdateRemoval`.
@@ -1368,34 +1370,26 @@ export class ASGProvider implements ResourceProvider {
       //     Reservation); the kept-partial object passes through unchanged.
       //   - AvailabilityZoneDistribution: single sub-field — no partial shape
       //     exists.
+      // go-to-k/cdkd#5004: HealthCheckType, HealthCheckGracePeriod, Cooldown,
+      // TerminationPolicies, NewInstancesProtectedFromScaleIn,
+      // CapacityRebalance, DesiredCapacityType, DefaultInstanceWarmup and
+      // DeletionProtection are KEPT by CloudFormation when removed from the
+      // template (real A/B), so a removal sends nothing for them and the live
+      // value stays. `Cooldown` / `DefaultCooldown` are one logical field.
       const healthCheckTypeInput = properties['HealthCheckType'] as string | undefined;
-      const healthCheckGracePeriodInput = clearOnUpdateRemoval(
+      const healthCheckGracePeriodInput =
         properties['HealthCheckGracePeriod'] != null
           ? Number(properties['HealthCheckGracePeriod'])
-          : undefined,
-        previousProperties['HealthCheckGracePeriod'] != null
-          ? Number(previousProperties['HealthCheckGracePeriod'])
-          : undefined,
-        // CFn default: 0 seconds.
-        0
-      );
-      // CFn's template key is `Cooldown`; cdkd also accepts the SDK-side
-      // spelling `DefaultCooldown`. Treat the two keys as ONE logical field on
-      // both sides so switching spellings is never misread as a removal.
+          : undefined;
       const cooldownRaw = properties['Cooldown'] ?? properties['DefaultCooldown'];
-      const prevCooldownRaw =
-        previousProperties['Cooldown'] ?? previousProperties['DefaultCooldown'];
-      const defaultCooldownInput = clearOnUpdateRemoval(
-        cooldownRaw != null ? Number(cooldownRaw) : undefined,
-        prevCooldownRaw != null ? Number(prevCooldownRaw) : undefined,
-        // CFn default: 300 seconds.
-        300
-      );
+      const defaultCooldownInput = cooldownRaw != null ? Number(cooldownRaw) : undefined;
       const terminationPoliciesInput = properties['TerminationPolicies'] as string[] | undefined;
       const newInstancesProtectedInput = properties['NewInstancesProtectedFromScaleIn'] as
         | boolean
         | undefined;
       const capacityRebalanceInput = properties['CapacityRebalance'] as boolean | undefined;
+      // RESET by CloudFormation (#5004 A/B): SDK doc "To clear a previously
+      // set value, specify a new value of 0."
       const maxInstanceLifetimeInput = clearOnUpdateRemoval(
         properties['MaxInstanceLifetime'] != null
           ? Number(properties['MaxInstanceLifetime'])
@@ -1403,21 +1397,13 @@ export class ASGProvider implements ResourceProvider {
         previousProperties['MaxInstanceLifetime'] != null
           ? Number(previousProperties['MaxInstanceLifetime'])
           : undefined,
-        // SDK doc: "To clear a previously set value, specify a new value of 0."
         0
       );
       const desiredCapacityTypeInput = properties['DesiredCapacityType'] as string | undefined;
-      const defaultInstanceWarmupInput = clearOnUpdateRemoval(
+      const defaultInstanceWarmupInput =
         properties['DefaultInstanceWarmup'] != null
           ? Number(properties['DefaultInstanceWarmup'])
-          : undefined,
-        previousProperties['DefaultInstanceWarmup'] != null
-          ? Number(previousProperties['DefaultInstanceWarmup'])
-          : undefined,
-        // SDK doc: "To remove a value that you previously set, include the
-        // property but specify -1 for the value."
-        -1
-      );
+          : undefined;
       const instanceMaintenancePolicyInput = properties['InstanceMaintenancePolicy'] as
         | InstanceMaintenancePolicy
         | undefined;

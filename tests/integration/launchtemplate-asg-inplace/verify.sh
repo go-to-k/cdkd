@@ -13,8 +13,9 @@
 # Issue #1160 leg: phases 1-2 set non-default HealthCheckGracePeriod (90) /
 # MaxInstanceLifetime (604800) / TerminationPolicies (['OldestInstance']) on the
 # ASG; the removal phase (CDKD_TEST_REMOVAL=true) drops them from the template.
-# UpdateAutoScalingGroup has merge semantics (absent = unchanged), so pre-fix
-# the live values silently survived the removal.
+# UpdateAutoScalingGroup has merge semantics (absent = unchanged). A real
+# CloudFormation A/B (issue #5004) shows CloudFormation RESETS MaxInstanceLifetime
+# but KEEPS HealthCheckGracePeriod and TerminationPolicies, so cdkd must match.
 #
 # This test asserts:
 #   1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
@@ -25,9 +26,10 @@
 #      version 2 AND the ASG's live LaunchTemplate.Version is "2" in the SAME
 #      deploy (NOT "1" -- the #985 symptom is a one-deploy-behind "1"). The
 #      three non-default ASG properties are still live (kept, not reset).
-#   3. REMOVAL phase (drop the three ASG properties): the live values return to
-#      the CFn defaults -- HealthCheckGracePeriod 0, MaxInstanceLifetime
-#      cleared, TerminationPolicies ['Default'] (issue #1160).
+#   3. REMOVAL phase (drop the three ASG properties): MaxInstanceLifetime is
+#      cleared (CloudFormation resets it, issue #1160), while
+#      HealthCheckGracePeriod stays 90 and TerminationPolicies stays
+#      ['OldestInstance'] (CloudFormation keeps them, issue #5004).
 # Then destroys and confirms a clean teardown.
 #
 # desiredCapacity is 0 so no EC2 instances launch (cheap deploy, fast destroy).
@@ -305,39 +307,40 @@ echo "    OK: ASG LaunchTemplate.Version == 2 in the SAME deploy (issue #985 fix
 # pass through unchanged (kept fields are never spuriously reset).
 assert_nondefault_props "Phase 2 (props kept)" "${ASG_NAME}"
 
-# --- Phase 3: REMOVAL (drop the three ASG props -> CFn defaults) ------
+# --- Phase 3: REMOVAL (drop the three ASG props) ------
 # Issue #1160: UpdateAutoScalingGroup has merge semantics, so pre-fix the
 # removed properties silently kept their old live values. The removal phase
 # keeps the Phase-2 instance type, so the ONLY template delta is the three
 # dropped ASG properties.
-echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies)"
+echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies; only MaxInstanceLifetime resets)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
 read -r GRACE_R LIFETIME_R POLICIES_R < <(asg_removal_props "${ASG_NAME}")
-if [ "${GRACE_R}" != "0" ]; then
-  echo "FAIL: HealthCheckGracePeriod is '${GRACE_R}' after removal, expected the CFn default '0'." >&2
-  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
+# Issue #5004: CloudFormation KEEPS the live value of a removed
+# HealthCheckGracePeriod / TerminationPolicies (the baseline above asserted
+# 90 / OldestInstance live), so cdkd must send no reset for them.
+if [ "${GRACE_R}" != "90" ]; then
+  echo "FAIL: HealthCheckGracePeriod is '${GRACE_R}' after removal, expected the live value '90' RETAINED (CloudFormation keeps it, issue #5004)." >&2
   exit 1
 fi
-echo "    OK: HealthCheckGracePeriod reset to 0"
+echo "    OK: HealthCheckGracePeriod retained at 90 (issue #5004)"
 # AWS clears MaxInstanceLifetime via the documented sentinel 0; Describe then
 # reports the cleared state as 0 or omits the field entirely ("None" in
-# --output text) -- both mean "no max lifetime".
+# --output text) -- both mean "no max lifetime". CloudFormation resets it too.
 if [ "${LIFETIME_R}" != "None" ] && [ "${LIFETIME_R}" != "0" ]; then
   echo "FAIL: MaxInstanceLifetime is '${LIFETIME_R}' after removal, expected cleared (None or 0)." >&2
   echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
   exit 1
 fi
 echo "    OK: MaxInstanceLifetime cleared (${LIFETIME_R})"
-if [ "${POLICIES_R}" != "Default" ]; then
-  echo "FAIL: TerminationPolicies is '${POLICIES_R}' after removal, expected the CFn default 'Default'." >&2
-  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live value." >&2
+if [ "${POLICIES_R}" != "OldestInstance" ]; then
+  echo "FAIL: TerminationPolicies is '${POLICIES_R}' after removal, expected the live value 'OldestInstance' RETAINED (CloudFormation keeps it, issue #5004)." >&2
   exit 1
 fi
-echo "    OK: TerminationPolicies reset to ['Default'] (issue #1160 fixed)"
+echo "    OK: TerminationPolicies retained as ['OldestInstance'] (issue #5004)"
 
 # Issue #4013: the removal phase dropped GroupMaxSize from the FIRST of two
 # 1Minute GroupMetrics entries. Pre-fix the update kept only the LAST entry per

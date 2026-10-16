@@ -1384,7 +1384,8 @@ shared report is `orphan-report.ts`):
 ## Update removal semantics: clear-on-removal
 
 CloudFormation resets a property **removed** from the template to its
-default. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+default for MANY types, but not all properties of all types (the reset
+premise is per type; see the A/B bullet below, issue #5004). Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
@@ -1519,6 +1520,14 @@ Checklist when writing or reviewing an `update()`:
   `cognito-provider.ts`): under both A/B answers the only wrong option is
   silence, because the user who deleted the sub-key believes a change (often
   a TIGHTENING) landed.
+  `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
+  CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
+  `MaxInstanceLifetime`, `CapacityReservationSpecification` and
+  `AvailabilityZoneDistribution`, but KEEPS `HealthCheckType`,
+  `HealthCheckGracePeriod`, `Cooldown`, `TerminationPolicies`,
+  `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
+  `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
+  their live value, so `ASGProvider` sends nothing for those nine.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit
