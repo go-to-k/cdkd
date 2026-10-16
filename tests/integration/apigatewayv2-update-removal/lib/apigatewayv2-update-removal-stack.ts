@@ -25,8 +25,8 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *
  * Phase 1 sets one-or-more removable fields on each of the five resources.
  * Phase 2 (CDKD_TEST_UPDATE=true) removes them and the verify script asserts
- * AWS reverted each to its CloudFormation default (a pre-fix run keeps the old
- * value). Fields that are required per protocol/authorizer type (Name, Target,
+ * AWS kept what CloudFormation keeps (#5004) and reset only CorsConfiguration
+ * (a pre-#5004 cdkd reset the rest). Fields that are required per protocol/authorizer type (Name, Target,
  * PayloadFormatVersion, IdentitySource, ...) stay set in both phases.
  */
 export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
@@ -59,8 +59,9 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     const api = new apigwv2.CfnApi(this, 'Api', {
       name: `${this.stackName}-api`,
       protocolType: 'HTTP',
-      // Removable on UPDATE: Description / CorsConfiguration /
-      // DisableExecuteApiEndpoint / IpAddressType.
+      // Removed on UPDATE: CorsConfiguration is RESET (CloudFormation resets it);
+      // Description / DisableExecuteApiEndpoint / IpAddressType are RETAINED
+      // (CloudFormation keeps them, #5004).
       ...(update
         ? {}
         : {
@@ -114,7 +115,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
           ],
         },
       },
-      // Removable on UPDATE: Description / RequestParameters.
+      // Removed on UPDATE, RETAINED by CloudFormation (#5004): Description / RequestParameters.
       ...(update
         ? {}
         : {
@@ -209,7 +210,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       authorizerUri,
       identitySource: ['$request.header.Authorization'],
       authorizerPayloadFormatVersion: '1.0',
-      // Removable on UPDATE: AuthorizerResultTtlInSeconds (resets to 0).
+      // Removed on UPDATE, RETAINED by CloudFormation (#5004): AuthorizerResultTtlInSeconds.
       ...(update ? {} : { authorizerResultTtlInSeconds: 300 }),
     });
 
@@ -220,7 +221,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       target: `integrations/${integration.ref}`,
       authorizationType: 'CUSTOM',
       authorizerId: authorizer.ref,
-      // Removable on UPDATE: OperationName (resets to '').
+      // Removed on UPDATE, RETAINED by CloudFormation (#5004): OperationName.
       ...(update ? {} : { operationName: 'probeOp' }),
     });
 
@@ -339,7 +340,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       apiId: api.ref,
       stageName: '$default',
       autoDeploy: true,
-      // Removable on UPDATE: StageVariables (per-key clear).
+      // Removed on UPDATE, RETAINED by CloudFormation (#5004): StageVariables.
       ...(update ? {} : { stageVariables: { foo: 'bar' } }),
     });
 

@@ -8,7 +8,8 @@
 # state dropped the field, and the next diff said "No changes" while AWS still
 # held the old value. This test removes one-or-more fields on each of the five
 # resources on UPDATE and asserts AWS reverted each to its CloudFormation
-# default (a pre-fix run keeps the old values).
+# default, except the properties CloudFormation KEEPS (issue #5004), which must
+# stay live (a pre-#5004 cdkd reset them).
 #
 # Phases:
 #   1. Deploy with Api Description/Cors/DisableExecuteApiEndpoint/IpAddressType,
@@ -16,11 +17,11 @@
 #      AuthorizerResultTtlInSeconds, Route OperationName, Stage StageVariables
 #      set; assert all live on AWS.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (those fields removed). Assert AWS
-#      shows the CFn defaults: Description empty, CorsConfiguration gone (cleared
-#      via DeleteCorsConfiguration), DisableExecuteApiEndpoint false,
-#      IpAddressType ipv4, Integration Description empty + RequestParameters
-#      empty, AuthorizerResultTtlInSeconds 0, Route OperationName empty, Stage
-#      StageVariables empty.
+#      keeps what CloudFormation keeps (#5004: Api Description /
+#      DisableExecuteApiEndpoint / IpAddressType, Integration Description +
+#      RequestParameters, AuthorizerResultTtlInSeconds, Route OperationName,
+#      Stage StageVariables stay live) and resets CorsConfiguration (cleared via
+#      DeleteCorsConfiguration).
 #   3. Destroy; assert the API is gone and the state file is removed.
 #
 # Required env vars:
@@ -468,18 +469,24 @@ D="$(api_field "${AID}" 'Description')"
 C="$(api_field "${AID}" 'CorsConfiguration.AllowOrigins[0]')"
 DE="$(api_field "${AID}" 'DisableExecuteApiEndpoint')"
 IP="$(api_field "${AID}" 'IpAddressType')"
-if [ "${D}" != "None" ]; then echo "FAIL: Api Description not cleared (got '${D}'; empty = probe error)" >&2; exit 1; fi
+# Issue #5004 (real CloudFormation A/B): CloudFormation KEEPS Description,
+# DisableExecuteApiEndpoint and IpAddressType when they are removed, so cdkd
+# must leave the live values (the phase 1 assertion above proved they were set).
+# CorsConfiguration is the one Api member CloudFormation RESETS.
+if [ "${D}" != "before removal" ]; then echo "FAIL: Api Description not RETAINED (got '${D}')" >&2; exit 1; fi
 if [ "${C}" != "None" ]; then echo "FAIL: Api CorsConfiguration not cleared (got '${C}'; empty = probe error)" >&2; exit 1; fi
-if [ "${DE}" != "False" ]; then echo "FAIL: Api DisableExecuteApiEndpoint not reset to false (got '${DE}')" >&2; exit 1; fi
-if [ "${IP}" != "ipv4" ]; then echo "FAIL: Api IpAddressType not reset to ipv4 (got '${IP}')" >&2; exit 1; fi
+if [ "${DE}" != "True" ]; then echo "FAIL: Api DisableExecuteApiEndpoint not RETAINED (got '${DE}')" >&2; exit 1; fi
+if [ "${IP}" != "dualstack" ]; then echo "FAIL: Api IpAddressType not RETAINED (got '${IP}')" >&2; exit 1; fi
 
 ID="$(int_field "${AID}" "${INT_ID}" 'Description')"
 RP="$(int_field "${AID}" "${INT_ID}" 'RequestParameters."append:header.x-cdkd"')"
-if [ "${ID}" != "None" ]; then echo "FAIL: Integration Description not cleared (got '${ID}'; empty = probe error)" >&2; exit 1; fi
-if [ "${RP}" != "None" ]; then echo "FAIL: Integration RequestParameters not cleared (got '${RP}'; empty = probe error)" >&2; exit 1; fi
+# #5004: CloudFormation KEEPS both on removal.
+if [ "${ID}" != "before removal" ]; then echo "FAIL: Integration Description not RETAINED (got '${ID}')" >&2; exit 1; fi
+if [ "${RP}" != "y" ]; then echo "FAIL: Integration RequestParameters not RETAINED (got '${RP}')" >&2; exit 1; fi
 
 TTL="$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')"
-if [ "${TTL}" != "0" ]; then echo "FAIL: Authorizer TTL not reset to 0 (got '${TTL}')" >&2; exit 1; fi
+# #5004: CloudFormation KEEPS AuthorizerResultTtlInSeconds on removal.
+if [ "${TTL}" != "300" ]; then echo "FAIL: Authorizer TTL not RETAINED at 300 (got '${TTL}')" >&2; exit 1; fi
 
 # Issue #609 (::Integration backfill), phase 2. These CHANGE VALUE rather than
 # being removed: the backfill wires delivery on create AND update, and the
@@ -551,11 +558,13 @@ if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$default".ThrottlingRateLimit
 fi
 
 ON="$(route_field "${AID}" "${ROUTE_ID}" 'OperationName')"
-if [ "${ON}" != "None" ]; then echo "FAIL: Route OperationName not cleared (got '${ON}'; empty = probe error)" >&2; exit 1; fi
+# #5004: CloudFormation KEEPS OperationName on removal.
+if [ "${ON}" != "probeOp" ]; then echo "FAIL: Route OperationName not RETAINED (got '${ON}')" >&2; exit 1; fi
 
 SV="$(stage_field "${AID}" 'StageVariables.foo')"
-if [ "${SV}" != "None" ]; then echo "FAIL: Stage StageVariables.foo not cleared (got '${SV}'; empty = probe error)" >&2; exit 1; fi
-echo "    all fields reset to CFn defaults (Cors cleared via DeleteCorsConfiguration)"
+# #5004: CloudFormation KEEPS a dropped stage variable.
+if [ "${SV}" != "bar" ]; then echo "FAIL: Stage StageVariables.foo not RETAINED (got '${SV}')" >&2; exit 1; fi
+echo "    CFn-KEPT fields retained (#5004); Cors cleared via DeleteCorsConfiguration"
 
 # Issue #1602: drift must still be clean AFTER the update — the update path
 # re-records both baselines, so a read side that stopped mirroring the declared
@@ -591,11 +600,13 @@ if [ "${KEPT_RS}" != "15.0" ] && [ "${KEPT_RS}" != "15" ]; then
   exit 1
 fi
 RP="$(route_field "${WS_AID}" "${WS_CONNECT_ID}" 'RequestParameters."route.request.header.X-Cdkd".Required')"
-if [ "${RP}" != "None" ]; then
-  echo "FAIL: WS \$connect RequestParameters not deleted (got '${RP}')" >&2
+# #5004: CloudFormation KEEPS a dropped Route RequestParameters key, so it is
+# NOT deleted: the phase 2 value (Required=false) must still be live.
+if [ "${RP}" != "False" ]; then
+  echo "FAIL: WS \$connect RequestParameters not RETAINED (got '${RP}')" >&2
   exit 1
 fi
-echo "    Phase 2b: all delete-API-only removals landed, retained sibling intact"
+echo "    Phase 2b: AccessLogSettings/RouteSettings removals landed, retained sibling intact, RequestParameters retained"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

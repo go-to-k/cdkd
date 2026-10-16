@@ -123,9 +123,7 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       expect(cmd.input[property]).toEqual(next);
     });
 
-    it('clears ClientCertificateId with the empty-string sentinel when it is removed', async () => {
-      mockSend.mockResolvedValueOnce({});
-
+    it('does NOT clear ClientCertificateId when it is removed (CFn KEEPS it, #5004)', async () => {
       await provider.update(
         'L',
         'test',
@@ -134,11 +132,8 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         { ApiId: API_ID, StageName: 'test', ClientCertificateId: 'cert-1' }
       );
 
-      const cmd = mockSend.mock.calls[0]?.[0];
-      expect(cmd).toBeInstanceOf(UpdateStageCommand);
-      // UpdateStage MERGES, so omitting the member would keep the certificate
-      // attached — the #1160 absent-field class.
-      expect(cmd.input.ClientCertificateId).toBe('');
+      // Restoring the '' sentinel makes UpdateStage fire and fails this test.
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('clears AccessLogSettings through its dedicated delete API when removed', async () => {
@@ -318,9 +313,7 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
       expect(cmd.input.ApiKeyRequired).toBe(false);
     });
 
-    it('clears a dropped RequestModels key with the empty-string value AWS requires', async () => {
-      mockSend.mockResolvedValueOnce({});
-
+    it('does NOT blank a dropped RequestModels key (CFn KEEPS it, #5004)', async () => {
       await provider.update(
         'L',
         'r-1',
@@ -333,17 +326,10 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         }
       );
 
-      const cmd = mockSend.mock.calls[0]?.[0];
-      // The map MERGES on the AWS side (live-probed for the sibling
-      // StageVariables / Integration RequestParameters maps), so a dropped key
-      // is only cleared by sending it with an empty-string value.
-      expect(cmd.input.RequestModels).toEqual({
-        'application/json': 'Kept',
-        'text/plain': '',
-      });
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('deletes only the DROPPED RequestParameters keys, keeping the retained one', async () => {
+    it('does NOT delete dropped RequestParameters keys (CFn KEEPS them, #5004)', async () => {
       mockSend.mockResolvedValue({});
 
       await provider.update(
@@ -365,16 +351,13 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         }
       );
 
-      // The map MERGES and its values are objects, so the empty-string per-key
-      // clear does not apply — AWS ships a per-key delete instead
-      // (live-probed 2026-08-11).
-      const deletes = mockSend.mock.calls
-        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
-        .map((c) => c[0].input.RequestParameterKey);
-      expect(deletes).toEqual(['route.request.header.Dropped']);
+      expect(
+        mockSend.mock.calls.some((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+      ).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('deletes every RequestParameters key when the whole block is removed', async () => {
+    it('does NOT delete RequestParameters when the whole block is removed (#5004)', async () => {
       mockSend.mockResolvedValue({});
 
       await provider.update(
@@ -385,34 +368,7 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         { ApiId: API_ID, RouteKey: '$connect', RequestParameters: requestParameters }
       );
 
-      const deletes = mockSend.mock.calls
-        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
-        .map((c) => c[0].input.RequestParameterKey);
-      expect(deletes).toEqual(['route.request.header.X-Api']);
-      // ...and it must happen even though no UpdateRoute-able field changed.
-      expect(mockSend.mock.calls.some((c) => c[0] instanceof UpdateRouteCommand)).toBe(false);
-    });
-
-    it('clears every RequestModels key when the whole block is removed', async () => {
-      mockSend.mockResolvedValueOnce({});
-
-      await provider.update(
-        'L',
-        'r-1',
-        ROUTE_TYPE,
-        { ApiId: API_ID, RouteKey: '$default' },
-        {
-          ApiId: API_ID,
-          RouteKey: '$default',
-          RequestModels: { 'application/json': 'A', 'text/plain': 'B' },
-        }
-      );
-
-      const cmd = mockSend.mock.calls[0]?.[0];
-      expect(cmd).toBeInstanceOf(UpdateRouteCommand);
-      // Live-probed 2026-08-11: UpdateRoute accepts an empty-string value and
-      // the model is cleared, so the string-map helper's sentinel holds here.
-      expect(cmd.input.RequestModels).toEqual({ 'application/json': '', 'text/plain': '' });
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it.each(['ModelSelectionExpression', 'RouteResponseSelectionExpression'])(

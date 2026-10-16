@@ -4,28 +4,29 @@ Real-AWS integ for the **ApiGatewayV2 update-field removal reset** fix
 (issue [#1160](https://github.com/go-to-k/cdkd/issues/1160), apigatewayv2 batch).
 
 Every `AWS::ApiGatewayV2::*` `Update*` API merges (an absent field = "no
-change"), so a field dropped from the template must be sent with an explicit
-reset value or AWS silently keeps the old one. This fixture deploys a single
+change"). Whether a removed property resets is per property, measured by a real
+CloudFormation A/B (issue [#5004](https://github.com/go-to-k/cdkd/issues/5004)):
+CloudFormation resets only the rows marked RESET below and KEEPS the live value
+of the rest, so cdkd sends nothing for those. This fixture deploys a single
 HTTP API (Api + Stage + Integration + Route + REQUEST Authorizer, plus the
 backing Lambda for the authorizer URI) with removable fields set, then
-re-deploys under `CDKD_TEST_UPDATE=true` with those fields removed and asserts
-AWS reverted each to its CloudFormation default:
+re-deploys under `CDKD_TEST_UPDATE=true` with those fields removed:
 
-| Resource | Removed field | Expected reset |
+| Resource | Removed field | Expected |
 |---|---|---|
-| Api | Description | empty |
-| Api | CorsConfiguration | gone (via `DeleteCorsConfiguration`) |
-| Api | DisableExecuteApiEndpoint | `false` |
-| Api | IpAddressType | `ipv4` |
-| Integration | Description | empty |
-| Integration | RequestParameters | empty (per-key clear) |
-| Authorizer | AuthorizerResultTtlInSeconds | `0` |
-| Route | OperationName | empty |
-| Stage | StageVariables | empty (per-key clear) |
+| Api | Description | RETAINED |
+| Api | CorsConfiguration | RESET: gone (via `DeleteCorsConfiguration`) |
+| Api | DisableExecuteApiEndpoint | RETAINED (`true`) |
+| Api | IpAddressType | RETAINED (`dualstack`) |
+| Integration | Description | RETAINED |
+| Integration | RequestParameters | RETAINED |
+| Authorizer | AuthorizerResultTtlInSeconds | RETAINED (`300`) |
+| Route | OperationName | RETAINED |
+| Stage | StageVariables | RETAINED |
 
 Run: `/run-integ apigatewayv2-update-removal` (deploy -> UPDATE -> destroy +
-orphan check). AutoDeploy-removal and the Authorizer string-field resets are
-covered by the unit tests in
+orphan check). The RESET rows without a live arm here (Stage `AutoDeploy`, Route
+`AuthorizationScopes`) are covered by the unit tests in
 `tests/unit/provisioning/apigatewayv2-provider-roundtrip.test.ts`.
 
 ## Issue #609 coverage (Stage / Route config properties)
@@ -39,7 +40,7 @@ belong on a body-carrying route.
 | Property | Where it is exercised |
 | --- | --- |
 | `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must reset to `false` |
-| `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b (needs `DeleteRouteRequestParameter`) |
+| `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b and RETAINED (CloudFormation keeps it, #5004) |
 | `Route.ModelSelectionExpression` | WS `$default`; value change |
 | `Route.RouteResponseSelectionExpression` | WS `$default` |
 | `Stage.AccessLogSettings` | WS stage, against a real log group; format changes in phase 2, REMOVED in phase 2b (needs `DeleteAccessLogSettings`) |

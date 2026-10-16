@@ -1528,6 +1528,12 @@ Checklist when writing or reviewing an `update()`:
   `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
   `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
   their live value, so `ASGProvider` sends nothing for those nine.
+  `AWS::ApiGatewayV2::*` is the same per-type split (issue #5004, real
+  CloudFormation A/B): CloudFormation RESETS only Api `CorsConfiguration`, Stage
+  `AutoDeploy` / `AccessLogSettings` / `RouteSettings` and Route
+  `AuthorizationScopes`, and KEEPS every other removable property (Description,
+  StageVariables, `RequestParameters`, `AuthorizationType`, the authorizer
+  fields, ...), so `apigatewayv2-provider.ts` sends nothing for those on removal.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit
