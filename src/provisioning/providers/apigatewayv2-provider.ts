@@ -100,6 +100,7 @@ import {
   withoutServerErrorRetries,
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * Retry-safety state for the three API Gateway v2 creates that mint their id
@@ -752,7 +753,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Api ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway V2 Api ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -938,7 +939,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway V2 Stage ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1129,7 +1130,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Integration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway V2 Integration ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1250,7 +1251,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway V2 Route ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1439,7 +1440,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway V2 Authorizer ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

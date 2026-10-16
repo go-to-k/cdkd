@@ -32,6 +32,7 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * The registry schema's read-only primaryIdentifier, under both of the names
@@ -136,7 +137,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CloudWatch anomaly detector ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CloudWatch anomaly detector ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -190,7 +191,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CloudWatch anomaly detector ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CloudWatch anomaly detector ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -271,7 +272,7 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CloudWatch anomaly detector ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CloudWatch anomaly detector ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

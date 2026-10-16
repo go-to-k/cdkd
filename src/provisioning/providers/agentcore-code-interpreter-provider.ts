@@ -33,6 +33,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /** The only valid code interpreter id for this type per the CFn schema pattern. */
 export const DEFAULT_CODE_INTERPRETER_ID = 'aws.codeinterpreter.v1';
@@ -90,7 +91,7 @@ export class AgentCoreCodeInterpreterProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to adopt the AWS-managed default code interpreter for ${logicalId}: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Failed to adopt the AWS-managed default code interpreter for ${logicalId}: ${describeAwsFailure(error).detail}. ` +
           `Bedrock AgentCore may not be available in this region.`,
         resourceType,
         logicalId,

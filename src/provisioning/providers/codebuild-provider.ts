@@ -39,6 +39,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -485,7 +486,7 @@ export class CodeBuildProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CodeBuild Project ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -567,7 +568,7 @@ export class CodeBuildProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CodeBuild Project ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -603,7 +604,7 @@ export class CodeBuildProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CodeBuild Project ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

@@ -619,7 +619,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Account ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Account ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -992,7 +992,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Authorizer ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1214,7 +1214,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Resource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1417,7 +1417,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Deployment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Deployment ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1996,7 +1996,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Stage ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -2535,7 +2535,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete API Gateway Method ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

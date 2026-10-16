@@ -175,7 +175,7 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create BedrockAgentCore Evaluator ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create BedrockAgentCore Evaluator ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -266,7 +266,7 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update BedrockAgentCore Evaluator ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update BedrockAgentCore Evaluator ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -338,7 +338,7 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete BedrockAgentCore Evaluator ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete BedrockAgentCore Evaluator ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

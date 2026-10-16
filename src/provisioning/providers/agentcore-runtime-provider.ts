@@ -162,7 +162,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create BedrockAgentCore Runtime ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -268,7 +268,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update BedrockAgentCore Runtime ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -312,7 +312,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete BedrockAgentCore Runtime ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete BedrockAgentCore Runtime ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

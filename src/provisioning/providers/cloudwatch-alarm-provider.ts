@@ -167,7 +167,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CloudWatch alarm ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -237,7 +237,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CloudWatch alarm ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -339,7 +339,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CloudWatch alarm ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

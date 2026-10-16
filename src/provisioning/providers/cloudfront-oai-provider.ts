@@ -22,6 +22,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * SDK Provider for AWS::CloudFront::CloudFrontOriginAccessIdentity
@@ -112,7 +113,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CloudFront OAI ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -228,7 +229,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CloudFront OAI ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -299,7 +300,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CloudFront OAI ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CloudFront OAI ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
