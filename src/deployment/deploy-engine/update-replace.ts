@@ -22,6 +22,7 @@ import {
 } from './record-shape.js';
 import { preparePropertiesForCcApi } from './routing.js';
 import { replacementNameOrigin } from './name-collision.js';
+import { establishNoEchoEchoFidelity, noEchoPositionSources } from './noecho.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -121,12 +122,13 @@ export async function updateByReplacement(
     record: currentResource,
     templateResource: template?.Resources?.[logicalId],
     resolvedProperties: resolvedProps,
-    noEchoParameters: this.noEchoPositionSources(stateResources, template)?.parameters ?? new Set(),
-    conditions: this.noEchoConditions,
+    noEchoParameters:
+      noEchoPositionSources(this.noEchoRun, stateResources, template)?.parameters ?? new Set(),
+    conditions: this.noEchoRun.noEchoConditions,
     secrets: updateSecrets,
     inputSources:
       template &&
-      this.maskedInputSources(template, stateResources, this.noEchoConditions, stackName),
+      this.maskedInputSources(template, stateResources, this.noEchoRun.noEchoConditions, stackName),
   });
   // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
   // createOnly property changed in the template). DELETE+CREATEing a
@@ -1022,7 +1024,9 @@ export async function updateByReplacement(
   this.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: a new resource, so its echo fidelity is read afresh
   // (whatever this deploy read of the old one is dropped).
-  await this.establishNoEchoEchoFidelity(
+  await establishNoEchoEchoFidelity(
+    this.noEchoRun,
+    this.noEchoDeps(),
     logicalId,
     stateResources[logicalId]!,
     resolvedProps,

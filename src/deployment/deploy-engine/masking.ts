@@ -48,6 +48,7 @@ import {
   storedSecretNameNeedles,
 } from '../secret-name-needles.js';
 import { declaresNoEcho } from '../noecho-declared.js';
+import { maskOutputsByPosition, noEchoPositionSources } from './noecho.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
@@ -381,7 +382,9 @@ function redactOutputsBag(
   // go-to-k/cdkd#4043: the positional `NoEcho` arm runs on every call, after
   // the dynamic-reference redaction, so an output a `NoEcho` parameter served
   // persists `***` whatever its type or length.
-  if (this.outputsRun.outputSecrets.size === 0) return this.maskOutputsByPosition(outputs);
+  if (this.outputsRun.outputSecrets.size === 0) {
+    return maskOutputsByPosition(this.noEchoRun, this.noEchoDeps(), outputs);
+  }
   // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
   // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
   // the only flag the two differ on, and it claims "this bag was PRODUCED by
@@ -412,7 +415,9 @@ function redactOutputsBag(
   // sibling `cdkd scrub` outputs call still passes the default and records
   // the inertness measurement for its own bag; converging the two is issue
   // [#2099](https://github.com/go-to-k/cdkd/issues/2099).
-  return this.maskOutputsByPosition(
+  return maskOutputsByPosition(
+    this.noEchoRun,
+    this.noEchoDeps(),
     redactSecretsForState(
       outputs,
       this.outputsRun.outputSecrets,
@@ -458,7 +463,7 @@ function redactOutputsBag(
  *
  * - the values go into the PRODUCER's own bag, which is what
  *   `scrubResourceRecord` redacts this record's `attributes` with;
- * - the logical id goes into {@link noEchoAttributeResources}, which every
+ * - the logical id goes into `NoEchoRunState.noEchoAttributeResources`, which every
  *   later resolution consults, so a DEPENDENT that resolves an `Fn::GetAtt`
  *   here records the same plaintext into ITS bag and its resolved
  *   `properties` are masked too. Without the second half the custom resource's
@@ -513,9 +518,12 @@ export function registerNoEchoAttributes(
     (result as { physicalId?: unknown }).physicalId
   );
   if (declared === true) {
-    this.noEchoAttributeResources.set(logicalId, true);
+    this.noEchoRun.noEchoAttributeResources.set(logicalId, true);
   } else if (declared !== undefined || echoed.size > 0) {
-    this.noEchoAttributeResources.set(logicalId, new Set([...(declared ?? []), ...echoed]));
+    this.noEchoRun.noEchoAttributeResources.set(
+      logicalId,
+      new Set([...(declared ?? []), ...echoed])
+    );
   }
 }
 
@@ -539,7 +547,7 @@ function echoedNoEchoAttributes(
     isMaskOnlyPlaintextOf(secrets, value)
   );
   const templateProps = engine.perResourceTemplateProps.get(logicalId);
-  const sources = engine.noEchoPositionSources();
+  const sources = noEchoPositionSources(engine.noEchoRun);
   // A POSITIONED value (a `Number`, one under the needle floor) counts only
   // for the attribute named like the property it was given through
   // (`AWS::SSM::Parameter`'s `Value`): a short value equals unrelated
@@ -983,7 +991,7 @@ export function captureStoredNoEchoNamingValues(
   template: CloudFormationTemplate,
   conditions: Readonly<Record<string, boolean>>
 ): void {
-  const names = new Set(this.inheritedNoEchoParameters);
+  const names = new Set(this.noEchoRun.inheritedNoEchoParameters);
   for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
     if (declaresNoEcho(definition)) names.add(name);
   }

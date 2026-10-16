@@ -1,5 +1,6 @@
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
+import { noEchoPositionSources } from './noecho.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
@@ -631,12 +632,17 @@ export async function updateInPlace(
         templateResource: template?.Resources?.[logicalId],
         resolvedProperties: resolvedProps,
         noEchoParameters:
-          this.noEchoPositionSources(stateResources, template)?.parameters ?? new Set(),
-        conditions: this.noEchoConditions,
+          noEchoPositionSources(this.noEchoRun, stateResources, template)?.parameters ?? new Set(),
+        conditions: this.noEchoRun.noEchoConditions,
         secrets: updateSecrets,
         inputSources:
           template &&
-          this.maskedInputSources(template, stateResources, this.noEchoConditions, stackName),
+          this.maskedInputSources(
+            template,
+            stateResources,
+            this.noEchoRun.noEchoConditions,
+            stackName
+          ),
       });
       this.logger.info(
         retainOldOnReplace
@@ -1266,7 +1272,7 @@ export async function updateInPlace(
   );
   // go-to-k/cdkd#4656: what this deploy read of the OLD resource does not
   // describe a resource the fallback replaced.
-  if (result.wasReplaced) this.noEchoExactEchoes.delete(logicalId);
+  if (result.wasReplaced) this.noEchoRun.noEchoExactEchoes.delete(logicalId);
   stateResources[logicalId] = {
     physicalId: result.physicalId,
     resourceType,

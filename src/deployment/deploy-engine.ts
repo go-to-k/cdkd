@@ -89,7 +89,13 @@ import * as provisionMixin from './deploy-engine/provision.js';
 import * as executeMixin from './deploy-engine/execute.js';
 import * as deployFlowMixin from './deploy-engine/deploy-flow.js';
 import * as resolverContextMixin from './deploy-engine/resolver-context.js';
-import * as noEchoMixin from './deploy-engine/noecho.js';
+import {
+  applyNoEchoPersist,
+  NoEchoRunState,
+  noEchoPositionSources,
+  withNoEchoExactEchoes,
+  type NoEchoDeps,
+} from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -480,73 +486,16 @@ export class DeployEngine {
   /** @internal */
   perResourceSecrets = new Map<string, RecordedSecretValues>();
   /**
-   * Logical ids whose provider declared THIS RUN's `attributes` sensitive
-   * (`ResourceCreateResult.noEchoAttributes` — issue
-   * [#2274](https://github.com/go-to-k/cdkd/issues/2274)). One producer today:
-   * `CustomResourceProvider`, relaying the handler's `NoEcho: true`.
-   *
-   * IN-RUN ONLY, and that is the whole shape of the feature rather than a
-   * shortcut. `NoEcho` arrives on a RESPONSE, so cdkd knows it exactly when the
-   * handler answered — this deploy — and `ResourceState` carries no durable
-   * per-attribute flag to remember it by (a v9 -> v10 schema bump, issue
-   * [#2449](https://github.com/go-to-k/cdkd/issues/2449)). Within the run that
-   * is enough: the DAG provisions the custom resource before anything that
-   * depends on it, so every dependent's resolution sees the entry. Across runs
-   * the persisted `***` is the signal instead — see
-   * `ResolverContext.redactedAttributeReads`.
-   *
-   * Reset per `deploy()`, like `perResourceSecrets`.
-   *
-   * `true` means the WHOLE attributes bag is sensitive (a custom resource's
-   * `NoEcho` response); a SET names the sensitive members only (a nested
-   * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
+   * This deploy's `NoEcho` positional-arm state — the ten fields
+   * {@link NoEchoRunState} holds (`noEchoAttributeResources`,
+   * `persistedNoEchoAttributes`, `noEchoConditions`,
+   * `inheritedNoEchoParameters`, `noEchoPhysicalIdWarned`,
+   * `noEchoPositionedValues`, `noEchoExactEchoes`, `noEchoAttributeReads`,
+   * `witnessConfirmedLeaves`, `constructPathTemplate`) — replaced, not cleared
+   * in place, per `deploy()`, like {@link outputsRun}.
    */
   /** @internal */
-  noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
-  /**
-   * go-to-k/cdkd#2449: the attributes each record of the PREVIOUS state
-   * declared `NoEcho` (`ResourceState.noEchoAttributeNames`), seeded at deploy
-   * start. Read-only evidence for the positional arm and the refusal's
-   * wording; never a source of needles (its values are the mask).
-   */
-  /** @internal */
-  persistedNoEchoAttributes = new Map<string, ReadonlySet<string>>();
-  /**
-   * go-to-k/cdkd#4043: the condition verdicts of the deploy in progress, so the
-   * positional arm opens only the `Fn::If` branch the deploy selected.
-   */
-  /** @internal */
-  noEchoConditions: Record<string, boolean> | undefined;
-  /**
-   * go-to-k/cdkd#4043 (review round 9): a NESTED child's parameters whose value
-   * carries a `NoEcho` value its parent supplied. The child template declares
-   * them plain, so they are positioned as `NoEcho` parameters here: every
-   * surface the top level masks by position (records, `noEchoLeaves`,
-   * outputs, the journal, the custom-resource delete skip) covers the child.
-   */
-  /** @internal */
-  inheritedNoEchoParameters: ReadonlySet<string> = new Set();
-  /** @internal */
-  noEchoPhysicalIdWarned = new Set<string>();
-  /**
-   * go-to-k/cdkd#4043 §3.3: per resource resolved this deploy, the canonical
-   * JSON of each leaf a `NoEcho` PARAMETER served it, so a HELD producer's
-   * echoed attribute can be matched against a value it was given without a
-   * needle (a `Number`, a value under the floor). Never persisted.
-   */
-  /** @internal */
-  noEchoPositionedValues = new Map<string, Set<string>>();
-  /**
-   * go-to-k/cdkd#4656: per resource, the `NoEcho` parameter coordinates a
-   * readback of THIS deploy proved its provider echoes exactly, bound to the
-   * physical id that readback judged, unioned into
-   * `noEchoExactEchoLeaves` at the save (`withNoEchoExactEchoes`). Coordinates
-   * only, never a value.
-   */
-  /** @internal */
-  noEchoExactEchoes = new Map<string, { physicalId: string; coordinates: string[][] }>();
-  /** @internal */
-  noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
+  noEchoRun: NoEchoRunState = new NoEchoRunState();
   /**
    * go-to-k/cdkd#4043 (review MEDIUM-3): per logical id, why a create-first
    * replacement's delete of the OLD resource was skipped (its delete address
@@ -605,14 +554,6 @@ export class DeployEngine {
   /** @internal */
   perResourceResolvedType = new Map<string, string>();
   /**
-   * go-to-k/cdkd#4831: per logical id, the coordinates where the migration
-   * witness CONFIRMED a MARKED record's stored plaintext equal to today's
-   * `NoEcho` value. `noEchoLeavesFor` adds them to the record's own field on
-   * its save, so the leaf persisted as `***` is also named there.
-   */
-  /** @internal */
-  witnessConfirmedLeaves = new Map<string, (string | number)[][]>();
-  /**
    * The stack's `NoEcho` parameter values, set once parameters resolve
    * (go-to-k/cdkd#4451): a masked property whose template text holds one is
    * refused a fingerprint at the save. Reset per `deploy()`.
@@ -670,13 +611,6 @@ export class DeployEngine {
    */
   /** @internal */
   outputsRun: OutputsRunState = new OutputsRunState();
-  /**
-   * The condition-pruned template of the deploy in progress, read by
-   * `redactStateForPersist` to stamp each record's `constructPath` on every
-   * save. `undefined` until the template is pruned; reset per deploy.
-   */
-  /** @internal */
-  constructPathTemplate: CloudFormationTemplate | undefined;
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -1019,7 +953,29 @@ export class DeployEngine {
       logger: this.logger,
       resolver: this.resolver,
       buildResolverContext: (...args) => this.buildResolverContext(...args),
-      noEchoPositionSources: (...args) => this.noEchoPositionSources(...args),
+      noEchoPositionSources: (...args) => noEchoPositionSources(this.noEchoRun, ...args),
+    };
+  }
+
+  /**
+   * This engine's current deps for `deploy-engine/noecho.ts`'s plain
+   * functions, built fresh at each call site like {@link outputsDeps}. The
+   * per-deploy maps `deploy()` REASSIGNS (`perResourceSecrets`,
+   * `perResourceTemplateProps`, `perResourceResolvedType`, `outputsRun`) are
+   * live getters, and a forwarded method stays bound to THIS engine.
+   * @internal
+   */
+  noEchoDeps(): NoEchoDeps {
+    return {
+      stackRegion: this.stackRegion,
+      logger: this.logger,
+      providerRegistry: this.providerRegistry,
+      perResourceSecrets: () => this.perResourceSecrets,
+      perResourceTemplateProps: () => this.perResourceTemplateProps,
+      perResourceResolvedType: () => this.perResourceResolvedType,
+      outputsRun: () => this.outputsRun,
+      readReaderForFreshNoEchoCeiling: (...args) => this.readReaderForFreshNoEchoCeiling(...args),
+      maskForResource: (...args) => this.maskForResource(...args),
     };
   }
 
@@ -1035,25 +991,17 @@ export class DeployEngine {
     this.recordedImports = [];
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
-    this.noEchoAttributeResources = new Map();
-    this.persistedNoEchoAttributes = new Map();
-    this.noEchoConditions = undefined;
-    this.inheritedNoEchoParameters = new Set();
-    this.noEchoPhysicalIdWarned = new Set();
-    this.noEchoPositionedValues = new Map();
-    this.noEchoExactEchoes = new Map();
-    this.noEchoAttributeReads = new Map();
+    // Replaces all ten `NoEcho` positional-arm fields at once (`NoEchoRunState`).
+    this.noEchoRun = new NoEchoRunState();
     this.replacedDeleteSkips = new Map();
     this.deferredReplacedDeletes = undefined;
     this.secretNameNeedles = new Map();
     this.perResourceTemplateProps = new Map();
-    this.constructPathTemplate = undefined;
     // Reset with its siblings (issue #2934). Inert today — a stale TRUE pairs
     // with cleared needle maps and reduces to the identity fallback — but this
     // map's whole job is to answer "do those needles describe THIS record",
     // and a reused engine carrying last deploy's answer is the #2516 class.
     this.perResourceResolvedType = new Map();
-    this.witnessConfirmedLeaves = new Map();
     this.fingerprintNoEchoValues = undefined;
     this.preDeploySecretNamedRecords = undefined;
     this.storedNoEchoNamingValues = new Map();
@@ -1154,12 +1102,14 @@ export class DeployEngine {
       // template value that holds one as a literal.
       // go-to-k/cdkd#4043 / #2449: the `NoEcho` arms, BEFORE the fingerprints,
       // which read the `***` keys of the persisted bag.
-      const noEchoScrubbed = this.applyNoEchoPersist(
+      const noEchoScrubbed = applyNoEchoPersist(
+        this.noEchoRun,
+        this.noEchoDeps(),
         logicalId,
         record,
         // go-to-k/cdkd#4656: this deploy's echo-fidelity verdicts join the
         // record's own; only this loop's records are the ones it read back.
-        this.withNoEchoExactEchoes(logicalId, scrubbed),
+        withNoEchoExactEchoes(this.noEchoRun, logicalId, scrubbed),
         templateProps,
         state.resources,
         secrets
@@ -1174,7 +1124,7 @@ export class DeployEngine {
             this.fingerprintNoEchoValues,
             this.perResourceInputFingerprints.get(logicalId)
           ),
-          constructPathOf(this.constructPathTemplate, logicalId)
+          constructPathOf(this.noEchoRun.constructPathTemplate, logicalId)
         ),
         this.referenceProvenanceToPersist(logicalId, record, noEchoScrubbed, secrets)
       );
@@ -1234,7 +1184,9 @@ export class DeployEngine {
           // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
           // by today's template while it still names the logical id as that
           // type.
-          this.applyNoEchoPersist(
+          applyNoEchoPersist(
+            this.noEchoRun,
+            this.noEchoDeps(),
             entry.logicalId,
             entry.state,
             scrubResourceRecord(
@@ -1843,15 +1795,3 @@ DeployEngine.prototype.rollbackExecutorContext = rollbackMixin.rollbackExecutorC
 DeployEngine.prototype.producerRegionEvidence = rollbackMixin.producerRegionEvidence;
 DeployEngine.prototype.writeRollbackJournalSegment = rollbackMixin.writeRollbackJournalSegment;
 DeployEngine.prototype.redactOperationsForJournal = rollbackMixin.redactOperationsForJournal;
-
-DeployEngine.prototype.noEchoPositionSources = noEchoMixin.noEchoPositionSources;
-DeployEngine.prototype.noEchoLeavesFor = noEchoMixin.noEchoLeavesFor;
-DeployEngine.prototype.applyNoEchoPersist = noEchoMixin.applyNoEchoPersist;
-DeployEngine.prototype.maskOutputsByPosition = noEchoMixin.maskOutputsByPosition;
-DeployEngine.prototype.warnNoEchoPhysicalId = noEchoMixin.warnNoEchoPhysicalId;
-DeployEngine.prototype.seedPersistedNoEchoAttributes = noEchoMixin.seedPersistedNoEchoAttributes;
-DeployEngine.prototype.noEchoAttributeOverridesFor = noEchoMixin.noEchoAttributeOverridesFor;
-DeployEngine.prototype.noEchoDiffComparison = noEchoMixin.noEchoDiffComparison;
-DeployEngine.prototype.noteNoEchoExactEchoes = noEchoMixin.noteNoEchoExactEchoes;
-DeployEngine.prototype.establishNoEchoEchoFidelity = noEchoMixin.establishNoEchoEchoFidelity;
-DeployEngine.prototype.withNoEchoExactEchoes = noEchoMixin.withNoEchoExactEchoes;

@@ -96,7 +96,14 @@ import {
   resolveRecordSecrets,
 } from '../masked-baseline-recapture.js';
 import { getCurrentProducerRegions } from '../producer-regions-scope.js';
-import { echoFidelityCandidates, noEchoExactEchoLeavesOf, provesEchoChangeAt } from './noecho.js';
+import {
+  echoFidelityCandidates,
+  noEchoAttributeOverridesFor,
+  noEchoExactEchoLeavesOf,
+  noEchoPositionSources,
+  noteNoEchoExactEchoes,
+  provesEchoChangeAt,
+} from './noecho.js';
 import { approveLateReplacement } from '../deployment-approval.js';
 import { findDestructiveChanges } from '../../analyzer/destructive-changes.js';
 import { STACK_UNDER_OTHER_PREFIX } from '../../state/cross-prefix-stack-scan.js';
@@ -237,7 +244,9 @@ export async function provisionUpdate(
   this.perResourceSecrets.set(logicalId, updateSecrets);
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
-  const noEchoOverrides = await this.noEchoAttributeOverridesFor(
+  const noEchoOverrides = await noEchoAttributeOverridesFor(
+    this.noEchoRun,
+    this.noEchoDeps(),
     desiredProps,
     stateResources,
     stackName
@@ -406,7 +415,7 @@ export async function provisionUpdate(
   // go-to-k/cdkd#4043: where a `NoEcho` PARAMETER (or an attribute declared
   // `NoEcho`) served this bag, by template position. The persisted bag holds
   // `***` at each, so the comparison side does too.
-  const noEchoSources = this.noEchoPositionSources(stateResources, template, conditions);
+  const noEchoSources = noEchoPositionSources(this.noEchoRun, stateResources, template, conditions);
   // Two classes, positioned separately: a PARAMETER's value, and an attribute
   // a producer declared `NoEcho` (the custom-resource class of #3729).
   const parameterCoordinates =
@@ -447,7 +456,7 @@ export async function provisionUpdate(
   });
   const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
   if (parameterCoordinates.length > 0) {
-    this.noEchoPositionedValues.set(
+    this.noEchoRun.noEchoPositionedValues.set(
       logicalId,
       new Set(
         parameterCoordinates.map((coordinate) =>
@@ -497,7 +506,7 @@ export async function provisionUpdate(
     recordPassedNoEchoParameters(
       updateSecrets,
       desiredProps['Parameters'],
-      this.noEchoPositionSources(stateResources)
+      noEchoPositionSources(this.noEchoRun, stateResources)
     );
   }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
@@ -710,7 +719,7 @@ export async function provisionUpdate(
   // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
   // differing one keeps the old plaintext the record holds until it is sent.
   if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
-    this.witnessConfirmedLeaves.set(
+    this.noEchoRun.witnessConfirmedLeaves.set(
       logicalId,
       witness.confirmed.map((coordinate) => [...coordinate])
     );
@@ -962,7 +971,8 @@ export async function provisionUpdate(
     ).then((read) => {
       // Every coordinate this read echoed exactly gains the flag; a differing
       // or failed one changes nothing.
-      this.noteNoEchoExactEchoes(
+      noteNoEchoExactEchoes(
+        this.noEchoRun,
         logicalId,
         currentResource.physicalId,
         read,

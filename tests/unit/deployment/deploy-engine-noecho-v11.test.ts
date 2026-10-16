@@ -9,6 +9,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  applyNoEchoPersist,
+  establishNoEchoEchoFidelity,
+  noteNoEchoExactEchoes,
+  withNoEchoExactEchoes,
+} from '../../../src/deployment/deploy-engine/noecho.js';
 import { GeneratedNameGuard } from '../../../src/deployment/generated-name-guard.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
@@ -1304,8 +1310,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       const engine = makeEngine() as unknown as Record<string, unknown> & {
         writeRollbackJournalSegment: (...args: unknown[]) => Promise<boolean>;
         outputsRun: { outputsTemplateSource: Record<string, unknown>; outputsSourceUsable: boolean };
+        noEchoRun: DeployEngine['noEchoRun'];
       };
-      engine['constructPathTemplate'] = template();
+      engine.noEchoRun.constructPathTemplate = template();
       engine.outputsRun.outputsTemplateSource = Object.assign(Object.create(null), {
         Out: { Ref: 'Token' },
         Plain: { Ref: 'Plain' },
@@ -1371,8 +1378,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     it('(3) an orphan record is masked by today\'s template positions', () => {
       const engine = makeEngine() as unknown as Record<string, unknown> & {
         redactStateForPersist: (state: StackState) => StackState;
+        noEchoRun: DeployEngine['noEchoRun'];
       };
-      engine['constructPathTemplate'] = template();
+      engine.noEchoRun.constructPathTemplate = template();
       const state = v11State();
       state.orphans = [
         {
@@ -1391,12 +1399,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it('(3) noEchoAttributeNames keeps a prior name still masked, drops one now public, and adds this run\'s', () => {
-      const engine = makeEngine() as unknown as Record<string, unknown> & {
-        applyNoEchoPersist: (...args: unknown[]) => ResourceState;
-        noEchoAttributeResources: Map<string, true | ReadonlySet<string>>;
-      };
-      engine['constructPathTemplate'] = template();
-      engine.noEchoAttributeResources.set('Cr', new Set(['Fresh']));
+      const engine = makeEngine();
+      engine.noEchoRun.constructPathTemplate = template();
+      engine.noEchoRun.noEchoAttributeResources.set('Cr', new Set(['Fresh']));
       const record: ResourceState = {
         physicalId: 'cr-1',
         resourceType: 'Custom::Thing',
@@ -1404,7 +1409,15 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         attributes: { Kept: '***', Public: 'now-public', Fresh: 'fresh-value-1234' },
         noEchoAttributeNames: ['Kept', 'Public'],
       };
-      const out = engine.applyNoEchoPersist('Cr', record, record, undefined, {});
+      const out = applyNoEchoPersist(
+        engine.noEchoRun,
+        engine.noEchoDeps(),
+        'Cr',
+        record,
+        record,
+        undefined,
+        {}
+      );
       expect(out.noEchoAttributeNames).toEqual(['Fresh', 'Kept']);
       expect(out.attributes).toEqual({ Kept: '***', Public: 'now-public', Fresh: '***' });
     });
@@ -1593,20 +1606,17 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it('a create or replacement verdict REPLACES what the deploy noted of the old resource', () => {
-      const engine = makeEngine() as unknown as {
-        noteNoEchoExactEchoes: (...args: unknown[]) => void;
-        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
-      };
+      const run = makeEngine().noEchoRun;
       const candidates = [{ coordinate: ['TopicName'], plaintext: TOPIC }];
       const handed = { TopicName: '***' };
       const ok = { live: { TopicName: TOPIC } };
-      const failed = { failure: 'read-failed' };
-      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, ok, handed, candidates, 'add');
-      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
-      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'add');
-      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
-      engine.noteNoEchoExactEchoes('Topic', TOPIC_ARN, failed, handed, candidates, 'set');
-      expect(engine.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([]);
+      const failed = { failure: 'read-failed' } as const;
+      noteNoEchoExactEchoes(run, 'Topic', TOPIC_ARN, ok, handed, candidates, 'add');
+      expect(run.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      noteNoEchoExactEchoes(run, 'Topic', TOPIC_ARN, failed, handed, candidates, 'add');
+      expect(run.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([['TopicName']]);
+      noteNoEchoExactEchoes(run, 'Topic', TOPIC_ARN, failed, handed, candidates, 'set');
+      expect(run.noEchoExactEchoes.get('Topic')!.coordinates).toEqual([]);
     });
 
     it('never replaces on a report that is the mask itself (a projected read), flag or not', async () => {
@@ -1766,25 +1776,30 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it('an `add` verdict on another physical resource replaces, never unions, and a create readback starts afresh', async () => {
-      const engine = makeEngine() as unknown as {
-        noteNoEchoExactEchoes: (...args: unknown[]) => void;
-        establishNoEchoEchoFidelity: (...args: unknown[]) => Promise<void>;
-        noEchoExactEchoes: Map<string, { physicalId: string; coordinates: string[][] }>;
-      };
+      const engine = makeEngine();
+      const run = engine.noEchoRun;
       const handed = { TopicName: '***', DisplayName: '***' };
       const both = [
         { coordinate: ['TopicName'], plaintext: TOPIC },
         { coordinate: ['DisplayName'], plaintext: 'd' },
       ];
-      engine.noteNoEchoExactEchoes('Topic', 'old', { live: { TopicName: TOPIC } }, handed, both, 'add');
-      engine.noteNoEchoExactEchoes('Topic', 'new', { live: { DisplayName: 'd' } }, handed, both, 'add');
-      expect(engine.noEchoExactEchoes.get('Topic')).toEqual({
+      noteNoEchoExactEchoes(run, 'Topic', 'old', { live: { TopicName: TOPIC } }, handed, both, 'add');
+      noteNoEchoExactEchoes(run, 'Topic', 'new', { live: { DisplayName: 'd' } }, handed, both, 'add');
+      expect(run.noEchoExactEchoes.get('Topic')).toEqual({
         physicalId: 'new',
         coordinates: [['DisplayName']],
       });
       // No template bag for the id: nothing to judge, and nothing noted survives.
-      await engine.establishNoEchoEchoFidelity('Topic', v11State().resources['Topic'], {}, {}, new Map());
-      expect(engine.noEchoExactEchoes.has('Topic')).toBe(false);
+      await establishNoEchoEchoFidelity(
+        run,
+        engine.noEchoDeps(),
+        'Topic',
+        v11State().resources['Topic']!,
+        {},
+        {},
+        new Map()
+      );
+      expect(run.noEchoExactEchoes.has('Topic')).toBe(false);
     });
 
     it('asks ONCE per resource, however many of its paths proved a change, and one "no" keeps all of them', async () => {
@@ -1986,11 +2001,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it('never applies a verdict on one physical resource to a record of another (a rollback restoring the old record)', () => {
-      const engine = makeEngine() as unknown as {
-        noteNoEchoExactEchoes: (...args: unknown[]) => void;
-        withNoEchoExactEchoes: (id: string, record: ResourceState) => ResourceState;
-      };
-      engine.noteNoEchoExactEchoes(
+      const run = makeEngine().noEchoRun;
+      noteNoEchoExactEchoes(
+        run,
         'Topic',
         `${TOPIC_ARN}-new`,
         { live: { TopicName: TOPIC } },
@@ -1999,9 +2012,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         'set'
       );
       const old = v11State().resources['Topic']!;
-      expect(engine.withNoEchoExactEchoes('Topic', old).noEchoExactEchoLeaves).toBeUndefined();
+      expect(withNoEchoExactEchoes(run, 'Topic', old).noEchoExactEchoLeaves).toBeUndefined();
       expect(
-        engine.withNoEchoExactEchoes('Topic', { ...old, physicalId: `${TOPIC_ARN}-new` })
+        withNoEchoExactEchoes(run, 'Topic', { ...old, physicalId: `${TOPIC_ARN}-new` })
           .noEchoExactEchoLeaves
       ).toEqual([['TopicName']]);
     });
@@ -2114,10 +2127,8 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(lastSaved().resources['Topic']!.noEchoExactEchoLeaves).toEqual([['TopicName']]);
 
       // The save keeps only entries the record still marks.
-      const engine = makeEngine() as unknown as Record<string, unknown> & {
-        applyNoEchoPersist: (...args: unknown[]) => ResourceState;
-      };
-      engine['constructPathTemplate'] = template();
+      const engine = makeEngine();
+      engine.noEchoRun.constructPathTemplate = template();
       const record: ResourceState = {
         physicalId: TOPIC_ARN,
         resourceType: 'AWS::SNS::Topic',
@@ -2125,13 +2136,11 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         noEchoLeaves: [['TopicName']],
         noEchoExactEchoLeaves: [['TopicName'], ['DisplayName']],
       };
-      expect(
-        engine.applyNoEchoPersist('Topic', record, record, undefined, {}).noEchoExactEchoLeaves
-      ).toEqual([['TopicName']]);
+      const persist = (r: ResourceState): ResourceState =>
+        applyNoEchoPersist(engine.noEchoRun, engine.noEchoDeps(), 'Topic', r, r, undefined, {});
+      expect(persist(record).noEchoExactEchoLeaves).toEqual([['TopicName']]);
       const unmarked = { ...record, noEchoLeaves: [['Other']] };
-      expect(
-        engine.applyNoEchoPersist('Topic', unmarked, unmarked, undefined, {}).noEchoExactEchoLeaves
-      ).toBeUndefined();
+      expect(persist(unmarked).noEchoExactEchoLeaves).toBeUndefined();
     });
 
     it('reads a malformed field as absent, and judges only whole string leaves under a create-only path by object keys', async () => {
