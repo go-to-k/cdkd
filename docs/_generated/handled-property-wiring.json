@@ -9953,8 +9953,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createTargetGroup"
+            "createTargetGroup",
+            "update",
+            "updateTargetGroup"
           ]
         },
         {
