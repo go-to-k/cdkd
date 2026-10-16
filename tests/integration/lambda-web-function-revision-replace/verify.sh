@@ -21,8 +21,9 @@
 # provider of 0.300.x did not record it and served the endpoint ARN; this build
 # records it on create / update, and heals a record 0.300.x created without it.
 # go-to-k/cdkd#4992 does the same for a path through an object-valued member
-# (`ScalingConfig.MaxEnvironments`) and for the whole map
-# (`Fn::ToJsonString` of `attrRegionalEndpoints`), each into its own parameter.
+# (`RegionalEndpoints.<region>.ScalingConfig.MaxEnvironments`, into a second
+# parameter), and records the whole map (`attrRegionalEndpoints`), which is
+# compared with what AWS reports.
 
 set -euo pipefail
 
@@ -84,7 +85,6 @@ esac
 export SECONDARY_REGION
 PARAM_NAME="/cdkd-integ/webfn-replace/regional-domain"
 MAX_ENVS_PARAM="/cdkd-integ/webfn-replace/regional-max-environments"
-MAP_PARAM="/cdkd-integ/webfn-replace/regional-endpoints"
 # Phase 3b renames the PerRegion endpoint; the stack reads the same variable.
 export REGIONAL_ENDPOINT_NAME="regional"
 
@@ -119,7 +119,7 @@ cleanup() {
     cc_delete AWS::Lambda::WebFunctionRevision "${id}"
   done
   cc_delete AWS::Lambda::WebFunction "${FN_ARN}"
-  for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}" "${MAP_PARAM}"; do
+  for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}"; do
     aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
   done
   aws iam detach-role-policy --role-name "${ROLE_NAME}" \
@@ -296,7 +296,7 @@ assert_regional_getatt() { # usage: assert_regional_getatt <phase>
   fi
   echo "    OK: $1: RegionalEndpoints.${SECONDARY_REGION}.DomainName resolved to ${got}"
   # go-to-k/cdkd#4992: a path through an object member, and the whole map.
-  local max_want max_got map_got map_domain
+  local max_want max_got map_domain map_max
   max_want="$(regional_read scalingConfig.maxEnvironments)" || return 1
   case "${max_want}" in
     "" | None | null)
@@ -310,13 +310,14 @@ assert_regional_getatt() { # usage: assert_regional_getatt <phase>
     exit 1
   fi
   echo "    OK: $1: RegionalEndpoints.${SECONDARY_REGION}.ScalingConfig.MaxEnvironments resolved to ${max_got}"
-  map_got="$(param_value "${MAP_PARAM}")" || return 1
-  map_domain="$(printf '%s' "${map_got}" | jq -r --arg r "${SECONDARY_REGION}" '.[$r].DomainName // empty' 2>/dev/null || true)"
-  if [ "${map_domain}" != "${want}" ]; then
-    echo "FAIL: $1: Fn::GetAtt RegionalEndpoints (the whole map) resolved to '${map_got}', expected a map whose ${SECONDARY_REGION} DomainName is '${want}' (#4992)" >&2
+  # The whole map (attrRegionalEndpoints) is served from the recorded object.
+  map_domain="$(record RegionalEndpoint ".attributes.RegionalEndpoints[\"${SECONDARY_REGION}\"].DomainName")" || return 1
+  map_max="$(record RegionalEndpoint ".attributes.RegionalEndpoints[\"${SECONDARY_REGION}\"].ScalingConfig.MaxEnvironments")" || return 1
+  if [ "${map_domain}" != "${want}" ] || [ "${map_max}" != "${max_want}" ]; then
+    echo "FAIL: $1: the recorded RegionalEndpoints map holds DomainName '${map_domain}' / MaxEnvironments '${map_max}', expected '${want}' / '${max_want}' (#4992)" >&2
     exit 1
   fi
-  echo "    OK: $1: RegionalEndpoints (the whole map) carries ${SECONDARY_REGION} DomainName ${map_domain}"
+  echo "    OK: $1: the recorded RegionalEndpoints map matches AWS"
 }
 
 assert_one_revision() { # usage: assert_one_revision <phase>
@@ -439,14 +440,19 @@ case "${GOT}" in
     exit 1
     ;;
 esac
-GOT="$(param_value "${MAP_PARAM}")"
+GOT="$(param_value "${MAX_ENVS_PARAM}")"
 case "${GOT}" in
-  *arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the whole-map GetAtt to the endpoint ARN (the #4992 bug)" ;;
+  arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to the endpoint ARN (the #4992 bug)" ;;
   *)
-    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the whole-map GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises its heal" >&2
+    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises its heal" >&2
     exit 1
     ;;
 esac
+HAS_MAP="$(record RegionalEndpoint '.attributes | has("RegionalEndpoints")')"
+if [ "${HAS_MAP}" != "false" ]; then
+  echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the RegionalEndpoints map (${HAS_MAP})" >&2
+  exit 1
+fi
 HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
 if [ "${HAS_KEY}" != "false" ]; then
   echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the regional DomainName (${HAS_KEY})" >&2
@@ -491,12 +497,12 @@ DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KE
 echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare (unsupported or
 # skipped), so require every resource of the stack to have been compared: the
-# role, the function, the revision, the two endpoints and the three parameters.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(8 resources checked, 0 unsupported)'; then
-  echo "FAIL: drift did not compare all 8 resources -- expected '(8 resources checked, 0 unsupported)'" >&2
+# role, the function, the revision, the two endpoints and the two parameters.
+if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(7 resources checked, 0 unsupported)'; then
+  echo "FAIL: drift did not compare all 7 resources -- expected '(7 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
-echo "    OK: no drift, all 8 resources compared"
+echo "    OK: no drift, all 7 resources compared"
 
 echo "==> Destroy"
 ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
@@ -510,7 +516,7 @@ assert_gone "PerRegion endpoint ${REP3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP3}" --region "${REGION}"
 assert_gone "revision ${REV3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
-for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}" "${MAP_PARAM}"; do
+for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}"; do
   assert_gone "parameter ${p} still exists after destroy" aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"

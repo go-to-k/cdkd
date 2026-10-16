@@ -731,6 +731,8 @@ function buildAttributes(resp: {
   const regional: Record<string, Record<string, unknown>> = {};
   for (const [region, entry] of Object.entries(resp.regionalEndpoints)) {
     const members = regionalEndpointAttribute(entry ?? {});
+    // An entry AWS assigned nothing in is left out, like an empty config object.
+    if (Object.keys(members).length === 0) continue;
     regional[region] = members;
     for (const member of REGIONAL_SCALAR_MEMBERS) {
       if (Object.hasOwn(members, member)) {

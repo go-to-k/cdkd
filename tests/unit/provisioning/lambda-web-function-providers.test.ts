@@ -66,6 +66,11 @@ import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import {
+  IntrinsicFunctionResolver,
+  type ResolverContext,
+} from '../../../src/deployment/intrinsic-function-resolver.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const FN_ARN = 'arn:aws:lambda:us-east-1:123456789012:web-function/my-fn';
 const REV_ARN = `${FN_ARN}/revision/rev-abc12`;
@@ -962,6 +967,67 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
       // Only scalar members get a flat key.
       expect(found?.attributes).not.toHaveProperty(['RegionalEndpoints.us-west-2.ScalingConfig']);
       expect(found?.attributes).toHaveProperty(['RegionalEndpoints.us-west-2.DomainName']);
+    });
+
+    it('leaves out a regional entry AWS assigned nothing in', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          [
+            'GetWebFunctionEndpointCommand',
+            [{ endpointArn: EP_ARN, regionalEndpoints: { 'us-west-2': { domainName: null, state: null } } }],
+          ],
+        ])
+      );
+      const found = await provider.import({
+        logicalId: 'Ep',
+        resourceType: EP_TYPE,
+        knownPhysicalId: EP_ARN,
+      } as never);
+      expect(found?.attributes?.['RegionalEndpoints']).toEqual({});
+    });
+
+    it('the resolver serves the whole map and a path through an object member from the recorded attributes (#4992)', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          [
+            'GetWebFunctionEndpointCommand',
+            [
+              {
+                endpointArn: EP_ARN,
+                regionalEndpoints: {
+                  'us-west-2': { domainName: 'b.lambda-web.us-west-2.on.aws', scalingConfig: { maxEnvironments: 4 } },
+                },
+              },
+            ],
+          ],
+        ])
+      );
+      const found = await provider.import({
+        logicalId: 'Ep',
+        resourceType: EP_TYPE,
+        knownPhysicalId: EP_ARN,
+      } as never);
+      // The provider's real attribute map, resolved by the real resolver: no
+      // GetAtt below reaches the physical-id fallback (which would answer EP_ARN).
+      const context = {
+        template: { Resources: { Ep: { Type: EP_TYPE } } } as unknown as CloudFormationTemplate,
+        resources: {
+          Ep: { physicalId: EP_ARN, resourceType: EP_TYPE, properties: {}, attributes: found?.attributes },
+        },
+      } as unknown as ResolverContext;
+      const resolver = new IntrinsicFunctionResolver();
+      await expect(resolver.resolve({ 'Fn::GetAtt': ['Ep', 'RegionalEndpoints'] }, context)).resolves.toEqual({
+        'us-west-2': { DomainName: 'b.lambda-web.us-west-2.on.aws', ScalingConfig: { MaxEnvironments: 4 } },
+      });
+      await expect(
+        resolver.resolve({ 'Fn::GetAtt': ['Ep', 'RegionalEndpoints.us-west-2.ScalingConfig.MaxEnvironments'] }, context)
+      ).resolves.toBe(4);
+      await expect(
+        resolver.resolve({ 'Fn::Sub': '${Ep.RegionalEndpoints.us-west-2.ScalingConfig.MaxEnvironments}' }, context)
+      ).resolves.toBe('4');
+      await expect(
+        resolver.resolve({ 'Fn::GetAtt': ['Ep', 'RegionalEndpoints.us-west-2.DomainName'] }, context)
+      ).resolves.toBe('b.lambda-web.us-west-2.on.aws');
     });
   });
 });
