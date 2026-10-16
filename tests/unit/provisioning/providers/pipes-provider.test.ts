@@ -70,7 +70,10 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../../src/provisioning/register-providers.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
@@ -1019,7 +1022,9 @@ describe('PipesPipeProvider review-round cases', () => {
       () => undefined,
       (e: unknown) => e
     );
+    expect(rejected).toBeInstanceOf(ProvisioningError);
     expect((rejected as Error).message).toContain('Failed to delete Pipe Pipe');
+    expect((rejected as Error).message).toContain('a value that could not be converted to text');
     expect((rejected as Error).message).not.toContain('Cannot convert object to primitive value');
   });
 
