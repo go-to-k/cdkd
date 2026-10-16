@@ -1,11 +1,8 @@
-// issue #1160: absent-field removal reset to CFn defaults (dlm batch).
-// UpdateLifecyclePolicy uses merge semantics (live-probed 2026-07-27: an
-// update carrying only PolicyId retains every live value), so a
-// default-policy shorthand field DROPPED from the template must be sent as
-// its explicit default — CreateInterval->1, RetainInterval->7,
-// CopyTags->false, ExtendDeletion->false, CrossRegionCopyTargets->[],
-// Exclusions->the per-DefaultPolicy explicit-empty shape — else the old
-// live value silently persists.
+// issue #5004: a real CloudFormation A/B showed CloudFormation KEEPS the live
+// value of the default-policy shorthand fields (CreateInterval, RetainInterval,
+// CopyTags, ExtendDeletion, CrossRegionCopyTargets, Exclusions) when one is
+// removed from the template. UpdateLifecyclePolicy merges absent members, so
+// cdkd sends NOTHING for a removed member (superseding the #1160 resets).
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -48,7 +45,7 @@ const POLICY_ID = 'policy-0123456789abcdef0';
 const POLICY_ARN = `arn:aws:dlm:us-east-1:123456789012:policy/${POLICY_ID}`;
 const ROLE_ARN = 'arn:aws:iam::123456789012:role/dlm-role';
 
-describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)', () => {
+describe('DLMLifecyclePolicyProvider removal keeps the live value like CloudFormation (issue #5004)', () => {
   let provider: DLMLifecyclePolicyProvider;
 
   beforeEach(() => {
@@ -72,7 +69,16 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     return (call?.[0] as UpdateLifecyclePolicyCommand).input as unknown as Record<string, unknown>;
   }
 
-  it('resets all removed VOLUME default-policy shorthand fields to their defaults', async () => {
+  const FIELDS = [
+    'CreateInterval',
+    'RetainInterval',
+    'CopyTags',
+    'ExtendDeletion',
+    'CrossRegionCopyTargets',
+    'Exclusions',
+  ];
+
+  it('sends NO reset for any removed VOLUME shorthand field (CFn keeps the live value)', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -92,19 +98,10 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     );
 
     const input = sentUpdateInput();
-    expect(input['CreateInterval']).toBe(1);
-    expect(input['RetainInterval']).toBe(7);
-    expect(input['CopyTags']).toBe(false);
-    expect(input['ExtendDeletion']).toBe(false);
-    expect(input['CrossRegionCopyTargets']).toEqual([]);
-    expect(input['Exclusions']).toEqual({
-      ExcludeBootVolumes: false,
-      ExcludeVolumeTypes: [],
-      ExcludeTags: [],
-    });
+    for (const key of FIELDS) expect(key in input).toBe(false);
   });
 
-  it('uses the INSTANCE clear shape for a removed Exclusions (volume-only sub-fields rejected there)', async () => {
+  it('sends NO Exclusions reset for a removed INSTANCE Exclusions', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -118,11 +115,10 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
       }
     );
 
-    const input = sentUpdateInput();
-    expect(input['Exclusions']).toEqual({ ExcludeTags: [] });
+    expect('Exclusions' in sentUpdateInput()).toBe(false);
   });
 
-  it('leaves never-present fields absent (no spurious reset)', async () => {
+  it('leaves never-present fields absent', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -132,29 +128,15 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     );
 
     const input = sentUpdateInput();
-    for (const key of [
-      'CreateInterval',
-      'RetainInterval',
-      'CopyTags',
-      'ExtendDeletion',
-      'CrossRegionCopyTargets',
-      'Exclusions',
-    ]) {
-      expect(key in input).toBe(false);
-    }
+    for (const key of FIELDS) expect(key in input).toBe(false);
   });
 
-  it('passes kept fields through while resetting only the removed ones', async () => {
+  it('passes kept fields through while sending nothing for the removed ones', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
       RESOURCE_TYPE,
-      {
-        ExecutionRoleArn: ROLE_ARN,
-        State: 'DISABLED',
-        DefaultPolicy: 'VOLUME',
-        CreateInterval: 3,
-      },
+      { ExecutionRoleArn: ROLE_ARN, State: 'DISABLED', DefaultPolicy: 'VOLUME', CreateInterval: 3 },
       {
         ExecutionRoleArn: ROLE_ARN,
         State: 'DISABLED',
@@ -166,7 +148,7 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
 
     const input = sentUpdateInput();
     expect(input['CreateInterval']).toBe(3);
-    expect(input['CopyTags']).toBe(false);
+    expect('CopyTags' in input).toBe(false);
     expect('RetainInterval' in input).toBe(false);
   });
 
@@ -198,7 +180,7 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     expect(input['Exclusions']).toEqual(exclusions);
   });
 
-  it('treats an explicit-null side as absent (no spurious reset — the != null guards)', async () => {
+  it('treats an explicit-null side as absent', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -219,14 +201,12 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     );
 
     const input = sentUpdateInput();
-    // null new side with absent previous -> nothing to reset; null previous
-    // side must not fire a reset either.
     expect('CreateInterval' in input).toBe(false);
     expect('CopyTags' in input).toBe(false);
     expect('Exclusions' in input).toBe(false);
   });
 
-  it('Number()-coerces string-form numerics on both the kept and the removed path', async () => {
+  it('Number()-coerces a kept string numeric and sends nothing for a removed one', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -247,13 +227,11 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
     );
 
     const input = sentUpdateInput();
-    // kept string value -> coerced number wins over toSdkFields' raw spread
     expect(input['CreateInterval']).toBe(3);
-    // removed string value -> reset to the numeric default
-    expect(input['RetainInterval']).toBe(7);
+    expect('RetainInterval' in input).toBe(false);
   });
 
-  it('does NOT reset a removed Description (no API clear sentinel — documented deferral)', async () => {
+  it('does NOT reset a removed Description (no API clear sentinel)', async () => {
     await provider.update(
       'Policy',
       POLICY_ID,
@@ -267,26 +245,6 @@ describe('DLMLifecyclePolicyProvider removal reset to CFn defaults (issue #1160)
       }
     );
 
-    const input = sentUpdateInput();
-    expect('Description' in input).toBe(false);
-  });
-
-  it('does NOT synthesize an Exclusions clear without a known DefaultPolicy type', async () => {
-    // A standard policy cannot legitimately carry Exclusions, but the gate
-    // must not guess a clear shape when the policy kind is unknown.
-    await provider.update(
-      'Policy',
-      POLICY_ID,
-      RESOURCE_TYPE,
-      { ExecutionRoleArn: ROLE_ARN, State: 'DISABLED' },
-      {
-        ExecutionRoleArn: ROLE_ARN,
-        State: 'DISABLED',
-        Exclusions: { ExcludeTags: [{ Key: 'skip', Value: 'yes' }] },
-      }
-    );
-
-    const input = sentUpdateInput();
-    expect('Exclusions' in input).toBe(false);
+    expect('Description' in sentUpdateInput()).toBe(false);
   });
 });

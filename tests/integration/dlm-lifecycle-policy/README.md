@@ -33,12 +33,13 @@ the SDK provider.
    `ENABLED -> DISABLED` (UpdateLifecyclePolicy), tag value change AND
    tag removal (TagResource / UntagResource — the #981 regression
    class). Asserts the PolicyId is unchanged (in-place, no replacement).
-2b. **Removal reset** (`CDKD_TEST_REMOVAL=true`, issue #1160): the default
-   policy drops CreateInterval / RetainInterval / CopyTags / ExtendDeletion
-   / CrossRegionCopyTargets / Exclusions. UpdateLifecyclePolicy merges
-   absent fields, so the provider must send the explicit defaults; asserts
-   AWS reads back `1 / 7 / false / false / [] / empty exclusions` with the
-   policy id unchanged.
+2b. **Removal retained** (`CDKD_TEST_REMOVAL=true`, issues #1160 / #5004): the
+   default policy drops CreateInterval / RetainInterval / CopyTags /
+   ExtendDeletion / CrossRegionCopyTargets / Exclusions. CloudFormation keeps
+   the live value of a removed shorthand field, so cdkd sends no reset;
+   asserts AWS still reads back the baseline `2 / 3 / true / true / 1 / true / 1`
+   (CreateInterval / RetainInterval / CopyTags / ExtendDeletion / #CrossRegionCopyTargets /
+   ExcludeBootVolumes / #ExcludeTags) with the policy id unchanged.
 3. **Destroy** and assert both policies + the role are gone from AWS and
    the cdkd state file is removed.
 

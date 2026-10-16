@@ -1385,7 +1385,8 @@ shared report is `orphan-report.ts`):
 
 CloudFormation resets a property **removed** from the template to its
 default for MANY types, but not all properties of all types (the reset
-premise is per type; see the A/B bullet below, issue #5004). Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+premise is per type; see the A/B bullet below, issue #5004). Most AWS
+`Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
@@ -1404,7 +1405,8 @@ the old value. Permanent, undetectable divergence from CloudFormation
 (confirmed live for Lambda in issue #1155).
 
 **Rule: every optional, mutable property passed to a merge-semantics update
-API needs an explicit reset when it was present before and is absent now.**
+API needs an explicit reset when it was present before, is absent now, and
+CloudFormation was measured to reset it (measure per property, #5004).**
 There are two shapes, both in `src/provisioning/update-removal.ts` (issue
 #1160):
 
@@ -1464,6 +1466,10 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- A real CloudFormation A/B can show it KEEPS the live value: for
+  `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
+  `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset
+  (#5004).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
 - **The reset SENTINEL can vary per API *and* per value KIND within one API,
