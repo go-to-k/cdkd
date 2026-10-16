@@ -84,9 +84,9 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // template sets Description + KmsKeyId (the AWS-managed key alias) via the
     // L1 escape hatch; the removal phase drops both properties entirely.
     // UpdateSecret MERGES (absent = "no change"), so pre-fix the live secret
-    // silently kept both values; the provider must reset Description to ''
-    // and KmsKeyId to '' (the documented "use aws/secretsmanager" sentinel,
-    // which restores the pristine no-explicit-key shape).
+    // kept both values, and since #5004 that is the intended outcome:
+    // CloudFormation KEEPS the live Description and KmsKeyId on removal, so
+    // the provider sends neither and verify.sh asserts both are retained.
     if (process.env.CDKD_TEST_REMOVAL !== 'true') {
       const cfnSecret = secret.node.defaultChild as secretsmanager.CfnSecret;
       cfnSecret.description = 'cdkd f1160 removal-reset probe';

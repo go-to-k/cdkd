@@ -17,9 +17,8 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
  * REMOVAL phase (CDKD_TEST_REMOVAL=true, issue #1160 lambda-url batch):
  * the baseline sets InvokeMode=RESPONSE_STREAM + a Cors block on the
  * Function URL; the removal redeploy drops both, and verify.sh asserts
- * AWS reset them (InvokeMode back to BUFFERED, Cors gone) instead of
- * silently keeping the live values (UpdateFunctionUrlConfig merge
- * semantics).
+ * Cors is gone (reset) while InvokeMode keeps its live RESPONSE_STREAM,
+ * matching CloudFormation (#5004).
  */
 export class CloudFrontFunctionUrlStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

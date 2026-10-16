@@ -8,7 +8,8 @@ Tests event-driven architecture: SNS topic with multiple SQS subscribers, DLQ, a
 - 2 SQS Queues (primary + secondary with filter policy)
 - SSE-removal queue (L1 `CfnQueue` with `SqsManagedSseEnabled: false`; the
   `CDKD_TEST_REMOVAL=true` redeploy drops the property and asserts the live
-  queue resets to the SQS/CFn default SSE-on, in place — issue #1160 sqs batch)
+  queue RETAINS `SqsManagedSseEnabled=false`, in place, as CloudFormation does —
+  issues #1160 / #5004)
 - Delivery-status topic (L1 `CfnTopic` with a two-protocol
   `DeliveryStatusLogging` block — `lambda` and `http/s` — plus an
   `sns.amazonaws.com`-trusted feedback role; the `CDKD_TEST_REMOVAL=true`
