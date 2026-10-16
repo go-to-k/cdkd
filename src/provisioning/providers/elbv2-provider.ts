@@ -1,3 +1,4 @@
+import { LambdaClient } from '@aws-sdk/client-lambda';
 import {
   ElasticLoadBalancingV2Client,
   CreateLoadBalancerCommand,
@@ -52,6 +53,7 @@ import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { waitForLambdaFunctionActive } from './custom-resource-provider.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -758,6 +760,8 @@ export class ELBv2Provider implements ResourceProvider {
     ],
   ]);
 
+  private readonly lambdaClients = new Map<string, LambdaClient>();
+
   private getClient(): ElasticLoadBalancingV2Client {
     if (!this.elbv2Client) {
       this.elbv2Client = new ElasticLoadBalancingV2Client({
@@ -766,6 +770,49 @@ export class ELBv2Provider implements ResourceProvider {
       });
     }
     return this.elbv2Client;
+  }
+
+  /**
+   * Wait for each Lambda target of a `lambda`-type target group to be
+   * `State=Active` before RegisterTargets (go-to-k/cdkd#5002).
+   * `LambdaFunctionProvider.create` returns while the function is `Pending`,
+   * and registering a `Pending` function is rejected ("not in Active state").
+   * The wait lives here, not in the Lambda provider, so no other deploy path
+   * pays for it; any other target type returns before a Lambda client exists.
+   */
+  private async waitForLambdaTargetsActive(
+    logicalId: string,
+    targetType: unknown,
+    targets: TargetDescription[]
+  ): Promise<void> {
+    if (targetType !== 'lambda') return;
+    for (const target of targets) {
+      // `arn:<partition>:lambda:<region>:<account>:function:<name>[:<qualifier>]`
+      const parts = typeof target.Id === 'string' ? target.Id.split(':') : [];
+      if (parts[0] !== 'arn' || parts[2] !== 'lambda' || !parts[3]) continue;
+      const region = parts[3];
+      let client = this.lambdaClients.get(region);
+      if (!client) {
+        client = new LambdaClient({ ...ambientClientDefaults(), region });
+        this.lambdaClients.set(region, client);
+      }
+      const watch = startInterruptWatch(`ELBv2 TargetGroup ${logicalId} Lambda target wait`);
+      const abort = new AbortController();
+      const poll = setInterval(() => {
+        if (watch.isInterrupted()) abort.abort();
+      }, 1000);
+      try {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await waitForLambdaFunctionActive(client, target.Id as string, abort.signal);
+      } catch (error) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        throw error;
+      } finally {
+        clearInterval(poll);
+        watch.dispose();
+      }
+      this.logger.debug(`Lambda target ${target.Id} of ${logicalId} is Active`);
+    }
   }
 
   /**
@@ -2068,6 +2115,7 @@ export class ELBv2Provider implements ResourceProvider {
         }
 
         if (targets.length > 0) {
+          await this.waitForLambdaTargetsActive(logicalId, properties['TargetType'], targets);
           await this.getClient().send(
             new RegisterTargetsCommand({ TargetGroupArn: tgArn, Targets: targets })
           );
@@ -2343,6 +2391,11 @@ export class ELBv2Provider implements ResourceProvider {
       const targetsToRegister = newTargets.filter((t) => !oldTargetKeys.has(targetKey(t)));
       const targetsToDeregister = oldTargets.filter((t) => !newTargetKeys.has(targetKey(t)));
       if (targetsToRegister.length > 0) {
+        await this.waitForLambdaTargetsActive(
+          logicalId,
+          properties['TargetType'],
+          targetsToRegister
+        );
         await this.getClient().send(
           new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
         );

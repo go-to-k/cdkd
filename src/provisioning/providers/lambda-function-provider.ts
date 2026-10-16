@@ -950,8 +950,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       // We deliberately do NOT wait for State=Active here. CreateFunction
       // returns synchronously while the function is still in `Pending`,
-      // but the only deploy-time consumer that actually breaks against a
-      // Pending function is a synchronous Lambda Invoke (Custom Resources).
+      // but the deploy-time consumers that actually break against a
+      // Pending function are a synchronous Lambda Invoke (Custom Resources)
+      // and an ELBv2 TargetGroup registering the function as a `lambda`
+      // target (go-to-k/cdkd#5002).
       // Other downstream resources — EventSourceMapping, AddPermission,
       // FunctionUrlConfig — accept the function in Pending state and
       // either succeed immediately or auto-progress once the function
@@ -963,6 +965,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // gated to the only path that needs it (`waitUntilFunctionActiveV2`
       // immediately before the synchronous Invoke). See PR #121 for the
       // bug report this addresses and the follow-up that moved the wait.
+      // The TargetGroup's wait lives in `ELBv2Provider.waitForLambdaTargetsActive`.
       log.debug(`Successfully created Lambda function ${logicalId}: ${log.value(functionName)}`);
 
       return {

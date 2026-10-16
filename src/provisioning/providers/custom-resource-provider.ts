@@ -945,6 +945,45 @@ function describeWaiterFailure(error: unknown, rejections: WaiterRejections): st
 }
 
 /**
+ * Wait until a Lambda function is `State=Active`, for a consumer that AWS
+ * rejects while the function is `Pending` (an ELBv2 Lambda target,
+ * go-to-k/cdkd#5002). The same waiter, cadence and payload-withholding as
+ * `waitForBackingLambdaReady`; the thrown error is `markNonRetryable` (the
+ * waiter already polled to its budget) and its text carries no AWS message
+ * or `GetFunction` payload. `abortSignal` stops the wait on a Ctrl-C.
+ */
+export async function waitForLambdaFunctionActive(
+  client: LambdaClient,
+  functionArn: string,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  const rejections = new WaiterRejections();
+  try {
+    await waitUntilFunctionActiveV2(
+      {
+        client: observingLambdaClient(client, rejections),
+        maxWaitTime: 600,
+        minDelay: 1,
+        maxDelay: 5,
+        ...(abortSignal ? { abortSignal } : {}),
+      },
+      { FunctionName: functionArn }
+    );
+  } catch (error) {
+    const log = getLogger().child('LambdaActiveWait');
+    for (const line of waiterRejectionDebugLines(rejections)) {
+      log.debug(safeMsg`Active waiter for ${functionArn} observed ${line}`);
+    }
+    throw markNonRetryable(
+      new Error(
+        `Lambda function ${functionArn} did not reach the Active state: ${describeWaiterFailure(error, rejections)}`,
+        { cause: error }
+      )
+    );
+  }
+}
+
+/**
  * IAM-authorization-propagation signals in a custom resource FAILED reason that
  * indicate the backing Lambda's freshly-attached execution-role policy has not
  * yet taken effect for its assumed-role session (so a recycle + retry will

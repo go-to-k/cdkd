@@ -20,6 +20,14 @@ function nameIsFree(command: { constructor: { name: string } }): Promise<never> 
   );
 }
 
+// A `lambda` target group waits for its function to be Active before
+// RegisterTargets (go-to-k/cdkd#5002); stubbed so this suite keeps testing the
+// RegisterTargets failure path.
+vi.mock('@aws-sdk/client-lambda', async () => ({
+  ...(await vi.importActual<typeof import('@aws-sdk/client-lambda')>('@aws-sdk/client-lambda')),
+  waitUntilFunctionActiveV2: vi.fn().mockResolvedValue({ state: 'SUCCESS' }),
+}));
+
 vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   const actual = await vi.importActual<
     typeof import('@aws-sdk/client-elastic-load-balancing-v2')
