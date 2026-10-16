@@ -70,6 +70,11 @@ export class AttributeHealer {
     this.deps = deps;
   }
 
+  /** The records this healer judges eligibility against. */
+  get baseline(): Readonly<Record<string, ResourceState>> {
+    return this.deps.baseline;
+  }
+
   /**
    * Re-read a STALE record's attributes from AWS (issue
    * [#1852](https://github.com/go-to-k/cdkd/issues/1852)) — the resolver calls

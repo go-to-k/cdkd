@@ -500,7 +500,7 @@ async function diffCommand(
           resourceType: resource.resourceType,
           properties: resource.properties,
           provisionedBy: resource.provisionedBy,
-          // As `DeployEngine.readStaleAttributes` routes it (issue #3713): the
+          // As `AttributeHealer.read` routes it (issue #3713): the
           // record is its own baseline, so the read stays on the layer that
           // wrote the record.
           previousProperties: resource.properties,

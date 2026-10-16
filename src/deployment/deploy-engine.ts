@@ -964,10 +964,13 @@ export class DeployEngine {
    * LOADED (same physical id, same `attributes` object): once a provider has
    * (re)written it this run, a missing attribute is the provider's answer, not
    * staleness, and re-reading would cost an AWS call to learn nothing. See
-   * {@link AttributeHealer.isEligible}.
+   * {@link AttributeHealer.isEligible}. Held by {@link attributeHealer}, so
+   * the two cannot disagree; set through {@link rebaseline}.
+   * @internal
    */
-  /** @internal */
-  healBaseline: Readonly<Record<string, ResourceState>> = {};
+  get healBaseline(): Readonly<Record<string, ResourceState>> {
+    return this.attributeHealer.baseline;
+  }
   /**
    * This deploy's producer-region evidence (`producerRegionEvidence` over the
    * state it loaded and the reads it has made), for the resolver's
@@ -1061,12 +1064,10 @@ export class DeployEngine {
   }
 
   /**
-   * Set {@link healBaseline} and a fresh {@link attributeHealer} over it, the
-   * pair's only writer, so the two cannot disagree.
+   * Set {@link healBaseline}: a fresh {@link attributeHealer} over `resources`.
    * @internal
    */
   rebaseline(resources: Readonly<Record<string, ResourceState>>): AttributeHealer {
-    this.healBaseline = resources;
     this.attributeHealer = new AttributeHealer({
       providerRegistry: this.providerRegistry,
       stackRegion: this.stackRegion,
