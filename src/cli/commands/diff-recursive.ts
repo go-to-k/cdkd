@@ -914,6 +914,13 @@ export interface StackDiffResult {
    */
   secretNamedRecords: RecordedSecretValues;
   /**
+   * The per-record judging bags over a map of this node's records
+   * (go-to-k/cdkd#3869): the node's `NoEcho` values plus what each record
+   * stores at a `NoEcho` position. For a heal that binds its printing bag
+   * outside this call (a nested row's `Parameters` pass). Printing only.
+   */
+  namingSecretsFor: (resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets;
+  /**
    * The parameter bag and the condition verdicts this node's resolver used
    * (go-to-k/cdkd#4094), for resolving a nested child's input `Parameters`
    * the way the deploy does: against the parent's BOUND parameters (template
@@ -2763,6 +2770,7 @@ export async function computeStackDiff(
       stateForDiff.resources,
       noEchoJudge(stateForDiff.resources)
     ),
+    namingSecretsFor: noEchoJudge,
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:
@@ -3686,6 +3694,7 @@ export async function buildDiffTree(args: {
     printingSecrets,
     derivedNames: nodeDerivedNames,
     secretNamedRecords: nodeStateNames,
+    namingSecretsFor,
     resolvedParameters,
     conditions,
     knownConditions,
@@ -3870,8 +3879,13 @@ export async function buildDiffTree(args: {
       // A nested row the parent's state does not hold yet (a CREATE) has its
       // Parameters resolved here only, so this pass heals first and only this
       // binds the bag.
+      // Judged with the node's per-record `NoEcho` bags, as its own heals are.
       attributeHealer &&
-        healerUnderRecordPrintingBag(attributeHealer, () => stateAfterAdoption.resources ?? {}),
+        healerUnderRecordPrintingBag(
+          attributeHealer,
+          () => stateAfterAdoption.resources ?? {},
+          namingSecretsFor
+        ),
       childUnresolvedParameters,
       trust,
       rowDerivedNames,

@@ -430,7 +430,8 @@ cleanup() {
     rm -rf "${VA_TMPDIR}" || true
   fi
   # Phase 0's isolated stack (go-to-k/cdkd#3869 item 3): its roles by name,
-  # and any an earlier run left (every one starts with the stack's prefix).
+  # and any THIS run created before it recorded the id (each holds one of
+  # this run's values). Never another run's or another stack's role.
   cv_destroy_rc=1
   if [ -f "${LOCAL_DIST}" ] && [ -n "${CV_STACK:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${CV_STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -438,7 +439,8 @@ cleanup() {
     cv_destroy_rc=$?
   fi
   for cv_role in ${CV_ROLES[@]+"${CV_ROLES[@]}"} $(aws iam list-roles \
-    --query "Roles[?starts_with(RoleName, 'CdkdCv')].RoleName" --output text 2>/dev/null); do
+    --query "Roles[?contains(RoleName, '${CV_TOKEN_A:-unset-cv-token}') || contains(RoleName, '${CV_TOKEN_B:-unset-cv-token}') || contains(RoleName, '${CV_TOKEN_C:-unset-cv-token}')].RoleName" \
+    --output text 2>/dev/null); do
     [ "${cv_role}" = "None" ] && continue
     aws iam delete-role --role-name "${cv_role}" >/dev/null 2>&1 || true
   done

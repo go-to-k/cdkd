@@ -722,6 +722,12 @@ expect_eq "ChildRoleReader holds the child's derived role name" "${CROLE_DERIVED
   "$(aws ssm get-parameter --region "${REGION}" --name "${NO_PARAM_NAME}" --query Parameter.Value --output text)"
 expect_reader_line "${NO_LOG}" "step-1b deploy"
 expect_no_role_name "${NO_LOG}" "step-1b deploy"
+# Sentinel for the reader-edit deploy's absence check below: the line it
+# looks for is the one this deploy, which did provision the row, printed.
+if ! grep -qF -- "Deploying nested stack" "${NO_LOG}"; then
+  echo "FAIL: sentinel: the step-1b deploy printed no 'Deploying nested stack' line -- its wording drifted, so the reader-edit deploy's NO_CHANGE check is vacuous" >&2
+  exit 1
+fi
 # The row names that output, by key, in its record: what a later deploy
 # where the row is NO_CHANGE reads.
 NO_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${NO_STATE_KEY}" -)"

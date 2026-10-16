@@ -144,3 +144,22 @@ describe("cdkd deploy's heal judges with the per-record NoEcho bags (go-to-k/cdk
     expect(line.includes('teamolddb1')).toBe(!withBag);
   });
 });
+
+describe("cdkd deploy's heal re-judges when the deploy's judging bag changes (go-to-k/cdkd#3869)", () => {
+  it('a bag bound after a first heal of the same loaded map is judged with', async () => {
+    const healed: ResourceState = {
+      physicalId: 'teamolddb1',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { DBInstanceIdentifier: 'TeamOldDb1' },
+      attributes: {},
+      dependencies: [],
+    };
+    // One map object for the whole deploy, as the healer's baseline is.
+    const baseline = { Db: healed };
+    // Before the deploy binds its NoEcho values: nothing to judge with.
+    expect((await healLine(baseline, healed)).includes('teamolddb1')).toBe(true);
+    const stored = new Map<string, string>();
+    recordLogOnlyValue(stored, 'TeamOldDb1');
+    expect((await healLine(baseline, healed, () => stored)).includes('teamolddb1')).toBe(false);
+  });
+});

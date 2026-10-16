@@ -911,3 +911,135 @@ describe("the heal's printing bag reads the records the diff reads (go-to-k/cdkd
     expect(line()).toBe(expected);
   });
 });
+
+describe("the heal's printing bag judges with the per-record NoEcho bags (go-to-k/cdkd#3869)", () => {
+  // A pre-v11 role record holds the name it took from a NoEcho value since
+  // CHANGED, in plaintext: no value the diff binds spells it, and no marker
+  // tells the record-only judge. Only the record's own leaf at the NoEcho
+  // position judges it.
+  const OLD_ROLE = 'TeamOldRole1';
+  const roleRecord: ResourceState = {
+    physicalId: OLD_ROLE,
+    resourceType: 'AWS::IAM::Role',
+    properties: { RoleName: OLD_ROLE },
+    attributes: {},
+  };
+  const dbRecord: ResourceState = {
+    physicalId: 'db1',
+    resourceType: 'AWS::RDS::DBInstance',
+    properties: { Engine: 'postgres', MonitoringRoleArn: `arn:aws:iam::123456789012:role/${OLD_ROLE}` },
+    attributes: {},
+  };
+  const parameters = (noEcho: boolean) => ({
+    RoleNameP: { Type: 'String', Default: 'TeamNewRole2', ...(noEcho && { NoEcho: true }) },
+  });
+  const role = { Type: 'AWS::IAM::Role', Properties: { RoleName: { Ref: 'RoleNameP' } } };
+  const db = { Type: 'AWS::RDS::DBInstance', Properties: { Engine: 'postgres' } };
+
+  async function healerLine(): Promise<{
+    factory: ReturnType<typeof createReadOnlyAttributeHealerFactory>;
+    line: () => string | undefined;
+  }> {
+    const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
+    let line: string | undefined;
+    const provider = {
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      import: vi.fn(async (input: { knownPhysicalId?: string }) => {
+        const text = `Describing DB instance ${input.knownPhysicalId} (monitoring role ${OLD_ROLE})`;
+        line = currentLogLineMasker()?.(text) ?? text;
+        return { physicalId: input.knownPhysicalId!, attributes: live['db1']! };
+      }),
+    } as unknown as ResourceProvider;
+    return {
+      factory: createReadOnlyAttributeHealerFactory({
+        getProvider: () => provider,
+        inRegion: (_region, fn) => fn(),
+      }),
+      line: () => line,
+    };
+  }
+
+  it.each([
+    ['the parameter is NoEcho', true, 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary parameter', false, `Describing DB instance db1 (monitoring role ${OLD_ROLE})`],
+  ])("the node's own heal (computeStackDiff): %s", async (_l, noEcho, expected) => {
+    const { factory, line } = await healerLine();
+    await computeStackDiff(
+      st('S', {
+        Role: roleRecord,
+        Db: dbRecord,
+        Endpoint: {
+          physicalId: 'endpoint-param',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Type: 'String', Value: 'db1' },
+          attributes: {},
+        },
+      }),
+      {
+        Parameters: parameters(noEcho),
+        Resources: {
+          Role: role,
+          Db: db,
+          Endpoint: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+          },
+        },
+      } as CloudFormationTemplate,
+      'us-east-1',
+      'S',
+      fakeBackend({}),
+      new DiffCalculator(),
+      { attributeHealer: factory('S', 'us-east-1') }
+    );
+    expect(line()).toBe(expected);
+  });
+
+  it.each([
+    ['the parameter is NoEcho', true, 'Describing DB instance db1 (monitoring role ***)'],
+    ['negative control, an ordinary parameter', false, `Describing DB instance db1 (monitoring role ${OLD_ROLE})`],
+  ])("a NEW nested row's Parameters pass, the first to heal (buildDiffTree): %s", async (_l, noEcho, expected) => {
+    const { factory, line } = await healerLine();
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-3869-child-heal-noecho-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Parameters: { EndpointIn: { Type: 'String' } },
+          Resources: {
+            Consumer: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: { Ref: 'EndpointIn' } } },
+          },
+        })
+      );
+      await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Parameters: parameters(noEcho),
+          Resources: {
+            Role: role,
+            Db: db,
+            Child: {
+              Type: NESTED,
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: { Parameters: { EndpointIn: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } } },
+            },
+          },
+        } as CloudFormationTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: fakeBackend({ S: st('S', { Role: roleRecord, Db: dbRecord }) }),
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        attributeHealerFor: factory,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(line()).toBe(expected);
+  });
+});

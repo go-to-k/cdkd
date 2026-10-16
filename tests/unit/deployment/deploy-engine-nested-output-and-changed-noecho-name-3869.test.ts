@@ -50,13 +50,18 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 function harness(
   state: StackState,
   levels: string[][],
   parameters: Record<string, string> = {},
   create: (logicalId: string) => unknown = () => ({ physicalId: 'new-physical-id', attributes: {} }),
-  extra: { update?: (logicalId: string, physicalId: string) => unknown; dryRun?: boolean } = {}
+  extra: {
+    update?: (logicalId: string, physicalId: string) => unknown;
+    dryRun?: boolean;
+    import?: (input: { knownPhysicalId?: string }) => unknown;
+  } = {}
 ) {
   const saveState = vi.fn().mockResolvedValue('etag');
   const provider = {
@@ -67,6 +72,7 @@ function harness(
     delete: vi.fn(() => undefined),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
+    ...(extra.import && { import: vi.fn(async (input: { knownPhysicalId?: string }) => extra.import!(input)) }),
   };
   const engine = new DeployEngine(
     {
@@ -377,4 +383,179 @@ describe('a replacement deleting a record named from a NoEcho value since CHANGE
       expect(all.includes(oldId)).toBe(!masked);
     }
   );
+});
+
+describe('a replacement records the new resource\'s secretNamedAttributes from its create result (go-to-k/cdkd#3869)', () => {
+  // The field is generic over the result: whichever provider reports it.
+  const state = (): StackState =>
+    ({
+      version: 12,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Db: {
+          physicalId: 'olddb',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'OldDb' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    }) as StackState;
+
+  it.each([
+    ['the create names one', ['Endpoint.Address'], ['Endpoint.Address']],
+    ['negative control, it names none', [], undefined],
+  ])('a create-only change (update-replace): %s', async (_l, names, expected) => {
+    const h = harness(state(), [['Db']], {}, () => ({
+      physicalId: 'newdb',
+      attributes: { 'Endpoint.Address': 'x' },
+      secretNamedAttributeNames: names,
+    }));
+    await h.engine.deploy('s', {
+      Resources: { Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: 'NewDb' } } },
+    } as CloudFormationTemplate);
+    // Premise: the replacement's create ran, not an update.
+    expect(h.provider.create).toHaveBeenCalled();
+    expect(h.provider.update).not.toHaveBeenCalled();
+    const saved = h.saveState.mock.calls.at(-1)?.[2] as StackState;
+    expect(saved.resources['Db']?.physicalId).toBe('newdb');
+    expect(saved.resources['Db']?.secretNamedAttributes).toEqual(expected);
+  });
+
+  it.each([
+    ['the create names one', ['Endpoint.Address'], ['Endpoint.Address']],
+    ['negative control, it names none', [], undefined],
+  ])('the update-unsupported fallback (update-in-place): %s', async (_l, names, expected) => {
+    const h = harness(
+      state(),
+      [['Db']],
+      {},
+      () => ({ physicalId: 'newdb', attributes: { 'Endpoint.Address': 'x' }, secretNamedAttributeNames: names }),
+      {
+        update: () => {
+          // Cloud Control's refusal of an UPDATE, by exception name.
+          throw Object.assign(new Error('Resource type does not support UPDATE action'), {
+            name: 'UnsupportedActionException',
+          });
+        },
+      }
+    );
+    await h.engine.deploy('s', {
+      Resources: {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: 'OldDb', Port: '5433' } },
+      },
+    } as CloudFormationTemplate);
+    // Premise: the update was refused and the fallback created the new one.
+    expect(h.provider.update).toHaveBeenCalled();
+    expect(h.provider.create).toHaveBeenCalled();
+    const saved = h.saveState.mock.calls.at(-1)?.[2] as StackState;
+    expect(saved.resources['Db']?.physicalId).toBe('newdb');
+    expect(saved.resources['Db']?.secretNamedAttributes).toEqual(expected);
+  });
+});
+
+describe("a nested row's registry judges the records with what each stored at a NoEcho position (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['the parameter is NoEcho', true, false],
+    ['negative control, an ordinary parameter', false, true],
+  ])("masks a CHANGED value's old name on a line the row's child prints: %s", async (_l, noEcho, shown) => {
+    const CHILD_ARN = 'arn:aws:cloudformation:us-east-1:123456789012:stack/s-Child/cdkd';
+    const state = {
+      version: 10,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Child: {
+          physicalId: CHILD_ARN,
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { TemplateURL: 'https://example.com/old.json' },
+          attributes: {},
+          dependencies: [],
+        },
+        Db: {
+          physicalId: 'teamolddb1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'TeamOldDb1' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const h = harness(state, [['Child'], ['Db']], { DbName: 'TeamNewDb2' }, undefined, {
+      update: (logicalId, physicalId) => {
+        // The child's own stored value, printed inside the row's update.
+        if (logicalId === 'Child') getLogger().info('child: requires replacement (from teamolddb1)');
+        return { physicalId, wasReplaced: false };
+      },
+    });
+    await h.engine.deploy('s', {
+      Parameters: { DbName: { Type: 'String', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'https://example.com/new.json' } },
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'DbName' } } },
+      },
+    } as CloudFormationTemplate);
+    const line = logLines.filter((l) => l.startsWith('child: requires replacement')).join('\n');
+    // Premise: the row's update ran and printed.
+    expect(line).not.toBe('');
+    expect(line.includes('teamolddb1')).toBe(shown);
+  });
+});
+
+describe("the deploy's heal judges with the deploy's per-record NoEcho bags (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['the parameter is NoEcho', true, false],
+    ['negative control, an ordinary parameter', false, true],
+  ])('masks a name minted from a short NoEcho value on the heal\'s provider line: %s', async (_l, noEcho, shown) => {
+    // `41` is under the needle floor, so only the record's own leaf at the
+    // NoEcho position (`TeamDb41`, RDS-folded) judges the name.
+    const state = {
+      version: 10,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Db: {
+          physicalId: 'teamdb41',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'TeamDb41' },
+          attributes: {},
+          dependencies: [],
+        },
+        Reader: {
+          physicalId: 'reader-param',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Type: 'String', Value: 'previous-value' },
+          attributes: {},
+          dependencies: ['Db'],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const h = harness(state, [['Db'], ['Reader']], { Short: '41' }, undefined, {
+      import: (input) => {
+        getLogger().debug(`Describing DB instance ${input.knownPhysicalId}`);
+        return { physicalId: input.knownPhysicalId!, attributes: { 'Endpoint.Address': 'db.example.com' } };
+      },
+    });
+    await h.engine.deploy('s', {
+      Parameters: { Short: { Type: 'String', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { 'Fn::Sub': 'TeamDb${Short}' } } },
+        Reader: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Type: 'String', Value: { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] } },
+        },
+      },
+    } as CloudFormationTemplate);
+    const line = logLines.filter((l) => l.startsWith('Describing DB instance')).join('\n');
+    // Premise: the heal's read ran.
+    expect(line).not.toBe('');
+    expect(line.includes('teamdb41')).toBe(shown);
+  });
 });

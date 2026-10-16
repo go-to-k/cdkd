@@ -1153,7 +1153,10 @@ export class NestedStackProvider implements ResourceProvider {
     // parent passed (a pre-v11 child record's plaintext is judged with it).
     // Known bound: a pre-v11 child record holding a value of the CHILD's own
     // `NoEcho` parameter (its `Default`, not parent-passed) in plaintext is not
-    // judged here; a post-v11 one stores `***` and is.
+    // judged here; a post-v11 one stores `***` and is. Nor are the values each
+    // child record STORED where a `NoEcho` parameter served it (the deploy's
+    // per-record judge, `recordedNoEchoValuesOf`): judging with them would need
+    // the child's template here.
     const childResources = childStateData.state.resources;
     const secretNamedAttributeNames =
       childResources !== null && typeof childResources === 'object'

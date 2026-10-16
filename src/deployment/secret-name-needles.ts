@@ -158,8 +158,10 @@ export function secretNameNeedlesOf(
  * `secretNamedAttributes` (go-to-k/cdkd#3869): each `Outputs.<Key>` that held a
  * child resource's secret-derived name when the row was last provisioned.
  * Whole leaves: the child judged the name, so the output's value is what a
- * parent reader prints. An `AWS::CloudFormation::Stack` record only, and a
- * malformed field reads as absent.
+ * parent reader prints. A parent that extracts a FRAGMENT of such an
+ * output (`Fn::Select` over `Fn::Split`) prints a value no whole leaf spells,
+ * so that fragment is not masked. An `AWS::CloudFormation::Stack` record
+ * only, and a malformed field reads as absent.
  */
 function secretNamedAttributeLeavesOf(
   record:
