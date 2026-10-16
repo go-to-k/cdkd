@@ -276,9 +276,10 @@ describe('${AWS::AccountId} follows where the stack was read (issues #3230, #500
     });
   });
 
-  // Only run-task and invoke-agentcore resolve with no state source (image Fn::Sub,
-  // bare --assume-task-role): the stack is the deployed one, so the DEPLOY account.
-  describe.each(resolvers.filter((r) => /run-task|invoke-agentcore/.test(r.name)))(
+  // Only run-task resolves with no state source (image Fn::Sub, bare
+  // --assume-task-role): the stack is the deployed one, so the DEPLOY account.
+  // invoke-agentcore looks the account up only when a state provider exists.
+  describe.each(resolvers.filter((r) => /run-task/.test(r.name)))(
     '$name, no state source',
     ({ resolve }) => {
       it('with --role-arn: the role account, built with the role credentials', async () => {

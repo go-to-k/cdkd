@@ -120,8 +120,8 @@ login for the role's account in your Docker config.
 ### Edge cases
 
 - **`${AWS::AccountId}` follows where the stack was read.** Under
-  `--from-state`, and on `local run-task` / `local invoke-agentcore` with no
-  state source (an image `Fn::Sub`, a bare `--assume-task-role`), it is the
+  `--from-state`, and on `local run-task` with no state source (an image
+  `Fn::Sub`, a bare `--assume-task-role`), it is the
   deploy account: the account `--role-arn`'s role belongs to, where the stack
   lives, so a pinned ECR image URI or an account-derived ARN points at the
   deployed resources. Without `--role-arn` that is your own account. Under
