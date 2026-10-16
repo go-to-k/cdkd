@@ -1459,6 +1459,11 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- Reset only what CloudFormation resets. RDS (#5004): DBCluster
+  `BackupRetentionPeriod` resets to 1; DBCluster and DBInstance
+  `DeletionProtection` / `EnableIAMDatabaseAuthentication` and DBInstance
+  `MonitoringInterval` are KEPT, so `update()` forwards them only when present
+  (DBCluster `MonitoringInterval` is unmeasured and still resets to 0).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
 - **The reset SENTINEL can vary per API *and* per value KIND within one API,

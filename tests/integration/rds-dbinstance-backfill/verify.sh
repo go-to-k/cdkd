@@ -28,15 +28,13 @@
 # the Cloud Control path (which would make the SDK-provider verification
 # meaningless). Also asserts the destroy path cleans up.
 #
-# #1160 (reset-on-removal): DeletionProtection + EnableIAMDatabaseAuthentication
-# are SET (true) in phase 1 and DROPPED in the phase-2 UPDATE pass
-# (CDKD_TEST_UPDATE=true). ModifyDBInstance has merge semantics (an absent
-# input field means "no change"), so before the #1160 fix the removed fields
-# silently kept their old live values — worst case DeletionProtection, which
-# would make the destroy fail. Phase 2 asserts both reset to their CFn
-# defaults (false / false) via DescribeDBInstances, and the phase-3 destroy
-# succeeding WITHOUT --remove-protection is itself proof the
-# DeletionProtection reset landed.
+# #5004 (removal KEEPS the live value, as CloudFormation does):
+# DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval are
+# SET in phase 1 and DROPPED in the phase-2 UPDATE pass (CDKD_TEST_UPDATE=true).
+# A real CloudFormation A/B (#5004) showed CFn KEEPS all three on removal, and
+# ModifyDBInstance treats an absent field as "no change", so cdkd sends no
+# reset. Phase 2 asserts all three are STILL live via DescribeDBInstances;
+# protection is retained, so the phase-3 destroy passes --remove-protection.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -287,8 +285,8 @@ if [ "${ACTUAL_PORT}" != "${EXPECTED_PORT}" ]; then
 fi
 echo "    OK: Endpoint.Port == ${EXPECTED_PORT} on AWS (Port silent-drop CLOSED by #609)"
 
-# DeletionProtection: explicit true from the phase-1 template (#1160
-# removable field — phase 2 drops it and asserts the reset to false).
+# DeletionProtection: explicit true from the phase-1 template (#5004
+# removable field — phase 2 drops it and asserts it is KEPT).
 # NOTE: use `tostring` instead of `// "null"` because jq's `//` operator
 # treats `false` as a missing value (it's the "alternative-on-null-or-false"
 # operator), so an explicit `false` from AWS would falsely register as `null`.
@@ -379,48 +377,48 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
-# --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication)"
+# --- Phase 2: UPDATE pass (#5004 removal keeps the value) --------------------
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval; all three must be KEPT)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
-# The removed fields must have reset to their CFn defaults (false / false),
-# NOT kept the phase-1 values (the merge-semantics silent drop #1160 closes).
-# DeletionProtection applies immediately; the IAM-auth flip can leave the
-# instance briefly 'modifying', so poll until the instance settles back to
-# 'available' with both fields reset (also guards the destroy below against
-# an InvalidDBInstanceState race).
-echo "==> Waiting for the DBInstance to settle with both #1160 fields reset"
-RESET_OK=""
+# #5004: the removed fields must be KEPT (CloudFormation keeps them on
+# removal), NOT reset. Premise: phase 1 asserted all three live above.
+# Wait for 'available' (guards the destroy below against an
+# InvalidDBInstanceState race), then assert all three are unchanged.
+echo "==> Waiting for the DBInstance to settle, then asserting the removed fields were KEPT (#5004)"
+SETTLED=""
 for _ in $(seq 1 60); do
   AFTER=$(aws rds describe-db-instances \
     --db-instance-identifier "${DB_INSTANCE_ID}" \
     --region "${REGION}" \
     --query 'DBInstances[0]' --output json)
   AFTER_STATUS=$(echo "${AFTER}" | jq -r '.DBInstanceStatus // "null"')
-  AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
-  AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
-  if [ "${AFTER_STATUS}" = "available" ] && [ "${AFTER_PROTECTION}" = "false" ] && [ "${AFTER_IAM}" = "false" ]; then
-    RESET_OK="yes"
+  if [ "${AFTER_STATUS}" = "available" ]; then
+    SETTLED="yes"
     break
   fi
   sleep 10
 done
-if [ -z "${RESET_OK}" ]; then
-  echo "FAIL: after removal, DBInstance did not settle to DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}') — #1160 ModifyDBInstance reset-on-removal NOT closed" >&2
+AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
+AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+AFTER_INTERVAL=$(echo "${AFTER}" | jq -r '.MonitoringInterval // "null"')
+if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}" != "true" ] || [ "${AFTER_INTERVAL}" != "${EXPECTED_MONITORING_INTERVAL}" ]; then
+  echo "FAIL: after removal, DBInstance did not keep DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true + MonitoringInterval=${EXPECTED_MONITORING_INTERVAL} (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}', interval='${AFTER_INTERVAL}') — #5004: CloudFormation keeps all three on removal" >&2
   exit 1
 fi
-echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
+echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true + MonitoringInterval=${EXPECTED_MONITORING_INTERVAL} (#5004, matches CloudFormation)"
 
 # --- Phase 3: destroy -------------------------------------------------
-# Deliberately NO --remove-protection: the destroy succeeding is itself
-# proof the #1160 DeletionProtection reset landed on AWS.
-echo "==> Phase 3: destroy (no --remove-protection — proves the reset landed)"
+# --remove-protection: DeletionProtection is retained on removal (#5004), so
+# the destroy has to flip it off.
+echo "==> Phase 3: destroy --remove-protection (protection was kept, #5004)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --remove-protection \
   --force
 
 # RDS DeleteDBInstance is async: the instance lingers in 'deleting' for
@@ -466,4 +464,4 @@ fi
 echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}") (issue #4030; cleanup deletes it)"
 
 echo ""
-echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #1160 reset-on-removal ==="
+echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value ==="

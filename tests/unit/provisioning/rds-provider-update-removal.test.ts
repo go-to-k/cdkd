@@ -51,7 +51,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('resets BackupRetentionPeriod / MonitoringInterval and keeps DeletionProtection / EnableIAMDatabaseAuthentication on removal (#5004)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -80,10 +80,13 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
-      expect(modifyCall.input.DeletionProtection).toBe(false);
+      // #5004 A/B: CFn RESETS BackupRetentionPeriod (to 1); MonitoringInterval
+      // is unmeasured for clusters, so the existing reset stays.
       expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
       expect(modifyCall.input.MonitoringInterval).toBe(0);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+      // #5004 A/B: CFn KEEPS these on removal -> no value sent (unchanged).
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
       // Deliberate non-resets: removal of these must NOT synthesize any
       // value — each stays absent (no change). Pins the per-field rationale
       // comment in updateDBCluster.
@@ -168,7 +171,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.DeletionProtection).toBe(true);
       expect(modifyCall.input.MonitoringInterval).toBe(60);
       expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
     });
   });
 
@@ -179,7 +182,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('keeps DeletionProtection / MonitoringInterval / EnableIAMDatabaseAuthentication on removal (#5004)', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -208,9 +211,10 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
-      expect(modifyCall.input.DeletionProtection).toBe(false);
-      expect(modifyCall.input.MonitoringInterval).toBe(0);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+      // #5004 A/B: CFn KEEPS all three on removal -> no value sent (unchanged).
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
+      expect(modifyCall.input.MonitoringInterval).toBeUndefined();
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
       // Deliberate non-resets: removal of these must NOT synthesize any
       // value — each stays absent (no change). Pins the per-field rationale
       // comment in updateDBInstance.
@@ -224,7 +228,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
     });
 
-    it('sends the CFn-parity request when the role is kept but the interval is removed', async () => {
+    it('sends no interval when the role is kept but the interval is removed (#5004)', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -242,12 +246,10 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
         }
       );
 
-      // Same CFn-parity shape as the cluster twin: kept role + interval 0
-      // go out together; AWS rejects the combination loudly rather than the
-      // old interval being silently kept.
+      // #5004 A/B: CFn keeps the live interval, so only the kept role goes out.
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.MonitoringRoleArn).toBe('arn:aws:iam::123:role/monitoring');
-      expect(modifyCall.input.MonitoringInterval).toBe(0);
+      expect(modifyCall.input.MonitoringInterval).toBeUndefined();
     });
 
     it('leaves a never-present field absent (no spurious reset value)', async () => {
@@ -267,7 +269,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
     });
 
-    it('passes kept/changed fields through unchanged while removed ones reset', async () => {
+    it('passes kept/changed fields through unchanged while removed ones are left unchanged', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -291,7 +293,7 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.DeletionProtection).toBe(true);
       expect(modifyCall.input.MonitoringInterval).toBe(30);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
     });
   });
 });
