@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 37
+    "classesWithBlindSpots": 35
   },
   "classes": [
     {
@@ -5709,9 +5709,7 @@
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "withRemovalDefaults(...) in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "docdb-subnet-group-provider.ts",
@@ -15783,9 +15781,7 @@
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "withRemovalDefaults(...) in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "nested-stack-provider.ts",

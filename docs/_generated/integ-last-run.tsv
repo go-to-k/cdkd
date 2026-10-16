@@ -93,7 +93,7 @@ diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re-run on 41c3c1321 (post-rebase, comment-only commits); rc ok, orph clean; removal retained
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
+docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a321dac, PreferredMaintenanceWindow companion change proves Modify* fired before KEEP asserts; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-16T16:59:47Z	PASS	335	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 drift-revert-arrays	2026-10-14T22:42:50Z	PASS	165	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean

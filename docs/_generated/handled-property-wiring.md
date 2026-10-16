@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1174** (**1172** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **35**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -46,7 +46,6 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
 | `CloudTrailProvider` (cloudtrail-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
-| `DocDBProvider` (docdb-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `computed key in replicationImpliedStreamSpecification()`, `computed key in update()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDesiredProperties()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `DynamoDBTableProvider` (dynamodb-table-provider.ts) | `computed key in canonicalizeDriftPair()`, `object spread in canonicalizeDriftProperties()` |
 | `EC2Provider` (ec2-provider.ts) | `Array.isArray(...) in isPlainRecord()`, `computed key in comparableIngressIdentity()`, `computed key in ingressRuleIdentity()`, `computed key in narrowRouteDestinations()`, `identity(...) in readSgIngressByIdentity()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()`, `object spread in updateSecurityGroupIngress()` |
@@ -67,7 +66,6 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
 | `LambdaMicrovmImageProvider` (lambda-microvm-image-provider.ts) | `computed key in update()` |
 | `LambdaUrlProvider` (lambda-url-provider.ts) | `computed key in update()`, `object spread in update()` |
-| `NeptuneProvider` (neptune-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `NestedStackProvider` (nested-stack-provider.ts) | `withoutSilentDropProperties(...) in recordWithPendingChildDeletes()` |
 | `PipesPipeProvider` (pipes-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `RDSDBProxyTargetGroupProvider` (rds-dbproxy-targetgroup-provider.ts) | `rest-destructure in withoutKey()` |

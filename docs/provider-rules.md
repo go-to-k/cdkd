@@ -1385,7 +1385,8 @@ shared report is `orphan-report.ts`):
 
 CloudFormation resets a property **removed** from the template to its
 default for MANY types, but not all properties of all types (the reset
-premise is per type; see the A/B bullet below, issue #5004). Most AWS
+premise is per type; see the A/B bullet below, issue #5004). Reset only what
+CloudFormation actually resets. Most AWS
 `Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
@@ -1565,6 +1566,10 @@ Checklist when writing or reviewing an `update()`:
   other attributes, IAM Role `Description` and Lambda Url `Cors` are RESET, and
   keep their reset. A KEPT property is not recorded after removal (state follows
   the template), so `cdkd diff` stays clean while the live value remains.
+  `AWS::DocDB::DBCluster` and `AWS::Neptune::DBCluster` / `DBInstance` are
+  measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
+  `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
+  `removalDefaults`.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

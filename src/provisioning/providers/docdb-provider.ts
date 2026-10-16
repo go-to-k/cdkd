@@ -16,15 +16,14 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
-  UpdateContext,
   ResourceIdentityVerdict,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -157,12 +156,12 @@ export class DocDBProvider implements ResourceProvider {
   readonly disableCcApiFallback = true;
 
   /**
-   * Issue #1160: the CFn default a property REMOVED from the template is
-   * reset to — the Modify/Update API keeps an absent field's live value.
+   * No `removalDefaults` (issue #5004). A real CloudFormation A/B showed that
+   * removing `DeletionProtection` or `BackupRetentionPeriod` from an
+   * `AWS::DocDB::DBCluster` template KEEPS the live value, so cdkd leaves
+   * both untouched on removal too (ModifyDBCluster: an absent field means
+   * "no change"). Nothing on DocDB was measured as a CloudFormation reset.
    */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    ['AWS::DocDB::DBCluster', new Map<string, unknown>([['DeletionProtection', false]])],
-  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -268,15 +267,8 @@ export class DocDBProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    context?: UpdateContext
+    _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
         return this.updateDBCluster(
@@ -446,9 +438,10 @@ export class DocDBProvider implements ResourceProvider {
 
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // the template is sent as an explicit reset only where CloudFormation resets
+      // it; #5004 measured DeletionProtection / BackupRetentionPeriod
+      // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
+      // so those are not reset. Deliberately NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
       //     must not synthesize; leave unchanged.
@@ -469,20 +462,14 @@ export class DocDBProvider implements ResourceProvider {
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          // CFn default: deletion protection isn't enabled by default
-          // (live-verified 2026-07-27: a cluster created without the field
-          // reads DeletionProtection=false).
+          // #5004: CloudFormation KEEPS the live value of a removed
+          // DeletionProtection / BackupRetentionPeriod, so an absent value
+          // is passed through as absent (no reset).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          // CFn/API default: 1 day (ModifyDBClusterMessage doc).
-          BackupRetentionPeriod: clearOnUpdateRemoval(
+          BackupRetentionPeriod:
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
-            previousProperties['BackupRetentionPeriod'] != null
-              ? Number(previousProperties['BackupRetentionPeriod'])
-              : undefined,
-            1
-          ),
           PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string

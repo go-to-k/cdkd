@@ -22,16 +22,16 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  UpdateContext,
   ResourceImportInput,
   ResourceImportResult,
-  UpdateContext,
   ResourceIdentityVerdict,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -146,25 +146,15 @@ export class NeptuneProvider implements ResourceProvider {
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
   /**
-   * Issue #1160: the CFn default a property REMOVED from the template is
-   * reset to — the Modify/Update API keeps an absent field's live value.
+   * `removalDefaults` is deliberately empty (issue #5004). A real
+   * CloudFormation A/B showed that removing `DeletionProtection`,
+   * `IamAuthEnabled` or `BackupRetentionPeriod` (DBCluster) or
+   * `AutoMinorVersionUpgrade` (DBInstance) from the template KEEPS the live
+   * value, so cdkd leaves them untouched too (Modify*: an absent field means
+   * "no change"). Not measurable: `DBInstance.DeletionProtection` is not a
+   * CloudFormation property (its pass-through below is kept as is), and
+   * `DBSubnetGroupDescription` is required there, so it cannot be removed.
    */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    [
-      'AWS::Neptune::DBCluster',
-      new Map<string, unknown>([
-        ['DeletionProtection', false],
-        ['IamAuthEnabled', false],
-      ]),
-    ],
-    [
-      'AWS::Neptune::DBInstance',
-      new Map<string, unknown>([
-        ['AutoMinorVersionUpgrade', true],
-        ['DeletionProtection', false],
-      ]),
-    ],
-  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -284,15 +274,8 @@ export class NeptuneProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    context?: UpdateContext
+    _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
         return this.updateDBSubnetGroup(
@@ -420,7 +403,8 @@ export class NeptuneProvider implements ResourceProvider {
       const sendSubnetIds = subnetIds !== undefined && subnetIds.length > 0;
       const modifyInput = {
         DBSubnetGroupName: physicalId,
-        // #1160 reset-on-removal: CFn declares DBSubnetGroupDescription
+        // #1160 reset-on-removal (kept; not measurable in the #5004 A/B):
+        // CFn declares DBSubnetGroupDescription
         // required, so a CFn-valid template can never remove it — but
         // cdkd's create() tolerates absence with the `Subnet group for
         // <logicalId>` fallback, so removal resets to the same fallback for
@@ -634,9 +618,10 @@ export class NeptuneProvider implements ResourceProvider {
 
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // the template is sent as an explicit reset only where CloudFormation resets
+      // it; #5004 measured DeletionProtection / BackupRetentionPeriod
+      // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
+      // so those are not reset. Deliberately NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
       //     must not synthesize; leave unchanged.
@@ -657,19 +642,14 @@ export class NeptuneProvider implements ResourceProvider {
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          // CFn default: deletion protection isn't enabled by default
-          // (ModifyDBClusterMessage doc).
+          // #5004: CloudFormation KEEPS the live value of a removed
+          // DeletionProtection / BackupRetentionPeriod, so an absent value
+          // is passed through as absent (no reset).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          // CFn/API default: 1 day (ModifyDBClusterMessage doc).
-          BackupRetentionPeriod: clearOnUpdateRemoval(
+          BackupRetentionPeriod:
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
-            previousProperties['BackupRetentionPeriod'] != null
-              ? Number(previousProperties['BackupRetentionPeriod'])
-              : undefined,
-            1
-          ),
           PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
@@ -677,9 +657,8 @@ export class NeptuneProvider implements ResourceProvider {
           DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as
             | string
             | undefined,
-          // CFn default: IAM database authentication isn't enabled
-          // (ModifyDBClusterMessage doc: "Default: false"). CFn property
-          // `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
+          // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
+          // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
           EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           Port:
@@ -972,9 +951,10 @@ export class NeptuneProvider implements ResourceProvider {
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // the template is sent as an explicit reset only where CloudFormation resets
+      // it; #5004 measured DeletionProtection / BackupRetentionPeriod
+      // (and IamAuthEnabled / AutoMinorVersionUpgrade on Neptune) as KEPT,
+      // so those are not reset. Deliberately NOT reset here:
       //   * DBParameterGroupName — the default is the
       //     engine-version-dependent `default.neptune1.x` family name;
       //     synthesizing it from a removal risks a wrong-family apply.
@@ -988,12 +968,10 @@ export class NeptuneProvider implements ResourceProvider {
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
             | undefined,
-          // CFn/API default: true (CreateDBInstanceMessage doc:
-          // "Default: true"); the change applies during the maintenance
-          // window, so the reset is non-disruptive.
+          // #5004: CloudFormation KEEPS the live value of a removed
+          // AutoMinorVersionUpgrade (no reset).
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-          // CFn default: deletion protection isn't enabled by default
-          // (ModifyDBInstanceMessage doc).
+          // Not a CloudFormation property (#5004): never reset on removal.
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           ApplyImmediately: true,
         })

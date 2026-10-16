@@ -1,10 +1,10 @@
-// issue #1160 (neptune batch): absent-field removal reset to CFn defaults.
-// ModifyDBCluster / ModifyDBInstance use merge semantics, so a field DROPPED
-// from the template must be sent as its explicit CFn-default reset value
-// (doc basis: ModifyDBClusterMessage / ModifyDBInstanceMessage /
-// CreateDBInstanceMessage in @aws-sdk/client-neptune), else the old live
-// value silently persists. Direct pattern twin of
-// rds-provider-update-removal.test.ts (PR #1222).
+// issues #1160 / #5004 (neptune): absent-field removal semantics.
+// ModifyDBCluster / ModifyDBInstance use merge semantics (an omitted field is
+// "no change"). A real CloudFormation A/B (#5004) showed CloudFormation KEEPS
+// the live value of a removed DeletionProtection / IamAuthEnabled /
+// BackupRetentionPeriod (DBCluster) and AutoMinorVersionUpgrade (DBInstance),
+// so cdkd sends NO reset for them. DBSubnetGroupDescription is required in
+// CloudFormation (not measurable), so its create-time-fallback reset stays.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -39,14 +39,36 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 
-describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
+describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
   let provider: NeptuneProvider;
 
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new NeptuneProvider();
+  });
+
+  describe('removal declaration (what deploy / rollback inject)', () => {
+    it.each([
+      [
+        'AWS::Neptune::DBCluster',
+        { DeletionProtection: true, BackupRetentionPeriod: 7, IamAuthEnabled: true },
+      ],
+      [
+        'AWS::Neptune::DBInstance',
+        { DeletionProtection: true, AutoMinorVersionUpgrade: false },
+      ],
+    ])('declares no removalDefaults for %s, so nothing is injected (#5004)', (type, previous) => {
+      expect((provider as ResourceProvider).removalDefaults?.get(type)).toBeUndefined();
+      const prep = prepareRemovalForUpdate(provider, type, {}, previous);
+      expect(prep.injected).toEqual([]);
+      for (const key of Object.keys(previous)) {
+        expect(prep.properties).not.toHaveProperty(key);
+      }
+    });
   });
 
   describe('DBCluster update (ModifyDBCluster)', () => {
@@ -56,7 +78,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('sends NO reset for removed fields CloudFormation keeps (#5004)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -68,7 +90,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
           DeletionProtection: true,
           BackupRetentionPeriod: 7,
           IamAuthEnabled: true,
-          // Deliberately NOT reset on removal — must stay absent.
+          // Also not reset on removal — must stay absent.
           EngineVersion: '1.3.2.0',
           DBClusterParameterGroupName: 'my-cluster-params',
           PreferredBackupWindow: '03:00-04:00',
@@ -80,12 +102,12 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
-      expect(modifyCall.input.DeletionProtection).toBe(false);
-      expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
-      // Deliberate non-resets: removal of these must NOT synthesize any
-      // value — each stays absent (no change). Pins the per-field rationale
-      // comment in updateDBCluster.
+      // #5004: CloudFormation keeps the live value, so each stays absent
+      // (no change) rather than being reset to false / 1 / false.
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
+      expect(modifyCall.input.BackupRetentionPeriod).toBeUndefined();
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
+      // Other deliberate non-resets: removal must NOT synthesize any value.
       expect(modifyCall.input.EngineVersion).toBeUndefined();
       expect(modifyCall.input.DBClusterParameterGroupName).toBeUndefined();
       expect(modifyCall.input.PreferredBackupWindow).toBeUndefined();
@@ -105,7 +127,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
     });
 
-    it('passes kept/changed fields through unchanged while removed ones reset', async () => {
+    it('passes changed fields through while removed ones stay absent', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -127,7 +149,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.DeletionProtection).toBe(true);
       expect(modifyCall.input.BackupRetentionPeriod).toBe(14);
-      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBe(false);
+      expect(modifyCall.input.EnableIAMDatabaseAuthentication).toBeUndefined();
     });
   });
 
@@ -138,7 +160,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('sends NO reset for a removed AutoMinorVersionUpgrade or DeletionProtection (#5004)', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -160,13 +182,12 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBInstanceCommand');
-      expect(modifyCall.input.DeletionProtection).toBe(false);
-      // CreateDBInstance documents `Default: true` for
-      // AutoMinorVersionUpgrade — the removal reset is TRUE, not false.
-      expect(modifyCall.input.AutoMinorVersionUpgrade).toBe(true);
-      // Deliberate non-resets: removal of these must NOT synthesize any
-      // value — each stays absent (no change). Pins the per-field rationale
-      // comment in updateDBInstance.
+      // #5004: CloudFormation keeps a removed AutoMinorVersionUpgrade;
+      // DeletionProtection is not a CloudFormation DBInstance property.
+      // Neither is reset.
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
+      expect(modifyCall.input.AutoMinorVersionUpgrade).toBeUndefined();
+      // Other deliberate non-resets: removal must NOT synthesize any value.
       expect(modifyCall.input.DBParameterGroupName).toBeUndefined();
       expect(modifyCall.input.PreferredMaintenanceWindow).toBeUndefined();
     });
@@ -187,7 +208,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.AutoMinorVersionUpgrade).toBeUndefined();
     });
 
-    it('passes kept/changed fields through unchanged while removed ones reset', async () => {
+    it('passes changed fields through while removed ones stay absent', async () => {
       mockInstanceUpdate();
 
       await provider.update(
@@ -207,7 +228,7 @@ describe('NeptuneProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.AutoMinorVersionUpgrade).toBe(false);
-      expect(modifyCall.input.DeletionProtection).toBe(false);
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
     });
   });
 
