@@ -80,11 +80,21 @@ export class LambdaWebFunctionRevisionReplaceStack extends cdk.Stack {
       regions: [this.region, secondaryRegion],
       authType: 'ApplicationManaged',
       revisionWeights: [{ revisionId: revision.attrRevisionId, weight: 100 }],
+      scalingConfig: { maxEnvironments: 4 },
     });
     new ssm.CfnParameter(this, 'RegionalDomainParameter', {
       name: '/cdkd-integ/webfn-replace/regional-domain',
       type: 'String',
       value: cdk.Fn.getAtt(regionalEndpoint.logicalId, `RegionalEndpoints.${secondaryRegion}.DomainName`).toString(),
+    });
+    // go-to-k/cdkd#4992: a path through an object-valued member. Fn::Sub turns
+    // the number into the string SSM requires (a bare GetAtt sends a number).
+    new ssm.CfnParameter(this, 'RegionalMaxEnvironmentsParameter', {
+      name: '/cdkd-integ/webfn-replace/regional-max-environments',
+      type: 'String',
+      value: cdk.Fn.sub(
+        `\${RegionalEndpoint.RegionalEndpoints.${secondaryRegion}.ScalingConfig.MaxEnvironments}`
+      ),
     });
 
     new cdk.CfnOutput(this, 'RevisionId', { value: revision.attrRevisionId });

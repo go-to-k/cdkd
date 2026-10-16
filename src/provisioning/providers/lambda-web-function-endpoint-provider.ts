@@ -635,15 +635,18 @@ function sameWeights(
 }
 
 /**
- * One entry of `GetWebFunctionEndpointResponse.regionalEndpoints`, narrowed to
- * its scalar members. CloudFormation's `RegionalEndpoints` attribute is the
- * whole region -> entry map; these are the leaves of it that a dotted
- * `Fn::GetAtt` path (`RegionalEndpoints.<region>.<Member>`) reaches, the same
- * names the Cloud Control path resolved before this provider took the type.
+ * One entry of `GetWebFunctionEndpointResponse.regionalEndpoints`.
+ * CloudFormation's `RegionalEndpoints` attribute is the whole region -> entry
+ * map, in CloudFormation casing.
  */
 interface RegionalEndpointRead {
   domainName?: string | undefined;
   authType?: string | undefined;
+  revisionWeights?:
+    | Array<{ revisionId?: string | undefined; weight?: number | undefined }>
+    | undefined;
+  scalingConfig?: { maxEnvironments?: number | undefined } | undefined;
+  throttleConfig?: { rateLimit?: number | undefined } | undefined;
   state?: string | undefined;
   stateReason?: string | undefined;
   updateStatus?: string | undefined;
@@ -651,15 +654,50 @@ interface RegionalEndpointRead {
 }
 
 /**
+ * A `RegionalEndpoints` entry in CloudFormation casing, with every member AWS
+ * did not assign left out (a MultiRegion endpoint reports `domainName: null`
+ * per region).
+ */
+function regionalEndpointAttribute(entry: RegionalEndpointRead): Record<string, unknown> {
+  const scaling = definedAttributes({ MaxEnvironments: entry.scalingConfig?.maxEnvironments });
+  const throttle = definedAttributes({ RateLimit: entry.throttleConfig?.rateLimit });
+  return definedAttributes({
+    DomainName: entry.domainName,
+    AuthType: entry.authType,
+    RevisionWeights: entry.revisionWeights?.map((w) =>
+      definedAttributes({ RevisionId: w.revisionId, Weight: w.weight })
+    ),
+    ScalingConfig: Object.keys(scaling).length > 0 ? scaling : undefined,
+    ThrottleConfig: Object.keys(throttle).length > 0 ? throttle : undefined,
+    State: entry.state,
+    StateReason: entry.stateReason,
+    UpdateStatus: entry.updateStatus,
+    UpdateStatusReason: entry.updateStatusReason,
+  });
+}
+
+/** The scalar members of a `RegionalEndpoints` entry, recorded as flat dot-keys. */
+const REGIONAL_SCALAR_MEMBERS = [
+  'DomainName',
+  'AuthType',
+  'State',
+  'StateReason',
+  'UpdateStatus',
+  'UpdateStatusReason',
+] as const;
+
+/**
  * The attribute map recorded for an endpoint read.
  *
- * `RegionalEndpoints.<region>.<Member>` is recorded as flat dot-keys: the
- * resolver looks a stored attribute up by its full dotted name first (as
- * `Endpoint.Port` is stored). Without them `Fn::GetAtt <endpoint>
- * RegionalEndpoints.<region>.DomainName` is unknown to this provider and
- * degrades to the endpoint ARN — a multi-region CloudFront origin built from it
- * then gets an ARN as its domain name. A member AWS did not assign (a MultiRegion
- * endpoint reports `domainName: null` per region) is left out.
+ * `RegionalEndpoints` is recorded as the nested region -> entry object, as the
+ * Cloud Control path recorded it before this provider took the type: the
+ * resolver serves the whole map (`attrRegionalEndpoints`) from it, and walks a
+ * dotted path through an object member (`RegionalEndpoints.<region>.
+ * ScalingConfig.MaxEnvironments`) into it (go-to-k/cdkd#4992). The scalar
+ * members are ALSO recorded as flat dot-keys (`RegionalEndpoints.<region>.
+ * DomainName`), which the resolver looks up first (go-to-k/cdkd#4978). Without
+ * either, the GetAtt degrades to the endpoint ARN — a multi-region CloudFront
+ * origin built from it then gets an ARN as its domain name.
  *
  * The per-region `State` / `UpdateStatus` are a snapshot taken when the parent
  * reached `Active`; nothing refreshes them later. That is harmless: `drift` and
@@ -689,18 +727,19 @@ function buildAttributes(resp: {
     CreatedAt: resp.createdAt?.toISOString(),
     UpdatedAt: resp.updatedAt?.toISOString(),
   });
-  for (const [region, entry] of Object.entries(resp.regionalEndpoints ?? {})) {
-    const members = definedAttributes({
-      DomainName: entry.domainName,
-      AuthType: entry.authType,
-      State: entry.state,
-      StateReason: entry.stateReason,
-      UpdateStatus: entry.updateStatus,
-      UpdateStatusReason: entry.updateStatusReason,
-    });
-    for (const [member, value] of Object.entries(members)) {
-      attributes[`RegionalEndpoints.${region}.${member}`] = value;
+  if (!resp.regionalEndpoints) return attributes;
+  const regional: Record<string, Record<string, unknown>> = {};
+  for (const [region, entry] of Object.entries(resp.regionalEndpoints)) {
+    const members = regionalEndpointAttribute(entry ?? {});
+    // An entry AWS assigned nothing in is left out, like an empty config object.
+    if (Object.keys(members).length === 0) continue;
+    regional[region] = members;
+    for (const member of REGIONAL_SCALAR_MEMBERS) {
+      if (Object.hasOwn(members, member)) {
+        attributes[`RegionalEndpoints.${region}.${member}`] = members[member];
+      }
     }
   }
+  attributes['RegionalEndpoints'] = regional;
   return attributes;
 }
