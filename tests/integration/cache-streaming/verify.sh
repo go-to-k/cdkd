@@ -309,7 +309,7 @@ if SNAP_OUT=$(aws elasticache describe-snapshots --cache-cluster-id "${CACHE_ID}
     echo "FAIL: ${SNAP_OUT} ElastiCache snapshot(s) of ${CACHE_ID} remain after destroy" >&2
     exit 1
   fi
-elif ! printf '%s' "${SNAP_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist'; then
+elif ! printf '%s' "${SNAP_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
   echo "FAIL: snapshot probe undetermined: ${SNAP_OUT}" >&2
   exit 1
 fi
