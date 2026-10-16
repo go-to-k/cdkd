@@ -1971,7 +1971,12 @@ export async function buildAgentCoreImageContext(
 
   let accountId: string | undefined;
   try {
-    accountId = await resolveStackAccountId(region, options.profile, options.fromState, options.fromCfnStack);
+    accountId = await resolveStackAccountId(
+      region,
+      options.profile,
+      options.fromState,
+      options.fromCfnStack
+    );
   } catch (err) {
     // cdkd-raw-beside-safe: the template is a `safeMsg` tag, which sanitizes
     // every interpolation, `stateProvider.label` included.
