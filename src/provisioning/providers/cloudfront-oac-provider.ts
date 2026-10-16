@@ -23,6 +23,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * SDK Provider for AWS::CloudFront::OriginAccessControl
@@ -141,7 +142,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CloudFront Origin Access Control ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CloudFront Origin Access Control ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -223,7 +224,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CloudFront Origin Access Control ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CloudFront Origin Access Control ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -298,7 +299,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CloudFront Origin Access Control ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CloudFront Origin Access Control ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

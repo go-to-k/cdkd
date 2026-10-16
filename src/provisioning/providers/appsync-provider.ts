@@ -2416,7 +2416,7 @@ export class AppSyncProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       throw new ProvisioningError(
         `Failed to fetch ${propertyPath} s3://${bucket}/${key} for ${logicalId}: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          `${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -2982,7 +2982,7 @@ export class AppSyncProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create GraphQL API ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create GraphQL API ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3144,7 +3144,7 @@ export class AppSyncProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete GraphQL API ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete GraphQL API ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3218,7 +3218,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create GraphQL Schema ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create GraphQL Schema ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3304,7 +3304,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create DataSource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create DataSource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3378,7 +3378,7 @@ export class AppSyncProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DataSource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DataSource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3458,7 +3458,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Resolver ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Resolver ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3526,7 +3526,7 @@ export class AppSyncProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Resolver ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Resolver ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3602,7 +3602,7 @@ export class AppSyncProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create ApiKey ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create ApiKey ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3761,7 +3761,7 @@ export class AppSyncProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete ApiKey ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ApiKey ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

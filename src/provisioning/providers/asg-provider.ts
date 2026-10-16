@@ -1830,7 +1830,7 @@ export class ASGProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete AutoScalingGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete AutoScalingGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

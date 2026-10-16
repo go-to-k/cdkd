@@ -362,7 +362,7 @@ export class ACMCertificateProvider implements ResourceProvider {
         throw thrown;
       }
       const cause = error instanceof Error ? error : undefined;
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = describeAwsFailure(error).detail;
       // The survivor note can join this line with a pasteable `aws acm
       // delete-certificate`, so the logical id is shown only when plain
       // (go-to-k/cdkd#4295).
@@ -710,7 +710,7 @@ export class ACMCertificateProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update ACM certificate ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update ACM certificate ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -750,7 +750,7 @@ export class ACMCertificateProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete ACM certificate ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ACM certificate ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

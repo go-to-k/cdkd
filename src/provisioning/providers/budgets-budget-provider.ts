@@ -43,6 +43,7 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 
 // ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
 //
@@ -696,7 +697,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
               `notification(s) beside every notification the budget already holds (the recorded ` +
               `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
               `budget allows at most 5 notifications and 10 email subscribers each): ` +
-              `${error instanceof Error ? error.message : String(error)}`,
+              `${describeAwsFailure(error).detail}`,
             resourceType,
             logicalId,
             physicalId,
@@ -1057,7 +1058,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete budget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete budget ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1095,7 +1096,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to resolve Arn for budget ${physicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to resolve Arn for budget ${physicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,

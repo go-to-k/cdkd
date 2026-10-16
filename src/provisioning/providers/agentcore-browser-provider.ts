@@ -39,6 +39,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /** The only valid browser id for this type per the CFn schema pattern. */
 export const DEFAULT_BROWSER_ID = 'aws.browser.v1';
@@ -95,7 +96,7 @@ export class AgentCoreBrowserProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to adopt the AWS-managed default browser for ${logicalId}: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Failed to adopt the AWS-managed default browser for ${logicalId}: ${describeAwsFailure(error).detail}. ` +
           `Bedrock AgentCore may not be available in this region.`,
         resourceType,
         logicalId,

@@ -875,3 +875,29 @@ describe('CodeBuildProvider update region guard (issue #2613)', () => {
     expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateProjectCommand);
   });
 });
+
+// A rethrowing catch must report the failure even when the thrown value has no
+// string form (go-to-k/cdkd#3341): a bare `String(err)` threw `TypeError:
+// Cannot convert object to primitive value` and replaced it.
+describe('CodeBuildProvider rethrow of an unconvertible thrown value (#3341)', () => {
+  it('create surfaces a ProvisioningError for a null-prototype thrown value', async () => {
+    mockSend.mockReset();
+    mockSend.mockRejectedValue(Object.create(null));
+    const rejected = await new CodeBuildProvider()
+      .create('MyProject', 'AWS::CodeBuild::Project', {
+        Name: 'my-project',
+        Source: { Type: 'NO_SOURCE' },
+        Environment: { Type: 'LINUX_CONTAINER', ComputeType: 'BUILD_GENERAL1_SMALL', Image: 'i' },
+        ServiceRole: 'arn:aws:iam::123456789012:role/r',
+        Artifacts: { Type: 'NO_ARTIFACTS' },
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(rejected).toBeInstanceOf(Error);
+    const message = (rejected as Error).message;
+    expect(message).toContain('Failed to create CodeBuild Project MyProject');
+    expect(message).not.toContain('Cannot convert object to primitive value');
+  });
+});

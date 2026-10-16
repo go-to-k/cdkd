@@ -343,7 +343,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -529,7 +529,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -666,7 +666,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1694,7 +1694,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       const cause = err instanceof Error ? err : undefined;
       throw new ProvisioningError(
         `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
-          `upserts=${upserts.length}): ${err instanceof Error ? err.message : String(err)}. ` +
+          `upserts=${upserts.length}): ${describeAwsFailure(err).detail}. ` +
           `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
         resourceType,
         logicalId,

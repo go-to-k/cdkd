@@ -13,8 +13,8 @@
  *    drift read that takes down its whole `Promise.all`. That is the defect
  *    class, and this fence keeps it at ZERO.
  *  - a handler that rethrows substitutes a less useful error. Real, lower
- *    severity, tracked as [#3341](https://github.com/go-to-k/cdkd/issues/3341),
- *    not enforced here.
+ *    severity, tracked as [#3341](https://github.com/go-to-k/cdkd/issues/3341)
+ *    and held by the `RETHROWING_CEILING` ratchet below rather than at zero.
  *
  * **This is the THIRD classifier written for this fence, and review defeated
  * the first two. Read why before replacing it with something simpler.**
@@ -319,7 +319,11 @@ function enclosingScope(node: ts.Node): string {
  * a copy of it -- the previous revision's control re-implemented the pipeline
  * and therefore could not see its own classifier break.
  */
-function collectFrom(sf: ts.SourceFile, fileLabel: string): Site[] {
+function collectFrom(
+  sf: ts.SourceFile,
+  fileLabel: string,
+  population: 'swallowing' | 'rethrowing' = 'swallowing'
+): Site[] {
   const sites: Site[] = [];
 
   const record = (param: string, body: ts.Block, anchor: ts.Node): void => {
@@ -331,7 +335,9 @@ function collectFrom(sf: ts.SourceFile, fileLabel: string): Site[] {
         n.arguments.length === 1 &&
         ts.isIdentifier(n.arguments[0]!) &&
         n.arguments[0]!.text === param &&
-        occurrenceCanDegrade(body, n)
+        // The rethrowing population (#3341) is the exact complement: it is the
+        // same predicate inverted, never a second classifier.
+        occurrenceCanDegrade(body, n) === (population === 'swallowing')
       ) {
         sites.push({
           file: fileLabel,
@@ -372,7 +378,7 @@ function collectFrom(sf: ts.SourceFile, fileLabel: string): Site[] {
   return sites;
 }
 
-function collect(file: string): Site[] {
+function collect(file: string, population: 'swallowing' | 'rethrowing' = 'swallowing'): Site[] {
   const text = readFileSync(file, 'utf-8');
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const diagnostics = (sf as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics;
@@ -381,7 +387,7 @@ function collect(file: string): Site[] {
     // like a clean one. Refuse instead.
     throw new Error(`${file}: ${diagnostics.length} parse diagnostic(s) — scan REFUSED`);
   }
-  return collectFrom(sf, file.slice(ROOT.length + 1));
+  return collectFrom(sf, file.slice(ROOT.length + 1), population);
 }
 
 /**
@@ -428,10 +434,90 @@ const EXEMPT: readonly {
 ];
 
 const files = sourceFiles(ROOT);
-const all = files.flatMap(collect);
+const all = files.flatMap((f) => collect(f));
 const swallowing = all.filter(
   (s) => !EXEMPT.some((e) => e.file === s.file && e.scope === s.scope && e.binding === s.binding)
 );
+
+/**
+ * The RETHROWING population (go-to-k/cdkd#3341): a bare `String(caught)` whose
+ * occurrence cannot reach a non-throwing exit, i.e. the inverse of
+ * `occurrenceCanDegrade`. An out-throw there does not kill a degradation, it
+ * substitutes `TypeError: Cannot convert object to primitive value` for the
+ * AWS failure the handler was about to report -- and for a `ProvisioningError`
+ * that text is persisted to `deployments/{runId}.jsonl`.
+ *
+ * Converting a site is byte-identical for every value `String` can convert:
+ * `err instanceof Error ? err.message : String(err)` becomes
+ * `describeAwsFailure(err).detail` and a bare `String(err)` becomes
+ * `safeStringify(err)` (`.detail` would drop the `Name: ` prefix a bare
+ * `String(err)` carries), so a downstream classifier that matches AWS's wording
+ * sees the same text it saw before.
+ *
+ * A RATCHET, not a zero: each file may hold at most the count recorded here, a
+ * file absent from the map holds none, and the only way to edit the map is to
+ * delete an entry or lower its number. The remaining entries are files another
+ * open PR or contributor claim holds, or slices of #3341 not yet merged.
+ */
+const RETHROWING_CEILING: Readonly<Record<string, number>> = {
+  // Held by open PRs / a contributor claim (go-to-k/cdkd#4988, #4990, #2319): swept by their owners.
+  "providers/elbv2-provider.ts": 3,
+  "providers/glue-provider.ts": 9,
+  "providers/iam-policy-provider.ts": 1,
+  "providers/iam-user-group-provider.ts": 3,
+  "providers/lambda-event-invoke-config-provider.ts": 1,
+  "providers/lambda-url-provider.ts": 2,
+  "providers/logs-loggroup-provider.ts": 1,
+  // Swept in the slice 2 PR of #3341; drop the entry there.
+  "providers/codecommit-repository-provider.ts": 4,
+  "providers/cognito-provider.ts": 5,
+  "providers/custom-resource-provider.ts": 3,
+  "providers/dlm-lifecycle-policy-provider.ts": 4,
+  "providers/docdb-provider.ts": 6,
+  "providers/docdb-subnet-group-provider.ts": 3,
+  "providers/dynamodb-globaltable-provider.ts": 5,
+  "providers/dynamodb-table-provider.ts": 4,
+  "providers/ec2-provider.ts": 32,
+  "providers/ecr-provider.ts": 3,
+  "providers/ecs-provider.ts": 4,
+  "providers/efs-provider.ts": 3,
+  "providers/elasticache-provider.ts": 6,
+  "providers/emr-cluster-provider.ts": 5,
+  "providers/emr-instance-fleet-config-provider.ts": 2,
+  "providers/emr-instance-group-config-provider.ts": 2,
+  "providers/eventbridge-bus-provider.ts": 2,
+  // Swept in the slice 3 PR of #3341; drop the entry there.
+  "providers/eventbridge-rule-provider.ts": 3,
+  "providers/firehose-provider.ts": 3,
+  "providers/fsx-filesystem-provider.ts": 4,
+  "providers/iam-access-key-provider.ts": 2,
+  "providers/iam-instance-profile-provider.ts": 1,
+  "providers/iam-role-provider.ts": 1,
+  "providers/kinesis-provider.ts": 3,
+  "providers/kinesis-streamconsumer-provider.ts": 2,
+  "providers/kms-provider.ts": 6,
+  "providers/lambda-eventsource-provider.ts": 1,
+  "providers/lambda-function-provider.ts": 4,
+  "providers/lambda-layer-provider.ts": 1,
+  "providers/lambda-permission-provider.ts": 1,
+  "providers/neptune-provider.ts": 9,
+  "providers/pipes-provider.ts": 3,
+  "providers/rds-provider.ts": 9,
+  "providers/route53-provider.ts": 9,
+  // Swept in the slice 4 PR of #3341; drop the entry there.
+  "providers/s3-directory-bucket-provider.ts": 3,
+  "providers/s3-tables-provider.ts": 12,
+  "providers/s3-vectors-provider.ts": 2,
+  "providers/scheduler-schedule-provider.ts": 4,
+  "providers/secretsmanager-secret-provider.ts": 2,
+  "providers/servicediscovery-provider.ts": 2,
+  "providers/sns-subscription-provider.ts": 1,
+  "providers/sns-topic-provider.ts": 3,
+  "providers/sqs-queue-provider.ts": 3,
+  "providers/ssm-parameter-provider.ts": 1,
+  "providers/stepfunctions-provider.ts": 3,
+  "providers/wafv2-provider.ts": 3,
+};
 
 describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
   it('leaves NO swallowing handler reading its caught value with a bare String()', () => {
@@ -681,6 +767,45 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
     for (const [label, src] of Object.entries(REFUSED)) {
       expect(probe(src), `${label} must NOT be classified swallowing`).toBe(0);
     }
+  });
+
+  it('holds the rethrowing population at or under its ratchet (#3341)', () => {
+    const rethrowing = files.flatMap((f) => collect(f, 'rethrowing'));
+    const perFile = new Map<string, number>();
+    for (const s of rethrowing) perFile.set(s.file, (perFile.get(s.file) ?? 0) + 1);
+    const over = [...perFile]
+      .filter(([file, n]) => n > (RETHROWING_CEILING[file] ?? 0))
+      .map(([file, n]) => `${file}: ${n} > ${RETHROWING_CEILING[file] ?? 0}`);
+    expect(
+      over,
+      'a rethrowing handler must read its caught value through `describeAwsFailure(err).detail` ' +
+        '(ternary spelling) or `safeStringify(err)` (bare spelling), not `String(err)`'
+    ).toEqual([]);
+    // A floor: a scan that matched nothing would satisfy the cap above.
+    expect(rethrowing.length, 'the rethrowing scan found nothing').toBeGreaterThan(0);
+  });
+
+  it('classifies the rethrowing population as the exact complement of the swallowing one', () => {
+    const probe = (source: string, population: 'swallowing' | 'rethrowing'): number =>
+      collectFrom(
+        ts.createSourceFile('probe.ts', source, ts.ScriptTarget.Latest, true),
+        'probe.ts',
+        population
+      ).length;
+    const rethrows = 'try { a(); } catch (e) {\n  log(String(e));\n  throw e;\n}';
+    const hostIsThrow = 'try { a(); } catch (e) {\n  throw new Error(`w: ${String(e)}`);\n}';
+    const swallows = 'try { a(); } catch (e) { log(String(e)); }';
+    expect(probe(rethrows, 'rethrowing')).toBe(1);
+    expect(probe(hostIsThrow, 'rethrowing')).toBe(1);
+    expect(probe(swallows, 'rethrowing')).toBe(0);
+    expect(probe(rethrows, 'swallowing')).toBe(0);
+    expect(probe(swallows, 'swallowing')).toBe(1);
+  });
+
+  it('refuses a STALE ratchet entry', () => {
+    const present = new Set(files.map((f) => f.slice(ROOT.length + 1)));
+    const stale = Object.keys(RETHROWING_CEILING).filter((f) => !present.has(f));
+    expect(stale, 'a ratchet entry names a file that no longer exists').toEqual([]);
   });
 
   it('reads the whole subtree, so a walk that stopped early cannot pass', () => {
