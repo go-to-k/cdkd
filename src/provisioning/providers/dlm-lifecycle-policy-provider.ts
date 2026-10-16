@@ -265,22 +265,6 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     };
   }
 
-  /**
-   * Removal semantics of the default-policy shorthand fields (#5004).
-   *
-   * UpdateLifecyclePolicy merges: an absent member leaves the live value
-   * alone. A real CloudFormation A/B (#5004) showed CloudFormation KEEPS the
-   * live value of CreateInterval, RetainInterval, CopyTags, ExtendDeletion,
-   * CrossRegionCopyTargets and Exclusions when one is removed from the
-   * template (it does not reset them), so cdkd sends nothing for a removed
-   * member (parity). This supersedes the explicit resets #1160 added.
-   * Description / State / ExecutionRoleArn / PolicyDetails likewise pass
-   * through: Description has no clear sentinel (UpdateLifecyclePolicy rejects
-   * '' - live-probed), the rest are required on create.
-   * (A KEPT-but-partial Exclusions object needs no handling: the API replaces
-   * the whole object, so pass-through is already CFn parity.)
-   */
-
   /** Fetch the policy ARN (`Fn::GetAtt Arn`) for a policy id. */
   private async fetchPolicyArn(policyId: string): Promise<string> {
     const response = await this.getClient().send(
@@ -432,6 +416,13 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     this.logger.debug(`Updating DLM Lifecycle Policy ${logicalId} (${physicalId})`);
 
     try {
+      // Removal semantics (#5004): UpdateLifecyclePolicy merges, and a real
+      // CloudFormation A/B showed CFn KEEPS the live CreateInterval,
+      // RetainInterval, CopyTags, ExtendDeletion, CrossRegionCopyTargets and
+      // Exclusions when removed, so nothing is sent for a removed member
+      // (parity; supersedes the #1160 resets). Description has no clear
+      // sentinel ('' is rejected, live-probed); the rest are required on
+      // create. A kept-but-partial Exclusions is replaced whole by the API.
       await this.getClient().send(
         new UpdateLifecyclePolicyCommand({
           PolicyId: physicalId,
