@@ -359,7 +359,6 @@ sg-circular-dependency	2026-10-06T05:56:08Z	PASS	471	verify.sh	rc ok, orph clean
 sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
 sns-pending-subscription	2026-10-13T05:13:33Z	PASS	85	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
-sns-sqs-event	2026-10-16T09:35:29Z	PASS	205	verify.sh	rc ok, orph clean (#3341 slice 4997)
 sns-sqs-event	2026-10-16T12:27:20Z	PASS	270	verify.sh	rc ok, orph clean; #5004 SqsManagedSseEnabled retained
 sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95, re-run on b9a821718 after #4842)
 sns-subscription-update	2026-10-13T11:42:44Z	PASS	135	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
