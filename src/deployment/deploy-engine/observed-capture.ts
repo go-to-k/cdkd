@@ -68,12 +68,11 @@ export interface ObservedCaptureDeps {
  * and the masked-baseline re-capture) and their drain before the final
  * state save.
  *
- * Built ONCE in the `DeployEngine` constructor, NOT per `deploy()`: unlike
- * `AttributeHealer` / `ProvenanceCapture`, neither `observedCaptureTasks` nor
- * `recapturedBaselines` is reset in `deploy()`'s per-run reset block today, so
- * a fresh instance per deploy would change nothing observable; reconstructing
- * it would only add risk. ENGINE-instance state regardless: one engine
- * deploys one stack.
+ * Per-deploy state, rebuilt in `deploy()`'s per-run reset like
+ * `AttributeHealer` / `ProvenanceCapture`: the task map is drained or cleared
+ * by the end of every deploy, and a `recapturedBaselines` key is a result
+ * object only that deploy's tasks create. ENGINE-instance state, never
+ * module-global: one engine deploys one stack.
  */
 export class ObservedCapture {
   /**

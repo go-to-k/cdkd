@@ -416,8 +416,7 @@ export class DeployEngine {
   /**
    * This deploy's `observedProperties` capture pipeline (the deploy-time
    * `readCurrentState` reads, their drain, and the masked-baseline
-   * re-capture). Built ONCE in the constructor, not per `deploy()` — see
-   * {@link ObservedCapture}'s class doc.
+   * re-capture), replaced per `deploy()` by {@link freshObservedCapture}.
    */
   /** @internal */
   observedCapture: ObservedCapture;
@@ -1050,17 +1049,22 @@ export class DeployEngine {
     this.options.captureObservedState = options.captureObservedState ?? true;
     this.attributeHealer = this.rebaseline({});
     this.provenanceCapture = this.freshProvenanceCapture();
-    // Built ONCE, not per `deploy()` — see `ObservedCapture`'s class doc.
-    // `fingerprintNoEchoValues` and `provenanceCapture` are live getters since
-    // `deploy()` reassigns both per run (the former is also replaced mid-run
-    // by the schema-upgrade backfill); every other member here is set once,
-    // above, and never reassigned.
-    this.observedCapture = new ObservedCapture({
+    this.observedCapture = this.freshObservedCapture();
+  }
+
+  /**
+   * A fresh {@link observedCapture} over this engine's deps, for the
+   * constructor and `deploy()`'s per-run reset.
+   * @internal
+   */
+  freshObservedCapture(): ObservedCapture {
+    return new ObservedCapture({
       logger: this.logger,
       options: this.options,
       resolver: this.resolver,
       providerRegistry: this.providerRegistry,
-      printingSecretsFor: this.printingSecretsFor.bind(this),
+      printingSecretsFor: (logicalId) => this.printingSecretsFor(logicalId),
+      // Live: replaced mid-run by the schema-upgrade backfill (deploy-flow.ts).
       fingerprintNoEchoValues: () => this.fingerprintNoEchoValues,
       provenanceCapture: () => this.provenanceCapture,
     });
@@ -1092,7 +1096,7 @@ export class DeployEngine {
    */
   freshProvenanceCapture(): ProvenanceCapture {
     return new ProvenanceCapture({
-      buildResolverContext: this.buildResolverContext.bind(this),
+      buildResolverContext: (...args) => this.buildResolverContext(...args),
       resolver: this.resolver,
       logger: this.logger,
     });
@@ -1177,6 +1181,7 @@ export class DeployEngine {
     this.provenanceBaseline = undefined;
     this.resolvedOutputsBag = undefined;
     this.provenanceCapture = this.freshProvenanceCapture();
+    this.observedCapture = this.freshObservedCapture();
     this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.

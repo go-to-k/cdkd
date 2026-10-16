@@ -1793,8 +1793,8 @@ export async function doDeployWithPrefetch(
 
     // On a rollback / SIGINT exit we may leave in-flight readCurrentState
     // promises in the map (the success path drains them above). Clear the
-    // map so a re-used engine instance does not accumulate stale entries
-    // across deploys. The underlying promises already have a `.catch` so
+    // map to drop the references now (the next `deploy()` replaces the whole
+    // capture anyway). The underlying promises already have a `.catch` so
     // dropping the references will not produce an unhandled rejection.
     this.observedCapture.observedCaptureTasks.clear();
 

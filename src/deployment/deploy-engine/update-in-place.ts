@@ -1331,7 +1331,7 @@ export async function updateInPlace(
     : await buildObservedCaptureSiblings(
         {
           options: this.options,
-          buildResolverContext: this.buildResolverContext.bind(this),
+          buildResolverContext: (...args) => this.buildResolverContext(...args),
           resolver: this.resolver,
         },
         resourceType,

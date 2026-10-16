@@ -4552,7 +4552,7 @@ echo "    OK: stack restored to a clean drift state after Phase 1f4"
 # refusal was hoisted into `secret-redaction.ts` precisely because the leak is
 # NOT specific to `cdkd state refresh-observed`: a plain `cdkd deploy`
 # auto-refreshes the baseline of any resource whose `observedProperties` is
-# ABSENT (`DeployEngine.kickOffAutoRefreshObservedProperties`, on by default via
+# ABSENT (`DeployEngine.observedCapture.kickOffAutoRefreshObservedProperties`, on by default via
 # `captureObservedState`). Such a resource is UNCHANGED this deploy, so it has
 # no secrets map and no template bag, and its readback drains through the
 # persist choke point with exactly the configuration Phase 1f exercises by hand.

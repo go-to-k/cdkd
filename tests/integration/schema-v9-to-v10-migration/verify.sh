@@ -662,7 +662,7 @@ assert_no_plaintext "v10 refresh-observed"
 # ---------------------------------------------------------------------------
 echo "==> Phase 8: the DEPLOY-START auto-refresh arm"
 # ---------------------------------------------------------------------------
-# `DeployEngine.kickOffAutoRefreshObservedProperties` selects exactly the
+# `DeployEngine.observedCapture.kickOffAutoRefreshObservedProperties` selects exactly the
 # records with `observedProperties === undefined`. The marked record is in that
 # population and must be SKIPPED on the marker; the control is not in it at all
 # right now, because Phase 7 gave it a baseline.
