@@ -34,9 +34,9 @@
 #
 # Phase 2 (CDKD_TEST_REMOVAL=true, issue #1160 secretsmanager batch) then
 # drops the secret's Description + KmsKeyId from the template and asserts the
-# live secret resets to the pristine defaults (both absent from
-# DescribeSecret) instead of silently keeping the old values (UpdateSecret
-# merges absent input fields). Phase 3 destroys.
+# live secret RETAINS both baseline values: CloudFormation keeps them on
+# removal (issue #5004 A/B) and UpdateSecret merges absent input fields, so
+# cdkd sends no reset. Phase 3 destroys.
 #
 # SECURITY: secret-derived values are NEVER printed. Assertions compare
 # against a masked representation; only PASS/FAIL + a masked snippet is shown.
@@ -4765,32 +4765,25 @@ if [ "${deploy_redaction_fail}" -ne 0 ]; then
   exit 1
 fi
 
-# --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
-echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
+# --- Phase 2: removal redeploy, values retained (issues #1160, #5004) ---
+echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (must be RETAINED, issue #5004)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
-# Pre-fix UpdateSecret merge semantics silently kept both values; post-fix
-# the provider sends Description='' and KmsKeyId='' (the SDK-documented
-# "revert to aws/secretsmanager" sentinel) and DescribeSecret reports the
-# pristine shape again: Description absent (text output 'None') and KmsKeyId
-# absent ('None').
+# Real CloudFormation KEEPS both on removal (issue #5004 A/B), and
+# UpdateSecret merges absent fields, so cdkd must send no reset: DescribeSecret
+# still reports the baseline Description and KmsKeyId asserted in Assertion 1b.
 DESC_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'Description' --output text)
 KMS_P2=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'KmsKeyId' --output text)
-# Asymmetry is deliberate: a cleared Description may surface as omitted
-# ('None') or as a literal empty string depending on how AWS normalizes the
-# '' write — both mean "no description". A cleared KmsKeyId is always OMITTED
-# from DescribeSecret (the pristine managed-key shape), so it must be exactly
-# 'None' — an empty string there would be an unexpected wire shape.
-if { [ "${DESC_P2}" != "None" ] && [ -n "${DESC_P2}" ]; } || [ "${KMS_P2}" != "None" ]; then
-  echo "FAIL: expected Description/KmsKeyId cleared after removal redeploy, got '${DESC_P2}' / '${KMS_P2}'" >&2
+if [ "${DESC_P2}" != "${DESC_P1}" ] || [ "${KMS_P2}" != "${KMS_P1}" ]; then
+  echo "FAIL: expected Description/KmsKeyId RETAINED ('${DESC_P1}' / '${KMS_P1}') after removal redeploy (CloudFormation keeps them, issue #5004), got '${DESC_P2}' / '${KMS_P2}'" >&2
   exit 1
 fi
-echo "    OK: Description + KmsKeyId reset to the pristine defaults on AWS"
+echo "    OK: Description + KmsKeyId retained on AWS after removal (CloudFormation parity)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"

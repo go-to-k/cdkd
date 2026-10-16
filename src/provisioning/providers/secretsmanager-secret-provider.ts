@@ -29,7 +29,6 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
@@ -289,18 +288,6 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     ],
   ]);
 
-  /**
-   * Issue #1160: UpdateSecret has merge semantics (an absent input field means
-   * "no change"), so a REMOVED Description is sent as the clear sentinel `''`
-   * — CFn resets it to "no description" (live-verified 2026-07-27: after
-   * `Description: ''` DescribeSecret omits Description again, so the reset is
-   * drift-clean). `KmsKeyId` treats `''` as absent on both sides, so its reset
-   * stays a local `clearOnUpdateRemoval` site.
-   */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    ['AWS::SecretsManager::Secret', new Map<string, unknown>([['Description', '']])],
-  ]);
-
   constructor() {
     const awsClients = getAwsClients();
     this.smClient = awsClients.secretsManager;
@@ -453,13 +440,6 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
     // Issue #2177: ONE masked sink per operation. The physical id is an ARN
     // embedding the secret's NAME, so it is masked whenever that name is
     // secret-derived: from the desired `Name`, or, after a rotated secret,
@@ -532,43 +512,40 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // user-intended `Description: ''` (clear-the-description) on
       // `cdkd drift --revert`. AWS UpdateSecret accepts empty string for
       // Description (treated as "no description").
-      // A Description REMOVED from the template arrives as its
-      // `removalDefaults` reset, `''` (#1160).
+      // A Description REMOVED from the template is NOT reset: UpdateSecret has
+      // merge semantics (absent = unchanged), and real CloudFormation KEEPS the
+      // live Description on removal (go-to-k/cdkd#5004 A/B), so cdkd sends nothing.
       const description = properties['Description'] as string | undefined;
       if (description !== undefined) updateParams.Description = description;
       // `KmsKeyId`: readCurrentState emits `KmsKeyId: ''` as a placeholder
-      // when the secret uses the AWS-managed key (no customer KMS key set), so
-      // `''` on EITHER side is normalized to "absent" before the #1160
-      // removal-reset resolution — a placeholder must never pass through as a
-      // customer-key value, and a placeholder-only previous side must not fire
-      // a pointless reset (keeps `cdkd drift --revert` round-trips a wire
-      // no-op, symmetric with the serializeRedrivePolicy pattern in
-      // sqs-queue-provider.ts).
-      // The reset sentinel for a REAL removal (previous had a customer key,
-      // template no longer does) IS the empty string: the UpdateSecret API
-      // documents `KmsKeyId: ''` as "use the Amazon Web Services managed key
-      // aws/secretsmanager", exactly CloudFormation's behavior when KmsKeyId
-      // is removed from the template. Live-probed 2026-07-27 (us-east-1):
-      // UpdateSecret with `KmsKeyId: ''` is accepted (an earlier comment here
-      // claimed AWS rejects it as an invalid ARN — no longer true), and a
-      // subsequent DescribeSecret OMITS KmsKeyId again, which readCurrentState
-      // maps back to the `''` placeholder — so the reset is drift-clean.
-      // (`alias/aws/secretsmanager` is also accepted but leaves an EXPLICIT
-      // KmsKeyId in DescribeSecret, which would diverge from the
-      // never-had-a-key shape; `''` is the strictly better sentinel.)
+      // when the secret uses the AWS-managed key (no customer KMS key set).
+      // A KmsKeyId REMOVED from the template (absent, not `''`) is NOT reset:
+      // UpdateSecret has merge semantics and real CloudFormation KEEPS the live
+      // key on removal (go-to-k/cdkd#5004 A/B), so cdkd sends nothing.
+      // An explicit `''` on the desired side (the baseline `cdkd drift
+      // --revert` hands over for a secret that had no customer key) while the
+      // other side holds a customer key is a deliberate clear: UpdateSecret
+      // documents `KmsKeyId: ''` as "use the AWS managed key
+      // aws/secretsmanager" (live-probed 2026-07-27: accepted, and DescribeSecret
+      // omits KmsKeyId again, which readCurrentState maps back to the `''`
+      // placeholder, so it is drift-clean). A placeholder-only previous side
+      // sends nothing.
       const newKmsKeyId = properties['KmsKeyId'] as string | undefined;
       const prevKmsKeyId = previousProperties['KmsKeyId'] as string | undefined;
-      const kmsKeyId = clearOnUpdateRemoval(
-        newKmsKeyId === '' ? undefined : newKmsKeyId,
-        prevKmsKeyId === '' ? undefined : prevKmsKeyId,
-        ''
-      );
+      const kmsKeyId =
+        newKmsKeyId === undefined
+          ? undefined
+          : newKmsKeyId === ''
+            ? prevKmsKeyId !== undefined && prevKmsKeyId !== ''
+              ? ''
+              : undefined
+            : newKmsKeyId;
       if (kmsKeyId !== undefined) updateParams.KmsKeyId = kmsKeyId;
       // `Type`: emit-when-present (no placeholder in readCurrentState).
       // Truthy gate matches create() — Type is the partner identifier for
       // Secrets Manager managed external secrets and is rarely user-set;
       // passing an empty string would be a no-op on AWS side.
-      // DELIBERATELY NOT routed through clearOnUpdateRemoval (issue #1160
+      // DELIBERATELY NOT reset on removal (issue #1160
       // secretsmanager batch): a template-removed Type still keeps its live
       // value — the umbrella's UNCERTAIN bucket tracks it (partner-managed
       // secrets; no documented clear sentinel, and probing one requires a

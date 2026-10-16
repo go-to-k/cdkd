@@ -6,11 +6,11 @@ import { safeMsg } from '../utils/display-safe.js';
  * absent-field removal silent-drop bug class; reference fix
  * `LambdaFunctionProvider`, #1157).
  *
- * CloudFormation resets a property REMOVED from the template to its default,
- * while most AWS `Update*` / `Modify*` APIs treat an absent input field as
- * "no change" (merge semantics). A provider `update()` that passes template
- * properties straight into the SDK input therefore silently keeps the old
- * live value on removal.
+ * CloudFormation usually resets a property REMOVED from the template to its
+ * default (measure per property, #5004), while most AWS `Update*` /
+ * `Modify*` APIs treat an absent input field as "no change" (merge
+ * semantics). A provider `update()` that passes template properties straight
+ * into the SDK input therefore silently keeps the old live value on removal.
  *
  * Two shapes, one rule ("removed" = the previous TEMPLATE declared it and the
  * desired one does not):

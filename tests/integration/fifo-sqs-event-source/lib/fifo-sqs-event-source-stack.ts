@@ -19,8 +19,9 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
  * `deduplicationScope`, and `fifoThroughputLimit` from the queue so the
  * redeploy exercises the issue #1237 in-place UPDATE classification plus the
  * #1160 removal resets (SetQueueAttributes ContentBasedDeduplication ->
- * 'false', DeduplicationScope -> 'queue', FifoThroughputLimit -> 'perQueue'
- * on the SAME queue — no replacement).
+ * 'false' on the SAME queue — no replacement). DeduplicationScope and
+ * FifoThroughputLimit are KEPT at their live values, as CloudFormation does
+ * (#5004).
  *
  * covers: AWS::SQS::Queue
  * covers: AWS::Lambda::EventSourceMapping
@@ -45,9 +46,8 @@ export class FifoSqsEventSourceStack extends cdk.Stack {
       // CDKD_TEST_REMOVAL=true OMITS the properties entirely (undefined is
       // not synthesized), exercising the #1160 removal resets via a plain
       // deploy. The baseline high-throughput pair (messageGroup +
-      // perMessageGroupId) must be removed TOGETHER: resetting only
-      // DeduplicationScope while keeping perMessageGroupId is rejected by
-      // AWS (and would be by CFn too — parity, see the provider map comment).
+      // perMessageGroupId) is removed together; since #5004 neither is reset,
+      // so both keep their live values (see the provider map comment).
       ...(TEST_REMOVAL
         ? {}
         : {

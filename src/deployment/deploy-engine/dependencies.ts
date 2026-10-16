@@ -1,22 +1,11 @@
-import type { DeployEngine } from '../deploy-engine.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
   computeImplicitDeleteEdges,
 } from '../../analyzer/implicit-delete-deps.js';
+import type { Logger } from '../../types/config.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import { DagExecutor } from '../dag-executor.js';
 import { safeMsg } from '../../utils/display-safe.js';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    hasPending<T>(executor: DagExecutor<T>): boolean;
-    /** @internal */
-    buildDeletionDependencies: OmitThisParameter<typeof buildDeletionDependencies>;
-    /** @internal */
-    addImplicitDeleteDependencies: OmitThisParameter<typeof addImplicitDeleteDependencies>;
-  }
-}
 
 /**
  * Build a per-resource map of "must be deleted before me" dependencies for
@@ -32,19 +21,17 @@ declare module '../deploy-engine.js' {
  * used to distinguish "SIGINT cancelled real work" from "SIGINT landed
  * after all nodes already completed" (the latter should not error).
  */
-/** @internal */
-export function hasPending<T>(this: DeployEngine, executor: DagExecutor<T>): boolean {
+export function hasPending<T>(executor: DagExecutor<T>): boolean {
   for (const node of executor.values()) {
     if (node.state === 'pending') return true;
   }
   return false;
 }
 
-/** @internal */
 export function buildDeletionDependencies(
-  this: DeployEngine,
   deleteIds: Set<string>,
-  state: StackState
+  state: StackState,
+  logger: Pick<Logger, 'debug'>
 ): Map<string, Set<string>> {
   const dependedBy = new Map<string, Set<string>>();
   for (const id of deleteIds) {
@@ -61,7 +48,7 @@ export function buildDeletionDependencies(
     }
   }
 
-  this.addImplicitDeleteDependencies(deleteIds, state, dependedBy);
+  addImplicitDeleteDependencies(deleteIds, state, dependedBy, logger);
 
   return dependedBy;
 }
@@ -79,10 +66,10 @@ export function buildDeletionDependencies(
  * depend on (e.g., InternetGateway).
  */
 export function addImplicitDeleteDependencies(
-  this: DeployEngine,
   deleteIds: Set<string>,
   state: StackState,
-  dependedBy: Map<string, Set<string>>
+  dependedBy: Map<string, Set<string>>,
+  logger: Pick<Logger, 'debug'>
 ): void {
   // Build a type → logical IDs index for resources being deleted
   const typeToIds = new Map<string, string[]>();
@@ -112,7 +99,7 @@ export function addImplicitDeleteDependencies(
         if (!dependedBy.has(id)) dependedBy.set(id, new Set());
         if (!dependedBy.get(id)!.has(depId)) {
           dependedBy.get(id)!.add(depId);
-          this.logger.debug(
+          logger.debug(
             safeMsg`Implicit delete dependency: ${depId} (${depType}) must be deleted before ${id} (${resource.resourceType})`
           );
         }
@@ -134,7 +121,7 @@ export function addImplicitDeleteDependencies(
     if (!dependedBy.has(after)) dependedBy.set(after, new Set());
     if (!dependedBy.get(after)!.has(before)) {
       dependedBy.get(after)!.add(before);
-      this.logger.debug(
+      logger.debug(
         safeMsg`Implicit delete dependency: ${before} (${scoped[before]?.resourceType}) must be deleted before ${after} (${scoped[after]?.resourceType})`
       );
     }

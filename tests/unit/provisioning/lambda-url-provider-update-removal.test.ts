@@ -2,9 +2,10 @@
 // UpdateFunctionUrlConfig uses merge semantics (live-probed 2026-07-27: an
 // update omitting InvokeMode / Cors retains the live values), so a field
 // DROPPED from the template must be sent as its explicit clear shape —
-// InvokeMode -> 'BUFFERED' (the documented default), Cors -> {} (an empty
-// Cors object clears CORS entirely) — else the old live value silently
-// persists.
+// Cors -> {} (an empty Cors object clears CORS entirely) — else the old live
+// value silently persists. go-to-k/cdkd#5004: a real CloudFormation A/B showed
+// CloudFormation KEEPS a removed InvokeMode at its live value (it RESETS Cors),
+// so cdkd sends no InvokeMode on removal.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
 
@@ -58,7 +59,7 @@ describe('LambdaUrlProvider removal reset to CFn defaults (issue #1160)', () => 
     return cmd.input as unknown as Record<string, unknown>;
   }
 
-  it('resets removed InvokeMode and Cors to their clear shapes', async () => {
+  it('resets a removed Cors to its clear shape but KEEPS a removed InvokeMode (issue #5004)', async () => {
     await provider.update(
       'MyUrl',
       FN_ARN,
@@ -73,7 +74,8 @@ describe('LambdaUrlProvider removal reset to CFn defaults (issue #1160)', () => 
     );
 
     const input = sentUpdateInput();
-    expect(input['InvokeMode']).toBe('BUFFERED');
+    // No InvokeMode member at all: UpdateFunctionUrlConfig reads that as "unchanged".
+    expect('InvokeMode' in input).toBe(false);
     expect(input['Cors']).toEqual({});
   });
 

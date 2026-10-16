@@ -23,10 +23,10 @@
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160 dlm batch): the
 #      DISABLED VOLUME default policy drops every UpdateLifecyclePolicy
 #      shorthand field (CreateInterval / RetainInterval / CopyTags /
-#      ExtendDeletion / CrossRegionCopyTargets / Exclusions). The API merges
-#      absent fields, so without the provider's explicit resets the live
-#      values would silently persist. Assert AWS reset each to its default
-#      (1 / 7 / false / false / [] / empty exclusions) and the policy id is
+#      ExtendDeletion / CrossRegionCopyTargets / Exclusions). A real
+#      CloudFormation A/B (issue #5004) showed CloudFormation KEEPS the live
+#      value, so cdkd sends no reset. Assert AWS still holds the baseline
+#      values (2 / 3 / true / true / 1 / true / 1) and the policy id is
 #      unchanged.
 #   3. Destroy + assert the policies are gone from AWS and the cdkd state
 #      file is removed.
@@ -263,19 +263,17 @@ if [ "${DEFAULT_POLICY_ID_P1}" != "${DEFAULT_POLICY_ID_P2B}" ]; then
 fi
 echo "    default policy identity preserved (${DEFAULT_POLICY_ID_P2B}) — in-place update"
 
-# UpdateLifecyclePolicy merges absent fields, so the removal must have sent
-# the explicit defaults: CreateInterval->1, RetainInterval->7,
-# CopyTags->false, ExtendDeletion->false, CrossRegionCopyTargets->[],
-# Exclusions -> all-empty (live-probed clear shapes, 2026-07-27).
+# CloudFormation keeps the live value of a removed shorthand field (issue
+# #5004), so the baseline summary asserted in Phase 1 must still hold.
 DP_DETAILS_P2B="$(aws dlm get-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P2B}" \
   --region "${REGION}" --query 'Policy.PolicyDetails' --output json)"
 DP_REMOVAL_SUMMARY="$(echo "${DP_DETAILS_P2B}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.stdout.write([d.CreateInterval,d.RetainInterval,d.CopyTags,d.ExtendDeletion,(d.CrossRegionCopyTargets||[]).length,(d.Exclusions&&d.Exclusions.ExcludeBootVolumes)||false,((d.Exclusions&&d.Exclusions.ExcludeTags)||[]).length].join("/"))})')"
-if [ "${DP_REMOVAL_SUMMARY}" != "1/7/false/false/0/false/0" ]; then
-  echo "FAIL: shorthand-field removal did NOT reset to defaults (CreateInterval/RetainInterval/CopyTags/ExtendDeletion/#CrossRegionCopyTargets/ExcludeBootVolumes/#ExcludeTags = ${DP_REMOVAL_SUMMARY}, expected 1/7/false/false/0/false/0 — issue #1160 silent drop NOT closed)" >&2
+if [ "${DP_REMOVAL_SUMMARY}" != "${DP_BASE_SUMMARY}" ]; then
+  echo "FAIL: shorthand-field removal did NOT retain the live values (CreateInterval/RetainInterval/CopyTags/ExtendDeletion/#CrossRegionCopyTargets/ExcludeBootVolumes/#ExcludeTags = ${DP_REMOVAL_SUMMARY}, expected the baseline ${DP_BASE_SUMMARY} — CloudFormation keeps them, issue #5004)" >&2
   echo "${DP_DETAILS_P2B}"
   exit 1
 fi
-echo "    removal reset all shorthand fields to their CFn defaults (issue #1160 closed for AWS::DLM::LifecyclePolicy)"
+echo "    removal retained all shorthand fields at their live values (CloudFormation parity, issue #5004)"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -293,4 +291,4 @@ echo "    execution role deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + shorthand-field removal reset (#1160) + destroy all passed"
+echo "[verify] PASS — AWS::DLM::LifecyclePolicy SDK provider: deploy + in-place update (incl. tag removal) + shorthand-field removal retained (#5004) + destroy all passed"

@@ -1,4 +1,3 @@
-import type { DeployEngine } from '../deploy-engine.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { findUnrewrittenAssetReferences } from '../../assets/asset-redirect.js';
 import {
@@ -12,19 +11,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markSameGenerationBag } from '../secret-redaction.js';
 import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    auditResolvedAssetReferences: OmitThisParameter<typeof auditResolvedAssetReferences>;
-    /** @internal */
-    extractAllDependencies: OmitThisParameter<typeof extractAllDependencies>;
-    /** @internal */
-    propertiesToRecord: OmitThisParameter<typeof propertiesToRecord>;
-    /** @internal */
-    extractTemplateAttributes: OmitThisParameter<typeof extractTemplateAttributes>;
-  }
-}
+import type { DeployEngineOptions } from './options.js';
 
 /**
  * Issue #1002 PR 2 — §7 step 3 post-resolution audit (defense in depth).
@@ -35,14 +22,13 @@ declare module '../deploy-engine.js' {
  * reference (assets live in cdkd storage, the property points at the CDK
  * bootstrap bucket that `cdk gc` may have emptied).
  */
-/** @internal */
 export function auditResolvedAssetReferences(
-  this: DeployEngine,
+  options: Pick<DeployEngineOptions, 'assetRedirect'>,
   logicalId: string,
   resourceType: string,
   resolvedProps: Record<string, unknown>
 ): void {
-  const redirect = this.options.assetRedirect;
+  const redirect = options.assetRedirect;
   if (!redirect) return;
   const findings = findUnrewrittenAssetReferences(resolvedProps, redirect);
   if (findings.length === 0) return;
@@ -85,9 +71,7 @@ export function auditResolvedAssetReferences(
  * `Parameters` section) would warn `depends on <Param>, but <Param> not
  * found in template` for every parameter-referencing resource.
  */
-/** @internal */
 export function extractAllDependencies(
-  this: DeployEngine,
   template: CloudFormationTemplate | undefined,
   logicalId: string
 ): string[] | undefined {
@@ -132,9 +116,7 @@ export function extractAllDependencies(
  * `cdkd drift` (for a provider with no `readCurrentState`), rollback replay,
  * `cdkd export`, `cdkd state`.
  */
-/** @internal */
 export function propertiesToRecord(
-  this: DeployEngine,
   desiredProperties: Record<string, unknown>,
   result: EffectivePropertiesResult,
   resourceType: string,
@@ -189,9 +171,7 @@ export function propertiesToRecord(
  * removes the attribute from their CDK code. `JSON.stringify` then omits
  * the `undefined` keys when state is serialized to S3.
  */
-/** @internal */
 export function extractTemplateAttributes(
-  this: DeployEngine,
   template: CloudFormationTemplate | undefined,
   logicalId: string
 ): {

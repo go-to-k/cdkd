@@ -1,6 +1,9 @@
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
+import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
+import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
+import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
@@ -138,7 +141,7 @@ export async function updateInPlace(
     // desired-only flip condition gets wrong (see
     // `GetProviderForInput.previousProperties`).
     previousProperties: currentResource.properties,
-    ...(this.isPinnedToCcApi(stackName, logicalId) && { forceCcApi: true }),
+    ...(isPinnedToCcApi(this.options, stackName, logicalId) && { forceCcApi: true }),
   });
   if (updateDecision.sdkMigration === true) {
     // The ONLY reader of `sdkMigration`, and the reason the field
@@ -186,7 +189,7 @@ export async function updateInPlace(
       ? withoutGeneratedFallbackName(
           resourceType,
           resolvedProps,
-          this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+          preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
         )
       : resolvedProps;
   // The previous side the provider diffs against, with each create-only
@@ -601,7 +604,7 @@ export async function updateInPlace(
       const replProvider = replDecision.provider;
       const replProps =
         replDecision.provisionedBy === 'cc-api'
-          ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+          ? preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
           : resolvedProps;
       // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
       // name known to move off the old resource's, probed where the
@@ -933,7 +936,7 @@ export async function updateInPlace(
             )
           );
         }
-        const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
+        const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
         // Verbatim the property-driven twin's verdict and code: with
         // Retain the old resource keeps the name, so a same-name
         // replacement can never proceed — under ANY flag, since the
@@ -1005,10 +1008,7 @@ export async function updateInPlace(
             newProperties: resolvedProps,
           })
         ) {
-          const idempotentNameOrigin = this.replacementNameOrigin(
-            logicalId,
-            currentResource.physicalId
-          );
+          const idempotentNameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
           // Marked for the same reason as its collision sibling: the
           // verdict is two recorded physical ids plus a template
           // attribute, and the message carries template-controlled
@@ -1257,7 +1257,7 @@ export async function updateInPlace(
     resolvedProps
   );
 
-  const recordedProperties = this.propertiesToRecord(
+  const recordedProperties = propertiesToRecord(
     resolvedProps,
     result,
     resourceType,
@@ -1304,7 +1304,7 @@ export async function updateInPlace(
         noEchoExactEchoLeaves: currentResource.noEchoExactEchoLeaves,
       }),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
-    ...this.extractTemplateAttributes(template, logicalId),
+    ...extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,
     ...(keepsParameterRefusal && {
       observedBaselineRefused: true as const,

@@ -23,9 +23,9 @@ import type { Construct } from 'constructs';
  * always-DISABLED VOLUME default policy carries every UpdateLifecyclePolicy
  * shorthand field at non-default values (CreateInterval=2, RetainInterval=3,
  * CopyTags=true, ExtendDeletion=true, CrossRegionCopyTargets, Exclusions);
- * the removal redeploy drops them all, and verify.sh asserts AWS reset each
- * to its default (1 / 7 / false / false / [] / empty exclusions) instead of
- * silently keeping the live values (UpdateLifecyclePolicy merge semantics).
+ * the removal redeploy drops them all, and verify.sh asserts AWS RETAINS the
+ * live values (2 / 3 / true / true / 1 / true / 1) because CloudFormation keeps
+ * a removed shorthand field rather than resetting it (issue #5004).
  * DISABLED means the default policy never actually snapshots any volume.
  */
 export class DlmLifecyclePolicyStack extends cdk.Stack {

@@ -14,8 +14,8 @@ export class SnsSqsEventStack extends cdk.Stack {
     // CDKD_TEST_REMOVAL (issue #1160, sqs batch): the baseline template sets
     // SqsManagedSseEnabled: false on the L1 queue below; the removal phase
     // drops the property entirely. SQS SetQueueAttributes MERGES (absent =
-    // "no change"), so pre-fix the live queue silently kept SSE off; the
-    // provider must reset it to the SQS/CFn default (true).
+    // "no change"), so the live queue keeps SSE off, which is what
+    // CloudFormation does (#5004: SqsManagedSseEnabled is KEPT, not reset).
     const removal = process.env.CDKD_TEST_REMOVAL === 'true';
     new sqs.CfnQueue(this, 'SseRemovalQueue', {
       queueName: 'cdkd-sns-sqs-test-sse-removal',

@@ -167,6 +167,26 @@ interface Run {
   thrown: unknown;
   /** What each provider update was sent. */
   sent: Record<string, Record<string, unknown>>;
+  /** This run's engine + its mutable state/provider mocks, so a later
+   * `deploy()` call can pass it back as `opts.shared` and run on the SAME
+   * `DeployEngine` instance (never a clear in place: each call still gets its
+   * own `calls`/`sent`, only the engine and its mocks are reused). */
+  shared: SharedEngine;
+}
+
+/** The mutable bundle `deploy()` builds once and a later call can reuse via
+ * `opts.shared`, for two deploys on one `DeployEngine` instance. */
+interface SharedEngine {
+  engine: DeployEngine;
+  getState: ReturnType<typeof vi.fn>;
+  saveState: ReturnType<typeof vi.fn>;
+  provider: {
+    create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+    getAttribute: ReturnType<typeof vi.fn>;
+    readCurrentState: ReturnType<typeof vi.fn>;
+  };
 }
 
 async function deploy(opts: {
@@ -196,85 +216,116 @@ async function deploy(opts: {
   oddResource?: boolean;
   /** `--require-approval any-change`, answered NO. */
   declineApproval?: boolean;
+  /** Reuse a prior call's `Run.shared` instead of building a fresh engine, so
+   * this deploy runs on the SAME `DeployEngine` instance as that call. */
+  shared?: SharedEngine;
+  /** This logical id's provider `update` throws (after it records the call),
+   * so `executeDeployment` rejects AFTER the post-approval provenance-capture
+   * kick-off (`deploy-flow.ts` ~1560) but BEFORE the drain (~1620). */
+  failUpdateOf?: string;
 }): Promise<Run> {
   const calls: string[] = [];
   const sent: Record<string, Record<string, unknown>> = {};
-  const provider = {
-    create: vi.fn(async (id: string) => {
-      calls.push(`create:${id}`);
-      return id === 'SecretQueue'
-        ? {
-            physicalId: URL.replace('sdin-q-1', secret.queue),
-            attributes: {
-              Arn: PLAIN_ARN.replace('sdin-q-1', secret.queue),
-              QueueUrl: URL.replace('sdin-q-1', secret.queue),
-            },
-          }
-        : { physicalId: id === 'Odd' ? 'odd-topic' : '/p/reader', attributes: {} };
-    }),
-    update: vi.fn(
-      async (id: string, _pid: string, _type: string, props: Record<string, unknown>) => {
-        calls.push(`update:${id}`);
-        sent[id] = props;
-        return id === 'SecretQueue'
-          ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
-          : {
-              physicalId: '/p/reader',
-              ...(!opts.readerUpdateNoAttributes && { attributes: {} }),
-              ...(opts.readerSentNothing && { sentNothing: true }),
-              ...(opts.readerEffectiveProperties && { effectiveProperties: { ...props } }),
-            };
-      }
-    ),
-    delete: vi.fn(async (id: string) => {
-      calls.push(`delete:${id}`);
-    }),
-    getAttribute: vi.fn(),
-    readCurrentState: vi.fn().mockResolvedValue(undefined),
+  const createImpl = async (id: string) => {
+    calls.push(`create:${id}`);
+    return id === 'SecretQueue'
+      ? {
+          physicalId: URL.replace('sdin-q-1', secret.queue),
+          attributes: {
+            Arn: PLAIN_ARN.replace('sdin-q-1', secret.queue),
+            QueueUrl: URL.replace('sdin-q-1', secret.queue),
+          },
+        }
+      : { physicalId: id === 'Odd' ? 'odd-topic' : '/p/reader', attributes: {} };
   };
-  const saveState = vi.fn().mockResolvedValue('etag');
-  const engine = new DeployEngine(
-    {
-      getState: vi
-        .fn()
-        .mockResolvedValue(opts.state === undefined ? null : { state: opts.state, etag: 'e0' }),
-      saveState,
-      loadRollbackJournal: vi.fn().mockResolvedValue(null),
-      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
-      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
-      warmConnections: vi.fn().mockResolvedValue(undefined),
-      appendRollbackJournalSegment: vi.fn(),
-      popRollbackJournalSegment: vi.fn(),
-      deleteRollbackJournal: vi.fn(),
-    } as never,
-    { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
-    {
-      buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi
-        .fn()
-        .mockReturnValue(opts.oddResource ? [['SecretQueue', 'Odd'], ['Reader']] : [['SecretQueue'], ['Reader']]),
-      getDirectDependencies: vi.fn((_g: unknown, id: string) =>
-        id === 'Reader' ? ['SecretQueue'] : []
-      ),
-    } as never,
-    new DiffCalculator(),
-    {
-      getProvider: vi.fn().mockReturnValue(provider),
-      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
-      getRegisteredTypes: vi.fn().mockReturnValue([]),
-      validateResourceTypes: vi.fn(),
-      validateResourceProperties: vi.fn(),
-    } as never,
-    {
-      dryRun: opts.dryRun === true,
-      forceStatefulRecreation: true,
-      ...(opts.declineApproval && {
-        requireApproval: 'any-change' as const,
-        approveDeployment: async () => false,
-      }),
-    },
-    'us-east-1'
-  );
+  const updateImpl = async (
+    id: string,
+    _pid: string,
+    _type: string,
+    props: Record<string, unknown>
+  ) => {
+    calls.push(`update:${id}`);
+    sent[id] = props;
+    if (opts.failUpdateOf === id) throw new Error(`forced failure updating ${id}`);
+    return id === 'SecretQueue'
+      ? { physicalId: URL, attributes: { Arn: PLAIN_ARN, QueueUrl: URL } }
+      : {
+          physicalId: '/p/reader',
+          ...(!opts.readerUpdateNoAttributes && { attributes: {} }),
+          ...(opts.readerSentNothing && { sentNothing: true }),
+          ...(opts.readerEffectiveProperties && { effectiveProperties: { ...props } }),
+        };
+  };
+  const deleteImpl = async (id: string) => {
+    calls.push(`delete:${id}`);
+  };
+
+  let shared: SharedEngine;
+  if (opts.shared !== undefined) {
+    shared = opts.shared;
+    shared.provider.create.mockImplementation(createImpl);
+    shared.provider.update.mockImplementation(updateImpl);
+    shared.provider.delete.mockImplementation(deleteImpl);
+    shared.getState.mockResolvedValue(
+      opts.state === undefined ? null : { state: opts.state, etag: 'e0' }
+    );
+  } else {
+    const provider = {
+      create: vi.fn(createImpl),
+      update: vi.fn(updateImpl),
+      delete: vi.fn(deleteImpl),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn().mockResolvedValue(undefined),
+    };
+    const getState = vi
+      .fn()
+      .mockResolvedValue(opts.state === undefined ? null : { state: opts.state, etag: 'e0' });
+    const saveState = vi.fn().mockResolvedValue('etag');
+    const engine = new DeployEngine(
+      {
+        getState,
+        saveState,
+        loadRollbackJournal: vi.fn().mockResolvedValue(null),
+        purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+        rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+        warmConnections: vi.fn().mockResolvedValue(undefined),
+        appendRollbackJournalSegment: vi.fn(),
+        popRollbackJournalSegment: vi.fn(),
+        deleteRollbackJournal: vi.fn(),
+      } as never,
+      { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi
+          .fn()
+          .mockReturnValue(
+            opts.oddResource ? [['SecretQueue', 'Odd'], ['Reader']] : [['SecretQueue'], ['Reader']]
+          ),
+        getDirectDependencies: vi.fn((_g: unknown, id: string) =>
+          id === 'Reader' ? ['SecretQueue'] : []
+        ),
+      } as never,
+      new DiffCalculator(),
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+      } as never,
+      {
+        dryRun: opts.dryRun === true,
+        forceStatefulRecreation: true,
+        ...(opts.declineApproval && {
+          requireApproval: 'any-change' as const,
+          approveDeployment: async () => false,
+        }),
+      },
+      'us-east-1'
+    );
+    shared = { engine, getState, saveState, provider };
+  }
+  const { engine, saveState } = shared;
   let thrown: unknown;
   await engine
     .deploy('s', {
@@ -323,7 +374,7 @@ async function deploy(opts: {
       (arg): arg is StackState =>
         typeof arg === 'object' && arg !== null && 'resources' in (arg as object)
     );
-  return { last: saved[saved.length - 1], saves: saved.length, calls, thrown, sent };
+  return { last: saved[saved.length - 1], saves: saved.length, calls, thrown, sent, shared };
 }
 
 const provenance = (run: Run, id: string): unknown =>
@@ -729,6 +780,54 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     });
     const second = await deploy({ state: run.last });
     expect(second.saves).toBe(0);
+  });
+});
+
+describe('ProvenanceCapture is rebuilt per deploy on a reused engine', () => {
+  it('a reused engine never drains a capture an earlier, failed deploy left in flight', async () => {
+    // Premise: this deploy-1 shape, run to completion with no forced
+    // failure, proves its capture of SecretQueue is not vacuous -- drained,
+    // it is a NON-empty entry, so a leak of it would actually be visible.
+    const premise = await deploy({ state: v11State({ outputs: false }), outputs: false });
+    expect(premise.thrown).toBeUndefined();
+    const wouldLeak = provenance(premise, 'SecretQueue');
+    expect(wouldLeak).toEqual({ [REF]: { region: 'us-east-1', versions: [V1] } });
+    expect(wouldLeak).not.toEqual({});
+
+    // Deploy 1, on a fresh (to-be-shared) engine: SecretQueue stays
+    // NO_CHANGE, so its migration capture is kicked off past
+    // `--require-approval` (deploy-flow.ts ~1560); Reader's update is
+    // forced to throw, so `executeDeployment` rejects before the drain at
+    // ~1620 and SecretQueue's in-flight capture task is neither installed
+    // nor cleared.
+    const first = await deploy({
+      state: v11State({ outputs: false }),
+      outputs: false,
+      readerDescription: 'b',
+      failUpdateOf: 'Reader',
+    });
+    expect(first.thrown).toBeDefined();
+    expect(first.calls).toContain('update:Reader');
+
+    // Deploy 2, on the SAME engine (`shared: first.shared`): SecretQueue's
+    // record already carries `referenceProvenance: {}` (the field), so
+    // `kickOffProvenanceCapture` starts no task of its own for it this run.
+    // Reader's description changes again (an independent, real change) so
+    // this deploy still saves, regardless of whether anything leaked.
+    const second = await deploy({
+      shared: first.shared,
+      state: v11State({
+        queue: { referenceProvenance: {} },
+        reader: { referenceProvenance: {} },
+        outputs: false,
+      }),
+      outputs: false,
+      readerDescription: 'c',
+    });
+    expect(second.thrown).toBeUndefined();
+    expect(second.calls).toContain('update:Reader');
+    // Nothing from deploy 1's undrained capture leaked into this save.
+    expect(provenance(second, 'SecretQueue')).toEqual({});
   });
 });
 

@@ -489,7 +489,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Integration':
         return this.updateIntegration(
@@ -498,7 +499,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Route':
         return this.updateRoute(
@@ -507,7 +509,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Authorizer':
         return this.updateAuthorizer(
@@ -1911,20 +1914,19 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Name = properties['Name'] as string;
       changed = true;
     }
-    // Description clears on '' when removed (#1160).
-    {
-      const r = this.clearableUpdate(
-        properties['Description'] as string | undefined,
-        previousProperties['Description'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.Description = r.value;
-        changed = true;
-      }
+    // Description: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['Description'] !== undefined &&
+      properties['Description'] !== previousProperties['Description']
+    ) {
+      input.Description = properties['Description'] as string;
+      changed = true;
     }
-    // CorsConfiguration is set here on change; REMOVAL is handled out-of-band
-    // via DeleteCorsConfiguration below (an empty Cors in UpdateApi does not
+    // CorsConfiguration: CloudFormation RESETS it on removal (real CloudFormation
+    // A/B, #5004), so cdkd keeps the reset. Set here on change; REMOVAL is handled
+    // out-of-band via DeleteCorsConfiguration below (an empty Cors in UpdateApi does not
     // clear it — live-probed #1160).
     if (
       properties['CorsConfiguration'] !== undefined &&
@@ -1938,29 +1940,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const corsRemoved =
       properties['CorsConfiguration'] === undefined &&
       previousProperties['CorsConfiguration'] !== undefined;
-    // DisableExecuteApiEndpoint resets to false (CFn default) on removal.
-    {
-      const r = this.clearableUpdate(
-        properties['DisableExecuteApiEndpoint'] as boolean | undefined,
-        previousProperties['DisableExecuteApiEndpoint'] as boolean | undefined,
-        false
-      );
-      if (r.changed) {
-        input.DisableExecuteApiEndpoint = r.value;
-        changed = true;
-      }
+    // DisableExecuteApiEndpoint: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['DisableExecuteApiEndpoint'] !== undefined &&
+      properties['DisableExecuteApiEndpoint'] !== previousProperties['DisableExecuteApiEndpoint']
+    ) {
+      input.DisableExecuteApiEndpoint = properties['DisableExecuteApiEndpoint'] as boolean;
+      changed = true;
     }
-    // Version clears on '' when removed.
-    {
-      const r = this.clearableUpdate(
-        properties['Version'] as string | undefined,
-        previousProperties['Version'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.Version = r.value;
-        changed = true;
-      }
+    // Version: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['Version'] !== undefined &&
+      properties['Version'] !== previousProperties['Version']
+    ) {
+      input.Version = properties['Version'] as string;
+      changed = true;
     }
     // RouteSelectionExpression is NOT cleared: required (and immutable in
     // practice) for WebSocket APIs, fixed for HTTP APIs, so removal is not a
@@ -1972,31 +1970,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.RouteSelectionExpression = properties['RouteSelectionExpression'] as string;
       changed = true;
     }
-    // ApiKeySelectionExpression is WebSocket-only; its CFn default is the
-    // header expression, so removal resets to that (a WebSocket API is the
-    // only place `previous` is ever set).
-    {
-      const r = this.clearableUpdate(
-        properties['ApiKeySelectionExpression'] as string | undefined,
-        previousProperties['ApiKeySelectionExpression'] as string | undefined,
-        '$request.header.x-api-key'
-      );
-      if (r.changed) {
-        input.ApiKeySelectionExpression = r.value;
-        changed = true;
-      }
+    // ApiKeySelectionExpression: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['ApiKeySelectionExpression'] !== undefined &&
+      properties['ApiKeySelectionExpression'] !== previousProperties['ApiKeySelectionExpression']
+    ) {
+      input.ApiKeySelectionExpression = properties['ApiKeySelectionExpression'] as string;
+      changed = true;
     }
-    // IpAddressType resets to 'ipv4' (CFn default) on removal.
-    {
-      const r = this.clearableUpdate(
-        properties['IpAddressType'] as IpAddressType | undefined,
-        previousProperties['IpAddressType'] as IpAddressType | undefined,
-        'ipv4' as IpAddressType
-      );
-      if (r.changed) {
-        input.IpAddressType = r.value;
-        changed = true;
-      }
+    // IpAddressType: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['IpAddressType'] !== undefined &&
+      properties['IpAddressType'] !== previousProperties['IpAddressType']
+    ) {
+      input.IpAddressType = properties['IpAddressType'] as IpAddressType;
+      changed = true;
     }
 
     if (!changed && !corsRemoved) {
@@ -2100,7 +2092,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2149,7 +2142,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const input: UpdateStageCommandInput = { ApiId: apiId, StageName: physicalId };
     let changed = false;
 
-    // AutoDeploy resets to false (CFn default) on removal (#1160).
+    // AutoDeploy: CloudFormation RESETS it to false on removal (real CloudFormation
+    // A/B, #5004), so cdkd keeps the reset.
     {
       const r = this.clearableUpdate(
         properties['AutoDeploy'] as boolean | undefined,
@@ -2171,9 +2165,13 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Description = properties['Description'] as string;
       changed = true;
     }
-    // StageVariables merges on the AWS side; removed keys (or the whole block)
-    // are cleared by sending them with an empty-string value (#1160).
-    {
+    // StageVariables merges on the AWS side. On a deploy CloudFormation KEEPS a
+    // key that is dropped from the template (real CloudFormation A/B, #5004), so
+    // a removed key (or the whole block) sends nothing and stays live. Only the
+    // declared map is sent, and only when it changed. `cdkd drift --revert`
+    // (`restoreFromAws`) is the opposite intent: it must remove a key added
+    // out-of-band, so it clears each dropped key with an empty-string value.
+    if (restoreFromAws) {
       const merged = this.mapWithRemovals(
         properties['StageVariables'],
         previousProperties['StageVariables']
@@ -2182,6 +2180,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.StageVariables = merged;
         changed = true;
       }
+    } else if (
+      this.mapEntryAddedOrChanged(
+        properties['StageVariables'],
+        previousProperties['StageVariables']
+      )
+    ) {
+      input.StageVariables = properties['StageVariables'] as Record<string, string>;
+      changed = true;
     }
     // DefaultRouteSettings is NOT cleared: UpdateStage merges it and offers no
     // whole-block reset (the throttle sub-fields have no account-default
@@ -2200,7 +2206,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // MERGES, so an omitted member is a no-op — live-probed 2026-08-11: a
     // stage keeps its AccessLogSettings verbatim through an UpdateStage that
     // omits it. Both therefore have DEDICATED delete APIs, handled out-of-band
-    // below exactly like CorsConfiguration on ::Api.
+    // below exactly like CorsConfiguration on ::Api. CloudFormation RESETS both on
+    // removal (real CloudFormation A/B, #5004), so cdkd keeps the deletes.
     if (
       properties['AccessLogSettings'] !== undefined &&
       !this.deepEqual(properties['AccessLogSettings'], previousProperties['AccessLogSettings'])
@@ -2225,18 +2232,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['RouteSettings'],
       previousProperties['RouteSettings']
     );
-    // ClientCertificateId clears on '' (detaches the certificate) when removed,
-    // mirroring the AuthorizerId treatment on Route.
-    {
-      const r = this.clearableUpdate(
-        properties['ClientCertificateId'] as string | undefined,
-        previousProperties['ClientCertificateId'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.ClientCertificateId = r.value;
-        changed = true;
-      }
+    // ClientCertificateId: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['ClientCertificateId'] !== undefined &&
+      properties['ClientCertificateId'] !== previousProperties['ClientCertificateId']
+    ) {
+      input.ClientCertificateId = properties['ClientCertificateId'] as string;
+      changed = true;
     }
     // DeploymentId points at a specific Deployment resource; it is only
     // meaningful while AutoDeploy is off, and there is no "no deployment"
@@ -2320,7 +2324,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2387,10 +2392,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // rejects an empty reset for them, so removal is not a valid transition and
     // they pass through as plain changes only. TimeoutInMillis is likewise left
     // alone (its default is integration-type-dependent with no clean reset).
-    // RequestParameters merges per key on the AWS side; removed keys (or the
-    // whole block) are cleared by sending them with an empty-string value
-    // (live-probed #1160 — `{}` does NOT clear).
-    {
+    // RequestParameters merges per key on the AWS side. On a deploy CloudFormation
+    // KEEPS a key that is dropped from the template (real CloudFormation A/B,
+    // #5004), so a removed key (or the whole block) sends nothing and stays live.
+    // `cdkd drift --revert` (`restoreFromAws`) clears a dropped key with an
+    // empty-string value instead (live-probed #1160 — `{}` does NOT clear).
+    if (restoreFromAws) {
       const merged = this.mapWithRemovals(
         properties['RequestParameters'],
         previousProperties['RequestParameters']
@@ -2399,46 +2406,35 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.RequestParameters = merged;
         changed = true;
       }
+    } else if (
+      this.mapEntryAddedOrChanged(
+        properties['RequestParameters'],
+        previousProperties['RequestParameters']
+      )
+    ) {
+      input.RequestParameters = properties['RequestParameters'] as Record<string, string>;
+      changed = true;
     }
-    // Description clears on '' when removed (#1160).
-    {
-      const r = this.clearableUpdate(
-        properties['Description'] as string | undefined,
-        previousProperties['Description'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.Description = r.value;
-        changed = true;
-      }
+    // Description: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['Description'] !== undefined &&
+      properties['Description'] !== previousProperties['Description']
+    ) {
+      input.Description = properties['Description'] as string;
+      changed = true;
     }
 
     // Issue #609 backfill — the ten properties below were previously DECLARED
     // nowhere and delivered nowhere, so a template using any of them lost it
     // silently. They pass through ON CHANGE ONLY.
     //
-    // Absent-field REMOVAL is deliberately NOT backfilled here. Each of these
-    // would need its own live CloudFormation A/B to establish whether CFn
-    // resets the field or retains it, and which sentinel the API accepts as
-    // "unset" (the ones already handled above — Description on '',
-    // RequestParameters per key — were each live-probed before being written
-    // that way, and the probes repeatedly contradicted the intuitive answer).
-    // Guessing a reset value here would turn a silent drop into a silent
-    // OVERWRITE of a live integration, which is strictly worse. Removal
-    // semantics for this group belong to the #1160 umbrella.
-    //
-    // That deferral covers PER-KEY removal too, which is NOT the same
-    // statement and is worth spelling out: `RequestTemplates` and
-    // `ResponseParameters` are maps, and the sibling `RequestParameters` above
-    // goes through `mapWithRemovals` precisely because UpdateIntegration
-    // MERGES a map (live-probed for that field — `{}` does not clear it). If
-    // these two merge the same way, then dropping ONE content type or ONE
-    // Destination while changing another is a CHANGE rather than a whole-field
-    // removal: the reduced map is sent, AWS keeps the old key, and cdkd reports
-    // success. The `''` sentinel `mapWithRemovals` relies on has NOT been
-    // probed for either field, and for `RequestTemplates` an empty string is a
-    // legitimate mapping-template body — so reusing it on a guess could delete
-    // a live template. Both stay whole-value pass-throughs until probed.
+    // Absent-field REMOVAL is deliberately NOT backfilled here: each would need
+    // its own live CloudFormation A/B, and a guessed reset would turn a silent
+    // drop into a silent OVERWRITE of a live integration. `RequestTemplates` and
+    // `ResponseParameters` stay whole-value pass-throughs (an empty string is a
+    // legitimate mapping-template body, so no per-key `''` sentinel is safe).
     if (
       properties['ConnectionId'] != null &&
       properties['ConnectionId'] !== previousProperties['ConnectionId']
@@ -2586,7 +2582,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2630,31 +2627,28 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Target = properties['Target'] as string;
       changed = true;
     }
-    // AuthorizationType resets to 'NONE' (CFn default) on removal (#1160).
-    {
-      const r = this.clearableUpdate(
-        properties['AuthorizationType'] as AuthorizationType | undefined,
-        previousProperties['AuthorizationType'] as AuthorizationType | undefined,
-        'NONE' as AuthorizationType
-      );
-      if (r.changed) {
-        input.AuthorizationType = r.value;
-        changed = true;
-      }
+    // AuthorizationType: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizationType'] !== undefined &&
+      properties['AuthorizationType'] !== previousProperties['AuthorizationType']
+    ) {
+      input.AuthorizationType = properties['AuthorizationType'] as AuthorizationType;
+      changed = true;
     }
-    // AuthorizerId clears on '' (detaches the authorizer) when removed.
-    {
-      const r = this.clearableUpdate(
-        properties['AuthorizerId'] as string | undefined,
-        previousProperties['AuthorizerId'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerId = r.value;
-        changed = true;
-      }
+    // AuthorizerId: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerId'] !== undefined &&
+      properties['AuthorizerId'] !== previousProperties['AuthorizerId']
+    ) {
+      input.AuthorizerId = properties['AuthorizerId'] as string;
+      changed = true;
     }
-    // AuthorizationScopes clears on [] when removed.
+    // AuthorizationScopes: CloudFormation RESETS it on removal (real CloudFormation
+    // A/B, #5004), so cdkd keeps the reset: clears on [] when removed.
     {
       const r = this.clearableUpdate(
         properties['AuthorizationScopes'] as string[] | undefined,
@@ -2666,17 +2660,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
-    // OperationName clears on '' when removed.
-    {
-      const r = this.clearableUpdate(
-        properties['OperationName'] as string | undefined,
-        previousProperties['OperationName'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.OperationName = r.value;
-        changed = true;
-      }
+    // OperationName: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['OperationName'] !== undefined &&
+      properties['OperationName'] !== previousProperties['OperationName']
+    ) {
+      input.OperationName = properties['OperationName'] as string;
+      changed = true;
     }
     // ApiKeyRequired resets to false (CFn default) on removal (#1160).
     {
@@ -2690,10 +2682,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
-    // RequestModels merges on the AWS side exactly like the Integration
-    // RequestParameters map, so a dropped key is cleared by sending it with an
-    // empty-string value (see mapWithRemovals).
-    {
+    // RequestModels merges on the AWS side. On a deploy CloudFormation KEEPS a key
+    // dropped from the template (real CloudFormation A/B, #5004), so a removed key
+    // (or the whole block) sends nothing and stays live. `cdkd drift --revert`
+    // (`restoreFromAws`) clears a dropped key with an empty-string value.
+    if (restoreFromAws) {
       const merged = this.mapWithRemovals(
         properties['RequestModels'],
         previousProperties['RequestModels']
@@ -2702,26 +2695,34 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         input.RequestModels = merged;
         changed = true;
       }
+    } else if (
+      this.mapEntryAddedOrChanged(properties['RequestModels'], previousProperties['RequestModels'])
+    ) {
+      input.RequestModels = properties['RequestModels'] as Record<string, string>;
+      changed = true;
     }
-    // RequestParameters here is Record<string, ParameterConstraints> — an
-    // OBJECT-valued map that UpdateRoute MERGES, so the empty-string per-key
-    // clear the string maps use does not apply and a dropped key survives.
-    // AWS ships a dedicated per-key delete for exactly this (live-probed
-    // 2026-08-11: DeleteRouteRequestParameter clears one parameter), applied
-    // out-of-band below.
+    // RequestParameters here is Record<string, ParameterConstraints>, merged by
+    // UpdateRoute. On a deploy CloudFormation KEEPS a parameter dropped from the
+    // template (real CloudFormation A/B, #5004), so a dropped key stays live.
+    // `cdkd drift --revert` (`restoreFromAws`) removes it with the per-key
+    // DeleteRouteRequestParameter, applied after the update below.
     if (
-      properties['RequestParameters'] !== undefined &&
-      !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+      restoreFromAws
+        ? properties['RequestParameters'] !== undefined &&
+          !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+        : this.mapEntryAddedOrChanged(
+            properties['RequestParameters'],
+            previousProperties['RequestParameters']
+          )
     ) {
       input.RequestParameters = properties[
         'RequestParameters'
       ] as UpdateRouteCommandInput['RequestParameters'];
       changed = true;
     }
-    const droppedRequestParameterKeys = this.droppedKeys(
-      properties['RequestParameters'],
-      previousProperties['RequestParameters']
-    );
+    const droppedRequestParameterKeys = restoreFromAws
+      ? this.droppedKeys(properties['RequestParameters'], previousProperties['RequestParameters'])
+      : [];
     // ModelSelectionExpression / RouteResponseSelectionExpression are
     // WebSocket-only selection expressions. Pass-through on change only, same
     // treatment as the API-level RouteSelectionExpression above: removal is not
@@ -2746,8 +2747,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     if (!changed) {
-      // The per-key parameter deletes are their own API calls, so a template
-      // whose ONLY change is dropping one still has work to do here.
+      // The per-key parameter deletes are their own API calls, so a revert whose
+      // ONLY change is dropping one still has work to do here.
       if (droppedRequestParameterKeys.length > 0) {
         try {
           await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
@@ -2879,41 +2880,37 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.AuthorizerUri = properties['AuthorizerUri'] as string;
       changed = true;
     }
-    // AuthorizerCredentialsArn clears on '' when removed (#1160).
-    {
-      const r = this.clearableUpdate(
-        properties['AuthorizerCredentialsArn'] as string | undefined,
-        previousProperties['AuthorizerCredentialsArn'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerCredentialsArn = r.value;
-        changed = true;
-      }
+    // AuthorizerCredentialsArn: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerCredentialsArn'] !== undefined &&
+      properties['AuthorizerCredentialsArn'] !== previousProperties['AuthorizerCredentialsArn']
+    ) {
+      input.AuthorizerCredentialsArn = properties['AuthorizerCredentialsArn'] as string;
+      changed = true;
     }
-    // AuthorizerPayloadFormatVersion clears on '' when removed.
-    {
-      const r = this.clearableUpdate(
-        properties['AuthorizerPayloadFormatVersion'] as string | undefined,
-        previousProperties['AuthorizerPayloadFormatVersion'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerPayloadFormatVersion = r.value;
-        changed = true;
-      }
+    // AuthorizerPayloadFormatVersion: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerPayloadFormatVersion'] !== undefined &&
+      properties['AuthorizerPayloadFormatVersion'] !==
+        previousProperties['AuthorizerPayloadFormatVersion']
+    ) {
+      input.AuthorizerPayloadFormatVersion = properties['AuthorizerPayloadFormatVersion'] as string;
+      changed = true;
     }
-    // AuthorizerResultTtlInSeconds resets to 0 (CFn default = no cache) on removal.
-    {
-      const r = this.clearableUpdate(
-        properties['AuthorizerResultTtlInSeconds'] as number | undefined,
-        previousProperties['AuthorizerResultTtlInSeconds'] as number | undefined,
-        0
-      );
-      if (r.changed) {
-        input.AuthorizerResultTtlInSeconds = r.value;
-        changed = true;
-      }
+    // AuthorizerResultTtlInSeconds: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerResultTtlInSeconds'] !== undefined &&
+      properties['AuthorizerResultTtlInSeconds'] !==
+        previousProperties['AuthorizerResultTtlInSeconds']
+    ) {
+      input.AuthorizerResultTtlInSeconds = properties['AuthorizerResultTtlInSeconds'] as number;
+      changed = true;
     }
     // EnableSimpleResponses is REQUEST-authorizer-only — UpdateAuthorizer
     // rejects it (even `false`) on a JWT authorizer, so it cannot be blindly
@@ -2925,17 +2922,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.EnableSimpleResponses = properties['EnableSimpleResponses'] as boolean;
       changed = true;
     }
-    // IdentityValidationExpression clears on '' when removed.
-    {
-      const r = this.clearableUpdate(
-        properties['IdentityValidationExpression'] as string | undefined,
-        previousProperties['IdentityValidationExpression'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.IdentityValidationExpression = r.value;
-        changed = true;
-      }
+    // IdentityValidationExpression: CloudFormation KEEPS the live value when it is removed (real
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['IdentityValidationExpression'] !== undefined &&
+      properties['IdentityValidationExpression'] !==
+        previousProperties['IdentityValidationExpression']
+    ) {
+      input.IdentityValidationExpression = properties['IdentityValidationExpression'] as string;
+      changed = true;
     }
 
     if (!changed) {
@@ -2969,31 +2965,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
   /**
    * Resolve an optional update field so that a property REMOVED from the
-   * template is reset to its CloudFormation default instead of silently
-   * retaining the old live value (issue #1160 — the absent-field removal
-   * silent-drop bug class; reference fix `LambdaFunctionProvider`, #1157).
+   * template is reset to a fixed value (issue #1160).
    *
-   * Every API Gateway V2 `Update*` API uses PATCH / merge semantics: an
-   * ABSENT input field means "no change", so passing `undefined` for a
-   * field the user just dropped leaves the old value live on AWS while
-   * CloudFormation resets it to the property default. For each removable
-   * field we therefore send its explicit reset value (`resetValue`) when
-   * it was present before and is now absent.
-   *
-   * The reset values below were live-probed against real AWS (2026-07-22):
-   * string fields clear on `''`, boolean/enum fields on their CFn default,
-   * `AuthorizationScopes` on `[]`, `AuthorizerResultTtlInSeconds` on `0`.
-   * `CorsConfiguration` is the ONE exception — an empty `Cors` in
-   * `UpdateApi` does NOT clear it, so removal is handled out-of-band via
-   * `DeleteCorsConfiguration` (see `updateApi`). Fields that are required
-   * per protocol/authorizer type (`Name`, `RouteKey`, `Target`,
-   * `RouteSelectionExpression`, `IntegrationType`/`Uri`/`Method`,
-   * `PayloadFormatVersion`, `IdentitySource`, `JwtConfiguration`,
-   * `EnableSimpleResponses`) are NOT cleared: the underlying API rejects a
-   * reset value for them, so CloudFormation faces the same constraint and
-   * cdkd leaving them matches CFn. `Stage.Description` /
-   * `DefaultRouteSettings` are likewise left alone — the API silently
-   * ignores an empty-string / empty-object reset for them.
+   * Every API Gateway V2 `Update*` API merges: an ABSENT input field means "no
+   * change". Whether removal should reset is PER PROPERTY, decided by a real
+   * CloudFormation A/B (#5004). Used for the properties CloudFormation RESETS
+   * on removal: Stage `AutoDeploy` (to `false`) and Route `AuthorizationScopes`
+   * (to `[]`); plus Route `ApiKeyRequired` (to `false`), which the #5004
+   * measurement did NOT cover and so keeps its #1160 reset. Api
+   * `CorsConfiguration`, Stage `AccessLogSettings` and `RouteSettings` are reset
+   * through dedicated `Delete*` calls. The measured KEEP set (Api Description /
+   * Version / DisableExecuteApiEndpoint / IpAddressType /
+   * ApiKeySelectionExpression, Stage StageVariables /
+   * ClientCertificateId, Integration Description / RequestParameters, Route
+   * AuthorizationType / AuthorizerId / OperationName / RequestModels /
+   * RequestParameters, Authorizer AuthorizerCredentialsArn /
+   * AuthorizerPayloadFormatVersion / AuthorizerResultTtlInSeconds /
+   * IdentityValidationExpression) is passed through on change only and sends
+   * nothing on removal. Fields required per protocol/authorizer type are never
+   * cleared.
    *
    * Returns `{ changed, value }`: `changed` is true only when the resolved
    * value actually differs from the previous one (so a no-op field never
@@ -3108,7 +3098,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * Resolve a `Record<string, string>` update field (`StageVariables`, Route
+   * Resolve a `Record<string, string>` update field for `cdkd drift --revert` (`StageVariables`, Route
    * `RequestModels`, Integration `RequestParameters`) with per-key removal
    * awareness.
    *
@@ -3130,6 +3120,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (!Object.hasOwn(nextMap, key)) merged[key] = '';
     }
     return merged;
+  }
+
+  /**
+   * True when `next` carries a key that is new or whose value differs from
+   * `previous`. The merge-semantics maps (StageVariables, RequestModels,
+   * RequestParameters) keep a key that is only DROPPED, as CloudFormation does
+   * (#5004), so a drop alone is not a change worth an Update call; when an
+   * entry did change the full `next` map is sent.
+   */
+  private mapEntryAddedOrChanged(next: unknown, previous: unknown): boolean {
+    if (next == null || typeof next !== 'object' || Array.isArray(next)) return false;
+    const prevMap =
+      previous != null && typeof previous === 'object' && !Array.isArray(previous)
+        ? (previous as Record<string, unknown>)
+        : {};
+    return Object.entries(next as Record<string, unknown>).some(
+      ([key, value]) =>
+        !Object.prototype.hasOwnProperty.call(prevMap, key) || !this.deepEqual(value, prevMap[key])
+    );
   }
 
   /**

@@ -6,6 +6,7 @@ import {
   UpdateRouteCommand,
   UpdateAuthorizerCommand,
   DeleteCorsConfigurationCommand,
+  DeleteRouteRequestParameterCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -626,8 +627,13 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
  * never-present -> absent, mixed -> kept fields pass through + removed reset.
  * Fields that the API rejects a reset for (required per protocol/authorizer
  * type, or merge-only maps/objects) are asserted to be left untouched.
+ *
+ * #5004 (real CloudFormation A/B): CloudFormation RESETS only Api
+ * CorsConfiguration, Stage AutoDeploy / AccessLogSettings / RouteSettings and
+ * Route AuthorizationScopes; it KEEPS every other removable property, so those
+ * assert that NO reset is sent.
  */
-describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
+describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () => {
   let provider: ApiGatewayV2Provider;
 
   beforeEach(() => {
@@ -658,8 +664,10 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
 
   // ─── Api ──────────────────────────────────────────────────────────
 
-  it('Api: removed Description/Version reset to "", DisableExecuteApiEndpoint to false, IpAddressType to ipv4', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Api: removed Description/Version/DisableExecuteApiEndpoint/IpAddressType are KEPT — no SDK call (#5004)', async () => {
+    // Real CloudFormation A/B (#5004): CloudFormation leaves the live value, so
+    // cdkd sends nothing. Restoring the old reset ('' / false / ipv4) makes
+    // UpdateApi fire and fails this test.
     await provider.update(
       'ApiLogical',
       API_ID,
@@ -673,13 +681,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
         IpAddressType: 'dualstack',
       }
     );
-    expect(updateApiInput()).toEqual({
-      ApiId: API_ID,
-      Description: '',
-      Version: '',
-      DisableExecuteApiEndpoint: false,
-      IpAddressType: 'ipv4',
-    });
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Api: fields never present produce no reset (zero SDK calls)', async () => {
@@ -688,7 +690,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('Api: mixed — Name changes, Description removed resets to "" in the same call', async () => {
+  it('Api: mixed — Name changes, Description removed is NOT sent (#5004)', async () => {
     mockSend.mockResolvedValueOnce({});
     await provider.update(
       'ApiLogical',
@@ -697,7 +699,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
       { ProtocolType: 'HTTP', Name: 'new' },
       { ProtocolType: 'HTTP', Name: 'old', Description: 'old-desc' }
     );
-    expect(updateApiInput()).toEqual({ ApiId: API_ID, Name: 'new', Description: '' });
+    expect(updateApiInput()).toEqual({ ApiId: API_ID, Name: 'new' });
   });
 
   it('Api: removed CorsConfiguration is cleared via DeleteCorsConfiguration, not UpdateApi', async () => {
@@ -718,7 +720,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
     expect(updateApiInput()).toBeUndefined();
   });
 
-  it('Api: Cors removal + Description removal issues both UpdateApi and DeleteCorsConfiguration', async () => {
+  it('Api: Cors removal still resets (CFn RESETS, #5004) while a removed Description sends nothing', async () => {
     mockSend.mockResolvedValue({});
     await provider.update(
       'ApiLogical',
@@ -727,14 +729,13 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
       { ProtocolType: 'HTTP' },
       { ProtocolType: 'HTTP', Description: 'old', CorsConfiguration: { AllowOrigins: ['*'] } }
     );
-    expect(updateApiInput()).toEqual({ ApiId: API_ID, Description: '' });
+    expect(updateApiInput()).toBeUndefined();
     expect(
       mockSend.mock.calls.some((c) => c[0] instanceof DeleteCorsConfigurationCommand)
     ).toBe(true);
   });
 
-  it('Api: removed ApiKeySelectionExpression resets to the WebSocket default', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Api: removed ApiKeySelectionExpression is KEPT — no SDK call (#5004)', async () => {
     await provider.update(
       'ApiLogical',
       API_ID,
@@ -742,10 +743,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
       { ProtocolType: 'WEBSOCKET' },
       { ProtocolType: 'WEBSOCKET', ApiKeySelectionExpression: '$request.querystring.apikey' }
     );
-    expect(updateApiInput()).toEqual({
-      ApiId: API_ID,
-      ApiKeySelectionExpression: '$request.header.x-api-key',
-    });
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Api: removed RouteSelectionExpression is NOT reset (required/fixed) — no SDK call', async () => {
@@ -761,25 +759,31 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
 
   // ─── Stage ────────────────────────────────────────────────────────
 
-  it('Stage: removed AutoDeploy resets to false; whole StageVariables block cleared per-key', async () => {
+  it('Stage: removed AutoDeploy resets to false (CFn RESETS, #5004); removed StageVariables and ClientCertificateId are KEPT', async () => {
     mockSend.mockResolvedValueOnce({});
     await provider.update(
       'StageLogical',
       '$default',
       'AWS::ApiGatewayV2::Stage',
       { ApiId: API_ID, StageName: '$default' },
-      { ApiId: API_ID, StageName: '$default', AutoDeploy: true, StageVariables: { a: '1', b: '2' } }
+      {
+        ApiId: API_ID,
+        StageName: '$default',
+        AutoDeploy: true,
+        StageVariables: { a: '1', b: '2' },
+        ClientCertificateId: 'cert-1',
+      }
     );
     expect(updateStageInput()).toEqual({
       ApiId: API_ID,
       StageName: '$default',
       AutoDeploy: false,
-      StageVariables: { a: '', b: '' },
     });
   });
 
-  it('Stage: partial StageVariables removal clears only the dropped key', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Stage: dropping StageVariables keys (whole block or one key) sends nothing (#5004)', async () => {
+    // A dropped key stays live, as in CloudFormation. Restoring the '' per-key
+    // clear makes UpdateStage fire and fails this test.
     await provider.update(
       'StageLogical',
       '$default',
@@ -787,21 +791,26 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
       { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1' } },
       { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1', b: '2' } }
     );
-    expect(updateStageInput()!['StageVariables']).toEqual({ a: '1', b: '' });
+    await provider.update(
+      'StageLogical',
+      '$default',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: API_ID, StageName: '$default' },
+      { ApiId: API_ID, StageName: '$default', StageVariables: { constructor: 'old' } }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('Stage: a dropped StageVariables key named `constructor` is still cleared (#3515)', async () => {
-    // #3515 mapWithRemovals: `key in nextMap` found `constructor` on
-    // Object.prototype, so the dropped key never got its '' sentinel.
+  it('Stage: a changed StageVariables key is sent in full; the dropped key is not blanked (#5004)', async () => {
     mockSend.mockResolvedValueOnce({});
     await provider.update(
       'StageLogical',
       '$default',
       'AWS::ApiGatewayV2::Stage',
-      { ApiId: API_ID, StageName: '$default', StageVariables: { keep: 'k' } },
-      { ApiId: API_ID, StageName: '$default', StageVariables: { keep: 'k', constructor: 'old' } }
+      { ApiId: API_ID, StageName: '$default', StageVariables: { a: '2' } },
+      { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1', b: '2' } }
     );
-    expect(updateStageInput()!['StageVariables']).toEqual({ keep: 'k', constructor: '' });
+    expect(updateStageInput()!['StageVariables']).toEqual({ a: '2' });
   });
 
   it('Stage: removed Description is NOT reset (API keeps empty-string) — no SDK call', async () => {
@@ -817,8 +826,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
 
   // ─── Integration ──────────────────────────────────────────────────
 
-  it('Integration: removed Description resets to ""; RequestParameters cleared per-key', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Integration: removed Description and RequestParameters (whole block or key) are KEPT — no SDK call (#5004)', async () => {
     await provider.update(
       'IntLogical',
       'int-1',
@@ -826,11 +834,172 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
       { ApiId: API_ID },
       { ApiId: API_ID, Description: 'old', RequestParameters: { 'append:header.x': 'y' } }
     );
-    expect(updateIntegrationInput()).toEqual({
-      ApiId: API_ID,
-      IntegrationId: 'int-1',
-      Description: '',
-      RequestParameters: { 'append:header.x': '' },
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '1' } },
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Integration: a changed RequestParameters key is sent in full; the dropped key is not blanked (#5004)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '2' } },
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } }
+    );
+    expect(updateIntegrationInput()!['RequestParameters']).toEqual({ 'append:header.a': '2' });
+  });
+
+  it('Route: a changed RequestModels key is sent in full; the dropped key is not blanked (#5004)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'RouteLogical',
+      'r-1',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID, RouteKey: '$default', RequestModels: { 'application/json': 'B' } },
+      {
+        ApiId: API_ID,
+        RouteKey: '$default',
+        RequestModels: { 'application/json': 'A', 'text/plain': 'C' },
+      }
+    );
+    expect(updateRouteInput()!['RequestModels']).toEqual({ 'application/json': 'B' });
+  });
+
+  it('Route: a changed RequestParameters key is sent in full and nothing is deleted (#5004)', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.update(
+      'RouteLogical',
+      'r-1',
+      'AWS::ApiGatewayV2::Route',
+      {
+        ApiId: API_ID,
+        RouteKey: '$connect',
+        RequestParameters: { 'route.request.header.A': { Required: false } },
+      },
+      {
+        ApiId: API_ID,
+        RouteKey: '$connect',
+        RequestParameters: {
+          'route.request.header.A': { Required: true },
+          'route.request.header.B': { Required: true },
+        },
+      }
+    );
+    expect(updateRouteInput()!['RequestParameters']).toEqual({
+      'route.request.header.A': { Required: false },
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  // `cdkd drift --revert` replays the baseline over the AWS-current state with
+  // `desiredFromAwsReadback: true`; it must still remove a console-added key.
+  describe('drift --revert (desiredFromAwsReadback) still clears a console-added map key', () => {
+    const revert = { desiredFromAwsReadback: true } as const;
+
+    it('Stage StageVariables: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'StageLogical',
+        '$default',
+        'AWS::ApiGatewayV2::Stage',
+        { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1' } },
+        { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1', b: '2' } },
+        revert
+      );
+      expect(updateStageInput()!['StageVariables']).toEqual({ a: '1', b: '' });
+    });
+
+    it('Integration RequestParameters: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'IntLogical',
+        'int-1',
+        'AWS::ApiGatewayV2::Integration',
+        { ApiId: API_ID, RequestParameters: { 'append:header.a': '1' } },
+        { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } },
+        revert
+      );
+      expect(updateIntegrationInput()!['RequestParameters']).toEqual({
+        'append:header.a': '1',
+        'append:header.b': '',
+      });
+    });
+
+    it('Route RequestModels: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'RouteLogical',
+        'r-1',
+        'AWS::ApiGatewayV2::Route',
+        { ApiId: API_ID, RouteKey: '$default', RequestModels: { 'application/json': 'A' } },
+        {
+          ApiId: API_ID,
+          RouteKey: '$default',
+          RequestModels: { 'application/json': 'A', 'text/plain': 'C' },
+        },
+        revert
+      );
+      expect(updateRouteInput()!['RequestModels']).toEqual({
+        'application/json': 'A',
+        'text/plain': '',
+      });
+    });
+
+    it('Route RequestParameters: the extra key is removed with DeleteRouteRequestParameter', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'RouteLogical',
+        'r-1',
+        'AWS::ApiGatewayV2::Route',
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: { 'route.request.header.A': { Required: true } },
+        },
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: {
+            'route.request.header.A': { Required: true },
+            'route.request.header.B': { Required: true },
+          },
+        },
+        revert
+      );
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+        .map((c) => c[0].input.RequestParameterKey);
+      expect(deletes).toEqual(['route.request.header.B']);
+    });
+
+    it('Route RequestParameters: a delete-only revert sends no UpdateRoute, only the per-key delete', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'RouteLogical',
+        'r-1',
+        'AWS::ApiGatewayV2::Route',
+        { ApiId: API_ID },
+        {
+          ApiId: API_ID,
+          RequestParameters: {
+            'route.request.header.A': { Required: true },
+            'route.request.header.B': { Required: true },
+          },
+        },
+        revert
+      );
+      expect(updateRouteInput()).toBeUndefined();
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+        .map((c) => c[0].input.RequestParameterKey);
+      expect(deletes).toEqual(['route.request.header.A', 'route.request.header.B']);
     });
   });
 
@@ -847,7 +1016,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
 
   // ─── Route ────────────────────────────────────────────────────────
 
-  it('Route: removed AuthorizationType/AuthorizerId/AuthorizationScopes/OperationName reset', async () => {
+  it('Route: removed AuthorizationScopes resets to [] (CFn RESETS); AuthorizationType/AuthorizerId/OperationName are KEPT (#5004)', async () => {
     mockSend.mockResolvedValueOnce({});
     await provider.update(
       'RouteLogical',
@@ -865,10 +1034,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
     expect(updateRouteInput()).toEqual({
       ApiId: API_ID,
       RouteId: 'route-1',
-      AuthorizationType: 'NONE',
-      AuthorizerId: '',
       AuthorizationScopes: [],
-      OperationName: '',
     });
   });
 
@@ -880,8 +1046,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
 
   // ─── Authorizer ───────────────────────────────────────────────────
 
-  it('Authorizer: removed Ttl/CredentialsArn/PayloadFormatVersion/IdentityValidationExpression reset', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Authorizer: removed Ttl/CredentialsArn/PayloadFormatVersion/IdentityValidationExpression are KEPT — no SDK call (#5004)', async () => {
     await provider.update(
       'AuthLogical',
       'auth-1',
@@ -895,14 +1060,7 @@ describe('ApiGatewayV2Provider update() removal-reset (#1160)', () => {
         IdentityValidationExpression: '^x$',
       }
     );
-    expect(updateAuthorizerInput()).toEqual({
-      ApiId: API_ID,
-      AuthorizerId: 'auth-1',
-      AuthorizerResultTtlInSeconds: 0,
-      AuthorizerCredentialsArn: '',
-      AuthorizerPayloadFormatVersion: '',
-      IdentityValidationExpression: '',
-    });
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Authorizer: removed EnableSimpleResponses and IdentitySource are NOT reset — no SDK call', async () => {

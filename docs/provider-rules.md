@@ -1385,9 +1385,9 @@ shared report is `orphan-report.ts`):
 
 CloudFormation resets a property **removed** from the template to its
 default for MANY types, but not all properties of all types (the reset
-premise is per type; see the A/B bullet below, issue
-[#5004](https://github.com/go-to-k/cdkd/issues/5004)). Reset only what
-CloudFormation actually resets. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+premise is per type; see the A/B bullet below, issue #5004). Reset only what
+CloudFormation actually resets. Most AWS
+`Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
@@ -1406,7 +1406,8 @@ the old value. Permanent, undetectable divergence from CloudFormation
 (confirmed live for Lambda in issue #1155).
 
 **Rule: every optional, mutable property passed to a merge-semantics update
-API needs an explicit reset when it was present before and is absent now.**
+API needs an explicit reset when it was present before, is absent now, and
+CloudFormation was measured to reset it (measure per property, #5004).**
 There are two shapes, both in `src/provisioning/update-removal.ts` (issue
 #1160):
 
@@ -1444,6 +1445,11 @@ reset it to its default — so a property with no such reset (FSx
 own warning, never into the shared line. A type without that entry is never
 warned about, because cdkd cannot say what its `update()` does.
 
+Measured per type (#5004): ElastiCache `CacheCluster` KEEPS
+`SnapshotRetentionLimit`, `AutoMinorVersionUpgrade` and `NotificationTopicArn`
+(so `update()` sends nothing for a removed one) and RESETS
+`LogDeliveryConfigurations` (delivery disabled).
+
 `drift --revert` injects nothing: its previous side is an AWS readback, not a
 template, so `UpdateContext.removedProperties` is empty there. A local
 `clearOnUpdateRemoval` still reads that readback, which is what reverts a
@@ -1461,6 +1467,15 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- Reset only what CloudFormation resets. RDS (#5004): DBCluster
+  `BackupRetentionPeriod` resets to 1; DBCluster and DBInstance
+  `DeletionProtection` / `EnableIAMDatabaseAuthentication` and DBInstance
+  `MonitoringInterval` are KEPT, so `update()` forwards them only when present
+  (DBCluster `MonitoringInterval` is unmeasured and still resets to 0).
+- A real CloudFormation A/B can show it KEEPS the live value: for
+  `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
+  `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset
+  (#5004).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
 - **The reset SENTINEL can vary per API *and* per value KIND within one API,
@@ -1530,6 +1545,27 @@ Checklist when writing or reviewing an `update()`:
   `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
   `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
   their live value, so `ASGProvider` sends nothing for those nine.
+  `AWS::ApiGatewayV2::*` is the same per-type split (issue #5004, real
+  CloudFormation A/B): CloudFormation RESETS only Api `CorsConfiguration`, Stage
+  `AutoDeploy` / `AccessLogSettings` / `RouteSettings` and Route
+  `AuthorizationScopes`. It KEEPS exactly these, so `apigatewayv2-provider.ts`
+  sends nothing for them on a deploy: Api `Description` / `Version` /
+  `DisableExecuteApiEndpoint` / `IpAddressType` / `ApiKeySelectionExpression`;
+  Stage `StageVariables` (per key) / `ClientCertificateId`; Integration
+  `Description` / `RequestParameters` (per key); Route `AuthorizationType` /
+  `AuthorizerId` / `OperationName` / `RequestModels` / `RequestParameters` (per
+  key); Authorizer `AuthorizerCredentialsArn` / `AuthorizerPayloadFormatVersion` /
+  `AuthorizerResultTtlInSeconds` / `IdentityValidationExpression`. Route
+  `ApiKeyRequired` was not measured and is still reset (#1160). The map keys
+  above are still cleared by `cdkd drift --revert` (`desiredFromAwsReadback`),
+  which must remove a console-added key.
+  Also real CloudFormation A/B, go-to-k/cdkd#5004: SQS `SqsManagedSseEnabled` /
+  `DeduplicationScope` / `FifoThroughputLimit`, Secrets Manager `Description` /
+  `KmsKeyId`, IAM Role `MaxSessionDuration` and Lambda Url `InvokeMode` are KEPT
+  at the live value on removal, so those providers send nothing for them. SQS's
+  other attributes, IAM Role `Description` and Lambda Url `Cors` are RESET, and
+  keep their reset. A KEPT property is not recorded after removal (state follows
+  the template), so `cdkd diff` stays clean while the live value remains.
   `AWS::DocDB::DBCluster` and `AWS::Neptune::DBCluster` / `DBInstance` are
   measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
   `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
