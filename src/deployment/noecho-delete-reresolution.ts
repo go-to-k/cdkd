@@ -381,6 +381,9 @@ export class TemplateNoEchoReresolver {
     this.parametersPromise ??= this.resolver
       .resolveParameters(this.options.template, this.options.parameters, {
         inheritedSecrets: this.newBag(),
+        // No collision walk or re-read reads this bag's pseudo table, so no
+        // account lookup for it (issue #4975).
+        recordPseudoParameters: false,
       })
       .catch(() => {
         this.logger.debug(

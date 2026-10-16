@@ -13,7 +13,8 @@
  * (`AWS::Region`, `AWS::Partition`, `AWS::URLSuffix`: pure functions of its
  * region) on the inherited bag, before the collision walk; the walk, the
  * persist re-read and (through the resolver) the diff side bind the same
- * values. `AWS::AccountId` (settled or not: #4975), `AWS::StackName`,
+ * values. `AWS::AccountId` is bound by an account lookup (#4975,
+ * `secret-redaction-nested-accountid-reread.test.ts`); `AWS::StackName`,
  * `AWS::StackId`, `AWS::NotificationARNs` and `AWS::NoValue` stay refused.
  *
  * Drives the REAL resolver, the REAL `redactSecretsForState` and the REAL
@@ -37,10 +38,7 @@ import {
   recordInheritedPseudoParameters,
   rereadParameterExpression,
 } from '../../../src/deployment/secret-redaction/nested-stack.js';
-import {
-  getAccountInfo,
-  resetAccountInfoCache,
-} from '../../../src/deployment/intrinsic-resolver/account-drain.js';
+import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-resolver/account-drain.js';
 import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
 import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -238,25 +236,6 @@ describe('a re-read refuses every pseudo parameter it cannot prove equal across 
       const parent = parentRow(true);
       await stepTwoPointFive(parent, template);
       // The pre-#4644 answer: the literal reads the survivor.
-      expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
-        `postgres://${USER_EXPR}:${EXPR_B}@host`
-      );
-    });
-  }
-
-  // Issue #4975: the account is known without an AWS call only once something
-  // in the process looked it up, so binding it would flip the verdict between
-  // two deploys of one tree. Refused either way, so the verdict is the same.
-  for (const settled of [true, false]) {
-    it(`withdraws the literal's spelling for AWS::AccountId, whether or not the account lookup settled (${settled})`, async () => {
-      if (settled) await getAccountInfo('us-east-1');
-      const template = childTemplate({
-        Mixed: { A: sub(`\${${PARAM_A}}-\${AWS::AccountId}`), B: SEL_B },
-      });
-      const parent = parentRow(true);
-      const calls = mockStsSend.mock.calls.length;
-      await stepTwoPointFive(parent, template);
-      expect(mockStsSend.mock.calls.length).toBe(calls);
       expect(redactInheritedParameterValue(parent, PARAM_A, CONN)).toBe(
         `postgres://${USER_EXPR}:${EXPR_B}@host`
       );

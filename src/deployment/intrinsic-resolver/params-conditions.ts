@@ -65,12 +65,21 @@ export async function resolveParameters(
      *    cdkd's string-keyed redaction model.
      */
     inheritedSecrets?: RecordedSecretValues;
+    /**
+     * `false` for a caller that never runs the collision walk or a re-read on
+     * `inheritedSecrets`, so the pseudo-parameter table (and its account
+     * lookup, issue #4975) would go unread.
+     */
+    recordPseudoParameters?: boolean;
   }
 ): Promise<Record<string, unknown>> {
   const inheritedSecrets = options?.inheritedSecrets;
   // Issue #4962: the pseudo values a nested child's re-read binds, on the bag
-  // the collision walk right after this call reads.
-  if (inheritedSecrets) await recordInheritedPseudoParameterValues(this, inheritedSecrets);
+  // the collision walk right after this call reads (`AWS::AccountId` only for
+  // a template that may re-read it, issue #4975).
+  if (inheritedSecrets && options?.recordPseudoParameters !== false) {
+    await recordInheritedPseudoParameterValues(this, inheritedSecrets, template);
+  }
   // SANITIZED as well as masked (go-to-k/cdkd#3426). The three lines below
   // print a template-supplied PARAMETER VALUE, so the control-character class
   // reaches them exactly as it reached the `Fn::ImportValue` bindings; they
