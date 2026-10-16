@@ -6,10 +6,11 @@ import { derivePartitionAndUrlSuffix } from '../../../src/utils/aws-partition.js
 
 /**
  * Issue #1814: `derivePseudoParametersFromRegion` is cdk-local's, and cdk-local
- * carries its own partition table whose prefix tests are case-sensitive — so the
+ * carried its own partition table whose prefix tests were case-sensitive — so the
  * issue #1795 canonicalization inside `src/utils/aws-partition.ts` structurally
- * could not reach it. `src/local/intrinsic-image.ts` now wraps the re-export with
- * a canonicalizing boundary.
+ * could not reach it. `src/local/intrinsic-image.ts` wraps the re-export with a
+ * canonicalizing boundary, which still matters for the returned region after
+ * cdk-local folded its prefix tests (issue #1831).
  *
  * The bar these tests hold to is the one #1795 set: for every partition, an
  * upper-cased region must produce the SAME answer as its lower-cased form, and

@@ -34,9 +34,9 @@ export {
  * normalization point. This helper is a FOURTH derivation that the fix
  * structurally could not reach (issue
  * [#1814](https://github.com/go-to-k/cdkd/issues/1814)): the implementation is
- * cdk-local's, and it carries its own partition table whose prefix tests are
+ * cdk-local's, and it carried its own partition table whose prefix tests were
  * case-sensitive in the same direction. So an upper-cased `--region CN-NORTH-1`
- * still fell through to the commercial partition here and synthesized
+ * fell through to the commercial partition here and synthesized
  * `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a `cn-` region carrying the
  * commercial suffix, a host that does not exist — at the five call sites, across
  * three files, that reach this symbol:
@@ -45,31 +45,19 @@ export {
  * - `src/cli/commands/local-invoke-agentcore.ts` (x3)
  * - `src/local/lambda-resolver.ts`
  *
- * The preferred fix is upstream — lower-casing the region inside cdk-local's
- * own implementation, which would keep exactly one normalization point. This
- * is the filed FALLBACK: a thin canonicalizing boundary over the re-export,
- * the same shape `docker-image-builder.ts` uses for its error-class boundary.
- * It stays correct if upstream later canonicalizes too, because
- * {@link canonicalizeRegion} is idempotent — double-folding is a no-op.
- *
- * Canonicalizing the INPUT (rather than post-processing the result) is what
- * makes this complete: the returned `region` is substituted as
- * `${AWS::Region}` into every ARN the resolver builds, so a raw upper-cased
- * value would misspell those too, not just the derived suffix.
+ * cdk-local's table now matches prefixes case-insensitively and carries the
+ * three rows cdkd's issue #1764 added (issue
+ * [#1831](https://github.com/go-to-k/cdkd/issues/1831)), so the PARTITION and
+ * URL suffix agree with cdkd's table without this wrapper. The wrapper stays
+ * for the returned `region`: upstream echoes its input unfolded, and that value
+ * is substituted as `${AWS::Region}` into every ARN the resolver builds, so a
+ * raw upper-cased region would misspell those. Canonicalizing the INPUT
+ * (rather than post-processing the result) is what covers both.
+ * {@link canonicalizeRegion} is idempotent, so this stays correct if upstream
+ * later folds the region too.
  *
  * `undefined` passes through untouched — upstream answers `undefined` for a
  * missing region and that verdict is not this shim's to change.
- *
- * ## What this deliberately does NOT fix
- *
- * Case is only half the agreement between the two tables. cdk-local's table
- * predates the three rows cdkd's issue #1764 added, so `us-isof-` / `eu-isoe-` /
- * `eusc-` regions resolve COMMERCIAL here even when spelled canonically — a
- * table-COVERAGE divergence, orthogonal to case, filed as issue
- * [#1821](https://github.com/go-to-k/cdkd/issues/1821). Widening this wrapper
- * into a second partition authority would fix it, but that is a design call of
- * its own; the divergence is pinned by a unit case so it fails loudly rather
- * than staying latent.
  */
 export function derivePseudoParametersFromRegion(
   region: string | undefined,
