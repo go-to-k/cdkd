@@ -451,27 +451,17 @@ export class ECSProvider implements ResourceProvider {
   private logger = getLogger().child('ECSProvider');
 
   /**
-   * Issue #1160: `UpdateService` keeps an absent member's live value, so a
-   * Service property REMOVED from the template is sent its CFn / API default.
+   * `removalDefaults` is deliberately EMPTY for `AWS::ECS::Service`. A real
+   * CloudFormation A/B (#5004) showed CloudFormation KEEPS the live value when
+   * these are removed from the template: CapacityProviderStrategy,
+   * PlacementConstraints, PlacementStrategies, PlatformVersion,
+   * HealthCheckGracePeriodSeconds, EnableECSManagedTags, PropagateTags,
+   * EnableExecuteCommand. `UpdateService` keeps an absent member, so sending
+   * nothing is parity. ServiceConnectConfiguration IS reset by CloudFormation
+   * (see `updateService`). The earlier #1160 resets for the keep list were
+   * parity bugs and are removed.
    */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    [
-      'AWS::ECS::Service',
-      new Map<string, unknown>([
-        // Empty list reverts the service to its launch type (AWS-documented).
-        // If the service was created with a capacity provider and no launch
-        // type, AWS rejects the reset — the same constraint CloudFormation
-        // faces.
-        ['CapacityProviderStrategy', []],
-        ['PlacementConstraints', []],
-        ['PlatformVersion', 'LATEST'],
-        ['HealthCheckGracePeriodSeconds', 0],
-        ['EnableECSManagedTags', false],
-        ['PropagateTags', 'NONE'],
-        ['EnableExecuteCommand', false],
-      ]),
-    ],
-  ]);
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1819,28 +1809,19 @@ export class ECSProvider implements ResourceProvider {
           ) ?? [])
         : undefined;
 
-    // issue #1160 — reset removed fields to their CloudFormation defaults.
-    // UpdateService uses merge semantics: an ABSENT input field means "no
-    // change", so a property dropped from the template silently keeps its old
-    // live value (deploy goes green, state.json records the removal, next diff
-    // says "No changes" — the divergence is permanent and invisible). For each
-    // removable field we send its explicit reset value when it was present
-    // before and is now absent. Reset values were live-probed against real AWS
-    // (2026-07-22, issue #1160): platformVersion clears on 'LATEST',
-    // healthCheckGracePeriodSeconds on 0, propagateTags on 'NONE',
-    // enableECSManagedTags on false, and each array field on an empty array
-    // ([] accepted + AWS-documented as the clear sentinel). enableExecuteCommand
-    // resets on false per the CFn default (a plain boolean; not live-probed
-    // because execute-command requires an SSM-capable task role). LoadBalancers /
-    // ServiceRegistries already clear via #975 (their change-detected empty-list
-    // sentinel above).
+    // Removal semantics (issue #5004). UpdateService treats an ABSENT input
+    // field as "no change". CloudFormation KEEPS the live value of
+    // CapacityProviderStrategy / PlacementConstraints / PlacementStrategies /
+    // PlatformVersion / HealthCheckGracePeriodSeconds / EnableECSManagedTags /
+    // PropagateTags / EnableExecuteCommand when they are removed from the
+    // template (real A/B), so those eight send NOTHING on removal. LoadBalancers
+    // / ServiceRegistries still clear via #975 (their change-detected
+    // empty-list sentinel above).
     //
     // The array fields below are converted from CFn PascalCase to SDK camelCase
-    // via their `convert*` helpers before the removal-reset check (issue #1165 —
-    // the same silent-drop class as `DeploymentConfiguration` below; without the
-    // conversion the SDK reads the camelCase keys, finds them absent, and drops
-    // the whole value on update). `clearOnUpdateRemoval` only inspects the
-    // PREVIOUS side for presence, so it may stay raw.
+    // via their `convert*` helpers (issue #1165 — the same silent-drop class as
+    // `DeploymentConfiguration` below; without the conversion the SDK reads the
+    // camelCase keys, finds them absent, and drops the whole value on update).
     //
     // `DeploymentConfiguration` casing is now fixed on both create() and
     // update() (converted via `convertDeploymentConfiguration`). Its removal
@@ -2055,25 +2036,21 @@ export class ECSProvider implements ResourceProvider {
     // reset (immutable / required / always-carried): ServiceName (immutable,
     // guarded above), Cluster / TaskDefinition / DesiredCount /
     // NetworkConfiguration, SchedulingStrategy (create-only).
-    // The constant resets arrive in `properties` from `removalDefaults`;
-    // `PlacementStrategies` accepts the `PlacementStrategy` alias, so its
-    // reset stays local.
+    // Removal of CapacityProviderStrategy / PlacementConstraints /
+    // PlacementStrategies / PlatformVersion / HealthCheckGracePeriodSeconds /
+    // EnableECSManagedTags / PropagateTags / EnableExecuteCommand sends NOTHING:
+    // CloudFormation keeps the live value (real A/B, #5004), and UpdateService
+    // treats an absent member as unchanged.
     const capacityProviderStrategyInput = this.convertCapacityProviderStrategy(
       properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
     );
     const placementConstraintsInput = this.convertPlacementConstraints(
       properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
     );
-    const placementStrategyInput = clearOnUpdateRemoval(
-      this.convertPlacementStrategies(
-        (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
-          | Array<Record<string, unknown>>
-          | undefined
-      ),
-      (previousProperties['PlacementStrategies'] ?? previousProperties['PlacementStrategy']) as
-        | PlacementStrategy[]
-        | undefined,
-      []
+    const placementStrategyInput = this.convertPlacementStrategies(
+      (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
+        | Array<Record<string, unknown>>
+        | undefined
     );
     const platformVersionInput = properties['PlatformVersion'] as string | undefined;
     const healthCheckGracePeriodSecondsInput = properties['HealthCheckGracePeriodSeconds'] as
@@ -2093,13 +2070,13 @@ export class ECSProvider implements ResourceProvider {
     // doctrine wants live-probed reset sentinels; none of these have been
     // live-probed yet, so each choice below is documented from the API docs
     // and marked UNVERIFIED-LIVE where a probe is still owed:
-    //   - ServiceConnectConfiguration -> `{ enabled: false }`. The ECS
-    //     developer guide documents Service Connect as disabled by default
-    //     and `enabled: false` as the API's turn-off shape (`enabled` is the
-    //     only required member). UNVERIFIED-LIVE.
-    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`, matching
+    //   - ServiceConnectConfiguration -> `{ enabled: false }`. A real
+    //     CloudFormation A/B (#5004) confirmed CloudFormation resets it to
+    //     disabled on removal, so this reset is parity.
+    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`. NOT
+    //     measured against CloudFormation (#5004): behavior unchanged, matching
     //     the empty-list clear sentinel of the sibling list members
-    //     (LoadBalancers / ServiceRegistries / PlacementConstraints). Unlike
+    //     (LoadBalancers / ServiceRegistries). Unlike
     //     those, the UpdateService doc does not spell out "pass an empty list
     //     to remove" for these two. UNVERIFIED-LIVE.
     //   - AvailabilityZoneRebalancing -> DEFERRED (no reset sent). The SDK

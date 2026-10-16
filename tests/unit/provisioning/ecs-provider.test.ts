@@ -1696,15 +1696,17 @@ describe('ECSProvider', () => {
         expect(updateCall.input.serviceRegistries).toBeUndefined();
       });
 
-      // --- issue #1160: absent-field removal reset to CFn defaults -----------
-      // UpdateService uses merge semantics, so a field DROPPED from the template
-      // must be sent as its explicit CFn-default reset value (live-probed against
-      // real AWS 2026-07-22), else the old live value silently persists.
-      describe('removal reset to CFn defaults (issue #1160)', () => {
+      // --- issue #5004: CloudFormation KEEPS these on removal ----------------
+      // A real CloudFormation A/B showed a removed CapacityProviderStrategy /
+      // PlacementConstraints / PlacementStrategies / PlatformVersion /
+      // HealthCheckGracePeriodSeconds / EnableECSManagedTags / PropagateTags /
+      // EnableExecuteCommand keeps its live value, so cdkd sends NOTHING for
+      // them (UpdateService treats an absent member as unchanged).
+      describe('removal keeps the live value (issue #5004)', () => {
         const arn = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
         const okResponse = { service: { serviceArn: arn, serviceName: 'my-service' } };
 
-        it('resets removed scalar/enum fields to their CFn defaults on update', async () => {
+        it('sends no reset for removed fields CloudFormation keeps', async () => {
           mockSend.mockResolvedValueOnce(okResponse);
 
           await provider.update('MyService', arn, 'AWS::ECS::Service', {
@@ -1724,14 +1726,14 @@ describe('ECSProvider', () => {
           });
 
           const input = mockSend.mock.calls[0][0].input;
-          expect(input.platformVersion).toBe('LATEST');
-          expect(input.healthCheckGracePeriodSeconds).toBe(0);
-          expect(input.propagateTags).toBe('NONE');
-          expect(input.enableECSManagedTags).toBe(false);
-          expect(input.enableExecuteCommand).toBe(false);
-          expect(input.capacityProviderStrategy).toEqual([]);
-          expect(input.placementConstraints).toEqual([]);
-          expect(input.placementStrategy).toEqual([]);
+          expect(input.platformVersion).toBeUndefined();
+          expect(input.healthCheckGracePeriodSeconds).toBeUndefined();
+          expect(input.propagateTags).toBeUndefined();
+          expect(input.enableECSManagedTags).toBeUndefined();
+          expect(input.enableExecuteCommand).toBeUndefined();
+          expect(input.capacityProviderStrategy).toBeUndefined();
+          expect(input.placementConstraints).toBeUndefined();
+          expect(input.placementStrategy).toBeUndefined();
         });
 
         it('leaves a never-present field absent (no spurious reset value)', async () => {

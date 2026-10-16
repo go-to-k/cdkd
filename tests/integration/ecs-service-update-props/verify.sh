@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160 +
+# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #5004 +
 # #1165 + #1861).
 #
 # Exercises four silent-drop classes on an SDK-routed `AWS::ECS::Service`
@@ -10,11 +10,9 @@
 #         mapped them into UpdateServiceCommand, so cdkd diff detected the
 #         change, deploy went green, state recorded the NEW value, but AWS kept
 #         the OLD one.
-#   #1160 (reset-on-removal): a field DROPPED from the template must reset to
-#         its CloudFormation default. UpdateService uses merge semantics (an
-#         absent input field means "no change"), so before the #1160 fix a
-#         removed PlatformVersion / HealthCheckGracePeriodSeconds silently kept
-#         its old live value.
+#   #5004 (retain-on-removal): a PlatformVersion / HealthCheckGracePeriodSeconds
+#         DROPPED from the template keeps its live value, as CloudFormation does
+#         (real CFn A/B). #1160 had reset them; that was a parity bug.
 #   #1165 (nested-object casing): a CFn PascalCase nested object
 #         (DeploymentConfiguration) must be converted to the SDK's camelCase
 #         input shape. Before the #1165 fix ECSProvider passed the block raw,
@@ -90,7 +88,7 @@
 #   Phase 2 (update): CDKD_TEST_UPDATE=true flips enableECSManagedTags == true,
 #                     propagateTags == TASK_DEFINITION (#975) AND drops
 #                     PlatformVersion / grace -> assert the #975 changes reach
-#                     AWS AND the #1160 removals reset to LATEST / 0. Also
+#                     AWS AND the removals are RETAINED (1.4.0 / 30, #5004). Also
 #                     DROPS the two optional circuit-breaker members from a
 #                     still-declared block -> assert AWS shows the defaults
 #                     (#1861 removal arm).
@@ -252,7 +250,7 @@ case "${BASE_PROPAGATE}" in
 esac
 echo "    OK: base state on AWS is enableECSManagedTags=false, propagateTags=${BASE_PROPAGATE}"
 
-# Base assertion for the #1160 removable fields: PlatformVersion / grace period
+# Base assertion for the #5004 retained-on-removal fields: PlatformVersion / grace period
 # were SET by the phase-1 template (via L1 override).
 BASE_PLATFORM=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
@@ -269,7 +267,7 @@ if [ "${BASE_GRACE}" != "30" ]; then
   echo "FAIL: base healthCheckGracePeriodSeconds is '${BASE_GRACE}', expected '30'" >&2
   exit 1
 fi
-echo "    OK: base #1160 fields on AWS are platformVersion=1.4.0, grace=30"
+echo "    OK: base #5004 retained-on-removal fields on AWS are platformVersion=1.4.0, grace=30"
 
 # Base assertion for issue #1165 (nested-object casing): the custom
 # DeploymentConfiguration set by phase 1 (MaximumPercent 150 /
@@ -578,7 +576,7 @@ if [ "${OBS_SVC_CONTROLLER}" != "ECS" ]; then
 fi
 echo "    OK: observedProperties captured AvailabilityZoneRebalancing=ENABLED + DeploymentController.Type=ECS (#609 read-back verified against real AWS)"
 
-# --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
+# --- Phase 2: UPDATE pass (issue #975 add-on-update + #5004 retain-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -606,8 +604,9 @@ if [ "${AFTER_PROPAGATE}" != "TASK_DEFINITION" ]; then
 fi
 echo "    OK: after update, AWS shows enableECSManagedTags=true, propagateTags=TASK_DEFINITION (#975 silent-drop CLOSED)"
 
-# #1160: the removed fields must have reset to their CFn defaults, NOT kept the
-# phase-1 values (the merge-semantics silent drop this PR closes).
+# #5004: CloudFormation KEEPS PlatformVersion / HealthCheckGracePeriodSeconds
+# when they are removed from the template (real CFn A/B), so the removed fields
+# must be RETAINED at the phase-1 values (asserted live at baseline above).
 AFTER_PLATFORM=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
   --query 'services[0].platformVersion' --output text 2>/dev/null)
@@ -615,15 +614,15 @@ AFTER_GRACE=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
   --query 'services[0].healthCheckGracePeriodSeconds' --output json 2>/dev/null)
 
-if [ "${AFTER_PLATFORM}" != "LATEST" ]; then
-  echo "FAIL: after removal, platformVersion is '${AFTER_PLATFORM}', expected 'LATEST' (#1160 PlatformVersion silent-drop NOT closed)" >&2
+if [ "${AFTER_PLATFORM}" != "1.4.0" ]; then
+  echo "FAIL: after removal, platformVersion is '${AFTER_PLATFORM}', expected the retained '1.4.0' (#5004: CloudFormation keeps it)" >&2
   exit 1
 fi
-if [ "${AFTER_GRACE}" != "0" ]; then
-  echo "FAIL: after removal, healthCheckGracePeriodSeconds is '${AFTER_GRACE}', expected '0' (#1160 HealthCheckGracePeriodSeconds silent-drop NOT closed)" >&2
+if [ "${AFTER_GRACE}" != "30" ]; then
+  echo "FAIL: after removal, healthCheckGracePeriodSeconds is '${AFTER_GRACE}', expected the retained '30' (#5004: CloudFormation keeps it)" >&2
   exit 1
 fi
-echo "    OK: after removal, AWS reset platformVersion=LATEST, grace=0 (#1160 silent-drop CLOSED)"
+echo "    OK: after removal, AWS retained platformVersion=1.4.0, grace=30 (#5004 CloudFormation parity)"
 
 # #1165 update SET path: phase 2 CHANGED the DeploymentConfiguration to a new
 # custom shape (MaximumPercent 175 / MinimumHealthyPercent 25 /
@@ -851,4 +850,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds retained-on-removal (#5004); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"

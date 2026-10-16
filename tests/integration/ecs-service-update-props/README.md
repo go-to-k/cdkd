@@ -1,8 +1,8 @@
-# ECS Service UPDATE-props Example (issues #975 + #1160)
+# ECS Service UPDATE-props Example (issues #975 + #5004)
 
 An integration test that verifies `AWS::ECS::Service` property changes reach
 AWS via `ECSProvider.updateService()` for two silent-drop classes: a CHANGED
-field (#975) and a REMOVED field (#1160).
+field (#975) and a REMOVED field (#5004).
 
 ## Background
 
@@ -14,15 +14,13 @@ detected a change — but deploy went green and state.json recorded the NEW
 value while AWS silently kept the OLD value (a poisoned-state silent drop,
 same class as #951 / #952).
 
-The #1160 fix closes the mirror-image case: a field REMOVED from the template.
-`UpdateService` uses merge semantics (an absent input field means "no change"),
-so `updateService()` passing `undefined` for a dropped field silently kept the
-old live value. The provider now resets each removed field to its
-CloudFormation default (live-probed 2026-07-22): `PlatformVersion` -> `LATEST`,
-`HealthCheckGracePeriodSeconds` -> `0`, `PropagateTags` -> `NONE`,
-`EnableECSManagedTags` / `EnableExecuteCommand` -> `false`, and
-`CapacityProviderStrategy` / `PlacementConstraints` / `PlacementStrategies` ->
-empty array. Removing the WHOLE `DeploymentConfiguration` deliberately resets
+A field REMOVED from the template is handled per property. A real
+CloudFormation A/B (#5004) showed CloudFormation KEEPS the live value of
+`PlatformVersion`, `HealthCheckGracePeriodSeconds`, `PropagateTags`,
+`EnableECSManagedTags`, `EnableExecuteCommand`, `CapacityProviderStrategy`,
+`PlacementConstraints` and `PlacementStrategies`, so cdkd sends nothing for
+them (this fixture asserts `PlatformVersion` / grace are retained). It RESETS
+`ServiceConnectConfiguration` to disabled, and cdkd does the same. Removing the WHOLE `DeploymentConfiguration` deliberately resets
 NOTHING — that was live-probed as CloudFormation parity (PR #1805), so a reset
 there would be the divergence. One level DOWN is different: dropping an
 OPTIONAL member of a still-declared `DeploymentCircuitBreaker`
@@ -87,8 +85,8 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
    for the wrong reason.
 2. **Phase 2 (update)**: redeploy with `CDKD_TEST_UPDATE=true` flipping to
    `enableECSManagedTags: true` / `propagateTags: TASK_DEFINITION` (#975) AND
-   dropping `PlatformVersion` / `HealthCheckGracePeriodSeconds` (#1160); assert
-   the #975 changes reach AWS AND the #1160 removals reset to `LATEST` / `0`.
+   dropping `PlatformVersion` / `HealthCheckGracePeriodSeconds` (#5004); assert
+   the #975 changes reach AWS AND the removed fields are RETAINED (`1.4.0` / `30`).
 3. **Phase 2b (force-nonce)**: redeploy with
    `CDKD_TEST_UPDATE=true,force-nonce` — the template is identical to phase 2
    except the `ForceNewDeployment.ForceNewDeploymentNonce` bump; assert a
