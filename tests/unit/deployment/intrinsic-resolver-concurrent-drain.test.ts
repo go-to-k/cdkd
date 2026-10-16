@@ -2943,8 +2943,7 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
       engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
       'redactOutputs'
     );
-    const needleBag = (): Map<string, string> =>
-      (engine as unknown as { outputSecrets: Map<string, string> }).outputSecrets;
+    const needleBag = (): Map<string, string> => engine.outputsRun.outputSecrets;
 
     const literal = `lit-${valueOf(SLOW_ID)}-tail`;
     const template: CloudFormationTemplate = {

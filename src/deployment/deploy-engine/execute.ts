@@ -45,6 +45,7 @@ import {
 } from '../../provisioning/auxiliary-failure.js';
 import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
+import { resolveOutputs } from './outputs.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -1201,7 +1202,9 @@ export async function executeDeployment(
     // unbounded here as it ever was. The trade the wrap makes is on
     // `withSharedDrainBudget`.
     outputs = await withSharedDrainBudget(() =>
-      this.resolveOutputs(
+      resolveOutputs(
+        this.outputsRun,
+        this.outputsDeps(),
         template,
         newResources,
         stackName,
@@ -1215,9 +1218,9 @@ export async function executeDeployment(
     // (`withParentInfo`), the exports-index `updateForStack` and
     // `buildDisplayOutputs` each redact this bag again when they read it
     // (issue #2814). `redactOutputs` folds the outputs pass map into
-    // `this.outputSecrets` — the outputs' own substituted references — and
-    // `resolveOutputs` filled `this.outputsTemplateSource` with the
-    // unresolved values that position
+    // `this.outputsRun.outputSecrets` — the outputs' own substituted
+    // references — and `resolveOutputs` filled `this.outputsRun.outputsTemplateSource`
+    // with the unresolved values that position
     // them (#1910).
     const resolvedOutputsBeforeRedaction = outputs;
     outputs = this.redactOutputs(outputs);
@@ -1268,10 +1271,12 @@ export async function executeDeployment(
       outputs,
       // Always written, `[]` included: on this path the bag was re-resolved,
       // so the set is KNOWN (issue #2193). Absent would read as "not known".
-      exportNames: [...this.resolvedExportNames],
+      exportNames: [...this.outputsRun.resolvedExportNames],
       // This pass's skipped set, omitted when empty (issue #2740). Copied,
       // like the `exportNames` / `imports` spreads beside it.
-      ...(this.skippedOutputs && { skippedOutputs: { ...this.skippedOutputs } }),
+      ...(this.outputsRun.skippedOutputs && {
+        skippedOutputs: { ...this.outputsRun.skippedOutputs },
+      }),
       ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
       ...(this.recordedOutputReads.length > 0 && {
         outputReads: [...this.recordedOutputReads],

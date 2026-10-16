@@ -24,6 +24,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -160,7 +161,15 @@ async function persistAndDesired(
     : await resolver.resolveParameters(template, parameters, { inheritedSecrets: parent });
   poisonRenderedSpellingsCollidingIn(template, values, parent);
   const engine = childEngine(parent);
-  const resolved = await engine.resolveOutputs(template, {}, 'Parent~Child', template, parameters);
+  const resolved = await resolveOutputs(
+    engine.outputsRun,
+    engine.outputsDeps(),
+    template,
+    {},
+    'Parent~Child',
+    template,
+    parameters
+  );
   // Twice, as the save's choke point re-redacts the pass's own redaction.
   const once = engine.redactOutputs(resolved);
   const persisted = engine.redactOutputs(once);

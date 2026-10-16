@@ -831,8 +831,8 @@ describe('DeployEngine records the outputs it skipped (issue #2740)', () => {
     // `{}` an output named `__proto__` REPLACES that prototype, and a later
     // lookup of a name the bag never stored inherits from it. Reverting the
     // `Object.create(null)` reds this line and nothing else.
-    const sourceBag = (engine as unknown as { outputsTemplateSource: object })
-      .outputsTemplateSource;
+    const sourceBag = (engine as unknown as { outputsRun: { outputsTemplateSource: object } })
+      .outputsRun.outputsTemplateSource;
     expect(Object.getPrototypeOf(sourceBag)).toBeNull();
   });
 

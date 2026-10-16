@@ -1303,13 +1303,14 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     it('(3) a nested segment\'s previousOutputs are masked by position in the journal', async () => {
       const engine = makeEngine() as unknown as Record<string, unknown> & {
         writeRollbackJournalSegment: (...args: unknown[]) => Promise<boolean>;
+        outputsRun: { outputsTemplateSource: Record<string, unknown>; outputsSourceUsable: boolean };
       };
       engine['constructPathTemplate'] = template();
-      engine['outputsTemplateSource'] = Object.assign(Object.create(null), {
+      engine.outputsRun.outputsTemplateSource = Object.assign(Object.create(null), {
         Out: { Ref: 'Token' },
         Plain: { Ref: 'Plain' },
       });
-      engine['outputsSourceUsable'] = true;
+      engine.outputsRun.outputsSourceUsable = true;
       await engine.writeRollbackJournalSegment(STACK, [], [], 'nested-pending-parent', false, {
         previousOutputs: { outputs: { Out: TOKEN, Plain: 'plain-value' } },
       });
@@ -1353,8 +1354,9 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
         parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: REGION },
       }) as unknown as Record<string, unknown> & {
         settleJournalAfterSuccess: (...args: unknown[]) => Promise<number>;
+        outputsRun: { carriedExportAliasRefusal: unknown };
       };
-      engine['carriedExportAliasRefusal'] = undefined;
+      engine.outputsRun.carriedExportAliasRefusal = undefined;
       const state = v11State();
       state.outputs = { Kept: 'v' };
       state.exportNames = ['Kept'];

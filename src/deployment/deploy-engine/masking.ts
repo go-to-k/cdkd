@@ -336,16 +336,16 @@ export function rememberRecoverableMaskedOutputs(
  * pair, would keep a positioning the pass itself no longer vouches for.
  */
 export function absorbOutputsPassSecrets(this: DeployEngine): void {
-  for (const passSecrets of this.outputsPassSecretMaps) {
+  for (const passSecrets of this.outputsRun.outputsPassSecretMaps) {
     for (const [value, expr] of passSecrets) {
-      this.outputSecrets.set(value, expr);
+      this.outputsRun.outputSecrets.set(value, expr);
     }
-    mergeResolvedPairs(passSecrets, this.outputSecrets);
+    mergeResolvedPairs(passSecrets, this.outputsRun.outputSecrets);
     // go-to-k/cdkd#4849: the physical ids the pass read stay copies of an id
     // in the outputs bag too (an `!Ref Topic` output, its export), or a
     // resource NAMED from a `NoEcho` value stores its ARN output as `***`.
     for (const physicalId of physicalNameCopiesOf.get(passSecrets) ?? []) {
-      recordPhysicalNameCopy(this.outputSecrets, physicalId);
+      recordPhysicalNameCopy(this.outputsRun.outputSecrets, physicalId);
     }
   }
 }
@@ -365,7 +365,9 @@ export function redactOutputs(
   const redacted = redactOutputsBag.call(this, outputs);
   // State schema v12: a redacted copy of a bag this deploy resolved is still
   // that bag, for the persist writer's provenance (`outputsResolvedThisRun`).
-  if (this.outputsResolvedThisRun.has(outputs)) this.outputsResolvedThisRun.add(redacted);
+  if (this.outputsRun.outputsResolvedThisRun.has(outputs)) {
+    this.outputsRun.outputsResolvedThisRun.add(redacted);
+  }
   return redacted;
 }
 
@@ -379,7 +381,7 @@ function redactOutputsBag(
   // go-to-k/cdkd#4043: the positional `NoEcho` arm runs on every call, after
   // the dynamic-reference redaction, so an output a `NoEcho` parameter served
   // persists `***` whatever its type or length.
-  if (this.outputSecrets.size === 0) return this.maskOutputsByPosition(outputs);
+  if (this.outputsRun.outputSecrets.size === 0) return this.maskOutputsByPosition(outputs);
   // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
   // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
   // the only flag the two differ on, and it claims "this bag was PRODUCED by
@@ -413,8 +415,8 @@ function redactOutputsBag(
   return this.maskOutputsByPosition(
     redactSecretsForState(
       outputs,
-      this.outputSecrets,
-      this.outputsSourceUsable ? this.outputsTemplateSource : undefined,
+      this.outputsRun.outputSecrets,
+      this.outputsRun.outputsSourceUsable ? this.outputsRun.outputsTemplateSource : undefined,
       TEMPLATE_SOURCED_RULES
     )
   );
@@ -777,7 +779,8 @@ export function allRecordedSecrets(this: DeployEngine): RecordedSecretValues {
   for (const bag of this.perResourceSecrets.values()) {
     for (const [plaintext, expression] of bag) all.set(plaintext, expression);
   }
-  for (const [plaintext, expression] of this.outputSecrets) all.set(plaintext, expression);
+  for (const [plaintext, expression] of this.outputsRun.outputSecrets)
+    all.set(plaintext, expression);
   return all;
 }
 

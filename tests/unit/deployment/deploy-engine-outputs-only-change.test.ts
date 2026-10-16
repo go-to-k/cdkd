@@ -606,8 +606,10 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       mockStateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
       const engine = makeEngine();
       const internals = engine as unknown as {
-        skippedOutputs: Record<string, string> | undefined;
-        outputsPassSecretMaps: Map<string, string>[];
+        outputsRun: {
+          skippedOutputs: Record<string, string> | undefined;
+          outputsPassSecretMaps: Map<string, string>[];
+        };
         redactOutputs: (outputs: Record<string, unknown>) => Record<string, unknown>;
       };
       // The outputs pass redacts its bag ONCE before the drain; the save-time
@@ -626,13 +628,13 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       // redacting this pass's bag and reach the drain await, where it then
       // waits on this very capture, so over-yielding is harmless.
       mockProvider.readCurrentState.mockImplementation(async () => {
-        for (let i = 0; internals.skippedOutputs === undefined; i += 1) {
+        for (let i = 0; internals.outputsRun.skippedOutputs === undefined; i += 1) {
           if (i > 100_000) throw new Error('outputs pass never finished');
           await Promise.resolve();
         }
         for (let i = 0; i < 200; i += 1) await Promise.resolve();
         redactCallsWhenNeedleLanded = redactSpy.mock.calls.length;
-        internals.outputsPassSecretMaps[0]!.set(LATE, SEC);
+        internals.outputsRun.outputsPassSecretMaps[0]!.set(LATE, SEC);
         return { BucketName: 'bucket-a' };
       });
       const template: CloudFormationTemplate = {

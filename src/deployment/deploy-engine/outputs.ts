@@ -1,7 +1,10 @@
 import { collectSkippedOutputs } from '../../analyzer/skipped-outputs.js';
+import type { Logger } from '../../types/config.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
+import type { DeployEngineOptions } from './options.js';
+import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import {
   carriedExportAliasExposure,
   collectPublishedOutputNames,
@@ -31,15 +34,133 @@ import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
 type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    handleOutputResolutionFailure: OmitThisParameter<typeof handleOutputResolutionFailure>;
-    /** @internal */
-    resolveOutputs: OmitThisParameter<typeof resolveOutputs>;
-    /** @internal */
-    buildDisplayOutputs: OmitThisParameter<typeof buildDisplayOutputs>;
-  }
+/**
+ * What {@link resolveOutputs} / {@link handleOutputResolutionFailure} read
+ * from the engine beyond {@link OutputsRunState} — the live engine members,
+ * built at each call site as `this.outputsDeps()` so a forwarded METHOD
+ * (`buildResolverContext`, `noEchoPositionSources`) stays bound to the
+ * calling engine rather than a snapshot taken at `deps` construction time.
+ */
+export interface OutputsDeps {
+  options: Pick<DeployEngineOptions, 'strictGetAtt' | 'inheritedSecrets' | 'parameters'>;
+  logger: Pick<Logger, 'warn' | 'debug'>;
+  resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
+  buildResolverContext: DeployEngine['buildResolverContext'];
+  noEchoPositionSources: DeployEngine['noEchoPositionSources'];
+}
+
+/**
+ * One deploy's Outputs-pass state: the ten fields {@link resolveOutputs}, the
+ * no-change merge (`deploy-flow.ts`), the exports-redaction fold
+ * (`masking.ts`), the `NoEcho` position scan (`noecho.ts`) and the
+ * nested-pending-parent journal snapshot (`rollback.ts`) read and write
+ * across one deploy.
+ *
+ * Replaced, not cleared in place, by `deploy()`'s per-run reset — like
+ * `AttributeHealer` / `ProvenanceCapture` / `ObservedCapture`. ENGINE-instance
+ * state, never module-global: one engine deploys one stack, and
+ * `--stack-concurrency` runs several at once.
+ */
+export class OutputsRunState {
+  /**
+   * Resolved secrets recorded while resolving the stack OUTPUTS (a
+   * `CfnOutput` whose Value resolves a `{{resolve:...}}` reference). Separate
+   * from the per-resource maps for the same anti-cross-contamination reason.
+   */
+  outputSecrets: RecordedSecretValues = new Map();
+  /**
+   * The outputs pass's own recording map(s), one per `resolveOutputs` call
+   * this deploy, so every redaction of the outputs bag re-reads them rather
+   * than trusting the copy taken when the pass ended (issue
+   * [#2814](https://github.com/go-to-k/cdkd/issues/2814)): a part the drain
+   * cap stopped waiting for records into its pass map LATE, and the final
+   * save, the exports index and the deploy summary all run after that copy.
+   */
+  outputsPassSecretMaps: RecordedSecretValues[] = [];
+  /**
+   * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
+   * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
+   * the bag `resolveOutputs` produces. Without it two outputs resolving one
+   * secret collapse onto whichever expression was recorded last, exactly as two
+   * resource properties did before #1904. Captured in `resolveOutputs` at the
+   * same point `outputSecrets` is accumulated.
+   *
+   * Null-prototype for the same reason as the outputs bag `resolveOutputs`
+   * builds two lines away: both are keyed by TEMPLATE-CONTROLLED output names,
+   * so an output called `__proto__` would replace this bag's prototype and a
+   * later lookup of a name it never stored would inherit from it. This
+   * initializer IS the reset: `deploy()` replaces the whole
+   * {@link OutputsRunState} before anything writes to it, so there is no
+   * second place this could drift out of sync with.
+   */
+  outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  /**
+   * The export aliases the last `resolveOutputs` pass WROTE into its bag
+   * (issue #2193) — exactly the keys `outputs[exportName] = value` landed on,
+   * so an alias the pass refused (secret-bearing name, collision with a
+   * published output name) or skipped (unresolved value, condition-suppressed
+   * output) is not in it. Persisted as `StackState.exportNames` by the saves
+   * that persist that bag, and the set the exports index is fed from. Reset
+   * at the top of every `resolveOutputs`, so it is only meaningful right
+   * after that call returns — read it there, not later.
+   */
+  resolvedExportNames: string[] = [];
+  /**
+   * The last `resolveOutputs` pass's verdict over an export alias the
+   * no-change merge would CARRY from state rather than resolve
+   * (go-to-k/cdkd#4657): the refusal warning, or `undefined` to carry it.
+   * Same lifetime rule as `resolvedExportNames`; `undefined` until a
+   * `resolveOutputs` pass has run (with or without `Outputs`: a pass with
+   * none decides from the `NoEcho` seed alone, go-to-k/cdkd#4043 Phase C).
+   */
+  carriedExportAliasRefusal:
+    | ((outputKey: string, exportName: string) => string | undefined)
+    | undefined;
+  /**
+   * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
+   * (the resolver threw under the default arm of
+   * `handleOutputResolutionFailure`, or returned `undefined` outright without
+   * `--strict-getatt` — see
+   * `collectSkippedOutputs`), each mapped to the
+   * digest `cdkd diff` compares against (issue #2740, `StackState.
+   * skippedOutputs`). `undefined` when nothing was skipped, so the saves that
+   * persist the resolved bag spread it as-is and the field stays omitted.
+   *
+   * Issue #2740, same reuse hazard as the engine's `retainedOldOnReplacement`:
+   * `resolveOutputs` recomputes this field at the END of a pass, but
+   * early-returns for a template with no `Outputs` without touching it, so a
+   * STALE value from a previous deploy of a reused engine would otherwise
+   * carry into a run whose pass takes that early return. This field's own
+   * initializer (`undefined`) is the only reset that guards it: `deploy()`
+   * replaces the whole {@link OutputsRunState}, so a fresh instance is what
+   * clears it — a second reset inside `resolveOutputs` would mask this one,
+   * and neither could then be pinned.
+   */
+  skippedOutputs: Record<string, string> | undefined;
+  /**
+   * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
+   * redaction. False once an outputs pass threw partway: the post-loop
+   * name pass never ran, so the bag holds only the alias keys written before
+   * the throw — a partial source built from THIS template, while the bag the
+   * failure path then redacts is the PREVIOUS deploy's.
+   */
+  outputsSourceUsable = true;
+  /**
+   * State schema v12: each output's OWN provenance sink, keyed by outputs-bag
+   * key (an `Export.Name` alias shares its output's).
+   */
+  outputProvenanceSinks = new Map<string, RecordedSecretValues>();
+  /**
+   * State schema v12: the outputs bags THIS deploy resolved, and their
+   * redacted copies, so the persist writer can tell this pass's bag from a
+   * carried or merged one.
+   */
+  outputsResolvedThisRun = new WeakSet<object>();
+  /**
+   * State schema v12: the outputs bag this deploy's outputs pass resolved
+   * (unredacted), for the no-change path's outputs share of the migration.
+   */
+  resolvedOutputsBag: Record<string, unknown> | undefined = undefined;
 }
 
 /**
@@ -147,7 +268,7 @@ class ForwardingSecrets extends Map<string, string> {
  * unmasked, and `markNonRetryable` cannot have marked it).
  */
 export function handleOutputResolutionFailure(
-  this: DeployEngine,
+  deps: Pick<OutputsDeps, 'options' | 'logger'>,
   error: unknown,
   outputKey: string,
   outputs: Record<string, unknown>,
@@ -168,7 +289,7 @@ export function handleOutputResolutionFailure(
     error instanceof Error ? error.message || error.name : String(error),
     union
   );
-  if (this.options.strictGetAtt) {
+  if (deps.options.strictGetAtt) {
     // The cause is masked on THIS arm only: `maskSecretsInError` clones the
     // whole chain and reads each link's `stack` accessor (a V8 trace
     // materialization per link), and the warn arm below never uses it.
@@ -205,7 +326,7 @@ export function handleOutputResolutionFailure(
       cause instanceof Error || typeof cause === 'string' ? { cause } : {}
     );
   }
-  this.logger.warn(safeMsg`Failed to resolve output ${outputKey}: ${asIsMessage(detail)}`);
+  deps.logger.warn(safeMsg`Failed to resolve output ${outputKey}: ${asIsMessage(detail)}`);
   outputs[outputKey] = undefined;
 }
 
@@ -220,7 +341,8 @@ export function handleOutputResolutionFailure(
  * go-to-k/cdkd#4043).
  */
 export async function resolveOutputs(
-  this: DeployEngine,
+  run: OutputsRunState,
+  deps: OutputsDeps,
   template: CloudFormationTemplate,
   resources: Record<string, ResourceState>,
   stackName: string,
@@ -244,18 +366,18 @@ export async function resolveOutputs(
   // per-run bags, which covers this early return and every path that never
   // reaches this method. A second reset here would MASK that one — either
   // could then be deleted with no test going red — so there is exactly one.
-  this.resolvedExportNames = [];
-  this.carriedExportAliasRefusal = undefined;
+  run.resolvedExportNames = [];
+  run.carriedExportAliasRefusal = undefined;
   if (!template.Outputs) {
     // go-to-k/cdkd#4043 Phase C: a nested child's journal snapshot re-runs
     // the verdict over the PREVIOUS record's export names, which today's
     // template may no longer declare: the seed of every `NoEcho` value alone.
-    this.carriedExportAliasRefusal = seedOnlyAliasRefusal(
+    run.carriedExportAliasRefusal = seedOnlyAliasRefusal(
       noEchoParameterValueSeed(
         template.Parameters,
         parameterValues,
-        this.options.inheritedSecrets,
-        this.options.parameters
+        deps.options.inheritedSecrets,
+        deps.options.parameters
       )
     );
     return {};
@@ -268,7 +390,7 @@ export async function resolveOutputs(
   // key would be swallowed, so `collectSkippedOutputs` could never record
   // it while `canonicalJson` goes to real trouble for exactly that name.
   const outputs: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  const context = this.buildResolverContext(
+  const context = deps.buildResolverContext(
     {
       template,
       resources,
@@ -405,16 +527,16 @@ export async function resolveOutputs(
   // cross-deploy object — inert today (nothing writes it), wrong the moment
   // anything does.
   if (context.recordedSecretValues) {
-    this.outputsPassSecretMaps.push(context.recordedSecretValues);
+    run.outputsPassSecretMaps.push(context.recordedSecretValues);
     // go-to-k/cdkd#4913: the fold copies entries, not the nested-stack
     // parameter reads keyed by this bag, which position an output leaf per
     // parameter; they are recorded on `outputSecrets` as they happen. Nor
     // the parent's per-parameter associations `buildResolverContext` copied
     // onto this bag, which the placeholder arm reads for an `Fn::Sub` /
     // `Fn::Join` part: copied onto `outputSecrets` the same way.
-    mirrorInheritedParameterReads(context.recordedSecretValues, this.outputSecrets);
-    if (this.options.inheritedSecrets && this.options.inheritedSecrets.size > 0) {
-      inheritNestedStackParameterAssociations(this.outputSecrets, this.options.inheritedSecrets);
+    mirrorInheritedParameterReads(context.recordedSecretValues, run.outputSecrets);
+    if (deps.options.inheritedSecrets && deps.options.inheritedSecrets.size > 0) {
+      inheritNestedStackParameterAssociations(run.outputSecrets, deps.options.inheritedSecrets);
     }
   }
 
@@ -445,7 +567,7 @@ export async function resolveOutputs(
       // side's `filterResourcesByCondition` (issue #1028; unknown condition
       // names are kept, matching that helper's semantics).
       if (isOutputSuppressedByCondition(output, conditions)) {
-        this.logger.debug(
+        deps.logger.debug(
           safeMsg`Skipping output ${outputKey} — condition ${output.Condition} is false`
         );
         continue;
@@ -458,9 +580,9 @@ export async function resolveOutputs(
       // State schema v12: this output's OWN provenance sink, so two outputs
       // holding one token at two generations keep apart in state.
       const provenanceSink: RecordedSecretValues = new Map();
-      this.outputProvenanceSinks.set(outputKey, provenanceSink);
+      run.outputProvenanceSinks.set(outputKey, provenanceSink);
       try {
-        const resolved = await this.resolver.resolve(output.Value, {
+        const resolved = await deps.resolver.resolve(output.Value, {
           ...context,
           redactedAttributeReads: ownReads,
           provenanceSink,
@@ -477,12 +599,13 @@ export async function resolveOutputs(
         // nested child being replaced would re-run the whole child deploy
         // (the #1874 hazard). `handleOutputResolutionFailure` threads this
         // as the `cause`, so the marker survives its re-wrap.
-        if (resolved === undefined && this.options.strictGetAtt) {
+        if (resolved === undefined && deps.options.strictGetAtt) {
           throw markNonRetryable(new Error('the value resolved to nothing'));
         }
         outputs[outputKey] = resolved;
       } catch (error) {
-        this.handleOutputResolutionFailure(
+        handleOutputResolutionFailure(
+          deps,
           error,
           outputKey,
           outputs,
@@ -503,17 +626,17 @@ export async function resolveOutputs(
       template.Parameters,
       parameterValues,
       context.inheritedSecrets,
-      this.options.parameters
+      deps.options.parameters
     );
     // The `NoEcho` parameters an intrinsic name may read (go-to-k/cdkd#4657):
     // this template's, and on a nested child those its parent's row fills
     // from a `NoEcho` source, under this deploy's condition verdicts.
-    const noEchoSources = this.noEchoPositionSources(resources, template, conditions);
+    const noEchoSources = deps.noEchoPositionSources(resources, template, conditions);
     // The no-change merge's verdict over an alias it would CARRY rather than
     // resolve (go-to-k/cdkd#4657): a literal name, so nothing is substituted
     // into it, decided by the pass-3 containment arms against this pass's
     // map, its shared log-only set and the seed, read when the merge runs.
-    this.carriedExportAliasRefusal = (outputKey, exportName) => {
+    run.carriedExportAliasRefusal = (outputKey, exportName) => {
       const verdict = carriedExportAliasExposure(exportName, outputsPassSecrets, noEchoSeed);
       if (verdict === undefined) return undefined;
       return secretBearingExportNameWarning(
@@ -607,7 +730,7 @@ export async function resolveOutputs(
         exportName =
           typeof output.Export.Name === 'string'
             ? output.Export.Name
-            : await this.resolver.resolve(output.Export.Name, {
+            : await deps.resolver.resolve(output.Export.Name, {
                 ...context,
                 recordedSecretValues: nameSecrets,
                 redactedAttributeReads: nameReads,
@@ -618,7 +741,8 @@ export async function resolveOutputs(
         // resolution recorded (`nameSecrets` writes through) — the needle
         // for a plaintext that resolution itself recorded; its LOG-ONLY
         // needles are shared with it (above).
-        this.handleOutputResolutionFailure(
+        handleOutputResolutionFailure(
+          deps,
           error,
           outputKey,
           outputs,
@@ -721,7 +845,7 @@ export async function resolveOutputs(
               noEchoSeed
             );
       if (noEchoParameters.length > 0) {
-        this.logger.warn(
+        deps.logger.warn(
           noEchoParameterExportNameWarning(outputKey, noEchoParameters, outputsPassSecrets)
         );
       } else if (exposure) {
@@ -729,7 +853,7 @@ export async function resolveOutputs(
         // map is the containment corpus the printed text is tested against
         // (issue #2874) — the warning used to decide from `exportName` and
         // print a sanitised form of it.
-        this.logger.warn(
+        deps.logger.warn(
           secretBearingExportNameWarning(
             outputKey,
             exportName,
@@ -745,25 +869,25 @@ export async function resolveOutputs(
         // `outputsPassSecrets` rather than a third spelling of the same
         // fallback: this method already computed it, and the note at its
         // declaration records that its `??` is never taken.
-        this.logger.warn(exportAliasCollisionWarning(outputKey, exportName, outputsPassSecrets));
+        deps.logger.warn(exportAliasCollisionWarning(outputKey, exportName, outputsPassSecrets));
       } else {
         outputs[exportName] = value;
         // State schema v12: the alias holds its output's value, so its
         // provenance too.
-        const aliasedSink = this.outputProvenanceSinks.get(outputKey);
-        if (aliasedSink !== undefined) this.outputProvenanceSinks.set(exportName, aliasedSink);
+        const aliasedSink = run.outputProvenanceSinks.get(outputKey);
+        if (aliasedSink !== undefined) run.outputProvenanceSinks.set(exportName, aliasedSink);
         // A SET: two outputs declaring one Export.Name (which CloudFormation
         // rejects) alias the same key twice, and the second write wins the
         // value; the name must not be persisted twice.
-        if (!this.resolvedExportNames.includes(exportName)) {
-          this.resolvedExportNames.push(exportName);
+        if (!run.resolvedExportNames.includes(exportName)) {
+          run.resolvedExportNames.push(exportName);
         }
         // The alias is a SECOND key holding the same value, so it needs the
         // same POSITION source or it falls to the value scan and collapses
         // onto a sibling's expression (issue #1910 review). This bag feeds
         // `updateForStack`, so a collapsed alias hands a downstream
         // `Fn::ImportValue` consumer the WRONG reference.
-        this.outputsTemplateSource[exportName] = outputValue;
+        run.outputsTemplateSource[exportName] = outputValue;
       }
     }
     outputsPassCompleted = true;
@@ -789,7 +913,7 @@ export async function resolveOutputs(
     // replaced. Dropping it degrades those keys to the value scan, which reads
     // what is actually stored. Same call the scrub twin makes through
     // `outputsSourceUntrusted`, for the same reason.
-    if (!outputsPassCompleted) this.outputsSourceUsable = false;
+    if (!outputsPassCompleted) run.outputsSourceUsable = false;
   }
   // ...and the UNRESOLVED values beside them, as the POSITION source (#1910).
   // Keyed by output NAME so the walk lines up with the resolved `outputs` bag
@@ -814,14 +938,14 @@ export async function resolveOutputs(
   // pins that single-call property, since this decision now rests on it.
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     if (!publishedOutputNames.has(outputKey)) continue;
-    this.outputsTemplateSource[outputKey] = output.Value;
+    run.outputsTemplateSource[outputKey] = output.Value;
   }
 
   // What this pass skipped, for the saves that persist this bag (issue
   // #2740). Computed here rather than in the failure handler so the record
   // is derived from the same bag the saves write: a key is skipped exactly
   // when its value is `undefined`, on either pass.
-  this.skippedOutputs = collectSkippedOutputs(digestSource, outputs);
+  run.skippedOutputs = collectSkippedOutputs(digestSource, outputs);
 
   // Issue #2516: this bag is THIS pass's own resolution of today's
   // `Outputs`, so it is marked same-generation for `redactOutputs` — a
@@ -839,13 +963,12 @@ export async function resolveOutputs(
   // method at all.
   // State schema v12: the persist writer takes this bag's provenance from the
   // per-output sinks (`redactOutputs` carries the mark to its redacted copy).
-  this.outputsResolvedThisRun.add(outputs);
-  this.resolvedOutputsBag = outputs;
+  run.outputsResolvedThisRun.add(outputs);
+  run.resolvedOutputsBag = outputs;
   return markSameGenerationBag(outputs);
 }
 
 export function buildDisplayOutputs(
-  this: DeployEngine,
   template: CloudFormationTemplate,
   resolvedOutputs: Record<string, unknown>
 ): Record<string, unknown> {

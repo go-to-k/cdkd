@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import * as outputsModule from '../../../src/deployment/deploy-engine/outputs.js';
 import {
   exportAliasCollisionWarning,
   secretBearingExportNameWarning,
@@ -227,6 +228,20 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
+
+// `resolveOutputs` is a plain function now (#5020-style split), not a
+// `DeployEngine.prototype` method, so there is no prototype to spy on. A
+// `vi.mock` substitutes the whole module in the graph before either call
+// site (`deploy-engine/execute.ts`, `deploy-engine/deploy-flow.ts`) imports
+// it, which intercepts regardless of how THEY imported the binding —
+// unlike a runtime `vi.spyOn` of an already-bound named import. Every other
+// export (including `OutputsRunState`, which `deploy-engine.ts` also
+// imports from here) stays real via the spread.
+vi.mock('../../../src/deployment/deploy-engine/outputs.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/outputs.js')>();
+  return { ...actual, resolveOutputs: vi.fn(actual.resolveOutputs) };
+});
 
 describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
   const stackName = 'export-name-collision-stack';
@@ -645,15 +660,12 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // deploy. The two call sites are mutually exclusive — the no-change branch
     // returns before `executeDeployment` — and `deploy()` resets the bag.
     //
-    // Spying on the METHOD, not on how many times a particular Output value was
+    // Spying on the FUNCTION, not on how many times a particular Output value was
     // handed to the resolver: a second `resolveOutputs` call over a DIFFERENT
     // output set (say a condition-pruned one) is precisely the shape this
     // decision fears — two calls disagreeing about which names are published —
     // and a value-counting assertion cannot see it.
-    const spy = vi.spyOn(
-      DeployEngine.prototype as unknown as { resolveOutputs: () => Promise<unknown> },
-      'resolveOutputs'
-    );
+    const spy = vi.mocked(outputsModule.resolveOutputs);
     try {
       await deployOutputs({ SecretBeta: { Value: EXPR_B } });
       expect(spy).toHaveBeenCalledTimes(1);
