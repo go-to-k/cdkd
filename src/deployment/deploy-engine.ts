@@ -1084,6 +1084,8 @@ export class DeployEngine {
       baseline: resources,
       // Read at merge time: `perResourceSecrets` is replaced per deploy.
       resolvedSecretsOf: (logicalId) => this.perResourceSecrets.get(logicalId),
+      // Read at heal time: bound and captured after this rebaseline.
+      namingSecrets: () => this.stateNamingSecrets(),
     });
     return this.attributeHealer;
   }

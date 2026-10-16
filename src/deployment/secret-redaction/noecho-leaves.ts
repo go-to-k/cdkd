@@ -288,8 +288,11 @@ export function noEchoParameterNodesAt(
  * `noEchoLeaves` (where a post-v11 deploy positioned one). A leaf that is the
  * mask or spells a `{{resolve:` reference holds no plaintext and is skipped.
  * An `Fn::If` of unknown verdict is read on both branches: over-masking is the
- * accepted direction. Known bound: a pre-v11 record (no `noEchoLeaves`) whose
- * parameter WAS `NoEcho` but no longer is has no coordinate left to read.
+ * accepted direction. Known bounds: a pre-v11 record (no `noEchoLeaves`)
+ * has no coordinate left to read when its parameter WAS `NoEcho` but no longer
+ * is, when the template no longer declares the resource (a template DELETE)
+ * or declares it as another type, and when the caller holds no template (a
+ * destroy that synthesizes none).
  *
  * Print-only: never persisted, compared or sent.
  */
@@ -320,9 +323,10 @@ export function recordedNoEchoValuesOf(
     if (typeof leaf === 'string') {
       if (leaf === SECRET_MASK || leaf.includes('{{resolve:')) return;
       recordLogOnlyValue(bag, leaf);
-    } else if (typeof leaf === 'number' || typeof leaf === 'boolean') {
+    } else if (typeof leaf === 'number') {
       recordLogOnlyValue(bag, String(leaf));
     }
+    // A boolean is left out: `true` would mask every line saying it.
   };
   const seen = new Set<object>();
   const walk = (value: unknown): void => {

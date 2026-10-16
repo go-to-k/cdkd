@@ -6,7 +6,7 @@ import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { isStalePlaceholderArnAttribute } from '../intrinsic-function-resolver.js';
 import { isMaskedOwnIdCopy } from '../intrinsic-resolver/getatt-heal.js';
 import { readRecordAttributes } from '../read-only-attribute-healer.js';
-import { secretNamePrintingBag, secretNamePrintingBags } from '../secret-name-needles.js';
+import { type StateNamingSecrets, secretNamePrintingBags } from '../secret-name-needles.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
@@ -27,6 +27,12 @@ export interface AttributeHealerDeps {
   baseline: Readonly<Record<string, ResourceState>>;
   /** The secret pairs this deploy resolved for `logicalId`, read at merge time. */
   resolvedSecretsOf: (logicalId: string) => RecordedSecretValues | undefined;
+  /**
+   * The deploy's per-record judging bags (`stateNamingSecrets`,
+   * go-to-k/cdkd#3869), read at heal time: the deploy binds its `NoEcho`
+   * values and captures what each record stored after it builds this healer.
+   */
+  namingSecrets: () => StateNamingSecrets;
 }
 
 /**
@@ -175,7 +181,7 @@ export class AttributeHealer {
     // such a name) binds those spellings as log-only needles, judged against
     // the records this deploy loaded, as `cdkd diff`'s heal does.
     const outcome = await withPrintingSecrets(
-      healPrintingBag(this.deps.baseline, logicalId, resource),
+      healPrintingBag(this.deps.baseline, logicalId, resource, this.deps.namingSecrets()),
       () =>
         readRecordAttributes({
           provider,
@@ -248,7 +254,7 @@ export class AttributeHealer {
 }
 
 /**
- * One judge per loaded map (go-to-k/cdkd#3869). `secretNamePrintingBags`
+ * One judge per loaded map and judging bag (go-to-k/cdkd#3869). `secretNamePrintingBags`
  * reads the map LIVE and memoizes each record's needles by record IDENTITY, so
  * a heal judges each record once per deploy, not once per heal. That is sound
  * because a deploy only REPLACES entries of the loaded map, never mutates a
@@ -256,29 +262,36 @@ export class AttributeHealer {
  * withRebaselinedFingerprints(record, ...)`, which returns `record` or a copy)
  * and `deploy-engine/rollback.ts` (`currentState.resources[id] = record` for an
  * adopted orphan); a replaced entry is a new object, so it is judged afresh.
+ * A judging bag other than the one the judge was built with (the deploy binds
+ * its `NoEcho` values after it loads the map) builds a new judge;
+ * `stateNamingSecrets` returns the same bag until its inputs change.
  */
 const healJudges = new WeakMap<
   Readonly<Record<string, ResourceState>>,
-  (logicalId: string) => RecordedSecretValues
+  { namingSecrets: StateNamingSecrets; judge: (logicalId: string) => RecordedSecretValues }
 >();
 
 /**
  * The printing bag a heal of `resource` binds: its own name spellings and
  * those of each secret-named record of `baseline` it holds. A record other
  * than the one the map holds under its id is judged with itself in place.
+ * Each record is judged with `namingSecrets` too: the stack's `NoEcho`
+ * values (also carried as log-only needles, print-only) and what the record
+ * stored where one served it.
  */
 function healPrintingBag(
   baseline: Readonly<Record<string, ResourceState>>,
   logicalId: string,
-  resource: ResourceState
+  resource: ResourceState,
+  namingSecrets: StateNamingSecrets
 ): RecordedSecretValues {
   if (!Object.hasOwn(baseline, logicalId) || baseline[logicalId] !== resource) {
-    return secretNamePrintingBag(logicalId, { ...baseline, [logicalId]: resource });
+    return secretNamePrintingBags({ ...baseline, [logicalId]: resource }, namingSecrets)(logicalId);
   }
-  let judge = healJudges.get(baseline);
-  if (judge === undefined) {
-    judge = secretNamePrintingBags(baseline, undefined);
-    healJudges.set(baseline, judge);
+  let hit = healJudges.get(baseline);
+  if (hit === undefined || hit.namingSecrets !== namingSecrets) {
+    hit = { namingSecrets, judge: secretNamePrintingBags(baseline, namingSecrets) };
+    healJudges.set(baseline, hit);
   }
-  return judge(logicalId);
+  return hit.judge(logicalId);
 }

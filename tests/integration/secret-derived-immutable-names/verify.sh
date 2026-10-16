@@ -672,6 +672,11 @@ expect_child_read_line() {
   fi
 }
 
+# Step 1b's log tail for a failure, the role name's spellings replaced.
+no_log_tail() {
+  tail -60 "${NO_LOG}" | sed -e "s/${CROLE_DERIVED}/<ROLE_NAME>/g" -e "s/${CROLE_VALUE//./\\.}/<CROLE>/g" >&2
+}
+
 # go-to-k/cdkd#3869 item 2: the --verbose log of a step-1b command names
 # neither the role name the IAM provider derived from the secret nor the
 # secret's own spelling of it (usage: expect_no_role_name <log> <which>).
@@ -679,8 +684,7 @@ expect_no_role_name() {
   local log="$1" which="$2" needle
   for needle in "${CROLE_DERIVED}" "cr-${SUFFIX}" "${CROLE_VALUE}"; do
     if grep -qF -- "${needle}" "${log}"; then
-      echo "FAIL: the ${which} log names RoleChild's secret-derived role name in plaintext (${needle}) (go-to-k/cdkd#3869)" >&2
-      grep -nF -- "${needle}" "${log}" | head -5 >&2
+      echo "FAIL: the ${which} log names RoleChild's secret-derived role name in plaintext (go-to-k/cdkd#3869), on log line(s): $(grep -nF -- "${needle}" "${log}" | cut -d: -f1 | head -5 | tr '\n' ' ')" >&2
       exit 1
     fi
   done
@@ -689,7 +693,7 @@ expect_no_role_name() {
 expect_reader_line() { # usage: expect_reader_line <log> <which>: the parent's read of the output printed
   if ! grep -E 'Resolved Fn::GetAtt.*RoleChild\.Outputs\.[^ ]* resolved to ' "$1" >/dev/null; then
     echo "FAIL: premise: the $2 log has no 'Resolved Fn::GetAtt ... RoleChild.Outputs.<Key> resolved to' line (the reader was not resolved, or the wording drifted)" >&2
-    tail -60 "$1" >&2
+    no_log_tail
     exit 1
   fi
   # A line the attribute-name heuristic redacts prints no value at all.
@@ -708,7 +712,7 @@ NO_RC=$?
 set -e
 if [ "${NO_RC}" -ne 0 ]; then
   echo "FAIL: the step-1b deploy exited ${NO_RC}" >&2
-  tail -60 "${NO_LOG}" >&2
+  no_log_tail
   exit 1
 fi
 # Premises: the provider derived the expected name, the reader holds it, and
@@ -739,7 +743,7 @@ NO_RC=$?
 set -e
 if [ "${NO_RC}" -ne 0 ]; then
   echo "FAIL: the step-1b reader-edit deploy exited ${NO_RC}" >&2
-  tail -60 "${NO_LOG}" >&2
+  no_log_tail
   exit 1
 fi
 if grep -qF -- "Updating nested stack" "${NO_LOG}" || grep -qF -- "Deploying nested stack" "${NO_LOG}"; then
@@ -759,7 +763,11 @@ NO_RC=$?
 set -e
 if [ "${NO_RC}" -ne 0 ]; then
   echo "FAIL: the step-1b destroy exited ${NO_RC}" >&2
-  tail -60 "${NO_LOG}" >&2
+  no_log_tail
+  exit 1
+fi
+if ! grep -qF -- "Deleting IAM role ChildNamedRole: " "${NO_LOG}"; then
+  echo "FAIL: sentinel: the step-1b destroy printed no 'Deleting IAM role ChildNamedRole: ' line -- its wording drifted, so the check below is vacuous" >&2
   exit 1
 fi
 expect_no_role_name "${NO_LOG}" "step-1b destroy"

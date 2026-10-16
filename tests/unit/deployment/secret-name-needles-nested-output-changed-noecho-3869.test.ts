@@ -12,6 +12,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceState } from '../../../src/types/state.js';
+import { secretNamedAttributesField } from '../../../src/deployment/deploy-engine/record-shape.js';
 import {
   namingSecretsWithRecordedNoEcho,
   secretNameNeedlesOf,
@@ -75,6 +76,7 @@ describe('item 2: a nested-stack row names its secret-named outputs (go-to-k/cdk
     ['malformed', 'Outputs.RoleName'],
     ['empty', []],
     ['naming no attribute the row holds', ['Outputs.Gone']],
+    ['holding no string', [42, null, {}]],
   ])('no needle when the field is %s', (_l, field) => {
     expect(secretNameNeedlesOf('Child', stackRow(field), undefined)).toBeUndefined();
   });
@@ -148,6 +150,16 @@ describe("item 2: which of a row's outputs hold a child's secret-derived name (g
 
 describe('item 3: what a record stores where a NoEcho parameter served it (go-to-k/cdkd#3869)', () => {
   const corpus = (bag: Map<string, string>): string[] => [...printingCorpusOf(bag).keys()].sort();
+
+  it('leaves a boolean out: `true` would mask every line saying it', () => {
+    const bag = recordedNoEchoValuesOf(
+      { Flag: { Ref: 'P' } },
+      { properties: { Flag: true } },
+      new Set(['P']),
+      undefined
+    );
+    expect(corpus(bag)).toEqual([]);
+  });
 
   it("records each leaf at today's coordinates WHOLE, a Number too", () => {
     const bag = recordedNoEchoValuesOf(
@@ -224,5 +236,23 @@ describe('item 3: what a record stores where a NoEcho parameter served it (go-to
     // The other readers take the same per-record judge.
     expect(stateSecretNameNeedles(resources, judge)('Db')).toContain('oldsecretdb1');
     expect(stateSecretNameNeedles(resources, bound)('Db')).toBeUndefined();
+  });
+});
+
+describe('secretNamedAttributesField: the field a rebuilt row record takes (go-to-k/cdkd#3869)', () => {
+  it.each([
+    ['the result reports names', { secretNamedAttributeNames: ['Outputs.A'] }, ['Outputs.B'], { secretNamedAttributes: ['Outputs.A'] }],
+    ['the result reports none: a stale value is dropped', { secretNamedAttributeNames: [] }, ['Outputs.B'], {}],
+    ['the result is silent: the previous names are carried', {}, ['Outputs.B'], { secretNamedAttributes: ['Outputs.B'] }],
+    ['nothing anywhere', {}, undefined, {}],
+    ['a malformed previous field reads as absent', {}, 'Outputs.B', {}],
+    ['non-string and empty names are dropped', { secretNamedAttributeNames: ['', 'Outputs.A', 7] }, undefined, { secretNamedAttributes: ['Outputs.A'] }],
+  ])('%s', (_l, result, previous, expected) => {
+    expect(
+      secretNamedAttributesField(
+        result as { secretNamedAttributeNames?: readonly string[] },
+        { secretNamedAttributes: previous as string[] | undefined }
+      )
+    ).toEqual(expected);
   });
 });

@@ -2009,7 +2009,11 @@ async function destroyStackInRegion(
                 logicalId,
                 Object.hasOwn(state.resources, logicalId) ? state.resources[logicalId] : undefined
               );
-            } catch {
+            } catch (error) {
+              // The class only: a message can quote a value.
+              logger.debug(
+                safeMsg`Could not read ${logicalId}'s stored NoEcho values for its printing bag (${error instanceof Error ? error.name : typeof error}).`
+              );
               return undefined;
             }
           })

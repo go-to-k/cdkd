@@ -1151,6 +1151,9 @@ export class NestedStackProvider implements ResourceProvider {
     // deploy where the row is NO_CHANGE never runs this method and must not
     // re-read the child's state to learn it. The row's bag holds what the
     // parent passed (a pre-v11 child record's plaintext is judged with it).
+    // Known bound: a pre-v11 child record holding a value of the CHILD's own
+    // `NoEcho` parameter (its `Default`, not parent-passed) in plaintext is not
+    // judged here; a post-v11 one stores `***` and is.
     const childResources = childStateData.state.resources;
     const secretNamedAttributeNames =
       childResources !== null && typeof childResources === 'object'

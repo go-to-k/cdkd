@@ -55,15 +55,15 @@ function harness(
   state: StackState,
   levels: string[][],
   parameters: Record<string, string> = {},
-  create: (logicalId: string) => unknown = () => ({ physicalId: 'new-physical-id', attributes: {} })
+  create: (logicalId: string) => unknown = () => ({ physicalId: 'new-physical-id', attributes: {} }),
+  extra: { update?: (logicalId: string, physicalId: string) => unknown; dryRun?: boolean } = {}
 ) {
   const saveState = vi.fn().mockResolvedValue('etag');
   const provider = {
     create: vi.fn(async (logicalId: string) => create(logicalId)),
-    update: vi.fn(async (logicalId: string, physicalId: string) => ({
-      physicalId,
-      wasReplaced: false,
-    })),
+    update: vi.fn(async (logicalId: string, physicalId: string) =>
+      extra.update ? extra.update(logicalId, physicalId) : { physicalId, wasReplaced: false }
+    ),
     delete: vi.fn(() => undefined),
     getAttribute: vi.fn(),
     readCurrentState: vi.fn().mockResolvedValue(undefined),
@@ -98,7 +98,7 @@ function harness(
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false, forceStatefulRecreation: true, parameters },
+    { dryRun: extra.dryRun ?? false, forceStatefulRecreation: true, parameters },
     'us-east-1'
   );
   return { engine, provider, saveState };
@@ -198,6 +198,115 @@ describe("a parent reader of a nested child's secret-named output, the row NO_CH
       );
     }
   );
+});
+
+describe("an in-place update of the row rewrites or carries secretNamedAttributes (go-to-k/cdkd#3869)", () => {
+  const CHILD_ARN = 'arn:aws:cloudformation:us-east-1:123456789012:stack/P-Child/cdkd';
+  const state = (): StackState =>
+    ({
+      version: 12,
+      stackName: 'P',
+      region: 'us-east-1',
+      resources: {
+        Child: {
+          physicalId: CHILD_ARN,
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: { TemplateURL: 'https://example.com/old.json' },
+          attributes: { 'Outputs.RoleName': 'old-role-name' },
+          secretNamedAttributes: ['Outputs.RoleName'],
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    }) as StackState;
+  const template: CloudFormationTemplate = {
+    Resources: {
+      Child: {
+        Type: 'AWS::CloudFormation::Stack',
+        Properties: { TemplateURL: 'https://example.com/new.json' },
+      },
+    },
+  };
+
+  it.each([
+    [
+      'fresh attributes naming none drop the field',
+      { attributes: { 'Outputs.RoleName': 'plain-role' }, secretNamedAttributeNames: [] },
+      undefined,
+    ],
+    [
+      'fresh attributes rewrite it',
+      {
+        attributes: { 'Outputs.Other': 'x', 'Outputs.RoleName': 'y' },
+        secretNamedAttributeNames: ['Outputs.Other'],
+      },
+      ['Outputs.Other'],
+    ],
+    ['carried attributes keep the previous names', {}, ['Outputs.RoleName']],
+  ])('%s', async (_l, result, expected) => {
+    const h = harness(state(), [['Child']], {}, undefined, {
+      update: (_id, physicalId) => ({ physicalId, wasReplaced: false, ...result }),
+    });
+    await h.engine.deploy('P', template);
+    expect(h.provider.update.mock.calls.map((call) => call[0])).toEqual(['Child']);
+    const saved = h.saveState.mock.calls.at(-1)?.[2] as StackState;
+    expect(saved.resources['Child']?.secretNamedAttributes).toEqual(expected);
+  });
+});
+
+describe("the deploy's diff pass judges a record named from a NoEcho value since CHANGED (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['the parameter is NoEcho', true, false],
+    ['negative control, an ordinary parameter', false, true],
+  ])("masks a reader's stored copy on the replacement line's old side: %s", async (_l, noEcho, shown) => {
+    // The key moves from the user named from the old value (RDS-folded) to an
+    // ordinary one; `UserName` is create-only, so the line prints both sides.
+    const state = {
+      version: 10,
+      stackName: 's',
+      region: 'us-east-1',
+      resources: {
+        Db: {
+          physicalId: 'teamolddb1',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'TeamOldDb1' },
+          attributes: {},
+          dependencies: [],
+        },
+        PlainUser: {
+          physicalId: 's-PlainUser-ABC123',
+          resourceType: 'AWS::IAM::User',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+        Key: {
+          physicalId: 'access-key-1',
+          resourceType: 'AWS::IAM::AccessKey',
+          properties: { UserName: 'teamolddb1' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const h = harness(state, [['Db', 'PlainUser'], ['Key']], { DbName: 'TeamNewDb2' }, undefined, {
+      dryRun: true,
+    });
+    await h.engine.deploy('s', {
+      Parameters: { DbName: { Type: 'String', ...(noEcho && { NoEcho: true }) } },
+      Resources: {
+        Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'DbName' } } },
+        PlainUser: { Type: 'AWS::IAM::User', Properties: {} },
+        Key: { Type: 'AWS::IAM::AccessKey', Properties: { UserName: { Ref: 'PlainUser' } } },
+      },
+    } as CloudFormationTemplate);
+    const line = logLines.filter((l) => l.includes('Property UserName of AWS::IAM::AccessKey')).join('\n');
+    expect(line).toContain('s-PlainUser-ABC123');
+    expect(line.includes('teamolddb1')).toBe(shown);
+  });
 });
 
 describe('a replacement deleting a record named from a NoEcho value since CHANGED (go-to-k/cdkd#3869)', () => {

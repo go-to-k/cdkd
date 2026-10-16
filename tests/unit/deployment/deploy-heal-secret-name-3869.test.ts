@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { AttributeHealer } from '../../../src/deployment/deploy-engine/attribute-healer.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -36,7 +37,8 @@ const db = (identifier: string): ResourceState => ({
 /** The provider line the heal's read logs, as the logger sink renders it. */
 async function healLine(
   healBaseline: Record<string, ResourceState>,
-  healed: ResourceState
+  healed: ResourceState,
+  namingSecrets?: (logicalId: string) => Map<string, string> | undefined
 ): Promise<string> {
   let line = '';
   const provider = {
@@ -52,6 +54,8 @@ async function healLine(
     stackRegion: 'us-east-1',
     logger: { debug: () => undefined },
     resolvedSecretsOf: () => undefined,
+    // The deploy's per-record judging bags (go-to-k/cdkd#3869).
+    namingSecrets: () => namingSecrets,
   });
   await healer.read('Db', healed, 'App');
   // Premise: the read ran.
@@ -118,5 +122,25 @@ describe('a healed record other than the loaded one is judged against the loaded
     // The map holds an older Db object under the id; the healed one differs.
     const baseline = { Role: role(roleName), Db: db('plain-db') };
     expect(await healLine(baseline, db('plain-db'))).toBe(expected);
+  });
+});
+
+describe("cdkd deploy's heal judges with the per-record NoEcho bags (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['given the stored old value', true],
+    ['negative control, no bag', false],
+  ])('masks a pre-v11 record named from a NoEcho value since changed: %s', async (_l, withBag) => {
+    // RDS folded the stored identifier; only the judge yields the folded id.
+    const healed: ResourceState = {
+      physicalId: 'teamolddb1',
+      resourceType: 'AWS::RDS::DBInstance',
+      properties: { DBInstanceIdentifier: 'TeamOldDb1' },
+      attributes: {},
+      dependencies: [],
+    };
+    const stored = new Map<string, string>();
+    recordLogOnlyValue(stored, 'TeamOldDb1');
+    const line = await healLine({ Db: healed }, healed, withBag ? () => stored : undefined);
+    expect(line.includes('teamolddb1')).toBe(!withBag);
   });
 });

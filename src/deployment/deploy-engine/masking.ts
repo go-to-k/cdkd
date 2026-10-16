@@ -950,8 +950,20 @@ export function stateNamingSecrets(this: DeployEngine): StateNamingSecrets {
   const base = this.fingerprintNoEchoValues;
   const stored = this.storedNoEchoNamingValues;
   if (stored.size === 0) return base;
-  return namingSecretsWithRecordedNoEcho(base, (logicalId) => stored.get(logicalId));
+  // The same bag while its inputs hold, so a caller memoizing on it (the
+  // heal's judge) judges each record once; both inputs are replaced, never
+  // mutated, per deploy.
+  const hit = namingSecretsMemo.get(stored);
+  if (hit !== undefined && hit.base === base) return hit.secrets;
+  const secrets = namingSecretsWithRecordedNoEcho(base, (logicalId) => stored.get(logicalId));
+  namingSecretsMemo.set(stored, { base, secrets });
+  return secrets;
 }
+
+const namingSecretsMemo = new WeakMap<
+  ReadonlyMap<string, RecordedSecretValues>,
+  { base: RecordedSecretValues | undefined; secrets: StateNamingSecrets }
+>();
 
 /**
  * Record, for each record of `resources` as the deploy found it, what it

@@ -87,9 +87,9 @@ import {
   noEchoParameterNamesOf,
 } from '../../deployment/deploy-engine/noecho.js';
 import {
+  type StateNamingSecrets,
   namingSecretsWithRecordedNoEcho,
   orphanRecordsPrintingBag,
-  secretNamePrintingBag,
   secretNamePrintingBags,
   stateSecretNameNeedles,
   secretNamedRecordNeedles,
@@ -1461,9 +1461,17 @@ export async function computeStackDiff(
   // printing bag, judged over the records the diff reads at that moment
   // (`healResources`, which takes the adopted records once they are spliced).
   let healResources: Readonly<Record<string, ResourceState>> = currentState.resources ?? {};
+  // Set once the per-record NoEcho judge exists (below); a heal runs after.
+  let healNamingSecrets:
+    | ((resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets)
+    | undefined;
   const attributeHealer =
     unboundAttributeHealer &&
-    healerUnderRecordPrintingBag(unboundAttributeHealer, () => healResources);
+    healerUnderRecordPrintingBag(
+      unboundAttributeHealer,
+      () => healResources,
+      (map) => healNamingSecrets?.(map)
+    );
   // This template's `NoEcho` parameters, plus (in a nested child) the ones the
   // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
   const noEchoParametersOf = (t: CloudFormationTemplate): Set<string> =>
@@ -1900,13 +1908,20 @@ export async function computeStackDiff(
   const liveNamingJudge = (
     resources: Readonly<Record<string, ResourceState>>
   ): ((logicalId: string) => RecordedSecretValues | undefined) => {
-    const memo = new Map<string, RecordedSecretValues | undefined>();
+    // Keyed by the record object too: a record rewritten mid-pass is re-read.
+    const memo = new Map<string, { record: unknown; bag: RecordedSecretValues | undefined }>();
     return (logicalId) => {
-      if (!memo.has(logicalId)) memo.set(logicalId, recordedNamingValues(resources, logicalId));
-      const stored = memo.get(logicalId);
+      const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+      let hit = memo.get(logicalId);
+      if (hit === undefined || hit.record !== record) {
+        hit = { record, bag: recordedNamingValues(resources, logicalId) };
+        memo.set(logicalId, hit);
+      }
+      const stored = hit.bag;
       return stored === undefined ? diffSecrets : unionOfSecretBags([diffSecrets, stored]);
     };
   };
+  healNamingSecrets = noEchoJudge;
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
     noEchoJudge(currentState.resources ?? {}),
@@ -3368,7 +3383,12 @@ function recordedTemplateResources(
  */
 export function healerUnderRecordPrintingBag(
   healer: StaleAttributeHealer,
-  resources: () => Readonly<Record<string, ResourceState>>
+  resources: () => Readonly<Record<string, ResourceState>>,
+  /**
+   * The judging bags per map (go-to-k/cdkd#3869): the node's `NoEcho` values
+   * plus what each record stores at a `NoEcho` position. Absent: record-only.
+   */
+  namingSecrets?: (resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets
 ): StaleAttributeHealer {
   let judged:
     | {
@@ -3379,9 +3399,12 @@ export function healerUnderRecordPrintingBag(
   const bagFor = (logicalId: string, resource: ResourceState): RecordedSecretValues => {
     const map = resources();
     if (!Object.hasOwn(map, logicalId) || map[logicalId] !== resource) {
-      return secretNamePrintingBag(logicalId, { ...map, [logicalId]: resource });
+      const withSelf = { ...map, [logicalId]: resource };
+      return secretNamePrintingBags(withSelf, namingSecrets?.(withSelf))(logicalId);
     }
-    if (judged?.map !== map) judged = { map, bagOf: secretNamePrintingBags(map, undefined) };
+    if (judged?.map !== map) {
+      judged = { map, bagOf: secretNamePrintingBags(map, namingSecrets?.(map)) };
+    }
     return judged.bagOf(logicalId);
   };
   return Object.assign(
