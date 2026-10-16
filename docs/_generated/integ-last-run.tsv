@@ -91,7 +91,7 @@ destroy-interrupt	2026-10-11T09:33:22Z	PASS	390	verify.sh	PR #4720 (#4705) final
 destroy-nested-cross-region	2026-10-15T08:22:32Z	PASS	195	verify.sh	PR #4944 (#4941) 00dc00c2b; rc ok, arms D/S/R green, orph clean in us-east-1 and us-west-2
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-dlm-lifecycle-policy	2026-10-16T11:25:01Z	PASS	299	verify.sh	PR #5010 (#5004) 3b3421183; rc ok, orph clean; removal retained
+dlm-lifecycle-policy	2026-10-16T11:25:01Z	PASS	299	verify.sh	PR #5010 (#5004) run on fa71833f3 (pre-rebase; src identical to 3b3421183); rc ok, orph clean; removal retained
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-14T14:47:46Z	PASS	5365	verify.sh	PR #4899 (#2613) beef2d5, new step-3c DocDB subnet group description in-place update arm; rc 0, destroy clean, orph clean
 docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
