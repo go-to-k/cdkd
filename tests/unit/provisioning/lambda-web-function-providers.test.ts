@@ -831,9 +831,20 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
         'RegionalEndpoints.us-west-2.AuthType': 'IamAuth',
         'RegionalEndpoints.ap-northeast-1.DomainName': 'a.lambda-web.ap-northeast-1.on.aws',
       });
-      // An unassigned member is absent, never recorded as undefined or ''.
-      expect(created.attributes).not.toHaveProperty('RegionalEndpoints.ap-northeast-1.AuthType');
-      expect(created.attributes).not.toHaveProperty('RegionalEndpoints');
+      // An unassigned member is absent, never recorded as undefined or ''. The
+      // array form names the FLAT key; a dotted string is a deep path.
+      expect(created.attributes).not.toHaveProperty(['RegionalEndpoints.ap-northeast-1.AuthType']);
+      expect(created.attributes).not.toHaveProperty(['RegionalEndpoints', 'ap-northeast-1', 'AuthType']);
+      // go-to-k/cdkd#4992: the whole map is recorded too, in CloudFormation casing.
+      expect(created.attributes?.['RegionalEndpoints']).toEqual({
+        'ap-northeast-1': { DomainName: 'a.lambda-web.ap-northeast-1.on.aws', State: 'Active' },
+        'us-west-2': {
+          DomainName: 'b.lambda-web.us-west-2.on.aws',
+          AuthType: 'IamAuth',
+          State: 'Active',
+          UpdateStatus: 'Successful',
+        },
+      });
 
       mockSend.mockReset();
       respond(
@@ -877,8 +888,11 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
         'RegionalEndpoints.us-west-2.AuthType': 'IamAuth',
         'RegionalEndpoints.us-west-2.State': 'Active',
       });
-      expect(found?.attributes).not.toHaveProperty('RegionalEndpoints.us-west-2.DomainName');
-      expect(found?.attributes).not.toHaveProperty('RegionalEndpoints.us-west-2.UpdateStatus');
+      expect(found?.attributes).not.toHaveProperty(['RegionalEndpoints.us-west-2.DomainName']);
+      expect(found?.attributes).not.toHaveProperty(['RegionalEndpoints.us-west-2.UpdateStatus']);
+      expect(found?.attributes?.['RegionalEndpoints']).toEqual({
+        'us-west-2': { AuthType: 'IamAuth', State: 'Active' },
+      });
     });
 
     it('import (the stale-record heal read) supplies the regional members a pre-fix record lacks', async () => {
@@ -907,7 +921,47 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
         ])
       );
       const created = await provider.create('Ep', EP_TYPE, base);
-      expect(Object.keys(created.attributes ?? {}).some((k) => k.startsWith('RegionalEndpoints.'))).toBe(false);
+      expect(Object.keys(created.attributes ?? {}).some((k) => k.startsWith('RegionalEndpoints'))).toBe(false);
+    });
+
+    it('records the object-valued members of a regional entry in the nested map (#4992)', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          [
+            'GetWebFunctionEndpointCommand',
+            [
+              {
+                endpointArn: EP_ARN,
+                regionalEndpoints: {
+                  'us-west-2': {
+                    domainName: 'b.lambda-web.us-west-2.on.aws',
+                    revisionWeights: [{ revisionId: 'rev-abc12', weight: 100 }],
+                    scalingConfig: { maxEnvironments: 4 },
+                    throttleConfig: { rateLimit: null },
+                  },
+                },
+              },
+            ],
+          ],
+        ])
+      );
+      const found = await provider.import({
+        logicalId: 'Ep',
+        resourceType: EP_TYPE,
+        knownPhysicalId: EP_ARN,
+      } as never);
+      expect(found?.attributes?.['RegionalEndpoints']).toEqual({
+        'us-west-2': {
+          DomainName: 'b.lambda-web.us-west-2.on.aws',
+          RevisionWeights: [{ RevisionId: 'rev-abc12', Weight: 100 }],
+          ScalingConfig: { MaxEnvironments: 4 },
+        },
+      });
+      // A config object with no assigned member is left out, not recorded as {}.
+      expect(found?.attributes).not.toHaveProperty(['RegionalEndpoints', 'us-west-2', 'ThrottleConfig']);
+      // Only scalar members get a flat key.
+      expect(found?.attributes).not.toHaveProperty(['RegionalEndpoints.us-west-2.ScalingConfig']);
+      expect(found?.attributes).toHaveProperty(['RegionalEndpoints.us-west-2.DomainName']);
     });
   });
 });

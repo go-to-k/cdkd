@@ -20,6 +20,9 @@
 # RegionalEndpoints.<region>.DomainName` feeds an SSM parameter. The SDK
 # provider of 0.300.x did not record it and served the endpoint ARN; this build
 # records it on create / update, and heals a record 0.300.x created without it.
+# go-to-k/cdkd#4992 does the same for a path through an object-valued member
+# (`ScalingConfig.MaxEnvironments`) and for the whole map
+# (`Fn::ToJsonString` of `attrRegionalEndpoints`), each into its own parameter.
 
 set -euo pipefail
 
@@ -80,6 +83,8 @@ case "${REGION}" in
 esac
 export SECONDARY_REGION
 PARAM_NAME="/cdkd-integ/webfn-replace/regional-domain"
+MAX_ENVS_PARAM="/cdkd-integ/webfn-replace/regional-max-environments"
+MAP_PARAM="/cdkd-integ/webfn-replace/regional-endpoints"
 # Phase 3b renames the PerRegion endpoint; the stack reads the same variable.
 export REGIONAL_ENDPOINT_NAME="regional"
 
@@ -114,7 +119,9 @@ cleanup() {
     cc_delete AWS::Lambda::WebFunctionRevision "${id}"
   done
   cc_delete AWS::Lambda::WebFunction "${FN_ARN}"
-  aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
+  for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}" "${MAP_PARAM}"; do
+    aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
+  done
   aws iam detach-role-policy --role-name "${ROLE_NAME}" \
     --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
@@ -265,12 +272,13 @@ assert_serves() { # usage: assert_serves <marker>
 
 # The SSM parameter holds what `Fn::GetAtt RegionalEndpoints.<secondary>.DomainName`
 # resolved to; it must be the domain AWS reports for that region (#4978).
-regional_domain() { # prints the secondary region's domain AWS reports
+regional_read() { # usage: regional_read <member-path>; prints the secondary region's member AWS reports
   aws lambda-web get-web-function-endpoint --function-name "${FN_NAME}" --endpoint-name "${REGIONAL_ENDPOINT_NAME}" --region "${REGION}" \
-    --query "regionalEndpoints.\"${SECONDARY_REGION}\".domainName" --output text
+    --query "regionalEndpoints.\"${SECONDARY_REGION}\".$1" --output text
 }
-param_value() {
-  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" --query Parameter.Value --output text
+regional_domain() { regional_read domainName; }
+param_value() { # usage: param_value [name]
+  aws ssm get-parameter --name "${1:-${PARAM_NAME}}" --region "${REGION}" --query Parameter.Value --output text
 }
 assert_regional_getatt() { # usage: assert_regional_getatt <phase>
   local want got
@@ -287,6 +295,28 @@ assert_regional_getatt() { # usage: assert_regional_getatt <phase>
     exit 1
   fi
   echo "    OK: $1: RegionalEndpoints.${SECONDARY_REGION}.DomainName resolved to ${got}"
+  # go-to-k/cdkd#4992: a path through an object member, and the whole map.
+  local max_want max_got map_got map_domain
+  max_want="$(regional_read scalingConfig.maxEnvironments)" || return 1
+  case "${max_want}" in
+    "" | None | null)
+      echo "FAIL: $1: AWS reports no ${SECONDARY_REGION} scalingConfig.maxEnvironments: '${max_want}'" >&2
+      exit 1
+      ;;
+  esac
+  max_got="$(param_value "${MAX_ENVS_PARAM}")" || return 1
+  if [ "${max_got}" != "${max_want}" ]; then
+    echo "FAIL: $1: Fn::GetAtt RegionalEndpoints.${SECONDARY_REGION}.ScalingConfig.MaxEnvironments resolved to '${max_got}', expected '${max_want}' (#4992)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: RegionalEndpoints.${SECONDARY_REGION}.ScalingConfig.MaxEnvironments resolved to ${max_got}"
+  map_got="$(param_value "${MAP_PARAM}")" || return 1
+  map_domain="$(printf '%s' "${map_got}" | jq -r --arg r "${SECONDARY_REGION}" '.[$r].DomainName // empty' 2>/dev/null || true)"
+  if [ "${map_domain}" != "${want}" ]; then
+    echo "FAIL: $1: Fn::GetAtt RegionalEndpoints (the whole map) resolved to '${map_got}', expected a map whose ${SECONDARY_REGION} DomainName is '${want}' (#4992)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: RegionalEndpoints (the whole map) carries ${SECONDARY_REGION} DomainName ${map_domain}"
 }
 
 assert_one_revision() { # usage: assert_one_revision <phase>
@@ -409,6 +439,14 @@ case "${GOT}" in
     exit 1
     ;;
 esac
+GOT="$(param_value "${MAP_PARAM}")"
+case "${GOT}" in
+  *arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the whole-map GetAtt to the endpoint ARN (the #4992 bug)" ;;
+  *)
+    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the whole-map GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises its heal" >&2
+    exit 1
+    ;;
+esac
 HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
 if [ "${HAS_KEY}" != "false" ]; then
   echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the regional DomainName (${HAS_KEY})" >&2
@@ -453,12 +491,12 @@ DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KE
 echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare (unsupported or
 # skipped), so require every resource of the stack to have been compared: the
-# role, the function, the revision, the two endpoints and the parameter.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(6 resources checked, 0 unsupported)'; then
-  echo "FAIL: drift did not compare all 6 resources -- expected '(6 resources checked, 0 unsupported)'" >&2
+# role, the function, the revision, the two endpoints and the three parameters.
+if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(8 resources checked, 0 unsupported)'; then
+  echo "FAIL: drift did not compare all 8 resources -- expected '(8 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
-echo "    OK: no drift, all 6 resources compared"
+echo "    OK: no drift, all 8 resources compared"
 
 echo "==> Destroy"
 ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
@@ -472,10 +510,11 @@ assert_gone "PerRegion endpoint ${REP3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP3}" --region "${REGION}"
 assert_gone "revision ${REV3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
-assert_gone "parameter ${PARAM_NAME} still exists after destroy" \
-  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
+for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}" "${MAP_PARAM}"; do
+  assert_gone "parameter ${p} still exists after destroy" aws ssm get-parameter --name "${p}" --region "${REGION}"
+done
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: web function, endpoints, revisions, parameter, role and state gone"
 echo ""
-echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926), and a PerRegion endpoint's RegionalEndpoints.<region>.DomainName resolves and heals (#4978)"
+echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926), and a PerRegion endpoint's RegionalEndpoints.<region>.DomainName resolves and heals (#4978), as do a path through an object member and the whole map (#4992)"
