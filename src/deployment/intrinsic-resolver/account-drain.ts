@@ -444,7 +444,7 @@ export async function allSettledKeepingFirstRejection<T>(
     // the request's names (an AccessDenied naming an `Fn::Sub`-assembled
     // SecretId included), so what arrives here from that route is already
     // masked. The downstream boundary masks stay as the layer for every other
-    // error: `DeployEngine.handleOutputResolutionFailure` and the `cdkd import`
+    // error: `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`) and the `cdkd import`
     // boundary (issues #2728 / #2803).
     if (rejection !== undefined) {
       // Inputs still running here means the CAP won the race: report them,

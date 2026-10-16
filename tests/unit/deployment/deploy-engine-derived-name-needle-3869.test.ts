@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { hasMaskableValues, recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
@@ -664,7 +665,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     await engine.maskedInputSources(template, {}, undefined, stackName)!.resolve('v');
     expectPrintOnly();
     contexts = [];
-    await engine.resolveOutputs(template, {}, stackName, template);
+    await resolveOutputs(engine.outputsRun, engine.outputsDeps(), template, {}, stackName, template);
     expectPrintOnly();
     // The control: an ordinary provisioning-shaped context records into its own bag.
     expect(

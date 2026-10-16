@@ -94,6 +94,7 @@ import { provenanceBaselineOf } from './provenance-capture.js';
 import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js';
 import type { CrossStackRead } from '../intrinsic-resolver/context.js';
 import { resolvePendingCloudControlRequests } from '../cc-pending-requests.js';
+import { buildDisplayOutputs, resolveOutputs } from './outputs.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -1082,7 +1083,9 @@ export async function doDeployWithPrefetch(
         const resolvedOutputs = this.redactOutputs(
           // One budget for the whole pass, as on the deploy path above.
           await withSharedDrainBudget(() =>
-            this.resolveOutputs(
+            resolveOutputs(
+              this.outputsRun,
+              this.outputsDeps(),
               effectiveTemplate,
               currentState.resources,
               stackName,
@@ -1120,14 +1123,14 @@ export async function doDeployWithPrefetch(
               resolved: resolvedOutputs,
               declaredOutputs: effectiveTemplate.Outputs,
               previousExportNames: currentEffectiveExports,
-              resolvedExportNames: this.resolvedExportNames,
+              resolvedExportNames: this.outputsRun.resolvedExportNames,
               // go-to-k/cdkd#4657: the outputs pass's own verdict. Always set by
               // a pass with `Outputs`, which is what a failed key needs; absent,
               // carry nothing.
               refusesCarriedAlias: (outputKey, exportName) =>
-                this.carriedExportAliasRefusal === undefined
+                this.outputsRun.carriedExportAliasRefusal === undefined
                   ? 'An export alias was not carried: no export-name verdict is available.'
-                  : this.carriedExportAliasRefusal(outputKey, exportName),
+                  : this.outputsRun.carriedExportAliasRefusal(outputKey, exportName),
             })
           : undefined;
         // Today's template may position only the keys THIS pass wrote. The save
@@ -1138,7 +1141,7 @@ export async function doDeployWithPrefetch(
         // never came from. Those keys fall to the value scan instead.
         if (merge?.kind === 'merged') {
           for (const key of merge.carriedKeys) {
-            Reflect.deleteProperty(this.outputsTemplateSource, key);
+            Reflect.deleteProperty(this.outputsRun.outputsTemplateSource, key);
           }
           // The merge's own mixed-generation check read the bag BEFORE this
           // save's redaction, which can still give it a first expression (a
@@ -1153,7 +1156,7 @@ export async function doDeployWithPrefetch(
             merge = { kind: 'kept', reason: 'mixed-generation' };
           }
         }
-        if (merge?.kind === 'kept') this.outputsSourceUsable = false;
+        if (merge?.kind === 'kept') this.outputsRun.outputsSourceUsable = false;
         // A carried alias the export-name verdict refused (go-to-k/cdkd#4657),
         // reported as the alias pass reports its own refusals. Only for a bag
         // that is written: a kept one holds the previous aliases whole.
@@ -1174,7 +1177,7 @@ export async function doDeployWithPrefetch(
               : persistedOutputs;
         const exportNamesToPersist: readonly string[] | undefined =
           merge === undefined
-            ? this.resolvedExportNames
+            ? this.outputsRun.resolvedExportNames
             : merge.kind === 'merged'
               ? merge.exportNames
               : undefined;
@@ -1240,7 +1243,7 @@ export async function doDeployWithPrefetch(
         // field yet whose broken output is skipped again today.
         const skippedOutputsChanged = !skippedOutputsEqual(
           currentState.skippedOutputs,
-          this.skippedOutputs
+          this.outputsRun.skippedOutputs
         );
 
         // Issue #1852: a heal the outputs pass (or the diff pass above) read
@@ -1324,7 +1327,9 @@ export async function doDeployWithPrefetch(
               // object each pass, so no alias outlives one and no test can
               // tell a copy from an alias here. Stated so the absence of a
               // fence is not read as an oversight.
-              ...(this.skippedOutputs && { skippedOutputs: { ...this.skippedOutputs } }),
+              ...(this.outputsRun.skippedOutputs && {
+                skippedOutputs: { ...this.outputsRun.skippedOutputs },
+              }),
               // Preserve existing imports[] / outputReads[] (v8+) — otherwise
               // the refresh would silently strip the strong-reference record
               // on every diff-clean deploy. Unioned with this session's
@@ -1443,7 +1448,7 @@ export async function doDeployWithPrefetch(
         // #2814): a part the drain cap stopped waiting for can record after
         // the outputs pass, and the bag kept here may be the PREVIOUS
         // deploy's, holding a literal nothing resolved then.
-        outputs: this.buildDisplayOutputs(template, this.redactOutputs(persistedOutputs)),
+        outputs: buildDisplayOutputs(template, this.redactOutputs(persistedOutputs)),
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     }
@@ -1753,7 +1758,7 @@ export async function doDeployWithPrefetch(
       }),
       unchanged: unchangedCount,
       durationMs,
-      outputs: this.buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
+      outputs: buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
       attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
     };
   } catch (error) {

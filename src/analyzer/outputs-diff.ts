@@ -590,7 +590,7 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * Resolve a template's `Outputs` section into the exact bag shape the deploy
  * engine persists to `StackState.outputs` (issue #1921).
  *
- * This is the preview twin of `DeployEngine.resolveOutputs`, and the three
+ * This is the preview twin of `resolveOutputs` (`deploy-engine/outputs.ts`), and the three
  * semantics below are load-bearing for parity — a preview that builds a
  * DIFFERENT bag than the apply persists reports a phantom change on every run,
  * which is this issue's own bug class inverted. `tests/unit/analyzer/

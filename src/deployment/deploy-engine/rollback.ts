@@ -601,7 +601,7 @@ export async function settleJournalAfterSuccess(
       // snapshotted only while this deploy's export-name verdict still
       // publishes it; with no verdict (no outputs pass ran), none is.
       nestedPendingSnapshot(previousState, (name) => {
-        const verdict = this.carriedExportAliasRefusal;
+        const verdict = this.outputsRun.carriedExportAliasRefusal;
         const dropped = verdict === undefined || verdict(name, name) !== undefined;
         // Said once per dropped name: the revert of this child will not
         // restore it. The name is never printed: the verdict refuses it

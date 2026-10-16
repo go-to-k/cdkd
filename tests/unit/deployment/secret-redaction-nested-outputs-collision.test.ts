@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -142,7 +143,15 @@ async function persistAndDesired(
 }> {
   poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
   const engine = childEngine(parent);
-  const resolved = await engine.resolveOutputs(template, {}, 'Parent~Child', template, PARAMETERS);
+  const resolved = await resolveOutputs(
+    engine.outputsRun,
+    engine.outputsDeps(),
+    template,
+    {},
+    'Parent~Child',
+    template,
+    PARAMETERS
+  );
   // Twice, as the save's choke point re-redacts the pass's own redaction.
   const persisted = engine.redactOutputs(engine.redactOutputs(resolved));
   const resolveOutputsWith = async (parameters: Record<string, unknown>) => {
@@ -333,7 +342,15 @@ describe('the no-change path keeps a previous generation\'s outputs (#4913)', ()
       const template = childTemplate({ OA: { Ref: PARAM_A }, OB: SEL_B, OC: SPLIT_A });
       poisonRenderedSpellingsCollidingIn(template, PARAMETERS, parent);
       const engine = childEngine(parent);
-      const resolved = await engine.resolveOutputs(template, {}, 'Parent~Child', template, PARAMETERS);
+      const resolved = await resolveOutputs(
+        engine.outputsRun,
+        engine.outputsDeps(),
+        template,
+        {},
+        'Parent~Child',
+        template,
+        PARAMETERS
+      );
       const current = engine.redactOutputs(resolved);
       // This generation's bag, and an older one holding the survivor's
       // spelling (what a deploy before this fix persisted), are both kept

@@ -89,7 +89,7 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
   // `exportNamesCarriedFrom` (fenced separately below).
   'exportNames: [],',
   ': { exportNames: [...exportNamesToPersist] }),',
-  'exportNames: [...this.resolvedExportNames],',
+  'exportNames: [...this.outputsRun.resolvedExportNames],',
   '...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),',
   'outputReads: [...this.recordedOutputReads],',
 ];

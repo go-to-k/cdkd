@@ -3,7 +3,7 @@
  * and SKIPPED, and the digest `cdkd diff` compares it against (issue
  * [#2740](https://github.com/go-to-k/cdkd/issues/2740)).
  *
- * The deploy side (`DeployEngine.handleOutputResolutionFailure`, default arm)
+ * The deploy side (`handleOutputResolutionFailure` (`deploy-engine/outputs.ts`), default arm)
  * warns, stores `undefined` for the key and moves on, so a re-resolved
  * `state.outputs` lacks it (the no-change path keeps a failed key's STORED
  * value, go-to-k/cdkd#2771, so a key that resolved on an EARLIER deploy can

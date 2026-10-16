@@ -566,8 +566,8 @@ export function maskOutputsByPosition(
   for (const [name, definition] of Object.entries(this.constructPathTemplate?.Outputs ?? {})) {
     templateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
   }
-  if (this.outputsSourceUsable) {
-    for (const [name, value] of Object.entries(this.outputsTemplateSource)) {
+  if (this.outputsRun.outputsSourceUsable) {
+    for (const [name, value] of Object.entries(this.outputsRun.outputsTemplateSource)) {
       templateValues[name] = value;
     }
   }

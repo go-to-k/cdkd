@@ -74,7 +74,7 @@ import {
   type DeployEngineOptions,
   type DeployResult,
 } from './deploy-engine/options.js';
-import * as outputsMixin from './deploy-engine/outputs.js';
+import { OutputsRunState, type OutputsDeps } from './deploy-engine/outputs.js';
 import * as rollbackMixin from './deploy-engine/rollback.js';
 import { ObservedCapture } from './deploy-engine/observed-capture.js';
 import * as maskingMixin from './deploy-engine/masking.js';
@@ -660,81 +660,16 @@ export class DeployEngine {
   /** @internal */
   perResourceInputFingerprints = new Map<string, Record<string, string>>();
   /**
-   * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
-   * whose Value resolves a `{{resolve:...}}` reference). Separate from the
-   * per-resource maps for the same anti-cross-contamination reason. Reset per
-   * `deploy()`.
+   * This deploy's Outputs-pass state — the ten fields {@link OutputsRunState}
+   * holds (`outputSecrets`, `outputsPassSecretMaps`, `outputsTemplateSource`,
+   * `resolvedExportNames`, `carriedExportAliasRefusal`, `skippedOutputs`,
+   * `outputsSourceUsable`, `outputProvenanceSinks`, `outputsResolvedThisRun`,
+   * `resolvedOutputsBag`) — replaced, not cleared in place, per `deploy()`,
+   * like {@link attributeHealer} / {@link provenanceCapture} /
+   * {@link observedCapture}.
    */
   /** @internal */
-  outputSecrets: RecordedSecretValues = new Map();
-  /**
-   * The outputs pass's own recording map(s), one per `resolveOutputs` call
-   * this deploy, so every redaction of the outputs bag re-reads them rather
-   * than trusting the copy taken when the pass ended (issue
-   * [#2814](https://github.com/go-to-k/cdkd/issues/2814)): a part the drain
-   * cap stopped waiting for records into its pass map LATE, and the final
-   * save, the exports index and the deploy summary all run after that copy.
-   * Reset per `deploy()`.
-   */
-  /** @internal */
-  outputsPassSecretMaps: RecordedSecretValues[] = [];
-  /**
-   * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
-   * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
-   * the bag `resolveOutputs` produces. Without it two outputs resolving one
-   * secret collapse onto whichever expression was recorded last, exactly as two
-   * resource properties did before #1904. Captured in `resolveOutputs` at the
-   * same point `outputSecrets` is accumulated. Reset per `deploy()`.
-   *
-   * Null-prototype for the same reason as the outputs bag `resolveOutputs`
-   * builds two lines away: both are keyed by TEMPLATE-CONTROLLED output names,
-   * so an output called `__proto__` would replace this bag's prototype and a
-   * later lookup of a name it never stored would inherit from it. Only the
-   * RESET in `deploy()` is pinned — reverting this initialiser alone survives
-   * the suite, measured, because `deploy()` replaces the bag before anything
-   * writes to it, so the initialiser matches the reset rather than standing as
-   * a second guard.
-   */
-  /** @internal */
-  outputsTemplateSource: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  /**
-   * The export aliases the last `resolveOutputs` pass WROTE into its bag
-   * (issue #2193) — exactly the keys `outputs[exportName] = value` landed on,
-   * so an alias the pass refused (secret-bearing name, collision with a
-   * published output name) or skipped (unresolved value, condition-suppressed
-   * output) is not in it. Persisted as `StackState.exportNames` by the saves
-   * that persist that bag, and the set the exports index is fed from. Reset
-   * at the top of every `resolveOutputs`, so it is only meaningful right
-   * after that call returns — read it there, not later.
-   */
-  /** @internal */
-  resolvedExportNames: string[] = [];
-  /**
-   * The last `resolveOutputs` pass's verdict over an export alias the
-   * no-change merge would CARRY from state rather than resolve
-   * (go-to-k/cdkd#4657): the refusal warning, or `undefined` to carry it.
-   * Same lifetime rule as `resolvedExportNames`; `undefined` until a
-   * `resolveOutputs` pass has run (with or without `Outputs`: a pass with
-   * none decides from the `NoEcho` seed alone, go-to-k/cdkd#4043 Phase C).
-   */
-  /** @internal */
-  carriedExportAliasRefusal:
-    | ((outputKey: string, exportName: string) => string | undefined)
-    | undefined;
-  /**
-   * The outputs the last `resolveOutputs` pass could NOT resolve and SKIPPED
-   * (the resolver threw under the default arm of
-   * `handleOutputResolutionFailure`, or returned `undefined` outright without
-   * `--strict-getatt` — see
-   * `collectSkippedOutputs`), each mapped to the
-   * digest `cdkd diff` compares against (issue #2740, `StackState.
-   * skippedOutputs`). `undefined` when nothing was skipped, so the saves that
-   * persist the resolved bag spread it as-is and the field stays omitted. Same
-   * lifetime rule as `resolvedExportNames`: reset at the top of every
-   * `resolveOutputs`, meaningful only right after that call returns.
-   */
-  /** @internal */
-  skippedOutputs: Record<string, string> | undefined;
+  outputsRun: OutputsRunState = new OutputsRunState();
   /**
    * The condition-pruned template of the deploy in progress, read by
    * `redactStateForPersist` to stamp each record's `constructPath` on every
@@ -742,15 +677,6 @@ export class DeployEngine {
    */
   /** @internal */
   constructPathTemplate: CloudFormationTemplate | undefined;
-  /**
-   * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
-   * redaction. False once an outputs pass threw partway: the post-loop
-   * name pass never ran, so the bag holds only the alias keys written before
-   * the throw — a partial source built from THIS template, while the bag the
-   * failure path then redacts is the PREVIOUS deploy's. Reset per `deploy()`.
-   */
-  /** @internal */
-  outputsSourceUsable = true;
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -896,21 +822,6 @@ export class DeployEngine {
   inPlaceCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]> | 'all'>();
 
   /**
-   * State schema v12: each output's OWN provenance sink, keyed by outputs-bag
-   * key (an `Export.Name` alias shares its output's). Cleared per `deploy()`.
-   */
-  /** @internal */
-  outputProvenanceSinks = new Map<string, RecordedSecretValues>();
-
-  /**
-   * State schema v12: the outputs bags THIS deploy resolved, and their
-   * redacted copies, so the persist writer can tell this pass's bag from a
-   * carried or merged one. Cleared per `deploy()`.
-   */
-  /** @internal */
-  outputsResolvedThisRun = new WeakSet<object>();
-
-  /**
    * State schema v12: the loaded record's outputs bag and its provenance, for
    * a save that carries that bag. Set at load, cleared per `deploy()`.
    */
@@ -918,14 +829,6 @@ export class DeployEngine {
   provenanceBaseline:
     | (Pick<StackState, 'outputs' | 'outputReferenceProvenance'> & { tokenFree: boolean })
     | undefined = undefined;
-
-  /**
-   * State schema v12: the outputs bag this deploy's outputs pass resolved
-   * (unredacted), for the no-change path's outputs share of the migration.
-   * Cleared per `deploy()`.
-   */
-  /** @internal */
-  resolvedOutputsBag: Record<string, unknown> | undefined = undefined;
 
   /**
    * State schema v12: this deploy's one-time migration capture
@@ -1103,6 +1006,24 @@ export class DeployEngine {
   }
 
   /**
+   * This engine's current deps for `deploy-engine/outputs.ts`'s plain
+   * functions, built fresh at each call site so a forwarded method
+   * (`buildResolverContext`, `noEchoPositionSources`) stays bound to THIS
+   * engine rather than a snapshot — the same arrow-forwarding
+   * {@link freshProvenanceCapture} uses.
+   * @internal
+   */
+  outputsDeps(): OutputsDeps {
+    return {
+      options: this.options,
+      logger: this.logger,
+      resolver: this.resolver,
+      buildResolverContext: (...args) => this.buildResolverContext(...args),
+      noEchoPositionSources: (...args) => this.noEchoPositionSources(...args),
+    };
+  }
+
+  /**
    * Deploy a CloudFormation template
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
@@ -1147,25 +1068,17 @@ export class DeployEngine {
     this.resumedCreates = new Map();
     this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();
-    this.outputSecrets = new Map();
-    this.outputsPassSecretMaps = [];
-    // Null-prototype for the same reason as the outputs bag it positions
-    // (issue #1943's class, and #2740's `__proto__` case): both are keyed by
-    // TEMPLATE-CONTROLLED output names two lines apart, so an output literally
-    // named `__proto__` would replace this bag's prototype and a later lookup
-    // of an output named, say, `Fn::GetAtt` would inherit a value from it.
-    // The pair was inconsistent inside one function, which is the state a
-    // later reader has to re-derive.
-    this.outputsTemplateSource = Object.create(null) as Record<string, unknown>;
-    this.outputsSourceUsable = true;
-    // Issue #2740, same reuse hazard as `retainedOldOnReplacement` below.
-    // The ONLY reset for this field: `resolveOutputs` recomputes it at the
-    // END of a pass, but early-returns for a template with no `Outputs`
-    // without touching it, so a reused engine would otherwise carry the
-    // PREVIOUS deploy's record into that run. A second reset inside
-    // `resolveOutputs` would mask this one — neither could then be pinned —
-    // so the clearing lives here, with the other per-run bags.
-    this.skippedOutputs = undefined;
+    // Replaces all ten Outputs-pass fields at once (`OutputsRunState`): the
+    // per-deploy reset. `resolvedExportNames` and `carriedExportAliasRefusal`
+    // are ALSO reset per PASS at the top of `resolveOutputs`, since they
+    // describe the last pass, not the deploy. In
+    // particular `skippedOutputs` (issue #2740, same reuse hazard as
+    // `retainedOldOnReplacement` below: `resolveOutputs` recomputes it at the
+    // END of a pass but early-returns for a template with no `Outputs`
+    // without touching it) and `outputsTemplateSource` (issue #1943's class /
+    // #2740's `__proto__` case: null-prototype, keyed by TEMPLATE-CONTROLLED
+    // output names, same as the bag it positions).
+    this.outputsRun = new OutputsRunState();
     // Issue #2603: an engine can be reused across deploys, and a STALE `true`
     // here would tell the next run's rollback to re-adopt an id this run
     // deleted. Reset in the same block as the other per-run bags.
@@ -1176,10 +1089,7 @@ export class DeployEngine {
     this.updatesThatSentNothing = new Set();
     this.updateWasReplaced = new Map();
     this.inPlaceCreateOnlyPaths = new Map();
-    this.outputProvenanceSinks = new Map();
-    this.outputsResolvedThisRun = new WeakSet();
     this.provenanceBaseline = undefined;
-    this.resolvedOutputsBag = undefined;
     this.provenanceCapture = this.freshProvenanceCapture();
     this.observedCapture = this.freshObservedCapture();
     this.oldDeletedBeforeCreate = new Set();
@@ -1388,16 +1298,16 @@ export class DeployEngine {
     redacted: Record<string, unknown>
   ): Record<string, Record<string, ReferenceProvenance>> | undefined {
     const sinkOf = (outputKey: string): RecordedSecretValues | undefined =>
-      this.outputProvenanceSinks.get(outputKey);
+      this.outputsRun.outputProvenanceSinks.get(outputKey);
     const baseline = this.provenanceBaseline;
     if (
-      !this.outputsResolvedThisRun.has(outputs) &&
+      !this.outputsRun.outputsResolvedThisRun.has(outputs) &&
       baseline !== undefined &&
       outputs === baseline.outputs &&
       baseline.outputReferenceProvenance === undefined &&
       !baseline.tokenFree &&
-      this.resolvedOutputsBag !== undefined &&
-      outputMapsEqual(this.redactOutputs(this.resolvedOutputsBag), redacted)
+      this.outputsRun.resolvedOutputsBag !== undefined &&
+      outputMapsEqual(this.redactOutputs(this.outputsRun.resolvedOutputsBag), redacted)
     ) {
       return outputProvenanceForPersist({
         outputs: redacted,
@@ -1408,7 +1318,7 @@ export class DeployEngine {
     }
     return outputProvenanceForPersist({
       outputs: redacted,
-      resolvedThisRun: this.outputsResolvedThisRun.has(outputs),
+      resolvedThisRun: this.outputsRun.outputsResolvedThisRun.has(outputs),
       carriedFrom: baseline !== undefined && outputs === baseline.outputs ? baseline : undefined,
       sinkOf,
     });
@@ -1945,7 +1855,3 @@ DeployEngine.prototype.noEchoDiffComparison = noEchoMixin.noEchoDiffComparison;
 DeployEngine.prototype.noteNoEchoExactEchoes = noEchoMixin.noteNoEchoExactEchoes;
 DeployEngine.prototype.establishNoEchoEchoFidelity = noEchoMixin.establishNoEchoEchoFidelity;
 DeployEngine.prototype.withNoEchoExactEchoes = noEchoMixin.withNoEchoExactEchoes;
-
-DeployEngine.prototype.handleOutputResolutionFailure = outputsMixin.handleOutputResolutionFailure;
-DeployEngine.prototype.resolveOutputs = outputsMixin.resolveOutputs;
-DeployEngine.prototype.buildDisplayOutputs = outputsMixin.buildDisplayOutputs;

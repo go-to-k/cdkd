@@ -262,7 +262,7 @@ steered the user away from the very deploy that would let the consumer's
 break a consumer — was hidden the same way.
 
 - `resolveTemplateOutputs` reproduces the bag shape
-  `DeployEngine.resolveOutputs` persists to `StackState.outputs`: a
+  `resolveOutputs` (`deploy-engine/outputs.ts`) persists to `StackState.outputs`: a
   condition-false output is skipped (CFn never creates it), and an
   `Export.Name` is stored as a **second key** holding the same value, since
   `Fn::ImportValue` resolves by export name. An output the last deploy

@@ -70,10 +70,10 @@ function seedSecrets(
 ): void {
   const priv = engine as unknown as {
     perResourceSecrets: Map<string, RecordedSecretValues>;
-    outputsPassSecretMaps: RecordedSecretValues[];
+    outputsRun: { outputsPassSecretMaps: RecordedSecretValues[] };
   };
   if (where === 'resource') priv.perResourceSecrets.set('SomeResource', pairs);
-  else priv.outputsPassSecretMaps.push(pairs);
+  else priv.outputsRun.outputsPassSecretMaps.push(pairs);
 }
 
 function redact(engine: DeployEngine, state: StackState): StackState {
