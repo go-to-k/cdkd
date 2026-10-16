@@ -185,8 +185,10 @@ describe('rollback replay refuses a REDACTED baseline (issue #2274)', () => {
     expect(update).not.toHaveBeenCalled();
     expect(result.failures).toBe(1);
     const refusal = warnLines.join('\n');
-    expect(refusal).toContain('four ways a baseline comes to hold it');
+    expect(refusal).toContain('five ways a baseline comes to hold it');
     expect(refusal).toContain("(4) A NoEcho template parameter's value");
+    // go-to-k/cdkd#4986: two overlapping secret values mask the leaf whole.
+    expect(refusal).toContain('(5) Two secret values cdkd resolved overlap inside the value');
     expect(refusal).toContain('(2) The Fn::Base64 encoding of a secret value');
     // The restore: a deploy that CHANGES the resource sends the encoding
     // again; an unchanged re-deploy sends nothing (the encoding of an ordinary

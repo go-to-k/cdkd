@@ -5375,7 +5375,7 @@ export async function buildImportPlan(
         // template for one that is not there.
         reason:
           "cdkd state holds only the redaction mask ('***') for at least one property, and " +
-          'cdkd cannot re-derive the value. There are three ways a record comes to hold it. ' +
+          'cdkd cannot re-derive the value. There are four ways a record comes to hold it. ' +
           '(1) A NoEcho custom-resource value: forcing the custom resource to update does NOT ' +
           'clear this — the handler supplies the value to the deploy and cdkd re-masks it on ' +
           'the way into state, so the export still has nothing to declare. Stop setting NoEcho ' +
@@ -5397,7 +5397,10 @@ export async function buildImportPlan(
           `cdkd import ${commandHole('stack')} --resource ` +
           `${commandHole('logicalId')}=${commandHole('physicalId')} --force (granting ` +
           'cloudformation:DescribeType first if the import warned that it could not read the ' +
-          'schema), then re-run whichever command wrote this property. In every case you can also ' +
+          'schema), then re-run whichever command wrote this property. (4) Two secret values cdkd ' +
+          'resolved overlap inside the value, so no single {{resolve:...}} reference renders it: ' +
+          'change the property (or rotate one of the secrets) so that they no longer overlap, ' +
+          're-deploy, then export again. In every case you can also ' +
           'export this stack without that resource and adopt it into CloudFormation by hand. ' +
           'See https://github.com/go-to-k/cdkd/issues/2274.',
       });

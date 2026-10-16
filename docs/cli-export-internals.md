@@ -63,7 +63,9 @@ stack parameter. It blocks only where the export itself reads the position.
 
 For the other sources of a mask in `properties` (a `NoEcho` Custom Resource
 value, the `Fn::Base64` encoding of a secret, a mask copied from another
-record) the record does not say which one put the mask there. Forcing a Custom
+record, a value in which two secret values overlap so that no single
+`{{resolve:...}}` reference renders it) the record does not say which one put
+the mask there. Forcing a Custom
 Resource to update does not clear its mask: the handler supplies the value to
 the deploy, and cdkd re-masks it on the way into state, which is what the
 export reads. cdkd never records the `Fn::Base64` encoding of a secret, so

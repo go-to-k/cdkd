@@ -277,7 +277,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
 
     expect(update).not.toHaveBeenCalled();
     expect(result.failures).toBe(1);
-    expect(lines.join('\n')).toContain('four ways a baseline comes to hold it');
+    expect(lines.join('\n')).toContain('five ways a baseline comes to hold it');
   });
 
   it('--revert-failed substitutes the same way', async () => {
@@ -337,7 +337,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
     expect(result.failures).toBe(1);
     const text = lines.join('\n');
     expect(text).toContain('there is no live resource to read that value back from');
-    expect(text).not.toContain('four ways a baseline comes to hold it');
+    expect(text).not.toContain('five ways a baseline comes to hold it');
   });
 
   it("a nested stack row's marked Parameters leaf is inert: replayed without a readback or a refusal", async () => {
@@ -841,7 +841,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       );
       expect(update).not.toHaveBeenCalled();
       expect(result.failures).toBe(1);
-      expect(lines.join('\n')).toContain('four ways a baseline comes to hold it');
+      expect(lines.join('\n')).toContain('five ways a baseline comes to hold it');
     });
 
     it('a re-create whose bag also holds an unmarked mask keeps the general refusal; a marked-only one names the path', async () => {
@@ -850,7 +850,7 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       ops[0]!.physicalId = 'phys-NEW';
       ops[0]!.previousState!.properties['Other'] = SECRET_MASK;
       await replayRollback(ops, state, 'S', makeCtx({ create: vi.fn(), delete: vi.fn() }));
-      expect(lines.join('\n')).toContain('four ways a baseline comes to hold it');
+      expect(lines.join('\n')).toContain('five ways a baseline comes to hold it');
 
       lines.length = 0;
       const second = marked('phys-OLD');

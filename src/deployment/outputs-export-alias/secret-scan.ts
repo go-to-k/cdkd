@@ -1,5 +1,6 @@
 import {
   SECRET_MASK,
+  maskMatchSpans,
   carryLogOnlyValuesCarriedBy,
   isSingleDynamicReferenceToken,
   noEchoParametersReadBy,
@@ -705,12 +706,13 @@ export function stateKeySecretExposure(
  * coincidental matches but wrong here, where the values are known to be IN this
  * string. Feeding a detected-but-unmaskable name to it printed the secret under
  * a "masked:" label — a message asserting a protection it had not performed.
- * Longest-first so a secret containing another is masked whole.
+ * The UNION of every occurrence is masked (go-to-k/cdkd#4986), so a secret
+ * containing another, or two that overlap, leave no tail.
  */
 export function maskEveryOccurrence(text: string, exposure: RecordedSecretValues): string {
-  let out = text;
-  for (const value of Array.from(exposure.keys()).sort((a, b) => b.length - a.length)) {
-    out = out.split(value).join(SECRET_MASK);
-  }
-  return out;
+  return maskMatchSpans(
+    text,
+    Array.from(exposure.keys()).filter((value) => value !== ''),
+    SECRET_MASK
+  );
 }

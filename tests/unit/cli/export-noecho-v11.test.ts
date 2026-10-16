@@ -186,7 +186,7 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
       'Root'
     );
     expect(result.blocked).toHaveLength(1);
-    expect(result.blocked[0]!.reason).toMatch(/three ways a record comes to hold it/);
+    expect(result.blocked[0]!.reason).toMatch(/four ways a record comes to hold it/);
   });
 
   it('keeps the general reason for a record with no marker (pre-v11)', async () => {
@@ -196,6 +196,6 @@ describe('cdkd export of a NoEcho-parameter-fed property (schema v11)', () => {
       cfnClientStub,
       'Root'
     );
-    expect(result.blocked[0]!.reason).toMatch(/three ways a record comes to hold it/);
+    expect(result.blocked[0]!.reason).toMatch(/four ways a record comes to hold it/);
   });
 });

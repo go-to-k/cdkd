@@ -358,10 +358,11 @@ describe('nested-stack child: an EMBEDDED parameter leaf beside a WHOLE-VALUE si
       P1: { 'Fn::Sub': '${User}${A}' },
     }) as Record<string, unknown>;
     expect(persisted['P1']).not.toContain(FRAGMENT);
-    // The value scan's answer, leftmost-first: the straddling needle wins at
-    // its offset and the shared plaintext's tail stays (the pre-existing
-    // overlap residual, identical without this arm).
-    expect(persisted['P1']).toBe(`u-{{resolve:ssm:straddle}}${SHARED.slice(3)}`);
+    // The value scan's answer: the straddling needle and the shared plaintext
+    // OVERLAP, and no single expression renders their union, so the leaf is
+    // masked WHOLE (go-to-k/cdkd#4986); the leftmost-first scan used to leave
+    // the shared plaintext's tail in the clear.
+    expect(persisted['P1']).toBe(SECRET_MASK);
   });
 
   it('ACCEPTS a SUB-FLOOR plaintext crossing a certified span\'s edge, which the value scan never reads either', () => {

@@ -296,8 +296,9 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
 
   it('FAILS CLOSED on a PARENT needle the child bag lacks, without relying on the carry', () => {
     // Bags built directly: the resolver's carry would put Z into the child
-    // bag, and the predicate must not depend on that. The parent scan takes Z
-    // first and leaves `EF` of X; the child-bag answer left `AB` of Z.
+    // bag, and the predicate must not depend on that. Z and X overlap, so the
+    // parent scan masks the value WHOLE (go-to-k/cdkd#4986); the child-bag
+    // answer leaves `AB` of Z, which the child bag does not hold.
     const Z = 'ABCD';
     const X = 'CDEF';
     const Z_EXPR = '{{resolve:secretsmanager:parent/z:SecretString:z::}}';
@@ -309,9 +310,10 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
     ]);
     const child: RecordedSecretValues = new Map([[X, X_EXPR]]);
     recordInheritedParameterRead(child, parent, PARAM_A);
-    // The premise: the parent-bag answer cuts X and passes the re-scan.
+    // The premise: the parent-bag answer differs from the child scan's and
+    // passes the re-scan, so only the fail-closed check declines it.
     const parentAnswer = redactInheritedParameterValue(parent, PARAM_A, value);
-    expect(parentAnswer).toBe(`xx${Z_EXPR}EFxx`);
+    expect(parentAnswer).toBe(SECRET_MASK);
     expect(redactSecretsForState(parentAnswer, child)).toBe(parentAnswer);
 
     const persisted = redactSecretsForState({ V: value }, child, { V: { Ref: PARAM_A } }) as Record<

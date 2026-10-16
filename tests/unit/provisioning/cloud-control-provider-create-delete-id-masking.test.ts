@@ -402,6 +402,30 @@ describe('CloudControlProvider create()/delete()/errors withhold a secret-derive
       expect(allLines()).not.toContain(DERIVED);
     });
 
+    it('masks two OVERLAPPING id parts as one span, leaving neither tail (go-to-k/cdkd#4986)', async () => {
+      // Replacing part by part (longest first) consumed the shared `abc` with
+      // the filter part and left `log-group-` of the group part.
+      const id = 'log-group-abc|abc-filter-xyz';
+      mockCcSend.mockImplementation((command: unknown) =>
+        commandName(command) === 'DeleteResourceCommand'
+          ? Promise.resolve({ ProgressEvent: { RequestToken: 'tok-delete' } })
+          : Promise.resolve({
+              ProgressEvent: {
+                TypeName: TYPE,
+                OperationStatus: 'FAILED',
+                Identifier: id,
+                ErrorCode: 'GeneralServiceException',
+                StatusMessage: 'Busy: log-group-abc-filter-xyz now',
+              },
+            })
+      );
+      const provider = new CloudControlProvider();
+      const error = await caught(provider.delete('MyFilter', id, TYPE, recorded));
+
+      expect(error.message).toContain(`Busy: ${SECRET_MASK} now`);
+      expect(error.message).not.toContain('log-group-');
+    });
+
     it('scrubs a helper line the delete reaches: the global-cluster WARN', async () => {
       const clusterId = 'secret-derived-cluster';
       mockCcSend.mockImplementation((command: unknown) =>

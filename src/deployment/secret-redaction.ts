@@ -106,6 +106,11 @@ export {
   repairPhysicalNameCopyLeaves,
   embeddedPhysicalNameRewrites,
   replaceEmbeddedPhysicalNameRewrites,
+  overlapRuleAnswered,
+  withLegacyOverlapScan,
+  differingStringLeaves,
+  replaceWholeLeaves,
+  legacyReferenceLeavesOnly,
   repairEmbeddedPhysicalNamesTowards,
 } from './secret-redaction/redact-state.js';
 export {
@@ -150,6 +155,7 @@ export {
   DYNAMIC_REFERENCE_INNER,
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   isSingleDynamicReferenceToken,
+  maskMatchSpans,
 } from './secret-redaction/rules.js';
 export { intrinsicSkeletonPattern } from './secret-redaction/positions.js';
 export { identityKeyFor } from './secret-redaction/identity-keys.js';

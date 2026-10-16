@@ -50,6 +50,11 @@ import {
   repairPhysicalNameCopyLeaves,
   embeddedPhysicalNameRewrites,
   replaceEmbeddedPhysicalNameRewrites,
+  overlapRuleAnswered,
+  withLegacyOverlapScan,
+  differingStringLeaves,
+  replaceWholeLeaves,
+  legacyReferenceLeavesOnly,
   repairEmbeddedPhysicalNamesTowards,
   isSingleDynamicReferenceToken,
   physicalNameCopiesOf,
@@ -566,6 +571,52 @@ export async function provisionUpdate(
         embeddedRewrites
       );
       if (repaired !== bag[key]) bag[key] = repaired;
+    }
+  }
+  // go-to-k/cdkd#4986: a record a pre-fix cdkd wrote can hold an overlapping
+  // leaf in its leftmost-first spelling (`{{resolve:A}}` + the rest of B in
+  // plaintext). Compared with today's `***` it reads as MOVED, so an
+  // unchanged template would send an UPDATE (a REPLACEMENT on a create-only
+  // property) where CloudFormation sends nothing. A leaf equal to what the old
+  // walk persisted for TODAY's value is that value unchanged: it takes
+  // today's spelling, which this deploy persists, with no send. A real edit
+  // changes today's value, so the old spelling no longer matches and it is
+  // sent. Only where today's walk took the overlap rule, so no other deploy
+  // pays for the second walk. The legacy bag can hold plaintext: a
+  // comparison key, never persisted (each leaf written is today's).
+  if (overlapRuleAnswered(updateSecrets)) {
+    const legacyOverlapBag = withLegacyOverlapScan(updateSecrets, () =>
+      maskAtCoordinates(
+        redactSecretsForState(
+          markSameGenerationBag({ ...resolvedProps }),
+          updateSecrets,
+          desiredProps
+        ),
+        comparisonCoordinates
+      )
+    );
+    // Only a leaf the old walk spelled with a reference: never a stored `***`.
+    const legacyOverlap = legacyReferenceLeavesOnly(legacyOverlapBag) as Record<string, unknown>;
+    for (const bag of new Set(repairable)) {
+      for (const key of Object.keys(bag)) {
+        const repaired = repairPhysicalNameCopyLeaves(
+          bag[key],
+          legacyOverlap[key],
+          desiredForSkipCheck[key]
+        );
+        if (repaired !== bag[key]) bag[key] = repaired;
+      }
+    }
+    // The same spelling in the record's `attributes` / `observedProperties`
+    // (the save redacted them with the same map): whole leaves only.
+    const pairs = differingStringLeaves(legacyOverlap, desiredForSkipCheck);
+    for (const field of ['attributes', 'observedProperties'] as const) {
+      const target = currentResource[field];
+      if (target === undefined || target === null || pairs.length === 0) continue;
+      for (const key of Object.keys(target)) {
+        const repaired = replaceWholeLeaves(target[key], pairs);
+        if (repaired !== target[key]) target[key] = repaired;
+      }
     }
   }
   // IN PLACE, as the properties above: the rollback journal's `previousState`

@@ -31,6 +31,7 @@ already hold them, use [`cdkd scrub`](cli-scrub.md). This page is part of
 | A template parameter declared `NoEcho: true` | `***` |
 | A custom resource response declared `NoEcho` | `***` |
 | The `Fn::Base64` encoding of a secret reference, such as EC2 `UserData` | `***` |
+| A value in which two secret values overlap, so no single reference renders it | `***` |
 
 A reference can be resolved again on the next deploy, so storing it costs
 nothing. A mask cannot be turned back into the value, and the rest of this
@@ -338,6 +339,26 @@ No custom resource is involved, so forcing one to run changes nothing. A
 deploy that changes the resource sends the encoding again. If another resource
 needs the value, have that resource build it from the secret's own reference,
 so that it does not read the encoded copy from the first resource.
+
+### Two secret values that overlap in one value
+
+When the resolved text of one secret runs into another's (`us-east-1${B}`,
+where another secret's value is `us-east-1` followed by the start of `B`'s),
+no single reference renders the shared characters, and storing one reference
+beside the rest would keep part of the other secret in the clear. cdkd stores
+the whole value as `***` instead, and the same commands refuse it in the same
+places. A deploy that changes the resource sends the value again; to end the
+refusals, change the property, or rotate one of the secrets, so that the two
+values no longer overlap.
+
+A cdkd before this behaviour stored such a value as one reference followed by
+the rest of the other secret in plaintext. `cdkd scrub` does not repair that
+record, since the secret it would need is no reference the record holds. The
+next deploy of the resource does: where the record holds exactly what the old
+cdkd stored for today's value, it is rewritten to `***` without sending
+anything. Earlier versions of `state.json` in the versioned bucket keep the
+partial value until [`cdkd scrub --purge-history`](cli-scrub.md#what-a-real-run-removes-and-what-it-cannot)
+deletes them, so treat the exposed secret as compromised and rotate it.
 
 The full rules, including which longer strings are kept, are on the
 contributor page

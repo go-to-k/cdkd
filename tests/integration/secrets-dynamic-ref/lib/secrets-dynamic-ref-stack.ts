@@ -524,6 +524,41 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         ),
       });
     }
+    // Issue #4986: two secret values that OVERLAP inside one leaf. `head` ends
+    // with the five characters `tail` starts with, and `OverlapParam`'s value
+    // is the template literal `cdkd-ovl-head-` followed by the `tail`
+    // reference, so it resolves to a string holding BOTH plaintexts, sharing
+    // `shr4d`. `Description` reads `head` whole, which records it in the same
+    // resource's secrets map. The leftmost-first value scan replaced `head`
+    // and persisted `-tail-cdkd-ovl`, the rest of `tail`, in plaintext: text
+    // the template never states. Fixed, the value persists as the mask.
+    // Gated on its own token; the next deploy without it deletes both. FIXED
+    // names, so verify.sh's cleanup can sweep them.
+    if (process.env.CDKD_TEST_OVERLAP === 'true') {
+      const overlapSecretName = `cdkd-test-dynref-overlap-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}`;
+      const overlapSecret = new secretsmanager.Secret(this, 'OverlapSecret', {
+        secretName: overlapSecretName,
+        secretStringValue: cdk.SecretValue.unsafePlainText(
+          JSON.stringify({ head: 'cdkd-ovl-head-shr4d', tail: 'shr4d-tail-cdkd-ovl' })
+        ),
+      });
+      overlapSecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      // A STABLE logical id: verify.sh drops this record (it declares both
+      // values as a template literal, by design) before grepping state, and an
+      // L2 id carries a hash suffix that would make that drop a silent no-op.
+      (overlapSecret.node.defaultChild as secretsmanager.CfnSecret).overrideLogicalId(
+        'OverlapSecret'
+      );
+      const overlapParam = new ssm.CfnParameter(this, 'OverlapParam', {
+        name: `cdkd-test-dynref-overlap-${account}`,
+        type: 'String',
+        value: `cdkd-ovl-head-{{resolve:secretsmanager:${overlapSecretName}:SecretString:tail}}`,
+        description: `{{resolve:secretsmanager:${overlapSecretName}:SecretString:head}}`,
+      });
+      // The references name the secret by a literal, so nothing in the
+      // template orders the parameter after it.
+      overlapParam.addDependency(overlapSecret.node.defaultChild as cdk.CfnResource);
+    }
     // Issue #2889: an `Export.Name` holding the password split by
     // `U+09BC` (BENGALI SIGN NUKTA), a zero-width nonspacing mark, so the name
     // READS as the password. The value resolves the password, so this pass
