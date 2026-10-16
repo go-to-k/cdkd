@@ -111,15 +111,15 @@ The command also accepts the common flags listed in
 accept `--env-vars` or `--container-host`. The flags that read cdkd's own
 state work as [State sources](#state-sources) describes.
 
-> [!WARNING]
-> Do not pass `--role-arn` here without the `--profile` flag. `--role-arn` is
-> the role cdkd assumes for its own AWS calls. On this command the role's
-> credentials also reach the Function URL and Lambda@Edge containers, so your
-> code runs as that role. An exported `AWS_PROFILE` does not prevent this.
-> Under `--from-state` or `--from-cfn-stack`, a deployed S3 origin's objects
-> and KeyValueStore entries are also read as that role.
-> cdkd warns at startup when this applies. See the `--role-arn` section of
-> the [CLI Reference](cli-reference.md).
+> [!NOTE]
+> Under `--role-arn`, the Function URL and Lambda@Edge containers and
+> everything cdkd resolves for them (the container's credentials,
+> `{{resolve:...}}` references, what `--from-cfn-stack` reads and any
+> `--assume-role` hop) use your own identity, not the role. No startup warning
+> applies. When your own credentials are not a static access key, the
+> containers receive none and cdkd warns once. Under `--from-state`, a
+> deployed S3 origin's objects and KeyValueStore entries are also read as you.
+> See [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Target resolution
 

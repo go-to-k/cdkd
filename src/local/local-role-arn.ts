@@ -4,7 +4,7 @@
  *
  * cdkd's own {@link applyRoleArnIfSet} performs the assume on these commands,
  * so cdk-local never sees it. cdk-local's workload sites (a literal layer ARN
- * fetch, the `--from-cfn-stack` provider, the `--assume-role` hop) resolve as
+ * fetch via `--layer-role-arn`, the `--from-cfn-stack` provider) resolve as
  * the caller only once the assume is RECORDED with cdk-local, which is what
  * this adds: the caller's pre-assume snapshot, taken by `applyRoleArnIfSet`
  * before it overwrote `AWS_*`, is published through cdk-local's
@@ -13,7 +13,9 @@
  * The four engine commands (`start-service` / `start-alb` / `start-cloudfront`
  * / `start-agentcore`) do not come here: cdk-local's own `applyRoleArnIfSet`
  * runs inside them and records the assume itself. Kept out of
- * `src/utils/role-arn.ts` so a deploy never loads `cdk-local/internal`.
+ * `src/utils/role-arn.ts` because of dependency direction: `src/utils` must not
+ * depend on `cdk-local/internal`. (cdkd's own `--assume-role` hop already opts
+ * out of the role itself.)
  */
 
 import { recordAssumedRole } from 'cdk-local/internal';

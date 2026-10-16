@@ -132,12 +132,12 @@ The command also accepts every common flag listed in
 specific to this command: the `--env-vars` file is keyed by container name,
 and the credentials of `--profile` are passed to the containers.
 
-> [!WARNING]
-> Do not pass `--role-arn` here without selecting a profile. `--role-arn` is
-> the role cdkd assumes for its own AWS calls, and on this command cdkd also
-> uses it to fetch the ECS task secrets that are injected into your
-> containers. cdkd warns at startup when this applies. See the `--role-arn`
-> section of the [CLI Reference](cli-reference.md).
+> [!NOTE]
+> Under `--role-arn`, the containers and everything cdkd resolves for them
+> (the container's credentials, ECS task secrets, `{{resolve:...}}`
+> references, what `--from-cfn-stack` reads and any `--assume-role` hop) use
+> your own identity, not the role. No startup warning applies. See
+> [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Target resolution
 

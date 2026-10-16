@@ -349,28 +349,34 @@ stop_engine
 echo "[verify] arm C: start-alb with only an exported AWS_PROFILE strips the role's key"
 if [ -n "${AWS_PROFILE:-}" ]; then
   WORKLOAD_PROFILE="${AWS_PROFILE}"
-elif aws configure list-profiles | grep -qx default; then
+elif aws configure list-profiles | grep -x default >/dev/null; then
   WORKLOAD_PROFILE="default"
 else
-  WORKLOAD_PROFILE="$(aws configure list-profiles | head -1)"
+  WORKLOAD_PROFILE="$(aws configure list-profiles | sed -n 1p)"
 fi
-if [ -z "${WORKLOAD_PROFILE}" ]; then
-  echo "[verify]   SKIP arm C: no named AWS profile exists on this host"
-else
-  echo "[verify]   using profile '${WORKLOAD_PROFILE}' (exported as AWS_PROFILE; no static triple, no --profile)"
-  PORT="$(free_port)"
-  boot as_profile_only start-alb "${APP_STACK}:Alb" --lb-port "80=${PORT}" --container-host 127.0.0.1 --no-pull --role-arn "${ROLE_ARN}"
-  wait_for_line 'Service\(s\) running:' 240
-  BODY="$(fetch_akid_body "http://127.0.0.1:${PORT}/")"
-  echo "[verify]   workload said: ${BODY}"
-  printf '%s' "${BODY}" | grep -qF '"akid":null' \
-    || fail "#3240: the role's access key reached the workload with only AWS_PROFILE exported (expected \"akid\":null, got: ${BODY})"
-  grep -qF 'Pass --profile' "${OUT_FILE}" \
-    || fail "the stripped-credentials warning naming --profile was not printed"
-  awk -v arn="${ROLE_ARN}" 'index($0, "Assumed role ") && index($0, arn) { found = 1 } END { exit !found }' "${OUT_FILE}" \
-    || fail "cdkd did not report assuming ${ROLE_ARN}; --role-arn may have been ignored"
-  stop_engine
+[ -n "${WORKLOAD_PROFILE}" ] \
+  || fail "arm C premise: no AWS profile exists on this host; set WORKLOAD_PROFILE (or AWS_PROFILE) to a profile in the role's account"
+WORKLOAD_ACCOUNT="$(aws sts get-caller-identity --profile "${WORKLOAD_PROFILE}" --query Account --output text)" \
+  || fail "arm C premise: 'aws sts get-caller-identity --profile ${WORKLOAD_PROFILE}' failed; set WORKLOAD_PROFILE to a working profile"
+ROLE_ACCOUNT="$(printf '%s' "${ROLE_ARN}" | cut -d: -f5)"
+[ "${WORKLOAD_ACCOUNT}" = "${ROLE_ACCOUNT}" ] \
+  || fail "arm C premise: profile '${WORKLOAD_PROFILE}' is in account ${WORKLOAD_ACCOUNT}, but ${ROLE_ARN} is in ${ROLE_ACCOUNT}; set WORKLOAD_PROFILE to a profile in the role's account"
+echo "[verify]   using profile '${WORKLOAD_PROFILE}' (exported as AWS_PROFILE; no static triple, no --profile)"
+PORT="$(free_port)"
+boot as_profile_only start-alb "${APP_STACK}:Alb" --lb-port "80=${PORT}" --container-host 127.0.0.1 --no-pull --role-arn "${ROLE_ARN}"
+wait_for_line 'Service\(s\) running:' 240
+BODY="$(fetch_akid_body "http://127.0.0.1:${PORT}/")"
+echo "[verify]   workload said: ${BODY}"
+printf '%s' "${BODY}" | grep -qF '"akid":null' \
+  || fail "#3240: the role's access key reached the workload with only AWS_PROFILE exported (expected \"akid\":null, got: ${BODY})"
+grep -qF 'is not handed to the emulated workload' "${OUT_FILE}" \
+  || fail "cdk-local's stripped-credentials warning ('is not handed to the emulated workload') was not printed"
+if grep -qF 'with your own profile' "${OUT_FILE}"; then
+  fail "the old cdkd startup warning ('with your own profile') was printed; it must be gone"
 fi
+awk -v arn="${ROLE_ARN}" 'index($0, "Assumed role ") && index($0, arn) { found = 1 } END { exit !found }' "${OUT_FILE}" \
+  || fail "cdkd did not report assuming ${ROLE_ARN}; --role-arn may have been ignored"
+stop_engine
 
 echo "[verify] step 5: no leftover containers or networks"
 sleep 1

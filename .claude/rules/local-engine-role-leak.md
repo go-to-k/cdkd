@@ -27,8 +27,8 @@ as the CALLER, never the role.
   (`src/local/local-role-arn.ts`): cdkd's `applyRoleArnIfSet`, then
   `recordAssumedRole` with the pre-assume snapshot. A call site using the bare
   `applyRoleArnIfSet` assumes the role without telling cdk-local, so its
-  `--from-cfn-stack` provider, literal layer fetch and assume-role hop resolve
-  the ROLE. Fenced by `tests/unit/local/local-role-arn.test.ts`.
+  `--from-cfn-stack` provider and `--layer-role-arn` hop resolve the ROLE
+  (cdkd's own `--assume-role` hop opts out itself). Fenced by `tests/unit/local/local-role-arn.test.ts`.
 - **`createCallerDynamicReferenceResolver`** (`src/local/dynamic-reference.ts`)
   stays for the cdkd-owned commands' own `{{resolve:...}}` clients.
 
@@ -41,7 +41,14 @@ bucket name is derived in the ROLE's account and the calls carry
 `${AWS::AccountId}` follows that reader under `--from-state` and stays the
 caller's under `--from-cfn-stack` (go-to-k/cdkd#3230).
 
+The `--assume-role` / `--ecr-role-arn` / `--layer-role-arn` hops are SIGNED by
+the caller (cdkd's `ecr-puller.ts` hop opts out with `ignoreAssumedRole`); the
+credentials a hop returns still do the pull or fetch.
+
 ## Remaining bounds
+
+- On `start-cloudfront --from-state`, the engine's deployed S3-origin and KVS
+  reads run as the caller; a cross-account deploy may need the caller's access.
 
 - cdk-local studio's children are not embedded, so they do not carry the config.
 - A `[default]` profile that sources the environment resolves whatever the

@@ -130,6 +130,13 @@ login for the role's account in your Docker config.
   them), the workload's inputs resolve as the role: `--role-arn` has replaced
   those variables with the role's credentials by then. Pass `--profile` with a
   profile that does not read the environment.
+- **Role hops are signed by you.** The `--assume-role`, `--ecr-role-arn` and
+  `--layer-role-arn` hops are signed by your own identity, so the target role's
+  trust policy must trust you, not only the `--role-arn` role. The credentials
+  a hop returns still do the image pull or layer fetch.
+- **Deployed S3 origins and KeyValueStores.** On `local start-cloudfront
+  --from-state`, the deployed S3-origin and KeyValueStore reads run as you. A
+  cross-account deploy may need your access to those.
 - **Credentials that are not an access key.** When your credentials come from
   IAM Identity Center, an EC2 instance role or an ECS container role, cdkd has
   no access key to capture, so the container receives no credentials, and
