@@ -20,8 +20,9 @@
 #      replacement), and the new statement reached AWS.
 #   3. Re-deploy with CDKD_TEST_REMOVAL=true (keeps the phase-2 policy, DROPS
 #      description + maxSessionDuration — issue #1160 iam-role batch). Assert
-#      the live role resets to the CFn defaults ('' / 3600) instead of silently
-#      keeping the old values (IAM UpdateRole merges absent fields).
+#      Description resets to '' (CloudFormation resets it) while
+#      MaxSessionDuration is RETAINED at 7200 (CloudFormation keeps it, issue
+#      #5004 A/B; IAM UpdateRole merges absent fields and cdkd sends none).
 #   4. Re-deploy with CDKD_TEST_ROLE_PATH=true (issue #4739): the unnamed
 #      PathRole, whose name cdkd generates, moves from `/` to `/cdkd-4739/`.
 #      `Path` is createOnly and the name does not change, so the deploy must be
@@ -256,7 +257,7 @@ fi
 echo "    in-place UPDATE reached AWS (inline policy now has 2 statements), no migration prompt"
 
 # --- Phase 3: removal-reset (issue #1160 iam-role batch) ----------------
-echo "==> Phase 3: re-deploy dropping description + maxSessionDuration (removal reset)"
+echo "==> Phase 3: re-deploy dropping description + maxSessionDuration (description reset, maxSessionDuration retained)"
 env -u CDKD_TEST_ROLE_PATH CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 
@@ -266,15 +267,15 @@ if [ "${ROLE_ID_P1}" != "${ROLE_ID_P3}" ]; then
   exit 1
 fi
 # Cleared Description comes back as absent (text output 'None'); MaxSessionDuration
-# must be back at the IAM/CFn default 3600 — pre-fix both silently kept the
-# phase-1 values because UpdateRole merges absent input fields.
+# must still be the phase-1 7200: CloudFormation keeps it on removal (issue
+# #5004 A/B), so cdkd must not reset it to 3600.
 DESC_P3="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Description' --output text)"
 MAX_P3="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.MaxSessionDuration' --output text)"
-if { [ "${DESC_P3}" != "None" ] && [ -n "${DESC_P3}" ]; } || [ "${MAX_P3}" != "3600" ]; then
-  echo "FAIL: expected Description cleared / MaxSessionDuration=3600 after removal redeploy, got '${DESC_P3}' / '${MAX_P3}'" >&2
+if { [ "${DESC_P3}" != "None" ] && [ -n "${DESC_P3}" ]; } || [ "${MAX_P3}" != "7200" ]; then
+  echo "FAIL: expected Description cleared / MaxSessionDuration retained at 7200 after removal redeploy, got '${DESC_P3}' / '${MAX_P3}'" >&2
   exit 1
 fi
-echo "    removal reset reached AWS (description cleared, maxSessionDuration back to 3600), role identity preserved"
+echo "    removal reset reached AWS (description cleared, maxSessionDuration retained at 7200), role identity preserved"
 
 # --- Phase 4: Path change without --replace is refused (issue #4739) -----
 echo "==> Phase 4: re-deploy moving ${PATH_ROLE_NAME} to /cdkd-4739/ — must be REFUSED without --replace"

@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 38
+    "classesWithBlindSpots": 37
   },
   "classes": [
     {
@@ -5203,7 +5203,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5220,7 +5219,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5237,7 +5235,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5250,11 +5247,9 @@
             "AWS::DLM::LifecyclePolicy"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "update"
           ]
@@ -5286,7 +5281,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5319,7 +5313,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -5352,7 +5345,6 @@
             "element-read"
           ],
           "seededBy": [
-            "buildRemovalResets",
             "create",
             "toSdkFields",
             "update"
@@ -9317,9 +9309,7 @@
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "withRemovalDefaults(...) in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "elbv2-provider.ts",
@@ -18305,8 +18295,7 @@
       ],
       "gaps": [],
       "blindSpots": [
-        "object spread in retainPreviousGenerateBlock()",
-        "withRemovalDefaults(...) in update()"
+        "object spread in retainPreviousGenerateBlock()"
       ]
     },
     {
@@ -19104,7 +19093,6 @@
             "AWS::SQS::Queue"
           ],
           "evidence": [
-            "element-read",
             "table-loop"
           ],
           "seededBy": [

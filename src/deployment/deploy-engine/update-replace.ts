@@ -14,7 +14,14 @@ import {
 } from '../../provisioning/stateful-types.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
 import { type ResourceChange, type ResourceState } from '../../types/state.js';
-import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
+import {
+  acceptedCreateOnlyDropsField,
+  extractTemplateAttributes,
+  propertiesToRecord,
+  secretNamedAttributesField,
+} from './record-shape.js';
+import { preparePropertiesForCcApi } from './routing.js';
+import { replacementNameOrigin } from './name-collision.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -292,7 +299,7 @@ export async function updateByReplacement(
   const replaceProvider = replaceDecision.provider;
   const replaceProps =
     replaceDecision.provisionedBy === 'cc-api'
-      ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+      ? preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
   // Order: property-driven replacement (immutable prop changed)
@@ -662,7 +669,7 @@ export async function updateByReplacement(
       // (Snapshot is not special-cased HERE — the old resource is
       // still deleted so the name frees up; the delete-first helper
       // takes its final snapshot first, issue #1354.)
-      const nameOrigin = this.replacementNameOrigin(logicalId, currentResource.physicalId);
+      const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
       // Issue #2668: across a Type change the old resource can hold the
       // name only where the two types share a name space; every other
       // pair is refused by the #3979 holder proof below, whose
@@ -850,10 +857,7 @@ export async function updateByReplacement(
       !deletedOldFirst &&
       createResult.physicalId === currentResource.physicalId
     ) {
-      const idempotentNameOrigin = this.replacementNameOrigin(
-        logicalId,
-        currentResource.physicalId
-      );
+      const idempotentNameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
       if (updateReplacePolicy === 'Retain') {
         throw new CdkdError(
           safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
@@ -991,7 +995,7 @@ export async function updateByReplacement(
     this.recreatedUnderSameId.add(logicalId);
   }
 
-  const recordedReplacementProperties = this.propertiesToRecord(
+  const recordedReplacementProperties = propertiesToRecord(
     resolvedProps,
     createResult,
     resourceType,
@@ -1012,7 +1016,7 @@ export async function updateByReplacement(
     // go-to-k/cdkd#3869: the new resource's create result is authoritative.
     ...secretNamedAttributesField(createResult),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
-    ...this.extractTemplateAttributes(template, logicalId),
+    ...extractTemplateAttributes(template, logicalId),
     provisionedBy: replaceDecision.provisionedBy,
   };
   this.recordInlinePolicyWrite(logicalId, 'create');

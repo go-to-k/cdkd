@@ -34,6 +34,8 @@
  * resolution of the same record already prints.
  */
 import type { DeployEngine } from '../deploy-engine.js';
+import type { Logger } from '../../types/config.js';
+import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ReferenceProvenance, ResourceState, StackState } from '../../types/state.js';
 import { isThrottlingError } from '../retryable-errors.js';
@@ -47,15 +49,6 @@ import {
   validateReferenceProvenance,
 } from '../reference-provenance-record.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    kickOffProvenanceCapture: OmitThisParameter<typeof kickOffProvenanceCapture>;
-    /** @internal */
-    drainProvenanceCaptures: OmitThisParameter<typeof drainProvenanceCaptures>;
-  }
-}
-
 /** What one record's capture produced. `field: undefined` leaves the field absent. */
 export interface ProvenanceCaptureOutcome {
   /** The record the capture read. */
@@ -63,162 +56,188 @@ export interface ProvenanceCaptureOutcome {
   field: Record<string, ReferenceProvenance> | undefined;
 }
 
+/** What a {@link ProvenanceCapture} reads from the deploy it serves. */
+export interface ProvenanceCaptureDeps {
+  buildResolverContext: DeployEngine['buildResolverContext'];
+  resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
+  logger: Pick<Logger, 'warn'>;
+}
+
 /**
- * Start the capture for every `NO_CHANGE` record in `noChange` that holds a
- * token and has no field. The caller has already applied the token-free fast
- * path; this still skips a record with the field (`{}` included) in O(1) and
- * a token-free record in one walk.
- *
- * ONE record at a time, in a single background chain: the resolver's value
- * cache then answers every later record holding a token an earlier one
- * resolved, so the capture costs at most one lookup per distinct token per
- * region, and it never competes with the deploy's own lookups in a burst.
+ * State schema v12: one deploy's one-time migration capture
+ * (go-to-k/cdkd#4847 / go-to-k/cdkd#4852), holding its in-flight tasks keyed
+ * by logical id until they are drained with the observed captures before a
+ * save. ENGINE-instance state, never module-global, for the same reason as
+ * {@link AttributeHealer}: one engine deploys one stack, and
+ * `--stack-concurrency` runs several at once.
  */
-export function kickOffProvenanceCapture(
-  this: DeployEngine,
-  args: {
+export class ProvenanceCapture {
+  /**
+   * In-flight tasks, keyed by logical id, drained with the observed captures
+   * before a save. Cleared per `deploy()` (a fresh instance replaces this
+   * one, never a clear in place).
+   */
+  private readonly tasks = new Map<string, Promise<ProvenanceCaptureOutcome>>();
+
+  private readonly deps: ProvenanceCaptureDeps;
+
+  constructor(deps: ProvenanceCaptureDeps) {
+    this.deps = deps;
+  }
+
+  /**
+   * Start the capture for every `NO_CHANGE` record in `noChange` that holds a
+   * token and has no field. The caller has already applied the token-free
+   * fast path; this still skips a record with the field (`{}` included) in
+   * O(1) and a token-free record in one walk.
+   *
+   * ONE record at a time, in a single background chain: the resolver's value
+   * cache then answers every later record holding a token an earlier one
+   * resolved, so the capture costs at most one lookup per distinct token per
+   * region, and it never competes with the deploy's own lookups in a burst.
+   */
+  kickOffProvenanceCapture(args: {
     noChange: readonly string[];
     resources: Readonly<Record<string, ResourceState>>;
     template: CloudFormationTemplate;
     parameters: Record<string, unknown> | undefined;
     conditions: Record<string, boolean> | undefined;
     stackName: string;
-  }
-): void {
-  const { noChange, resources, template } = args;
-  let chain: Promise<unknown> = Promise.resolve();
-  for (const logicalId of noChange) {
-    const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
-    if (record === undefined || hasReferenceProvenanceField(record)) continue;
-    const tokens = recordReferenceTokens(record);
-    if (tokens.size === 0) continue;
-    const definition = Object.hasOwn(template.Resources, logicalId)
-      ? template.Resources[logicalId]
-      : undefined;
-    const properties = definition?.Properties ?? {};
-    const task = chain
-      .then(() => captureOne(this, logicalId, record, tokens, properties, args))
-      // `captureOne` classifies every lookup failure itself (throttling
-      // absent, anything else `{}`); this keeps a rejection out of the chain
-      // and leaves the field absent, the v11 reading.
-      .catch((): ProvenanceCaptureOutcome => ({ record, field: undefined }));
-    chain = task;
-    this.provenanceCaptureTasks.set(logicalId, task);
-  }
-}
-
-function warnUnattributed(engine: DeployEngine, logicalId: string): void {
-  engine.logger.warn(
-    safeMsg`Could not record where the secret reference(s) in ${logicalId} were resolved (state schema v12 migration). cdkd keeps its previous handling of them; update ${logicalId} to record it.`
-  );
-}
-
-async function captureOne(
-  engine: DeployEngine,
-  logicalId: string,
-  record: ResourceState,
-  tokens: ReadonlySet<string>,
-  properties: Record<string, unknown>,
-  args: {
-    resources: Readonly<Record<string, ResourceState>>;
-    template: CloudFormationTemplate;
-    parameters: Record<string, unknown> | undefined;
-    conditions: Record<string, boolean> | undefined;
-    stackName: string;
-  }
-): Promise<ProvenanceCaptureOutcome> {
-  const bag: RecordedSecretValues = new Map();
-  const { attributeHealer: _healer, ...base } = engine.buildResolverContext(
-    {
-      template: args.template,
-      resources: { ...args.resources },
-      ...(args.parameters && { parameters: args.parameters }),
-      ...(args.conditions && { conditions: args.conditions }),
-    },
-    args.stackName
-  );
-  const { producerSecrets: _producer, ...withoutRecorders } = base;
-  const context = {
-    ...withoutRecorders,
-    recordedSecretValues: bag,
-    recordedImports: [],
-    recordedOutputReads: [],
-    staleAttributeHeal: { phase: 'probe' as const },
-    printingSecrets: new Map<string, string>(),
-    provenanceCapture: true as const,
-  };
-  // One top-level property at a time, and only one whose stored value holds a
-  // token: a property that cannot resolve leaves ITS tokens unattributed and
-  // the rest are still captured, and a token-free one costs nothing.
-  const stored = record.properties ?? {};
-  for (const [key, value] of Object.entries(properties)) {
-    if (
-      !Object.hasOwn(stored, key) ||
-      recordReferenceTokens({ properties: stored[key] }).size === 0
-    ) {
-      continue;
-    }
-    try {
-      await engine.resolver.resolve(structuredClone(value), context);
-    } catch (error) {
-      if (isThrottlingError(error)) return { record, field: undefined };
+  }): void {
+    const { noChange, resources, template } = args;
+    let chain: Promise<unknown> = Promise.resolve();
+    for (const logicalId of noChange) {
+      const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+      if (record === undefined || hasReferenceProvenanceField(record)) continue;
+      const tokens = recordReferenceTokens(record);
+      if (tokens.size === 0) continue;
+      const definition = Object.hasOwn(template.Resources, logicalId)
+        ? template.Resources[logicalId]
+        : undefined;
+      const properties = definition?.Properties ?? {};
+      const task = chain
+        .then(() => this.captureOne(logicalId, record, tokens, properties, args))
+        // `captureOne` classifies every lookup failure itself (throttling
+        // absent, anything else `{}`); this keeps a rejection out of the chain
+        // and leaves the field absent, the v11 reading.
+        .catch((): ProvenanceCaptureOutcome => ({ record, field: undefined }));
+      chain = task;
+      this.tasks.set(logicalId, task);
     }
   }
-  const physicalId = typeof record.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
-  const field: Record<string, ReferenceProvenance> = {};
-  let unattributed = false;
-  for (const token of [...tokens].sort()) {
-    const pass = passProvenanceFor(bag, token);
-    const plaintext = resolvedPlaintextOf(bag, token);
-    const named =
-      plaintext !== undefined &&
-      plaintext.length >= MIN_NEEDLE_LENGTH &&
-      physicalId.includes(plaintext.toLowerCase());
-    const entry =
-      validateReferenceProvenance(token, {
-        ...(pass?.region !== undefined && { region: pass.region }),
-        ...(named && pass?.versions !== undefined && { versions: pass.versions }),
-      }) ?? {};
-    if (entry.region === undefined && entry.versions === undefined) unattributed = true;
-    field[token] = entry;
-  }
-  if (unattributed) warnUnattributed(engine, logicalId);
-  return { record, field };
-}
 
-/**
- * Install every finished capture onto its record when that record still names
- * the same resource. Returns how many it installed, so the no-change path
- * saves only when one landed. Nothing gives a record the field between the
- * kick-off (which skipped every record holding one) and here, and a record
- * this deploy WROTE needs no exclusion: the persist writer replaces the field
- * of every written record with this pass's answer.
- */
-export async function drainProvenanceCaptures(
-  this: DeployEngine,
-  stateResources: Record<string, ResourceState>
-): Promise<number> {
-  if (this.provenanceCaptureTasks.size === 0) return 0;
-  const entries = [...this.provenanceCaptureTasks.entries()];
-  this.provenanceCaptureTasks.clear();
-  const outcomes = await Promise.all(entries.map(([, task]) => task));
-  let installed = 0;
-  for (let i = 0; i < entries.length; i++) {
-    const logicalId = entries[i]![0];
-    const { record, field } = outcomes[i]!;
-    if (field === undefined) continue;
-    const target = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
-    if (
-      target === undefined ||
-      target.physicalId !== record.physicalId ||
-      target.resourceType !== record.resourceType
-    ) {
-      continue;
-    }
-    stateResources[logicalId] = { ...target, referenceProvenance: field };
-    installed++;
+  private warnUnattributed(logicalId: string): void {
+    this.deps.logger.warn(
+      safeMsg`Could not record where the secret reference(s) in ${logicalId} were resolved (state schema v12 migration). cdkd keeps its previous handling of them; update ${logicalId} to record it.`
+    );
   }
-  return installed;
+
+  private async captureOne(
+    logicalId: string,
+    record: ResourceState,
+    tokens: ReadonlySet<string>,
+    properties: Record<string, unknown>,
+    args: {
+      resources: Readonly<Record<string, ResourceState>>;
+      template: CloudFormationTemplate;
+      parameters: Record<string, unknown> | undefined;
+      conditions: Record<string, boolean> | undefined;
+      stackName: string;
+    }
+  ): Promise<ProvenanceCaptureOutcome> {
+    const bag: RecordedSecretValues = new Map();
+    const { attributeHealer: _healer, ...base } = this.deps.buildResolverContext(
+      {
+        template: args.template,
+        resources: { ...args.resources },
+        ...(args.parameters && { parameters: args.parameters }),
+        ...(args.conditions && { conditions: args.conditions }),
+      },
+      args.stackName
+    );
+    const { producerSecrets: _producer, ...withoutRecorders } = base;
+    const context = {
+      ...withoutRecorders,
+      recordedSecretValues: bag,
+      recordedImports: [],
+      recordedOutputReads: [],
+      staleAttributeHeal: { phase: 'probe' as const },
+      printingSecrets: new Map<string, string>(),
+      provenanceCapture: true as const,
+    };
+    // One top-level property at a time, and only one whose stored value holds
+    // a token: a property that cannot resolve leaves ITS tokens unattributed
+    // and the rest are still captured, and a token-free one costs nothing.
+    const stored = record.properties ?? {};
+    for (const [key, value] of Object.entries(properties)) {
+      if (
+        !Object.hasOwn(stored, key) ||
+        recordReferenceTokens({ properties: stored[key] }).size === 0
+      ) {
+        continue;
+      }
+      try {
+        await this.deps.resolver.resolve(structuredClone(value), context);
+      } catch (error) {
+        if (isThrottlingError(error)) return { record, field: undefined };
+      }
+    }
+    const physicalId = typeof record.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
+    const field: Record<string, ReferenceProvenance> = {};
+    let unattributed = false;
+    for (const token of [...tokens].sort()) {
+      const pass = passProvenanceFor(bag, token);
+      const plaintext = resolvedPlaintextOf(bag, token);
+      const named =
+        plaintext !== undefined &&
+        plaintext.length >= MIN_NEEDLE_LENGTH &&
+        physicalId.includes(plaintext.toLowerCase());
+      const entry =
+        validateReferenceProvenance(token, {
+          ...(pass?.region !== undefined && { region: pass.region }),
+          ...(named && pass?.versions !== undefined && { versions: pass.versions }),
+        }) ?? {};
+      if (entry.region === undefined && entry.versions === undefined) unattributed = true;
+      field[token] = entry;
+    }
+    if (unattributed) this.warnUnattributed(logicalId);
+    return { record, field };
+  }
+
+  /**
+   * Install every finished capture onto its record when that record still
+   * names the same resource. Returns how many it installed, so the
+   * no-change path saves only when one landed. Nothing gives a record the
+   * field between the kick-off (which skipped every record holding one) and
+   * here, and a record this deploy WROTE needs no exclusion: the persist
+   * writer replaces the field of every written record with this pass's
+   * answer.
+   */
+  async drainProvenanceCaptures(stateResources: Record<string, ResourceState>): Promise<number> {
+    if (this.tasks.size === 0) return 0;
+    const entries = [...this.tasks.entries()];
+    this.tasks.clear();
+    const outcomes = await Promise.all(entries.map(([, task]) => task));
+    let installed = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const logicalId = entries[i]![0];
+      const { record, field } = outcomes[i]!;
+      if (field === undefined) continue;
+      const target = Object.hasOwn(stateResources, logicalId)
+        ? stateResources[logicalId]
+        : undefined;
+      if (
+        target === undefined ||
+        target.physicalId !== record.physicalId ||
+        target.resourceType !== record.resourceType
+      ) {
+        continue;
+      }
+      stateResources[logicalId] = { ...target, referenceProvenance: field };
+      installed++;
+    }
+    return installed;
+  }
 }
 
 /**

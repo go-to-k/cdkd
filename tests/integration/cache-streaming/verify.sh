@@ -189,6 +189,85 @@ if [ -z "${ESM_STATE}" ] || [ "${ESM_STATE}" = "None" ]; then
 fi
 echo "    OK: Lambda ${FN_NAME} wired to the Kinesis stream (ESM state: ${ESM_STATE})"
 
+echo "==> Step 4b: BASELINE (issue #5004) -- the non-default values are live before the removal phase"
+# The cluster id is auto-generated; attribute it via the fixed subnet group.
+CACHE_ID=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ -z "${CACHE_ID}" ] || [ "${CACHE_ID}" = "None" ]; then
+  echo "FAIL: cannot resolve the cache cluster id on subnet group ${SUBNET_GROUP}" >&2
+  exit 1
+fi
+cc_field() { # usage: cc_field <JMESPath on the single CacheCluster>
+  aws elasticache describe-cache-clusters --cache-cluster-id "${CACHE_ID}" --region "${REGION}" \
+    --query "CacheClusters[0].$1" --output text
+}
+assert_cc() { # usage: assert_cc <desc> <JMESPath> <expected>; polls 60s for read-after-write lag
+  local desc="$1" expr="$2" want="$3" got="" _i
+  for _i in 1 2 3 4 5 6; do
+    got=$(cc_field "${expr}")
+    [ "${got}" = "${want}" ] && { echo "    OK: ${desc} == ${want}"; return 0; }
+    sleep 10
+  done
+  echo "FAIL: ${desc} is '${got}', expected '${want}'" >&2
+  exit 1
+}
+TOPIC_ARN=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.NotificationTopicArn // empty')
+if [ -z "${TOPIC_ARN}" ]; then
+  echo "FAIL: cannot resolve the NotificationTopicArn output from the state file" >&2
+  exit 1
+fi
+assert_cc "baseline SnapshotRetentionLimit" 'SnapshotRetentionLimit' "3"
+assert_cc "baseline AutoMinorVersionUpgrade" 'AutoMinorVersionUpgrade' "False"
+assert_cc "baseline NotificationTopicArn" 'NotificationConfiguration.TopicArn' "${TOPIC_ARN}"
+assert_cc "baseline NotificationTopicStatus" 'NotificationConfiguration.TopicStatus' "active"
+assert_cc "baseline PreferredMaintenanceWindow" 'PreferredMaintenanceWindow' "tue:05:00-tue:06:00"
+assert_cc "baseline slow-log delivery status" "LogDeliveryConfigurations[?LogType=='slow-log'].Status | [0]" "active"
+
+echo "==> Step 4c: REMOVAL deploy -- drop the four properties, change PreferredMaintenanceWindow"
+# CDKD_TEST_REMOVAL=true synthesizes a cluster template that LACKS
+# SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn /
+# LogDeliveryConfigurations, and moves PreferredMaintenanceWindow tue -> wed in
+# the SAME deploy so ModifyCacheCluster provably fires (the companion change
+# landing proves the Modify call happened, so a KEEP value that survives was
+# retained, not skipped). Real CloudFormation: the first three are KEPT, log
+# delivery is RESET. No other mode token is in play, so no resource is dropped.
+set +e
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+REMOVAL_RC=$?
+set -e
+if [ "${REMOVAL_RC}" -ne 0 ]; then
+  echo "FAIL: removal deploy exited ${REMOVAL_RC}" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: removal deploy exited 0"
+assert_cc "companion PreferredMaintenanceWindow (Modify fired)" 'PreferredMaintenanceWindow' "wed:05:00-wed:06:00"
+assert_cc "RETAINED SnapshotRetentionLimit" 'SnapshotRetentionLimit' "3"
+assert_cc "RETAINED AutoMinorVersionUpgrade" 'AutoMinorVersionUpgrade' "False"
+assert_cc "RETAINED NotificationTopicArn" 'NotificationConfiguration.TopicArn' "${TOPIC_ARN}"
+assert_cc "RETAINED NotificationTopicStatus" 'NotificationConfiguration.TopicStatus' "active"
+# RESET: the slow-log entry is no longer active/enabling (disabling, or gone).
+LOG_ACTIVE=""
+for _i in 1 2 3 4 5 6; do
+  LOG_ACTIVE=$(cc_field "LogDeliveryConfigurations[?Status=='active' || Status=='enabling'] | length(@)")
+  [ "${LOG_ACTIVE}" = "0" ] && break
+  sleep 10
+done
+if [ "${LOG_ACTIVE}" != "0" ]; then
+  echo "FAIL: ${LOG_ACTIVE} log delivery configuration(s) still active after the removal deploy (RESET not applied)" >&2
+  exit 1
+fi
+echo "    OK: LogDeliveryConfigurations RESET (slow-log delivery disabled)"
+# Replacement guard: the removal must be an in-place update.
+CACHE_ID_AFTER=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ "${CACHE_ID_AFTER}" != "${CACHE_ID}" ]; then
+  echo "FAIL: cache cluster was REPLACED by the removal deploy (${CACHE_ID} -> ${CACHE_ID_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: removal was an in-place update"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -222,6 +301,20 @@ if [ -n "${LG_LEFT}" ] && [ "${LG_LEFT}" != "None" ]; then
   echo "FAIL: Lambda log groups still exist after the sweep: ${LG_LEFT}" >&2
   exit 1
 fi
+# Automatic snapshots (SnapshotRetentionLimit=3) die with the cluster; assert
+# none of this run's remain (a failed probe must be not-found, not a throttle).
+if SNAP_OUT=$(aws elasticache describe-snapshots --cache-cluster-id "${CACHE_ID}" --region "${REGION}" \
+  --query 'length(Snapshots)' --output text 2>&1); then
+  if [ "${SNAP_OUT}" != "0" ]; then
+    echo "FAIL: ${SNAP_OUT} ElastiCache snapshot(s) of ${CACHE_ID} remain after destroy" >&2
+    exit 1
+  fi
+elif ! printf '%s' "${SNAP_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  echo "FAIL: snapshot probe undetermined: ${SNAP_OUT}" >&2
+  exit 1
+fi
+assert_gone "SNS topic ${TOPIC_ARN} still exists after destroy" \
+  aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}"
 echo "    OK: 0 orphans (state + Kinesis + Lambda + ElastiCache + Lambda log groups all gone)"
 
 echo ""

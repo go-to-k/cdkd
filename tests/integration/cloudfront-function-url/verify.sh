@@ -180,8 +180,9 @@ echo "    OK: baseline URL config has InvokeMode=RESPONSE_STREAM + Cors"
 
 # --- Phase 1b: removal redeploy (issue #1160 lambda-url batch) --------
 # Drop InvokeMode + Cors from the template; UpdateFunctionUrlConfig uses
-# merge semantics, so without the provider's explicit clear shapes the
-# live values would silently persist. Assert AWS reset both.
+# merge semantics. CloudFormation RESETS a removed Cors but KEEPS a removed
+# InvokeMode (issue #5004 A/B), so assert Cors is cleared and InvokeMode is
+# RETAINED at its baseline.
 echo "==> Phase 1b: removal redeploy (InvokeMode + Cors dropped)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -192,8 +193,8 @@ URL_CONFIG=$(aws lambda get-function-url-config \
   --function-name "${FUNCTION_NAME}" --region "${REGION}" --output json)
 REMOVAL_INVOKE_MODE=$(echo "${URL_CONFIG}" | jq -r '.InvokeMode // empty')
 REMOVAL_HAS_CORS=$(echo "${URL_CONFIG}" | jq 'has("Cors")')
-if [ "${REMOVAL_INVOKE_MODE}" != "BUFFERED" ]; then
-  echo "FAIL: post-removal InvokeMode is '${REMOVAL_INVOKE_MODE}' (expected BUFFERED — removal silently dropped)" >&2
+if [ "${REMOVAL_INVOKE_MODE}" != "RESPONSE_STREAM" ]; then
+  echo "FAIL: post-removal InvokeMode is '${REMOVAL_INVOKE_MODE}' (expected RESPONSE_STREAM RETAINED — CloudFormation keeps it, issue #5004)" >&2
   echo "${URL_CONFIG}" | jq .
   exit 1
 fi
@@ -202,7 +203,7 @@ if [ "${REMOVAL_HAS_CORS}" != "false" ]; then
   echo "${URL_CONFIG}" | jq .
   exit 1
 fi
-echo "    OK: removal reset InvokeMode to BUFFERED and cleared Cors (issue #1160 closed for AWS::Lambda::Url)"
+echo "    OK: removal cleared Cors and retained InvokeMode=RESPONSE_STREAM (CloudFormation parity, issues #1160, #5004)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

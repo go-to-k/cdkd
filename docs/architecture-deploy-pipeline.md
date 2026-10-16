@@ -234,7 +234,7 @@ locations. The rewrite rules are in
 ## Stage 5: deploy each stack
 
 `DeployEngine` deploys one stack. Its code is in
-`src/deployment/deploy-engine.ts` and the mixins in `deploy-engine/`. For each
+`src/deployment/deploy-engine.ts` and the modules in `deploy-engine/`. For each
 stack it does nine things in order:
 
 1. Acquire the stack lock.

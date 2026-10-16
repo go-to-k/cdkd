@@ -13,11 +13,11 @@
 #      preserves the group ids).
 #   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication,
 #      deduplicationScope, and fifoThroughputLimit from the queue and asserts
-#      ContentBasedDeduplication reads 'false', DeduplicationScope reads
-#      'queue', and FifoThroughputLimit reads 'perQueue' IN PLACE (issue
-#      #1237 updateable classification + the #1160 removal resets; the
-#      baseline is the high-throughput pair messageGroup+perMessageGroupId,
-#      removed together — the only removal shape AWS accepts), with an
+#      ContentBasedDeduplication reads 'false' (reset, as CloudFormation does)
+#      while DeduplicationScope stays 'messageGroup' and FifoThroughputLimit
+#      stays 'perMessageGroupId' (CloudFormation KEEPS both on removal, issue
+#      #5004 A/B), all IN PLACE (issue #1237 updateable classification + the
+#      #1160 removal reset for ContentBasedDeduplication), with an
 #      unchanged CreatedTimestamp as the no-replacement guard (re issue
 #      #1238 same-name deletion hazard). SetQueueAttributes documents up to
 #      60s propagation, so the attribute read is a bounded retry loop.
@@ -221,7 +221,9 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # SetQueueAttributes documents up to 60s propagation for attribute reads, so
-# poll bounded (~60s budget) until ALL THREE attributes read their defaults.
+# poll bounded (~60s budget) until ContentBasedDeduplication reads its default.
+# DeduplicationScope / FifoThroughputLimit must read their BASELINE values
+# throughout (retained, issue #5004), so the loop only waits on CBD.
 # The if/then/break form (not `[ ... ] && break`) keeps a failed test from
 # ever being the loop body's trailing && list.
 CBD_AFTER=""
@@ -236,7 +238,7 @@ for i in $(seq 1 6); do
   SCOPE_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.DeduplicationScope // "None"')"
   LIMIT_AFTER="$(printf '%s' "${ATTRS_JSON}" | jq -r '.FifoThroughputLimit // "None"')"
   echo "    poll ${i}: ContentBasedDeduplication=${CBD_AFTER} DeduplicationScope=${SCOPE_AFTER} FifoThroughputLimit=${LIMIT_AFTER}"
-  if [ "${CBD_AFTER}" = "false" ] && [ "${SCOPE_AFTER}" = "queue" ] && [ "${LIMIT_AFTER}" = "perQueue" ]; then
+  if [ "${CBD_AFTER}" = "false" ]; then
     break
   fi
   # No sleep after the final poll — it would only delay the failure report.
@@ -246,12 +248,12 @@ if [ "${CBD_AFTER}" != "false" ]; then
   echo "FAIL: ContentBasedDeduplication expected 'false' after removal redeploy, got '${CBD_AFTER}'" >&2
   exit 1
 fi
-if [ "${SCOPE_AFTER}" != "queue" ]; then
-  echo "FAIL: DeduplicationScope expected 'queue' after removal redeploy, got '${SCOPE_AFTER}'" >&2
+if [ "${SCOPE_AFTER}" != "messageGroup" ]; then
+  echo "FAIL: DeduplicationScope expected to be RETAINED as 'messageGroup' after removal redeploy (CloudFormation keeps it, issue #5004), got '${SCOPE_AFTER}'" >&2
   exit 1
 fi
-if [ "${LIMIT_AFTER}" != "perQueue" ]; then
-  echo "FAIL: FifoThroughputLimit expected 'perQueue' after removal redeploy, got '${LIMIT_AFTER}'" >&2
+if [ "${LIMIT_AFTER}" != "perMessageGroupId" ]; then
+  echo "FAIL: FifoThroughputLimit expected to be RETAINED as 'perMessageGroupId' after removal redeploy (CloudFormation keeps it, issue #5004), got '${LIMIT_AFTER}'" >&2
   exit 1
 fi
 
@@ -264,7 +266,7 @@ if [ "${CREATED_AFTER}" != "${BASE_CREATED}" ]; then
   echo "FAIL: CreatedTimestamp changed (${BASE_CREATED} -> ${CREATED_AFTER}) — queue was REPLACED, not updated in place" >&2
   exit 1
 fi
-echo "    FIFO attrs removed in place (CBD 'false', scope 'queue', limit 'perQueue', CreatedTimestamp unchanged)"
+echo "    FIFO attrs removed in place (CBD reset to 'false'; scope 'messageGroup' and limit 'perMessageGroupId' retained; CreatedTimestamp unchanged)"
 
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"

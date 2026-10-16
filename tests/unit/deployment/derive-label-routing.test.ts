@@ -2,7 +2,7 @@
  * Unit tests for the #614 §9 live-progress label routing inference.
  *
  * `deriveLabelRouting` is the pure-functional helper called from
- * `DeployEngine.peekRoutingForLabel` to decide whether a resource's
+ * `peekRoutingForLabel` (`deploy-engine/routing.ts`) to decide whether a resource's
  * live-progress task label should carry the `[CC API]` tag.
  * Cosmetic-only — errors here never surface, so the helper swallows
  * exceptions and returns `undefined` (label stays untagged).

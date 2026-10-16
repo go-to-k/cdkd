@@ -23,8 +23,9 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 iam-role batch)
  * keeps the phase-2 inline policy and ADDITIONALLY drops `description` +
  * `maxSessionDuration` from the template. IAM UpdateRole MERGES (absent =
- * "no change"), so pre-fix the live role silently kept both values;
- * IAMRoleProvider.update() must reset them to the CFn defaults ('' / 3600).
+ * "no change"), so pre-fix the live role kept both values; since #5004
+ * that is right for MaxSessionDuration (CloudFormation keeps it), while
+ * IAMRoleProvider.update() still resets Description to ''.
  *
  * The PATH phases (gated on CDKD_TEST_ROLE_PATH, issue #4739) move an UNNAMED
  * role -- cdkd generates its name, `${stackName}-<logicalId>` -- that a named

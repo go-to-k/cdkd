@@ -21,7 +21,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
+import { clearOnUpdateRemoval } from '../update-removal.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -72,17 +72,6 @@ export class ElastiCacheProvider implements ResourceProvider {
   private createClient?: ElastiCacheClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
-
-  /**
-   * Issue #1160: the CFn default a property REMOVED from the template is
-   * reset to — the Modify/Update API keeps an absent field's live value.
-   */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    [
-      'AWS::ElastiCache::CacheCluster',
-      new Map<string, unknown>([['AutoMinorVersionUpgrade', true]]),
-    ],
-  ]);
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -201,15 +190,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    context?: UpdateContext
+    _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
         return this.updateSubnetGroup(
@@ -332,8 +314,9 @@ export class ElastiCacheProvider implements ResourceProvider {
       // `createSubnetGroup` synthesizes when the template omits the
       // description, keeping create/update parity. (CFn marks `Description`
       // required on AWS::ElastiCache::SubnetGroup, so a removal is
-      // CFn-invalid anyway — but cdkd's create path tolerates the absence
-      // with this default, and update must not silently keep the old value.)
+      // CFn-invalid anyway and could not be A/B-measured in #5004 — but
+      // cdkd's create path tolerates the absence with this default, and
+      // update must not silently keep the old value.)
       const modified = await this.getClient().send(
         new ModifyCacheSubnetGroupCommand({
           CacheSubnetGroupName: physicalId,
@@ -572,10 +555,10 @@ export class ElastiCacheProvider implements ResourceProvider {
       const sgIds = rawSgIds && rawSgIds.length > 0 ? rawSgIds : undefined;
 
       // #1160 reset-on-removal — ModifyCacheCluster has merge semantics (an
-      // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // absent input field means "no change"), so a removed property is
+      // sent as an explicit reset ONLY where CloudFormation resets it
+      // (LogDeliveryConfigurations; see #5004 below). Deliberately NOT
+      // reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky version change cdkd must not
       //     synthesize (ModifyCacheClusterMessage doc: downgrade is
@@ -594,18 +577,13 @@ export class ElastiCacheProvider implements ResourceProvider {
       //     (readCurrentState placeholder defense); classified UNCERTAIN in
       //     the #1160 audit, out of this batch's scope.
 
-      // NotificationTopicArn has no "clear to empty" input; the documented
-      // disable sentinel is NotificationTopicStatus=inactive
-      // (ModifyCacheClusterMessage doc: "Notifications are sent only if the
-      // status is active"). On removal keep the ARN absent and send the
-      // inactive status; when an ARN is present, send active explicitly so
-      // re-adding a topic after a removal reactivates delivery.
+      // #5004 (real CloudFormation A/B, us-east-1): CloudFormation KEEPS the
+      // live value when SnapshotRetentionLimit, AutoMinorVersionUpgrade or
+      // NotificationTopicArn is removed from the template, so a removed one
+      // sends nothing (an absent Modify field = unchanged) -- in particular
+      // no NotificationTopicStatus=inactive. The one measured RESET is
+      // LogDeliveryConfigurations (CloudFormation disables delivery), below.
       const notificationTopicArn = properties['NotificationTopicArn'] as string | undefined;
-      // `!= null` (not `!== undefined`) so an explicit-null / never-really-set
-      // previous side does not fire a spurious inactive sentinel — matches the
-      // numeric fields' previous-side checks below (PR #1256 review nit).
-      const notificationRemoved =
-        notificationTopicArn === undefined && previousProperties['NotificationTopicArn'] != null;
 
       await this.getClient().send(
         new ModifyCacheClusterCommand({
@@ -618,26 +596,15 @@ export class ElastiCacheProvider implements ResourceProvider {
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
             | undefined,
-          // CFn default: 0 — automatic backups off (SnapshotRetentionLimit
-          // doc: "If the value ... is set to zero (0), backups are turned
-          // off").
-          SnapshotRetentionLimit: clearOnUpdateRemoval(
+          SnapshotRetentionLimit:
             properties['SnapshotRetentionLimit'] != null
               ? Number(properties['SnapshotRetentionLimit'])
               : undefined,
-            previousProperties['SnapshotRetentionLimit'] != null
-              ? Number(previousProperties['SnapshotRetentionLimit'])
-              : undefined,
-            0
-          ),
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
-          // Service default when omitted at create: enabled (live-verified
-          // 2026-07-27 — a bare CreateCacheCluster reports
-          // AutoMinorVersionUpgrade=true on DescribeCacheClusters).
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: notificationTopicArn,
-          ...(notificationRemoved && { NotificationTopicStatus: 'inactive' }),
           ...(notificationTopicArn !== undefined && { NotificationTopicStatus: 'active' }),
+          // #5004 A/B: CloudFormation DISABLES delivery on removal (RESET).
           // Per-LogType merge semantics: each request entry modifies ONLY
           // its own LogType, so a log type dropped from the template (or the
           // whole property removed) must be sent as an explicit
@@ -1059,10 +1026,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (cluster.AutoMinorVersionUpgrade !== undefined) {
       result['AutoMinorVersionUpgrade'] = cluster.AutoMinorVersionUpgrade;
     }
-    // AWS keeps the topic ARN visible on DescribeCacheClusters after the
-    // #1160 removal reset (NotificationTopicStatus=inactive) — semantically
-    // "no notification topic configured" — so gate the emit on the status
-    // to keep the post-removal read round-trip clean.
+    // An `inactive` topic (set outside cdkd; cdkd no longer sends the
+    // inactive status on removal, #5004) means "no notification topic
+    // configured", so gate the emit on the status.
     if (
       cluster.NotificationConfiguration?.TopicArn !== undefined &&
       cluster.NotificationConfiguration.TopicStatus !== 'inactive'

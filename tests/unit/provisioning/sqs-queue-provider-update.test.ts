@@ -327,13 +327,16 @@ describe('SQSQueueProvider.update', () => {
     expect(input.Attributes['DelaySeconds']).toBe('5');
   });
 
-  it('resets DeduplicationScope to "queue" when removed on update (issue #1160)', async () => {
-    // FIFO queue had DeduplicationScope: messageGroup; the property is now
-    // absent from the desired template. A bare FIFO queue reads
-    // DeduplicationScope 'queue' (the default; live-verified 2026-07-27), so
-    // removal resets to 'queue'. FIFO-only: only a FIFO queue can carry the
-    // attribute in previousProperties (AWS rejects it on standard queues).
-    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+  // go-to-k/cdkd#5004: a real CloudFormation A/B showed CloudFormation KEEPS
+  // these three at the live value when they are removed from the template, so
+  // cdkd must send NOTHING for them (an omitted SetQueueAttributes member means
+  // "unchanged"). Each test fails if the old removal reset is restored.
+  const sentAttributes = (): Record<string, string> | undefined => {
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof SetQueueAttributesCommand);
+    return call ? (call[0].input as { Attributes: Record<string, string> }).Attributes : undefined;
+  };
+
+  it('KEEPS DeduplicationScope when removed on update: no reset is sent (issue #5004)', async () => {
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
 
     await provider.update(
@@ -344,18 +347,11 @@ describe('SQSQueueProvider.update', () => {
       { FifoQueue: true, DeduplicationScope: 'messageGroup' }
     );
 
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['DeduplicationScope']).toBe('queue');
+    // Nothing else changed, so no SetQueueAttributes call at all.
+    expect(sentAttributes()).toBeUndefined();
   });
 
-  it('resets FifoThroughputLimit to "perQueue" while a kept DeduplicationScope passes through (issue #1160)', async () => {
-    // Only FifoThroughputLimit removed; DeduplicationScope: messageGroup kept.
-    // 'perQueue' + 'messageGroup' is a valid combination — AWS accepts it in
-    // one SetQueueAttributes call (live-verified 2026-07-27).
+  it('KEEPS FifoThroughputLimit when removed on update, while a kept DeduplicationScope passes through (issue #5004)', async () => {
     mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
 
@@ -371,20 +367,13 @@ describe('SQSQueueProvider.update', () => {
       }
     );
 
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['FifoThroughputLimit']).toBe('perQueue');
-    // Kept field passes through unchanged, not reset to its default.
-    expect(input.Attributes['DeduplicationScope']).toBe('messageGroup');
+    const attrs = sentAttributes();
+    expect(attrs).toBeDefined();
+    expect(attrs).not.toHaveProperty('FifoThroughputLimit');
+    expect(attrs!['DeduplicationScope']).toBe('messageGroup');
   });
 
-  it('resets both DeduplicationScope and FifoThroughputLimit in ONE call when both are removed (issue #1160)', async () => {
-    // Template dropped the high-throughput FIFO config entirely. Both resets
-    // ride the same SetQueueAttributes call — 'queue' + 'perQueue' together is
-    // accepted by AWS (both defaults; live-verified 2026-07-27).
+  it('KEEPS both DeduplicationScope and FifoThroughputLimit when both are removed, while ContentBasedDeduplication still resets (issue #5004)', async () => {
     mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
 
@@ -395,28 +384,26 @@ describe('SQSQueueProvider.update', () => {
       { FifoQueue: true },
       {
         FifoQueue: true,
+        ContentBasedDeduplication: true,
         DeduplicationScope: 'messageGroup',
         FifoThroughputLimit: 'perMessageGroupId',
       }
     );
 
     const calls = mockSend.mock.calls.filter((c) => c[0] instanceof SetQueueAttributesCommand);
-    // ONE combined call, not one per attribute.
     expect(calls).toHaveLength(1);
-    const input = calls[0]![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['DeduplicationScope']).toBe('queue');
-    expect(input.Attributes['FifoThroughputLimit']).toBe('perQueue');
+    expect(sentAttributes()).toEqual({ ContentBasedDeduplication: 'false' });
   });
 
-  it('does NOT suppress the DeduplicationScope reset when the template keeps FifoThroughputLimit: perMessageGroupId (CFn parity)', async () => {
-    // Removing ONLY DeduplicationScope while keeping FifoThroughputLimit:
-    // perMessageGroupId is an invalid combination — AWS rejects the call
-    // loudly (InvalidAttributeValue: "To set FifoThroughputLimit to
-    // perMessageGroupId, the DeduplicationScope must be messageGroup";
-    // live-verified 2026-07-27, queue state unchanged). CloudFormation's
-    // reset-to-default hits the same service constraint, so cdkd passes the
-    // reset through with NO guard — no sub-field synthesis, no suppression.
-    // The user must drop / change FifoThroughputLimit too.
+  it('KEEPS SqsManagedSseEnabled when removed on update: no reset is sent (issue #5004)', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update('L', QUEUE_URL, 'AWS::SQS::Queue', {}, { SqsManagedSseEnabled: false });
+
+    expect(sentAttributes()).toBeUndefined();
+  });
+
+  it('still passes a declared SqsManagedSseEnabled through (only the removal reset is gone)', async () => {
     mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
 
@@ -424,104 +411,16 @@ describe('SQSQueueProvider.update', () => {
       'L',
       QUEUE_URL,
       'AWS::SQS::Queue',
-      { FifoQueue: true, FifoThroughputLimit: 'perMessageGroupId' },
-      {
-        FifoQueue: true,
-        DeduplicationScope: 'messageGroup',
-        FifoThroughputLimit: 'perMessageGroupId',
-      }
+      { SqsManagedSseEnabled: false },
+      { SqsManagedSseEnabled: true }
     );
 
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    // The reset IS sent alongside the kept perMessageGroupId — AWS (and CFn)
-    // own the rejection; cdkd must not silently keep the stale value.
-    expect(input.Attributes['DeduplicationScope']).toBe('queue');
-    expect(input.Attributes['FifoThroughputLimit']).toBe('perMessageGroupId');
+    expect(sentAttributes()).toEqual({ SqsManagedSseEnabled: 'false' });
   });
 
-  it('resets SqsManagedSseEnabled to "true" when removed on update (issue #1160)', async () => {
-    // A standard queue had SqsManagedSseEnabled: false; the property is now
-    // absent. SSE-SQS is enabled by default when the property is undefined
-    // (CFn docs), so removal resets to 'true'.
-    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
-    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
-
-    await provider.update(
-      'L',
-      QUEUE_URL,
-      'AWS::SQS::Queue',
-      {},
-      { SqsManagedSseEnabled: false }
-    );
-
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
-  });
-
-  it('skips the SqsManagedSseEnabled reset when the new template carries a non-empty KmsMasterKeyId', async () => {
-    // SSE-SQS and SSE-KMS are mutually exclusive: AWS rejects a
-    // SetQueueAttributes call carrying both a non-empty KmsMasterKeyId and
-    // SqsManagedSseEnabled 'true' ("You can use one type of server-side
-    // encryption (SSE) at one time.", live-verified). The template switched
-    // to SSE-KMS, so the reset must be suppressed — setting the CMK
-    // implicitly turns SSE-SQS off.
-    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
-    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
-
-    await provider.update(
-      'L',
-      QUEUE_URL,
-      'AWS::SQS::Queue',
-      { KmsMasterKeyId: 'alias/aws/sqs' },
-      { SqsManagedSseEnabled: false }
-    );
-
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['SqsManagedSseEnabled']).toBeUndefined();
-    expect(input.Attributes['KmsMasterKeyId']).toBe('alias/aws/sqs');
-  });
-
-  it('still resets SqsManagedSseEnabled when the new KmsMasterKeyId is the empty-string placeholder', async () => {
-    // readCurrentState emits KmsMasterKeyId: '' as the "no CMK" placeholder.
-    // An empty key means SSE-KMS is NOT desired, so the SSE-SQS reset must
-    // fire — AWS accepts KmsMasterKeyId '' + SqsManagedSseEnabled 'true' in
-    // one call (live-verified).
-    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
-    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
-
-    await provider.update(
-      'L',
-      QUEUE_URL,
-      'AWS::SQS::Queue',
-      { KmsMasterKeyId: '' },
-      { SqsManagedSseEnabled: false }
-    );
-
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
-    expect(input.Attributes['KmsMasterKeyId']).toBe('');
-  });
-
-  it('resets both KmsMasterKeyId and SqsManagedSseEnabled when both are removed at once', async () => {
-    // Template dropped SSE config entirely: KmsMasterKeyId resets to '' and
-    // SqsManagedSseEnabled resets to 'true' (back to the SSE-SQS default).
-    // AWS accepts this combination in a single call (live-verified).
+  it('removing both KmsMasterKeyId and SqsManagedSseEnabled resets only the key (issue #5004)', async () => {
+    // KmsMasterKeyId is RESET by CloudFormation ('' clears the CMK);
+    // SqsManagedSseEnabled is KEPT, so it is not sent alongside it.
     mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
     mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
 
@@ -533,13 +432,29 @@ describe('SQSQueueProvider.update', () => {
       { KmsMasterKeyId: 'alias/aws/sqs', SqsManagedSseEnabled: false }
     );
 
-    const setAttrsCall = mockSend.mock.calls.find(
-      (c) => c[0] instanceof SetQueueAttributesCommand
-    );
-    expect(setAttrsCall).toBeDefined();
-    const input = setAttrsCall![0].input as { Attributes: Record<string, string> };
-    expect(input.Attributes['KmsMasterKeyId']).toBe('');
-    expect(input.Attributes['SqsManagedSseEnabled']).toBe('true');
+    expect(sentAttributes()).toEqual({ KmsMasterKeyId: '' });
+  });
+
+  // The properties CloudFormation RESETS on removal (issue #5004 A/B) keep
+  // their reset to the documented default.
+  it.each([
+    ['RedrivePolicy', { deadLetterTargetArn: 'arn:aws:sqs:us-east-1:0:dlq', maxReceiveCount: 3 }, ''],
+    ['RedriveAllowPolicy', { redrivePermission: 'allowAll' }, ''],
+    ['KmsMasterKeyId', 'alias/aws/sqs', ''],
+    ['VisibilityTimeout', 120, '30'],
+    ['MaximumMessageSize', 2048, '262144'],
+    ['MessageRetentionPeriod', 60, '345600'],
+    ['DelaySeconds', 5, '0'],
+    ['ReceiveMessageWaitTimeSeconds', 5, '0'],
+    ['KmsDataKeyReusePeriodSeconds', 600, '300'],
+    ['ContentBasedDeduplication', true, 'false'],
+  ])('RESETS %s on removal, as CloudFormation does (issue #5004)', async (key, previous, reset) => {
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributes
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update('L', QUEUE_URL, 'AWS::SQS::Queue', {}, { [key]: previous });
+
+    expect(sentAttributes()).toEqual({ [key]: reset });
   });
 
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {

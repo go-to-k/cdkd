@@ -1,20 +1,8 @@
-import type { DeployEngine } from '../deploy-engine.js';
 import { applyDefaultNameForFallback } from '../../provisioning/resource-name.js';
+import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
 import { deriveLabelRouting } from '../label-routing.js';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    isPinnedToCcApi: OmitThisParameter<typeof isPinnedToCcApi>;
-    /** @internal */
-    recreateDirectionFor: OmitThisParameter<typeof recreateDirectionFor>;
-    /** @internal */
-    peekRoutingForLabel: OmitThisParameter<typeof peekRoutingForLabel>;
-    /** @internal */
-    preparePropertiesForCcApi: OmitThisParameter<typeof preparePropertiesForCcApi>;
-  }
-}
+import type { DeployEngineOptions } from './options.js';
 
 /**
  * Is this resource pinned to Cloud Control for this deploy (`--pin-cc-api`)?
@@ -32,12 +20,12 @@ declare module '../deploy-engine.js' {
  * resource in a stack the user never named — silently, since a pin produces
  * no output of its own.
  */
-/** @internal */
-export function isPinnedToCcApi(this: DeployEngine, stackName: string, logicalId: string): boolean {
-  return (
-    this.options.pinCcApi?.stackName === stackName &&
-    this.options.pinCcApi.logicalIds.has(logicalId)
-  );
+export function isPinnedToCcApi(
+  options: Pick<DeployEngineOptions, 'pinCcApi'>,
+  stackName: string,
+  logicalId: string
+): boolean {
+  return options.pinCcApi?.stackName === stackName && options.pinCcApi.logicalIds.has(logicalId);
 }
 
 /**
@@ -57,25 +45,22 @@ export function isPinnedToCcApi(this: DeployEngine, stackName: string, logicalId
  * the sticky inputs, then this) by subtracting one input at a time from the
  * label. The class closes by asking the same QUESTION at both sites instead.
  */
-/** @internal */
 export function recreateDirectionFor(
-  this: DeployEngine,
+  options: Pick<DeployEngineOptions, 'recreateTargets'>,
   stackName: string,
   logicalId: string
 ): 'sdk' | 'cc-api' | undefined {
   const targets =
-    this.options.recreateTargets?.stackName === stackName
-      ? this.options.recreateTargets
-      : undefined;
+    options.recreateTargets?.stackName === stackName ? options.recreateTargets : undefined;
   if (targets === undefined) return undefined;
   if (targets.viaCcApi.has(logicalId)) return 'cc-api';
   if (targets.viaSdkProvider.has(logicalId)) return 'sdk';
   return undefined;
 }
 
-/** @internal */
 export function peekRoutingForLabel(
-  this: DeployEngine,
+  providerRegistry: ProviderRegistry,
+  options: Pick<DeployEngineOptions, 'pinCcApi'>,
   change: ResourceChange,
   existingState: ResourceState | undefined,
   stackName: string,
@@ -85,7 +70,7 @@ export function peekRoutingForLabel(
 ): 'sdk' | 'cc-api' | undefined {
   // The pin is resolved HERE rather than inside `deriveLabelRouting` because
   // that function is exported and unit-tested without an engine; keeping it
-  // free of `this.options` is what lets it be called with a plain registry.
+  // free of `options` is what lets it be called with a plain registry.
   // `needsReplacement` already folds in the flag half -- the caller computes
   // it once so the VERB and this tag cannot disagree, which is the whole
   // lesson of {@link recreateDirectionFor}'s docstring.
@@ -102,18 +87,13 @@ export function peekRoutingForLabel(
       ...(recreateDirection !== undefined && { provisionedBy: recreateDirection }),
       ...(existingState?.properties !== undefined && { properties: existingState.properties }),
     };
-    return deriveLabelRouting(
-      change,
-      hintRecord,
-      this.providerRegistry,
-      recreateDirection === 'cc-api'
-    );
+    return deriveLabelRouting(change, hintRecord, providerRegistry, recreateDirection === 'cc-api');
   }
   return deriveLabelRouting(
     change,
     existingState,
-    this.providerRegistry,
-    this.isPinnedToCcApi(stackName, logicalId)
+    providerRegistry,
+    isPinnedToCcApi(options, stackName, logicalId)
   );
 }
 
@@ -135,15 +115,14 @@ export function peekRoutingForLabel(
  * issue #3174) and returns the bag unchanged otherwise. An UPDATE drops the
  * generated name again (`withoutGeneratedFallbackName`).
  */
-/** @internal */
 export function preparePropertiesForCcApi(
-  this: DeployEngine,
+  providerRegistry: ProviderRegistry,
   resourceType: string,
   resolvedProps: Record<string, unknown>,
   logicalId: string
 ): Record<string, unknown> {
-  const sdkProvider = this.providerRegistry.getRegisteredTypes().includes(resourceType)
-    ? this.providerRegistry.getProvider(resourceType)
+  const sdkProvider = providerRegistry.getRegisteredTypes().includes(resourceType)
+    ? providerRegistry.getProvider(resourceType)
     : undefined;
   if (sdkProvider?.preparePropertiesForFallback) {
     return sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps);

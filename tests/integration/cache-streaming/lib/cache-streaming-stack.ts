@@ -6,6 +6,7 @@ import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
 
 /**
  * Cache and Streaming pattern stack
@@ -18,6 +19,9 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - Kinesis Data Stream
  * - Lambda Function with Kinesis event source mapping
  * - CfnOutputs for Redis endpoint, stream name, function name
+ * - CDKD_TEST_REMOVAL=true: the cluster template LACKS SnapshotRetentionLimit,
+ *   AutoMinorVersionUpgrade, NotificationTopicArn and LogDeliveryConfigurations
+ *   (issue #5004 -- see the cluster comment below)
  */
 export class CacheStreamingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,13 +68,51 @@ export class CacheStreamingStack extends cdk.Stack {
       cacheSubnetGroupName: `${this.stackName}-redis-subnet-group`,
     });
 
+    // CDKD_TEST_REMOVAL (issue #5004). The baseline template sets
+    // SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn
+    // to NON-default values plus a slow-log LogDeliveryConfigurations entry.
+    // The removal phase drops all four AND changes PreferredMaintenanceWindow,
+    // a property ModifyCacheCluster sends, so the Modify call provably fires.
+    // Real CloudFormation A/B: the first three are KEPT (live value stays,
+    // topic status stays active); LogDeliveryConfigurations is RESET (delivery
+    // disabled). The topic and log group are NOT mode-gated: only scalar
+    // cluster properties change, so no later deploy deletes a resource.
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    const topic = new sns.Topic(this, 'CacheNotifications');
+    topic.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    const slowLogGroup = new logs.LogGroup(this, 'RedisSlowLog', {
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // ElastiCache Redis cluster (L1 construct)
     const redis = new elasticache.CfnCacheCluster(this, 'RedisCluster', {
       cacheNodeType: 'cache.t3.micro',
       engine: 'redis',
+      engineVersion: '7.1',
       numCacheNodes: 1,
       vpcSecurityGroupIds: [redisSg.securityGroupId],
       cacheSubnetGroupName: subnetGroup.ref,
+      // Companion change: baseline tue, removal wed. Not overlapping SnapshotWindow.
+      preferredMaintenanceWindow: removal ? 'wed:05:00-wed:06:00' : 'tue:05:00-tue:06:00',
+      snapshotWindow: '02:00-03:00',
+      ...(removal
+        ? {}
+        : {
+            snapshotRetentionLimit: 3, // default 0
+            autoMinorVersionUpgrade: false, // default true
+            notificationTopicArn: topic.topicArn,
+            logDeliveryConfigurations: [
+              {
+                logType: 'slow-log',
+                destinationType: 'cloudwatch-logs',
+                logFormat: 'json',
+                destinationDetails: {
+                  cloudWatchLogsDetails: { logGroup: slowLogGroup.logGroupName },
+                },
+              },
+            ],
+          }),
     });
     redis.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
@@ -122,6 +164,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'RedisEndpoint', {
       value: redis.attrRedisEndpointAddress,
       description: 'ElastiCache Redis endpoint address',
+    });
+
+    new cdk.CfnOutput(this, 'NotificationTopicArn', {
+      value: topic.topicArn,
+      description: 'SNS topic the cache cluster notifies (issue #5004 removal arm)',
     });
 
     new cdk.CfnOutput(this, 'StreamName', {

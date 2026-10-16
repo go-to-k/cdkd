@@ -1044,7 +1044,7 @@ export async function doDeployWithPrefetch(
     // enters it; `--dry-run` saves nothing.
     const startProvenanceCapture = (): void => {
       if (this.options.dryRun || isKnownTokenFreeState(currentStateData?.state)) return;
-      this.kickOffProvenanceCapture({
+      this.provenanceCapture.kickOffProvenanceCapture({
         noChange: this.diffCalculator
           .filterByType(changes, 'NO_CHANGE')
           .map((change) => change.logicalId),

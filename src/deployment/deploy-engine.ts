@@ -22,9 +22,8 @@ import {
   provenanceForWrittenRecord,
   withReferenceProvenance,
 } from './reference-provenance-record.js';
-import type { ProvenanceCaptureOutcome } from './deploy-engine/provenance-capture.js';
+import { ProvenanceCapture } from './deploy-engine/provenance-capture.js';
 import type { DeferredReplacedDelete } from './deploy-engine/replacement.js';
-import * as provenanceCaptureMixin from './deploy-engine/provenance-capture.js';
 import {
   type ChildTemplateLoader,
   type parameterInputsFor,
@@ -75,7 +74,6 @@ import {
   type DeployEngineOptions,
   type DeployResult,
 } from './deploy-engine/options.js';
-import * as nameCollisionMixin from './deploy-engine/name-collision.js';
 import * as outputsMixin from './deploy-engine/outputs.js';
 import * as rollbackMixin from './deploy-engine/rollback.js';
 import * as observedCaptureMixin from './deploy-engine/observed-capture.js';
@@ -91,9 +89,6 @@ import * as provisionMixin from './deploy-engine/provision.js';
 import * as executeMixin from './deploy-engine/execute.js';
 import * as deployFlowMixin from './deploy-engine/deploy-flow.js';
 import * as resolverContextMixin from './deploy-engine/resolver-context.js';
-import * as routingMixin from './deploy-engine/routing.js';
-import * as recordShapeMixin from './deploy-engine/record-shape.js';
-import * as dependenciesMixin from './deploy-engine/dependencies.js';
 import * as noEchoMixin from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 export {
@@ -951,12 +946,13 @@ export class DeployEngine {
   resolvedOutputsBag: Record<string, unknown> | undefined = undefined;
 
   /**
-   * State schema v12: the one-time migration capture's in-flight tasks, keyed
-   * by logical id, drained with the observed captures before a save
-   * (`deploy-engine/provenance-capture.ts`). Cleared per `deploy()`.
+   * State schema v12: this deploy's one-time migration capture
+   * (`deploy-engine/provenance-capture.ts`), holding its in-flight tasks until
+   * they are drained with the observed captures before a save. Replaced (not
+   * cleared in place) per `deploy()`, like {@link attributeHealer}.
    */
   /** @internal */
-  provenanceCaptureTasks = new Map<string, Promise<ProvenanceCaptureOutcome>>();
+  provenanceCapture: ProvenanceCapture;
 
   /**
    * go-to-k/cdkd#4604: logical ids whose replacement deleted (or found gone)
@@ -1070,6 +1066,7 @@ export class DeployEngine {
     // than the +0-10% drift-baseline overhead.
     this.options.captureObservedState = options.captureObservedState ?? true;
     this.attributeHealer = this.rebaseline({});
+    this.provenanceCapture = this.freshProvenanceCapture();
   }
 
   /**
@@ -1088,6 +1085,20 @@ export class DeployEngine {
       namingSecrets: () => this.stateNamingSecrets(),
     });
     return this.attributeHealer;
+  }
+
+  /**
+   * A fresh {@link provenanceCapture} over this engine's current deps, for
+   * the constructor and `deploy()`'s per-run reset — never a clear in place,
+   * so a reused engine never serves a previous deploy's capture tasks.
+   * @internal
+   */
+  freshProvenanceCapture(): ProvenanceCapture {
+    return new ProvenanceCapture({
+      buildResolverContext: this.buildResolverContext.bind(this),
+      resolver: this.resolver,
+      logger: this.logger,
+    });
   }
 
   /**
@@ -1168,7 +1179,7 @@ export class DeployEngine {
     this.outputsResolvedThisRun = new WeakSet();
     this.provenanceBaseline = undefined;
     this.resolvedOutputsBag = undefined;
-    this.provenanceCaptureTasks = new Map();
+    this.provenanceCapture = this.freshProvenanceCapture();
     this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
@@ -1853,21 +1864,6 @@ export class DeployEngine {
   }
 }
 
-DeployEngine.prototype.hasPending = dependenciesMixin.hasPending;
-DeployEngine.prototype.buildDeletionDependencies = dependenciesMixin.buildDeletionDependencies;
-DeployEngine.prototype.addImplicitDeleteDependencies =
-  dependenciesMixin.addImplicitDeleteDependencies;
-
-DeployEngine.prototype.auditResolvedAssetReferences = recordShapeMixin.auditResolvedAssetReferences;
-DeployEngine.prototype.extractAllDependencies = recordShapeMixin.extractAllDependencies;
-DeployEngine.prototype.propertiesToRecord = recordShapeMixin.propertiesToRecord;
-DeployEngine.prototype.extractTemplateAttributes = recordShapeMixin.extractTemplateAttributes;
-
-DeployEngine.prototype.isPinnedToCcApi = routingMixin.isPinnedToCcApi;
-DeployEngine.prototype.recreateDirectionFor = routingMixin.recreateDirectionFor;
-DeployEngine.prototype.peekRoutingForLabel = routingMixin.peekRoutingForLabel;
-DeployEngine.prototype.preparePropertiesForCcApi = routingMixin.preparePropertiesForCcApi;
-
 DeployEngine.prototype.buildResolverContext = resolverContextMixin.buildResolverContext;
 DeployEngine.prototype.maskedInputSources = resolverContextMixin.maskedInputSources;
 
@@ -1923,8 +1919,6 @@ DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
 
 DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;
 DeployEngine.prototype.drainObservedCaptures = observedCaptureMixin.drainObservedCaptures;
-DeployEngine.prototype.kickOffProvenanceCapture = provenanceCaptureMixin.kickOffProvenanceCapture;
-DeployEngine.prototype.drainProvenanceCaptures = provenanceCaptureMixin.drainProvenanceCaptures;
 DeployEngine.prototype.buildObservedCaptureSiblings =
   observedCaptureMixin.buildObservedCaptureSiblings;
 DeployEngine.prototype.stampReasonlessParameterRefusals =
@@ -1964,6 +1958,3 @@ DeployEngine.prototype.withNoEchoExactEchoes = noEchoMixin.withNoEchoExactEchoes
 DeployEngine.prototype.handleOutputResolutionFailure = outputsMixin.handleOutputResolutionFailure;
 DeployEngine.prototype.resolveOutputs = outputsMixin.resolveOutputs;
 DeployEngine.prototype.buildDisplayOutputs = outputsMixin.buildDisplayOutputs;
-
-DeployEngine.prototype.replacementNameOrigin = nameCollisionMixin.replacementNameOrigin;
-DeployEngine.prototype.orphanedNameCollisionAdvice = nameCollisionMixin.orphanedNameCollisionAdvice;

@@ -31,6 +31,8 @@ import { cyan, red } from '../../utils/colors.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
+import { buildDeletionDependencies, hasPending } from './dependencies.js';
+import { extractTemplateAttributes } from './record-shape.js';
 import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
@@ -430,7 +432,7 @@ export async function executeDeployment(
             ...(pendingRequest !== undefined && {
               pendingCloudControlRequest: pendingRequest,
               deletionPolicy: journaledOrphanPolicy(
-                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+                extractTemplateAttributes(template, logicalId).deletionPolicy
               ),
             }),
             ...(previousState && { previousState }),
@@ -438,7 +440,7 @@ export async function executeDeployment(
             ...(createdId !== undefined && {
               physicalIdRecoveredFromError: true,
               deletionPolicy: journaledOrphanPolicy(
-                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+                extractTemplateAttributes(template, logicalId).deletionPolicy
               ),
             }),
             // go-to-k/cdkd#4355: a failed op whose attempted bag is
@@ -475,7 +477,7 @@ export async function executeDeployment(
               physicalId: orphanedBy.createdId,
               physicalIdRecoveredFromError: true,
               deletionPolicy: journaledOrphanPolicy(
-                this.extractTemplateAttributes(template, logicalId).deletionPolicy
+                extractTemplateAttributes(template, logicalId).deletionPolicy
               ),
               replacedPhysicalId: orphanedBy.record.physicalId,
               replacedResourceType: orphanedBy.record.resourceType,
@@ -604,7 +606,7 @@ export async function executeDeployment(
       // If every node already completed before SIGINT landed, treat the deploy
       // as fully successful — matches the prior level-loop's "loop exits, no
       // check" behaviour at the very end of execution.
-      if (this.interrupted && this.hasPending(createUpdateExecutor)) {
+      if (this.interrupted && hasPending(createUpdateExecutor)) {
         throw new InterruptedError(this.interruptCause ?? 'user');
       }
     }
@@ -613,7 +615,7 @@ export async function executeDeployment(
     if (deleteChanges.size > 0) {
       this.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
-      const deleteDeps = this.buildDeletionDependencies(deleteChanges, currentState);
+      const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, this.logger);
       const deleteExecutor = new DagExecutor<ResourceChange>();
       for (const id of deleteChanges) {
         deleteExecutor.add({
@@ -688,7 +690,7 @@ export async function executeDeployment(
         await saveChain;
       }
 
-      if (this.interrupted && this.hasPending(deleteExecutor)) {
+      if (this.interrupted && hasPending(deleteExecutor)) {
         throw new InterruptedError(this.interruptCause ?? 'user');
       }
     }
