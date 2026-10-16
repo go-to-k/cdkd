@@ -66,17 +66,24 @@ describe('applyRoleArnForLocal', () => {
     expect(mocks.applyRoleArnIfSet).toHaveBeenCalledExactlyOnceWith(opts);
   });
 
-  it("records the assume with the caller's pre-assume snapshot", async () => {
+  it("records the assume with the caller's pre-assume snapshot and the role triple (go-to-k/cdkd#5001)", async () => {
     assume(CALLER);
     await applyRoleArnForLocal(opts);
-    expect(mocks.recordAssumedRole).toHaveBeenCalledExactlyOnceWith(CALLER);
+    expect(mocks.recordAssumedRole).toHaveBeenCalledExactlyOnceWith(CALLER, ROLE);
     expect(assumedRoleRecorded()).toBe(true);
   });
 
-  it('records undefined when there was no caller triple to snapshot', async () => {
+  it('passes a copy of the role triple, carrying exactly the three credential keys', async () => {
+    assume(CALLER);
+    await applyRoleArnForLocal(opts);
+    const role = mocks.recordAssumedRole.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(role).sort()).toEqual(['accessKeyId', 'secretAccessKey', 'sessionToken']);
+  });
+
+  it('records undefined for the snapshot, but still the role, when there was no caller triple', async () => {
     assume(undefined);
     await applyRoleArnForLocal(opts);
-    expect(mocks.recordAssumedRole).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(mocks.recordAssumedRole).toHaveBeenCalledExactlyOnceWith(undefined, ROLE);
     expect(assumedRoleRecorded()).toBe(true);
   });
 

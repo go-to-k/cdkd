@@ -8,14 +8,13 @@ import {
 import { getLogger } from '../../../src/utils/logger.js';
 
 /**
- * Issue go-to-k/cdkd#3230: `${AWS::AccountId}` in the emulated workload's
- * environment follows the SOURCE the stack was read from, not whichever
- * identity happens to answer STS.
+ * Issues go-to-k/cdkd#3230 and #5001: `${AWS::AccountId}` in the emulated
+ * workload's environment is the DEPLOY account, whichever state source the
+ * stack was read from.
  *
- * - `--from-state` reads cdkd's state record AS the `--role-arn` role when one
- *   is published (and `ExpectedBucketOwner` pins that bucket to the reader's
- *   account), so the account is the ROLE's.
- * - `--from-cfn-stack` keeps the CALLER's own account.
+ * - With a `--role-arn` published, the lookup runs AS the role (the account the
+ *   stack lives in), for `--from-state` and `--from-cfn-stack` alike.
+ * - Without one it is the caller's own (`--profile` or the default chain).
  *
  * Each of the five resolvers on the four commands is driven through its own
  * entry point in both polarities. The STS mock answers with the account that
@@ -175,7 +174,6 @@ const resolvers: Array<{
       const arn = await resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
         region: 'us-east-1',
         profile,
-        fromState: source === 'from-state',
       });
       return /^arn:aws:iam::(\d{12}):role\/TaskRole$/.exec(arn)?.[1];
     },
@@ -230,7 +228,7 @@ function publishRole(): void {
   setAssumedRoleCredentials(ROLE);
 }
 
-describe('${AWS::AccountId} follows the state source the stack was read from (issue #3230)', () => {
+describe('${AWS::AccountId} is the deploy account for either state source (issues #3230, #5001)', () => {
   describe.each(resolvers)('$name', ({ resolve }) => {
     it('--from-state with --role-arn: the account the state was read in (the role)', async () => {
       publishRole();
@@ -239,10 +237,13 @@ describe('${AWS::AccountId} follows the state source the stack was read from (is
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it("--from-cfn-stack with --role-arn: the caller's own account, never the role's", async () => {
+    it("--from-cfn-stack with --role-arn: the role's account too, never the caller snapshot's", async () => {
       publishRole();
-      await expect(resolve('from-cfn-stack')).resolves.toBe(CALLER_ACCOUNT);
+      await expect(resolve('from-cfn-stack')).resolves.toBe(ROLE_ACCOUNT);
       expect(stsClientConfigs).toHaveLength(1);
+      expect((stsClientConfigs[0]?.['credentials'] as { accessKeyId?: string }).accessKeyId).toBe(
+        ROLE.accessKeyId
+      );
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
@@ -259,10 +260,10 @@ describe('${AWS::AccountId} follows the state source the stack was read from (is
       await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(PROFILE_ACCOUNT);
     });
 
-    it('with --profile AND --role-arn, --from-state still takes the role the state was read as', async () => {
+    it('with --profile AND --role-arn, both sources take the role (the deploy account)', async () => {
       publishRole();
       await expect(resolve('from-state', 'dev')).resolves.toBe(ROLE_ACCOUNT);
-      await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(PROFILE_ACCOUNT);
+      await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(ROLE_ACCOUNT);
     });
   });
 });

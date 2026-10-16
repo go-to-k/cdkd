@@ -25,7 +25,7 @@ as the CALLER, never the role.
   which caller.
 - **cdkd's four commands publish via `applyRoleArnForLocal`**
   (`src/local/local-role-arn.ts`): cdkd's `applyRoleArnIfSet`, then
-  `recordAssumedRole` with the pre-assume snapshot. A call site using the bare
+  `recordAssumedRole` with the pre-assume snapshot and the role triple. A call site using the bare
   `applyRoleArnIfSet` assumes the role without telling cdk-local, so its
   `--from-cfn-stack` provider and `--layer-role-arn` hop resolve the ROLE
   (cdkd's own `--assume-role` hop opts out itself). Fenced by `tests/unit/local/local-role-arn.test.ts`.
@@ -37,9 +37,15 @@ as the CALLER, never the role.
 Synthesis, the ECR pull, a `fromS3` bundle download, and cdkd's `--from-state`
 reads (`cdkd-local-role-identity:` sites). Do NOT "fix" the last: the state
 bucket name is derived in the ROLE's account and the calls carry
-`ExpectedBucketOwner`, so caller credentials 403. The cdkd-owned commands'
-`${AWS::AccountId}` follows that reader under `--from-state` and stays the
-caller's under `--from-cfn-stack` (go-to-k/cdkd#3230).
+`ExpectedBucketOwner`, so caller credentials 403.
+
+**`${AWS::AccountId}` is the DEPLOY account** (go-to-k/cdkd#5001): the account
+of the `--role-arn` role, for both state sources, on all `local` commands; with
+no `--role-arn`, your own. It is an identifier, not a permission. The
+cdkd-owned commands' lookups therefore omit `ignoreAssumedRole`, and cdk-local
+resolves its own as the role because `applyRoleArnForLocal` passes it the role
+triple (`recordAssumedRole(caller, role)`). Only that account lookup runs as
+the role; the assume-role hops and every workload input stay the caller's.
 
 The `--assume-role` / `--ecr-role-arn` / `--layer-role-arn` hops are SIGNED by
 the caller (cdkd's `ecr-puller.ts` hop opts out with `ignoreAssumedRole`); the
@@ -52,4 +58,3 @@ credentials a hop returns still do the pull or fetch.
 - cdk-local studio's children are not embedded, so they do not carry the config.
 - A `[default]` profile that sources the environment resolves whatever the
   `AWS_*` variables hold.
-- Cross-account: `${AWS::AccountId}` is the caller's account.
