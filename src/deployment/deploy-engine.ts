@@ -652,6 +652,15 @@ export class DeployEngine {
   /** @internal */
   preDeploySecretNamedRecords: RecordedSecretValues | undefined = undefined;
   /**
+   * Per record AS THE DEPLOY FOUND IT, what it stores where a `NoEcho`
+   * parameter served it (`recordedNoEchoValuesOf`, go-to-k/cdkd#3869), as
+   * log-only needles: a name taken from a value since CHANGED, or a short or
+   * `Number` one, which `fingerprintNoEchoValues` cannot judge. Read by
+   * `namingSecretsFor` alone. Judging and printing only. Reset per `deploy()`.
+   */
+  /** @internal */
+  storedNoEchoNamingValues: ReadonlyMap<string, RecordedSecretValues> = new Map();
+  /**
    * How each template parameter enters a masked property's INPUT fingerprint
    * (go-to-k/cdkd#4543), set once parameters resolve, so the diff pass and the
    * provisioning arms classify every parameter alike. Reset per `deploy()`.
@@ -1112,6 +1121,7 @@ export class DeployEngine {
     this.witnessConfirmedLeaves = new Map();
     this.fingerprintNoEchoValues = undefined;
     this.preDeploySecretNamedRecords = undefined;
+    this.storedNoEchoNamingValues = new Map();
     this.fingerprintParameters = undefined;
     this.fingerprintChildTemplates = undefined;
     this.perResourceInputFingerprints = new Map();
@@ -1904,6 +1914,9 @@ DeployEngine.prototype.secretNameBagFor = maskingMixin.secretNameBagFor;
 DeployEngine.prototype.noteSecretNamedRecord = maskingMixin.noteSecretNamedRecord;
 DeployEngine.prototype.printingSecretsFor = maskingMixin.printingSecretsFor;
 DeployEngine.prototype.namingSecretsFor = maskingMixin.namingSecretsFor;
+DeployEngine.prototype.stateNamingSecrets = maskingMixin.stateNamingSecrets;
+DeployEngine.prototype.captureStoredNoEchoNamingValues =
+  maskingMixin.captureStoredNoEchoNamingValues;
 DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
 
 DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;

@@ -664,10 +664,13 @@ export async function doDeployWithPrefetch(
     const orphanPlan = await this.adoptRollbackOrphans(currentState, effectiveTemplate);
     // go-to-k/cdkd#3869: the secret-named records as this deploy found them,
     // adopted ones included, before any replacement re-points one. Printing
-    // only (a nested stack row's registry, provision.ts).
+    // only (a nested stack row's registry, provision.ts). Each record is also
+    // judged with what it stored where a `NoEcho` parameter served it, for a
+    // name taken from a value since changed (no AWS call).
+    this.captureStoredNoEchoNamingValues(currentState.resources, effectiveTemplate, conditions);
     this.preDeploySecretNamedRecords = secretNamedRecordNeedles(
       currentState.resources,
-      this.fingerprintNoEchoValues
+      this.stateNamingSecrets()
     );
     // Issue #3468: an adopted record entered `resources` AFTER the deploy-start
     // stamp. No writer produces a marked orphan record today; re-reading here

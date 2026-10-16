@@ -909,6 +909,23 @@ export interface ResourceState {
   noEchoExactEchoLeaves?: string[][] | undefined;
 
   /**
+   * No bump (go-to-k/cdkd#3869): on an `AWS::CloudFormation::Stack` row, the
+   * keys of `attributes` (`Outputs.<Key>`) whose value holds the name of a
+   * child resource NAMED from a secret, judged from the child's state records
+   * when the row was last provisioned. KEYS only, never a value. Read by the
+   * derived-name judge (`secretNameNeedlesOf`): every string leaf of each named
+   * attribute is a LOG-ONLY needle, so a parent reader of that output masks
+   * what it prints, on a deploy where the row is `NO_CHANGE` too. Print-only:
+   * nothing persisted, compared or sent reads it.
+   *
+   * Rewritten by every create or update of the row (absent when none holds
+   * such a name); a carried record keeps it. ABSENT means "not known" (an
+   * older cdkd's record, or a row not provisioned since): the reader then
+   * masks as before. An older binary ignores the field, losing only the mask.
+   */
+  secretNamedAttributes?: string[] | undefined;
+
+  /**
    * v11+ (go-to-k/cdkd#2449): the keys of this record's OWN `attributes` that
    * its provider DECLARED `NoEcho` (a custom resource answering `NoEcho: true`
    * declares every attribute it returned; a nested stack names the outputs it

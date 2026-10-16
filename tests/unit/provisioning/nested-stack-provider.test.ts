@@ -27,8 +27,10 @@ import {
   SECRET_MASK,
   clearRecoverableMaskedOutputs,
   isSameGenerationBag,
+  recordLogOnlyValue,
   recordRecoverableMaskedOutput,
 } from '../../../src/deployment/secret-redaction.js';
+import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,
@@ -2378,5 +2380,98 @@ describe('NestedStackProvider - a child output THIS RUN masked (issue #2274)', (
 
     expect((result.attributes as Record<string, unknown>)['Outputs.Token']).toBe(REAL);
     expect(result.noEchoAttributeNames).toEqual(['Outputs.Token']);
+  });
+});
+
+// go-to-k/cdkd#3869 item 2: the outputs holding a child resource's name taken
+// from a secret, judged from the child's records this read already holds and
+// returned as KEYS, so the engine persists them on the row (a later deploy
+// where the row is NO_CHANGE never runs this provider).
+describe('NestedStackProvider - outputs holding a secret-derived child name (go-to-k/cdkd#3869)', () => {
+  // The child's provider prefixed and folded a role name taken from a secret.
+  const ROLE_NAME = 'Parent-Child-Team-Secret-Role-a1b2';
+
+  function childContext(resources: StackState['resources'], outputs: Record<string, unknown>) {
+    const childState = { ...makeChildState(outputs), resources };
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-secret-named-'));
+    const templatePath = join(dir, 'child.nested.template.json');
+    writeFileSync(
+      templatePath,
+      JSON.stringify({ Resources: { Foo: { Type: 'AWS::S3::Bucket', Properties: {} } } })
+    );
+    return makeContext({
+      nestedTemplates: { Child: templatePath },
+      stateBackend: {
+        getState: vi.fn(async () => ({ state: childState, etag: 'etag-1' })),
+      } as unknown as NestedStackProviderContext['stateBackend'],
+    });
+  }
+
+  const roleRecord = (roleName: string) => ({
+    physicalId: ROLE_NAME,
+    resourceType: 'AWS::IAM::Role',
+    properties: { RoleName: roleName },
+    attributes: { Arn: `arn:aws:iam::123456789012:role/${ROLE_NAME}` },
+    dependencies: [],
+  });
+
+  it.each([
+    ['a role named from a secret reference', '{{resolve:secretsmanager:team:SecretString:role::}}', true],
+    ['negative control, an ordinary role name', ROLE_NAME, false],
+  ])('%s', async (_l, roleName, named) => {
+    const provider = new NestedStackProvider();
+    const ctx = childContext(
+      { Role: roleRecord(roleName) },
+      {
+        RoleName: ROLE_NAME,
+        RoleArn: `arn:aws:iam::123456789012:role/${ROLE_NAME}`,
+        Plain: 'plain-output',
+      }
+    );
+    for (const run of [
+      () => provider.create('Child', 'AWS::CloudFormation::Stack', {}),
+      () =>
+        provider.update(
+          'Child',
+          'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack',
+          {},
+          {}
+        ),
+    ]) {
+      const result = await withNestedStackContext(ctx, run);
+      expect(result.secretNamedAttributeNames).toEqual(
+        named ? ['Outputs.RoleArn', 'Outputs.RoleName'] : []
+      );
+    }
+  });
+
+  it("judges a pre-v11 child record's plaintext with the row's bag (a case-folded identifier)", async () => {
+    // The parent passed the value; the child's pre-v11 record holds it in
+    // plaintext and RDS folded the identifier, so only the row's bag says so.
+    const provider = new NestedStackProvider();
+    const ctx = childContext(
+      {
+        Db: {
+          physicalId: 'teamsecretdb',
+          resourceType: 'AWS::RDS::DBInstance',
+          properties: { DBInstanceIdentifier: 'TeamSecretDb' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      { DbId: 'teamsecretdb' }
+    );
+    const rowBag = new Map<string, string>();
+    recordLogOnlyValue(rowBag, 'TeamSecretDb');
+    const withBag = await withCurrentResourceSecrets(rowBag, () =>
+      withNestedStackContext(ctx, () => provider.create('Child', 'AWS::CloudFormation::Stack', {}))
+    );
+    expect(withBag.secretNamedAttributeNames).toEqual(['Outputs.DbId']);
+    // Premise: without the row's bag the plaintext record carries no evidence.
+    const without = await withNestedStackContext(ctx, () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+    expect(without.secretNamedAttributeNames).toEqual([]);
   });
 });

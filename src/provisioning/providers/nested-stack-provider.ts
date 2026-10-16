@@ -17,6 +17,7 @@ import type {
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import { secretNamedAttributeNamesOf } from '../../deployment/secret-name-needles.js';
 import {
   recordReferenceProvenanceEntry,
   snapshotPassProvenance,
@@ -362,6 +363,9 @@ export class NestedStackProvider implements ResourceProvider {
         ...(childOutputs.noEchoAttributeNames.length > 0 && {
           noEchoAttributeNames: childOutputs.noEchoAttributeNames,
         }),
+        // go-to-k/cdkd#3869: always set (possibly empty), so the engine
+        // rewrites the row's field from this read.
+        secretNamedAttributeNames: childOutputs.secretNamedAttributeNames,
         ...(pendingRecord && { effectiveProperties: pendingRecord }),
       };
     } catch (error) {
@@ -452,6 +456,8 @@ export class NestedStackProvider implements ResourceProvider {
       ...(updatedOutputs.noEchoAttributeNames.length > 0 && {
         noEchoAttributeNames: updatedOutputs.noEchoAttributeNames,
       }),
+      // go-to-k/cdkd#3869 — see `create()`.
+      secretNamedAttributeNames: updatedOutputs.secretNamedAttributeNames,
       ...(pendingRecord && { effectiveProperties: pendingRecord }),
     };
   }
@@ -1059,7 +1065,11 @@ export class NestedStackProvider implements ResourceProvider {
     ctx: NestedStackProviderContext,
     childStackName: string,
     childRegion: string
-  ): Promise<{ attributes: Record<string, unknown>; noEchoAttributeNames: string[] }> {
+  ): Promise<{
+    attributes: Record<string, unknown>;
+    noEchoAttributeNames: string[];
+    secretNamedAttributeNames: string[];
+  }> {
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
       throw markNonRetryable(
@@ -1134,7 +1144,19 @@ export class NestedStackProvider implements ResourceProvider {
       attributes[attributeName] = recovered;
       noEchoAttributeNames.push(attributeName);
     }
-    return { attributes, noEchoAttributeNames };
+    // go-to-k/cdkd#3869: the outputs holding a child resource's name taken
+    // from a secret (one its provider rewrote or case-folded, which no
+    // recorded plaintext spells). Judged HERE, from the child's records this
+    // read already holds, and persisted on the row as KEYS, since a later
+    // deploy where the row is NO_CHANGE never runs this method and must not
+    // re-read the child's state to learn it. The row's bag holds what the
+    // parent passed (a pre-v11 child record's plaintext is judged with it).
+    const childResources = childStateData.state.resources;
+    const secretNamedAttributeNames =
+      childResources !== null && typeof childResources === 'object'
+        ? secretNamedAttributeNamesOf(attributes, childResources, rowSecrets)
+        : [];
+    return { attributes, noEchoAttributeNames, secretNamedAttributeNames };
   }
 
   private requireContext(): NestedStackProviderContext {

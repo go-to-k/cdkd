@@ -27,6 +27,7 @@ import {
   printingCorpusOf,
   recordLogOnlyValue,
   SECRET_MASK,
+  unionOfSecretBags,
   wholeStringLeavesOf,
 } from './secret-redaction.js';
 
@@ -55,14 +56,25 @@ import {
  * omit it) adds the whole id, and a needle of `secrets` the id embeds as it
  * is (a queue URL ending in the resolved name) is added for a READER's bag,
  * which does not hold the resource's plaintext. Last, the spellings a
- * final-snapshot name of the id needs ({@link finalSnapshotSpellingsOf}).
+ * final-snapshot name of the id needs ({@link finalSnapshotSpellingsOf}), and
+ * a nested-stack row's outputs holding a child's secret-derived name
+ * ({@link secretNamedAttributeLeavesOf}), which the row's own id and
+ * properties do not show.
  *
  * LOG-ONLY wherever they are recorded: they mask what PRINTS and never what
  * is persisted, diffed or sent, since a physical id is the record's identity.
  */
 export function secretNameNeedlesOf(
   logicalId: string,
-  record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined,
+  record:
+    | {
+        resourceType?: unknown;
+        physicalId?: unknown;
+        properties?: unknown;
+        attributes?: unknown;
+        secretNamedAttributes?: unknown;
+      }
+    | undefined,
   secrets: RecordedSecretValues | undefined,
   /**
    * `embedded`: the bag the EMBEDDED arm reads, when it must be narrower than
@@ -137,7 +149,60 @@ export function secretNameNeedlesOf(
       add(spelling);
     }
   }
+  for (const leaf of secretNamedAttributeLeavesOf(record)) add(leaf);
   return needles.size > 0 ? needles : undefined;
+}
+
+/**
+ * The string leaves of a nested-stack row's attributes its record names in
+ * `secretNamedAttributes` (go-to-k/cdkd#3869): each `Outputs.<Key>` that held a
+ * child resource's secret-derived name when the row was last provisioned.
+ * Whole leaves: the child judged the name, so the output's value is what a
+ * parent reader prints. An `AWS::CloudFormation::Stack` record only, and a
+ * malformed field reads as absent.
+ */
+function secretNamedAttributeLeavesOf(
+  record:
+    | { resourceType?: unknown; attributes?: unknown; secretNamedAttributes?: unknown }
+    | undefined
+): string[] {
+  if (record?.resourceType !== 'AWS::CloudFormation::Stack') return [];
+  const names = record.secretNamedAttributes;
+  const attributes = record.attributes;
+  if (!Array.isArray(names) || attributes === null || typeof attributes !== 'object') return [];
+  const leaves: string[] = [];
+  for (const name of names) {
+    if (typeof name !== 'string' || !Object.hasOwn(attributes, name)) continue;
+    for (const leaf of wholeStringLeavesOf((attributes as Record<string, unknown>)[name])) {
+      // The mask is no name, and a reference is masked by its own arm.
+      if (leaf !== '' && leaf !== SECRET_MASK && !leaf.includes('{{resolve:')) leaves.push(leaf);
+    }
+  }
+  return leaves;
+}
+
+/**
+ * Which `Outputs.<Key>` attributes of a nested-stack row hold the name of a
+ * child resource NAMED from a secret (go-to-k/cdkd#3869), for the row's
+ * `secretNamedAttributes`. The child's records are judged as
+ * {@link secretNamedRecordNeedles} judges them, with `secrets` (the row's
+ * bag, which holds what the parent passed); an attribute counts when one of
+ * its string leaves holds a needle. KEYS only, sorted, never a value.
+ */
+export function secretNamedAttributeNamesOf(
+  attributes: Readonly<Record<string, unknown>>,
+  childResources: Readonly<Record<string, ResourceState>>,
+  secrets: RecordedSecretValues | undefined
+): string[] {
+  const needles = [...printingCorpusOf(secretNamedRecordNeedles(childResources, secrets)).keys()];
+  if (needles.length === 0) return [];
+  const names: string[] = [];
+  for (const [name, value] of Object.entries(attributes)) {
+    const leaves = [...wholeStringLeavesOf(value)].filter((leaf) => leaf !== '');
+    if (leaves.length === 0) continue;
+    if (needles.some((needle) => leavesHoldNeedle(leaves, needle))) names.push(name);
+  }
+  return names.sort();
 }
 
 /**
@@ -190,6 +255,47 @@ function finalSnapshotSpellingsOf(
     }
   }
   return spellings;
+}
+
+/**
+ * The bag a STATE record's name is judged with: one for every record, or one
+ * per logical id, for a caller that adds what each record itself stores where
+ * a `NoEcho` parameter served it ({@link namingSecretsWithRecordedNoEcho}).
+ */
+export type StateNamingSecrets =
+  | RecordedSecretValues
+  | undefined
+  | ((logicalId: string) => RecordedSecretValues | undefined);
+
+function namingBagOf(
+  secrets: StateNamingSecrets,
+  logicalId: string
+): RecordedSecretValues | undefined {
+  const bag = typeof secrets === 'function' ? secrets(logicalId) : secrets;
+  return bag !== undefined && hasMaskableValues(bag) ? bag : undefined;
+}
+
+/**
+ * `base` per record, unioned with what that record stores where a `NoEcho`
+ * parameter served it (`recorded`, built on `recordedNoEchoValuesOf`;
+ * go-to-k/cdkd#3869): a name taken from a value since CHANGED (a pre-v11
+ * record holds the old plaintext), or from a short or `Number` value, which
+ * `base` (the values bound now) cannot judge. Memoized per logical id. Judging
+ * and printing only.
+ */
+export function namingSecretsWithRecordedNoEcho(
+  base: RecordedSecretValues | undefined,
+  recorded: (logicalId: string) => RecordedSecretValues | undefined
+): (logicalId: string) => RecordedSecretValues | undefined {
+  const memo = new Map<string, RecordedSecretValues | undefined>();
+  return (logicalId) => {
+    if (memo.has(logicalId)) return memo.get(logicalId);
+    const own = recorded(logicalId);
+    const bag =
+      own === undefined || !hasMaskableValues(own) ? base : unionOfSecretBags([base, own]);
+    memo.set(logicalId, bag);
+    return bag;
+  };
 }
 
 /** The bags a resource's name is judged with (see {@link secretNameNeedlesOf}). */
@@ -251,13 +357,13 @@ function leavesHoldNeedle(leaves: readonly string[], needle: string): boolean {
  */
 export function stateSecretNameNeedles(
   resources: Readonly<Record<string, ResourceState>>,
-  secrets?: RecordedSecretValues
+  secrets?: StateNamingSecrets
 ): (logicalId: string) => ReadonlySet<string> | undefined {
   return (logicalId) =>
     secretNameNeedlesOf(
       logicalId,
       Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined,
-      secrets,
+      namingBagOf(secrets, logicalId),
       { embedded: undefined }
     );
 }
@@ -318,13 +424,13 @@ function storedRecordNameNeedles(
  */
 export function storedSecretNameNeedles(
   resources: Readonly<Record<string, ResourceState>>,
-  secrets: RecordedSecretValues | undefined,
+  secrets: StateNamingSecrets,
   bag: RecordedSecretValues = new Map(),
   outputs?: unknown
 ): RecordedSecretValues {
   const named: Array<[string, ReadonlySet<string>]> = [];
   for (const [logicalId, record] of Object.entries(resources)) {
-    const needles = storedRecordNameNeedles(logicalId, record, secrets);
+    const needles = storedRecordNameNeedles(logicalId, record, namingBagOf(secrets, logicalId));
     if (needles !== undefined) named.push([logicalId, needles]);
   }
   if (named.length === 0) return bag;
@@ -370,11 +476,15 @@ export function secretNamesStoredIn(
  */
 export function secretNamedRecordNeedles(
   resources: Readonly<Record<string, ResourceState>>,
-  secrets: RecordedSecretValues | undefined,
+  secrets: StateNamingSecrets,
   bag: RecordedSecretValues = new Map()
 ): RecordedSecretValues {
   for (const [logicalId, record] of Object.entries(resources)) {
-    for (const needle of storedRecordNameNeedles(logicalId, record, secrets) ?? []) {
+    for (const needle of storedRecordNameNeedles(
+      logicalId,
+      record,
+      namingBagOf(secrets, logicalId)
+    ) ?? []) {
       recordLogOnlyValue(bag, needle);
     }
   }
@@ -412,10 +522,13 @@ export function secretNamePrintingBag(
  */
 export function secretNamePrintingBags(
   resources: Readonly<Record<string, ResourceState>>,
-  noEchoValues: RecordedSecretValues | undefined
+  /**
+   * One bag for the stack, or one per record
+   * ({@link namingSecretsWithRecordedNoEcho}: what a record stores where a
+   * `NoEcho` parameter served it, which a CHANGED value no longer spells).
+   */
+  noEchoValues: StateNamingSecrets
 ): (logicalId: string) => RecordedSecretValues {
-  const secrets =
-    noEchoValues !== undefined && hasMaskableValues(noEchoValues) ? noEchoValues : undefined;
   const judged = new Map<string, { record: unknown; needles: Set<string> | undefined }>();
   const needlesOf = (logicalId: string, record: ResourceState | undefined) => {
     const hit = judged.get(logicalId);
@@ -423,12 +536,15 @@ export function secretNamePrintingBags(
     // `embedded: undefined`: a stack-wide value embedded by chance in an id is
     // no evidence the id came from it (`stateSecretNameNeedles`); the value
     // itself is masked by the carried needles below.
-    const needles = secretNameNeedlesOf(logicalId, record, secrets, { embedded: undefined });
+    const needles = secretNameNeedlesOf(logicalId, record, namingBagOf(noEchoValues, logicalId), {
+      embedded: undefined,
+    });
     judged.set(logicalId, { record, needles });
     return needles;
   };
   return (logicalId) => {
     const bag: RecordedSecretValues = new Map();
+    const secrets = namingBagOf(noEchoValues, logicalId);
     if (secrets !== undefined) carryLogOnlyValues(secrets, bag);
     const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     for (const needle of needlesOf(logicalId, record) ?? []) recordLogOnlyValue(bag, needle);

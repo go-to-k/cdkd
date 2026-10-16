@@ -20,6 +20,15 @@
 # Steps (each echoed as `Step N`):
 #   1. Seed the secret naming the stage, the service, the policy's path and
 #      description, the GraphQL API, the data source and the queue.
+#   1b. LOAD-BEARING (go-to-k/cdkd#3869 item 2): the isolated
+#      CdkdSdinNestedOutput stack. Its nested RoleChild names ChildNamedRole
+#      from the secret's `crole` field, which the IAM provider REWRITES (`.`
+#      folded to `-`); the parent's
+#      ChildRoleReader stores the name through `Fn::GetAtt
+#      RoleChild.Outputs.<Key>`. The deploy's --verbose log names no spelling
+#      of it, and the row records that output in `secretNamedAttributes`.
+#      A redeploy editing the reader alone (the row NO_CHANGE, so nothing
+#      re-reads the child) and the stack's --verbose destroy name none either.
 #   2. Deploy. The nested QueueReaderChild receives SecretQueue's ARN as its
 #      QueueArn parameter: its `Resolved Ref to parameter: QueueArn` line is in
 #      the log, the queue name is not, and the child's SSM parameter holds the
@@ -243,6 +252,12 @@
 # on the `Deleting old MovingFilter` line (none yet measured on real AWS).
 # With the fix the patch leaves FilterName out, so the filter keeps its
 # pre-rotation name, as CloudFormation leaves an unchanged reference alone.
+# Revert the `secretNamedAttributeLeavesOf` arm of secretNameNeedlesOf in
+# src/deployment/secret-name-needles.ts ALONE (go-to-k/cdkd#3869 item 2) and
+# step 1b fails naming the derived role name on the parent's `Resolved
+# Fn::GetAtt ... RoleChild.Outputs.<Key> resolved to` line, on the first deploy
+# and on the reader-only redeploy (measured against an origin/main build; its
+# destroy was already masked there).
 # Revert the IdScrubLog in cloud-control-provider.ts and step 2 fails
 # "SecretFilter's 'Created resource' line does not withhold its physical id"
 # (with create()'s sink kept, step 6 fails the same way for its
@@ -368,6 +383,22 @@ export SDIN_PJ_READER_NAME="/cdkd-integ/sdin-${SUFFIX}/promo-value-reader"
 PROMO_CHILD_STACK="${STACK}~PromoChild"
 PROMO_CHILD_STATE_KEY="cdkd/${PROMO_CHILD_STACK}/${REGION}/state.json"
 PROMO_CHILD_PREFIX="$(s3_stack_prefix "${PROMO_CHILD_STACK}" "${REGION}")"
+# Step 1b's isolated stack (go-to-k/cdkd#3869 item 2) and its nested RoleChild.
+NO_STACK="CdkdSdinNestedOutput"
+NO_STATE_KEY="cdkd/${NO_STACK}/${REGION}/state.json"
+NO_PREFIX="$(s3_stack_prefix "${NO_STACK}" "${REGION}")"
+NO_CHILD_STACK="${NO_STACK}~RoleChild"
+NO_CHILD_STATE_KEY="cdkd/${NO_CHILD_STACK}/${REGION}/state.json"
+NO_CHILD_PREFIX="$(s3_stack_prefix "${NO_CHILD_STACK}" "${REGION}")"
+# The secret's `crole` field, and the name the IAM provider derives from it
+# (`.` folded to `-`; a user-supplied name takes no stack prefix by default).
+# Neither spelling is a recorded plaintext of the parent's reader.
+CROLE_VALUE="sdin.cr.${SUFFIX}"
+CROLE_DERIVED="sdin-cr-${SUFFIX}"
+export SDIN_NO_PARAM_NAME="/cdkd-integ/sdin-${SUFFIX}/child-role-name"
+NO_PARAM_NAME="${SDIN_NO_PARAM_NAME}"
+NO_LOG="$(mktemp -t secret-derived-immutable-names-nested-output.XXXXXX)"
+NO_DEPLOYED=0
 SEEDED_SECRET=0
 # Set just before the first deploy: the stack name is fixed, so a run refused by
 # the pre-flight must not destroy (or sweep the state history of) a stack an
@@ -480,6 +511,19 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET:-}/${ORPHAN_JOURNAL_KEY}" >/dev/null 2>&1
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${ORPHAN_PREFIX}" noncurrent || true
   fi
+  if [ "${NO_DEPLOYED}" = "1" ] && [ -f "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" destroy "${NO_STACK}" --region "${REGION}" \
+      --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
+    node "${LOCAL_DIST}" state destroy "${NO_STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
+    # By their known names, so a run that stopped before its destroy leaves no orphan.
+    aws iam delete-role --role-name "${CROLE_DERIVED}" >/dev/null 2>&1
+    aws ssm delete-parameter --region "${REGION}" --name "${NO_PARAM_NAME}" >/dev/null 2>&1
+    for key in "${NO_CHILD_STATE_KEY}" "cdkd/${NO_CHILD_STACK}/${REGION}/lock.json"; do
+      aws s3 rm "s3://${STATE_BUCKET:-}/${key}" >/dev/null 2>&1
+    done
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${NO_CHILD_PREFIX}" noncurrent || true
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${NO_PREFIX}" noncurrent || true
+  fi
   if [ "${SEEDED_SECRET}" = "1" ]; then
     aws secretsmanager delete-secret --region "${REGION}" --secret-id "${SDIN_SECRET_NAME}" \
       --force-delete-without-recovery >/dev/null 2>&1
@@ -487,7 +531,7 @@ cleanup() {
   if [ "${DEPLOYED}" = "1" ]; then
     s3_purge_prefix_versions "${STATE_BUCKET:-}" "${PREFIX}" noncurrent || true
   fi
-  rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" "${SECRET_FILE:-}" 2>/dev/null || true
+  rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" "${NO_LOG}" "${SECRET_FILE:-}" 2>/dev/null || true
   set -e
   exit "${rc}"
 }
@@ -506,7 +550,7 @@ if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/n
   echo "FAIL: state already exists at ${STATE_KEY} - clean up first." >&2
   exit 1
 fi
-for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}"; do
+for key in "${ORPHAN_STATE_KEY}" "${ORPHAN_JOURNAL_KEY}" "${NO_STATE_KEY}" "${NO_CHILD_STATE_KEY}"; do
   if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" >/dev/null 2>&1; then
     echo "FAIL: ${key} already exists - clean up first." >&2
     exit 1
@@ -533,8 +577,8 @@ fi
 echo "==> Step 1: seed the secret naming every secret-derived property"
 # From a file, not argv, so the value never shows in the host's process list.
 SECRET_FILE="$(mktemp -t secret-derived-immutable-names-secret.XXXXXX)"
-printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s"}' \
-  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME}" \
+printf '{"stage":"%s","service":"%s","path":"%s","policydesc":"%s","api":"%s","datasource":"%s","queue":"%s","filter":"%s","group":"%s","repo":"%s","rbqueue":"%s","stream":"%s","loggroup":"%s","aqueue":"%s","crole":"%s"}' \
+  "${STAGE_NAME}" "${SERVICE_NAME}" "${POLICY_PATH}" "${POLICY_DESC}" "${GQL_API_NAME}" "${DS_NAME}" "${QUEUE_NAME}" "${FILTER_NAME}" "${GROUP_NAME}" "${REPO_NAME}" "${RB_QUEUE_NAME}" "${STREAM_NAME}" "${LOG_GROUP_NAME}" "${AQ_QUEUE_NAME}" "${CROLE_VALUE}" \
   > "${SECRET_FILE}"
 aws secretsmanager create-secret --region "${REGION}" --name "${SDIN_SECRET_NAME}" \
   --secret-string "file://${SECRET_FILE}" >/dev/null
@@ -627,6 +671,102 @@ expect_child_read_line() {
     exit 1
   fi
 }
+
+# go-to-k/cdkd#3869 item 2: the --verbose log of a step-1b command names
+# neither the role name the IAM provider derived from the secret nor the
+# secret's own spelling of it (usage: expect_no_role_name <log> <which>).
+expect_no_role_name() {
+  local log="$1" which="$2" needle
+  for needle in "${CROLE_DERIVED}" "cr-${SUFFIX}" "${CROLE_VALUE}"; do
+    if grep -qF -- "${needle}" "${log}"; then
+      echo "FAIL: the ${which} log names RoleChild's secret-derived role name in plaintext (${needle}) (go-to-k/cdkd#3869)" >&2
+      grep -nF -- "${needle}" "${log}" | head -5 >&2
+      exit 1
+    fi
+  done
+  echo "    OK: the ${which} log names no spelling of the secret-derived role name"
+}
+expect_reader_line() { # usage: expect_reader_line <log> <which>: the parent's read of the output printed
+  if ! grep -E 'Resolved Fn::GetAtt.*RoleChild\.Outputs\.[^ ]* resolved to ' "$1" >/dev/null; then
+    echo "FAIL: premise: the $2 log has no 'Resolved Fn::GetAtt ... RoleChild.Outputs.<Key> resolved to' line (the reader was not resolved, or the wording drifted)" >&2
+    tail -60 "$1" >&2
+    exit 1
+  fi
+  # A line the attribute-name heuristic redacts prints no value at all.
+  if grep -E 'Resolved Fn::GetAtt.*RoleChild\.Outputs\.[^ ]* resolved to <redacted>' "$1" >/dev/null; then
+    echo "FAIL: premise: the $2 log's read of RoleChild's output prints '<redacted>' (its key reads as credential-bearing), so the name check is vacuous" >&2
+    exit 1
+  fi
+}
+
+echo "==> Step 1b: a parent reads a nested output holding a secret-derived role name (go-to-k/cdkd#3869)"
+NO_DEPLOYED=1
+set +e
+node "${LOCAL_DIST}" deploy "${NO_STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --verbose --yes > "${NO_LOG}" 2>&1
+NO_RC=$?
+set -e
+if [ "${NO_RC}" -ne 0 ]; then
+  echo "FAIL: the step-1b deploy exited ${NO_RC}" >&2
+  tail -60 "${NO_LOG}" >&2
+  exit 1
+fi
+# Premises: the provider derived the expected name, the reader holds it, and
+# the parent resolved the read (its `resolved to` line is in the log).
+aws iam get-role --role-name "${CROLE_DERIVED}" --query Role.RoleName --output text >/dev/null
+expect_eq "ChildRoleReader holds the child's derived role name" "${CROLE_DERIVED}" \
+  "$(aws ssm get-parameter --region "${REGION}" --name "${NO_PARAM_NAME}" --query Parameter.Value --output text)"
+expect_reader_line "${NO_LOG}" "step-1b deploy"
+expect_no_role_name "${NO_LOG}" "step-1b deploy"
+# The row names that output, by key, in its record: what a later deploy
+# where the row is NO_CHANGE reads.
+NO_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${NO_STATE_KEY}" -)"
+NO_OUTPUT_KEY="$(jq -r --arg n "${CROLE_DERIVED}" \
+  '[.resources.RoleChild.attributes // {} | to_entries[] | select(.value == $n) | .key] | join(",")' <<< "${NO_STATE}")"
+if [ -z "${NO_OUTPUT_KEY}" ] || [[ "${NO_OUTPUT_KEY}" == *,* ]]; then
+  echo "FAIL: premise: the RoleChild row's attributes hold the role name under '${NO_OUTPUT_KEY}', not one Outputs.<Key>" >&2
+  exit 1
+fi
+expect_eq "the RoleChild row's secretNamedAttributes" "[\"${NO_OUTPUT_KEY}\"]" \
+  "$(jq -c '.resources.RoleChild.secretNamedAttributes // "<absent>"' <<< "${NO_STATE}")"
+
+# The reader alone edited: the row is NO_CHANGE, so nothing re-reads the
+# child, and only the persisted record says the output is secret-named.
+set +e
+SDIN_NO_EDIT=true node "${LOCAL_DIST}" deploy "${NO_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --verbose --yes > "${NO_LOG}" 2>&1
+NO_RC=$?
+set -e
+if [ "${NO_RC}" -ne 0 ]; then
+  echo "FAIL: the step-1b reader-edit deploy exited ${NO_RC}" >&2
+  tail -60 "${NO_LOG}" >&2
+  exit 1
+fi
+if grep -qF -- "Updating nested stack" "${NO_LOG}" || grep -qF -- "Deploying nested stack" "${NO_LOG}"; then
+  echo "FAIL: premise: the step-1b reader-edit deploy provisioned the RoleChild row (it must be NO_CHANGE)" >&2
+  exit 1
+fi
+expect_eq "ChildRoleReader's description after the edit" "cdkd integ: reader edited" \
+  "$(aws ssm describe-parameters --region "${REGION}" \
+    --parameter-filters "Key=Name,Values=${NO_PARAM_NAME}" --query 'Parameters[0].Description' --output text)"
+expect_reader_line "${NO_LOG}" "step-1b reader-edit deploy"
+expect_no_role_name "${NO_LOG}" "step-1b reader-edit deploy"
+
+set +e
+SDIN_NO_EDIT=true node "${LOCAL_DIST}" destroy "${NO_STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --verbose --force > "${NO_LOG}" 2>&1
+NO_RC=$?
+set -e
+if [ "${NO_RC}" -ne 0 ]; then
+  echo "FAIL: the step-1b destroy exited ${NO_RC}" >&2
+  tail -60 "${NO_LOG}" >&2
+  exit 1
+fi
+expect_no_role_name "${NO_LOG}" "step-1b destroy"
+assert_gone "RoleChild's role survived the step-1b destroy" aws iam get-role --role-name "${CROLE_DERIVED}"
+assert_gone "ChildRoleReader survived the step-1b destroy" \
+  aws ssm get-parameter --region "${REGION}" --name "${NO_PARAM_NAME}"
+echo "    OK: step 1b"
 
 echo "==> Step 2: deploy"
 DEPLOYED=1
@@ -2334,7 +2474,7 @@ fi
 echo "    OK: 0 orphans (state, API with both stages, ECS service, cluster and task definition, managed policy, GraphQL API with its data source, queue, both log groups with their metric filters, both schedules with their group, roles and the second target queue)"
 
 trap - EXIT INT TERM
-rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" 2>/dev/null || true
+rm -f "${DEPLOY_LOG}" "${ORPHAN_LOG}" "${NO_LOG}" 2>/dev/null || true
 
 echo "==> Step 8: sweep every object version under both stacks' and the nested child's state prefixes"
 # On the SUCCESS path, after the disarm: a sweep living only in `cleanup` never
@@ -2347,5 +2487,9 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "QueueReaderChild state teardown"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PROMO_CHILD_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PROMO_CHILD_PREFIX}" "PromoChild state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${NO_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${NO_PREFIX}" "step 1b stack state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${NO_CHILD_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${NO_CHILD_PREFIX}" "step 1b RoleChild state teardown"
 echo ""
 echo "[verify] PASS - an in-place update of a Stage, an ECS Service, a managed policy, a GraphQL API, a data source, a Cloud Control-routed metric filter and a schedule whose immutable values come from a secret succeeded, in place, and destroy was clean"

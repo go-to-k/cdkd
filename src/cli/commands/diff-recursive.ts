@@ -79,12 +79,15 @@ import {
   type RecordedSecretValues,
   readsNoEchoSource,
   noEchoOutputsComparison,
+  recordedNoEchoValuesOf,
+  unionOfSecretBags,
 } from '../../deployment/secret-redaction.js';
 import {
   noEchoComparisonForTemplate,
   noEchoParameterNamesOf,
 } from '../../deployment/deploy-engine/noecho.js';
 import {
+  namingSecretsWithRecordedNoEcho,
   orphanRecordsPrintingBag,
   secretNamePrintingBag,
   secretNamePrintingBags,
@@ -1852,11 +1855,61 @@ export async function computeStackDiff(
   // `diffSecrets` an `Fn::Split` fragment of one, and an ordinary record
   // named like a fragment would be judged secret-named, its id spellings
   // over-masking a nested child.
-  const noEchoJudge: RecordedSecretValues = new Map(diffSecrets);
-  carryLogOnlyValues(diffSecrets, noEchoJudge);
+  const noEchoJudgeValues: RecordedSecretValues = new Map(diffSecrets);
+  carryLogOnlyValues(diffSecrets, noEchoJudgeValues);
+  // Per record, also what it stores where a `NoEcho` parameter served it
+  // (go-to-k/cdkd#3869): a name taken from a value since CHANGED (a pre-v11
+  // record holds the old plaintext), or a short or `Number` one, which the
+  // bound values cannot judge. Positioned by the template as this diff
+  // evaluated it, a condition it could not evaluate read on both branches.
+  const namingNoEchoParameters = noEchoParametersOf(effectiveTemplate);
+  const namingConditions =
+    conditions === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+        );
+  const namingTemplateResources = (effectiveTemplate.Resources ?? {}) as Record<
+    string,
+    { Type?: unknown; Properties?: unknown } | undefined
+  >;
+  const recordedNamingValues = (
+    resources: Readonly<Record<string, ResourceState>>,
+    logicalId: string
+  ): RecordedSecretValues | undefined => {
+    const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+    const templateResource = Object.hasOwn(namingTemplateResources, logicalId)
+      ? namingTemplateResources[logicalId]
+      : undefined;
+    const bag = recordedNoEchoValuesOf(
+      templateResource?.Type === record?.resourceType ? templateResource?.Properties : undefined,
+      record,
+      namingNoEchoParameters,
+      namingConditions
+    );
+    return hasMaskableValues(bag) ? bag : undefined;
+  };
+  const noEchoJudge = (
+    resources: Readonly<Record<string, ResourceState>>
+  ): ((logicalId: string) => RecordedSecretValues | undefined) =>
+    namingSecretsWithRecordedNoEcho(noEchoJudgeValues, (logicalId) =>
+      recordedNamingValues(resources, logicalId)
+    );
+  // The resolver's judge reads `diffSecrets` LIVE (it grows mid-walk), so the
+  // record's stored values are memoized and the union is taken per call.
+  const liveNamingJudge = (
+    resources: Readonly<Record<string, ResourceState>>
+  ): ((logicalId: string) => RecordedSecretValues | undefined) => {
+    const memo = new Map<string, RecordedSecretValues | undefined>();
+    return (logicalId) => {
+      if (!memo.has(logicalId)) memo.set(logicalId, recordedNamingValues(resources, logicalId));
+      const stored = memo.get(logicalId);
+      return stored === undefined ? diffSecrets : unionOfSecretBags([diffSecrets, stored]);
+    };
+  };
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
-    noEchoJudge,
+    noEchoJudge(currentState.resources ?? {}),
     new Map(),
     currentState.outputs
   );
@@ -1892,7 +1945,10 @@ export async function computeStackDiff(
         // go-to-k/cdkd#4852: the resource diff's cross-stack reads, for the
         // read-provenance arm (as the deploy's diff pass records them).
         ...(crossStackReads && { crossStackReads }),
-        secretNameNeedles: stateSecretNameNeedles(currentState.resources, diffSecrets),
+        secretNameNeedles: stateSecretNameNeedles(
+          currentState.resources,
+          liveNamingJudge(currentState.resources)
+        ),
         secretNameSink: derivedNames,
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
         ...(secretStandInTokens && { secretStandInTokens }),
@@ -2092,7 +2148,7 @@ export async function computeStackDiff(
       // adopted record can store one.
       storedSecretNameNeedles(
         stateForDiff.resources,
-        noEchoJudge,
+        noEchoJudge(stateForDiff.resources),
         stateNames,
         currentState.outputs
       );
@@ -2181,7 +2237,10 @@ export async function computeStackDiff(
           const value = await intrinsicResolver.resolve(structuredClone(node), {
             recordedSecretValues: secrets,
             // go-to-k/cdkd#3869: its lines masked, its deciding bag untouched.
-            secretNameNeedles: stateSecretNameNeedles(resourcesForInputs, diffSecrets),
+            secretNameNeedles: stateSecretNameNeedles(
+              resourcesForInputs,
+              liveNamingJudge(resourcesForInputs)
+            ),
             secretNameSink: derivedNames,
             template: effectiveTemplate,
             resources: resourcesForInputs,
@@ -2685,7 +2744,10 @@ export async function computeStackDiff(
     effectiveTemplate,
     printingSecrets,
     derivedNames: diffPrintingSecrets([derivedNames, inheritedDerivedNames]),
-    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, noEchoJudge),
+    secretNamedRecords: secretNamedRecordNeedles(
+      stateForDiff.resources,
+      noEchoJudge(stateForDiff.resources)
+    ),
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:

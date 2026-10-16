@@ -174,6 +174,8 @@ export {
   readsNoEchoSource,
   noEchoParametersReadBy,
   noEchoCoordinatesOf,
+  noEchoParameterNodesAt,
+  recordedNoEchoValuesOf,
   maskWholeValue,
   valueAtCoordinate,
   maskAtCoordinates,
