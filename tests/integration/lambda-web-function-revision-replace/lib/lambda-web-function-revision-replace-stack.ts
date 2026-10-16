@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 
 /**
@@ -16,6 +17,7 @@ import type { Construct } from 'constructs';
  * covers: AWS::Lambda::WebFunction
  * covers: AWS::Lambda::WebFunctionRevision
  * covers: AWS::Lambda::WebFunctionEndpoint
+ * covers: AWS::SSM::Parameter
  */
 export class LambdaWebFunctionRevisionReplaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -62,6 +64,27 @@ export class LambdaWebFunctionRevisionReplaceStack extends cdk.Stack {
       endpointType: 'HomeRegion',
       authType: 'ApplicationManaged',
       revisionWeights: [{ revisionId: revision.attrRevisionId, weight: 100 }],
+    });
+
+    // go-to-k/cdkd#4978: a PerRegion endpoint whose second region's domain is
+    // read through a dotted `Fn::GetAtt` into its `RegionalEndpoints` map. The
+    // parameter is the consumer: verify.sh compares its value with the domain
+    // AWS reports, so an unresolved GetAtt (served as the endpoint ARN) fails.
+    const secondaryRegion = process.env['SECONDARY_REGION'] ?? 'us-west-2';
+    const regionalEndpoint = new lambda.CfnWebFunctionEndpoint(this, 'RegionalEndpoint', {
+      functionName: fn.ref,
+      // A later phase renames it with the release before #4978, so that
+      // release CREATES the record this build then heals.
+      endpointName: process.env['REGIONAL_ENDPOINT_NAME'] ?? 'regional',
+      endpointType: 'PerRegion',
+      regions: [this.region, secondaryRegion],
+      authType: 'ApplicationManaged',
+      revisionWeights: [{ revisionId: revision.attrRevisionId, weight: 100 }],
+    });
+    new ssm.CfnParameter(this, 'RegionalDomainParameter', {
+      name: '/cdkd-integ/webfn-replace/regional-domain',
+      type: 'String',
+      value: cdk.Fn.getAtt(regionalEndpoint.logicalId, `RegionalEndpoints.${secondaryRegion}.DomainName`).toString(),
     });
 
     new cdk.CfnOutput(this, 'RevisionId', { value: revision.attrRevisionId });

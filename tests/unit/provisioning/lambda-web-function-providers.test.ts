@@ -780,6 +780,136 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
     respond(new Map<string, unknown[]>([['GetWebFunctionEndpointCommand', [{ domainName: 'd.on.aws' }]]]));
     await expect(provider.getAttribute(EP_ARN, EP_TYPE, 'DomainName')).resolves.toBe('d.on.aws');
   });
+
+  describe('RegionalEndpoints.<region>.<Member> attributes', () => {
+    const regionalEndpoints = {
+      'ap-northeast-1': { domainName: 'a.lambda-web.ap-northeast-1.on.aws', state: 'Active' },
+      'us-west-2': {
+        domainName: 'b.lambda-web.us-west-2.on.aws',
+        authType: 'IamAuth',
+        state: 'Active',
+        updateStatus: 'Successful',
+      },
+    };
+
+    it('getAttribute resolves a regional DomainName, and an absent region or member is undefined', async () => {
+      const get = (name: string): Promise<unknown> => provider.getAttribute(EP_ARN, EP_TYPE, name);
+      const read = (): void =>
+        respond(new Map<string, unknown[]>([['GetWebFunctionEndpointCommand', [{ regionalEndpoints }]]]));
+      read();
+      await expect(get('RegionalEndpoints.us-west-2.DomainName')).resolves.toBe(
+        'b.lambda-web.us-west-2.on.aws'
+      );
+      read();
+      await expect(get('RegionalEndpoints.ap-northeast-1.State')).resolves.toBe('Active');
+      read();
+      await expect(get('RegionalEndpoints.eu-central-1.DomainName')).resolves.toBeUndefined();
+      read();
+      await expect(get('RegionalEndpoints.ap-northeast-1.AuthType')).resolves.toBeUndefined();
+    });
+
+    it('create and update record the regional members as flat dot-keys in the attribute map', async () => {
+      const active = {
+        endpointArn: EP_ARN,
+        state: 'Active',
+        updateStatus: 'Successful',
+        revisionWeights: [{ revisionId: 'rev-abc12', weight: 100 }],
+        regionalEndpoints,
+      };
+      // The first read is taken before the endpoint settles and carries no
+      // regional members; the recorded map is the SETTLED read's.
+      respond(
+        new Map<string, unknown[]>([
+          ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+          ['GetWebFunctionEndpointCommand', [{ endpointArn: EP_ARN, state: 'Pending' }, active]],
+        ])
+      );
+      const created = await provider.create('Ep', EP_TYPE, base);
+      expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(2);
+      expect(created.attributes).toMatchObject({
+        'RegionalEndpoints.us-west-2.DomainName': 'b.lambda-web.us-west-2.on.aws',
+        'RegionalEndpoints.us-west-2.AuthType': 'IamAuth',
+        'RegionalEndpoints.ap-northeast-1.DomainName': 'a.lambda-web.ap-northeast-1.on.aws',
+      });
+      // An unassigned member is absent, never recorded as undefined or ''.
+      expect(created.attributes).not.toHaveProperty('RegionalEndpoints.ap-northeast-1.AuthType');
+      expect(created.attributes).not.toHaveProperty('RegionalEndpoints');
+
+      mockSend.mockReset();
+      respond(
+        new Map<string, unknown[]>([
+          ['UpdateWebFunctionEndpointCommand', [{}]],
+          ['GetWebFunctionEndpointCommand', [active]],
+        ])
+      );
+      const updated = await provider.update('Ep', EP_ARN, EP_TYPE, base, base);
+      expect(updated.attributes).toMatchObject({
+        'RegionalEndpoints.us-west-2.DomainName': 'b.lambda-web.us-west-2.on.aws',
+      });
+    });
+
+    it('records the wire shape of a MultiRegion endpoint: a null regional domainName is absent, the rest is kept', async () => {
+      // Observed from a live MultiRegion endpoint: every region reports
+      // `domainName: null` (the domain is the endpoint's global one).
+      respond(
+        new Map<string, unknown[]>([
+          [
+            'GetWebFunctionEndpointCommand',
+            [
+              {
+                endpointArn: EP_ARN,
+                domainName: 'g.lambda-web.global.on.aws',
+                regionalEndpoints: {
+                  'us-west-2': { domainName: null, authType: 'IamAuth', state: 'Active', updateStatus: null },
+                },
+              },
+            ],
+          ],
+        ])
+      );
+      const found = await provider.import({
+        logicalId: 'Ep',
+        resourceType: EP_TYPE,
+        knownPhysicalId: EP_ARN,
+      } as never);
+      expect(found?.attributes).toMatchObject({
+        DomainName: 'g.lambda-web.global.on.aws',
+        'RegionalEndpoints.us-west-2.AuthType': 'IamAuth',
+        'RegionalEndpoints.us-west-2.State': 'Active',
+      });
+      expect(found?.attributes).not.toHaveProperty('RegionalEndpoints.us-west-2.DomainName');
+      expect(found?.attributes).not.toHaveProperty('RegionalEndpoints.us-west-2.UpdateStatus');
+    });
+
+    it('import (the stale-record heal read) supplies the regional members a pre-fix record lacks', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          ['GetWebFunctionEndpointCommand', [{ endpointArn: EP_ARN, state: 'Active', regionalEndpoints }]],
+        ])
+      );
+      const found = await provider.import({
+        logicalId: 'Ep',
+        resourceType: EP_TYPE,
+        knownPhysicalId: EP_ARN,
+      } as never);
+      expect(found?.physicalId).toBe(EP_ARN);
+      expect(found?.attributes).toMatchObject({
+        'RegionalEndpoints.us-west-2.DomainName': 'b.lambda-web.us-west-2.on.aws',
+        'RegionalEndpoints.ap-northeast-1.DomainName': 'a.lambda-web.ap-northeast-1.on.aws',
+      });
+    });
+
+    it('an endpoint with no regionalEndpoints records none', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          ['CreateWebFunctionEndpointCommand', [{ endpointArn: EP_ARN }]],
+          ['GetWebFunctionEndpointCommand', [active]],
+        ])
+      );
+      const created = await provider.create('Ep', EP_TYPE, base);
+      expect(Object.keys(created.attributes ?? {}).some((k) => k.startsWith('RegionalEndpoints.'))).toBe(false);
+    });
+  });
 });
 
 describe('Lambda Web providers — re-review round 2 gaps', () => {

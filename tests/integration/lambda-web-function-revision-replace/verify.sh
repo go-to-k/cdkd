@@ -15,6 +15,11 @@
 # previous release (Cloud Control for both) deploys v1, so the records start
 # pinned to cc-api; this build's v2 deploy must move both to the SDK route
 # (the 'sdk-coverage' sticky exemption), and v3 runs SDK to SDK.
+#
+# go-to-k/cdkd#4978: a PerRegion endpoint's `Fn::GetAtt
+# RegionalEndpoints.<region>.DomainName` feeds an SSM parameter. The SDK
+# provider of 0.300.x did not record it and served the endpoint ARN; this build
+# records it on create / update, and heals a record 0.300.x created without it.
 
 set -euo pipefail
 
@@ -64,7 +69,19 @@ FN_ARN="arn:aws:lambda:${REGION}:${ACCOUNT}:web-function/${FN_NAME}"
 FN_MODEL="{\"FunctionName\":\"${FN_NAME}\"}"
 WORK="$(mktemp -d)"
 OLD_CDKD_VERSION="${OLD_CDKD_VERSION:-0.299.7}"
+# The last release whose SDK endpoint provider lacks the #4978 attributes.
+PREFIX_CDKD_VERSION="${PREFIX_CDKD_VERSION:-0.300.2}"
 OLD_TMPDIR=""
+PREFIX_TMPDIR=""
+# The PerRegion endpoint's second region; the stack reads the same variable.
+case "${REGION}" in
+  us-west-2) SECONDARY_REGION="us-east-2" ;;
+  *) SECONDARY_REGION="us-west-2" ;;
+esac
+export SECONDARY_REGION
+PARAM_NAME="/cdkd-integ/webfn-replace/regional-domain"
+# Phase 3b renames the PerRegion endpoint; the stack reads the same variable.
+export REGIONAL_ENDPOINT_NAME="regional"
 
 # Identifiers of every resource of a type under the web function.
 cc_ids() { # usage: cc_ids <type>
@@ -97,14 +114,17 @@ cleanup() {
     cc_delete AWS::Lambda::WebFunctionRevision "${id}"
   done
   cc_delete AWS::Lambda::WebFunction "${FN_ARN}"
+  aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws iam detach-role-policy --role-name "${ROLE_NAME}" \
     --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
   case "${FN_NAME}" in
     cdkd-integ-webfn?*)
-      for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/web/${FN_NAME}" \
-        --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
-        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1
+      for r in "${REGION}" "${SECONDARY_REGION}"; do
+        for lg in $(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/web/${FN_NAME}" \
+          --region "${r}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+          aws logs delete-log-group --log-group-name "${lg}" --region "${r}" >/dev/null 2>&1
+        done
       done
       ;;
     *) echo "WARN: teardown sweep refused: FN_NAME '${FN_NAME}' is outside cdkd-integ-webfn?*" >&2 ;;
@@ -120,9 +140,11 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
   rm -rf "${WORK}"
-  if [ -n "${OLD_TMPDIR:-}" ] && [ -d "${OLD_TMPDIR}" ]; then
-    rm -rf "${OLD_TMPDIR}"
-  fi
+  for d in "${OLD_TMPDIR:-}" "${PREFIX_TMPDIR:-}"; do
+    if [ -n "${d}" ] && [ -d "${d}" ]; then
+      rm -rf "${d}"
+    fi
+  done
   set -eu
 }
 trap cleanup EXIT
@@ -186,14 +208,14 @@ record() { # usage: record <logical-id> <jq-expression-over-the-resource-object>
 
 assert_route() { # usage: assert_route <phase> <provisionedBy>
   local id got
-  for id in Revision Endpoint; do
+  for id in Revision Endpoint RegionalEndpoint; do
     got="$(record "${id}" '.provisionedBy')" || return 1
     if [ "${got}" != "$2" ]; then
       echo "FAIL: after $1, ${id} is recorded provisionedBy=${got}, expected $2" >&2
       exit 1
     fi
   done
-  echo "    OK: Revision and Endpoint recorded provisionedBy=$2 after $1"
+  echo "    OK: Revision, Endpoint and RegionalEndpoint recorded provisionedBy=$2 after $1"
 }
 
 # A code change: the revision is replaced, its inline delete is refused while
@@ -225,7 +247,7 @@ assert_replaced() { # usage: assert_replaced <phase> <deploy-output> <old-revisi
 # The endpoint answers with the marker of the revision it routes to.
 assert_serves() { # usage: assert_serves <marker>
   local endpoint domain body=""
-  endpoint="$(cc_ids AWS::Lambda::WebFunctionEndpoint)" || return 1
+  endpoint="$(record Endpoint '.physicalId')" || return 1
   domain="$(aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint \
     --identifier "${endpoint}" --region "${REGION}" --query 'ResourceDescription.Properties' \
     --output text | python3 -c 'import json,sys; print(json.load(sys.stdin)["DomainName"])')" || return 1
@@ -241,6 +263,32 @@ assert_serves() { # usage: assert_serves <marker>
   echo "    OK: endpoint serves $1"
 }
 
+# The SSM parameter holds what `Fn::GetAtt RegionalEndpoints.<secondary>.DomainName`
+# resolved to; it must be the domain AWS reports for that region (#4978).
+regional_domain() { # prints the secondary region's domain AWS reports
+  aws lambda-web get-web-function-endpoint --function-name "${FN_NAME}" --endpoint-name "${REGIONAL_ENDPOINT_NAME}" --region "${REGION}" \
+    --query "regionalEndpoints.\"${SECONDARY_REGION}\".domainName" --output text
+}
+param_value() {
+  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" --query Parameter.Value --output text
+}
+assert_regional_getatt() { # usage: assert_regional_getatt <phase>
+  local want got
+  want="$(regional_domain)" || return 1
+  case "${want}" in
+    "" | None | null | *:*)
+      echo "FAIL: $1: AWS reports no usable ${SECONDARY_REGION} domain for the PerRegion endpoint: '${want}'" >&2
+      exit 1
+      ;;
+  esac
+  got="$(param_value)" || return 1
+  if [ "${got}" != "${want}" ]; then
+    echo "FAIL: $1: Fn::GetAtt RegionalEndpoints.${SECONDARY_REGION}.DomainName resolved to '${got}', expected '${want}' (#4978)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: RegionalEndpoints.${SECONDARY_REGION}.DomainName resolved to ${got}"
+}
+
 assert_one_revision() { # usage: assert_one_revision <phase>
   local revisions count
   revisions="$(cc_ids AWS::Lambda::WebFunctionRevision)" || return 1
@@ -253,22 +301,32 @@ assert_one_revision() { # usage: assert_one_revision <phase>
   printf '%s\n' "${revisions}"
 }
 
-echo "==> Installing the previous release (@go-to-k/cdkd@${OLD_CDKD_VERSION})"
-OLD_TMPDIR="$(mktemp -d)"
-(cd "${OLD_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${OLD_CDKD_VERSION}" >/dev/null)
-OLD_BIN="${OLD_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
-if [ ! -f "${OLD_BIN}" ]; then
-  echo "FAIL: the previous release was not installed at ${OLD_BIN}" >&2
-  exit 1
-fi
-OLD_REPORTED="$(node "${OLD_BIN}" --version)"
-case "${OLD_REPORTED}" in
-  *"${OLD_CDKD_VERSION}"*) ;;
-  *)
-    echo "FAIL: the installed old binary reports '${OLD_REPORTED}', not ${OLD_CDKD_VERSION}" >&2
+# Installs a release into <dir> and checks the binary reports that version.
+install_release() { # usage: install_release <dir> <version>
+  local bin reported
+  (cd "$1" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@$2" >/dev/null) || return 1
+  bin="$1/node_modules/@go-to-k/cdkd/dist/cli.js"
+  if [ ! -f "${bin}" ]; then
+    echo "FAIL: release $2 was not installed at ${bin}" >&2
     exit 1
-    ;;
-esac
+  fi
+  reported="$(node "${bin}" --version)" || return 1
+  case "${reported}" in
+    *"$2"*) ;;
+    *)
+      echo "FAIL: the installed binary reports '${reported}', not $2" >&2
+      exit 1
+      ;;
+  esac
+}
+
+echo "==> Installing the previous releases (@go-to-k/cdkd@${OLD_CDKD_VERSION}, @${PREFIX_CDKD_VERSION})"
+OLD_TMPDIR="$(mktemp -d)"
+install_release "${OLD_TMPDIR}" "${OLD_CDKD_VERSION}"
+OLD_BIN="${OLD_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
+PREFIX_TMPDIR="$(mktemp -d)"
+install_release "${PREFIX_TMPDIR}" "${PREFIX_CDKD_VERSION}"
+PREFIX_BIN="${PREFIX_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
 
 echo "==> Phase 1: deploy v1 with the previous release (Cloud Control)"
 V1="$(upload_code v1)"
@@ -277,7 +335,9 @@ echo "${OUT}"
 REV1="$(assert_one_revision 'phase 1' | tail -1)"
 assert_route 'phase 1' cc-api
 EP1="$(record Endpoint '.physicalId')"
+REP1="$(record RegionalEndpoint '.physicalId')"
 assert_serves v1
+assert_regional_getatt 'phase 1'
 
 echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
 V2="$(upload_code v2)"
@@ -300,7 +360,15 @@ if [ "${EP2}" != "${EP1}" ]; then
   exit 1
 fi
 echo "    OK: endpoint ${EP1} kept across the route change"
+REP2="$(record RegionalEndpoint '.physicalId')"
+if [ "${REP2}" != "${REP1}" ]; then
+  echo "FAIL: the PerRegion endpoint was recreated on the route change (${REP1} -> ${REP2})" >&2
+  exit 1
+fi
 assert_serves v2
+# The SDK update rewrote the endpoint's record in this run, so only the
+# provider's own attributes can answer the GetAtt (no stale-record heal).
+assert_regional_getatt 'phase 2'
 
 echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
 V3="$(upload_code v3)"
@@ -315,6 +383,48 @@ assert_gone "old revision ${REV2} still exists" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV2}" --region "${REGION}"
 echo "    OK: old revision ${REV2} is gone"
 assert_route 'phase 3' sdk
+assert_serves v3
+assert_regional_getatt 'phase 3'
+
+echo "==> Phase 3b: rename the PerRegion endpoint with ${PREFIX_CDKD_VERSION} (a record created without the #4978 attributes)"
+# A rename replaces the endpoint, so the release before the fix CREATES its
+# record; an update would keep the attributes this build already recorded.
+export REGIONAL_ENDPOINT_NAME="regional2"
+OUT="$(deploy "${V3}" "${PREFIX_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 3b deploy" >&2; exit 1; }
+echo "${OUT}"
+REP3="$(record RegionalEndpoint '.physicalId')"
+case "${REP3}" in
+  */endpoint/regional2) ;;
+  *) echo "FAIL: phase 3b: the PerRegion endpoint record is ${REP3}, expected the renamed endpoint/regional2" >&2; exit 1 ;;
+esac
+assert_gone "old PerRegion endpoint ${REP1} still exists after the rename" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP1}" --region "${REGION}"
+# Sentinel: the release before the fix serves the ARN, or phase 3c would pass
+# without the record lacking the attribute it heals.
+GOT="$(param_value)"
+case "${GOT}" in
+  arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the GetAtt to the endpoint ARN (the #4978 bug)" ;;
+  *)
+    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises the heal" >&2
+    exit 1
+    ;;
+esac
+HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
+if [ "${HAS_KEY}" != "false" ]; then
+  echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the regional DomainName (${HAS_KEY})" >&2
+  exit 1
+fi
+
+echo "==> Phase 3c: deploy v3 again with this build (heals the ${PREFIX_CDKD_VERSION} record)"
+OUT="$(deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 3c deploy" >&2; exit 1; }
+echo "${OUT}"
+assert_regional_getatt 'phase 3c'
+HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
+if [ "${HAS_KEY}" != "true" ]; then
+  echo "FAIL: phase 3c: the healed regional DomainName was not saved to the record (${HAS_KEY})" >&2
+  exit 1
+fi
+echo "    OK: phase 3c: the healed attribute was saved to the record"
 assert_serves v3
 
 echo "==> Phase 4: rename the endpoint (SDK create of the new one, SDK delete of the old one)"
@@ -343,12 +453,12 @@ DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KE
 echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare (unsupported or
 # skipped), so require every resource of the stack to have been compared: the
-# role, the function, the revision and the endpoint.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(4 resources checked, 0 unsupported)'; then
-  echo "FAIL: drift did not compare all 4 resources -- expected '(4 resources checked, 0 unsupported)'" >&2
+# role, the function, the revision, the two endpoints and the parameter.
+if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(6 resources checked, 0 unsupported)'; then
+  echo "FAIL: drift did not compare all 6 resources -- expected '(6 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
-echo "    OK: no drift, all 4 resources compared"
+echo "    OK: no drift, all 6 resources compared"
 
 echo "==> Destroy"
 ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
@@ -358,10 +468,14 @@ assert_gone "web function ${FN_NAME} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunction --identifier "${FN_ARN}" --region "${REGION}"
 assert_gone "endpoint ${EP4} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${EP4}" --region "${REGION}"
+assert_gone "PerRegion endpoint ${REP3} still exists after destroy" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP3}" --region "${REGION}"
 assert_gone "revision ${REV3} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
+assert_gone "parameter ${PARAM_NAME} still exists after destroy" \
+  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    OK: web function, endpoint, revisions, role and state gone"
+echo "    OK: web function, endpoints, revisions, parameter, role and state gone"
 echo ""
-echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), and revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926)"
+echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926), and a PerRegion endpoint's RegionalEndpoints.<region>.DomainName resolves and heals (#4978)"

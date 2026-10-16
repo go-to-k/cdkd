@@ -634,6 +634,38 @@ function sameWeights(
   return left.every((k, i) => k === right[i]);
 }
 
+/**
+ * One entry of `GetWebFunctionEndpointResponse.regionalEndpoints`, narrowed to
+ * its scalar members. CloudFormation's `RegionalEndpoints` attribute is the
+ * whole region -> entry map; these are the leaves of it that a dotted
+ * `Fn::GetAtt` path (`RegionalEndpoints.<region>.<Member>`) reaches, the same
+ * names the Cloud Control path resolved before this provider took the type.
+ */
+interface RegionalEndpointRead {
+  domainName?: string | undefined;
+  authType?: string | undefined;
+  state?: string | undefined;
+  stateReason?: string | undefined;
+  updateStatus?: string | undefined;
+  updateStatusReason?: string | undefined;
+}
+
+/**
+ * The attribute map recorded for an endpoint read.
+ *
+ * `RegionalEndpoints.<region>.<Member>` is recorded as flat dot-keys: the
+ * resolver looks a stored attribute up by its full dotted name first (as
+ * `Endpoint.Port` is stored). Without them `Fn::GetAtt <endpoint>
+ * RegionalEndpoints.<region>.DomainName` is unknown to this provider and
+ * degrades to the endpoint ARN — a multi-region CloudFront origin built from it
+ * then gets an ARN as its domain name. A member AWS did not assign (a MultiRegion
+ * endpoint reports `domainName: null` per region) is left out.
+ *
+ * The per-region `State` / `UpdateStatus` are a snapshot taken when the parent
+ * reached `Active`; nothing refreshes them later. That is harmless: `drift` and
+ * `diff` do not compare `attributes`, and the top-level `State` / `UpdateStatus`
+ * are recorded the same way.
+ */
 function buildAttributes(resp: {
   endpointArn?: string | undefined;
   functionArn?: string | undefined;
@@ -644,8 +676,9 @@ function buildAttributes(resp: {
   updateStatusReason?: string | undefined;
   createdAt?: Date | undefined;
   updatedAt?: Date | undefined;
+  regionalEndpoints?: Record<string, RegionalEndpointRead> | undefined;
 }): Record<string, unknown> {
-  return definedAttributes({
+  const attributes = definedAttributes({
     EndpointArn: resp.endpointArn,
     FunctionArn: resp.functionArn,
     DomainName: resp.domainName,
@@ -656,4 +689,18 @@ function buildAttributes(resp: {
     CreatedAt: resp.createdAt?.toISOString(),
     UpdatedAt: resp.updatedAt?.toISOString(),
   });
+  for (const [region, entry] of Object.entries(resp.regionalEndpoints ?? {})) {
+    const members = definedAttributes({
+      DomainName: entry.domainName,
+      AuthType: entry.authType,
+      State: entry.state,
+      StateReason: entry.stateReason,
+      UpdateStatus: entry.updateStatus,
+      UpdateStatusReason: entry.updateStatusReason,
+    });
+    for (const [member, value] of Object.entries(members)) {
+      attributes[`RegionalEndpoints.${region}.${member}`] = value;
+    }
+  }
+  return attributes;
 }

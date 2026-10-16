@@ -7204,6 +7204,7 @@
         "inplace-attr-propagation",
         "intrinsics-torture",
         "intrinsics-torture-2",
+        "lambda-web-function-revision-replace",
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
         "list-parameters",
@@ -7426,6 +7427,10 @@
           "literal"
         ],
         "intrinsics-torture-2": [
+          "l1",
+          "literal"
+        ],
+        "lambda-web-function-revision-replace": [
           "l1",
           "literal"
         ],
