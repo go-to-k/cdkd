@@ -459,32 +459,11 @@ const swallowing = all.filter(
  * fails as "over ceiling"; a count below it, or an entry whose file now holds
  * none, fails as LOOSE and the author must lower or delete the entry. So a
  * sweep PR deletes (or lowers) its own entries in the same change, and the map
- * only ever shrinks. The remaining entries are the not-yet-swept slices of
- * #3341.
+ * only ever shrinks. #3341 swept every file, so the map is empty: every
+ * provider file holds zero rethrowing sites, and a new one fails as over
+ * ceiling.
  */
-const RETHROWING_CEILING: Readonly<Record<string, number>> = {
-  // Swept in the final #3341 slice (#4997); that PR deletes these entries.
-  'providers/elbv2-provider.ts': 3,
-  'providers/glue-provider.ts': 9,
-  'providers/iam-policy-provider.ts': 1,
-  'providers/iam-user-group-provider.ts': 3,
-  'providers/lambda-event-invoke-config-provider.ts': 1,
-  'providers/lambda-url-provider.ts': 2,
-  'providers/logs-loggroup-provider.ts': 1,
-  // Swept in #4997; that PR deletes these entries.
-  'providers/s3-directory-bucket-provider.ts': 3,
-  'providers/s3-tables-provider.ts': 12,
-  'providers/s3-vectors-provider.ts': 2,
-  'providers/scheduler-schedule-provider.ts': 4,
-  'providers/secretsmanager-secret-provider.ts': 2,
-  'providers/servicediscovery-provider.ts': 2,
-  'providers/sns-subscription-provider.ts': 1,
-  'providers/sns-topic-provider.ts': 3,
-  'providers/sqs-queue-provider.ts': 3,
-  'providers/ssm-parameter-provider.ts': 1,
-  'providers/stepfunctions-provider.ts': 3,
-  'providers/wafv2-provider.ts': 3,
-};
+const RETHROWING_CEILING: Readonly<Record<string, number>> = {};
 
 describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
   it('leaves NO swallowing handler reading its caught value with a bare String()', () => {
