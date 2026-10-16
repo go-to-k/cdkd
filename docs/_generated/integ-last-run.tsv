@@ -8,7 +8,7 @@
 access-key-cloudmap-fix-forward-orphan	2026-10-15T19:20:59Z	PASS	216	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 acm-certificate	2026-10-16T07:55:32Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4994)
 agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
-alb	2026-10-16T09:35:29Z	PASS	511	verify.sh	rc ok, orph clean (#3341 slice 4997)
+alb	2026-10-16T12:12:45Z	PASS	625	verify.sh	re-run on d4ecb5100 after rebase onto main with #5002 Lambda-target wait (#4997); rc ok, destroy 16 deleted 0 errors, orph clean
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-15T09:01:04Z	PASS	65	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
