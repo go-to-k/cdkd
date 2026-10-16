@@ -38,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
@@ -124,7 +125,7 @@ describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
       // the injected properties to update(); a restored removalDefaults entry
       // (e.g. AutoMinorVersionUpgrade: true) would be re-sent there even
       // though the direct update() path sends nothing.
-      expect(provider.removalDefaults?.get('AWS::ElastiCache::CacheCluster')).toBeUndefined();
+      expect((provider as ResourceProvider).removalDefaults?.get('AWS::ElastiCache::CacheCluster')).toBeUndefined();
 
       const baseline = {
         Engine: 'redis',
