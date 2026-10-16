@@ -2865,7 +2865,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
     } catch (error) {
       throw new ProvisioningError(
-        `${describeAwsFailure(error).detail}. Nothing was applied to ` + `user pool ${physicalId}`,
+        `${describeAwsFailure(error).detail}. Nothing was applied to user pool ${physicalId}`,
         resourceType,
         logicalId,
         physicalId,

@@ -693,9 +693,10 @@ describe('DLMLifecyclePolicyProvider rethrow of an unconvertible thrown value (#
         () => undefined,
         (e: unknown) => e
       );
-    expect(rejected).toBeInstanceOf(Error);
+    expect(rejected).toBeInstanceOf(ProvisioningError);
     const message = (rejected as Error).message;
     expect(message).toContain('Failed to create DLM Lifecycle Policy MyPolicy');
+    expect(message).toContain('a value that could not be converted to text');
     expect(message).not.toContain('Cannot convert object to primitive value');
   });
 });
