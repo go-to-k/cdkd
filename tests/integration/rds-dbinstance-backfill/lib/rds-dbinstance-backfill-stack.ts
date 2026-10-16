@@ -136,7 +136,11 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // MasterUserPassword — set neither password literal.
       manageMasterUserPassword: true,
       masterUserSecret: { kmsKeyId: 'alias/aws/secretsmanager' },
-      port: '5433',
+      // Companion change (#5004): the port moves 5433 -> 5434 in phase 2 (an
+      // immediately-applied ModifyDBInstance, ApplyImmediately=true), so
+      // verify.sh can prove ModifyDBInstance fired in the removal deploy
+      // before it asserts the three dropped fields were KEPT.
+      port: isUpdate ? '5434' : '5433',
       engineVersion: '17.6',
       ...(isUpdate ? {} : { deletionProtection: true }),
       storageEncrypted: true,

@@ -82,6 +82,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 EXPECTED_ENGINE_VERSION="17.6"
 EXPECTED_PORT=5433
+EXPECTED_UPDATED_PORT=5434 # phase 2 companion change (#5004)
 EXPECTED_DELETION_PROTECTION="true"
 EXPECTED_STORAGE_ENCRYPTED="true"
 EXPECTED_MASTER_USERNAME="postgres"
@@ -378,7 +379,7 @@ fi
 echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps the value) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval; all three must be KEPT)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval, move Port 5433 -> 5434; all three must be KEPT)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -396,12 +397,23 @@ for _ in $(seq 1 60); do
     --region "${REGION}" \
     --query 'DBInstances[0]' --output json)
   AFTER_STATUS=$(echo "${AFTER}" | jq -r '.DBInstanceStatus // "null"')
-  if [ "${AFTER_STATUS}" = "available" ]; then
+  # The port applies via a reboot that can trail ModifyDBInstance, so 'available'
+  # alone can still read the old port: settle on both.
+  if [ "${AFTER_STATUS}" = "available" ] && [ "$(echo "${AFTER}" | jq -r '.Endpoint.Port // "null"')" = "${EXPECTED_UPDATED_PORT}" ]; then
     SETTLED="yes"
     break
   fi
   sleep 10
 done
+# Companion change: phase 2 also moved the port, so a live 5434 proves
+# ModifyDBInstance FIRED in this deploy. Asserted BEFORE the KEEP checks: without
+# it a skipped modify would leave the dropped fields untouched and pass vacuously.
+AFTER_PORT=$(echo "${AFTER}" | jq -r '.Endpoint.Port // "null"')
+if [ -z "${SETTLED}" ] || [ "${AFTER_PORT}" != "${EXPECTED_UPDATED_PORT}" ]; then
+  echo "FAIL: after phase 2, Endpoint.Port is '${AFTER_PORT}' (status='${AFTER_STATUS}'), expected '${EXPECTED_UPDATED_PORT}' -- ModifyDBInstance did not fire, so the KEEP assertions below would prove nothing (#5004)" >&2
+  exit 1
+fi
+echo "    OK: phase 2 ModifyDBInstance fired (Endpoint.Port == ${EXPECTED_UPDATED_PORT}) -- the KEEP assertions are non-vacuous"
 AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
 AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
 AFTER_INTERVAL=$(echo "${AFTER}" | jq -r '.MonitoringInterval // "null"')

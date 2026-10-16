@@ -202,6 +202,11 @@ export class RdsAuroraStack extends cdk.Stack {
       ...(isUpdate
         ? {}
         : { deletionProtection: true, enableIamDatabaseAuthentication: true }),
+      // Companion change (#5004): BackupRetentionPeriod is SET to 7 in phase 1
+      // and DROPPED in phase 2, where CloudFormation RESETS it to 1. That
+      // reset proves ModifyDBCluster fired in the removal deploy, so the KEEP
+      // assertions for the two fields above cannot pass vacuously.
+      ...(isUpdate ? {} : { backupRetentionPeriod: 7 }),
       monitoringInterval: 60,
       monitoringRoleArn: monitoringRole.roleArn,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
