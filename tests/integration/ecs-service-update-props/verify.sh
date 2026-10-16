@@ -850,4 +850,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds retained-on-removal (#5004); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
