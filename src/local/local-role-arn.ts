@@ -11,7 +11,7 @@
  * `recordAssumedRole` (go-to-k/cdkd#3240, go-to-k/cdk-local#783). The assumed
  * role's own credentials go as the second argument, so cdk-local's
  * `${AWS::AccountId}` / account lookups resolve as the role, i.e. the DEPLOY
- * account (go-to-k/cdkd#5001, cdk-local 0.153.0).
+ * account (go-to-k/cdkd#5001, cdk-local 0.153.0+).
  *
  * The four engine commands (`start-service` / `start-alb` / `start-cloudfront`
  * / `start-agentcore`) do not come here: cdk-local's own `applyRoleArnIfSet`
