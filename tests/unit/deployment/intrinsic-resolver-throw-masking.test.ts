@@ -7,7 +7,7 @@
  * left it bare when it THREW. The throw is the copy that travels: it crosses
  * into every caller, and a caller that masks at its own boundary can only mask
  * against ITS bag — which is why three separate issues each fixed one boundary
- * (#2728 `DeployEngine.handleOutputResolutionFailure`, #2803 `cdkd import`,
+ * (#2728 `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`), #2803 `cdkd import`,
  * #2748 `evaluateConditions`) and the class kept recurring. This file pins the
  * PRODUCER end, site by site.
  *

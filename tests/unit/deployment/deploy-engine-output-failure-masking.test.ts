@@ -1,5 +1,5 @@
 /**
- * Issue #2728: `DeployEngine.handleOutputResolutionFailure` reported an
+ * Issue #2728: `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`) reported an
  * Output resolution failure with the resolver's error text UNMASKED, on both
  * arms — the default warn and the `--strict-getatt` throw — while every other
  * resolver-facing site in the engine masks against a secrets map.

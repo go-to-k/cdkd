@@ -1068,8 +1068,10 @@ export class DeployEngine {
     this.resumedCreates = new Map();
     this.generatedNameGuard = undefined;
     this.liveTaskLabels = new Map();
-    // Replaces all ten Outputs-pass fields at once (`OutputsRunState`); see
-    // the class doc for why this is the only reset each of them needs — in
+    // Replaces all ten Outputs-pass fields at once (`OutputsRunState`): the
+    // per-deploy reset. `resolvedExportNames` and `carriedExportAliasRefusal`
+    // are ALSO reset per PASS at the top of `resolveOutputs`, since they
+    // describe the last pass, not the deploy. In
     // particular `skippedOutputs` (issue #2740, same reuse hazard as
     // `retainedOldOnReplacement` below: `resolveOutputs` recomputes it at the
     // END of a pass but early-returns for a template with no `Outputs`

@@ -6,7 +6,7 @@
  * stayed byte-identical previewed as "No changes detected" and `--fail` exited
  * 0 — while the apply wrote new outputs and republished the exports index.
  *
- * The fix deliberately does NOT share code with `DeployEngine.resolveOutputs`
+ * The fix deliberately does NOT share code with `resolveOutputs` (`deploy-engine/outputs.ts`)
  * (that file is in the `integ-destroy` gate scope and was held
  * by a parallel lane). The last describe block is the anti-drift fence that
  * trade requires: it watches the deploy-side semantics this module
@@ -1240,7 +1240,7 @@ describe('failedOutputKeys / failuresMirrorDeploy (issue #3101)', () => {
   });
 });
 
-describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => {
+describe('anti-drift fence vs resolveOutputs (issue #1921)', () => {
   // This module is a deliberate SECOND implementation of the deploy engine's
   // outputs resolution — see the file header for why sharing was rejected. The
   // cost of that trade is drift, so these assertions watch the deploy-side

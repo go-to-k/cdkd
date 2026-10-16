@@ -279,7 +279,7 @@ export async function resolveSub(
   // description, not a cache: a later resolution of the same object with a
   // fresh recording map would then return the plaintext without recording
   // it (no token left for `resolveDynamicReferences` to see), and the
-  // positioning source `DeployEngine.resolveOutputs` retains would carry
+  // positioning source `resolveOutputs` (`deploy-engine/outputs.ts`) retains would carry
   // the secret. The plain-string form and `Fn::Join` never mutated theirs.
   //
   // `Object.create(null)`, not `{}`: the variable NAMES come from the

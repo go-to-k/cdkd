@@ -12,7 +12,7 @@
  * output owns a key, `redactByPath` positions a leaf by a source belonging to a
  * DIFFERENT output and persists that output's `{{resolve:...}}` reference as
  * this one's value. So the rules deciding key ownership live here, in one
- * place, because FOUR writers apply them: `DeployEngine.resolveOutputs` (both of
+ * place, because FOUR writers apply them: `resolveOutputs` (`deploy-engine/outputs.ts`) (both of
  * its bags), `cdkd scrub` (which reconstructs the same source bag from the
  * template to redact legacy state), and `analyzer/outputs-diff.ts`, which
  * PREVIEWS the very bag the deploy persists — a count that was wrong here for

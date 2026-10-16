@@ -34,7 +34,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
  * `Fn::Sub` form resolved its variable map IN PLACE, so after one resolution
  * the caller's template object held the resolved value — a secret's plaintext
  * — where it had held the `{{resolve:...}}` reference. A template is a
- * description, not a cache: the object is what `DeployEngine.resolveOutputs`
+ * description, not a cache: the object is what `resolveOutputs` (`deploy-engine/outputs.ts`)
  * retains as the positioning source, and a later resolution of it with a
  * fresh recording map would return the plaintext without recording it (no
  * token left for `resolveDynamicReferences` to see).

@@ -8,7 +8,7 @@
  *
  * Another instance of one class — NOT the third of that SHAPE, which the rule
  * file says in as many words: issue #2728 fixed
- * `DeployEngine.handleOutputResolutionFailure`, and `rollback-executor.ts` and
+ * `handleOutputResolutionFailure` (`deploy-engine/outputs.ts`), and `rollback-executor.ts` and
  * `drift.ts` already hoist their bags above the `try` for the same reason and
  * say so at their own declarations. Import was the site that had been MISSED.
  *

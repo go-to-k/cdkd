@@ -360,9 +360,10 @@ export async function resolveOutputs(
   parameterValues?: Record<string, unknown>,
   conditions?: Record<string, boolean>
 ): Promise<Record<string, unknown>> {
-  // Reset BEFORE the early return: a template with no Outputs exports
-  // nothing, and that is a known `[]`, not a stale set from a prior pass.
-  // `skippedOutputs` is NOT reset here: `deploy()` clears it with the other
+  // Reset per PASS, BEFORE the early return: a template with no Outputs
+  // exports nothing, and that is a known `[]`, not a stale set from a prior
+  // pass of the same deploy (the per-deploy `OutputsRunState` replacement
+  // covers only the deploy's first pass). `skippedOutputs` is NOT reset here: `deploy()` clears it with the other
   // per-run bags, which covers this early return and every path that never
   // reaches this method. A second reset here would MASK that one — either
   // could then be deleted with no test going red — so there is exactly one.

@@ -22,7 +22,7 @@ The `Outputs` resolution and comparison behind `cdkd diff`'s Outputs section
 ([#1921](https://github.com/go-to-k/cdkd/issues/1921)).
 
 - `resolveTemplateOutputs` builds the exact bag shape
-  `DeployEngine.resolveOutputs` writes to `StackState.outputs`: a condition-false
+  `resolveOutputs` (`deployment/deploy-engine/outputs.ts`) writes to `StackState.outputs`: a condition-false
   output is SKIPPED, and an `Export.Name` is stored as a SECOND key holding the
   same value (what `Fn::ImportValue` resolves against).
 - Values resolve into the `outputsPass` bag, each `Export.Name` into a bag
