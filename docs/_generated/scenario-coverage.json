@@ -1577,6 +1577,11 @@
       ]
     },
     {
+      "name": "local-engine-role-identity",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-invoke",
       "annotated": true,
       "scenarios": [
@@ -3432,6 +3437,7 @@
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "list-parameters",
+    "local-engine-role-identity",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",

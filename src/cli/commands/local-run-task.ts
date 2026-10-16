@@ -15,8 +15,8 @@ import { getLogger } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
 import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
+import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
-  applyRoleArnIfSet,
   assertFlagRoleArn,
   assertSendableRoleArn,
   sendableAssumeRoleCommand,
@@ -284,7 +284,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
     await ensureDockerAvailable();
 
     const appCmd = resolveApp(options.app);

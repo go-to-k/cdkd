@@ -286,6 +286,7 @@
         "lambda-url-authtype-replay",
         "lambda-web-function-revision-replace",
         "list-parameters",
+        "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -708,6 +709,7 @@
         "lambda-web-function-revision-replace",
         "launchtemplate-asg-inplace",
         "list-parameters",
+        "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -860,6 +862,12 @@
       "integs": [
         "replacement-rename-onto-holder",
         "rollback-explicit-name-rewrite"
+      ]
+    },
+    {
+      "flag": "--profile",
+      "integs": [
+        "local-engine-role-identity"
       ]
     },
     {
@@ -1080,6 +1088,7 @@
         "lambda-web-function-revision-replace",
         "launchtemplate-asg-inplace",
         "list-parameters",
+        "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack",
@@ -1270,6 +1279,7 @@
         "iam-role-fix-forward-orphan",
         "iam-user-group-fix-forward-orphan",
         "lambda-fix-forward-orphan",
+        "local-engine-role-identity",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
         "logs-loggroup-fix-forward-orphan",
@@ -1509,6 +1519,7 @@
         "lambda-web-function-revision-replace",
         "launchtemplate-asg-inplace",
         "list-parameters",
+        "local-engine-role-identity",
         "local-invoke-agentcore-from-state",
         "local-invoke-from-state",
         "local-run-task-from-state",
@@ -2016,7 +2027,6 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
-    "--profile",
     "--resource-warn-after",
     "--strict"
   ],

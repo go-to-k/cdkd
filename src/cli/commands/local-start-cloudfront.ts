@@ -4,27 +4,8 @@ import {
   createLocalStartCloudFrontCommand as createCdkLocalStartCloudFrontCommand,
   getEmbedConfig,
 } from 'cdk-local';
-import {
-  cdkdExtraStateProviders,
-  engineCredentialTripleChannel,
-  engineFromCfnStackChannel,
-  engineFromStateChannel,
-  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
-  warnEngineRoleExposure,
-} from './local-state-source.js';
+import { cdkdExtraStateProviders } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
-
-/**
- * What the engine fetches with its own `{region, profile}` clients once a state
- * source names the deployed stack: the S3 origin's objects (and, for an origin
- * whose bucket is a pure intrinsic, the distribution config naming it), the
- * KeyValueStore entries, and the `${AWS::AccountId}` an intrinsic in a Function
- * URL / Lambda@Edge environment needs (an STS call). Named on whichever state
- * flag is set, since both reach the same engine paths.
- */
-const STATE_SOURCE_ENGINE_READS =
-  "a deployed S3 origin's objects and distribution config and the KeyValueStore entries, " +
-  "and the ${AWS::AccountId} in the Function URL / Lambda@Edge environment resolves to the role's account";
 
 /**
  * `cdkd local start-cloudfront <distribution>` — serve a CloudFront distribution
@@ -116,17 +97,6 @@ export function createLocalStartCloudFrontCommand(): Command {
         'credentials (or the --profile overlay) unchanged, and suppress the "re-run with ' +
         '--assume-role" hint that omitting the flag prints when deployed state is loaded.'
     )
-  );
-
-  warnEngineRoleExposure(
-    cmd,
-    'start-cloudfront',
-    [
-      engineCredentialTripleChannel('the Function URL and Lambda@Edge containers'),
-      ENGINE_DYNAMIC_REFERENCE_CHANNEL,
-    ],
-    engineFromCfnStackChannel(STATE_SOURCE_ENGINE_READS),
-    engineFromStateChannel(STATE_SOURCE_ENGINE_READS)
   );
 
   return adoptDeprecatedRegionFlag(cmd);

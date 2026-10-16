@@ -88,6 +88,11 @@ import {
 } from '../../../src/local/ecr-puller.js';
 import { formatError, LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../../src/utils/aws-clients.js';
+import {
+  resetAwsClientDefaults,
+  setAssumedRoleCredentials,
+  setPreAssumeEnvCredentials,
+} from '../../../src/utils/aws-client-defaults.js';
 import { ECR_REGISTRY_HOST_FORMS } from '../../../src/utils/ecr-uri.js';
 
 describe('parseEcrUri', () => {
@@ -471,6 +476,124 @@ describe('pullEcrImage', () => {
     expect(ecrConfig.credentials?.accessKeyId).toBe('ASIAEXAMPLE');
     expect(ecrConfig.credentials?.sessionToken).toBe('examplesessiontoken');
     expect(ecrConfig.region).toBe('us-east-1');
+  });
+
+  it('under a published --role-arn: the --ecr-role-arn AssumeRole is signed by the CALLER, the pull by the hop credentials', async () => {
+    setPreAssumeEnvCredentials({
+      accessKeyId: 'AKIACALLER',
+      secretAccessKey: 'caller-secret',
+      sessionToken: 'caller-token',
+    });
+    setAssumedRoleCredentials({
+      accessKeyId: 'ASIADEPLOYROLE',
+      secretAccessKey: 'deploy-secret',
+      sessionToken: 'deploy-token',
+    });
+    try {
+      stsSendMock
+        .mockResolvedValueOnce({ Account: '111111111111' })
+        .mockResolvedValueOnce({
+          Credentials: {
+            AccessKeyId: 'ASIAHOP',
+            SecretAccessKey: 'hop-secret',
+            SessionToken: 'hop-token',
+          },
+        });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [
+          {
+            authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+            proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+          },
+        ],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: 'arn:aws:iam::999999999999:role/CrossAccountEcrPull',
+      });
+
+      // STS client #1 (GetCallerIdentity) is cdkd's own call: the role.
+      const callerIdentityCfg = stsConstructorMock.mock.calls[0]![0] as {
+        credentials?: { accessKeyId?: string };
+      };
+      expect(callerIdentityCfg.credentials?.accessKeyId).toBe('ASIADEPLOYROLE');
+      // STS client #2 (the AssumeRole hop) is signed by the caller.
+      const hopCfg = stsConstructorMock.mock.calls[1]![0] as {
+        credentials?: { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string };
+      };
+      expect(hopCfg.credentials).toEqual({
+        accessKeyId: 'AKIACALLER',
+        secretAccessKey: 'caller-secret',
+        sessionToken: 'caller-token',
+      });
+      // The pull keeps the credentials the hop returned.
+      const ecrCfg = ecrConstructorMock.mock.calls[0]![0] as {
+        credentials?: { accessKeyId?: string };
+      };
+      expect(ecrCfg.credentials?.accessKeyId).toBe('ASIAHOP');
+    } finally {
+      resetAwsClientDefaults();
+    }
+  });
+
+  describe('the --ecr-role-arn hop client under a published --role-arn and a configured identity', () => {
+    const publishRole = (): void => {
+      setPreAssumeEnvCredentials({
+        accessKeyId: 'AKIACALLER',
+        secretAccessKey: 'caller-secret',
+        sessionToken: 'caller-token',
+      });
+      setAssumedRoleCredentials({
+        accessKeyId: 'ASIADEPLOYROLE',
+        secretAccessKey: 'deploy-secret',
+        sessionToken: 'deploy-token',
+      });
+    };
+    const runPull = async (): Promise<{ profile?: string; credentials?: unknown }> => {
+      stsSendMock.mockResolvedValueOnce({ Account: '111111111111' }).mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAHOP',
+          SecretAccessKey: 'hop-secret',
+          SessionToken: 'hop-token',
+        },
+      });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [
+          {
+            authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+            proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+          },
+        ],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: 'arn:aws:iam::999999999999:role/CrossAccountEcrPull',
+      });
+      return stsConstructorMock.mock.calls[1]![0] as { profile?: string; credentials?: unknown };
+    };
+
+    afterEach(() => {
+      resetAwsClients();
+      resetAwsClientDefaults();
+    });
+
+    it('a configured profile reaches the hop client, and the role credentials do not', async () => {
+      publishRole();
+      setAwsClients(new AwsClients({ region: 'us-east-1', profile: 'workload-profile' }));
+      const hopCfg = await runPull();
+      expect(hopCfg.profile).toBe('workload-profile');
+      expect(hopCfg.credentials).toBeUndefined();
+    });
+
+    it('explicit credentials win over the ignoreAssumedRole default', async () => {
+      publishRole();
+      const explicit = { accessKeyId: 'AKIAEXPLICIT', secretAccessKey: 'explicit-secret' };
+      setAwsClients(new AwsClients({ region: 'us-east-1', credentials: explicit }));
+      const hopCfg = await runPull();
+      expect(hopCfg.credentials).toEqual(explicit);
+    });
   });
 
   it('same-account WITH --ecr-role-arn: still issues AssumeRole (explicit opt-in)', async () => {

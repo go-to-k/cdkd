@@ -1,52 +1,55 @@
 ---
-description: What cdk-local's own AWS clients resolve as the `--role-arn` role
+description: Which identity a `cdkd local` workload resolves as under `--role-arn`
 paths:
   - 'src/cli/commands/local-state-source.ts'
   - 'src/cli/commands/local-start-*.ts'
   - 'src/cli/commands/local-run-task.ts'
+  - 'src/local/local-role-arn.ts'
 ---
 
-# What the local engine resolves as role
+# What a `cdkd local` workload resolves as
 
-Issue [#3130](https://github.com/go-to-k/cdkd/issues/3130)'s other half:
-[local-caller-identity.md](local-caller-identity.md). Only `local-invoke`,
-`local-start-api`, `local-run-task` and `local-invoke-agentcore` call
-`applyRoleArnIfSet`; nothing is restored for the four `start-*` commands, whose
-overwrite is cdk-local's OWN `applyRoleArnIfSet` inside the emulator entry
-point — it returns only after every container started.
+Issue [#3240](https://github.com/go-to-k/cdkd/issues/3240); the env-channel
+half is [local-caller-identity.md](local-caller-identity.md).
 
-**Reason from the RULE, not the list**: cdk-local builds clients from the region
-and `options.profile` alone, so with `--role-arn` and no profile everything
-resolves AS THE ROLE.
+`--role-arn` is a DEPLOY identity. The emulated workload's inputs (the container
+credentials, ECS task secrets, `{{resolve:...}}` lookups, `${AWS::AccountId}`,
+`--from-cfn-stack` reads, a literal layer ARN, the `--assume-role` hop) resolve
+as the CALLER, never the role.
 
-1. **The credential triple** copied into the container (`start-alb`,
-   `start-cloudfront`, `start-agentcore`), gated on the `options.profile` FLAG
-   (`AWS_PROFILE` does NOT mitigate it). `start-service` uses the
-   metadata sidecar.
-2. **ECS task SECRETS** (`start-service` / `start-alb`) via cdk-local's
-   `resolveEcsSecrets`; cdkd's own opts out.
-3. **`${AWS::AccountId}`**: cdk-local's `resolveCallerAccountId` takes
-   `options.profile` only: the id in the env, `secrets` refs and ECR URIs.
-4. **`--from-cfn-stack`** — `GetParameters` with `WithDecryption: true`.
-   On `start-cloudfront` either state flag also has the ENGINE read S3 origins
-   and KVS.
-   On the four cdkd-owned commands `bindCallerIdentityClients` shadows the
-   provider's PRIVATE getters; `cfnProviderShapeDrift` refuses (under a role,
-   no profile) any change to the reviewed member ALLOWLIST (shape, not use: an inline or module-cached client is undetectable).
-5. **`--assume-role` / `--assume-task-role`** for the workload: the STS
-   AssumeRole call is made as the role.
-6. **A literal layer ARN** (`local invoke` / `start-api`): cdk-local's
-   `materializeLayerFromArn` fetches it as the role, cdkd-owned commands too.
-7. **A `{{resolve:...}}` lookup**: cdk-local's resolver takes `profile` only.
-   cdkd-owned commands build its clients as the caller
-   (`src/local/dynamic-reference.ts`, #2056).
+- **cdk-local does it.** `CDKD_EMBED_CONFIG` (`local-invoke.ts`) sets
+  `workloadIdentity: 'caller'`. On the four ENGINE commands (`start-service` /
+  `start-alb` / `start-cloudfront` / `start-agentcore`) cdk-local runs its own
+  `applyRoleArnIfSet`, records the assume (`recordAssumedRole`, write-once per
+  process) and builds every workload client as the caller. `--profile` picks
+  which caller.
+- **cdkd's four commands publish via `applyRoleArnForLocal`**
+  (`src/local/local-role-arn.ts`): cdkd's `applyRoleArnIfSet`, then
+  `recordAssumedRole` with the pre-assume snapshot. A call site using the bare
+  `applyRoleArnIfSet` assumes the role without telling cdk-local, so its
+  `--from-cfn-stack` provider and `--layer-role-arn` hop resolve the ROLE
+  (cdkd's own `--assume-role` hop opts out itself). Fenced by `tests/unit/local/local-role-arn.test.ts`.
+- **`createCallerDynamicReferenceResolver`** (`src/local/dynamic-reference.ts`)
+  stays for the cdkd-owned commands' own `{{resolve:...}}` clients.
 
-Either profile spelling mitigates 2-7. The fix is upstream
-(go-to-k/cdk-local#783); `warnEngineRoleExposure` warns at startup meanwhile.
+## What stays on the role, deliberately
 
-cdkd's `--from-state` twin runs as the role **deliberately** (its
-`cdkd-local-role-identity:` sites); do NOT "fix" them — the bucket name is
-derived in the ROLE's account and the calls carry `ExpectedBucketOwner`, so
-caller credentials 403. The four cdkd-owned commands' `${AWS::AccountId}`
-follows the same reader under `--from-state` and stays the caller's under
-`--from-cfn-stack` (go-to-k/cdkd#3230).
+Synthesis, the ECR pull, a `fromS3` bundle download, and cdkd's `--from-state`
+reads (`cdkd-local-role-identity:` sites). Do NOT "fix" the last: the state
+bucket name is derived in the ROLE's account and the calls carry
+`ExpectedBucketOwner`, so caller credentials 403. The cdkd-owned commands'
+`${AWS::AccountId}` follows that reader under `--from-state` and stays the
+caller's under `--from-cfn-stack` (go-to-k/cdkd#3230).
+
+The `--assume-role` / `--ecr-role-arn` / `--layer-role-arn` hops are SIGNED by
+the caller (cdkd's `ecr-puller.ts` hop opts out with `ignoreAssumedRole`); the
+credentials a hop returns still do the pull or fetch.
+
+## Remaining bounds
+
+- On `start-cloudfront --from-state`, the engine's deployed S3-origin and KVS
+  reads run as the caller; a cross-account deploy may need the caller's access.
+- cdk-local studio's children are not embedded, so they do not carry the config.
+- A `[default]` profile that sources the environment resolves whatever the
+  `AWS_*` variables hold.
+- Cross-account: `${AWS::AccountId}` is the caller's account.

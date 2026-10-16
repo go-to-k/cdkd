@@ -110,13 +110,13 @@ this command: the `--env-vars` file is keyed by the runtime's logical ID or
 display path, and `--container-host` sets the IP the agent container's port
 binds to.
 
-> [!WARNING]
-> Do not pass `--role-arn` here without the `--profile` flag. `--role-arn` is
-> the role cdkd assumes for its own AWS calls. On this command the role's
-> credentials also reach the agent container, so your code runs as that role.
-> An exported `AWS_PROFILE` does not prevent this. cdkd warns at startup when
-> this applies. See the `--role-arn` section of the
-> [CLI Reference](cli-reference.md).
+> [!NOTE]
+> Under `--role-arn`, the agent container and everything cdkd resolves for it
+> (the container's credentials, `{{resolve:...}}` references, what
+> `--from-cfn-stack` reads and any `--assume-role` hop) use your own identity,
+> not the role. No startup warning applies. When your own credentials are not
+> a static access key, the container receives none and cdkd warns once. See
+> [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Target resolution
 

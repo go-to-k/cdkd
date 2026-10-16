@@ -124,13 +124,14 @@ this command: the `--env-vars` file is keyed by container name, and
 `--container-host` sets the IP that both the container ports and the
 front-door ports bind to.
 
-> [!WARNING]
-> Do not pass `--role-arn` here without the `--profile` flag. `--role-arn` is
-> the role cdkd assumes for its own AWS calls. On this command the role's
-> credentials also reach the Lambda target containers, and cdkd fetches the
-> ECS task secrets with it. An exported `AWS_PROFILE` covers only the secrets.
-> cdkd warns at startup when this applies. See the `--role-arn` section of
-> the [CLI Reference](cli-reference.md).
+> [!NOTE]
+> Under `--role-arn`, the Lambda target containers and everything cdkd
+> resolves for them (the container's credentials, ECS task secrets,
+> `{{resolve:...}}` references, what `--from-cfn-stack` reads and any
+> `--assume-role` hop) use your own identity, not the role. No startup warning
+> applies. When your own credentials are not a static access key, the
+> containers receive none and cdkd warns once. See
+> [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Target resolution
 

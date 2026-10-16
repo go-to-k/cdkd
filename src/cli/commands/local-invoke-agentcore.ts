@@ -24,8 +24,8 @@ import { quotedOrDescribed, shellBoundedDisplay } from '../../utils/pasteable-co
 import { displayAssemblyPath } from '../../utils/assembly-path.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { foldRegionOption } from '../region-options.js';
+import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
-  applyRoleArnIfSet,
   assertFlagRoleArn,
   assertSendableRoleArn,
   explicitRoleArnOrThrow,
@@ -513,7 +513,7 @@ async function localInvokeAgentCoreCommand(
         (message) => new CdkdError(message, 'LOCAL_INVOKE_AGENTCORE_ECR_ROLE_ARN_INVALID')
       );
     }
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
     await ensureDockerAvailable();
 
     const profileCredentials = options.profile

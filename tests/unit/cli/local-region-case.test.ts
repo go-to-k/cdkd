@@ -785,10 +785,10 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   ])('%s folds the ENV half at its handler entry (issues #2103, #3622)', (file) => {
     const lines = liveLinesOf(file);
     const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
-    const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnIfSet('));
+    const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnForLocal('));
 
     expect(foldAt, `live '${SHARED_FOLD}' not found in ${file}`).toBeGreaterThan(-1);
-    expect(roleArnAt, 'applyRoleArnIfSet anchor drifted').toBeGreaterThan(-1);
+    expect(roleArnAt, 'applyRoleArnForLocal anchor drifted').toBeGreaterThan(-1);
     expect(foldAt).toBeLessThan(roleArnAt);
   });
 

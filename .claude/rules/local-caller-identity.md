@@ -50,6 +50,6 @@ READS-CALLER, or a `cdkd-local-env-identity: <reason>` comment. An annotation is
 a CLAIM the fence cannot check.
 
 `--from-cfn-stack` on these four reads as the caller because
-`createLocalStateProvider` (`local-state-source.ts`) rebinds cdk-local's
-provider getters. Residual: the four engine `local start-*` commands
-([local-engine-role-leak.md](local-engine-role-leak.md)).
+`applyRoleArnForLocal` records the assume with cdk-local, whose provider then
+resolves the caller. The four engine `local start-*` commands get the same from
+cdk-local itself ([local-engine-role-leak.md](local-engine-role-leak.md)).

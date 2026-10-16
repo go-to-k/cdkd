@@ -175,12 +175,14 @@ IAM errors locally, run the code under the deployed role:
 `--role-arn` is a different flag. It names the role cdkd assumes for its own
 AWS calls.
 
-> [!WARNING]
-> On `start-service`, `start-alb`, `start-cloudfront` and `start-agentcore`,
-> do not pass `--role-arn` without `--profile`. The role's credentials would
-> reach your containers, or fetch the secrets injected into them. cdkd warns at
-> startup when that applies, and each page's Options table says what the role
-> touches.
+> [!NOTE]
+> Under `--role-arn`, what the workload runs as, and every input cdkd
+> resolves for it (container credentials, task secrets, `{{resolve:...}}`,
+> `--from-cfn-stack`, `--assume-role` hops), uses your own identity, not the
+> role. No startup warning applies. When your own credentials are not a static
+> access key, the container receives none, and `start-alb`, `start-cloudfront`
+> and `start-agentcore` warn once. See
+> [Credentials and --role-arn](cli-reference-credentials.md#role-arn-with-cdkd-local).
 
 ## Common flags
 

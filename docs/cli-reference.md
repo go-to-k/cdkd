@@ -216,10 +216,9 @@ a cross-account producer role. See
 #### `cdkd local` and the role
 
 `--role-arn` is meant for cdkd's own work, and the function or task that a
-`cdkd local` command runs should keep your own identity. How well that holds
-depends on the command, so read
+`cdkd local` command runs keeps your own identity. See
 [`--role-arn` with `cdkd local`](cli-reference-credentials.md#role-arn-with-cdkd-local)
-before you combine them.
+for what still uses the role.
 
 ## Startup compile cache
 

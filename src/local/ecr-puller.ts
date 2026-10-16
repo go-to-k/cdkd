@@ -481,11 +481,13 @@ async function assumeRoleForEcr(
     `Assuming role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull...`
   );
   const sts = new STSClient({
-    // cdkd-local-role-identity: pulling the image is cdkd's OWN call, not the
-    // emulated workload's, so a `--role-arn` correctly answers it. Nothing
-    // resolved here reaches the container as an identity; the ECR login token
-    // it leaves in the host docker config is the role's.
-    ...clientDefaultsFor(credentialConfig),
+    // cdkd-local-role-identity: this AssumeRole opts out of the published role
+    // (`ignoreAssumedRole`), so it is signed by the CALLER, not by a
+    // `--role-arn` role published earlier in the process, the same as the
+    // engine commands' `--assume-role` hop. The `--ecr-role-arn` role's trust
+    // policy must therefore trust the caller. Only this signer changes: the
+    // pull below keeps using the credentials this hop returns.
+    ...clientDefaultsFor(credentialConfig, true),
     ...(callerRegion && { region: callerRegion }),
   });
   try {

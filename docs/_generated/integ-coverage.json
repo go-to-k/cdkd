@@ -621,10 +621,14 @@
     {
       "resourceType": "AWS::BedrockAgentCore::Runtime",
       "integs": [
-        "bedrock-agentcore"
+        "bedrock-agentcore",
+        "local-engine-role-identity"
       ],
       "signals": {
         "bedrock-agentcore": [
+          "literal"
+        ],
+        "local-engine-role-identity": [
           "literal"
         ]
       }
@@ -774,6 +778,7 @@
       "integs": [
         "bench-cdk-sample",
         "cloudfront-function-url",
+        "local-engine-role-identity",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
         "s3-cloudfront"
@@ -784,6 +789,10 @@
         ],
         "cloudfront-function-url": [
           "l2"
+        ],
+        "local-engine-role-identity": [
+          "l2",
+          "literal"
         ],
         "local-start-cloudfront": [
           "l2"
@@ -3489,6 +3498,7 @@
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "local-ecs-service-connect",
+        "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
         "local-start-service",
@@ -3514,6 +3524,9 @@
           "l2"
         ],
         "local-ecs-service-connect": [
+          "l1"
+        ],
+        "local-engine-role-identity": [
           "l1"
         ],
         "local-start-alb": [
@@ -3551,6 +3564,7 @@
         "ecs-fargate",
         "ecs-service-update-props",
         "local-ecs-service-connect",
+        "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
         "local-start-service",
@@ -3570,6 +3584,10 @@
           "literal"
         ],
         "local-ecs-service-connect": [
+          "l1",
+          "literal"
+        ],
+        "local-engine-role-identity": [
           "l1",
           "literal"
         ],
@@ -3603,6 +3621,7 @@
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "local-ecs-service-connect",
+        "local-engine-role-identity",
         "local-run-task",
         "local-run-task-awsvpc",
         "local-run-task-cdkd-assets",
@@ -3629,6 +3648,9 @@
           "l2"
         ],
         "local-ecs-service-connect": [
+          "l1"
+        ],
+        "local-engine-role-identity": [
           "l1"
         ],
         "local-run-task": [
@@ -3848,6 +3870,7 @@
       "integs": [
         "alb",
         "deletion-ordering-complex",
+        "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state"
       ],
@@ -3857,6 +3880,9 @@
         ],
         "deletion-ordering-complex": [
           "literal"
+        ],
+        "local-engine-role-identity": [
+          "l1"
         ],
         "local-start-alb": [
           "l1",
@@ -3876,6 +3902,7 @@
         "drift-revert-vpc",
         "ecs-bluegreen",
         "import-attribute-readback-network",
+        "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
         "nlb-source-nat",
@@ -3906,6 +3933,10 @@
         ],
         "import-attribute-readback-network": [
           "l1"
+        ],
+        "local-engine-role-identity": [
+          "l1",
+          "literal"
         ],
         "local-start-alb": [
           "l1",
@@ -3945,6 +3976,7 @@
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
         "import-attribute-readback-network",
+        "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
         "partial-create-handback",
@@ -3966,6 +3998,9 @@
           "literal"
         ],
         "import-attribute-readback-network": [
+          "l1"
+        ],
+        "local-engine-role-identity": [
           "l1"
         ],
         "local-start-alb": [
@@ -4475,6 +4510,7 @@
         "lambda-network-connector",
         "lambda-snapstart",
         "lambda-web-function-revision-replace",
+        "local-engine-role-identity",
         "local-invoke-dotnet",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
@@ -4694,6 +4730,10 @@
         ],
         "lambda-web-function-revision-replace": [
           "l2"
+        ],
+        "local-engine-role-identity": [
+          "l2",
+          "literal"
         ],
         "local-invoke-dotnet": [
           "l2"
@@ -5208,6 +5248,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "lambda-versioning",
+        "local-engine-role-identity",
         "local-invoke",
         "local-invoke-buildkit",
         "local-invoke-container",
@@ -5472,6 +5513,10 @@
           "l2"
         ],
         "lambda-versioning": [
+          "l2",
+          "literal"
+        ],
+        "local-engine-role-identity": [
           "l2",
           "literal"
         ],
@@ -7208,6 +7253,7 @@
         "legacy-bucket-name-fallback",
         "legacy-state-migration",
         "list-parameters",
+        "local-engine-role-identity",
         "local-invoke-from-cfn-stack-multi-stack",
         "lost-child-after-failed-deploy",
         "microservices",
@@ -7442,6 +7488,10 @@
         ],
         "list-parameters": [
           "l1",
+          "literal"
+        ],
+        "local-engine-role-identity": [
+          "l2",
           "literal"
         ],
         "local-invoke-from-cfn-stack-multi-stack": [
