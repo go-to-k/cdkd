@@ -1,4 +1,4 @@
-# ECS Service UPDATE-props Example (issues #975 + #1160)
+# ECS Service UPDATE-props Example (issues #975 + #5004)
 
 An integration test that verifies `AWS::ECS::Service` property changes reach
 AWS via `ECSProvider.updateService()` for two silent-drop classes: a CHANGED

@@ -5,7 +5,7 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 
 /**
- * ECS Fargate Service create/UPDATE-props example stack (issues #975 / #1160 /
+ * ECS Fargate Service create/UPDATE-props example stack (issues #975 / #5004 /
  * #1165).
  *
  * Exercises the SDK-routed `ECSProvider.createService()` / `updateService()`

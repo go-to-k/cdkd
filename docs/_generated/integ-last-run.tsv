@@ -120,7 +120,7 @@ ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 sli
 ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ecs-fargate	2026-10-11T09:33:22Z	PASS	451	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-ecs-service-update-props	2026-10-16T12:58:30Z	PASS	150	verify.sh	PR #5004 ECS lane retain-on-removal asserts; rc ok, destroy 15 deleted 0 errors, orph clean
+ecs-service-update-props	2026-10-16T12:58:30Z	PASS	150	verify.sh	PR #5014 (#5004) ECS lane retain-on-removal asserts; rc ok, destroy 15 deleted 0 errors, orph clean
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-16T08:15:12Z	PASS	155	verify.sh	rc ok, orph clean (#3341 slice 4995)

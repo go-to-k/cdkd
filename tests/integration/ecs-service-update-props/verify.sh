@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160 +
+# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #5004 +
 # #1165 + #1861).
 #
 # Exercises four silent-drop classes on an SDK-routed `AWS::ECS::Service`
@@ -250,7 +250,7 @@ case "${BASE_PROPAGATE}" in
 esac
 echo "    OK: base state on AWS is enableECSManagedTags=false, propagateTags=${BASE_PROPAGATE}"
 
-# Base assertion for the #1160 removable fields: PlatformVersion / grace period
+# Base assertion for the #5004 retained-on-removal fields: PlatformVersion / grace period
 # were SET by the phase-1 template (via L1 override).
 BASE_PLATFORM=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
@@ -267,7 +267,7 @@ if [ "${BASE_GRACE}" != "30" ]; then
   echo "FAIL: base healthCheckGracePeriodSeconds is '${BASE_GRACE}', expected '30'" >&2
   exit 1
 fi
-echo "    OK: base #1160 fields on AWS are platformVersion=1.4.0, grace=30"
+echo "    OK: base #5004 retained-on-removal fields on AWS are platformVersion=1.4.0, grace=30"
 
 # Base assertion for issue #1165 (nested-object casing): the custom
 # DeploymentConfiguration set by phase 1 (MaximumPercent 150 /
@@ -576,7 +576,7 @@ if [ "${OBS_SVC_CONTROLLER}" != "ECS" ]; then
 fi
 echo "    OK: observedProperties captured AvailabilityZoneRebalancing=ENABLED + DeploymentController.Type=ECS (#609 read-back verified against real AWS)"
 
-# --- Phase 2: UPDATE pass (issue #975 add-on-update + #1160 reset-on-removal) --
+# --- Phase 2: UPDATE pass (issue #975 add-on-update + #5004 retain-on-removal) --
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (flip EnableECSManagedTags + PropagateTags; DROP PlatformVersion / grace)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \

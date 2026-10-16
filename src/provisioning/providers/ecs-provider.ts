@@ -1809,28 +1809,19 @@ export class ECSProvider implements ResourceProvider {
           ) ?? [])
         : undefined;
 
-    // issue #1160 — reset removed fields to their CloudFormation defaults.
-    // UpdateService uses merge semantics: an ABSENT input field means "no
-    // change", so a property dropped from the template silently keeps its old
-    // live value (deploy goes green, state.json records the removal, next diff
-    // says "No changes" — the divergence is permanent and invisible). For each
-    // removable field we send its explicit reset value when it was present
-    // before and is now absent. Reset values were live-probed against real AWS
-    // (2026-07-22, issue #1160): platformVersion clears on 'LATEST',
-    // healthCheckGracePeriodSeconds on 0, propagateTags on 'NONE',
-    // enableECSManagedTags on false, and each array field on an empty array
-    // ([] accepted + AWS-documented as the clear sentinel). enableExecuteCommand
-    // resets on false per the CFn default (a plain boolean; not live-probed
-    // because execute-command requires an SSM-capable task role). LoadBalancers /
-    // ServiceRegistries already clear via #975 (their change-detected empty-list
-    // sentinel above).
+    // Removal semantics (issue #5004). UpdateService treats an ABSENT input
+    // field as "no change". CloudFormation KEEPS the live value of
+    // CapacityProviderStrategy / PlacementConstraints / PlacementStrategies /
+    // PlatformVersion / HealthCheckGracePeriodSeconds / EnableECSManagedTags /
+    // PropagateTags / EnableExecuteCommand when they are removed from the
+    // template (real A/B), so those eight send NOTHING on removal. LoadBalancers
+    // / ServiceRegistries still clear via #975 (their change-detected
+    // empty-list sentinel above).
     //
     // The array fields below are converted from CFn PascalCase to SDK camelCase
-    // via their `convert*` helpers before the removal-reset check (issue #1165 —
-    // the same silent-drop class as `DeploymentConfiguration` below; without the
-    // conversion the SDK reads the camelCase keys, finds them absent, and drops
-    // the whole value on update). `clearOnUpdateRemoval` only inspects the
-    // PREVIOUS side for presence, so it may stay raw.
+    // via their `convert*` helpers (issue #1165 — the same silent-drop class as
+    // `DeploymentConfiguration` below; without the conversion the SDK reads the
+    // camelCase keys, finds them absent, and drops the whole value on update).
     //
     // `DeploymentConfiguration` casing is now fixed on both create() and
     // update() (converted via `convertDeploymentConfiguration`). Its removal
