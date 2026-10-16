@@ -34,6 +34,7 @@ import {
 } from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * The short `ResourceDeleteResult.reason` the missing-`FunctionName` DELETE arm
@@ -505,7 +506,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Lambda permission ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Lambda permission ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

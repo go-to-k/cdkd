@@ -498,7 +498,7 @@ export class FirehoseProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               undefined,
@@ -656,7 +656,7 @@ export class FirehoseProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -988,7 +988,7 @@ export class FirehoseProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Firehose delivery stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

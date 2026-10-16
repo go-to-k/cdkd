@@ -70,7 +70,10 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../../src/provisioning/register-providers.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
@@ -1004,6 +1007,25 @@ describe('PipesPipeProvider review-round cases', () => {
     });
     const provider = new PipesPipeProvider({ sleep: noSleep });
     await expect(provider.delete('Pipe', NAME, TYPE)).rejects.toThrow(/Failed to delete Pipe Pipe/);
+  });
+
+  // go-to-k/cdkd#3341: a bare `String(err)` threw `TypeError: Cannot convert
+  // object to primitive value` here and replaced the failure.
+  it('a thrown value with no string form still surfaces as the delete failure', async () => {
+    route({
+      DeletePipeCommand: () => {
+        throw Object.create(null);
+      },
+    });
+    const provider = new PipesPipeProvider({ sleep: noSleep });
+    const rejected = await provider.delete('Pipe', NAME, TYPE).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(rejected).toBeInstanceOf(ProvisioningError);
+    expect((rejected as Error).message).toContain('Failed to delete Pipe Pipe');
+    expect((rejected as Error).message).toContain('a value that could not be converted to text');
+    expect((rejected as Error).message).not.toContain('Cannot convert object to primitive value');
   });
 
   it('a pipe that reaches DELETE_FAILED fails the delete', async () => {

@@ -20,7 +20,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import {
   isThrottlingError,
   isTransientServerError,
@@ -594,7 +594,7 @@ export class PipesPipeProvider implements ResourceProvider {
       throw new ProvisioningError(
         // AWS echoes resolved inputs into its text: masked like the settle
         // reason (`waitForSettled`).
-        `Failed to create Pipe ${logicalId}: ${mask(cause?.message ?? String(error))}`,
+        `Failed to create Pipe ${logicalId}: ${mask(cause?.message ?? safeStringify(error))}`,
         resourceType,
         logicalId,
         undefined,
@@ -760,7 +760,7 @@ export class PipesPipeProvider implements ResourceProvider {
       throw new ProvisioningError(
         // AWS echoes resolved inputs into its text: masked like the settle
         // reason (`waitForSettled`).
-        `Failed to update Pipe ${logicalId}: ${mask(cause?.message ?? String(error))}`,
+        `Failed to update Pipe ${logicalId}: ${mask(cause?.message ?? safeStringify(error))}`,
         resourceType,
         logicalId,
         physicalId,
@@ -803,7 +803,7 @@ export class PipesPipeProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Pipe ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to delete Pipe ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,

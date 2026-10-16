@@ -496,7 +496,7 @@ export class RDSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         dbSubnetGroupName,
@@ -597,7 +597,7 @@ export class RDSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -636,7 +636,7 @@ export class RDSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -824,7 +824,7 @@ export class RDSProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbClusterIdentifier,
@@ -991,7 +991,7 @@ export class RDSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1177,7 +1177,7 @@ export class RDSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
+        `Failed to delete DBCluster ${logicalId}: ${describeAwsFailure(error).detail}` +
           (detachedFrom !== undefined
             ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
             : ''),
@@ -1322,7 +1322,7 @@ export class RDSProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbInstanceIdentifier,
@@ -1492,7 +1492,7 @@ export class RDSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1642,7 +1642,7 @@ export class RDSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

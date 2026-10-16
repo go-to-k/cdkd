@@ -215,7 +215,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to register Kinesis stream consumer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to register Kinesis stream consumer ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               consumerName,
@@ -430,7 +430,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to deregister Kinesis stream consumer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to deregister Kinesis stream consumer ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

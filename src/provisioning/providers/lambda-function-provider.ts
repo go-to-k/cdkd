@@ -1,5 +1,5 @@
 import * as zlib from 'node:zlib';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import {
   LambdaClient,
   CreateFunctionCommand,
@@ -990,7 +990,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             logicalId,
             functionName,
-            cause ?? new Error(String(error))
+            cause ?? new Error(safeStringify(error))
           )
       );
       // go-to-k/cdkd#4583: the function is live with no state record unless a
@@ -1560,7 +1560,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             logicalId,
             physicalId,
-            cause ?? new Error(String(error))
+            cause ?? new Error(safeStringify(error))
           )
       );
     }
@@ -1663,7 +1663,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Lambda function ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1885,7 +1885,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             resourceType,
             logicalId,
             functionName,
-            cause ?? new Error(String(error))
+            cause ?? new Error(safeStringify(error))
           )
       );
     }

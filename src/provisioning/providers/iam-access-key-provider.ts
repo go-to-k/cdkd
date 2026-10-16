@@ -628,7 +628,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // Outside the `try` below, so the refusal is not re-labelled as an AWS
       // update failure.
       throw new ProvisioningError(
-        `${v(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
+        `${v(describeAwsFailure(error).detail)}. Nothing was applied to ` +
           `access key ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -729,7 +729,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete IAM access key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete IAM access key ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

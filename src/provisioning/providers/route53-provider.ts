@@ -670,7 +670,7 @@ export class Route53Provider implements ResourceProvider {
           const cause = uhfError instanceof Error ? uhfError : undefined;
           throw new ProvisioningError(
             `Failed to enable Accelerated Recovery on hosted zone ${logicalId} (${zoneId}): ${
-              uhfError instanceof Error ? uhfError.message : String(uhfError)
+              describeAwsFailure(uhfError).detail
             }`,
             resourceType,
             logicalId,
@@ -701,7 +701,7 @@ export class Route53Provider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               undefined,
@@ -762,7 +762,7 @@ export class Route53Provider implements ResourceProvider {
         adopted = await this.findHostedZoneByCallerReference(input.Name!, input.CallerReference!);
       } catch (lookupError) {
         this.logger.warn(
-          `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: ${lookupError instanceof Error ? lookupError.message : String(lookupError)}. Reporting the original error.`
+          `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: ${describeAwsFailure(lookupError).detail}. Reporting the original error.`
         );
         throw error;
       }
@@ -780,7 +780,7 @@ export class Route53Provider implements ResourceProvider {
         };
       } catch (describeError) {
         this.logger.warn(
-          `Adopted hosted zone ${adopted.Id} but could not read it back: ${describeError instanceof Error ? describeError.message : String(describeError)}. Reporting the original error rather than returning a zone with no NameServers.`
+          `Adopted hosted zone ${adopted.Id} but could not read it back: ${describeAwsFailure(describeError).detail}. Reporting the original error rather than returning a zone with no NameServers.`
         );
         throw error;
       }
@@ -917,7 +917,7 @@ export class Route53Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -976,7 +976,7 @@ export class Route53Provider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to delete hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to delete hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               physicalId,
@@ -1214,7 +1214,7 @@ export class Route53Provider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       const cnameConflict = isCnameConflictRefusal(error);
       const wrapped = new ProvisioningError(
-        `Failed to create record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}` +
+        `Failed to create record set ${logicalId}: ${describeAwsFailure(error).detail}` +
           (cnameConflict ? CNAME_CONFLICT_COLLISION_NOTE : ''),
         resourceType,
         logicalId,
@@ -1317,7 +1317,7 @@ export class Route53Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update record set ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1553,7 +1553,7 @@ export class Route53Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete record set ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete record set ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

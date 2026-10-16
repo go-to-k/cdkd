@@ -420,7 +420,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create EventBridge rule ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         ruleName,
@@ -572,7 +572,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EventBridge rule ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -664,7 +664,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete EventBridge rule ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete EventBridge rule ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

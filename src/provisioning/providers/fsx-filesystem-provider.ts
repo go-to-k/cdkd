@@ -637,7 +637,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      const message = `Failed to create FSx FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`;
+      const message = `Failed to create FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`;
       if (survivorId !== undefined) {
         const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
         markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
@@ -1150,7 +1150,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update FSx FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1499,7 +1499,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete FSx FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1770,7 +1770,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         if (error instanceof FileSystemNotFound) return;
         const cause = error instanceof Error ? error : undefined;
         throw new ProvisioningError(
-          `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${describeAwsFailure(error).detail}`,
           resourceType,
           logicalId,
           fileSystemId,
