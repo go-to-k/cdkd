@@ -96,8 +96,8 @@ function serializeRedriveAllowPolicy(value: unknown): string {
  * without an explicit reset the stale value lingers on AWS (the
  * `conditions-update-2` integ exercises exactly this for `RedrivePolicy`).
  *
- * CloudFormation resets a removed property to the attribute's default. We
- * mirror that here:
+ * CloudFormation resets a removed property to the attribute's default,
+ * except the three it keeps (listed below). We mirror that here:
  *   - The JSON policy attributes (`RedrivePolicy` / `RedriveAllowPolicy`)
  *     are cleared with the empty string the SQS API documents for removal.
  *   - `KmsMasterKeyId` is cleared with the empty string (removes a custom

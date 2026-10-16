@@ -391,7 +391,9 @@ export class IAMRoleProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // The re-create below takes the template bag: a reset is an UPDATE value,
-    // so a key the caller injected one for (#1160) is taken back out.
+    // so a key the caller injected one for (#1160) is taken back out. Defensive
+    // since #5004: the only reset left is Description '', which create() skips
+    // anyway because it sends Description only when truthy.
     const templateProperties: Record<string, unknown> = { ...properties };
     for (const key of context?.removedProperties ?? []) {
       if (this.removalDefaults.get(resourceType)?.has(key) === true) delete templateProperties[key];

@@ -714,8 +714,11 @@ describe('IAMRoleProvider', () => {
       });
 
       // Issue #1160: a removal reset is an UPDATE value. A rename that also
-      // drops MaxSessionDuration creates the new role from the TEMPLATE bag,
-      // not one carrying the injected reset.
+      // drops Description creates the new role from the TEMPLATE bag, not one
+      // carrying the injected reset. Since #5004 Description ('') is the only
+      // reset this provider injects and create() already skips a falsy
+      // Description, so these two tests pin the outcome but would stay green
+      // without the strip in update(); it is defensive, not observable.
       it('a rename that also removes Description creates the role without the reset', async () => {
         mockSend.mockResolvedValueOnce({
           Role: { RoleName: 'my-role', Arn: 'arn:aws:iam::0:role/my-role', RoleId: 'r2' },
