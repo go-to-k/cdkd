@@ -789,7 +789,12 @@ export class ELBv2Provider implements ResourceProvider {
     for (const target of targets) {
       // `arn:<partition>:lambda:<region>:<account>:function:<name>[:<qualifier>]`
       const parts = typeof target.Id === 'string' ? target.Id.split(':') : [];
-      if (parts[0] !== 'arn' || parts[2] !== 'lambda' || !parts[3]) continue;
+      if (parts[0] !== 'arn' || parts[2] !== 'lambda' || !parts[3]) {
+        this.logger.debug(
+          `Skipping the Active wait for target ${String(target.Id)} of ${logicalId}: not a Lambda function ARN`
+        );
+        continue;
+      }
       const region = parts[3];
       let client = this.lambdaClients.get(region);
       if (!client) {
@@ -2135,6 +2140,19 @@ export class ELBv2Provider implements ResourceProvider {
             )
           );
         } else {
+          if (isInterruptedWaitError(innerError)) {
+            // Printed BEFORE the delete, at default verbosity, so a process that
+            // dies mid-cleanup still leaves the user a handle (same as the
+            // Listener path below).
+            this.logger.warn(
+              maskerOrIdentity(maskSecrets)(
+                `Interrupted after creating TargetGroup ${logicalId} (${tgArn}) but before its ` +
+                  `targets were registered. Nothing in cdkd state refers to it, so cdkd is deleting ` +
+                  `it now. If that delete fails, remove it yourself: ` +
+                  `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
+              )
+            );
+          }
           try {
             await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
             this.logger.debug(
