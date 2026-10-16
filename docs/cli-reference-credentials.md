@@ -125,13 +125,16 @@ login for the role's account in your Docker config.
 - **`${AWS::AccountId}` otherwise.** It resolves to your own account. The stack
   has to be readable by you.
 - **A `[default]` profile that sources the environment.** If your own
-  credentials come from a profile that reads the `AWS_*` variables, the
-  identity cdkd falls back to is whatever those variables hold.
+  credentials come from a profile that reads the `AWS_*` variables
+  (`credential_source = Environment`, or a `credential_process` that echoes
+  them), the workload's inputs resolve as the role: `--role-arn` has replaced
+  those variables with the role's credentials by then. Pass `--profile` with a
+  profile that does not read the environment.
 - **Credentials that are not an access key.** When your credentials come from
   IAM Identity Center, an EC2 instance role or an ECS container role, cdkd has
-  no access key to capture, so `local invoke`, `local start-api`,
-  `local run-task` and `local invoke-agentcore` forward no credentials to the
-  container. The handler's first AWS call then fails with
+  no access key to capture, so the container receives no credentials, and
+  `local start-alb`, `local start-cloudfront` and `local start-agentcore` warn
+  once at startup. The handler's first AWS call then fails with
   `Could not load credentials from any providers`. Pass `--profile <name>` to
   give the function an identity, or `--assume-role <arn>` to run it as its
   deployed execution role.
