@@ -18,9 +18,12 @@ round DURING that tree's integ edits a `--detach` sibling, pushes
 before the marker, re-running an integ the fix touches (#4561). Never two
 lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
-yields to the next merge-ready lane. ANY turn holding for HOURS tells the user
+yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger must block until EVERY run ends and report ONCE.
+ledger blocks until EVERY run ends and reports ONCE. Size it for ONE context
+(§8-d probe alone, then fixture batches), each run's fixture, PID, log,
+state prefix appended to `<scratch>/integ-<PR>.live` at launch for a finisher.
+A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
@@ -57,8 +60,7 @@ git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
 # on a `git commit` / `gh pr create|merge` segment, so every gated line takes
 # the LITERAL path; keep `$(git -C <literal path> merge-base origin/main HEAD)`.
 # Never the origin/main TIP: --soft onto it stages a revert of main's newer files.
-# Message to a FILE named per BRANCH, never -m: inside -m "..." the shell
-# EVALUATES a backtick and drops the word while still creating the commit.
+# Message to a FILE named per BRANCH, never -m: inside -m "..." a backtick RUNS.
 # DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
 MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}   # empty when detached
 MSGFILE="${TMPDIR:-/tmp}/cdkd-squash-${MSGREF}.txt"
@@ -121,8 +123,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
   as it blocks even after re-runs pass (#3664).
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
-  = `MERGED` is**, read in its OWN call before anything presuming the merge (the
-  thank-you, the claim release, the pull): from the PR's own worktree
+  = `MERGED` is**, read in its OWN call before anything presuming the merge:
+  from the PR's own worktree
   `--delete-branch` prints `fatal: 'main' is already used by worktree ...` over
   a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
@@ -200,10 +202,9 @@ reports success instead of falling through. The dirty check is a TEST, since
 ACROSS; unchained, a FAILED switch still runs the `-D`. The delete is PLURAL
 (§10-d adds a retro branch) and unconditional: confirm each PR reads `MERGED`.
 
-Fallback — run THIS block INSTEAD of the one above, never both. It applies ONLY
-when `LAUNCH_BRANCH` was empty at probe time (launched detached) or the branch
-is now gone; never as the default. Chaining matters here too: an unchained
-`switch --detach` after a failed `fetch` detaches at a STALE `origin/main`.
+Fallback — INSTEAD of the block above, ONLY when `LAUNCH_BRANCH` was empty at
+probe time (launched detached) or is now gone. Keep it chained: after a failed
+`fetch`, `switch --detach` lands on a STALE `origin/main`.
 
 ```bash
 git fetch origin \
@@ -211,8 +212,7 @@ git fetch origin \
   && git branch -D <each branch this run created in THIS tree>
 ```
 
-Never pull, fast-forward, rebase or delete `<LAUNCH_BRANCH>`. **AS-IS is the
-whole rule: RESTORE, never ADJUST.** **This step runs LAST, not per-lane**:
+**AS-IS is the whole rule for `<LAUNCH_BRANCH>`: RESTORE, never ADJUST.** **This step runs LAST, not per-lane**:
 §10-d branches in this tree.
 
 ### Release the claims
