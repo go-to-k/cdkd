@@ -7,7 +7,6 @@ import {
 } from '../provisioning/providers/create-token-ledger.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import { type StaleAttributeHealOutcome } from './stale-attribute-heal.js';
 import {
   redactSecretsForState,
   scrubResourceRecord,
@@ -82,7 +81,7 @@ import * as rollbackMixin from './deploy-engine/rollback.js';
 import * as observedCaptureMixin from './deploy-engine/observed-capture.js';
 import * as maskingMixin from './deploy-engine/masking.js';
 import * as replacementMixin from './deploy-engine/replacement.js';
-import * as healMixin from './deploy-engine/heal.js';
+import { AttributeHealer } from './deploy-engine/attribute-healer.js';
 import * as createMixin from './deploy-engine/create.js';
 import * as updateMixin from './deploy-engine/update.js';
 import * as updateReplaceMixin from './deploy-engine/update-replace.js';
@@ -964,12 +963,8 @@ export class DeployEngine {
    * baseline. A record is healed only while it is still the one this deploy
    * LOADED (same physical id, same `attributes` object): once a provider has
    * (re)written it this run, a missing attribute is the provider's answer, not
-   * staleness, and re-reading would cost an AWS call to learn nothing.
-   *
-   * Compared by the `attributes` REFERENCE rather than the record's, because
-   * the metadata-only arm re-spreads a record (`{ ...currentResource }`) without
-   * a provider call — its attributes object survives the spread, a create /
-   * update result's does not.
+   * staleness, and re-reading would cost an AWS call to learn nothing. See
+   * {@link AttributeHealer.isEligible}.
    */
   /** @internal */
   healBaseline: Readonly<Record<string, ResourceState>> = {};
@@ -1011,32 +1006,12 @@ export class DeployEngine {
   private inlinePolicyWriters = new Map<string, InlinePolicyWrite>();
 
   /**
-   * Single-flight + per-deploy memo of the #1852 heal, keyed by logical id and
-   * physical id. ENGINE-instance state, never module-global: one engine deploys
-   * one stack, and `--stack-concurrency` runs several engines at once. Holding
-   * the PROMISE is what makes it single-flight — every concurrent resolution of
-   * the same record awaits the one read — and never deleting an entry is what
-   * bounds it: one read per record per deploy, success or failure, no retry.
+   * This deploy's #1852 heal, built over {@link healBaseline} by
+   * {@link rebaseline}: replaced whenever the baseline is, so a reused engine never serves last deploy's
+   * read nor persists it against today's records.
+   * @internal
    */
-  /** @internal */
-  attributeHeals = new Map<string, Promise<StaleAttributeHealOutcome>>();
-
-  /**
-   * What the heals of this deploy read, waiting for the next state save.
-   *
-   * Applied at {@link redactStateForPersist} — the choke point EVERY save
-   * passes through — rather than written into the in-memory record, so a heal
-   * survives every exit path that saves at all (success, a failed resource, a
-   * failed output, the no-change path), whichever copy-on-write record map the
-   * save happens to hold, and is scrubbed by the same redaction every other
-   * attribute goes through. A path that saves NOTHING (`--dry-run`) persists
-   * nothing and the next deploy re-heals.
-   */
-  /** @internal */
-  healedAttributes = new Map<
-    string,
-    { physicalId: string; resourceType: string; attributes: Record<string, unknown> }
-  >();
+  attributeHealer: AttributeHealer;
 
   /**
    * Target region for this stack. Required — load-bearing for the
@@ -1082,6 +1057,25 @@ export class DeployEngine {
     // The opt-out exists for users who care more about deploy speed
     // than the +0-10% drift-baseline overhead.
     this.options.captureObservedState = options.captureObservedState ?? true;
+    this.attributeHealer = this.rebaseline({});
+  }
+
+  /**
+   * Set {@link healBaseline} and a fresh {@link attributeHealer} over it, the
+   * pair's only writer, so the two cannot disagree.
+   * @internal
+   */
+  rebaseline(resources: Readonly<Record<string, ResourceState>>): AttributeHealer {
+    this.healBaseline = resources;
+    this.attributeHealer = new AttributeHealer({
+      providerRegistry: this.providerRegistry,
+      stackRegion: this.stackRegion,
+      logger: this.logger,
+      baseline: resources,
+      // Read at merge time: `perResourceSecrets` is replaced per deploy.
+      resolvedSecretsOf: (logicalId) => this.perResourceSecrets.get(logicalId),
+    });
+    return this.attributeHealer;
   }
 
   /**
@@ -1165,13 +1159,11 @@ export class DeployEngine {
     this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
-    this.healBaseline = {};
+    this.rebaseline({});
     this.runProducerRegionEvidence = undefined;
     this.deployChanges = new Map();
     this.deployStateResources = {};
     this.inlinePolicyWriters = new Map();
-    this.attributeHeals = new Map();
-    this.healedAttributes = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -1211,7 +1203,7 @@ export class DeployEngine {
         // keeps a sensitive value out is the read itself: masked keys are
         // dropped in `readRecordAttributes`, and custom resources / nested stacks
         // are never read.
-        this.withHealedAttributes(logicalId, record),
+        this.attributeHealer.withHealedAttributes(logicalId, record),
         secrets ?? new Map<string, string>(),
         // No template bag means this resource was not resolved this deploy (an
         // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
@@ -1881,12 +1873,6 @@ DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacem
 DeployEngine.prototype.updateInPlace = updateInPlaceMixin.updateInPlace;
 
 DeployEngine.prototype.provisionCreate = createMixin.provisionCreate;
-
-DeployEngine.prototype.healStaleAttributes = healMixin.healStaleAttributes;
-DeployEngine.prototype.isHealEligible = healMixin.isHealEligible;
-DeployEngine.prototype.readStaleAttributes = healMixin.readStaleAttributes;
-DeployEngine.prototype.withHealedAttributes = healMixin.withHealedAttributes;
-DeployEngine.prototype.hasUnpersistedHeals = healMixin.hasUnpersistedHeals;
 
 DeployEngine.prototype.replacementDeleteContext = replacementMixin.replacementDeleteContext;
 DeployEngine.prototype.prepareFinalSnapshotForDelete =

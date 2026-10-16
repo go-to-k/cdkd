@@ -112,7 +112,7 @@ export function buildResolverContext(
     // provisioning arms and the outputs pass all read the same stale record,
     // and the heal is memoized, so whichever asks first pays the one read.
     attributeHealer: (logicalId, resource) =>
-      this.healStaleAttributes(logicalId, resource, stackName),
+      this.attributeHealer.heal(logicalId, resource, stackName),
     // The pairs the PARENT resolved for this stack, on a nested-stack child
     // engine only (issue #1903). NOT pre-loaded into the map below: the
     // resolver copies a pair across at the moment a resource's `{Ref: Param}`

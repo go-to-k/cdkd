@@ -2,11 +2,11 @@
  * `cdkd deploy`'s stale-attribute heal reads a record through
  * `provider.import` under the healed record's printing bag (go-to-k/cdkd#3869),
  * judged over the records the deploy loaded: its own name spellings, and those
- * of each secret-named record it holds. Driven through `readStaleAttributes`
+ * of each secret-named record it holds. Driven through `AttributeHealer.read`
  * itself, so each half of the bag is pinned on its own.
  */
 import { describe, it, expect } from 'vite-plus/test';
-import { readStaleAttributes } from '../../../src/deployment/deploy-engine/heal.js';
+import { AttributeHealer } from '../../../src/deployment/deploy-engine/attribute-healer.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -46,14 +46,14 @@ async function healLine(
       return { physicalId: input.knownPhysicalId!, attributes: {} };
     },
   };
-  const engine = {
-    providerRegistry: { getProviderFor: () => ({ provider }) },
-    healBaseline,
+  const healer = new AttributeHealer({
+    providerRegistry: { getProviderFor: () => ({ provider }) } as never,
+    baseline: healBaseline,
     stackRegion: 'us-east-1',
-    healedAttributes: new Map(),
     logger: { debug: () => undefined },
-  };
-  await readStaleAttributes.call(engine as never, 'Db', healed, 'App');
+    resolvedSecretsOf: () => undefined,
+  });
+  await healer.read('Db', healed, 'App');
   // Premise: the read ran.
   expect(line).not.toBe('');
   return line;

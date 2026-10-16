@@ -196,7 +196,7 @@ export async function doDeployWithPrefetch(
       lastModified: Date.now(),
     };
     const currentEtag = currentStateData?.etag;
-    this.healBaseline = currentState.resources ?? {};
+    this.rebaseline(currentState.resources ?? {});
     this.runProducerRegionEvidence = () => this.producerRegionEvidence(currentState);
     // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
     // the most write-capable consumer of this bag there is: the no-change
@@ -1244,7 +1244,9 @@ export async function doDeployWithPrefetch(
         // every run (its healer is read-only and saves nothing,
         // go-to-k/cdkd#3456), and `cdkd drift`, which re-reads nothing,
         // never sees the attribute at all.
-        const healedAttributesPending = this.hasUnpersistedHeals(currentState.resources);
+        const healedAttributesPending = this.attributeHealer.hasUnpersistedHeals(
+          currentState.resources
+        );
 
         // go-to-k/cdkd#4479: the record changed (a first record, another
         // verdict, or one to clear) on a run with no resource change, so it is
