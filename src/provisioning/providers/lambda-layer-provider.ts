@@ -48,6 +48,7 @@ import {
   orphanCommandRegionArg,
   reportPossibleOrphans,
 } from './orphan-report.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * Retry-safety state for `PublishLayerVersion`, which mints the next version
@@ -468,7 +469,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Lambda layer version ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Lambda layer version ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

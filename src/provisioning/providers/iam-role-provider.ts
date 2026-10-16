@@ -824,9 +824,7 @@ export class IAMRoleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        log.mask(
-          `Failed to delete IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        log.mask(`Failed to delete IAM role ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,

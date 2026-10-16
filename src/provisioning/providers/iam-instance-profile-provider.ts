@@ -534,7 +534,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete IAM instance profile ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete IAM instance profile ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

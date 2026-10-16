@@ -1006,6 +1006,23 @@ describe('PipesPipeProvider review-round cases', () => {
     await expect(provider.delete('Pipe', NAME, TYPE)).rejects.toThrow(/Failed to delete Pipe Pipe/);
   });
 
+  // go-to-k/cdkd#3341: a bare `String(err)` threw `TypeError: Cannot convert
+  // object to primitive value` here and replaced the failure.
+  it('a thrown value with no string form still surfaces as the delete failure', async () => {
+    route({
+      DeletePipeCommand: () => {
+        throw Object.create(null);
+      },
+    });
+    const provider = new PipesPipeProvider({ sleep: noSleep });
+    const rejected = await provider.delete('Pipe', NAME, TYPE).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect((rejected as Error).message).toContain('Failed to delete Pipe Pipe');
+    expect((rejected as Error).message).not.toContain('Cannot convert object to primitive value');
+  });
+
   it('a pipe that reaches DELETE_FAILED fails the delete', async () => {
     let clock = 0;
     const answers = [

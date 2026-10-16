@@ -391,7 +391,7 @@ export class NeptuneProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Neptune DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         dbSubnetGroupName,
@@ -460,7 +460,7 @@ export class NeptuneProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Neptune DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -499,7 +499,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -592,7 +592,7 @@ export class NeptuneProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create Neptune DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbClusterIdentifier,
@@ -714,7 +714,7 @@ export class NeptuneProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Neptune DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -861,7 +861,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Neptune DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -937,7 +937,7 @@ export class NeptuneProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create Neptune DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbInstanceIdentifier,
@@ -1021,7 +1021,7 @@ export class NeptuneProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Neptune DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1150,7 +1150,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Neptune DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

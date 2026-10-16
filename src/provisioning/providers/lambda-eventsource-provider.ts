@@ -51,6 +51,7 @@ import {
   orphanCommandRegionArg,
   reportPossibleOrphans,
 } from './orphan-report.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * Retry-safety state for `CreateEventSourceMapping`, which mints the mapping's
@@ -1150,7 +1151,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete event source mapping ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete event source mapping ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

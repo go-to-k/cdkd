@@ -417,7 +417,7 @@ export class KMSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create KMS Key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -779,7 +779,7 @@ export class KMSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update KMS Key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -822,7 +822,7 @@ export class KMSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to schedule deletion for KMS Key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to schedule deletion for KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -909,7 +909,7 @@ export class KMSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create KMS Alias ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -950,7 +950,7 @@ export class KMSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update KMS Alias ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -989,7 +989,7 @@ export class KMSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete KMS Alias ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

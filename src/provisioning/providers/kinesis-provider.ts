@@ -614,7 +614,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create Kinesis stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               streamName,
@@ -933,7 +933,7 @@ export class KinesisStreamProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Kinesis stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -984,7 +984,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Kinesis stream ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
