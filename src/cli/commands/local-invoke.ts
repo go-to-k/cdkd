@@ -26,8 +26,8 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../../utils/assembly-path.js';
+import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
-  applyRoleArnIfSet,
   assertFlagRoleArn,
   assertSendableRoleArn,
   explicitRoleArnOrThrow,
@@ -196,6 +196,10 @@ const CDKD_EMBED_CONFIG = {
   // Every factory cdkd hands an `embedConfig` passes `getEmbedConfig()`, which
   // returns this logger too, so no later `setEmbedConfig` drops it.
   logger: CDKD_LOCAL_HOST_LOGGER,
+  // cdkd's `--role-arn` is a DEPLOY identity: cdk-local resolves the emulated
+  // workload's inputs as the caller, keeping the role for synth and the ECR
+  // pull (go-to-k/cdkd#3240). Carried the same way as `logger` above.
+  workloadIdentity: 'caller',
 } as const;
 
 interface LocalInvokeOptions {
@@ -524,7 +528,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     if (options.ecrRoleArn !== undefined) {
       assertFlagRoleArn('--ecr-role-arn', options.ecrRoleArn);
     }
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
 
     await ensureDockerAvailable();
 

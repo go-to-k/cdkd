@@ -4,13 +4,7 @@ import {
   createLocalStartAgentCoreCommand as createCdkLocalStartAgentCoreCommand,
   getEmbedConfig,
 } from 'cdk-local';
-import {
-  cdkdExtraStateProviders,
-  engineCredentialTripleChannel,
-  ENGINE_ACCOUNT_ID_CHANNEL,
-  ENGINE_DYNAMIC_REFERENCE_CHANNEL,
-  warnEngineRoleExposure,
-} from './local-state-source.js';
+import { cdkdExtraStateProviders } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
@@ -113,12 +107,6 @@ export function createLocalStartAgentCoreCommand(): Command {
         '--assume-role" hint that omitting the flag prints when deployed state is loaded.'
     )
   );
-
-  warnEngineRoleExposure(cmd, 'start-agentcore', [
-    engineCredentialTripleChannel('the agent container'),
-    ENGINE_ACCOUNT_ID_CHANNEL,
-    ENGINE_DYNAMIC_REFERENCE_CHANNEL,
-  ]);
 
   // cdk-local declares a visible `--region <region>` and owns this command's
   // handler, so cdkd replaces the declaration with its deprecated twin and

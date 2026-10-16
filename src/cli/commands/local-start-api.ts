@@ -25,8 +25,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
+import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
-  applyRoleArnIfSet,
   assertSendableRoleArn,
   explicitRoleArnOrThrow,
   isIamRoleArn,
@@ -409,7 +409,7 @@ async function localStartApiCommand(
   if (options.layerRoleArn !== undefined) {
     explicitRoleArnOrThrow('--layer-role-arn', options.layerRoleArn);
   }
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  await applyRoleArnForLocal({ roleArn: options.roleArn, region: options.region });
 
   // Issue #256 Option 1: compose `--assume-role` (value-form
   // accumulator) and the separate `--assume-role-auto` boolean flag

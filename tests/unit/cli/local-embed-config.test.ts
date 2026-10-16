@@ -38,7 +38,16 @@ describe('cdkd local embed-config branding', () => {
       // cliName / binaryName branding while referencing the upstream flag.
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
+      // go-to-k/cdkd#3240: `--role-arn` is a deploy identity; the emulated
+      // workload's inputs resolve as the caller on cdk-local's engine commands.
+      workloadIdentity: 'caller',
     });
+  });
+
+  it("carries workloadIdentity 'caller' so cdk-local resolves workload inputs as the caller (go-to-k/cdkd#3240)", () => {
+    resetEmbedConfig();
+    createLocalCommand();
+    expect(getEmbedConfig().workloadIdentity).toBe('caller');
   });
 
   it("routes cdk-local's own log lines through cdkd's logger (go-to-k/cdkd#2429)", () => {
