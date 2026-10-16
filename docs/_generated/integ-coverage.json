@@ -5868,6 +5868,7 @@
         "apigatewayv2-update-removal",
         "apigw-stage-props",
         "apigw-stage-throttling",
+        "cache-streaming",
         "cloudtrail-trail",
         "cloudwatch",
         "composite-stack",
@@ -5910,6 +5911,9 @@
         "apigw-stage-throttling": [
           "l2",
           "literal"
+        ],
+        "cache-streaming": [
+          "l2"
         ],
         "cloudtrail-trail": [
           "l2"
@@ -6607,6 +6611,7 @@
       "resourceType": "AWS::SNS::Topic",
       "integs": [
         "bench-sdk",
+        "cache-streaming",
         "cc-to-sdk-reroute",
         "cloudtrail-trail",
         "cloudwatch",
@@ -6659,6 +6664,9 @@
       ],
       "signals": {
         "bench-sdk": [
+          "l2"
+        ],
+        "cache-streaming": [
           "l2"
         ],
         "cc-to-sdk-reroute": [
