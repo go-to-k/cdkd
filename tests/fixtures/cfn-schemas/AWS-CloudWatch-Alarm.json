@@ -1,7 +1,8 @@
 {
   "resourceType": "AWS::CloudWatch::Alarm",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-10-16",
   "properties": [
+    "ActionConfiguration",
     "ActionsEnabled",
     "AlarmActions",
     "AlarmDescription",
@@ -84,6 +85,12 @@
       "PromQLCriteria",
       "Query",
       "RecoveryPeriod"
+    ],
+    "ActionConfiguration": [
+      "AlarmTagsPropagation",
+      "Enabled",
+      "ExcludedTagKeys",
+      "IncludedTagKeys"
     ]
   },
   "nestedPropertyPaths": {
@@ -127,6 +134,12 @@
       "PromQLCriteria.PendingPeriod",
       "PromQLCriteria.Query",
       "PromQLCriteria.RecoveryPeriod"
+    ],
+    "ActionConfiguration": [
+      "AlarmTagsPropagation",
+      "AlarmTagsPropagation.Enabled",
+      "AlarmTagsPropagation.ExcludedTagKeys",
+      "AlarmTagsPropagation.IncludedTagKeys"
     ]
   },
   "definitionShapes": {
@@ -157,7 +170,8 @@
       "Namespace": "scalar",
       "AlarmActions": "array",
       "AlarmDescription": "scalar",
-      "Arn": "scalar"
+      "Arn": "scalar",
+      "ActionConfiguration": "object"
     },
     "WallClockWindow": {
       "Timezone": "scalar"
@@ -170,6 +184,11 @@
       "PendingPeriod": "scalar",
       "Query": "scalar",
       "RecoveryPeriod": "scalar"
+    },
+    "AlarmTagsPropagation": {
+      "IncludedTagKeys": "array",
+      "ExcludedTagKeys": "array",
+      "Enabled": "scalar"
     },
     "MetricStat": {
       "Stat": "scalar",
@@ -197,6 +216,9 @@
     "EvaluationCriteria": {
       "PromQLCriteria": "object"
     },
+    "ActionConfiguration": {
+      "AlarmTagsPropagation": "object"
+    },
     "MetricDataQuery": {
       "AccountId": "scalar",
       "ReturnData": "scalar",
@@ -208,6 +230,9 @@
     }
   },
   "definitionRequired": {
+    "AlarmTagsPropagation": [
+      "Enabled"
+    ],
     "MetricStat": [
       "Metric",
       "Period",
@@ -226,6 +251,9 @@
     ]
   },
   "nestedRequired": {
+    "ActionConfiguration.AlarmTagsPropagation": [
+      "Enabled"
+    ],
     "Dimensions": [
       "Name",
       "Value"
@@ -248,6 +276,10 @@
     ]
   },
   "propertyShapes": {
+    "ActionConfiguration": "object",
+    "ActionConfiguration.AlarmTagsPropagation": "object",
+    "ActionConfiguration.AlarmTagsPropagation.ExcludedTagKeys": "array",
+    "ActionConfiguration.AlarmTagsPropagation.IncludedTagKeys": "array",
     "AlarmActions": "array",
     "Dimensions": "array",
     "Dimensions[]": "object",

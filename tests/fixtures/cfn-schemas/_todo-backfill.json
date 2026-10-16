@@ -44,6 +44,7 @@
       "AggregationConfigurations"
     ],
     "AWS::CloudWatch::Alarm": [
+      "ActionConfiguration",
       "EvaluationWindow",
       "WarmUpConfiguration"
     ],
