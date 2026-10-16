@@ -1386,10 +1386,8 @@ shared report is `orphan-report.ts`):
 CloudFormation resets a property **removed** from the template to its
 default for MANY types, but not all properties of all types (the reset
 premise is per type; see the A/B bullet below, issue
-[#5004](https://github.com/go-to-k/cdkd/issues/5004)). Only a measured reset
-gets one (`DocDB::DBCluster` and `Neptune::DBCluster` / `DBInstance` measured
-KEEP for `DeletionProtection`, `BackupRetentionPeriod`, `IamAuthEnabled` and
-`AutoMinorVersionUpgrade`, so they declare no `removalDefaults`). Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+[#5004](https://github.com/go-to-k/cdkd/issues/5004)). Reset only what
+CloudFormation actually resets. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
@@ -1532,6 +1530,10 @@ Checklist when writing or reviewing an `update()`:
   `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
   `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
   their live value, so `ASGProvider` sends nothing for those nine.
+  `AWS::DocDB::DBCluster` and `AWS::Neptune::DBCluster` / `DBInstance` are
+  measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
+  `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
+  `removalDefaults`.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 
 describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
@@ -47,6 +48,26 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new NeptuneProvider();
+  });
+
+  describe('removal declaration (what deploy / rollback inject)', () => {
+    it.each([
+      [
+        'AWS::Neptune::DBCluster',
+        { DeletionProtection: true, BackupRetentionPeriod: 7, IamAuthEnabled: true },
+      ],
+      [
+        'AWS::Neptune::DBInstance',
+        { DeletionProtection: true, AutoMinorVersionUpgrade: false },
+      ],
+    ])('declares no removalDefaults for %s, so nothing is injected (#5004)', (type, previous) => {
+      expect(provider.removalDefaults?.get(type)).toBeUndefined();
+      const prep = prepareRemovalForUpdate(provider, type, {}, previous);
+      expect(prep.injected).toEqual([]);
+      for (const key of Object.keys(previous)) {
+        expect(prep.properties).not.toHaveProperty(key);
+      }
+    });
   });
 
   describe('DBCluster update (ModifyDBCluster)', () => {
