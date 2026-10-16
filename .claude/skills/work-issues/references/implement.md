@@ -12,14 +12,12 @@ lane:
 
 ```bash
 # MAIN-CHECKOUT only; an IN-PLACE lane in the launch tree skips these two lines,
-# a CONCURRENT one runs them with absolute paths: launch-mode.md row 1's
-# `git -C <MAIN_CHECKOUT> worktree add ...`, then `cd <MAIN_CHECKOUT>/.claude/worktrees/<b>`.
+# a CONCURRENT one runs launch-mode.md row 1's absolute-path form instead.
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp will not resolve
 pnpm install                 # worktrees have no node_modules
-vp run build                 # ...and no dist/, so a test spawning the built
-                             # CLI fails asserting about its SUBJECT
+vp run build                 # ...and no dist/ for CLI-spawning tests
 ```
 
 **IN-PLACE: confirm the tree is YOURS before adopting it** — a signal shows
@@ -49,6 +47,11 @@ git fetch origin && git switch -c <branch> origin/main   # unchained, a failed
                          # fetch still branches off a stale origin/main
 ```
 
+**A STACKED lane** (needing an unmerged lane's branch) branches off that branch;
+its claim names the base branch and sha. No PR until the base merges, then
+`git rebase --onto origin/main <recorded base sha>`: the squash-merge rewrote
+the base, and a plain rebase replays it.
+
 ### 5-b. Sweep the class, not the instance
 
 **Ask whether the defect has SIBLING SITES; sweep them in THIS lane.**
@@ -77,7 +80,7 @@ done                                                               # RIGHT
 Fix in the lane's tree, matching the existing pattern; AGENTS.md owns the
 mechanics. Make the unit test **fail without the fix and pass with it**. A
 hook's harness is `.claude/hooks/<name>.test.sh`, run by `run-tests.sh` from
-BESIDE its subject, where it resolves the hook from.
+BESIDE its subject.
 
 **Adding a HANDLER to a single slot REPLACES it** — a second `trap ... EXIT`
 disarms the first, which in an integ fixture is the AWS teardown. Work inside
@@ -112,8 +115,7 @@ instead of the RANGE, a global needle where each subject spells its own, and
 candidate over the still-broken tree, read every hit, tighten until all are
 genuine. Then probe the real tree, spelling the injected defect the way its
 SOURCE would. A fence reading another tool's CONFIG parses it with a real
-parser and fails CLOSED on anything unmodelled; three spellings in three
-rounds means change instrument.
+parser and fails CLOSED on anything unmodelled.
 
 - **Delete what the fence REQUIRES and watch it fail.** A population or floor
   derived from the DEFECT itself, from an OPTIONAL language feature, or from
@@ -147,7 +149,7 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   `bash -c`: zsh passes an unquoted `$files` as ONE argument.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
-  per-line watcher (`tail -F`, a line-emitting `Monitor`), waking it per line.
+  per-line watcher (`tail -F`, a line-emitting `Monitor`).
   A turn ended with nothing in the background is final.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.

@@ -25,8 +25,7 @@ the live fixture's directory, and stage only its own test files (the integ's
 ledger row lands there, #4302). A round overlapping the §8-d probe (clean tree;
 it restores `src` from `HEAD`) edits in scratch until the parent frees it. A
 lane REPORTS `mise exec -- markgate status integ-destroy --explain`'s line,
-never "integ not needed": comment-only edits count (#3873); bare `markgate` can
-be a stale PATH copy dying `unknown hash "diff"` (#4477).
+never "integ not needed": comment-only edits count (#3873).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
@@ -91,13 +90,14 @@ tests passing is necessary but NOT sufficient:
 
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
-Revert the fix, rebuild, run, confirm the arm goes RED **at YOUR assertion —
-read which one fired**, then restore and rebuild. A failure HINT's needle is
+BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
+**at YOUR assertion — read which one fired**, then restore and rebuild. A GREEN
+pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
+(#4927: an engine skip ate the write). A failure HINT's needle is
 copied from that red run, never reasoned (#4336); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert by
-COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh does not word-split an
-unquoted `$var`, and reads `$B:src/…` as a history modifier), each copy written
+COPY, from a COMMITTED, clean lane**, inside `bash -c` (zsh mangles `$B:src`), each copy written
 to scratch FIRST — a redirect onto the file truncates it even when `git show`
 fails:
 
