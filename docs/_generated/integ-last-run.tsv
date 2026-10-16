@@ -273,7 +273,7 @@ nested-stack-secret	2026-10-16T08:00:52Z	PASS	309	verify.sh	PR #4988 (#4986) c9c
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 noecho-named-producer	2026-10-13T09:55:40Z	PASS	135	verify.sh	rc ok, orph clean; PR #4848 ad9263dc8 NoEcho string-form value arm lift
-noecho-parameter-masking	2026-10-16T12:35:59Z	PASS	1353	verify.sh	branch fix/3869-derived-name-items-2-3 (#3869 items 2-3) d6e898ab8; us-east-1; own state bucket; rc ok, Phase 0 new arm, all versions swept, orph clean
+noecho-parameter-masking	2026-10-16T15:14:34Z	PASS	1383	verify.sh	branch fix/3869-derived-name-items-2-3 (#3869 items 2-3, review round 2) 3bc74b129; us-east-1; own state bucket; rc ok, Phase 0 run-scoped role cleanup, all versions swept, orph clean
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
 orphan-getatt-takeover	2026-10-15T07:48:13Z	PASS	60	verify.sh	rc ok, orph clean (#4937 PR #4943; pre-fix probe RED at Phase 4b)
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
@@ -346,7 +346,7 @@ schema-v9-to-v10-migration	2026-10-12T00:02:47Z	PASS	157	verify.sh	PR #4820 (#34
 scrub-nested-child	2026-10-16T08:08:46Z	PASS	151	verify.sh	PR #4988 (#4986) c9c0e6ab3; us-east-1; own state bucket; 0 surviving state versions, orph clean
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-15T02:06:45Z	PASS	225	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
-secret-derived-immutable-names	2026-10-16T12:35:59Z	PASS	910	verify.sh	branch fix/3869-derived-name-items-2-3 (#3869 items 2-3) d6e898ab8; us-east-1; own state bucket; rc ok, step 1b new arm, all versions swept, orph clean
+secret-derived-immutable-names	2026-10-16T15:14:34Z	PASS	923	verify.sh	branch fix/3869-derived-name-items-2-3 (#3869 items 2-3, review round 2) 3bc74b129; us-east-1; own state bucket; rc ok, step 1b sentinel ok, all versions swept, orph clean
 secrets-array-nested	2026-10-15T19:32:45Z	PASS	307	verify.sh	0 surviving object versions
 secrets-dynamic-ref	2026-10-16T09:50:03Z	PASS	705	verify.sh	PR #4988 (#4986) 65fa6438a; us-east-1; own state bucket; Phase 1b2e OK (overlapping leaf persisted as the mask, no piece of either value in state, unchanged redeploy sent nothing); discrimination proof: a detached worktree at origin/main (4d77468bc) with only this PR's verify.sh+lib copied in stayed RED at the same Phase 1b2e assertion after its OverlapSecret premise checks passed (FAIL: state.json after the CDKD_TEST_OVERLAP deploy holds an overlap secret value or a piece of one in plaintext outside OverlapSecret's own record), so the PASS here is not vacuous; rc ok, 0 surviving state object versions, orph clean
 secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
