@@ -1,4 +1,5 @@
-import { SECRET_MASK } from './pairs.js';
+import { type RecordedSecretValues, SECRET_MASK } from './pairs.js';
+import { recordLogOnlyValue } from './log-only.js';
 import { isPlainObject, isSingleDynamicReferenceToken } from './rules.js';
 import { identityKeyFor } from './identity-keys.js';
 import { DYNAMIC_REFERENCE_TOKEN_SCAN } from './redact-path.js';
@@ -249,6 +250,98 @@ export function noEchoCoordinatesOf(
   };
   walk(template, resolved, []);
   return coordinates;
+}
+
+/**
+ * The TEMPLATE node at each coordinate of `shape` that `templateProperties`
+ * serves from a `NoEcho` PARAMETER (never a declared attribute, which has no
+ * template value), keyed by `canonicalJson(coordinate)`. An `Fn::If` whose
+ * verdict `conditions` does not name is read whole.
+ */
+export function noEchoParameterNodesAt(
+  templateProperties: unknown,
+  shape: unknown,
+  noEchoParameters: ReadonlySet<string>,
+  conditions: Readonly<Record<string, boolean>> | undefined
+): Map<string, { coordinate: NoEchoCoordinate; node: unknown }> {
+  const nodes = new Map<string, { coordinate: NoEchoCoordinate; node: unknown }>();
+  noEchoCoordinatesOf(
+    templateProperties ?? {},
+    shape,
+    { parameters: noEchoParameters, ...(conditions !== undefined && { conditions }) },
+    (coordinate, node) => nodes.set(canonicalJson(coordinate), { coordinate, node })
+  );
+  return nodes;
+}
+
+/**
+ * What a STORED record holds where a `NoEcho` parameter served it
+ * (go-to-k/cdkd#3869), as LOG-ONLY needles of a fresh bag, for judging which
+ * names it prints: a name taken from such a value whose parameter has since
+ * CHANGED is no longer any value this run binds, and a short or `Number` value
+ * is under the needle floor even unchanged. So each scalar leaf the record
+ * holds at those coordinates is a needle WHOLE (`topic-42` from
+ * `Fn::Sub topic-${P}`), whatever the value it came from.
+ *
+ * The coordinates are today's template's (`templateProperties` read with
+ * `noEchoParameterNames` and `conditions`) unioned with the record's own
+ * `noEchoLeaves` (where a post-v11 deploy positioned one). A leaf that is the
+ * mask or spells a `{{resolve:` reference holds no plaintext and is skipped.
+ * An `Fn::If` of unknown verdict is read on both branches: over-masking is the
+ * accepted direction. Known bounds: a pre-v11 record (no `noEchoLeaves`)
+ * has no coordinate left to read when its parameter WAS `NoEcho` but no longer
+ * is, when the template no longer declares the resource (a template DELETE)
+ * or declares it as another type, and when the caller holds no template (a
+ * destroy that synthesizes none).
+ *
+ * Print-only: never persisted, compared or sent.
+ */
+export function recordedNoEchoValuesOf(
+  templateProperties: unknown,
+  record: { readonly properties?: unknown; readonly noEchoLeaves?: unknown } | undefined,
+  noEchoParameterNames: ReadonlySet<string>,
+  conditions: Readonly<Record<string, boolean>> | undefined
+): RecordedSecretValues {
+  const bag: RecordedSecretValues = new Map();
+  const properties = record?.properties;
+  if (properties === null || typeof properties !== 'object') return bag;
+  const coordinates = new Map<string, NoEchoCoordinate>();
+  if (noEchoParameterNames.size > 0 && templateProperties !== undefined) {
+    for (const [key, { coordinate }] of noEchoParameterNodesAt(
+      templateProperties,
+      properties,
+      noEchoParameterNames,
+      conditions
+    )) {
+      coordinates.set(key, coordinate);
+    }
+  }
+  for (const coordinate of noEchoLeavesOf(record ?? {}) ?? []) {
+    coordinates.set(canonicalJson(coordinate), coordinate);
+  }
+  const recordLeaf = (leaf: unknown): void => {
+    if (typeof leaf === 'string') {
+      if (leaf === SECRET_MASK || leaf.includes('{{resolve:')) return;
+      recordLogOnlyValue(bag, leaf);
+    } else if (typeof leaf === 'number') {
+      recordLogOnlyValue(bag, String(leaf));
+    }
+    // A boolean is left out: `true` would mask every line saying it.
+  };
+  const seen = new Set<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object') {
+      recordLeaf(value);
+      return;
+    }
+    if (seen.has(value)) return;
+    seen.add(value);
+    for (const child of Object.values(value)) walk(child);
+  };
+  for (const coordinate of coordinates.values()) {
+    walk(valueAtCoordinate(properties, coordinate));
+  }
+  return bag;
 }
 
 /**

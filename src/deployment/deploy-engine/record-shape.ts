@@ -243,3 +243,22 @@ export function acceptedCreateOnlyDropsField(
     );
   return { acceptedCreateOnlyDrops: names.length > 0 ? names : undefined };
 }
+
+/**
+ * The `secretNamedAttributes` field of a record rebuilt from a provider result
+ * (go-to-k/cdkd#3869): the result's `secretNamedAttributeNames` when it
+ * reports them (a nested-stack row's create or update, which re-judged the
+ * child), else `previous`'s, for an in-place update whose attributes were
+ * carried forward. KEYS only. Empty when there is none, so a rebuilt record
+ * drops a stale value.
+ */
+export function secretNamedAttributesField(
+  result: { readonly secretNamedAttributeNames?: readonly string[] | undefined },
+  previous?: Pick<ResourceState, 'secretNamedAttributes'>
+): { secretNamedAttributes?: string[] } {
+  const reported = result.secretNamedAttributeNames;
+  const source: unknown = reported !== undefined ? reported : previous?.secretNamedAttributes;
+  if (!Array.isArray(source)) return {};
+  const names = source.filter((name): name is string => typeof name === 'string' && name !== '');
+  return names.length > 0 ? { secretNamedAttributes: names } : {};
+}

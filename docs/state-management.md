@@ -317,7 +317,7 @@ A record can also carry bookkeeping fields that no command asks you to read or
 edit: `noEchoLeaves`, `noEchoAttributeNames`, `noEchoExactEchoLeaves`,
 `maskedPropertyFingerprints`, `maskedPropertyInputFingerprints`,
 `acceptedCreateOnlyDrops`, `observedBaselineRefusalReason`,
-`referenceProvenance`, and the stack's `conditionVerdicts` and
+`referenceProvenance`, `secretNamedAttributes`, and the stack's `conditionVerdicts` and
 `outputReferenceProvenance`. The contributor page
 [State schema internals](state-schema-internals.md#schema-reference) documents
 each one.

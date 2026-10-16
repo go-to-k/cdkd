@@ -14,6 +14,15 @@
 # to state or the exports index.
 #
 # Phases:
+#   0. LOAD-BEARING (go-to-k/cdkd#3869 item 3): the isolated
+#      CdkdNoechoChangedValueArm stack. NoEchoChangedRole is named from the
+#      NoEcho ChangedRoleTok plus padding, which the IAM provider truncates
+#      with a hash, so its id holds the value but not the whole stored name.
+#      Deployed under value A, its record is rewritten as a pre-v11 binary
+#      stored it (RoleName in plaintext, no noEchoLeaves); a redeploy under
+#      value B replaces the role, and its `Deleting old NoEchoChangedRole`
+#      line names neither A nor the old id. Rewritten again (value B), the
+#      stack's --verbose destroy under value C names neither B nor the id.
 #   1. Deploy with --verbose. The resolver's `Resolved Fn::Sub: ...` line
 #      prints the value masked, AWS holds the REAL value, and state.json holds
 #      `***` at the leaf, named in `noEchoLeaves` (schema v11, #4043), with no
@@ -125,6 +134,10 @@
 # AWS). Revert the `noEchoValues` that src/cli/commands/destroy-runner.ts
 # passes to `secretNamePrintingBags` and Phase 5 fails "prints a name taken
 # from the NoEcho value in plaintext" (not yet measured on real AWS).
+# Make `recordedNoEchoValuesOf` in src/deployment/secret-redaction/noecho-leaves.ts
+# return an empty bag (go-to-k/cdkd#3869 item 3) and Phase 0 fails on the
+# replacement deploy's `Deleting old NoEchoChangedRole (<old id>)` line, and
+# on the destroy (both measured against an origin/main build).
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -269,6 +282,22 @@ VA_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${VA_NAME}"
 VA_READER="/cdkd-test/noecho-value-arm/$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 export CDKD_TEST_NOECHO_VALUE_ARM_READER="${VA_READER}"
 RENAME_NEW_ARN="${RENAME_TOPIC_PREFIX}-${TOKEN}"
+# go-to-k/cdkd#3869 item 3 (Phase 0): an isolated stack whose role is named
+# from a NoEcho value plus padding, deployed under value A, redeployed under
+# B, destroyed under C. Mixed-case values, so a lower-cased spelling differs.
+CV_STACK="CdkdNoechoChangedValueArm"
+CV_STATE_KEY="cdkd/${CV_STACK}/${REGION}/state.json"
+CV_PREFIX="$(s3_stack_prefix "${CV_STACK}" "${REGION}")"
+CV_TOKEN_A="CdkdCvA$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+CV_TOKEN_B="CdkdCvB$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+CV_TOKEN_C="CdkdCvC$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+if [ "${#CV_TOKEN_A}" -lt 20 ] || [ "${#CV_TOKEN_B}" -lt 20 ] || [ "${#CV_TOKEN_C}" -lt 20 ]; then
+  echo "FAIL: premise: could not generate the changed-value arm's values" >&2
+  exit 1
+fi
+CV_PADDING="-padding-past-the-iam-name-limit-0123456789"
+# Each role the arm creates, by its physical id once known, for cleanup.
+CV_ROLES=()
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The schema version the LOCAL binary writes, read from the BUILT binary
@@ -307,7 +336,8 @@ SCRATCH_FILES=()
 # the value: these paths exist to detect a masking regression, and echoing the
 # log there would print exactly what failed to be masked.
 diag_output() { # diag_output <text>
-  if [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${STRING_TOKEN}"* ]] || [[ -n "${VA_NAME:-}" && "$1" == *"${VA_NAME}"* ]] || [[ "$1" == *"${SNAP_STEM}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]] \
+  if [[ "$1" == *"${CV_TOKEN_A}"* ]] || [[ "$1" == *"${CV_TOKEN_B}"* ]] || [[ "$1" == *"${CV_TOKEN_C}"* ]] \
+    || [[ "$1" == *"${TOKEN}"* ]] || [[ "$1" == *"${STRING_TOKEN}"* ]] || [[ -n "${VA_NAME:-}" && "$1" == *"${VA_NAME}"* ]] || [[ "$1" == *"${SNAP_STEM}"* ]] || [[ "$1" == *"${SPLIT_A}"* ]] || [[ "$1" == *"${SPLIT_B}"* ]] \
     || [[ "$1" == *"${ALIAS_TOKEN}"* ]] || [[ -n "${ALIAS_ENCODING:-}" && "$1" == *"${ALIAS_ENCODING}"* ]]; then
     echo "    (output withheld: it carries a NoEcho value, split piece or encoding)" >&2
   else
@@ -399,6 +429,21 @@ cleanup() {
   if [ -n "${VA_TMPDIR:-}" ] && [ -d "${VA_TMPDIR}" ]; then
     rm -rf "${VA_TMPDIR}" || true
   fi
+  # Phase 0's isolated stack (go-to-k/cdkd#3869 item 3): its roles by name,
+  # and any THIS run created before it recorded the id (each holds one of
+  # this run's values). Never another run's or another stack's role.
+  cv_destroy_rc=1
+  if [ -f "${LOCAL_DIST}" ] && [ -n "${CV_STACK:-}" ]; then
+    node "${LOCAL_DIST}" state destroy "${CV_STACK}" --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" --yes >/dev/null 2>&1
+    cv_destroy_rc=$?
+  fi
+  for cv_role in ${CV_ROLES[@]+"${CV_ROLES[@]}"} $(aws iam list-roles \
+    --query "Roles[?contains(RoleName, '${CV_TOKEN_A:-unset-cv-token}') || contains(RoleName, '${CV_TOKEN_B:-unset-cv-token}') || contains(RoleName, '${CV_TOKEN_C:-unset-cv-token}')].RoleName" \
+    --output text 2>/dev/null); do
+    [ "${cv_role}" = "None" ] && continue
+    aws iam delete-role --role-name "${cv_role}" >/dev/null 2>&1 || true
+  done
   aws sns delete-topic --topic-arn "${RENAME_NEW_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   # NoEchoSnapshotGroup and the final snapshot its removal takes (#3869),
   # swept by the `${SNAP_STEM}-final-` prefix. A snapshot still `creating`
@@ -445,6 +490,11 @@ cleanup() {
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${VA_STACK:-}/${REGION}/lock.json" >/dev/null 2>&1 || true
     s3_purge_prefix_versions "${STATE_BUCKET}" "${VA_PREFIX:-}" noncurrent || true
+    if [ "${cv_destroy_rc:-1}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${CV_STATE_KEY:-}" >/dev/null 2>&1 || true
+    fi
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CV_STACK:-}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${CV_PREFIX:-}" noncurrent || true
     # NONCURRENT only here: this also runs from the failure traps, where a live
     # state.json may still be the only record of standing resources. The
     # success path does the full sweep and asserts it.
@@ -485,6 +535,105 @@ if [ "$(s3_count_versions "${STATE_BUCKET}" "${STATE_PREFIX}deployments/")" != "
   echo "FAIL: premise: ${STATE_PREFIX}deployments/ still holds object versions after the pre-run purge -- the events scan could read an earlier run" >&2
   exit 1
 fi
+
+# --- Phase 0: a NoEcho-derived name whose value has since CHANGED -----------
+# go-to-k/cdkd#3869 item 3, LOAD-BEARING. The isolated CdkdNoechoChangedValueArm
+# stack names NoEchoChangedRole from ChangedRoleTok plus padding; the IAM
+# provider truncates it past 64 characters with a hash, so the role's name holds the
+# value but not the whole stored RoleName. Its record is rewritten as a binary
+# before schema v11 stored it, then the stack is deployed (a replacement) and
+# destroyed under a value that no longer spells the stored name.
+cv_rewrite_pre_v11() { # usage: cv_rewrite_pre_v11 <token>: the record as a pre-v11 binary stored it
+  local state new leaf="$1${CV_PADDING}"
+  state=$(mktemp)
+  new=$(mktemp)
+  SCRATCH_FILES+=("${state}" "${new}")
+  aws s3 cp "s3://${STATE_BUCKET}/${CV_STATE_KEY}" "${state}" --region "${REGION}" --quiet
+  jq --arg leaf "${leaf}" '
+    .resources.NoEchoChangedRole.properties.RoleName = $leaf
+    | del(.resources.NoEchoChangedRole.noEchoLeaves, .resources.NoEchoChangedRole.noEchoExactEchoLeaves,
+        .resources.NoEchoChangedRole.maskedPropertyFingerprints,
+        .resources.NoEchoChangedRole.maskedPropertyInputFingerprints)
+    | if (.resources.NoEchoChangedRole.observedProperties.RoleName? // null) == "***"
+      then .resources.NoEchoChangedRole.observedProperties.RoleName = $leaf else . end' \
+    "${state}" > "${new}"
+  aws s3 cp "${new}" "s3://${STATE_BUCKET}/${CV_STATE_KEY}" --region "${REGION}" --quiet
+  aws s3 cp "s3://${STATE_BUCKET}/${CV_STATE_KEY}" "${state}" --region "${REGION}" --quiet
+  if [ "$(jq -r '.resources.NoEchoChangedRole.properties.RoleName' "${state}")" != "${leaf}" ] \
+    || [ "$(jq -c '.resources.NoEchoChangedRole.noEchoLeaves // "<absent>"' "${state}")" != '"<absent>"' ]; then
+    echo "FAIL: premise: state.json does not hold NoEchoChangedRole as a pre-v11 plaintext record" >&2
+    exit 1
+  fi
+}
+cv_physical_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${CV_STATE_KEY}" - --region "${REGION}" \
+    | jq -r '.resources.NoEchoChangedRole.physicalId // empty'
+}
+cv_expect_masked() { # usage: cv_expect_masked <label> <text> <old token> <old role id>
+  if [[ "$2" == *"$3"* ]] || [[ "$2" == *"$4"* ]]; then
+    echo "FAIL: $1 prints NoEchoChangedRole's name taken from a NoEcho value since changed, in plaintext (go-to-k/cdkd#3869)" >&2
+    mask_literals "$(grep -F -- "$3" <<< "$2" | head -5)" "$3" >&2
+    echo >&2
+    exit 1
+  fi
+  echo "    OK: $1 withholds the name taken from the old value"
+}
+
+echo "==> Phase 0: deploy the changed-value arm under value A"
+if ! CV_OUT=$(CDKD_TEST_NOECHO_CV_TOKEN="${CV_TOKEN_A}" node "${LOCAL_DIST}" deploy "${CV_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1); then
+  echo "FAIL: the Phase 0 deploy under value A exited non-zero" >&2
+  diag_output "${CV_OUT}"
+  exit 1
+fi
+CV_ROLE_A="$(cv_physical_id)"
+CV_ROLES+=("${CV_ROLE_A}")
+# Premise: the provider derived a name holding the value but not the whole
+# stored leaf, so only the derived spelling masks it.
+if [[ "${CV_ROLE_A}" != *"${CV_TOKEN_A}"* ]] || [[ "${CV_ROLE_A}" == *"${CV_TOKEN_A}${CV_PADDING}"* ]]; then
+  echo "FAIL: premise: NoEchoChangedRole's id does not hold value A without the whole stored name (prefix and truncation changed?)" >&2
+  exit 1
+fi
+aws iam get-role --role-name "${CV_ROLE_A}" --query Role.RoleName --output text >/dev/null
+cv_rewrite_pre_v11 "${CV_TOKEN_A}"
+
+echo "==> Phase 0: redeploy under value B (a replacement of the role named from A)"
+if ! CV_OUT=$(CDKD_TEST_NOECHO_CV_TOKEN="${CV_TOKEN_B}" node "${LOCAL_DIST}" deploy "${CV_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  echo "FAIL: the Phase 0 deploy under value B exited non-zero" >&2
+  diag_output "${CV_OUT}"
+  exit 1
+fi
+if [[ "${CV_OUT}" != *"Deleting old NoEchoChangedRole ("* ]]; then
+  echo "FAIL: sentinel: the Phase 0 deploy under value B printed no 'Deleting old NoEchoChangedRole (' line -- it did not replace the role, or the wording drifted" >&2
+  exit 1
+fi
+cv_expect_masked "the Phase 0 replacement deploy" "${CV_OUT}" "${CV_TOKEN_A}" "${CV_ROLE_A}"
+CV_ROLE_B="$(cv_physical_id)"
+CV_ROLES+=("${CV_ROLE_B}")
+if [[ "${CV_ROLE_B}" != *"${CV_TOKEN_B}"* ]]; then
+  echo "FAIL: premise: NoEchoChangedRole's id after the replacement does not hold value B" >&2
+  exit 1
+fi
+assert_gone "NoEchoChangedRole's role named from value A survived its replacement" \
+  aws iam get-role --role-name "${CV_ROLE_A}"
+cv_rewrite_pre_v11 "${CV_TOKEN_B}"
+
+echo "==> Phase 0: destroy under value C"
+if ! CV_OUT=$(CDKD_TEST_NOECHO_CV_TOKEN="${CV_TOKEN_C}" node "${LOCAL_DIST}" destroy "${CV_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes 2>&1); then
+  echo "FAIL: the Phase 0 destroy exited non-zero" >&2
+  diag_output "${CV_OUT}"
+  exit 1
+fi
+if [[ "${CV_OUT}" != *"Deleting IAM role NoEchoChangedRole: "* ]]; then
+  echo "FAIL: sentinel: the Phase 0 destroy printed no 'Deleting IAM role NoEchoChangedRole: ' line -- its wording drifted, so the check is vacuous" >&2
+  exit 1
+fi
+cv_expect_masked "the Phase 0 destroy" "${CV_OUT}" "${CV_TOKEN_B}" "${CV_ROLE_B}"
+assert_gone "NoEchoChangedRole survived the Phase 0 destroy" aws iam get-role --role-name "${CV_ROLE_B}"
+assert_gone "the changed-value arm's state survived the Phase 0 destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CV_STATE_KEY}"
 
 # --- Phase 1: deploy ---------------------------------------------------------
 echo "==> Phase 1: deploy with --verbose"
@@ -2145,5 +2294,7 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${CHILD_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHILD_PREFIX}" "noecho-parameter-masking SplitChild state teardown"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${VA_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${VA_PREFIX}" "noecho-parameter-masking value-arm state teardown"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CV_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${CV_PREFIX}" "noecho-parameter-masking changed-value arm state teardown"
 
 echo "[verify] PASS - a NoEcho parameter value is masked on the deploy's provider, error, event, resolver and replacement-line surfaces, and so are its Fn::Split pieces, an Export.Name holding one is refused, state persists *** at every NoEcho position (schema v11), and an unchanged redeploy neither updates nor replaces its readers"

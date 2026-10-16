@@ -9,6 +9,7 @@ import { healerUnderRecordPrintingBag } from '../../../src/cli/commands/diff-rec
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import type { StaleAttributeHealer } from '../../../src/deployment/stale-attribute-heal.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 
 const ROLE_ID = 'App-team-secret-role';
 
@@ -161,5 +162,30 @@ describe('the heal re-judges when the map the diff reads changes (go-to-k/cdkd#3
       `Reading profile of role ${ROLE_ID}`,
       'Reading profile of role ***',
     ]);
+  });
+});
+
+describe("the heal judges with the node's per-record NoEcho bags (go-to-k/cdkd#3869)", () => {
+  it.each([
+    ['given the bag holding the stored old value', true, 'Importing role ***'],
+    ['negative control, no bag', false, `Importing role ${ROLE_ID.toLowerCase()}`],
+  ])('%s', async (_l, withBag, expected) => {
+    // A pre-v11 record named from a NoEcho value since changed: the id is a
+    // folded spelling of the stored leaf, which only the judge yields.
+    const record: ResourceState = { ...role('App-Team-Secret-Role'), physicalId: ROLE_ID.toLowerCase() };
+    const stored = new Map<string, string>();
+    recordLogOnlyValue(stored, 'App-Team-Secret-Role');
+    let line = '';
+    const inner: StaleAttributeHealer = async (_id: string, resource: ResourceState) => {
+      const text = `Importing role ${resource.physicalId}`;
+      line = currentLogLineMasker()?.(text) ?? text;
+      return { kind: 'not-found' as const };
+    };
+    await healerUnderRecordPrintingBag(
+      inner,
+      () => ({ Role: record }),
+      withBag ? () => stored : undefined
+    )('Role', record);
+    expect(line).toBe(expected);
   });
 });

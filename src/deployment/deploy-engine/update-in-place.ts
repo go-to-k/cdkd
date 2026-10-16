@@ -28,7 +28,7 @@ import type {
   ResourceUpdateResult,
 } from '../../types/resource.js';
 import { type ResourceState, hasUnverifiableParameterRefusal } from '../../types/state.js';
-import { acceptedCreateOnlyDropsField } from './record-shape.js';
+import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
 import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
@@ -1112,6 +1112,10 @@ export async function updateInPlace(
         ...(createResult.noEchoAttributeNames && {
           noEchoAttributeNames: createResult.noEchoAttributeNames,
         }),
+        // go-to-k/cdkd#3869: likewise, or the record keeps no field.
+        ...(createResult.secretNamedAttributeNames && {
+          secretNamedAttributeNames: createResult.secretNamedAttributeNames,
+        }),
         // The `'partial'` arm of the outcome union, set only when the
         // retain branch above ran. A ternary rather than a conditional
         // spread: `ResourceUpdateResult` intersects a DISCRIMINATED
@@ -1277,6 +1281,12 @@ export async function updateInPlace(
       currentResource
     ),
     ...(carriedAttributes && { attributes: carriedAttributes }),
+    // go-to-k/cdkd#3869: the result's names describe its fresh attributes;
+    // carried attributes keep the previous names, a replacement none.
+    ...secretNamedAttributesField(
+      result,
+      result.attributes === undefined && !result.wasReplaced ? currentResource : undefined
+    ),
     // go-to-k/cdkd#2449: the previous declared `NoEcho` attribute names, which
     // the save unions with this run's declaration (an in-place update keeps
     // the resource, and a name whose attribute still holds the mask stays

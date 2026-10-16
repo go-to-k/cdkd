@@ -179,6 +179,18 @@ export interface NoEchoAttributesResult {
    * entries whose value it recovered from a child output THIS RUN masked.
    */
   noEchoAttributeNames?: readonly string[];
+  /**
+   * The `attributes` keys whose value holds the name of a resource NAMED from
+   * a secret (go-to-k/cdkd#3869): KEYS only, never a value. One producer:
+   * `NestedStackProvider`, naming each `Outputs.<Key>` that carries a child
+   * resource's secret-derived name (a name its provider rewrote or case-folded,
+   * which no recorded plaintext spells). The engine persists them as
+   * `ResourceState.secretNamedAttributes`, which the derived-name judge reads
+   * so a parent `Fn::GetAtt Child.Outputs.<Key>` reader masks what it prints,
+   * on a later deploy where the row is `NO_CHANGE` too. Print-only: nothing
+   * persisted, compared or sent changes.
+   */
+  secretNamedAttributeNames?: readonly string[];
 }
 
 /**

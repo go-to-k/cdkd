@@ -10,7 +10,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
-import { acceptedCreateOnlyDropsField } from './record-shape.js';
+import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
@@ -313,6 +313,9 @@ export async function provisionCreate(
     // dependent in the clear (issue #2274, measured). Masking happens at
     // the PERSIST choke point, from the needles registered above.
     ...(result.attributes && { attributes: result.attributes }),
+    // go-to-k/cdkd#3869: a nested-stack row's outputs holding a child's
+    // secret-derived name, BEFORE any dependent reads one.
+    ...secretNamedAttributesField(result),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...templateAttrs,
     provisionedBy: createDecision.provisionedBy,

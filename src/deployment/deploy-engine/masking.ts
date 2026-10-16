@@ -38,8 +38,11 @@ import {
   unionOfSecretBags,
   physicalNameCopiesOf,
   recordPhysicalNameCopy,
+  recordedNoEchoValuesOf,
 } from '../secret-redaction.js';
 import {
+  type StateNamingSecrets,
+  namingSecretsWithRecordedNoEcho,
   secretNameNeedlesOf,
   secretNamesReadBy,
   storedSecretNameNeedles,
@@ -82,6 +85,10 @@ declare module '../deploy-engine.js' {
     printingSecretsFor: OmitThisParameter<typeof printingSecretsFor>;
     /** @internal */
     namingSecretsFor: OmitThisParameter<typeof namingSecretsFor>;
+    /** @internal */
+    stateNamingSecrets: OmitThisParameter<typeof stateNamingSecrets>;
+    /** @internal */
+    captureStoredNoEchoNamingValues: OmitThisParameter<typeof captureStoredNoEchoNamingValues>;
     /** @internal */
     noteSecretNamedReads: OmitThisParameter<typeof noteSecretNamedReads>;
   }
@@ -144,7 +151,9 @@ export function diffLogMasker(
       // only, never a `Fn::Split` piece an ordinary name can hold nor a value
       // that IS a `{{resolve:` token, and a nested child's parent-passed ones
       // too. Records still spelling a reference or the mask need none.
-      storedSecretNameNeedles(resources, this.fingerprintNoEchoValues, stateNames);
+      // go-to-k/cdkd#3869: per record, plus what each stored where a
+      // `NoEcho` parameter served it (a value since changed).
+      storedSecretNameNeedles(resources, this.stateNamingSecrets(), stateNames);
     }
     return union(text);
   };
@@ -901,7 +910,7 @@ export function secretNameBagFor(this: DeployEngine, logicalId: string): Recorde
 export function noteSecretNamedRecord(
   this: DeployEngine,
   logicalId: string,
-  record: { resourceType?: unknown; physicalId?: unknown; properties?: unknown } | undefined
+  record: Parameters<typeof secretNameNeedlesOf>[1]
 ): ReadonlySet<string> | undefined {
   const needles = secretNameNeedlesOf(logicalId, record, this.namingSecretsFor(logicalId), {
     embedded: this.perResourceSecrets.get(logicalId),
@@ -925,8 +934,74 @@ export function namingSecretsFor(
 ): RecordedSecretValues | undefined {
   const own = this.perResourceSecrets.get(logicalId);
   const noEcho = this.fingerprintNoEchoValues;
-  if (!hasMaskableValues(noEcho)) return own;
-  return unionOfSecretBags([own, noEcho]);
+  // go-to-k/cdkd#3869: what the record stored where a `NoEcho` parameter
+  // served it, for a name taken from a value since changed.
+  const stored = this.storedNoEchoNamingValues.get(logicalId);
+  if (!hasMaskableValues(noEcho) && !hasMaskableValues(stored)) return own;
+  return unionOfSecretBags([own, noEcho, stored]);
+}
+
+/**
+ * The per-record judging bag a deploy's STATE judges take
+ * (go-to-k/cdkd#3869): the stack's `NoEcho` values plus what each record
+ * stored where a `NoEcho` parameter served it (`storedNoEchoNamingValues`).
+ */
+export function stateNamingSecrets(this: DeployEngine): StateNamingSecrets {
+  const base = this.fingerprintNoEchoValues;
+  const stored = this.storedNoEchoNamingValues;
+  if (stored.size === 0) return base;
+  // The same bag while its inputs hold, so a caller memoizing on it (the
+  // heal's judge) judges each record once; both inputs are replaced, never
+  // mutated, per deploy.
+  const hit = namingSecretsMemo.get(stored);
+  if (hit !== undefined && hit.base === base) return hit.secrets;
+  const secrets = namingSecretsWithRecordedNoEcho(base, (logicalId) => stored.get(logicalId));
+  namingSecretsMemo.set(stored, { base, secrets });
+  return secrets;
+}
+
+const namingSecretsMemo = new WeakMap<
+  ReadonlyMap<string, RecordedSecretValues>,
+  { base: RecordedSecretValues | undefined; secrets: StateNamingSecrets }
+>();
+
+/**
+ * Record, for each record of `resources` as the deploy found it, what it
+ * stores where a `NoEcho` parameter served it (go-to-k/cdkd#3869): positioned
+ * by `template` (the condition-pruned one, read with `conditions`) where it
+ * still declares the resource as the record's type, and by the record's own
+ * `noEchoLeaves`. The parameters are the template's declared `NoEcho` ones
+ * plus a nested child's `inheritedNoEchoParameters`. Printing and judging
+ * only; no AWS call.
+ */
+export function captureStoredNoEchoNamingValues(
+  this: DeployEngine,
+  resources: Readonly<Record<string, ResourceState>>,
+  template: CloudFormationTemplate,
+  conditions: Readonly<Record<string, boolean>>
+): void {
+  const names = new Set(this.inheritedNoEchoParameters);
+  for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
+    if (declaresNoEcho(definition)) names.add(name);
+  }
+  const templateResources = (template.Resources ?? {}) as Record<
+    string,
+    { Type?: unknown; Properties?: unknown } | undefined
+  >;
+  const captured = new Map<string, RecordedSecretValues>();
+  for (const [logicalId, record] of Object.entries(resources)) {
+    const templateResource = Object.hasOwn(templateResources, logicalId)
+      ? templateResources[logicalId]
+      : undefined;
+    const bag = recordedNoEchoValuesOf(
+      templateResource?.Type === record?.resourceType ? templateResource?.Properties : undefined,
+      record,
+      names,
+      conditions
+    );
+    if (hasMaskableValues(bag)) captured.set(logicalId, bag);
+  }
+  this.storedNoEchoNamingValues = captured;
 }
 
 /**

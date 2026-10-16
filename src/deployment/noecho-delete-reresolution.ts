@@ -10,8 +10,9 @@ import {
   carryLogOnlyValuesCarriedBy,
   createSecretMasker,
   hasMaskableValues,
-  noEchoCoordinatesOf,
   noEchoLeavesOf,
+  noEchoParameterNodesAt,
+  recordedNoEchoValuesOf,
   recordLogOnlyParameterValue,
   replaceAtCoordinates,
   valueAtCoordinate,
@@ -122,24 +123,6 @@ function recordLeaves(bag: RecordedSecretValues, value: unknown): void {
   recordLogOnlyParameterValue(bag, value);
 }
 
-/** The template nodes at the record's coordinates TODAY, keyed by `canonicalJson(coordinate)`. */
-function templateNodesAt(
-  templateProperties: unknown,
-  shape: unknown,
-  noEchoParameters: ReadonlySet<string>,
-  conditions: Readonly<Record<string, boolean>> | undefined
-): Map<string, unknown> {
-  const nodes = new Map<string, unknown>();
-  // PARAMETERS only: a coordinate an attribute fills has no template value.
-  noEchoCoordinatesOf(
-    templateProperties ?? {},
-    shape,
-    { parameters: noEchoParameters, ...(conditions !== undefined && { conditions }) },
-    (coordinate, node) => nodes.set(canonicalJson(coordinate), node)
-  );
-  return nodes;
-}
-
 /**
  * Whether the top-level property holding `coordinate` is today what the deploy
  * that wrote the record sent: its template TEXT (`maskedPropertyFingerprints`,
@@ -208,7 +191,7 @@ export async function noEchoDeleteValuesFromResolved(options: {
   // A resolved SECRET in this resource's bag: a custom resource's create and
   // update refuse to send one (#4009), so its delete sends none either.
   if (carriesResolvedSecret(options.secrets)) return undefined;
-  const nodes = templateNodesAt(
+  const nodes = noEchoParameterNodesAt(
     templateResource.Properties,
     resolvedProperties,
     options.noEchoParameters,
@@ -495,6 +478,31 @@ export class TemplateNoEchoReresolver {
   }
 
   /**
+   * What `record` stores where a `NoEcho` parameter of this template served it
+   * (`recordedNoEchoValuesOf`, go-to-k/cdkd#3869), for the destroy's printing
+   * judge: a pre-v11 record holds a name taken from such a value in plaintext,
+   * which a CHANGED value no longer spells. Today's template positions it
+   * when it still declares the resource as the record's type; the record's
+   * own `noEchoLeaves` do either way. No binding, no AWS call. PRINT-ONLY.
+   */
+  recordedNoEchoValuesFor(
+    logicalId: string,
+    record: ResourceState | undefined
+  ): RecordedSecretValues {
+    const resources = this.options.template.Resources as Record<string, unknown> | undefined;
+    const templateResource =
+      resources !== undefined && resources !== null && Object.hasOwn(resources, logicalId)
+        ? (resources[logicalId] as { Type?: unknown; Properties?: unknown } | undefined)
+        : undefined;
+    return recordedNoEchoValuesOf(
+      templateResource?.Type === record?.resourceType ? templateResource?.Properties : undefined,
+      record,
+      this.noEchoParameters,
+      undefined
+    );
+  }
+
+  /**
    * Today's values at `record`'s masked `noEchoLeaves` coordinates, or
    * `undefined` when none could be re-resolved. A partial answer is returned
    * as such: the provider skips while any masked coordinate lacks a value.
@@ -514,7 +522,7 @@ export class TemplateNoEchoReresolver {
     const parameters = await this.boundParameters();
     if (parameters === undefined) return undefined;
 
-    const nodes = templateNodesAt(
+    const nodes = noEchoParameterNodesAt(
       templateResource.Properties,
       record.properties,
       this.noEchoParameters,
@@ -529,7 +537,7 @@ export class TemplateNoEchoReresolver {
     for (const coordinate of masked) {
       const key = canonicalJson(coordinate);
       if (!nodes.has(key)) continue;
-      const node = nodes.get(key);
+      const node = nodes.get(key)?.node;
       if (!readsParametersOnly(node, declared, refused)) continue;
       if (!(await fingerprintsUnchanged(record, templateProps, coordinate, fingerprinter))) {
         continue;

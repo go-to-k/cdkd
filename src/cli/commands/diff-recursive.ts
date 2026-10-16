@@ -79,14 +79,17 @@ import {
   type RecordedSecretValues,
   readsNoEchoSource,
   noEchoOutputsComparison,
+  recordedNoEchoValuesOf,
+  unionOfSecretBags,
 } from '../../deployment/secret-redaction.js';
 import {
   noEchoComparisonForTemplate,
   noEchoParameterNamesOf,
 } from '../../deployment/deploy-engine/noecho.js';
 import {
+  type StateNamingSecrets,
+  namingSecretsWithRecordedNoEcho,
   orphanRecordsPrintingBag,
-  secretNamePrintingBag,
   secretNamePrintingBags,
   stateSecretNameNeedles,
   secretNamedRecordNeedles,
@@ -911,6 +914,13 @@ export interface StackDiffResult {
    */
   secretNamedRecords: RecordedSecretValues;
   /**
+   * The per-record judging bags over a map of this node's records
+   * (go-to-k/cdkd#3869): the node's `NoEcho` values plus what each record
+   * stores at a `NoEcho` position. For a heal that binds its printing bag
+   * outside this call (a nested row's `Parameters` pass). Printing only.
+   */
+  namingSecretsFor: (resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets;
+  /**
    * The parameter bag and the condition verdicts this node's resolver used
    * (go-to-k/cdkd#4094), for resolving a nested child's input `Parameters`
    * the way the deploy does: against the parent's BOUND parameters (template
@@ -1458,9 +1468,17 @@ export async function computeStackDiff(
   // printing bag, judged over the records the diff reads at that moment
   // (`healResources`, which takes the adopted records once they are spliced).
   let healResources: Readonly<Record<string, ResourceState>> = currentState.resources ?? {};
+  // Set once the per-record NoEcho judge exists (below); a heal runs after.
+  let healNamingSecrets:
+    | ((resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets)
+    | undefined;
   const attributeHealer =
     unboundAttributeHealer &&
-    healerUnderRecordPrintingBag(unboundAttributeHealer, () => healResources);
+    healerUnderRecordPrintingBag(
+      unboundAttributeHealer,
+      () => healResources,
+      (map) => healNamingSecrets?.(map)
+    );
   // This template's `NoEcho` parameters, plus (in a nested child) the ones the
   // parent fills from a `NoEcho` source (go-to-k/cdkd#4043 review round 9).
   const noEchoParametersOf = (t: CloudFormationTemplate): Set<string> =>
@@ -1852,11 +1870,68 @@ export async function computeStackDiff(
   // `diffSecrets` an `Fn::Split` fragment of one, and an ordinary record
   // named like a fragment would be judged secret-named, its id spellings
   // over-masking a nested child.
-  const noEchoJudge: RecordedSecretValues = new Map(diffSecrets);
-  carryLogOnlyValues(diffSecrets, noEchoJudge);
+  const noEchoJudgeValues: RecordedSecretValues = new Map(diffSecrets);
+  carryLogOnlyValues(diffSecrets, noEchoJudgeValues);
+  // Per record, also what it stores where a `NoEcho` parameter served it
+  // (go-to-k/cdkd#3869): a name taken from a value since CHANGED (a pre-v11
+  // record holds the old plaintext), or a short or `Number` one, which the
+  // bound values cannot judge. Positioned by the template as this diff
+  // evaluated it, a condition it could not evaluate read on both branches.
+  const namingNoEchoParameters = noEchoParametersOf(effectiveTemplate);
+  const namingConditions =
+    conditions === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
+        );
+  const namingTemplateResources = (effectiveTemplate.Resources ?? {}) as Record<
+    string,
+    { Type?: unknown; Properties?: unknown } | undefined
+  >;
+  const recordedNamingValues = (
+    resources: Readonly<Record<string, ResourceState>>,
+    logicalId: string
+  ): RecordedSecretValues | undefined => {
+    const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+    const templateResource = Object.hasOwn(namingTemplateResources, logicalId)
+      ? namingTemplateResources[logicalId]
+      : undefined;
+    const bag = recordedNoEchoValuesOf(
+      templateResource?.Type === record?.resourceType ? templateResource?.Properties : undefined,
+      record,
+      namingNoEchoParameters,
+      namingConditions
+    );
+    return hasMaskableValues(bag) ? bag : undefined;
+  };
+  const noEchoJudge = (
+    resources: Readonly<Record<string, ResourceState>>
+  ): ((logicalId: string) => RecordedSecretValues | undefined) =>
+    namingSecretsWithRecordedNoEcho(noEchoJudgeValues, (logicalId) =>
+      recordedNamingValues(resources, logicalId)
+    );
+  // The resolver's judge reads `diffSecrets` LIVE (it grows mid-walk), so the
+  // record's stored values are memoized and the union is taken per call.
+  const liveNamingJudge = (
+    resources: Readonly<Record<string, ResourceState>>
+  ): ((logicalId: string) => RecordedSecretValues | undefined) => {
+    // Keyed by the record object too: a record rewritten mid-pass is re-read.
+    const memo = new Map<string, { record: unknown; bag: RecordedSecretValues | undefined }>();
+    return (logicalId) => {
+      const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+      let hit = memo.get(logicalId);
+      if (hit === undefined || hit.record !== record) {
+        hit = { record, bag: recordedNamingValues(resources, logicalId) };
+        memo.set(logicalId, hit);
+      }
+      const stored = hit.bag;
+      return stored === undefined ? diffSecrets : unionOfSecretBags([diffSecrets, stored]);
+    };
+  };
+  healNamingSecrets = noEchoJudge;
   const stateNames = storedSecretNameNeedles(
     currentState.resources ?? {},
-    noEchoJudge,
+    noEchoJudge(currentState.resources ?? {}),
     new Map(),
     currentState.outputs
   );
@@ -1892,7 +1967,10 @@ export async function computeStackDiff(
         // go-to-k/cdkd#4852: the resource diff's cross-stack reads, for the
         // read-provenance arm (as the deploy's diff pass records them).
         ...(crossStackReads && { crossStackReads }),
-        secretNameNeedles: stateSecretNameNeedles(currentState.resources, diffSecrets),
+        secretNameNeedles: stateSecretNameNeedles(
+          currentState.resources,
+          liveNamingJudge(currentState.resources)
+        ),
         secretNameSink: derivedNames,
         ...(inheritedForResolver && { inheritedSecrets: inheritedForResolver }),
         ...(secretStandInTokens && { secretStandInTokens }),
@@ -2092,7 +2170,7 @@ export async function computeStackDiff(
       // adopted record can store one.
       storedSecretNameNeedles(
         stateForDiff.resources,
-        noEchoJudge,
+        noEchoJudge(stateForDiff.resources),
         stateNames,
         currentState.outputs
       );
@@ -2181,7 +2259,10 @@ export async function computeStackDiff(
           const value = await intrinsicResolver.resolve(structuredClone(node), {
             recordedSecretValues: secrets,
             // go-to-k/cdkd#3869: its lines masked, its deciding bag untouched.
-            secretNameNeedles: stateSecretNameNeedles(resourcesForInputs, diffSecrets),
+            secretNameNeedles: stateSecretNameNeedles(
+              resourcesForInputs,
+              liveNamingJudge(resourcesForInputs)
+            ),
             secretNameSink: derivedNames,
             template: effectiveTemplate,
             resources: resourcesForInputs,
@@ -2685,7 +2766,11 @@ export async function computeStackDiff(
     effectiveTemplate,
     printingSecrets,
     derivedNames: diffPrintingSecrets([derivedNames, inheritedDerivedNames]),
-    secretNamedRecords: secretNamedRecordNeedles(stateForDiff.resources, noEchoJudge),
+    secretNamedRecords: secretNamedRecordNeedles(
+      stateForDiff.resources,
+      noEchoJudge(stateForDiff.resources)
+    ),
+    namingSecretsFor: noEchoJudge,
     resolvedParameters: mergedParameters,
     conditions,
     knownConditions:
@@ -3306,7 +3391,12 @@ function recordedTemplateResources(
  */
 export function healerUnderRecordPrintingBag(
   healer: StaleAttributeHealer,
-  resources: () => Readonly<Record<string, ResourceState>>
+  resources: () => Readonly<Record<string, ResourceState>>,
+  /**
+   * The judging bags per map (go-to-k/cdkd#3869): the node's `NoEcho` values
+   * plus what each record stores at a `NoEcho` position. Absent: record-only.
+   */
+  namingSecrets?: (resources: Readonly<Record<string, ResourceState>>) => StateNamingSecrets
 ): StaleAttributeHealer {
   let judged:
     | {
@@ -3317,9 +3407,12 @@ export function healerUnderRecordPrintingBag(
   const bagFor = (logicalId: string, resource: ResourceState): RecordedSecretValues => {
     const map = resources();
     if (!Object.hasOwn(map, logicalId) || map[logicalId] !== resource) {
-      return secretNamePrintingBag(logicalId, { ...map, [logicalId]: resource });
+      const withSelf = { ...map, [logicalId]: resource };
+      return secretNamePrintingBags(withSelf, namingSecrets?.(withSelf))(logicalId);
     }
-    if (judged?.map !== map) judged = { map, bagOf: secretNamePrintingBags(map, undefined) };
+    if (judged?.map !== map) {
+      judged = { map, bagOf: secretNamePrintingBags(map, namingSecrets?.(map)) };
+    }
     return judged.bagOf(logicalId);
   };
   return Object.assign(
@@ -3601,6 +3694,7 @@ export async function buildDiffTree(args: {
     printingSecrets,
     derivedNames: nodeDerivedNames,
     secretNamedRecords: nodeStateNames,
+    namingSecretsFor,
     resolvedParameters,
     conditions,
     knownConditions,
@@ -3785,8 +3879,13 @@ export async function buildDiffTree(args: {
       // A nested row the parent's state does not hold yet (a CREATE) has its
       // Parameters resolved here only, so this pass heals first and only this
       // binds the bag.
+      // Judged with the node's per-record `NoEcho` bags, as its own heals are.
       attributeHealer &&
-        healerUnderRecordPrintingBag(attributeHealer, () => stateAfterAdoption.resources ?? {}),
+        healerUnderRecordPrintingBag(
+          attributeHealer,
+          () => stateAfterAdoption.resources ?? {},
+          namingSecretsFor
+        ),
       childUnresolvedParameters,
       trust,
       rowDerivedNames,

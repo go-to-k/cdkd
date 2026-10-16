@@ -59,6 +59,7 @@ interface ResourceState {
   noEchoAttributeNames?: string[];          // v11+: own `attributes` declared NoEcho, each stored `***`
   referenceProvenance?: Record<string, ReferenceProvenance>; // v12+: token -> { region?, versions?, readVersions? }
   noEchoExactEchoLeaves?: string[][];       // no bump: `noEchoLeaves` echoed exactly (#4656)
+  secretNamedAttributes?: string[];         // no bump: nested-stack row's `Outputs.<Key>` holding a child's secret-derived name (#3869)
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
   constructPath?: string;                   // no bump: display only; stamped in `redactStateForPersist` on every deploy save (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
@@ -69,6 +70,8 @@ interface ResourceState {
 `acceptedCreateOnlyDrops` is EVIDENCE, read only through `acceptedCreateOnlyDropsOf` (malformed = absent = none): the #2790 refusal fires only for a key it names, since an imported or pre-v7 record holds create-only keys AWS does hold. An SDK-route create or replacement rebuilds it, an in-place update only carries entries still in `properties` (`acceptedCreateOnlyDropsField`), Cloud Control clears it, a spreading writer keeps it.
 
 Neither field hashes a secret-derived value (a confirm oracle). The input field is SEPARATE so an older binary (text field only) still sends template edits; an input entry whose `+sha256:` half differs from the text entry is stale and is re-baselined without sending. A template literal equal to a `NoEcho` value or a resolved needle gets `REFUSED_FINGERPRINT` (no hash). Helpers: `src/deployment/masked-property-fingerprints.ts`; the save rebuilds both only for a bag `propertiesToRecord` wrote this deploy; absent keeps the pre-#4451 comparison.
+
+`secretNamedAttributes` (#3869) is PRINT-ONLY attribute KEYS, read by `secretNameNeedlesOf`, rewritten by each create or update of the row; absent = not known, so an older binary loses only the mask.
 
 ## `exportNames` (v9+)
 

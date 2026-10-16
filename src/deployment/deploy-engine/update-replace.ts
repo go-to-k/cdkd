@@ -14,7 +14,7 @@ import {
 } from '../../provisioning/stateful-types.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
 import { type ResourceChange, type ResourceState } from '../../types/state.js';
-import { acceptedCreateOnlyDropsField } from './record-shape.js';
+import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -1009,6 +1009,8 @@ export async function updateByReplacement(
       'new-resource'
     ),
     ...(createResult.attributes && { attributes: createResult.attributes }),
+    // go-to-k/cdkd#3869: the new resource's create result is authoritative.
+    ...secretNamedAttributesField(createResult),
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...this.extractTemplateAttributes(template, logicalId),
     provisionedBy: replaceDecision.provisionedBy,

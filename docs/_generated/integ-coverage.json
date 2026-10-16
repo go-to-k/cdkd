@@ -4526,6 +4526,7 @@
         "multi-resource",
         "multi-stack-deps",
         "nested-stack",
+        "noecho-parameter-masking",
         "orphan-getatt-takeover",
         "pipes-fix-forward-orphan",
         "propagation-races-2",
@@ -4780,6 +4781,9 @@
         ],
         "nested-stack": [
           "l2"
+        ],
+        "noecho-parameter-masking": [
+          "l1"
         ],
         "orphan-getatt-takeover": [
           "l2",

@@ -71,6 +71,7 @@ import {
   readProtection,
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
+import { withStackName } from '../../provisioning/resource-name.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
 import {
   accountArgs,
@@ -131,6 +132,7 @@ import { orphanNeedsIdentity } from '../../deployment/rollback-executor/orphan-i
 import {
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
+  namingSecretsWithRecordedNoEcho,
   orphanRecordsPrintingBag,
   secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
@@ -1992,8 +1994,36 @@ async function destroyStackInRegion(
     logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
 
     // go-to-k/cdkd#3869: judged with the stack's `NoEcho` values too, each
-    // record once (see `noEchoValues` above).
-    const printingBagOf = secretNamePrintingBags(state.resources, noEchoValues);
+    // record once (see `noEchoValues` above), plus what each record stores
+    // where a `NoEcho` parameter of the template served it: a name taken from
+    // a value since CHANGED, which the bound values no longer spell.
+    const reresolver = ctx.noEchoReresolver;
+    const judgedBagOf = secretNamePrintingBags(
+      state.resources,
+      reresolver === undefined
+        ? noEchoValues
+        : namingSecretsWithRecordedNoEcho(noEchoValues, (logicalId) => {
+            // A masking-only judgment never stops a delete.
+            try {
+              return reresolver.recordedNoEchoValuesFor(
+                logicalId,
+                Object.hasOwn(state.resources, logicalId) ? state.resources[logicalId] : undefined
+              );
+            } catch (error) {
+              // The class only: a message can quote a value.
+              logger.debug(
+                safeMsg`Could not read ${logicalId}'s stored NoEcho values for its printing bag (${error instanceof Error ? error.name : typeof error}).`
+              );
+              return undefined;
+            }
+          })
+    );
+    // A name its provider DERIVED from a plaintext one (the stack-name prefix
+    // and the truncation `generateResourceNameWithFallback` applies) is
+    // spelled in this stack's naming scope, as the deploy that created it
+    // derived it; a destroy binds none of its own.
+    const printingBagOf = (logicalId: string): RecordedSecretValues =>
+      withStackName(stackName, () => judgedBagOf(logicalId));
 
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {

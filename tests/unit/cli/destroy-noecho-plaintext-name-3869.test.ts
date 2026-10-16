@@ -66,6 +66,10 @@ import {
 import { TemplateNoEchoReresolver } from '../../../src/deployment/noecho-delete-reresolution.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
+import {
+  generateResourceNameWithFallback,
+  withStackName,
+} from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
 const SECRET = 'SuperSecretPassword123';
@@ -243,6 +247,105 @@ describe('cdkd destroy masks a pre-v11 plaintext NoEcho-derived name (go-to-k/cd
       expect(lines['Bucket']).toBe('Deleting Bucket ***');
       expect(lines['Plain']).toBe('Deleting Plain plain-bucket-name');
     }
+  });
+});
+
+describe('cdkd destroy masks a name taken from a NoEcho value since CHANGED (go-to-k/cdkd#3869)', () => {
+  // Today's template binds value B; the pre-v11 records hold names minted
+  // from value A, so no bound value spells them. Only the record's own leaf at
+  // a coordinate the template serves from a NoEcho parameter says so.
+  const OLD_DB = 'OldSecretDb1';
+  const ROLE_PADDING = '-padding-past-the-iam-limit-0123456789abcdef0123456789';
+  const OLD_ROLE_LEAF = `OldRoleTok1${ROLE_PADDING}`;
+  // What the deploy derived, in the stack's naming scope.
+  const OLD_ROLE_ID = withStackName('NoEchoStack', () =>
+    generateResourceNameWithFallback(OLD_ROLE_LEAF, 'Role', { maxLength: 64 })
+  );
+  const CHANGED_TEMPLATE = {
+    Parameters: {
+      DbIdParam: { Type: 'String', NoEcho: true, Default: 'NewSecretDb2' },
+      // A short value: under the needle floor even unchanged.
+      Short: { Type: 'String', NoEcho: true, Default: '42' },
+      Plain: { Type: 'String', Default: 'plain-db-name' },
+      RoleTok: { Type: 'String', NoEcho: true, Default: 'NewRoleTok2' },
+    },
+    Resources: {
+      // The IAM provider prefixes the stack name and truncates past 64
+      // characters, so the id holds the old value but not the whole leaf.
+      Role: {
+        Type: 'AWS::IAM::Role',
+        Properties: { RoleName: { 'Fn::Sub': `\${RoleTok}${ROLE_PADDING}` } },
+      },
+      Db: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'DbIdParam' } } },
+      Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: { 'Fn::Sub': 'topic-${Short}' } } },
+      PlainDb: { Type: 'AWS::RDS::DBInstance', Properties: { DBInstanceIdentifier: { Ref: 'Plain' } } },
+    },
+  } as unknown as CloudFormationTemplate;
+  const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:topic-41';
+
+  async function changedLines(withTemplate: boolean): Promise<Record<string, string | undefined>> {
+    const lines: Record<string, string | undefined> = {};
+    const providerDelete = vi.fn((logicalId: string, physicalId: string) => {
+      const line = `Deleting ${logicalId} ${physicalId}`;
+      lines[logicalId] = currentLogLineMasker()?.(line) ?? line;
+      return Promise.resolve(undefined);
+    });
+    const state = {
+      version: 10,
+      stackName: 'NoEchoStack',
+      region: REGION,
+      resources: {
+        Db: record(OLD_DB.toLowerCase(), 'AWS::RDS::DBInstance', { DBInstanceIdentifier: OLD_DB }),
+        Topic: record(TOPIC_ARN, 'AWS::SNS::Topic', { TopicName: 'topic-41' }),
+        PlainDb: record('old-plain-db', 'AWS::RDS::DBInstance', {
+          DBInstanceIdentifier: 'old-plain-db',
+        }),
+        Role: record(OLD_ROLE_ID, 'AWS::IAM::Role', { RoleName: OLD_ROLE_LEAF }),
+      },
+      outputs: {},
+      lastModified: 1,
+    } as StackState;
+    const ctx = {
+      ...makeCtx(providerDelete, false),
+      ...(withTemplate && {
+        noEchoReresolver: new TemplateNoEchoReresolver({
+          template: CHANGED_TEMPLATE,
+          stackName: 'NoEchoStack',
+          region: REGION,
+        }),
+      }),
+    };
+    const result = await runDestroyForStack('NoEchoStack', state, ctx);
+    expect(result.errorCount).toBe(0);
+    expect(providerDelete).toHaveBeenCalledTimes(4);
+    return lines;
+  }
+
+  it("masks a provider-derived (prefixed, truncated) name the stored leaf alone does not spell", async () => {
+    // Premise: the id holds the old value, but not the whole stored leaf.
+    expect(OLD_ROLE_ID).toContain('OldRoleTok1');
+    expect(OLD_ROLE_ID.includes(OLD_ROLE_LEAF)).toBe(false);
+    const lines = await changedLines(true);
+    expect(lines['Role']).toBe('Deleting Role ***');
+  });
+
+  it("masks the old value's folded name", async () => {
+    const lines = await changedLines(true);
+    expect(lines['Db']).toBe('Deleting Db ***');
+    // Negative control: a name from an ordinary parameter prints as it is.
+    expect(lines['PlainDb']).toBe('Deleting PlainDb old-plain-db');
+  });
+
+  it("masks a short value's whole leaf, which the value itself is too short to match", async () => {
+    const lines = await changedLines(true);
+    expect(lines['Topic']).toBeDefined();
+    expect(lines['Topic']).not.toContain('topic-41');
+  });
+
+  it('premise: without the template the records carry no evidence', async () => {
+    const lines = await changedLines(false);
+    expect(lines['Db']).toBe(`Deleting Db ${OLD_DB.toLowerCase()}`);
+    expect(lines['Topic']).toBe(`Deleting Topic ${TOPIC_ARN}`);
   });
 });
 
