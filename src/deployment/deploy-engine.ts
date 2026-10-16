@@ -76,7 +76,7 @@ import {
 } from './deploy-engine/options.js';
 import * as outputsMixin from './deploy-engine/outputs.js';
 import * as rollbackMixin from './deploy-engine/rollback.js';
-import * as observedCaptureMixin from './deploy-engine/observed-capture.js';
+import { ObservedCapture } from './deploy-engine/observed-capture.js';
 import * as maskingMixin from './deploy-engine/masking.js';
 import * as replacementMixin from './deploy-engine/replacement.js';
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
@@ -400,19 +400,6 @@ export class DeployEngine {
   interruptCause: InterruptCause | null = null;
 
   /**
-   * In-flight `provider.readCurrentState` promises kicked off after a
-   * successful CREATE / UPDATE. The deploy critical path does NOT
-   * `await` these; instead they're drained at the end of `doDeploy`
-   * (success path only) and the resolved values are merged into
-   * `ResourceState.observedProperties` before the final state save.
-   *
-   * Each Promise resolves to the AWS-current snapshot, or `undefined`
-   * if the provider does not implement `readCurrentState` or the call
-   * threw — never rejects, so an unhandled-rejection cannot escape.
-   */
-  /** @internal */
-  observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> = new Map();
-  /**
    * The journal-key version purge a deploy starts when it finds no rollback
    * journal (`deploy-flow.ts` step 1b); the success settle awaits it in place
    * of its own delete and purge. Never rejects.
@@ -427,17 +414,12 @@ export class DeployEngine {
   /** @internal */
   noEchoCeilingReadbackTimeoutMs = 30_000;
   /**
-   * The bags a masked-baseline re-capture produced (issue #3595). Each is the
-   * PREVIOUS baseline with some masks replaced, already redacted, so
-   * `drainObservedCaptures` installs it as it is rather than marking it as a
-   * fresh readback. Keyed by the bag's identity, and mapped to the PREVIOUS
-   * baseline it was built from: the drain installs it only while the record
-   * still holds that very baseline, so a record this deploy rebuilt (an UPDATE
-   * or a replacement whose provider takes no capture of its own) never
-   * receives a bag describing the resource it replaced.
+   * This deploy's `observedProperties` capture pipeline (the deploy-time
+   * `readCurrentState` reads, their drain, and the masked-baseline
+   * re-capture), replaced per `deploy()` by {@link freshObservedCapture}.
    */
   /** @internal */
-  recapturedBaselines = new WeakMap<object, object>();
+  observedCapture: ObservedCapture;
   /** @internal */
   stateBackend: S3StateBackend;
   /** @internal */
@@ -1067,6 +1049,25 @@ export class DeployEngine {
     this.options.captureObservedState = options.captureObservedState ?? true;
     this.attributeHealer = this.rebaseline({});
     this.provenanceCapture = this.freshProvenanceCapture();
+    this.observedCapture = this.freshObservedCapture();
+  }
+
+  /**
+   * A fresh {@link observedCapture} over this engine's deps, for the
+   * constructor and `deploy()`'s per-run reset.
+   * @internal
+   */
+  freshObservedCapture(): ObservedCapture {
+    return new ObservedCapture({
+      logger: this.logger,
+      options: this.options,
+      resolver: this.resolver,
+      providerRegistry: this.providerRegistry,
+      printingSecretsFor: (logicalId) => this.printingSecretsFor(logicalId),
+      // Live: replaced mid-run by the schema-upgrade backfill (deploy-flow.ts).
+      fingerprintNoEchoValues: () => this.fingerprintNoEchoValues,
+      provenanceCapture: () => this.provenanceCapture,
+    });
   }
 
   /**
@@ -1095,7 +1096,7 @@ export class DeployEngine {
    */
   freshProvenanceCapture(): ProvenanceCapture {
     return new ProvenanceCapture({
-      buildResolverContext: this.buildResolverContext.bind(this),
+      buildResolverContext: (...args) => this.buildResolverContext(...args),
       resolver: this.resolver,
       logger: this.logger,
     });
@@ -1180,6 +1181,7 @@ export class DeployEngine {
     this.provenanceBaseline = undefined;
     this.resolvedOutputsBag = undefined;
     this.provenanceCapture = this.freshProvenanceCapture();
+    this.observedCapture = this.freshObservedCapture();
     this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
@@ -1916,17 +1918,6 @@ DeployEngine.prototype.stateNamingSecrets = maskingMixin.stateNamingSecrets;
 DeployEngine.prototype.captureStoredNoEchoNamingValues =
   maskingMixin.captureStoredNoEchoNamingValues;
 DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
-
-DeployEngine.prototype.kickOffObservedCapture = observedCaptureMixin.kickOffObservedCapture;
-DeployEngine.prototype.drainObservedCaptures = observedCaptureMixin.drainObservedCaptures;
-DeployEngine.prototype.buildObservedCaptureSiblings =
-  observedCaptureMixin.buildObservedCaptureSiblings;
-DeployEngine.prototype.stampReasonlessParameterRefusals =
-  observedCaptureMixin.stampReasonlessParameterRefusals;
-DeployEngine.prototype.kickOffAutoRefreshObservedProperties =
-  observedCaptureMixin.kickOffAutoRefreshObservedProperties;
-DeployEngine.prototype.kickOffMaskedBaselineRecapture =
-  observedCaptureMixin.kickOffMaskedBaselineRecapture;
 
 DeployEngine.prototype.adoptRollbackOrphans = rollbackMixin.adoptRollbackOrphans;
 DeployEngine.prototype.performRollback = rollbackMixin.performRollback;

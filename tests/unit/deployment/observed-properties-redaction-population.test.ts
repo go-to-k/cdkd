@@ -172,8 +172,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
   'src/deployment/deploy-engine/observed-capture.ts': {
     sites: 1,
     why:
-      '`drainObservedCaptures`, a `DeployEngine` method in its observed-capture mixin ' +
-      '(#4200) — the one ASSIGNMENT site that legitimately does NOT redact at the call ' +
+      '`drainObservedCaptures`, a method of the engine\'s `ObservedCapture` collaborator ' +
+      '— the one ASSIGNMENT site that legitimately does NOT redact at the call ' +
       'site; see UNREDACTED_AT_SITE below.',
   },
   'src/cli/commands/drift.ts': {
@@ -228,8 +228,8 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
  * hard to make without noticing.
  */
 const UNREDACTED_AT_SITE: Readonly<Record<string, string>> = {
-  // A `DeployEngine` method living in the engine's observed-capture mixin
-  // (#4200); the choke point it relies on is the engine's, asserted below.
+  // A method of `ObservedCapture`, the engine's observed-capture collaborator;
+  // the choke point it relies on is the engine's, asserted below.
   'src/deployment/deploy-engine/observed-capture.ts':
     'The deploy path redacts at its single persist CHOKE POINT — every ' +
     '`stateBackend.saveState` in the engine goes through `withParentInfo` -> ' +

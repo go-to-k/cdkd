@@ -19,6 +19,7 @@ import {
   secretNamedAttributesField,
 } from './record-shape.js';
 import { preparePropertiesForCcApi } from './routing.js';
+import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
@@ -339,7 +340,12 @@ export async function provisionCreate(
     createSecrets
   );
 
-  const createCaptureSiblings = await this.buildObservedCaptureSiblings(
+  const createCaptureSiblings = await buildObservedCaptureSiblings(
+    {
+      options: this.options,
+      buildResolverContext: (...args) => this.buildResolverContext(...args),
+      resolver: this.resolver,
+    },
     resourceType,
     logicalId,
     result.physicalId,
@@ -349,7 +355,7 @@ export async function provisionCreate(
     parameterValues,
     conditions
   );
-  this.kickOffObservedCapture(
+  this.observedCapture.kickOffObservedCapture(
     createProvider,
     logicalId,
     result.physicalId,

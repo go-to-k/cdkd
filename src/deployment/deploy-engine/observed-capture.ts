@@ -1,4 +1,9 @@
 import type { DeployEngine } from '../deploy-engine.js';
+import type { DeployEngineOptions } from './options.js';
+import type { ProvenanceCapture } from './provenance-capture.js';
+import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import type { Logger } from '../../types/config.js';
+import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import {
   type ParameterNamingVerdict,
   resourcesNamingDeclaredParameter,
@@ -33,212 +38,555 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    kickOffObservedCapture: OmitThisParameter<typeof kickOffObservedCapture>;
-    /** @internal */
-    drainObservedCaptures: OmitThisParameter<typeof drainObservedCaptures>;
-    /** @internal */
-    buildObservedCaptureSiblings: OmitThisParameter<typeof buildObservedCaptureSiblings>;
-    /** @internal */
-    stampReasonlessParameterRefusals: OmitThisParameter<typeof stampReasonlessParameterRefusals>;
-    /** @internal */
-    kickOffAutoRefreshObservedProperties: OmitThisParameter<
-      typeof kickOffAutoRefreshObservedProperties
-    >;
-    /** @internal */
-    kickOffMaskedBaselineRecapture: OmitThisParameter<typeof kickOffMaskedBaselineRecapture>;
-  }
+/**
+ * What an {@link ObservedCapture} reads from the deploy it serves.
+ *
+ * `fingerprintNoEchoValues` is a GETTER rather than a value: the
+ * schema-upgrade backfill in `deploy-flow.ts` replaces it MID-run, after this
+ * deploy's capture was built, and a captured `undefined` would leave a NoEcho
+ * value unmasked in a capture-failure line. `provenanceCapture` is a getter
+ * too, so the pair never depends on the order `deploy()` rebuilds them in.
+ * Every other member here is set once in the constructor and never reassigned.
+ */
+export interface ObservedCaptureDeps {
+  logger: Pick<Logger, 'debug' | 'warn'>;
+  options: Pick<DeployEngineOptions, 'captureObservedState' | 'dryRun'>;
+  resolver: Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
+  providerRegistry: ProviderRegistry;
+  /** Bound `DeployEngine.printingSecretsFor`. */
+  printingSecretsFor: (logicalId: string) => RecordedSecretValues | undefined;
+  /** Live read of `DeployEngine.fingerprintNoEchoValues` — reassigned per deploy. */
+  fingerprintNoEchoValues: () => RecordedSecretValues | undefined;
+  /** Live read of `DeployEngine.provenanceCapture` — reassigned per deploy. */
+  provenanceCapture: () => ProvenanceCapture;
 }
 
 /**
- * Kick off `provider.readCurrentState` for a freshly-created/updated
- * resource without blocking the deploy critical path. The promise
- * lands in `observedCaptureTasks` keyed by `logicalId`; the deploy's
- * success-path drain (`drainObservedCaptures`) awaits the full set
- * and merges the resolved values into `ResourceState.observedProperties`
- * before the final state save.
+ * One engine's deploy-time `observedProperties` capture pipeline: the
+ * fire-and-forget `provider.readCurrentState` calls kicked off after a
+ * successful CREATE / UPDATE (or, once, by the schema-upgrade auto-refresh
+ * and the masked-baseline re-capture) and their drain before the final
+ * state save.
  *
- * Errors are swallowed at the Promise level — readCurrentState
- * failing must not fail the deploy. The map entry resolves to
- * `undefined` for failures and for providers without
- * `readCurrentState`; both translate to "no observedProperties" at
- * the merge step, which is fine: drift falls back to comparing
- * against `properties`.
+ * Per-deploy state, rebuilt in `deploy()`'s per-run reset like
+ * `AttributeHealer` / `ProvenanceCapture`: the task map is drained or cleared
+ * by the end of every deploy, and a `recapturedBaselines` key is a result
+ * object only that deploy's tasks create. ENGINE-instance state, never
+ * module-global: one engine deploys one stack.
  */
-export function kickOffObservedCapture(
-  this: DeployEngine,
-  provider: ResourceProvider,
-  logicalId: string,
-  physicalId: string,
-  resourceType: string,
-  resolvedProps: Record<string, unknown>,
-  context?: import('../../types/resource.js').ReadCurrentStateContext,
-  secrets?: RecordedSecretValues,
+export class ObservedCapture {
   /**
-   * go-to-k/cdkd#4043 / #2449: coordinates whose readback value is masked
-   * before it is installed, paired through `properties` (the deploy-start
-   * refresh of a record that holds `***` there and has no needle bag).
+   * In-flight `provider.readCurrentState` promises kicked off after a
+   * successful CREATE / UPDATE. The deploy critical path does NOT
+   * `await` these; instead they're drained at the end of `doDeploy`
+   * (success path only) and the resolved values are merged into
+   * `ResourceState.observedProperties` before the final state save.
+   *
+   * Each Promise resolves to the AWS-current snapshot, or `undefined`
+   * if the provider does not implement `readCurrentState` or the call
+   * threw — never rejects, so an unhandled-rejection cannot escape.
+   *
+   * @internal
    */
-  maskAt?: { properties: Record<string, unknown>; coordinates: readonly NoEchoCoordinate[] }
-): void {
-  if (this.options.captureObservedState !== true) return;
-  // A capture that cannot run still SUPERSEDES the deploy-start refresh task
-  // for this id (issue #3595 review): the record was just rebuilt, and a
-  // readback of what it replaced must not be installed over it.
-  this.observedCaptureTasks.delete(logicalId);
-  if (!provider.readCurrentState) return;
+  readonly observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
+    new Map();
 
-  const readCurrentState = provider.readCurrentState.bind(provider);
-  const read = (): Promise<Record<string, unknown> | undefined> =>
-    readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context).then(
-      // A resource AWS reports gone has no baseline to capture
-      // (go-to-k/cdkd#4283): the same "no observedProperties" a failed read
-      // leaves, never the sentinel installed as a property bag.
-      (observed) =>
-        observed === RESOURCE_NOT_FOUND
-          ? undefined
-          : maskAt === undefined || observed === undefined || maskAt.coordinates.length === 0
-            ? observed
-            : maskReadbackAtCoordinates(observed, maskAt.properties, maskAt.coordinates),
-      (err: unknown) => {
-        // go-to-k/cdkd#4043 (review M6): masked with the resource's bag, its
-        // derived-name needles and the stack's `NoEcho` values, since the
-        // deploy-start refresh runs with NO bag and AWS may echo a value.
-        const mask = createUnionSecretMasker([
-          secrets,
-          this.printingSecretsFor(logicalId),
-          this.fingerprintNoEchoValues,
-        ]);
-        this.logger.debug(
-          // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
-          safeMsg`observedProperties capture for ${mask(logicalId)} (${mask(resourceType)}) failed: ${asIsMessage(mask(err instanceof Error ? err.message : String(err)))} — drift will fall back to template properties for this resource until the next successful deploy.`
+  /**
+   * The bags a masked-baseline re-capture produced (issue #3595). Each is the
+   * PREVIOUS baseline with some masks replaced, already redacted, so
+   * `drainObservedCaptures` installs it as it is rather than marking it as a
+   * fresh readback. Keyed by the bag's identity, and mapped to the PREVIOUS
+   * baseline it was built from: the drain installs it only while the record
+   * still holds that very baseline, so a record this deploy rebuilt (an UPDATE
+   * or a replacement whose provider takes no capture of its own) never
+   * receives a bag describing the resource it replaced.
+   *
+   * @internal
+   */
+  readonly recapturedBaselines = new WeakMap<object, object>();
+
+  private readonly deps: ObservedCaptureDeps;
+
+  constructor(deps: ObservedCaptureDeps) {
+    this.deps = deps;
+  }
+
+  /**
+   * Kick off `provider.readCurrentState` for a freshly-created/updated
+   * resource without blocking the deploy critical path. The promise
+   * lands in `observedCaptureTasks` keyed by `logicalId`; the deploy's
+   * success-path drain (`drainObservedCaptures`) awaits the full set
+   * and merges the resolved values into `ResourceState.observedProperties`
+   * before the final state save.
+   *
+   * Errors are swallowed at the Promise level — readCurrentState
+   * failing must not fail the deploy. The map entry resolves to
+   * `undefined` for failures and for providers without
+   * `readCurrentState`; both translate to "no observedProperties" at
+   * the merge step, which is fine: drift falls back to comparing
+   * against `properties`.
+   */
+  kickOffObservedCapture(
+    provider: ResourceProvider,
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    resolvedProps: Record<string, unknown>,
+    context?: import('../../types/resource.js').ReadCurrentStateContext,
+    secrets?: RecordedSecretValues,
+    /**
+     * go-to-k/cdkd#4043 / #2449: coordinates whose readback value is masked
+     * before it is installed, paired through `properties` (the deploy-start
+     * refresh of a record that holds `***` there and has no needle bag).
+     */
+    maskAt?: { properties: Record<string, unknown>; coordinates: readonly NoEchoCoordinate[] }
+  ): void {
+    if (this.deps.options.captureObservedState !== true) return;
+    // A capture that cannot run still SUPERSEDES the deploy-start refresh task
+    // for this id (issue #3595 review): the record was just rebuilt, and a
+    // readback of what it replaced must not be installed over it.
+    this.observedCaptureTasks.delete(logicalId);
+    if (!provider.readCurrentState) return;
+
+    const readCurrentState = provider.readCurrentState.bind(provider);
+    const read = (): Promise<Record<string, unknown> | undefined> =>
+      readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context).then(
+        // A resource AWS reports gone has no baseline to capture
+        // (go-to-k/cdkd#4283): the same "no observedProperties" a failed read
+        // leaves, never the sentinel installed as a property bag.
+        (observed) =>
+          observed === RESOURCE_NOT_FOUND
+            ? undefined
+            : maskAt === undefined || observed === undefined || maskAt.coordinates.length === 0
+              ? observed
+              : maskReadbackAtCoordinates(observed, maskAt.properties, maskAt.coordinates),
+        (err: unknown) => {
+          // go-to-k/cdkd#4043 (review M6): masked with the resource's bag, its
+          // derived-name needles and the stack's `NoEcho` values, since the
+          // deploy-start refresh runs with NO bag and AWS may echo a value.
+          const mask = createUnionSecretMasker([
+            secrets,
+            this.deps.printingSecretsFor(logicalId),
+            this.deps.fingerprintNoEchoValues(),
+          ]);
+          this.deps.logger.debug(
+            // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
+            safeMsg`observedProperties capture for ${mask(logicalId)} (${mask(resourceType)}) failed: ${asIsMessage(mask(err instanceof Error ? err.message : String(err)))} — drift will fall back to template properties for this resource until the next successful deploy.`
+          );
+          return undefined;
+        }
+      );
+    // go-to-k/cdkd#4362: the readback runs AFTER the create / update call
+    // returned, so outside the scope that call bound. Bind the SAME bag again,
+    // around the whole chain: a promise reaction runs in the scope it was
+    // registered in, so the `catch` line above (AWS may echo a submitted,
+    // secret-derived name) is sink-masked too, not only the provider's own lines.
+    const promise = secrets === undefined ? read() : withCurrentResourceSecrets(secrets, read);
+    this.observedCaptureTasks.set(logicalId, promise);
+  }
+
+  /**
+   * Wait for every in-flight `readCurrentState` promise from the
+   * deploy's success path, then merge each resolved snapshot into the
+   * matching `ResourceState.observedProperties`. After this runs the
+   * map is drained so a subsequent deploy starts fresh.
+   *
+   * Called from `doDeploy` immediately before the final `saveState`.
+   * The rollback / failure paths intentionally do NOT call this — a
+   * failed deploy's partial state is already inconsistent, and waiting
+   * on potentially many in-flight reads would slow down the rollback
+   * itself.
+   *
+   * Returns how many baselines it installed, so the no-change path saves only
+   * when one landed: a masked-baseline re-capture (issue #3595) that refuses
+   * resolves to `undefined` on every deploy for a position that stays
+   * uncertifiable, and must not rewrite an unchanged `state.json` each time.
+   */
+  async drainObservedCaptures(stateResources: Record<string, ResourceState>): Promise<number> {
+    // State schema v12: the one-time provenance capture lands in the same save,
+    // and counts toward it, so a no-change deploy persists what it captured.
+    const captured = await this.deps.provenanceCapture().drainProvenanceCaptures(stateResources);
+    if (this.observedCaptureTasks.size === 0) return captured;
+    const entries = Array.from(this.observedCaptureTasks.entries());
+    this.observedCaptureTasks.clear();
+    const resolved = await Promise.all(entries.map(([, p]) => p));
+    let installed = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const logicalId = entries[i]![0];
+      const observed = resolved[i];
+      const target = stateResources[logicalId];
+      const recapturedFrom =
+        observed === undefined ? undefined : this.recapturedBaselines.get(observed);
+      if (recapturedFrom !== undefined && target?.observedProperties !== recapturedFrom) continue;
+      if (target && observed !== undefined) {
+        installed++;
+        // Issue #2516: the readback is THIS pass's own, taken from the
+        // resource it just wrote, so the object is marked same-generation
+        // before it is installed — the persist choke point walks this bag
+        // separately from `properties`, against today's template, and a mark
+        // on `properties` alone would leave the readback of an embedded 1-3
+        // character secret in plaintext. The mark is one half of the
+        // evidence: the arm also needs a resolved pair for the source token
+        // AND the readback's middle to EQUAL what that pair recorded. An
+        // UNCHANGED resource's auto-refresh has an empty map and no pair. A
+        // resource the diff called UPDATE and the re-check then skipped is
+        // refreshed with today's pair in its map — and there the re-check has
+        // just proven the stored record already holds the token at that leaf,
+        // so a readback carrying today's plaintext converges on the same
+        // answer rather than fabricating one.
+        //
+        // A COPY, like the two never-installed sites -- the journal's
+        // `attemptedProperties` above and the no-change re-check below: `observed` is
+        // whatever `provider.readCurrentState` returned, and the
+        // schema-upgrade auto-refresh hands that method the PREVIOUS
+        // generation's `resource.properties` as its 4th argument -- so a
+        // provider returning that argument BY IDENTITY would put a permanent
+        // same-generation mark on a previous-generation object still
+        // installed on the record, which is the fabrication this mark's own
+        // contract forbids. No provider under `src/provisioning/` does that
+        // today (grepped at PR 2753 review), but the contract is delegated to
+        // ~100 implementations with no guard, and the copy costs one spread.
+        //
+        // Pinned from outside by walking the object the provider handed back
+        // through `redactSecretsForState` AFTER the deploy, under the DEFAULT
+        // rules: those make no generation claim of their own, so the mark on
+        // the object is what decides whether a sub-floor middle becomes the
+        // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
+        // that constant claims the generation itself -- which is why the
+        // test does not reuse the persist path's own rules.
+        // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
+        // is the previous baseline with some masks replaced by the record's own
+        // expressions, not a readback this pass took, so it must not claim the
+        // generation. The persist choke point then re-scrubs it with the
+        // readback rules, which add no mask to a bag holding no plaintext.
+        // NO TEST FENCES THIS, and the reason is structural: marked, the bag
+        // would take the fail-closed rules instead, and those only mask a
+        // string at a position they cannot pair that is neither a reference
+        // nor a literal the record spells. The re-capture's own precondition
+        // already refused any such baseline, so the two answers agree on every
+        // bag that reaches here.
+        target.observedProperties =
+          recapturedFrom !== undefined ? observed : markSameGenerationBag({ ...observed });
+        // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
+        // rather than an omission (issue #2944). An explicit `delete` was
+        // written at this line first and is UNREACHABLE: the only two ways a
+        // bag reaches it are the deploy-start auto-refresh, which never
+        // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
+        // skips them, and its masked-baseline re-capture takes only a record
+        // that HAS a baseline, which a marked one never does), and a
+        // post-CREATE / post-UPDATE / post-replacement
+        // capture, whose record `provisionResource` has already REBUILT from
+        // the template — dropping the field with it. So the clearing mechanism
+        // is the rebuild, and the contract a test can hold is "a real CREATE /
+        // UPDATE clears the refusal", not "this line does".
+        //
+        // ONE REFUSAL CLASS IS NOT CLEARED BY THE REBUILD (issue #3462): an
+        // unverifiable-parameter refusal survives every IN-PLACE update, and
+        // that arm of `provisionResource` kicks off no capture at all, so such
+        // a record never reaches this loop either. Only a replacement / CREATE
+        // (or a proving re-import) discharges it — the type doc of
+        // `ResourceState.observedBaselineRefusalReason` carries the argument.
+        //
+        // The other arm that deliberately KEEPS a marked record marked is the
+        // metadata-only update (`{ ...currentResource, ...templateAttributes }`
+        // in `provisionResource`): it issues no provider call and takes no
+        // readback, so nothing there earns a baseline the import declined.
+      }
+    }
+    return installed + captured;
+  }
+
+  /**
+   * Kick off `provider.readCurrentState` for every resource in the
+   * loaded state that lacks `observedProperties` (e.g. state written
+   * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
+   * resource's baseline never landed). Calls go through
+   * `kickOffObservedCapture`, so they share the same fire-and-forget
+   * pipeline, error swallowing, and final-drain wiring that the
+   * post-CREATE / post-UPDATE captures use.
+   *
+   * The deploy critical path does NOT wait on these; the cost is
+   * bounded by `max(per-resource readCurrentState latency)` (typically
+   * ~200-300ms in practice) once at the end-of-deploy drain. Any
+   * resource that subsequently goes through CREATE / UPDATE in the
+   * same deploy will overwrite this entry via the `Map.set` keyed by
+   * `logicalId` (latest-wins) — so there's no double-write to state,
+   * just a wasted SDK call for the (rare) UPDATE / DELETE intersection.
+   *
+   * Resources whose provider lookup throws (e.g. unsupported type) or
+   * lacks `readCurrentState` are silently skipped — same policy as the
+   * manual `cdkd state refresh-observed` command.
+   */
+  kickOffAutoRefreshObservedProperties(
+    stateResources: Record<string, ResourceState>,
+    crossStackReads: Pick<StackState, 'imports' | 'outputReads'>
+  ): void {
+    if (this.deps.options.captureObservedState !== true) return;
+    // Dry run does not fire this observed-state read (no AWS side-effect runs
+    // under it). The #1852 attribute heal is the one read a dry run CAN issue:
+    // it is read-only, fires only on a `Fn::GetAtt` miss, and persists nothing.
+    if (this.deps.options.dryRun === true) return;
+    let toRefresh = 0;
+    let refused = 0;
+    const candidates: Array<{
+      logicalId: string;
+      resource: ResourceState;
+    }> = [];
+    // Issue #3595: records whose baseline holds a #2852 fail-closed mask. See
+    // `masked-baseline-recapture.ts` for what may change and what may not.
+    const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
+    for (const [logicalId, resource] of Object.entries(stateResources)) {
+      // go-to-k/cdkd#3211: both reads below address AWS by the record's
+      // `physicalId`, so a record with none usable is not read at all: the
+      // value names no resource, and whatever a provider answered for it would
+      // become the record's drift baseline.
+      if (!hasAddressablePhysicalId(resource)) continue;
+      if (resource.observedProperties !== undefined) {
+        if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
+        continue;
+      }
+      // Schema v10+ (issue #2944). `observedProperties === undefined` is
+      // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
+      // with no `readCurrentState` — where refilling is exactly this method's
+      // job — and it ALSO means "a `cdkd import` run REFUSED to capture one",
+      // where refilling is the leak. The two are indistinguishable from the
+      // field alone, which is why the refusal is recorded on the record; see
+      // `ResourceState.observedBaselineRefused`'s doc for why nothing else can
+      // carry it here.
+      //
+      // What makes the refill a leak rather than a wasted call: this site
+      // positions the readback against `resource.properties` (the 5th argument
+      // below), and after a refusal those can hold the WRONG-BRANCH LITERAL the
+      // import distrusted. A literal source leaf against a string readback
+      // PAIRS as an ordinary drifted literal, so `redactSecretsForState` has
+      // nothing to refuse on and the decrypted value is persisted.
+      //
+      // NOT cleared here. The clearing writer is a real CREATE / UPDATE, which
+      // resolved the resource from the template and whose own
+      // `kickOffObservedCapture` overwrites the baseline anyway (latest-wins on
+      // the `observedCaptureTasks` key) — so a deploy that actually changes the
+      // resource heals it, while a deploy that leaves it NO_CHANGE holds no
+      // more evidence than this site does.
+      if (resource.observedBaselineRefused === true) {
+        refused++;
+        continue;
+      }
+      candidates.push({ logicalId, resource });
+    }
+    if (refused > 0) {
+      this.deps.logger.debug(
+        safeMsg`observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused: their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
+      );
+    }
+    if (candidates.length === 0 && masked.length === 0) return;
+
+    // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
+    // fully loaded from the previous deploy — sibling AWS::IAM::Policy
+    // resources are all present. Pass a cross-resource context so IAM
+    // providers can filter inline policies managed via sibling
+    // resources, otherwise observed.Policies would record the
+    // sibling-managed entries and the next `cdkd drift` would fire
+    // false drift (filtered AWS-current = []) until `cdkd drift
+    // --accept` runs. Build the siblings map once and clone-minus-self
+    // per resource to avoid an O(N²) walk.
+    const allSiblings: Record<
+      string,
+      { resourceType: string; properties: Record<string, unknown> }
+    > = {};
+    for (const [lid, res] of Object.entries(stateResources)) {
+      allSiblings[lid] = {
+        resourceType: res.resourceType,
+        properties: res.properties ?? {},
+      };
+    }
+
+    for (const { logicalId, resource } of candidates) {
+      // Skip-list / unsupported types: the routing lookup throws — silently
+      // skip (mirrors `cdkd state refresh-observed`'s policy: best-effort,
+      // no failure on a state record we cannot resolve).
+      //
+      // Routed on the RECORD's `provisionedBy`, not by type alone (issue
+      // #2608's sibling site, found by that fix's sweep). Unlike the UPDATE
+      // capture, this site has no routing DECISION to bind to — the record is
+      // all there is — so it re-derives, and that is not an identity for a
+      // `STICKY_CC_MIGRATION_EXEMPT` type: one stamped `cc-api` can
+      // deliberately land on its SDK provider. Accepted here rather than
+      // papered over, and the reason is now per MODE (issue #2719):
+      //   - `'cc-broken'` (`AWS::Scheduler::Schedule`): the SDK provider IS the
+      //     correct reader — the exemption exists because CC cannot address the
+      //     resource — and both layers store the same physicalId.
+      //   - `'sdk-coverage'` (`AWS::SNS::Topic`): this site passes NO property
+      //     bags, so the flip predicate's no-properties gate refuses, and the
+      //     re-derivation stays on Cloud Control. That is load-bearing rather
+      //     than incidental: the capture must read through the layer that
+      //     WROTE the resource, and this deploy has not flipped it yet.
+      // Either way the re-derivation lands on the right provider.
+      //
+      // One more consequence, audited rather than accidental: the sticky arm
+      // returns BEFORE `isSupportedResourceType`, so a `cc-api`-stamped record
+      // of a type Cloud Control no longer supports now resolves to the CC
+      // provider instead of falling into the `catch { continue }` below. It
+      // gets a fire-and-forget read that fails and is swallowed, which is the
+      // same no-baseline outcome skipping produced -- one wasted call on a
+      // record that has no observed bag either way. The legacy
+      // `getProvider` entry point passes no recorded layer, so a record
+      // stamped `provisionedBy: 'cc-api'` — because a silent-drop property
+      // auto-routed it (issue #614) — had its baseline read back through the
+      // SDK provider instead. The bag then describes a layer state does not
+      // name, and this bag IS the drift baseline, so the very next
+      // `cdkd drift` reports the shape difference as drift (the phantom-drift
+      // class of issue #1591). Absent on a pre-v7 record, which reads as
+      // "no recorded layer" and lands on the same type-only decision as
+      // before.
+      let provider: ResourceProvider;
+      try {
+        provider = this.deps.providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
+      } catch {
+        continue;
+      }
+      if (!provider.readCurrentState) continue;
+      const siblings = { ...allSiblings };
+      delete siblings[logicalId];
+      // go-to-k/cdkd#4043 / #2449 (review SECURITY 4): this read has NO needle
+      // bag, and a `***` source leaf positions nothing in the persist walk, so a
+      // value the record holds only as the mask (a reader of a custom
+      // resource's `NoEcho` attribute, whose producer did not run; a pre-v11
+      // record names no coordinate) would be installed in the clear. Every
+      // whole-`***` leaf of `properties`, and every coordinate the record marks,
+      // is masked in the readback before it is installed.
+      const recordProperties = resource.properties ?? {};
+      const maskCoordinates = [
+        ...maskedLeafCoordinatesOf(recordProperties),
+        ...(noEchoLeavesOf(resource) ?? []),
+      ];
+      this.kickOffObservedCapture(
+        provider,
+        logicalId,
+        resource.physicalId,
+        resource.resourceType,
+        recordProperties,
+        { siblings },
+        undefined,
+        maskCoordinates.length > 0
+          ? { properties: recordProperties, coordinates: maskCoordinates }
+          : undefined
+      );
+      toRefresh++;
+    }
+
+    if (toRefresh > 0) {
+      this.deps.logger.warn(
+        safeMsg`cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
+      );
+    }
+
+    // The CONSUMER's cross-region evidence for the re-capture's resolution. Read
+    // only when a masked record needs it, and a record list that cannot be read
+    // (a hand-edited `imports` element) skips the re-capture rather than
+    // resolving without the evidence: an absent list would verdict every
+    // region-less reference `local`.
+    let producerRegions: readonly string[] = [];
+    if (masked.length > 0) {
+      try {
+        producerRegions = producerRegionsFromState(crossStackReads);
+      } catch {
+        this.deps.logger.debug(
+          safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read.`
+        );
+        masked.length = 0;
+      }
+    }
+    for (const { logicalId, resource } of masked) {
+      let provider: ResourceProvider;
+      try {
+        // Routed on the record's `provisionedBy`, as the loop above is.
+        provider = this.deps.providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
+      } catch {
+        continue;
+      }
+      if (!provider.readCurrentState) continue;
+      const siblings = { ...allSiblings };
+      delete siblings[logicalId];
+      this.kickOffMaskedBaselineRecapture(provider, logicalId, resource, producerRegions, {
+        siblings,
+      });
+    }
+  }
+
+  /**
+   * Re-capture ONE record's fail-closed-masked baseline (issue #3595).
+   *
+   * Resolves the record's own `properties` references into a map of its own —
+   * never into `perResourceSecrets`: a populated entry there would move the
+   * persist choke point's observed walk off the fail-closed rules for this
+   * record. Then reads the resource back and hands both to
+   * `recaptureMaskedBaseline`, which changes masked positions only. Every
+   * refusal (a reference that does not resolve, a readback that fails, a
+   * baseline the fresh readback does not reproduce) resolves the task to
+   * `undefined`, which leaves the old baseline in place.
+   *
+   * Fire-and-forget like every other capture: drained before the final save,
+   * latest-wins against a later CREATE / UPDATE capture of the same id.
+   */
+  kickOffMaskedBaselineRecapture(
+    provider: ResourceProvider,
+    logicalId: string,
+    resource: ResourceState,
+    producerRegions: readonly string[],
+    context: import('../../types/resource.js').ReadCurrentStateContext
+  ): void {
+    const previous = resource.observedProperties;
+    const readCurrentState = provider.readCurrentState?.bind(provider);
+    if (previous === undefined || readCurrentState === undefined) return;
+    const properties = resource.properties ?? {};
+    const task = (async (): Promise<Record<string, unknown> | undefined> => {
+      const secrets = await resolveRecordSecrets(properties, (token, own) =>
+        this.deps.resolver.resolveDynamicReferences(
+          token,
+          // The CONSUMER's cross-region evidence rides it, so a region-less
+          // reference this stack may have read from another region refuses
+          // (`ambiguous`) instead of resolving against a same-named secret here.
+          persistedTokenResolverContext(own, producerRegions)
+        )
+      );
+      if (secrets === undefined || secrets.size === 0) {
+        // The CLASS only: never a reference, a value or an error's text.
+        this.deps.logger.debug(
+          safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values.`
         );
         return undefined;
       }
-    );
-  // go-to-k/cdkd#4362: the readback runs AFTER the create / update call
-  // returned, so outside the scope that call bound. Bind the SAME bag again,
-  // around the whole chain: a promise reaction runs in the scope it was
-  // registered in, so the `catch` line above (AWS may echo a submitted,
-  // secret-derived name) is sink-masked too, not only the provider's own lines.
-  const promise = secrets === undefined ? read() : withCurrentResourceSecrets(secrets, read);
-  this.observedCaptureTasks.set(logicalId, promise);
-}
-
-/**
- * Wait for every in-flight `readCurrentState` promise from the
- * deploy's success path, then merge each resolved snapshot into the
- * matching `ResourceState.observedProperties`. After this runs the
- * map is drained so a subsequent deploy starts fresh.
- *
- * Called from `doDeploy` immediately before the final `saveState`.
- * The rollback / failure paths intentionally do NOT call this — a
- * failed deploy's partial state is already inconsistent, and waiting
- * on potentially many in-flight reads would slow down the rollback
- * itself.
- *
- * Returns how many baselines it installed, so the no-change path saves only
- * when one landed: a masked-baseline re-capture (issue #3595) that refuses
- * resolves to `undefined` on every deploy for a position that stays
- * uncertifiable, and must not rewrite an unchanged `state.json` each time.
- */
-export async function drainObservedCaptures(
-  this: DeployEngine,
-  stateResources: Record<string, ResourceState>
-): Promise<number> {
-  // State schema v12: the one-time provenance capture lands in the same save,
-  // and counts toward it, so a no-change deploy persists what it captured.
-  const captured = await this.provenanceCapture.drainProvenanceCaptures(stateResources);
-  if (this.observedCaptureTasks.size === 0) return captured;
-  const entries = Array.from(this.observedCaptureTasks.entries());
-  this.observedCaptureTasks.clear();
-  const resolved = await Promise.all(entries.map(([, p]) => p));
-  let installed = 0;
-  for (let i = 0; i < entries.length; i++) {
-    const logicalId = entries[i]![0];
-    const observed = resolved[i];
-    const target = stateResources[logicalId];
-    const recapturedFrom =
-      observed === undefined ? undefined : this.recapturedBaselines.get(observed);
-    if (recapturedFrom !== undefined && target?.observedProperties !== recapturedFrom) continue;
-    if (target && observed !== undefined) {
-      installed++;
-      // Issue #2516: the readback is THIS pass's own, taken from the
-      // resource it just wrote, so the object is marked same-generation
-      // before it is installed — the persist choke point walks this bag
-      // separately from `properties`, against today's template, and a mark
-      // on `properties` alone would leave the readback of an embedded 1-3
-      // character secret in plaintext. The mark is one half of the
-      // evidence: the arm also needs a resolved pair for the source token
-      // AND the readback's middle to EQUAL what that pair recorded. An
-      // UNCHANGED resource's auto-refresh has an empty map and no pair. A
-      // resource the diff called UPDATE and the re-check then skipped is
-      // refreshed with today's pair in its map — and there the re-check has
-      // just proven the stored record already holds the token at that leaf,
-      // so a readback carrying today's plaintext converges on the same
-      // answer rather than fabricating one.
-      //
-      // A COPY, like the two never-installed sites -- the journal's
-      // `attemptedProperties` above and the no-change re-check below: `observed` is
-      // whatever `provider.readCurrentState` returned, and the
-      // schema-upgrade auto-refresh hands that method the PREVIOUS
-      // generation's `resource.properties` as its 4th argument -- so a
-      // provider returning that argument BY IDENTITY would put a permanent
-      // same-generation mark on a previous-generation object still
-      // installed on the record, which is the fabrication this mark's own
-      // contract forbids. No provider under `src/provisioning/` does that
-      // today (grepped at PR 2753 review), but the contract is delegated to
-      // ~100 implementations with no guard, and the copy costs one spread.
-      //
-      // Pinned from outside by walking the object the provider handed back
-      // through `redactSecretsForState` AFTER the deploy, under the DEFAULT
-      // rules: those make no generation claim of their own, so the mark on
-      // the object is what decides whether a sub-floor middle becomes the
-      // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
-      // that constant claims the generation itself -- which is why the
-      // test does not reuse the persist path's own rules.
-      // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
-      // is the previous baseline with some masks replaced by the record's own
-      // expressions, not a readback this pass took, so it must not claim the
-      // generation. The persist choke point then re-scrubs it with the
-      // readback rules, which add no mask to a bag holding no plaintext.
-      // NO TEST FENCES THIS, and the reason is structural: marked, the bag
-      // would take the fail-closed rules instead, and those only mask a
-      // string at a position they cannot pair that is neither a reference
-      // nor a literal the record spells. The re-capture's own precondition
-      // already refused any such baseline, so the two answers agree on every
-      // bag that reaches here.
-      target.observedProperties =
-        recapturedFrom !== undefined ? observed : markSameGenerationBag({ ...observed });
-      // NOTHING CLEARS `observedBaselineRefused` HERE, and that is a finding
-      // rather than an omission (issue #2944). An explicit `delete` was
-      // written at this line first and is UNREACHABLE: the only two ways a
-      // bag reaches it are the deploy-start auto-refresh, which never
-      // enqueues a MARKED record (`kickOffAutoRefreshObservedProperties`
-      // skips them, and its masked-baseline re-capture takes only a record
-      // that HAS a baseline, which a marked one never does), and a
-      // post-CREATE / post-UPDATE / post-replacement
-      // capture, whose record `provisionResource` has already REBUILT from
-      // the template — dropping the field with it. So the clearing mechanism
-      // is the rebuild, and the contract a test can hold is "a real CREATE /
-      // UPDATE clears the refusal", not "this line does".
-      //
-      // ONE REFUSAL CLASS IS NOT CLEARED BY THE REBUILD (issue #3462): an
-      // unverifiable-parameter refusal survives every IN-PLACE update, and
-      // that arm of `provisionResource` kicks off no capture at all, so such
-      // a record never reaches this loop either. Only a replacement / CREATE
-      // (or a proving re-import) discharges it — the type doc of
-      // `ResourceState.observedBaselineRefusalReason` carries the argument.
-      //
-      // The other arm that deliberately KEEPS a marked record marked is the
-      // metadata-only update (`{ ...currentResource, ...templateAttributes }`
-      // in `provisionResource`): it issues no provider call and takes no
-      // readback, so nothing there earns a baseline the import declined.
-    }
+      // The readback can carry the plaintext just resolved, so it runs inside
+      // that bag's sink scope, like the post-write capture (#4362).
+      const readback = await withCurrentResourceSecrets(secrets, () =>
+        readCurrentState(resource.physicalId, logicalId, resource.resourceType, properties, context)
+      );
+      // A resource AWS reports gone keeps its masked baseline (go-to-k/cdkd#4283).
+      if (readback === undefined || readback === RESOURCE_NOT_FOUND) return undefined;
+      const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
+      if (recaptured === undefined) {
+        this.deps.logger.debug(
+          safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records.`
+        );
+        return undefined;
+      }
+      this.recapturedBaselines.set(recaptured, previous);
+      this.deps.logger.debug(safeMsg`Re-captured the masked observed baseline of ${logicalId}.`);
+      return recaptured;
+    })().catch(() => {
+      this.deps.logger.debug(
+        safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed.`
+      );
+      return undefined;
+    });
+    this.observedCaptureTasks.set(logicalId, task);
   }
-  return installed + captured;
 }
 
 /** The standalone inline policy type naming a principal of each kind, and its field. */
@@ -247,6 +595,13 @@ const STANDALONE_SIBLING: Record<'Roles' | 'Users' | 'Groups', { type: string; f
   Users: { type: 'AWS::IAM::UserPolicy', field: 'UserName' },
   Groups: { type: 'AWS::IAM::GroupPolicy', field: 'GroupName' },
 };
+
+/** What {@link buildObservedCaptureSiblings} reads from the deploy it serves. */
+export interface ObservedCaptureSiblingsDeps {
+  options: Pick<DeployEngineOptions, 'captureObservedState'>;
+  buildResolverContext: DeployEngine['buildResolverContext'];
+  resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
+}
 
 /**
  * Build a sibling context for the deploy-time `observedProperties`
@@ -282,7 +637,7 @@ const STANDALONE_SIBLING: Record<'Roles' | 'Users' | 'Groups', { type: string; f
  * capture behaving exactly as before.
  */
 export async function buildObservedCaptureSiblings(
-  this: DeployEngine,
+  deps: ObservedCaptureSiblingsDeps,
   resourceType: string,
   capturedLogicalId: string,
   capturedPhysicalId: string,
@@ -294,7 +649,7 @@ export async function buildObservedCaptureSiblings(
 ): Promise<import('../../types/resource.js').ReadCurrentStateContext | undefined> {
   // Capture disabled (kickOffObservedCapture would ignore the context) —
   // skip the template walk / resolver work entirely.
-  if (this.options.captureObservedState !== true) return undefined;
+  if (deps.options.captureObservedState !== true) return undefined;
   const attachmentField =
     resourceType === 'AWS::IAM::Role'
       ? 'Roles'
@@ -343,7 +698,7 @@ export async function buildObservedCaptureSiblings(
     // exclude set (no worse than the pre-fix behavior).
     let policyName: unknown = props['PolicyName'];
     if (policyName !== undefined && typeof policyName !== 'string') {
-      resolverContext ??= this.buildResolverContext(
+      resolverContext ??= deps.buildResolverContext(
         {
           template: template!,
           resources: stateResources,
@@ -353,7 +708,7 @@ export async function buildObservedCaptureSiblings(
         stackName
       );
       try {
-        policyName = await this.resolver.resolve(policyName, resolverContext);
+        policyName = await deps.resolver.resolve(policyName, resolverContext);
       } catch {
         continue;
       }
@@ -393,7 +748,7 @@ export async function buildObservedCaptureSiblings(
  * place, which is what lets every later reader of it see the stamp.
  */
 export function stampReasonlessParameterRefusals(
-  this: DeployEngine,
+  logger: Pick<Logger, 'debug'>,
   stateResources: Record<string, ResourceState>,
   template: CloudFormationTemplate | undefined
 ): void {
@@ -411,305 +766,13 @@ export function stampReasonlessParameterRefusals(
   }
   if (namesParameter?.failedClosed !== undefined) {
     // The cause CLASS only: never a template value or an error's text.
-    this.logger.debug(
+    logger.debug(
       safeMsg`The template's parameter dependence could not be judged (${namesParameter.failedClosed}): every observed-baseline refusal recorded without a reason is treated as an unverifiable-parameter refusal (${stamped} stamped).`
     );
   }
   if (stamped > 0) {
-    this.logger.debug(
+    logger.debug(
       safeMsg`${stamped} resource(s) carry an observed-baseline refusal recorded without a reason by an older cdkd, and their template definition reads a template parameter: treated as an unverifiable-parameter refusal (kept until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter).`
     );
   }
-}
-
-/**
- * Kick off `provider.readCurrentState` for every resource in the
- * loaded state that lacks `observedProperties` (e.g. state written
- * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
- * resource's baseline never landed). Calls go through
- * `kickOffObservedCapture`, so they share the same fire-and-forget
- * pipeline, error swallowing, and final-drain wiring that the
- * post-CREATE / post-UPDATE captures use.
- *
- * The deploy critical path does NOT wait on these; the cost is
- * bounded by `max(per-resource readCurrentState latency)` (typically
- * ~200-300ms in practice) once at the end-of-deploy drain. Any
- * resource that subsequently goes through CREATE / UPDATE in the
- * same deploy will overwrite this entry via the `Map.set` keyed by
- * `logicalId` (latest-wins) — so there's no double-write to state,
- * just a wasted SDK call for the (rare) UPDATE / DELETE intersection.
- *
- * Resources whose provider lookup throws (e.g. unsupported type) or
- * lacks `readCurrentState` are silently skipped — same policy as the
- * manual `cdkd state refresh-observed` command.
- */
-export function kickOffAutoRefreshObservedProperties(
-  this: DeployEngine,
-  stateResources: Record<string, ResourceState>,
-  crossStackReads: Pick<StackState, 'imports' | 'outputReads'>
-): void {
-  if (this.options.captureObservedState !== true) return;
-  // Dry run does not fire this observed-state read (no AWS side-effect runs
-  // under it). The #1852 attribute heal is the one read a dry run CAN issue:
-  // it is read-only, fires only on a `Fn::GetAtt` miss, and persists nothing.
-  if (this.options.dryRun === true) return;
-  let toRefresh = 0;
-  let refused = 0;
-  const candidates: Array<{
-    logicalId: string;
-    resource: ResourceState;
-  }> = [];
-  // Issue #3595: records whose baseline holds a #2852 fail-closed mask. See
-  // `masked-baseline-recapture.ts` for what may change and what may not.
-  const masked: Array<{ logicalId: string; resource: ResourceState }> = [];
-  for (const [logicalId, resource] of Object.entries(stateResources)) {
-    // go-to-k/cdkd#3211: both reads below address AWS by the record's
-    // `physicalId`, so a record with none usable is not read at all: the
-    // value names no resource, and whatever a provider answered for it would
-    // become the record's drift baseline.
-    if (!hasAddressablePhysicalId(resource)) continue;
-    if (resource.observedProperties !== undefined) {
-      if (isMaskedBaselineRecaptureCandidate(resource)) masked.push({ logicalId, resource });
-      continue;
-    }
-    // Schema v10+ (issue #2944). `observedProperties === undefined` is
-    // OVERLOADED: it means "never captured" for a pre-v3 record or a provider
-    // with no `readCurrentState` — where refilling is exactly this method's
-    // job — and it ALSO means "a `cdkd import` run REFUSED to capture one",
-    // where refilling is the leak. The two are indistinguishable from the
-    // field alone, which is why the refusal is recorded on the record; see
-    // `ResourceState.observedBaselineRefused`'s doc for why nothing else can
-    // carry it here.
-    //
-    // What makes the refill a leak rather than a wasted call: this site
-    // positions the readback against `resource.properties` (the 5th argument
-    // below), and after a refusal those can hold the WRONG-BRANCH LITERAL the
-    // import distrusted. A literal source leaf against a string readback
-    // PAIRS as an ordinary drifted literal, so `redactSecretsForState` has
-    // nothing to refuse on and the decrypted value is persisted.
-    //
-    // NOT cleared here. The clearing writer is a real CREATE / UPDATE, which
-    // resolved the resource from the template and whose own
-    // `kickOffObservedCapture` overwrites the baseline anyway (latest-wins on
-    // the `observedCaptureTasks` key) — so a deploy that actually changes the
-    // resource heals it, while a deploy that leaves it NO_CHANGE holds no
-    // more evidence than this site does.
-    if (resource.observedBaselineRefused === true) {
-      refused++;
-      continue;
-    }
-    candidates.push({ logicalId, resource });
-  }
-  if (refused > 0) {
-    this.logger.debug(
-      safeMsg`observed-properties auto-refresh SKIPPED for ${refused} resource(s) whose baseline a 'cdkd import' run refused: their recorded properties cannot position the redaction, so capturing an AWS readback against them could persist a resolved secret in plaintext. A deploy that actually CHANGES one of them restores its baseline, unless the refusal is an unverifiable-parameter one (only a replacement or a proving re-import discharges that); a NO_CHANGE deploy never does.`
-    );
-  }
-  if (candidates.length === 0 && masked.length === 0) return;
-
-  // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
-  // fully loaded from the previous deploy — sibling AWS::IAM::Policy
-  // resources are all present. Pass a cross-resource context so IAM
-  // providers can filter inline policies managed via sibling
-  // resources, otherwise observed.Policies would record the
-  // sibling-managed entries and the next `cdkd drift` would fire
-  // false drift (filtered AWS-current = []) until `cdkd drift
-  // --accept` runs. Build the siblings map once and clone-minus-self
-  // per resource to avoid an O(N²) walk.
-  const allSiblings: Record<string, { resourceType: string; properties: Record<string, unknown> }> =
-    {};
-  for (const [lid, res] of Object.entries(stateResources)) {
-    allSiblings[lid] = {
-      resourceType: res.resourceType,
-      properties: res.properties ?? {},
-    };
-  }
-
-  for (const { logicalId, resource } of candidates) {
-    // Skip-list / unsupported types: the routing lookup throws — silently
-    // skip (mirrors `cdkd state refresh-observed`'s policy: best-effort,
-    // no failure on a state record we cannot resolve).
-    //
-    // Routed on the RECORD's `provisionedBy`, not by type alone (issue
-    // #2608's sibling site, found by that fix's sweep). Unlike the UPDATE
-    // capture, this site has no routing DECISION to bind to — the record is
-    // all there is — so it re-derives, and that is not an identity for a
-    // `STICKY_CC_MIGRATION_EXEMPT` type: one stamped `cc-api` can
-    // deliberately land on its SDK provider. Accepted here rather than
-    // papered over, and the reason is now per MODE (issue #2719):
-    //   - `'cc-broken'` (`AWS::Scheduler::Schedule`): the SDK provider IS the
-    //     correct reader — the exemption exists because CC cannot address the
-    //     resource — and both layers store the same physicalId.
-    //   - `'sdk-coverage'` (`AWS::SNS::Topic`): this site passes NO property
-    //     bags, so the flip predicate's no-properties gate refuses, and the
-    //     re-derivation stays on Cloud Control. That is load-bearing rather
-    //     than incidental: the capture must read through the layer that
-    //     WROTE the resource, and this deploy has not flipped it yet.
-    // Either way the re-derivation lands on the right provider.
-    //
-    // One more consequence, audited rather than accidental: the sticky arm
-    // returns BEFORE `isSupportedResourceType`, so a `cc-api`-stamped record
-    // of a type Cloud Control no longer supports now resolves to the CC
-    // provider instead of falling into the `catch { continue }` below. It
-    // gets a fire-and-forget read that fails and is swallowed, which is the
-    // same no-baseline outcome skipping produced -- one wasted call on a
-    // record that has no observed bag either way. The legacy
-    // `getProvider` entry point passes no recorded layer, so a record
-    // stamped `provisionedBy: 'cc-api'` — because a silent-drop property
-    // auto-routed it (issue #614) — had its baseline read back through the
-    // SDK provider instead. The bag then describes a layer state does not
-    // name, and this bag IS the drift baseline, so the very next
-    // `cdkd drift` reports the shape difference as drift (the phantom-drift
-    // class of issue #1591). Absent on a pre-v7 record, which reads as
-    // "no recorded layer" and lands on the same type-only decision as
-    // before.
-    let provider: ResourceProvider;
-    try {
-      provider = this.providerRegistry.getProviderFor({
-        resourceType: resource.resourceType,
-        provisionedBy: resource.provisionedBy,
-      }).provider;
-    } catch {
-      continue;
-    }
-    if (!provider.readCurrentState) continue;
-    const siblings = { ...allSiblings };
-    delete siblings[logicalId];
-    // go-to-k/cdkd#4043 / #2449 (review SECURITY 4): this read has NO needle
-    // bag, and a `***` source leaf positions nothing in the persist walk, so a
-    // value the record holds only as the mask (a reader of a custom
-    // resource's `NoEcho` attribute, whose producer did not run; a pre-v11
-    // record names no coordinate) would be installed in the clear. Every
-    // whole-`***` leaf of `properties`, and every coordinate the record marks,
-    // is masked in the readback before it is installed.
-    const recordProperties = resource.properties ?? {};
-    const maskCoordinates = [
-      ...maskedLeafCoordinatesOf(recordProperties),
-      ...(noEchoLeavesOf(resource) ?? []),
-    ];
-    this.kickOffObservedCapture(
-      provider,
-      logicalId,
-      resource.physicalId,
-      resource.resourceType,
-      recordProperties,
-      { siblings },
-      undefined,
-      maskCoordinates.length > 0
-        ? { properties: recordProperties, coordinates: maskCoordinates }
-        : undefined
-    );
-    toRefresh++;
-  }
-
-  if (toRefresh > 0) {
-    this.logger.warn(
-      safeMsg`cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
-    );
-  }
-
-  // The CONSUMER's cross-region evidence for the re-capture's resolution. Read
-  // only when a masked record needs it, and a record list that cannot be read
-  // (a hand-edited `imports` element) skips the re-capture rather than
-  // resolving without the evidence: an absent list would verdict every
-  // region-less reference `local`.
-  let producerRegions: readonly string[] = [];
-  if (masked.length > 0) {
-    try {
-      producerRegions = producerRegionsFromState(crossStackReads);
-    } catch {
-      this.logger.debug(
-        safeMsg`Masked observed baseline re-capture skipped for ${masked.length} resource(s): the record's cross-stack reads could not be read.`
-      );
-      masked.length = 0;
-    }
-  }
-  for (const { logicalId, resource } of masked) {
-    let provider: ResourceProvider;
-    try {
-      // Routed on the record's `provisionedBy`, as the loop above is.
-      provider = this.providerRegistry.getProviderFor({
-        resourceType: resource.resourceType,
-        provisionedBy: resource.provisionedBy,
-      }).provider;
-    } catch {
-      continue;
-    }
-    if (!provider.readCurrentState) continue;
-    const siblings = { ...allSiblings };
-    delete siblings[logicalId];
-    this.kickOffMaskedBaselineRecapture(provider, logicalId, resource, producerRegions, {
-      siblings,
-    });
-  }
-}
-
-/**
- * Re-capture ONE record's fail-closed-masked baseline (issue #3595).
- *
- * Resolves the record's own `properties` references into a map of its own —
- * never into `perResourceSecrets`: a populated entry there would move the
- * persist choke point's observed walk off the fail-closed rules for this
- * record. Then reads the resource back and hands both to
- * `recaptureMaskedBaseline`, which changes masked positions only. Every
- * refusal (a reference that does not resolve, a readback that fails, a
- * baseline the fresh readback does not reproduce) resolves the task to
- * `undefined`, which leaves the old baseline in place.
- *
- * Fire-and-forget like every other capture: drained before the final save,
- * latest-wins against a later CREATE / UPDATE capture of the same id.
- */
-export function kickOffMaskedBaselineRecapture(
-  this: DeployEngine,
-  provider: ResourceProvider,
-  logicalId: string,
-  resource: ResourceState,
-  producerRegions: readonly string[],
-  context: import('../../types/resource.js').ReadCurrentStateContext
-): void {
-  const previous = resource.observedProperties;
-  const readCurrentState = provider.readCurrentState?.bind(provider);
-  if (previous === undefined || readCurrentState === undefined) return;
-  const properties = resource.properties ?? {};
-  const task = (async (): Promise<Record<string, unknown> | undefined> => {
-    const secrets = await resolveRecordSecrets(properties, (token, own) =>
-      this.resolver.resolveDynamicReferences(
-        token,
-        // The CONSUMER's cross-region evidence rides it, so a region-less
-        // reference this stack may have read from another region refuses
-        // (`ambiguous`) instead of resolving against a same-named secret here.
-        persistedTokenResolverContext(own, producerRegions)
-      )
-    );
-    if (secrets === undefined || secrets.size === 0) {
-      // The CLASS only: never a reference, a value or an error's text.
-      this.logger.debug(
-        safeMsg`Masked observed baseline of ${logicalId} kept: its recorded references did not all resolve to distinct values.`
-      );
-      return undefined;
-    }
-    // The readback can carry the plaintext just resolved, so it runs inside
-    // that bag's sink scope, like the post-write capture (#4362).
-    const readback = await withCurrentResourceSecrets(secrets, () =>
-      readCurrentState(resource.physicalId, logicalId, resource.resourceType, properties, context)
-    );
-    // A resource AWS reports gone keeps its masked baseline (go-to-k/cdkd#4283).
-    if (readback === undefined || readback === RESOURCE_NOT_FOUND) return undefined;
-    const recaptured = recaptureMaskedBaseline({ previous, readback, properties, secrets });
-    if (recaptured === undefined) {
-      this.logger.debug(
-        safeMsg`Masked observed baseline of ${logicalId} kept: no masked position could be certified, or the resource no longer reads back as its baseline records.`
-      );
-      return undefined;
-    }
-    this.recapturedBaselines.set(recaptured, previous);
-    this.logger.debug(safeMsg`Re-captured the masked observed baseline of ${logicalId}.`);
-    return recaptured;
-  })().catch(() => {
-    this.logger.debug(
-      safeMsg`Masked observed baseline of ${logicalId} kept: the re-capture failed.`
-    );
-    return undefined;
-  });
-  this.observedCaptureTasks.set(logicalId, task);
 }
