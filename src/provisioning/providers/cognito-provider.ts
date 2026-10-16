@@ -1898,7 +1898,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
     } catch (error) {
       throw new ProvisioningError(
-        error instanceof Error ? error.message : String(error),
+        describeAwsFailure(error).detail,
         resourceType,
         logicalId,
         poolName,
@@ -2140,7 +2140,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         poolName,
@@ -2865,8 +2865,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       );
     } catch (error) {
       throw new ProvisioningError(
-        `${error instanceof Error ? error.message : String(error)}. Nothing was applied to ` +
-          `user pool ${physicalId}`,
+        `${describeAwsFailure(error).detail}. Nothing was applied to ` + `user pool ${physicalId}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3164,7 +3163,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3628,7 +3627,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Cognito User Pool ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

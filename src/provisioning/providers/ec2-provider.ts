@@ -1256,7 +1256,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EC2 resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EC2 resource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1845,7 +1845,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create VPC ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -1930,7 +1930,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update VPC ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -2216,7 +2216,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Subnet ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -2299,7 +2299,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Subnet ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -2564,7 +2564,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create InternetGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create InternetGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -2620,7 +2620,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete InternetGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete InternetGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -2843,7 +2843,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EIP ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3016,7 +3016,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete EIP ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete EIP ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3108,7 +3108,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create VPCGatewayAttachment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create VPCGatewayAttachment ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3178,7 +3178,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete VPCGatewayAttachment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete VPCGatewayAttachment ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3306,7 +3306,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create NatGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create NatGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3371,7 +3371,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete NatGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete NatGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3490,7 +3490,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create RouteTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create RouteTable ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3536,7 +3536,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete RouteTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete RouteTable ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3691,7 +3691,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Route ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3809,7 +3809,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Route ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3868,7 +3868,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Route ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3917,7 +3917,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create SubnetRouteTableAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SubnetRouteTableAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -3968,7 +3968,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SubnetRouteTableAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete SubnetRouteTableAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4120,7 +4120,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SecurityGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -4284,7 +4284,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update SecurityGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4687,7 +4687,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to create SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -5346,7 +5346,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -5543,7 +5543,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -5853,7 +5853,7 @@ export class EC2Provider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create EC2 Instance ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               undefined,
@@ -6115,7 +6115,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EC2 Instance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -6872,7 +6872,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create NetworkAcl ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create NetworkAcl ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -6907,7 +6907,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete NetworkAcl ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete NetworkAcl ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -7011,7 +7011,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create NetworkAclEntry ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create NetworkAclEntry ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -7068,7 +7068,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete NetworkAclEntry ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete NetworkAclEntry ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -7147,7 +7147,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create SubnetNetworkAclAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SubnetNetworkAclAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,

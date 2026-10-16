@@ -404,7 +404,7 @@ export class DocDBProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create DocDB DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbClusterIdentifier,
@@ -521,7 +521,7 @@ export class DocDBProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DocDB DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -668,7 +668,7 @@ export class DocDBProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DocDB DBCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -741,7 +741,7 @@ export class DocDBProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create DocDB DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               dbInstanceIdentifier,
@@ -819,7 +819,7 @@ export class DocDBProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DocDB DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -876,7 +876,7 @@ export class DocDBProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DocDB DBInstance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

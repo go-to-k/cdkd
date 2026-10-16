@@ -304,7 +304,7 @@ export class ElastiCacheProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create CacheSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         cacheSubnetGroupName,
@@ -389,7 +389,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CacheSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -428,7 +428,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CacheSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -533,7 +533,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create CacheCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               cacheClusterId,
@@ -704,7 +704,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CacheCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -780,7 +780,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CacheCluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

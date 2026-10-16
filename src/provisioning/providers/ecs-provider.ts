@@ -1131,7 +1131,7 @@ export class ECSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete ECS cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ECS cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1310,7 +1310,7 @@ export class ECSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete ECS task definition ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ECS task definition ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1543,7 +1543,7 @@ export class ECSProvider implements ResourceProvider {
         // Names `--full-wait` and two `aws` commands, so the logical id is
         // shown only when plain (go-to-k/cdkd#4295).
         throw new Error(
-          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${waitError instanceof Error ? waitError.message : String(waitError)}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
+          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${describeAwsFailure(waitError).detail}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
           { cause: waitError }
         );
       }
@@ -2377,7 +2377,7 @@ export class ECSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete ECS service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ECS service ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

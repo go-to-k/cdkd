@@ -661,7 +661,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError` is
       // for relayed AWS text only).
       throw new ProvisioningError(
-        log.mask(error instanceof Error ? error.message : String(error)),
+        log.mask(describeAwsFailure(error).detail),
         resourceType,
         logicalId,
         undefined,
@@ -856,7 +856,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError`
         // is for relayed AWS text only).
         throw new ProvisioningError(
-          log.mask(error instanceof Error ? error.message : String(error)),
+          log.mask(describeAwsFailure(error).detail),
           resourceType,
           logicalId,
           undefined,
@@ -958,7 +958,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // A cdkd-authored refusal: masked, never stamped (`wrapMaskedAwsError` is
       // for relayed AWS text only).
       throw new ProvisioningError(
-        log.mask(error instanceof Error ? error.message : String(error)),
+        log.mask(describeAwsFailure(error).detail),
         resourceType,
         logicalId,
         undefined,
@@ -3915,7 +3915,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           try {
             await this.dynamoDBClient.send(cmd);
           } catch (ttlErr) {
-            const msg = ttlErr instanceof Error ? ttlErr.message : String(ttlErr);
+            const msg = describeAwsFailure(ttlErr).detail;
             if (msg.includes('Time to live has been modified multiple times')) {
               throw this.wrapMaskedError(
                 log,
@@ -5493,7 +5493,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // issue #1955.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DynamoDB GlobalTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DynamoDB GlobalTable ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

@@ -191,7 +191,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create EventBus ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create EventBus ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -250,7 +250,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EventBus ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EventBus ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
