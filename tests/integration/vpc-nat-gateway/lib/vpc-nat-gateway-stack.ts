@@ -100,7 +100,7 @@ export class VpcNatGatewayStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'cdkd-vpc-nat-gateway-drift-probe' }],
     });
 
-    // go-to-k/cdkd#4606: the fix-forward arms (Phases 1d / 1e of `verify.sh`).
+    // go-to-k/cdkd#4606: the fix-forward arms (Phases 1d / 1e / 1f of `verify.sh`).
     // Each env-gated resource's first deploy is a CREATE that fails AFTER AWS
     // made the resource, so the journal holds it as a proven orphan; the
     // `*_FIX_FORWARD` redeploy keeps the logical id with a valid shape, the
@@ -131,6 +131,8 @@ export class VpcNatGatewayStack extends cdk.Stack {
     if (process.env.INJECT_EIP_ORPHAN === 'true') {
       // `AllocateAddress` succeeds, then `AssociateAddress` rejects the
       // malformed instance id (`InvalidInstanceID.Malformed`, not retried).
+      // The provider then releases the address (go-to-k/cdkd#4945, Phase 1e);
+      // only a deploy denied `ec2:ReleaseAddress` journals it (Phase 1f).
       new ec2.CfnEIP(this, 'OrphanEip', {
         domain: 'vpc',
         ...(process.env.EIP_FIX_FORWARD !== 'true' && { instanceId: 'i-cdkdmalformed' }),

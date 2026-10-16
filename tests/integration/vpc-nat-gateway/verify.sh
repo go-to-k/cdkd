@@ -27,9 +27,12 @@
 # (both compare clean after the deploy), and a standalone EIP released out of
 # band reports `deleted` with exit 1 rather than "drift unknown".
 #
-# PLUS issue #4606 (Phases 1d / 1e): a `--no-rollback` deploy whose NAT gateway
+# PLUS issue #4606 (Phases 1d / 1f): a `--no-rollback` deploy whose NAT gateway
 # (then Elastic IP) CREATE fails after AWS made it, then a fix-forward under the
 # same logical id: that successful deploy deletes the earlier one and exits 0.
+# The EIP arm (1f) deploys as a role denied `ec2:ReleaseAddress`: with release
+# allowed, the provider releases the address itself (go-to-k/cdkd#4945), which
+# Phase 1e asserts, and nothing is left to journal.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -83,10 +86,37 @@ NAT_TYPE="AWS::EC2::NatGateway"
 # (aborting under `set -e`) when dist/ is unbuilt.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Phase 1f's role: it may allocate, tag and associate an address but never
+# release one (go-to-k/cdkd#4606 through go-to-k/cdkd#4945's cleanup).
+# IAM names are account-global: the region keeps a run in another region from
+# sharing it (and from `cleanup` deleting that run's role). <= 64 chars.
+DENY_ROLE="${STACK}-no-release-${REGION}"
+DENY_POLICY_NAME="allocate-without-release"
+DENY_ROLE_CREATED=""
+delete_deny_role() { ( # usage: delete_deny_role  (best-effort)
+  set +eu
+  aws iam delete-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" >/dev/null 2>&1
+  aws iam delete-role --role-name "${DENY_ROLE}" >/dev/null 2>&1
+  true
+); }
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DRIFT_JSON_FILE:-}"
+  rm -f "${ASSUME_ERR:-}"
+  if [ -n "${DENY_ROLE_CREATED}" ]; then
+    delete_deny_role
+    for _ in $(seq 1 12); do
+      if ( gone_probe aws iam get-role --role-name "${DENY_ROLE}" ); then break; fi
+      sleep 5
+    done
+    if ! ( gone_probe aws iam get-role --role-name "${DENY_ROLE}" ); then
+      echo "    WARN: role ${DENY_ROLE} could not be confirmed deleted; delete it by hand" >&2
+    else
+      DENY_ROLE_CREATED=""
+    fi
+  fi
   destroy_rc=0
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
@@ -104,12 +134,12 @@ cleanup() {
   fi
   rm -f "${FF_LOG:-}"
   # go-to-k/cdkd#4606: `state destroy` deletes what the rollback journal holds
-  # too; this backstop releases a Phase 1e address neither record reached
+  # too; this backstop releases a Phase 1e / 1f address neither record reached
   # (an unassociated EIP bills by the hour). Only the allocation ids THIS run
   # captured: a tag filter would also release a concurrent run's address.
   # Only after a clean destroy: a kept state may still record the address.
   if [ "${destroy_rc}" -eq 0 ]; then
-    for alloc in ${ORPHAN_EIP_ALLOC:-} ${FF_EIP_ALLOC:-}; do
+    for alloc in ${PENDING_EIP_ALLOCS:-} ${RELEASED_EIP_ALLOC:-} ${FF_EIP_ALLOC:-} ${ORPHAN_EIP_ALLOC:-} ${FF2_EIP_ALLOC:-}; do
       case "${alloc}" in eipalloc-*) ;; *) continue;; esac
       if aws ec2 release-address --allocation-id "${alloc}" --region "${REGION}" >/dev/null 2>&1; then
         echo "    released leftover ${alloc}"
@@ -149,6 +179,13 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Never deleted by the pre-run cleanup: a concurrent run may be using it.
+assert_gone "precondition: role ${DENY_ROLE} already exists (left by an earlier run, or a concurrent run holds it); delete it first" \
+  aws iam get-role --role-name "${DENY_ROLE}"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+CALLER_USERID="$(aws sts get-caller-identity --query UserId --output text)"
+case "${ACCOUNT_ID}" in [0-9]*) ;; *) echo "FAIL: could not read the account id (got '${ACCOUNT_ID}')" >&2; exit 1;; esac
+[ -n "${CALLER_USERID}" ] || { echo "FAIL: could not read the caller's user id" >&2; exit 1; }
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -445,22 +482,248 @@ echo "    OK: the fix-forward deleted ${ORPHAN_NAT_ID}, kept ${FF_NAT_ID}, exite
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_nat_gone "${FF_NAT_ID}" "the fix-forward"
 
+# --- Phase 1e: a failed EIP CREATE releases its own address (go-to-k/cdkd#4945) ---
+# `AllocateAddress` succeeds, then `AssociateAddress` rejects the malformed
+# instance id. Since go-to-k/cdkd#4945 the provider releases the address before
+# it throws, so the failed CREATE leaves nothing: no state record, no address,
+# no journaled orphan -- and the fix-forward has nothing to delete.
+
+# go-to-k/cdkd#4945: the journal holds no address for a logical id whose CREATE
+# released its own. An absent journal passes; a present one must carry no
+# physical id for it.
+assert_no_journaled_orphan() { # usage: assert_no_journaled_orphan <logical-id> <when>
+  local op
+  if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+    echo "    OK: no rollback journal $2"
+    return 0
+  fi
+  op="$(journal_op "$1" "$2")" || exit 1
+  if [ -n "$(printf '%s' "${op}" | jq -r '.physicalId // empty')" ] \
+    || [ "$(printf '%s' "${op}" | jq -r '.physicalIdRecoveredFromError // false')" = "true" ]; then
+    echo "FAIL: the journal carries $1 with a physical id $2, though the CREATE released its address (op: ${op})" >&2
+    exit 1
+  fi
+  echo "    OK: the journal carries no $1 physical id $2 (op: ${op:-<none>})"
+}
+
+# Backstop only, never an assertion: every allocation id the provider names for
+# OrphanEip (`Released` / `Failed to release partially-created EIP OrphanEip
+# (<id>)`) in a failing deploy's output, so `cleanup` releases an address an
+# assertion below exits before capturing.
+note_pending_eip_allocs() {
+  PENDING_EIP_ALLOCS="${PENDING_EIP_ALLOCS:-} $(grep -E 'partially-created EIP OrphanEip \(eipalloc-' "${FF_LOG}" \
+    | grep -oE 'eipalloc-[0-9a-f]+' | sort -u | tr '\n' ' ' || true)"
+}
+
 echo "==> Phase 1e: --no-rollback deploy whose OrphanEip CREATE fails after AllocateAddress"
 set +e
 INJECT_EIP_ORPHAN=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${FF_LOG}" 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback --verbose >"${FF_LOG}" 2>&1
 EIP_FAIL_RC=$?
 set -e
 sed 's/^/  /' "${FF_LOG}"
+note_pending_eip_allocs
 if [ "${EIP_FAIL_RC}" -eq 0 ]; then
   echo "FAIL: the OrphanEip injection deploy unexpectedly SUCCEEDED (AssociateAddress should reject the malformed instance id)" >&2
+  exit 1
+fi
+if ! grep -q "i-cdkdmalformed" "${FF_LOG}"; then
+  echo "FAIL: the OrphanEip injection deploy failed, but not on the malformed instance id (output above)" >&2
   exit 1
 fi
 if [ "$(state_physical_id OrphanEip)" != "<absent>" ]; then
   echo "FAIL: state records OrphanEip after a CREATE that threw (expected no record)" >&2
   exit 1
 fi
-ORPHAN_EIP_PID="$(journaled_orphan_id OrphanEip 'after the --no-rollback deploy of Phase 1e')"
+# The address the failed CREATE released, from the provider's own --verbose
+# line (`Released partially-created EIP <id> (<allocation>)`). Sentinel: an
+# OrphanEip line naming an allocation id that the parse missed means the
+# wording drifted, not that nothing was released.
+RELEASED_EIP_ALLOC="$(grep -oE 'Released partially-created EIP OrphanEip \(eipalloc-[0-9a-f]+\)' "${FF_LOG}" \
+  | grep -oE 'eipalloc-[0-9a-f]+' | head -1 || true)"
+if [ -z "${RELEASED_EIP_ALLOC}" ]; then
+  if grep -q "Failed to release partially-created EIP OrphanEip" "${FF_LOG}"; then
+    echo "FAIL: the provider could not release the address its failed CREATE allocated (go-to-k/cdkd#4945; output above)" >&2
+  elif grep -E 'OrphanEip' "${FF_LOG}" | grep -qE 'eipalloc-[0-9a-f]+'; then
+    echo "FAIL: an OrphanEip line names an allocation id, but not as 'Released partially-created EIP OrphanEip (<id>)' -- the provider's wording drifted; update this parse (output above)" >&2
+  else
+    echo "FAIL: the failed OrphanEip CREATE printed no release of its address under --verbose (go-to-k/cdkd#4945; output above)" >&2
+  fi
+  exit 1
+fi
+# Read twice, 5s apart: a just-allocated address can read NotFound for a moment,
+# so one NotFound alone is weak evidence of the release.
+for _ in $(seq 1 12); do
+  if gone_probe aws ec2 describe-addresses --allocation-ids "${RELEASED_EIP_ALLOC}" --region "${REGION}"; then break; fi
+  sleep 5
+done
+sleep 5
+assert_gone "the failed CREATE's ${RELEASED_EIP_ALLOC} still exists (go-to-k/cdkd#4945: the provider must release it)" \
+  aws ec2 describe-addresses --allocation-ids "${RELEASED_EIP_ALLOC}" --region "${REGION}"
+# No second address either: a retried CREATE would mint one per attempt, and
+# each attempt's failure names its own address. Only this run's output is read,
+# so a concurrent or crashed run's address cannot fail the check.
+E1_NAMED="$(grep -E 'partially-created EIP OrphanEip \(eipalloc-' "${FF_LOG}" \
+  | grep -oE 'eipalloc-[0-9a-f]+' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
+if [ "${E1_NAMED}" != "${RELEASED_EIP_ALLOC}" ]; then
+  echo "FAIL: the failed OrphanEip CREATE named addresses '${E1_NAMED}', expected only the released ${RELEASED_EIP_ALLOC} (a retry minted another)" >&2
+  exit 1
+fi
+assert_no_journaled_orphan OrphanEip 'after the --no-rollback deploy of Phase 1e'
+echo "    OK: the failed OrphanEip CREATE released ${RELEASED_EIP_ALLOC}, left no state record and journaled no orphan"
+
+echo "==> Phase 1e: the fix-forward deploy (same logical id, no instance)"
+set +e
+INJECT_EIP_ORPHAN=true EIP_FIX_FORWARD=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FF_LOG}" 2>&1
+EIP_FF_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+if [ "${EIP_FF_RC}" -ne 0 ]; then
+  echo "FAIL: the OrphanEip fix-forward deploy exited ${EIP_FF_RC} (expected 0: nothing was left to settle -- output above)" >&2
+  exit 1
+fi
+# `deleting partially-created` is pinned positively by Phases 1d / 1f, so its
+# absence here is not a drifted string. A warned-about earlier attempt exits 2,
+# which the rc check above already refuses.
+if grep -q "deleting partially-created OrphanEip" "${FF_LOG}"; then
+  echo "FAIL: the fix-forward deploy deleted an earlier OrphanEip, but none was journaled (output above)" >&2
+  exit 1
+fi
+assert_gone "rollback journal s3://${STATE_BUCKET}/${JOURNAL_KEY} still present after the OrphanEip fix-forward deploy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+FF_EIP_PID="$(state_physical_id OrphanEip)"
+FF_EIP_ALLOC="${FF_EIP_PID#*|}"
+case "${FF_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: state records OrphanEip as '${FF_EIP_PID}' after the fix-forward (expected an allocation id)" >&2; exit 1;; esac
+if [ "${FF_EIP_ALLOC}" = "${RELEASED_EIP_ALLOC}" ]; then
+  echo "FAIL: state records OrphanEip as the released ${RELEASED_EIP_ALLOC}" >&2
+  exit 1
+fi
+if gone_probe aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"; then
+  echo "FAIL: the fix-forward address ${FF_EIP_ALLOC} is not in AWS" >&2
+  exit 1
+fi
+echo "    OK: the fix-forward created a fresh ${FF_EIP_ALLOC}, exited 0 and left no journal"
+
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone "the fix-forward ${FF_EIP_ALLOC} still exists after the deploy that removed it" \
+  aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"
+
+# --- Phase 1f: the fix-forward deletes a journaled EIP orphan (go-to-k/cdkd#4606) ---
+# The same injection as Phase 1e, deployed as a role denied ec2:ReleaseAddress:
+# the provider's release fails, so the CREATE throws with the address it made
+# and the journal holds it as a proven orphan. The fix-forward (as the caller)
+# must then delete it, as Phase 1d does for the NAT gateway.
+echo "==> Phase 1f: a role that may allocate and associate an address but not release it"
+TRUST="$(node -e 'process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Principal:{AWS:`arn:aws:iam::${process.argv[1]}:root`},Action:"sts:AssumeRole",Condition:{StringEquals:{"aws:userid":process.argv[2]}}}]}))' "${ACCOUNT_ID}" "${CALLER_USERID}")"
+# Scoped to what this deploy calls. Every other resource is unchanged, so the
+# deploy reads and writes only the state path in the bucket
+# (`cdkd/<stack>/*`, plus the bucket-level reads of src/state and
+# src/utils/aws-region-resolver.ts), the CDK bootstrap parameters, read-only
+# CloudFormation and EC2 verbs, and the EIP CREATE's own calls: AllocateAddress
+# and CreateTags on an address, and AssociateAddress of an address carrying
+# OrphanEip's Name tag (the provider tags before it associates). EC2 authorizes
+# the malformed instance id against `instance/*`, so the instance side is
+# open; without it the association fails on IAM instead of on the id.
+# ReleaseAddress and DisassociateAddress are explicitly denied, so the
+# provider's cleanup cannot remove the address.
+# sts:AssumeRole is denied everywhere: nothing this session runs assumes a role
+# (cdkd is run without --role-arn).
+DENY_POLICY="$(node -e 'const [bucket,stack,acct,region]=process.argv.slice(1);const eip=`arn:aws:ec2:${region}:${acct}:elastic-ip/*`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["ec2:AllocateAddress","ec2:CreateTags"],Resource:eip},{Effect:"Allow",Action:"ec2:AssociateAddress",Resource:eip,Condition:{StringEquals:{"aws:ResourceTag/Name":"cdkd-vpc-nat-gateway-orphan"}}},{Effect:"Allow",Action:"ec2:AssociateAddress",Resource:`arn:aws:ec2:${region}:${acct}:instance/*`},{Effect:"Allow",Action:"ec2:Describe*",Resource:"*"},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:["ec2:ReleaseAddress","ec2:DisassociateAddress"],Resource:"*"},{Effect:"Deny",Action:"sts:AssumeRole",Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${REGION}")"
+aws iam create-role --role-name "${DENY_ROLE}" --assume-role-policy-document "${TRUST}" \
+  --tags Key=cdkd-integ,Value=vpc-nat-gateway >/dev/null
+DENY_ROLE_CREATED=1
+aws iam put-role-policy --role-name "${DENY_ROLE}" --policy-name "${DENY_POLICY_NAME}" \
+  --policy-document "${DENY_POLICY}"
+# A new role is assumable only once IAM has propagated it.
+ASSUME_ERR="$(mktemp)"
+DENY_CREDS=""
+assume_err=""
+for _ in $(seq 1 24); do
+  # stderr (the error text only) goes to a file; stdout (the credentials)
+  # stays in the variable.
+  if DENY_CREDS="$(aws sts assume-role --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${DENY_ROLE}" \
+    --role-session-name cdkd-vpc-nat-gateway-no-release \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>"${ASSUME_ERR}")"; then
+    break
+  fi
+  DENY_CREDS=""
+  assume_err="$(tail -3 "${ASSUME_ERR}" 2>/dev/null || true)"
+  sleep 5
+done
+rm -f "${ASSUME_ERR}"
+if [ -z "${DENY_CREDS}" ]; then
+  echo "FAIL: precondition -- could not assume ${DENY_ROLE} within 2 minutes (last answer: ${assume_err:-<none>})" >&2
+  exit 1
+fi
+# Process substitution, not a here-string: bash 3.2 backs a here-string with a
+# temp file, and these are live credentials.
+read -r DENY_AK DENY_SK DENY_ST < <(printf '%s\n' "${DENY_CREDS}")
+unset DENY_CREDS
+# Run a command as the role. A profile in the environment would win over the
+# key variables in the SDK's credential chain, so it is dropped. Exported
+# inside a subshell, so the keys never sit in a process's argv.
+as_deny_role() {
+  (
+    # CDKD_ROLE_ARN would make the deploy AssumeRole, which this role denies.
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE CDKD_ROLE_ARN
+    export AWS_ACCESS_KEY_ID="${DENY_AK}" AWS_SECRET_ACCESS_KEY="${DENY_SK}" AWS_SESSION_TOKEN="${DENY_ST}"
+    exec "$@"
+  )
+}
+# The inline policy propagates on its own clock: wait until the role may read
+# EC2 before the deploy relies on its allows.
+policy_live=""
+for _ in $(seq 1 24); do
+  if as_deny_role aws ec2 describe-addresses --region "${REGION}" --query 'length(Addresses)' --output text >/dev/null 2>"${FF_LOG}"; then
+    policy_live=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${policy_live}" ]; then
+  echo "FAIL: precondition -- ${DENY_ROLE}'s policy did not take effect within 2 minutes (last answer: $(tail -3 "${FF_LOG}"))" >&2
+  exit 1
+fi
+
+echo "==> Phase 1f: --no-rollback deploy as ${DENY_ROLE} whose OrphanEip CREATE fails and cannot release"
+set +e
+as_deny_role env INJECT_EIP_ORPHAN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${FF_LOG}" 2>&1
+EIP_FAIL_RC=$?
+set -e
+sed 's/^/  /' "${FF_LOG}"
+note_pending_eip_allocs
+# The role is not needed past this deploy: drop it now, and stop `cleanup`
+# owning the name as soon as it is confirmed gone -- after that, a role under
+# this name is another run's.
+delete_deny_role
+unset DENY_AK DENY_SK DENY_ST
+for _ in $(seq 1 12); do
+  if gone_probe aws iam get-role --role-name "${DENY_ROLE}"; then break; fi
+  sleep 5
+done
+assert_gone "role ${DENY_ROLE} still exists a minute after its delete" aws iam get-role --role-name "${DENY_ROLE}"
+DENY_ROLE_CREATED=""
+if [ "${EIP_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL: the OrphanEip injection deploy as ${DENY_ROLE} unexpectedly SUCCEEDED (AssociateAddress should reject the malformed instance id)" >&2
+  exit 1
+fi
+# The injection fired as designed: the association failed on the malformed id
+# (not on an IAM refusal of the role's own scope), and the release was refused.
+if ! grep -q "i-cdkdmalformed" "${FF_LOG}"; then
+  echo "FAIL: the OrphanEip deploy as ${DENY_ROLE} failed, but not on the malformed instance id -- the role's policy refused a call the arm needs (output above)" >&2
+  exit 1
+fi
+if ! grep -q "Failed to release partially-created EIP OrphanEip" "${FF_LOG}"; then
+  echo "FAIL: the deploy as ${DENY_ROLE} did not report a refused release of OrphanEip's address (the arm needs the release to fail -- output above)" >&2
+  exit 1
+fi
+if [ "$(state_physical_id OrphanEip)" != "<absent>" ]; then
+  echo "FAIL: state records OrphanEip after a CREATE that threw (expected no record)" >&2
+  exit 1
+fi
+ORPHAN_EIP_PID="$(journaled_orphan_id OrphanEip 'after the --no-rollback deploy of Phase 1f')"
 ORPHAN_EIP_ALLOC="${ORPHAN_EIP_PID#*|}"
 case "${ORPHAN_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: journaled OrphanEip id '${ORPHAN_EIP_PID}' carries no allocation id" >&2; exit 1;; esac
 if gone_probe aws ec2 describe-addresses --allocation-ids "${ORPHAN_EIP_ALLOC}" --region "${REGION}"; then
@@ -469,7 +732,7 @@ if gone_probe aws ec2 describe-addresses --allocation-ids "${ORPHAN_EIP_ALLOC}" 
 fi
 echo "    OK: OrphanEip ${ORPHAN_EIP_ALLOC} is journaled as a proven orphan, no state record"
 
-echo "==> Phase 1e: the fix-forward deploy (same logical id, no instance)"
+echo "==> Phase 1f: the fix-forward deploy as the caller (same logical id, no instance)"
 set +e
 INJECT_EIP_ORPHAN=true EIP_FIX_FORWARD=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FF_LOG}" 2>&1
@@ -479,24 +742,24 @@ sed 's/^/  /' "${FF_LOG}"
 assert_fix_forward_deleted OrphanEip "${EIP_FF_RC}" "${FF_LOG}"
 assert_gone "the earlier attempt's ${ORPHAN_EIP_ALLOC} still exists after the fix-forward deploy (go-to-k/cdkd#4606)" \
   aws ec2 describe-addresses --allocation-ids "${ORPHAN_EIP_ALLOC}" --region "${REGION}"
-FF_EIP_PID="$(state_physical_id OrphanEip)"
-FF_EIP_ALLOC="${FF_EIP_PID#*|}"
-case "${FF_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: state records OrphanEip as '${FF_EIP_PID}' after the fix-forward (expected an allocation id)" >&2; exit 1;; esac
-if [ "${FF_EIP_ALLOC}" = "${ORPHAN_EIP_ALLOC}" ]; then
+FF2_EIP_PID="$(state_physical_id OrphanEip)"
+FF2_EIP_ALLOC="${FF2_EIP_PID#*|}"
+case "${FF2_EIP_ALLOC}" in eipalloc-*) ;; *) echo "FAIL: state records OrphanEip as '${FF2_EIP_PID}' after the fix-forward (expected an allocation id)" >&2; exit 1;; esac
+if [ "${FF2_EIP_ALLOC}" = "${ORPHAN_EIP_ALLOC}" ]; then
   echo "FAIL: state records OrphanEip as the earlier attempt's ${ORPHAN_EIP_ALLOC}" >&2
   exit 1
 fi
-if gone_probe aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"; then
-  echo "FAIL: the fix-forward address ${FF_EIP_ALLOC} is gone (the settle must not release the record's address)" >&2
+if gone_probe aws ec2 describe-addresses --allocation-ids "${FF2_EIP_ALLOC}" --region "${REGION}"; then
+  echo "FAIL: the fix-forward address ${FF2_EIP_ALLOC} is gone (the settle must not release the record's address)" >&2
   exit 1
 fi
-echo "    OK: the fix-forward released ${ORPHAN_EIP_ALLOC}, kept ${FF_EIP_ALLOC}, exited 0 and dropped the journal"
+echo "    OK: the fix-forward released ${ORPHAN_EIP_ALLOC}, kept ${FF2_EIP_ALLOC}, exited 0 and dropped the journal"
 
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "the fix-forward ${FF_EIP_ALLOC} still exists after the deploy that removed it" \
-  aws ec2 describe-addresses --allocation-ids "${FF_EIP_ALLOC}" --region "${REGION}"
+assert_gone "the fix-forward ${FF2_EIP_ALLOC} still exists after the deploy that removed it" \
+  aws ec2 describe-addresses --allocation-ids "${FF2_EIP_ALLOC}" --region "${REGION}"
 rm -f "${FF_LOG}"
-echo "    OK: Phases 1d / 1e passed"
+echo "    OK: Phases 1d / 1e / 1f passed"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy (SDK delete for one gateway, CC delete for the other)"

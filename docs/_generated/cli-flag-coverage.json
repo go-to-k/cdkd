@@ -1281,7 +1281,8 @@
         "rollback-command",
         "s3-fix-forward-orphan",
         "s3-retry-own-bucket",
-        "tags-propagation"
+        "tags-propagation",
+        "vpc-nat-gateway"
       ]
     },
     {
@@ -1728,7 +1729,8 @@
         "stepfunctions",
         "stepfunctions-logging",
         "tags-propagation",
-        "throttle-wide-dag"
+        "throttle-wide-dag",
+        "vpc-nat-gateway"
       ]
     },
     {
