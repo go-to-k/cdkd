@@ -23,15 +23,27 @@ const stubLogger = {
  * target rendered `Updating` over a destroy + recreate.
  */
 const taskLabels: string[] = [];
+/**
+ * Every `renderer.updateTaskLabel` re-label call, `[id, label]`: the #3729
+ * downgrade (`update.ts` ~1634) re-labels through THIS call, never `addTask`,
+ * so a test of its `[CC API]` tag needs its own capture (`taskLabels` above
+ * only sees the INITIAL label `provisionResource` chose).
+ */
+const updateLabelCalls: Array<[string, string]> = [];
 vi.mock('../../../src/utils/live-renderer.js', async (orig) => {
   const actual = (await orig()) as Record<string, unknown>;
   return {
     ...actual,
     getLiveRenderer: () => ({
+      start: vi.fn(),
+      stop: vi.fn(),
+      printAbove: (write: () => void) => write(),
       addTask: (_id: string, label: string) => {
         taskLabels.push(label);
       },
-      updateTaskLabel: vi.fn(),
+      updateTaskLabel: (id: string, label: string) => {
+        updateLabelCalls.push([id, label]);
+      },
       removeTask: vi.fn(),
       completeTask: vi.fn(),
       failTask: vi.fn(),
@@ -45,7 +57,44 @@ vi.mock('../../../src/utils/logger.js', () => ({
   Logger: class {},
   LogLevel: { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 },
 }));
+// The #3729-pin describe block's resource is create-only by SCHEMA
+// (`AWS::SNS::Topic.TopicName`), which `update.ts` consults via
+// `getCreateOnlyPropertyPaths` -> `DescribeType` even on a direct
+// `provisionResource` call (never gated on going through a full diff).
+// Mocked here, or the unmocked call hits the test run's network fence; shape
+// copied from `deploy-engine-replacement-ceiling.test.ts`.
+vi.mock('../../../src/utils/aws-clients.js', async () => {
+  const { CREATE_ONLY_PATHS_SNAPSHOT } = await import(
+    '../../../src/provisioning/create-only-snapshot.generated.js'
+  );
+  return {
+    getAwsClients: () => ({
+      cloudFormation: {
+        send: vi.fn((command: { input?: { TypeName?: string } }) => {
+          const paths = CREATE_ONLY_PATHS_SNAPSHOT.get(command.input?.TypeName ?? '');
+          if (paths === undefined) {
+            return Promise.reject(
+              Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+                name: 'AccessDeniedException',
+                $metadata: { httpStatusCode: 403 },
+              })
+            );
+          }
+          return Promise.resolve({
+            Schema: JSON.stringify({
+              createOnlyProperties: paths.map((path) => `/properties/${path.join('/')}`),
+              writeOnlyProperties: [],
+            }),
+          });
+        }),
+      },
+      sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+    }),
+  };
+});
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
+import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import type { ResourceProvider, CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState as StateRecord } from '../../../src/types/state.js';
 import { STICKY_CC_MIGRATION_EXEMPT } from '../../../src/provisioning/provider-registry.js';
@@ -90,6 +139,7 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
   beforeEach(() => {
     infoLines.length = 0;
     taskLabels.length = 0;
+    updateLabelCalls.length = 0;
     provider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'pid', attributes: {} }),
       update: vi.fn().mockResolvedValue({ physicalId: 'pid' }),
@@ -454,5 +504,166 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
     // case above by breaking the flag outright.
     await runUpdate(makeEngine({ stackName: STACK, logicalIds: new Set(['SomethingElse']) }), STACK);
     expect(updateCall()['forceCcApi']).toBeUndefined();
+  });
+});
+
+/**
+ * The #3729 relabel (`update.ts` ~1610-1645): a create-only change the
+ * INITIAL label counted as a replacement, but which `update.ts` lowers once
+ * AWS's readback confirms the fresh NoEcho value is already there, is
+ * re-labelled `Updating` through `renderer.updateTaskLabel` -- never
+ * `addTask`, which already ran with the (wrong) `Replacing` verb. That
+ * downgrade's routing tag goes through
+ * `peekRoutingForLabel(this.providerRegistry, this.options, ...)` with
+ * `needsReplacement: false` (`update.ts` ~1636), and `this.options.pinCcApi`
+ * is the ONLY input left that can still color it `cc-api`.
+ *
+ * The real diff ALSO flags this exact shape (a create-only property fed by a
+ * `NoEcho` parameter) as a replacement, but tags it `inPlacePropagated`/
+ * `noEchoPromoted` doing so -- `isReplacementCeiling` then excludes it from
+ * `provisionResource`'s OWN initial choice (`provision.ts` ~90-95), so the
+ * label there is ALREADY `Updating` and this downgrade never fires driven
+ * through a full `deploy()`. Reaching it needs a `propertyChanges` entry
+ * that `provisionResource` counts (no ceiling flag, so its initial label IS
+ * `Replacing`) while `update.ts`'s OWN create-only-by-schema + readback path
+ * still lowers it -- precisely what a direct `provisionResource` call, like
+ * every other case in this file, can set up by hand.
+ */
+describe('the #3729 relabel colors its downgraded [CC API] tag through the pin', () => {
+  const TOPIC_TYPE = 'AWS::SNS::Topic';
+  const TOPIC_NAME = 'pinned-topic-noecho';
+  const TOPIC_ARN = `arn:aws:sns:us-east-1:123456789012:${TOPIC_NAME}`;
+
+  let pinProvider: ResourceProvider;
+  let pinGetProviderFor: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    taskLabels.length = 0;
+    updateLabelCalls.length = 0;
+    clearCreateOnlyPropertiesCache();
+    clearWriteOnlyPropertiesCache();
+    pinProvider = {
+      create: vi.fn().mockResolvedValue({ physicalId: TOPIC_ARN, attributes: {} }),
+      update: vi.fn().mockResolvedValue({ physicalId: TOPIC_ARN }),
+      delete: vi.fn().mockResolvedValue(undefined),
+      getAttribute: vi.fn(),
+      // AWS already holds the fresh NoEcho value: the readback the downgrade
+      // depends on.
+      readCurrentState: vi.fn().mockResolvedValue({ TopicName: TOPIC_NAME, DisplayName: 'd1' }),
+      disableOuterRetry: true,
+    } as unknown as ResourceProvider;
+    // The ONLY thing allowed to steer this toward 'cc-api': `forceCcApi` in
+    // the args, which is exactly what `isPinnedToCcApi` contributes. A
+    // registry that answered `cc-api` unconditionally would make the pin's
+    // wiring invisible to the assertion below.
+    pinGetProviderFor = vi.fn((args: { forceCcApi?: boolean }) => ({
+      provider: pinProvider,
+      provisionedBy: args.forceCcApi === true ? ('cc-api' as const) : ('sdk' as const),
+    }));
+  });
+
+  function makePinEngine(pinCcApi?: {
+    stackName: string;
+    logicalIds: ReadonlySet<string>;
+  }): DeployEngine {
+    return new DeployEngine(
+      { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag') } as unknown as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi.fn().mockReturnValue([]),
+        getDirectDependencies: vi.fn().mockReturnValue([]),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(new Map<string, ResourceChange>()),
+        hasChanges: vi.fn().mockReturnValue(false),
+        filterByType: vi.fn().mockReturnValue([]),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(pinProvider),
+        getProviderFor: pinGetProviderFor,
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+      } as never,
+      { ...(pinCcApi ? { pinCcApi } : {}) },
+      'us-east-1'
+    );
+  }
+
+  /** Same shape as the file's own `provisionOf`, scoped to this block. */
+  function provisionOfPinned(engine: InstanceType<typeof DeployEngine>) {
+    return (
+      engine as unknown as {
+        provisionResource: (
+          logicalId: string,
+          change: ResourceChange,
+          stateResources: Record<string, unknown>,
+          stackName: string,
+          template?: CloudFormationTemplate,
+          parameterValues?: Record<string, unknown>
+        ) => Promise<unknown>;
+      }
+    ).provisionResource.bind(engine);
+  }
+
+  it('shows [CC API] on the downgraded label for a resource pinned via --pin-cc-api', async () => {
+    const engine = makePinEngine({ stackName: STACK, logicalIds: new Set(['Topic']) });
+    const change: ResourceChange = {
+      logicalId: 'Topic',
+      changeType: 'UPDATE',
+      resourceType: TOPIC_TYPE,
+      currentProperties: { TopicName: '***', DisplayName: 'd1' },
+      desiredProperties: { TopicName: { Ref: 'TopicName' }, DisplayName: 'd2' },
+      propertyChanges: [
+        { path: 'DisplayName', oldValue: 'd1', newValue: 'd2', requiresReplacement: false },
+        // Deliberately NOT ceiling-flagged (no `inPlacePropagated` /
+        // `noEchoPromoted`), unlike the real diff's own promotion of this
+        // exact shape: `update.ts`'s OWN readback must be what decides this,
+        // the same as the real #3729 path, or the case proves nothing about
+        // the downgrade branch.
+        { path: 'TopicName', oldValue: '***', newValue: { Ref: 'TopicName' }, requiresReplacement: true },
+      ],
+    } as unknown as ResourceChange;
+    const stateResources: Record<string, StateRecord> = {
+      Topic: {
+        physicalId: TOPIC_ARN,
+        resourceType: TOPIC_TYPE,
+        properties: { TopicName: '***', DisplayName: 'd1' },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['TopicName']],
+      } as unknown as StateRecord,
+    };
+    const template: CloudFormationTemplate = {
+      Parameters: { TopicName: { Type: 'String', NoEcho: true, Default: TOPIC_NAME } },
+      Resources: {
+        Topic: {
+          Type: TOPIC_TYPE,
+          Properties: { TopicName: { Ref: 'TopicName' }, DisplayName: 'd2' },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+
+    await provisionOfPinned(engine)('Topic', change, stateResources, STACK, template, {
+      TopicName: TOPIC_NAME,
+    });
+
+    // Premise: there was something to downgrade FROM, or the assertion below
+    // is vacuous.
+    expect(taskLabels[0], `labels: ${JSON.stringify(taskLabels)}`).toContain('Replacing Topic');
+    // Premise: the downgrade actually fired (an in-place update, never a
+    // replacement).
+    expect(pinProvider.create).not.toHaveBeenCalled();
+    expect(pinProvider.update).toHaveBeenCalled();
+    const downgraded = updateLabelCalls.filter(([id]) => id === 'Topic');
+    expect(downgraded.length, JSON.stringify(updateLabelCalls)).toBeGreaterThan(0);
+    const lastLabel = downgraded[downgraded.length - 1]![1];
+    expect(lastLabel).toContain('Updating Topic');
+    expect(lastLabel).toContain('[CC API]');
   });
 });
