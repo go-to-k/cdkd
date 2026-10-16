@@ -19,11 +19,12 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   issue #609 DBCluster security-property silent-drop assertions
   (`ManageMasterUserPassword` / `MasterUserSecret` / `MonitoringRoleArn` /
   `MonitoringInterval` / `EnableIAMDatabaseAuthentication`) plus the issue
-  #1160 reset-on-removal assertions: `DeletionProtection` +
+  #5004 removal-keeps-the-value assertions: `DeletionProtection` +
   `EnableIAMDatabaseAuthentication` are set in phase 1 and DROPPED in the
-  `CDKD_TEST_UPDATE=true` phase; verify.sh asserts both reset to their
-  CloudFormation defaults (false). Phase 2b turns the guard back on and proves
-  a failed `--remove-protection` destroy restores it (issue #2204). It
+  `CDKD_TEST_UPDATE=true` phase; verify.sh asserts both are KEPT, as
+  CloudFormation does; the same phase drops `BackupRetentionPeriod` (7 in
+  phase 1) and asserts the reset to 1, proving `ModifyDBCluster` fired. Phase 2b
+  proves a failed `--remove-protection` destroy restores it (issue #2204). It
   declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
   final snapshot, which verify.sh asserts and then deletes (issue #4030).
 

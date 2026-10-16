@@ -286,8 +286,8 @@ pipes-fix-forward-orphan	2026-10-15T19:34:21Z	PASS	130	verify.sh	PR #4966 (#3252
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-11T18:48:18Z	PASS	4620	verify.sh	PR #4796, rc ok, orph clean
-rds-dbinstance-backfill	2026-10-16T08:48:48Z	PASS	922	verify.sh	rc ok, orph clean (#3341 slice 4996)
+rds-aurora	2026-10-16T17:34:17Z	PASS	4554	verify.sh	src b1367d11c; #5004 removal keeps + BackupRetentionPeriod 7->1 reset companion; rc ok, orph clean
+rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean
 rds-fix-forward-orphan	2026-10-15T19:12:27Z	PASS	1157	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 rds-full-stack	2026-10-07T20:26:24Z	PASS	1112	verify.sh	PR #4654 rebased on #4662/#4664 (#4639 database slice create client); rc 0, destroy clean, orph clean
 recreate-mixed-direction	2026-10-14T12:12:31Z	PASS	130	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175

@@ -1466,6 +1466,11 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- Reset only what CloudFormation resets. RDS (#5004): DBCluster
+  `BackupRetentionPeriod` resets to 1; DBCluster and DBInstance
+  `DeletionProtection` / `EnableIAMDatabaseAuthentication` and DBInstance
+  `MonitoringInterval` are KEPT, so `update()` forwards them only when present
+  (DBCluster `MonitoringInterval` is unmeasured and still resets to 0).
 - A real CloudFormation A/B can show it KEEPS the live value: for
   `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
   `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset
