@@ -1,4 +1,6 @@
-// issue #1160: absent-field removal reset to CFn defaults (elasticache batch).
+// issue #1160 / #5004: absent-field removal (elasticache batch). Real CFn A/B (#5004):
+// KEEP SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn;
+// RESET LogDeliveryConfigurations.
 // ModifyCacheCluster / ModifyCacheSubnetGroup use merge semantics, so a field
 // DROPPED from the template must be sent as its explicit CFn-default reset
 // value (doc basis: ModifyCacheClusterMessage / ModifyCacheSubnetGroupMessage /
@@ -40,7 +42,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
 
-describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () => {
+describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
   let provider: ElastiCacheProvider;
 
   beforeEach(() => {
@@ -59,7 +61,7 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
       });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('keeps the live value of KEEP properties and disables removed log delivery (#5004)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -97,14 +99,14 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyCacheClusterCommand');
-      // CFn default: 0 = automatic backups off.
-      expect(modifyCall.input.SnapshotRetentionLimit).toBe(0);
-      // Service create-default: enabled.
-      expect(modifyCall.input.AutoMinorVersionUpgrade).toBe(true);
-      // Documented disable sentinel: status=inactive, ARN stays absent.
+      // #5004 (real CloudFormation A/B): CloudFormation KEEPS these three on
+      // removal, so none is sent (absent = unchanged) and no
+      // NotificationTopicStatus=inactive is sent.
+      expect(modifyCall.input.SnapshotRetentionLimit).toBeUndefined();
+      expect(modifyCall.input.AutoMinorVersionUpgrade).toBeUndefined();
       expect(modifyCall.input.NotificationTopicArn).toBeUndefined();
-      expect(modifyCall.input.NotificationTopicStatus).toBe('inactive');
-      // Whole-property removal: every previously-configured log type gets
+      expect(modifyCall.input.NotificationTopicStatus).toBeUndefined();
+      // RESET (#5004 A/B: CloudFormation disables delivery): every previously-configured log type gets
       // an explicit disable entry.
       expect(modifyCall.input.LogDeliveryConfigurations).toEqual([
         { LogType: 'slow-log', Enabled: false },
@@ -138,7 +140,7 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
       expect(modifyCall.input.LogDeliveryConfigurations).toBeUndefined();
     });
 
-    it('passes kept/changed fields through unchanged while removed ones reset', async () => {
+    it('passes kept/changed fields through unchanged while a removed KEEP one sends nothing', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -167,7 +169,8 @@ describe('ElastiCacheProvider removal reset to CFn defaults (issue #1160)', () =
       // after a prior removal (status=inactive) reactivates delivery.
       expect(modifyCall.input.NotificationTopicArn).toBe('arn:aws:sns:us-east-1:123:topic');
       expect(modifyCall.input.NotificationTopicStatus).toBe('active');
-      expect(modifyCall.input.AutoMinorVersionUpgrade).toBe(true);
+      // Removed in this update (previous false): KEEP, nothing sent.
+      expect(modifyCall.input.AutoMinorVersionUpgrade).toBeUndefined();
     });
 
     it('disables only the log types dropped from the template (per-entry removal)', async () => {
