@@ -335,7 +335,7 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(errored).toContain('refused to revert Value');
     expect(errored).toContain('a NoEcho template parameter feeds it');
-    expect(errored).not.toContain('Three causes');
+    expect(errored).not.toContain('Four causes');
   });
 
   it('--revert words the refusal truthfully when a marked and an unmarked masked path are refused together', async () => {
@@ -358,8 +358,10 @@ describe('cdkd drift — a NoEcho parameter position (schema v11, go-to-k/cdkd#4
     expect(update).not.toHaveBeenCalled();
     const errored = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(errored).toContain('Where a NoEcho template parameter feeds a path (Value)');
-    expect(errored).toContain('For the other paths, three causes');
-    expect(errored).not.toContain('Three causes');
+    expect(errored).toContain('For the other paths, four causes');
+    // go-to-k/cdkd#4986: two overlapping secret values mask the leaf whole.
+    expect(errored).toContain('two secret values that overlap inside the value');
+    expect(errored).not.toContain('Four causes');
   });
 
   it('--revert keeps a declared NoEcho attribute masked when the update echoes a number (review LOW-7)', async () => {

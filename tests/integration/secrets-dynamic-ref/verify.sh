@@ -126,6 +126,9 @@ B64_UD_PARAM_NAME="cdkd-test-dynref-b64-ud-${ACCOUNT_ID}"
 # Issue #4543: its sibling reading the `UdInput` template parameter, same gate,
 # same sweep. Must match the stack's own spelling.
 B64_IN_PARAM_NAME="cdkd-test-dynref-b64-in-${ACCOUNT_ID}"
+# Issue #4986: the gated `OverlapSecret` and `OverlapParam` (Phase 1b2e creates
+# them, Phase 1b3 deletes them) share this name. Must match the stack's spelling.
+OVERLAP_NAME="cdkd-test-dynref-overlap-${ACCOUNT_ID}"
 # SecureString counterpart (issue #1901). Created by THIS script, not by the
 # stack: CloudFormation cannot create a SecureString parameter, so the fixture
 # only references it.
@@ -528,6 +531,10 @@ cleanup() {
   aws ssm delete-parameter --name "${PARAM_NAME}-mixed" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Issue #4986: Phase 1b2e's gated parameter and secret (same name for both).
+  aws ssm delete-parameter --name "${OVERLAP_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws secretsmanager delete-secret --secret-id "${OVERLAP_NAME}" \
+    --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   # The SecureString parameter is created by this script, so cdkd never deletes
   # it — the ONLY thing that keeps it from being an orphan is this sweep.
   aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -1544,6 +1551,138 @@ if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | ha
 fi
 aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 
+# --- Phase 1b2e: two secret values OVERLAP inside one leaf (issue #4986) ----
+# `CDKD_TEST_OVERLAP` declares `OverlapSecret` (`head` / `tail`, sharing the
+# five characters `shr4d`) and `OverlapParam`, whose value is the literal
+# `cdkd-ovl-head-` + the `tail` reference and whose description reads `head`
+# whole. The value resolves to `cdkd-ovl-head-shr4d-tail-cdkd-ovl`, holding
+# both plaintexts. The leftmost-first scan replaced `head` and persisted
+# `{{resolve:...:head}}-tail-cdkd-ovl`: `-tail-cdkd-ovl` is the rest of `tail`,
+# text the template never states. Fixed, the value persists as the mask. The
+# Phase 1b2d tokens ride along, so this deploy adds the two resources and
+# changes nothing else; Phase 1b3's deploy, without the token, deletes them.
+echo "==> Phase 1b2e: two overlapping secret values in one leaf persist as the mask (issue #4986)"
+OVL_HEAD="cdkd-ovl-head-shr4d"
+OVL_TAIL="shr4d-tail-cdkd-ovl"
+OVL_LEAF="cdkd-ovl-head-shr4d-tail-cdkd-ovl"
+# The rest of `tail` past the shared characters: the pre-fix leak, and text
+# the template does not hold.
+OVL_TAIL_REST="-tail-cdkd-ovl"
+OVL_SECRET_NAME="${OVERLAP_NAME}"
+OVL_PARAM_NAME="${OVERLAP_NAME}"
+# Premise, on the literals themselves: the two values overlap in the leaf
+# without either containing the other, which is the shape under test.
+if [[ "${OVL_LEAF}" != "${OVL_HEAD}"* ]] || [[ "${OVL_LEAF}" != *"${OVL_TAIL}" ]] \
+  || [ $(( ${#OVL_HEAD} + ${#OVL_TAIL} )) -le ${#OVL_LEAF} ] \
+  || [[ "${OVL_HEAD}" == *"${OVL_TAIL}"* ]] || [[ "${OVL_TAIL}" == *"${OVL_HEAD}"* ]] \
+  || [[ "${OVL_TAIL}" != *"${OVL_TAIL_REST}" ]]; then
+  echo "FAIL: premise: OVL_HEAD and OVL_TAIL do not overlap inside OVL_LEAF the way the #4986 arm needs" >&2
+  exit 1
+fi
+ovl_live_version() {
+  aws ssm get-parameter --name "${OVL_PARAM_NAME}" --region "${REGION}" \
+    --query 'Parameter.Version' --output text
+}
+# ovl_shown <value>: the value with every overlap piece replaced, for a
+# failure message. No log negative here: OverlapSecret declares both values as
+# a template literal, so a verbose create line may print them by design, and
+# the log maskers already mask the union of overlapping matches.
+ovl_shown() {
+  local v="$1"
+  v=${v//"${OVL_HEAD}"/<head>}
+  v=${v//"${OVL_TAIL}"/<tail>}
+  v=${v//"${OVL_TAIL_REST}"/<rest-of-tail>}
+  v=${v//shr4d/<shared>}
+  printf '%s\n' "${v}"
+}
+OVL_STATE=$(mktemp)
+OVL_RECORD=$(mktemp)
+SCRATCH_FILES+=("${OVL_STATE}" "${OVL_RECORD}")
+# ovl_assert_state <what>: OverlapParam's value is the mask, its description
+# keeps the `head` reference (so `head` was recorded in this resource's map),
+# and no record but OverlapSecret's own (which declares both values in the
+# template, by design) holds either value or the leaked rest.
+ovl_assert_state() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${OVL_STATE}" --quiet
+  local value description
+  value=$(jq -r '.resources.OverlapParam.properties.Value // "<absent>"' "${OVL_STATE}")
+  description=$(jq -r '.resources.OverlapParam.properties.Description // "<absent>"' "${OVL_STATE}")
+  if [ "${description}" != "{{resolve:secretsmanager:${OVL_SECRET_NAME}:SecretString:head}}" ]; then
+    echo "FAIL: premise: $1: OverlapParam.Description is not the head reference -- head was not recorded beside the leaf (issue #4986)" >&2
+    ovl_shown "${description}" >&2
+    exit 1
+  fi
+  jq 'del(.resources.OverlapSecret)' "${OVL_STATE}" > "${OVL_RECORD}"
+  if grep -qF -e "${OVL_HEAD}" -e "${OVL_TAIL}" -e "${OVL_TAIL_REST}" -e "shr4d" "${OVL_RECORD}"; then
+    echo "FAIL: $1 holds an overlap secret value or a piece of one in plaintext outside OverlapSecret's own record (issue #4986); OverlapParam.Value follows, pieces replaced" >&2
+    ovl_shown "${value}" >&2
+    exit 1
+  fi
+  if [ "${value}" != "***" ]; then
+    echo "FAIL: $1: OverlapParam.Value is not the mask '***' (issue #4986); value follows, pieces replaced" >&2
+    ovl_shown "${value}" >&2
+    exit 1
+  fi
+}
+if ! DEPLOY_OUT_OVL=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two CDKD_TEST_OVERLAP=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the CDKD_TEST_OVERLAP probe deploy exited non-zero (issue #4986)" >&2
+  diag_output "$(ovl_shown "${DEPLOY_OUT_OVL}")"
+  exit 1
+fi
+# Premise: the synthesized leaf is the literal prefix + the tail reference, and
+# the description the head reference, both plain strings.
+OVL_SHAPE=$(jq -r --arg s "${OVL_SECRET_NAME}" '.Resources.OverlapParam.Properties
+  | if . == null then "absent"
+    elif .Value == ("cdkd-ovl-head-{{resolve:secretsmanager:" + $s + ":SecretString:tail}}")
+      and .Description == ("{{resolve:secretsmanager:" + $s + ":SecretString:head}}") then "ok"
+    else "other" end' "${SYNTH_TEMPLATE}")
+if [ "${OVL_SHAPE}" != "ok" ]; then
+  echo "FAIL: premise: OverlapParam synthesized as '${OVL_SHAPE}', not the literal prefix + tail reference with a head-reference description (issue #4986)" >&2
+  exit 1
+fi
+# Premise: AWS holds the resolved leaf, so both values really were resolved and
+# overlap in it. Compared, never printed.
+if [ "$(aws ssm get-parameter --name "${OVL_PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)" != "${OVL_LEAF}" ]; then
+  echo "FAIL: premise: the live OverlapParam value is not the resolved overlapping leaf (issue #4986)" >&2
+  exit 1
+fi
+ovl_assert_state "state.json after the CDKD_TEST_OVERLAP deploy"
+echo "    OK: the overlapping leaf persisted as the mask, with no piece of either value in state (#4986)"
+# The same deploy again: the masked leaf must compare unchanged, so nothing is
+# re-sent (a persisted form the next deploy cannot reproduce would be a
+# perpetual UPDATE).
+OVL_VERSION=$(ovl_live_version)
+if ! DEPLOY_OUT_OVL_SAME=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two CDKD_TEST_OVERLAP=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --verbose \
+  --yes 2>&1); then
+  echo "FAIL: the unchanged CDKD_TEST_OVERLAP redeploy exited non-zero (issue #4986)" >&2
+  diag_output "$(ovl_shown "${DEPLOY_OUT_OVL_SAME}")"
+  exit 1
+fi
+if [ -z "${OVL_VERSION}" ] || [ "$(ovl_live_version)" != "${OVL_VERSION}" ]; then
+  echo "FAIL: the unchanged redeploy re-sent OverlapParam (version ${OVL_VERSION} moved) -- the masked leaf does not compare unchanged (issue #4986)" >&2
+  exit 1
+fi
+ovl_assert_state "state.json after the unchanged CDKD_TEST_OVERLAP redeploy"
+echo "    OK: the unchanged redeploy sent nothing (version stays ${OVL_VERSION}) and kept the mask (#4986)"
+# Drop the two Phase 1b2 outputs these deploys declared again, for the later
+# `diff --fail` guard, exactly as Phase 1b2d does.
+jq 'del(.outputs.Base64Secret, .outputs.Base64Pin)' "${OVL_STATE}" > "${B64_TRIMMED}"
+if jq -e 'has("outputs") and ((.outputs | has("Base64Secret")) or (.outputs | has("Base64Pin")))' "${B64_TRIMMED}" >/dev/null; then
+  echo "FAIL: could not drop Base64Secret / Base64Pin from the persisted outputs after Phase 1b2e -- the diff --fail guard later would red on them" >&2
+  exit 1
+fi
+aws s3 cp "${B64_TRIMMED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
 # --- issue #2743: WHERE the password sits in a persisted document ---------
 # A whole-file grep for the password cannot be the assertion: this fixture's
 # own `secretsmanager.Secret` is declared from `SecretValue.unsafePlainText`,
@@ -1667,6 +1806,21 @@ assert_gone "SSM parameter '${B64_UD_PARAM_NAME}' (base64 of a script carrying t
 assert_gone "SSM parameter '${B64_IN_PARAM_NAME}' (base64 of a script carrying the password) still exists after the deploy that undeclared it (issue #4543)" \
   aws ssm get-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}"
 echo "    OK: Base64UserDataParam is gone from state and from AWS (#2909)"
+# Issue #4986: and Phase 1b2e's two resources, undeclared by this deploy too.
+if ! jq -e '.resources | (has("OverlapParam") or has("OverlapSecret")) | not' "${SPAN_STATE}" >/dev/null; then
+  echo "FAIL: state still records OverlapParam or OverlapSecret after the deploy that undeclared them (issue #4986)" >&2
+  exit 1
+fi
+assert_gone "SSM parameter '${OVL_PARAM_NAME}' still exists after the deploy that undeclared it (issue #4986)" \
+  aws ssm get-parameter --name "${OVL_PARAM_NAME}" --region "${REGION}"
+# The secret too. A force delete (the provider's `ForceDeleteWithoutRecovery`)
+# completes asynchronously, so the probe is given a short window to settle.
+for _ in 1 2 3 4 5 6; do
+  gone_probe aws secretsmanager describe-secret --secret-id "${OVL_SECRET_NAME}" --region "${REGION}" && break
+  sleep 5
+done
+assert_gone "Secrets Manager secret '${OVL_SECRET_NAME}' still exists after the deploy that undeclared it (issue #4986)" \
+  aws secretsmanager describe-secret --secret-id "${OVL_SECRET_NAME}" --region "${REGION}"
 assert_password_paths "state.json after the service-span OUTPUT probe deploy" by-design "${SPAN_STATE}"
 SPAN_PERSISTED=$(jq -r '.outputs | has("ServiceSpanLeak")' "${SPAN_STATE}")
 if [ "${SPAN_PERSISTED}" != "false" ]; then

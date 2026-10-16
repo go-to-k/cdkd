@@ -469,7 +469,10 @@ describe('nested-stack child: an embedding leaf positioned by the RESOLVER\'s pa
       childBag.set(STRADDLE, '{{resolve:ssm:straddle}}');
       const persisted = redactSecretsForState(resolved, childBag, source) as Record<string, unknown>;
       expect(persisted['P1']).not.toContain(FRAGMENT);
-      expect(persisted['P1']).toBe(`app-{{resolve:ssm:straddle}}${SHARED.slice(3)}-ChildStack`);
+      // The straddling needle overlaps the shared plaintext, so the value
+      // scan masks the leaf WHOLE (go-to-k/cdkd#4986) instead of leaving the
+      // shared plaintext's tail in the clear.
+      expect(persisted['P1']).toBe(SECRET_MASK);
     });
 
     it('REFUSES when a gap holds a containment needle: the leaf is masked WHOLE', async () => {

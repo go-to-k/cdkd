@@ -10,6 +10,7 @@ import {
   STATE_DERIVED_RULES,
   type PathSourceRules,
   type RecordedSecretValues,
+  SECRET_MASK,
 } from '../../../src/deployment/secret-redaction.js';
 
 // The reference a PREVIOUS deploy already persisted into a MIXED leaf: the
@@ -222,7 +223,7 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     expect(out['Url']).toBe(`x${STRADDLING_EXPR}y`);
   });
 
-  it('PRECEDENCE: a straddling needle is a CANDIDATE again, so it beats a later short one', () => {
+  it('PRECEDENCE: a straddling needle is a CANDIDATE again, so a later short one never wins', () => {
     // Not a claim that the longest needle always wins — see the case below for
     // where it does not. `buildNeedleRegex`'s longest-first ordering decides
     // between alternatives at the SAME offset, and the scan is leftmost-first.
@@ -241,24 +242,21 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
       ])
     ) as Record<string, unknown>;
 
-    expect(out['Url']).toBe('jdbc://user:{{resolve:secretsmanager:LONG:SecretString:p}}@host');
+    // The two needles OVERLAP (`tail`), so since go-to-k/cdkd#4986 no single
+    // expression renders their union and the leaf is masked WHOLE; writing
+    // LONG's expression left `@ho`, the tail of `tail@ho`, in the clear. What
+    // this case still guards is the candidacy: SHORT's expression, the wrong
+    // reference, is never persisted.
+    expect(out['Url']).toBe(SECRET_MASK);
+    expect(JSON.stringify(out)).not.toContain('SHORT');
   });
 
-  it('LEFTMOST beats LONGEST: a shorter needle starting earlier keeps the longer one out', () => {
-    // The limit of the precedence claim above, pinned so the comment cannot
-    // quietly widen back. Regex alternation is leftmost-first; longest-first
-    // only orders alternatives at ONE offset. So `ABCD` wins at index 2 and the
-    // `EF` tail of `BCDEF` survives in the clear.
-    //
-    // Identical before and after this change — the rule under test does not
-    // reach overlapping needles at DIFFERENT offsets, and this case exists to
-    // say so rather than to endorse it.
-    //
-    // NO cheap mutant reds this one, and that is measured rather than assumed:
-    // inverting `buildNeedleRegex`'s longest-first sort leaves it green,
-    // because leftmost-first decides it before ordering ever applies. It is a
-    // CHARACTERIZATION case — its job is to make the narrowed claim in the
-    // comments falsifiable if someone widens it back, not to guard a mechanism.
+  it('OVERLAP at different offsets masks the leaf WHOLE (go-to-k/cdkd#4986)', () => {
+    // Regex alternation is leftmost-first, and longest-first only orders
+    // alternatives at ONE offset, so `ABCD` won at index 2 and the `EF` tail of
+    // `BCDEF` survived in the clear. Overlapping matches now take the union
+    // rule: no single expression renders `ABCDEF`, so the leaf is masked whole.
+    // `secret-redaction-overlapping-needles-4986.test.ts` holds the shapes.
     const out = redactSecretsForState(
       { Url: 'zzABCDEFzz' },
       new Map([
@@ -267,7 +265,7 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
       ])
     ) as Record<string, unknown>;
 
-    expect(out['Url']).toBe('zz{{resolve:secretsmanager:EARLY:SecretString:p}}EFzz');
+    expect(out['Url']).toBe(SECRET_MASK);
   });
 
   it('RESIDUAL: an UNTERMINATED `{{resolve:` opener is not a span, so a needle after it is replaced', () => {

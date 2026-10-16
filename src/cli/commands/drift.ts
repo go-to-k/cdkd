@@ -7292,12 +7292,15 @@ async function runRevert(
                         `${maskSecretsInText(maskPreserved.unpreservablePaths.join(', '), secrets)} — the recorded ` +
                         `baseline holds only the redaction mask there, and AWS reports nothing to ` +
                         `preserve, so cdkd has no value it may write. ` +
-                        `${markedAmong ? `Where a NoEcho template parameter feeds a path (${markedPaths}), deploy the stack with the parameter's value to set it. For the other paths, three` : 'Three'} causes leave such a mask, and ` +
+                        `${markedAmong ? `Where a NoEcho template parameter feeds a path (${markedPaths}), deploy the stack with the parameter's value to set it. For the other paths, four` : 'Four'} causes leave such a mask, and ` +
                         `the record does not say which: a NoEcho custom-resource value (force that ` +
                         `custom resource to update — change one of its properties, e.g. a nonce — and ` +
                         `re-deploy, so its handler runs again and supplies the value); the Fn::Base64 ` +
                         `encoding of a secret value, which cdkd never records (deploy a change to this ` +
-                        `resource, which sends it the encoded value again); or a readback position cdkd ` +
+                        `resource, which sends it the encoded value again); two secret values that ` +
+                        `overlap inside the value, which no single reference renders (change the ` +
+                        `property, or rotate one of the secrets, so that they no longer overlap, and ` +
+                        `deploy that change); or a readback position cdkd ` +
                         `could not certify when the baseline was captured (deploy a change to this ` +
                         `resource, so its baseline is re-captured). A re-deploy that leaves this resource ` +
                         `unchanged sends it nothing, so it resolves this refusal for none of them.`

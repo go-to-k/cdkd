@@ -88,6 +88,7 @@ import { getPrimaryIdentifierFields, toCloudControlIdentifier } from './cc-impor
 import { isInterruptedWaitError } from './interrupt-watch.js';
 import {
   errorCauseChain,
+  maskMatchSpans,
   maskSecretsInError,
   SECRET_MASK,
 } from '../deployment/secret-redaction.js';
@@ -5190,8 +5191,10 @@ class IdScrubLog implements IdLogSink {
     ].sort((a, b) => b.length - a.length);
   }
 
+  // The UNION of every occurrence (go-to-k/cdkd#4986): replacing needle by
+  // needle left the tail of one that overlaps another (`maskMatchSpans`).
   readonly scrub = (text: string): string =>
-    this.needles.reduce((out, needle) => out.split(needle).join(SECRET_MASK), this.mask(text));
+    maskMatchSpans(this.mask(text), this.needles, SECRET_MASK);
 
   /**
    * `text` scrubbed, except that an abandoned wait's request tokens and its

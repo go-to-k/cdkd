@@ -170,7 +170,9 @@ describe('DeployEngine - a Base64-encoded secret read back out of attributes (is
     const refusal = String(failure?.cause?.message ?? failure?.message);
     expect(refusal).toContain('Cannot resolve Param.Value for Copy');
     // The arm this issue adds, with its remedy.
-    expect(refusal).toContain('three ways a record comes to hold the mask');
+    expect(refusal).toContain('four ways a record comes to hold the mask');
+    // go-to-k/cdkd#4986: two overlapping secret values mask the leaf whole.
+    expect(refusal).toContain('(4) Two secret values cdkd resolved overlap inside the value');
     expect(refusal).toContain('Fn::Base64 encoding of a secret value');
     // The remedy names the SECRET's reference, and steers away from reading
     // the String parameter that holds the encoding, which cdkd stores in the

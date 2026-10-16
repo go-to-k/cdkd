@@ -250,6 +250,21 @@ function embedsNeedleOutsideReferences(
   needles: readonly string[],
   secrets: RecordedSecretValues
 ): boolean {
+  return needleOccurrencesOutsideReferences(leaf, needles, secrets, true).length > 0;
+}
+
+/**
+ * The occurrences of `needles` in `leaf` that {@link embedsNeedleOutsideReferences}
+ * counts (not strictly inside a resolvable span, not inside a read physical
+ * id); only the first when `first`.
+ */
+function needleOccurrencesOutsideReferences(
+  leaf: string,
+  needles: readonly string[],
+  secrets: RecordedSecretValues,
+  first: boolean
+): Array<{ start: number; end: number }> {
+  const found: Array<{ start: number; end: number }> = [];
   let spans: Array<{ start: number; end: number }> | undefined;
   let names: Array<{ start: number; end: number }> | undefined;
   for (const needle of needles) {
@@ -263,10 +278,34 @@ function embedsNeedleOutsideReferences(
       names ??= physicalNameSpans(physicalNameCopiesOf.get(secrets), leaf);
       const end = at + needle.length;
       if (names.some((n) => n.start <= at && end <= n.end)) continue;
-      return true;
+      found.push({ start: at, end });
+      if (first) return found;
     }
   }
-  return false;
+  return found;
+}
+
+/**
+ * Does a match of the substring arm (`redacted`) CUT a containment needle's
+ * occurrence in `leaf`, overlapping it without containing it
+ * (go-to-k/cdkd#4986)? The arm would then write an expression over part of
+ * the needle and leave the rest in the clear, where {@link
+ * flattenEmbeddedNoEchoLeaves} no longer finds it whole. An occurrence a match
+ * contains goes with that match, and one no match touches is the post-pass's.
+ */
+export function cutsContainmentNeedle(
+  leaf: string,
+  secrets: RecordedSecretValues,
+  redacted: ReadonlyArray<{ start: number; end: number }>
+): boolean {
+  if (redacted.length === 0) return false;
+  const needles = containmentNeedlesOf(secrets);
+  if (needles.length === 0) return false;
+  return needleOccurrencesOutsideReferences(leaf, needles, secrets, false).some((c) =>
+    redacted.some(
+      (m) => m.start < c.end && c.start < m.end && !(m.start <= c.start && c.end <= m.end)
+    )
+  );
 }
 
 /**

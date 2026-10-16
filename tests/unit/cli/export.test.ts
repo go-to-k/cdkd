@@ -5024,8 +5024,10 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
 
     expect(result.blocked).toHaveLength(1);
     const reason = result.blocked[0]!.reason;
-    expect(reason).toMatch(/three ways a record comes to hold it/);
+    expect(reason).toMatch(/four ways a record comes to hold it/);
     expect(reason).toMatch(/\(2\) The Fn::Base64 encoding of a secret value/);
+    // go-to-k/cdkd#4986: two overlapping secret values mask the leaf whole.
+    expect(reason).toMatch(/\(4\) Two secret values cdkd resolved overlap inside the value/);
     expect(reason).toMatch(/re-deploying the same template does not clear this/);
     expect(reason).toMatch(/Stop encoding the secret into the property/);
     // The remedy must not read as "inline the plaintext", which would clear

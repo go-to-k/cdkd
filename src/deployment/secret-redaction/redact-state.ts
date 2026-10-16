@@ -17,6 +17,7 @@ import {
 import { SECRET_MASK, type RecordedSecretValues, isSameGenerationBag } from './pairs.js';
 import { redactByPath, isReadbackProjectedFromState, isOrdinaryDate } from './redact-path.js';
 import {
+  cutsContainmentNeedle,
   flattenEmbeddedNoEchoLeaves,
   recordedExpressionsOf,
   substringNeedlesOf,
@@ -253,11 +254,11 @@ function redactSecretsForStatePasses<T>(
    * Scanning the WHOLE leaf in ONE pass is also what preserves what needle
    * PRECEDENCE there is. {@link buildNeedleRegex} sorts alternatives
    * longest-first, which decides only between alternatives matching at the SAME
-   * offset; the scan itself is LEFTMOST-first, so a shorter secret starting
-   * EARLIER still wins and the tail of the longer one survives in the clear
-   * (`zzABCDEFzz` with needles `ABCD` / `BCDEF` leaves `EF`). That is regex
-   * semantics, identical before and after this change, and is not something
-   * this rule claims to fix.
+   * offset; the scan itself is LEFTMOST-first, so of two matches that OVERLAP
+   * at different offsets it consumed the earlier one and left the later one's
+   * tail in the clear (`zzABCDEFzz` with needles `ABCD` / `BCDEF` left `EF`).
+   * Overlapping matches are therefore taken out of the replace and answered
+   * by {@link redactOverlappingMatches} (go-to-k/cdkd#4986).
    *
    * What the single pass DOES restore is the same-offset ordering across a span
    * boundary. The two-rule form scanned each BETWEEN-span stretch separately,
@@ -293,6 +294,20 @@ function redactSecretsForStatePasses<T>(
   // Built once per pass, and only if a leaf needs it.
   let vouched: Set<string> | undefined;
   const vouchedExpressions = (): ReadonlySet<string> => (vouched ??= new Set(secrets.values()));
+  const expressionFor = (match: string): string => {
+    // Unreachable today: `needles` is built from {@link substringNeedlesOf},
+    // i.e. from `secrets.keys()` minus the mask-only class, so every match is
+    // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
+    // the substring arm; the reachability argument is unchanged, since
+    // narrowing the needle set can only REMOVE matches.) {@link SECRET_MASK}
+    // anyway on a miss, and the polarity is the
+    // whole point of keeping a dead branch — a caller that ever hands this
+    // function a regex built from somewhere else gets a MASK rather than the
+    // plaintext. An earlier revision made it identity on the grounds that the
+    // branch cannot run; a branch that cannot run still has to fail in the
+    // safe direction, because the day it runs is the day nobody is looking.
+    return secrets.get(match) ?? SECRET_MASK;
+  };
   const scanLeaf = (value: string, needles: RegExp): string => {
     // Only a leaf that HOLDS a reference can have a span, and the dominant leaf
     // does not — so the offsets are computed only where they can matter.
@@ -300,26 +315,38 @@ function redactSecretsForStatePasses<T>(
       ? resolvableReferenceSpans(value, vouchedExpressions())
       : [];
     const names = physicalNameSpans(physicalNames, value);
+    const kept = (start: number, end: number): boolean =>
+      isStrictlyInsideASpan(spans, start, end) ||
+      // Inside (or equal to) an occurrence of a physical id this pass read.
+      names.some((n) => n.start <= start && end <= n.end);
+    // go-to-k/cdkd#4986: matches that OVERLAP take the union rule below, and
+    // only they do; a leaf whose matches are disjoint is answered by the
+    // replace that follows, byte-identically to before.
+    // `withLegacyOverlapScan` skips this block to reproduce what a pre-fix
+    // cdkd persisted, for the one-time repair of such a record.
+    if (!legacyOverlapScan.has(secrets)) {
+      const matches = everyMatch(value, needles);
+      const redacted = matches.filter((m) => !kept(m.start, m.end));
+      // A containment needle (a fresh `NoEcho` value, a derived `Fn::Base64`
+      // one) is no substring needle, so a redacted match can cut it, leaving
+      // the rest in the clear where the containment post-pass no longer finds
+      // it whole. Such a leaf is masked WHOLE here, as that post-pass would.
+      if (cutsContainmentNeedle(value, secrets, redacted)) {
+        overlapAnswered.add(secrets);
+        return SECRET_MASK;
+      }
+      const overlapping = redactOverlappingMatches(value, matches, redacted, expressionFor);
+      if (overlapping !== undefined) {
+        overlapAnswered.add(secrets);
+        return overlapping;
+      }
+    }
     // No `lastIndex` reset before `replace`: `RegExp.prototype[Symbol.replace]`
     // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
     // call site is the one that IS needed.
     return value.replace(needles, (match: string, offset: number) => {
-      if (isStrictlyInsideASpan(spans, offset, offset + match.length)) return match;
-      // Inside (or equal to) an occurrence of a physical id this pass read.
-      const end = offset + match.length;
-      if (names.some((n) => n.start <= offset && end <= n.end)) return match;
-      // Unreachable today: `needles` is built from {@link substringNeedlesOf},
-      // i.e. from `secrets.keys()` minus the mask-only class, so every match is
-      // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
-      // the substring arm; the reachability argument is unchanged, since
-      // narrowing the needle set can only REMOVE matches.) {@link SECRET_MASK}
-      // anyway on a miss, and the polarity is the
-      // whole point of keeping a dead branch — a caller that ever hands this
-      // function a regex built from somewhere else gets a MASK rather than the
-      // plaintext. An earlier revision made it identity on the grounds that the
-      // branch cannot run; a branch that cannot run still has to fail in the
-      // safe direction, because the day it runs is the day nobody is looking.
-      return secrets.get(match) ?? SECRET_MASK;
+      if (kept(offset, offset + match.length)) return match;
+      return expressionFor(match);
     });
   };
 
@@ -398,6 +425,212 @@ function redactSecretsForStatePasses<T>(
   };
 
   return walk(bag) as T;
+}
+
+/** Maps whose walk runs the pre-#4986 leftmost-first scan ({@link withLegacyOverlapScan}). */
+const legacyOverlapScan = new WeakSet<RecordedSecretValues>();
+/** Maps a walk answered by the #4986 overlap rule at least once. */
+const overlapAnswered = new WeakSet<RecordedSecretValues>();
+
+/**
+ * Did a walk over `secrets` answer a leaf by the overlap rule of
+ * go-to-k/cdkd#4986 (a tiled or masked overlap, or a cut containment
+ * needle)? The gate on the one-time legacy repair: a record can hold a
+ * pre-fix spelling only where today's walk takes that rule.
+ */
+export function overlapRuleAnswered(secrets: RecordedSecretValues): boolean {
+  return overlapAnswered.has(secrets);
+}
+
+/**
+ * `run` with the substring arm as a pre-go-to-k/cdkd#4986 cdkd ran it
+ * (leftmost-first, no overlap rule), so a caller can compute what such a
+ * cdkd PERSISTED for today's value and recognise a record it wrote. The walk
+ * is synchronous and the flag is cleared afterwards, also on a throw. Its
+ * output can hold plaintext and must never be persisted or printed; it is a
+ * comparison key only.
+ */
+export function withLegacyOverlapScan<T>(secrets: RecordedSecretValues, run: () => T): T {
+  if (legacyOverlapScan.has(secrets)) return run();
+  legacyOverlapScan.add(secrets);
+  try {
+    return run();
+  } finally {
+    legacyOverlapScan.delete(secrets);
+  }
+}
+
+/**
+ * The `[legacy, current]` string leaves that differ at the same position of
+ * two bags (go-to-k/cdkd#4986): what a pre-fix walk persisted beside what
+ * today's persists, for repairing a leaf no desired value stands beside.
+ */
+export function differingStringLeaves(
+  legacy: unknown,
+  current: unknown,
+  out: Array<readonly [string, string]> = []
+): Array<readonly [string, string]> {
+  if (typeof legacy === 'string' && typeof current === 'string') {
+    if (legacy !== current) out.push([legacy, current]);
+    return out;
+  }
+  if (Array.isArray(legacy) && Array.isArray(current) && legacy.length === current.length) {
+    legacy.forEach((item, i) => differingStringLeaves(item, current[i], out));
+    return out;
+  }
+  if (
+    legacy !== null &&
+    current !== null &&
+    typeof legacy === 'object' &&
+    typeof current === 'object' &&
+    !Array.isArray(legacy) &&
+    !Array.isArray(current)
+  ) {
+    const c = current as Record<string, unknown>;
+    for (const [key, value] of Object.entries(legacy as Record<string, unknown>)) {
+      if (Object.hasOwn(c, key)) differingStringLeaves(value, c[key], out);
+    }
+  }
+  return out;
+}
+
+/**
+ * `legacy` with every string leaf that holds no `{{resolve:` reference (a
+ * whole `***` included) replaced by `undefined`, so a position-wise repair
+ * against it touches only a leaf a pre-go-to-k/cdkd#4986 walk spelled with a
+ * reference. A stored `***` identifies no value: repairing it to today's
+ * spelling would take it out of the masked-property fingerprint comparison
+ * and could hide a real edit (PR #4988 security review).
+ */
+export function legacyReferenceLeavesOnly(legacy: unknown): unknown {
+  if (typeof legacy === 'string') return legacy.includes('{{resolve:') ? legacy : undefined;
+  if (Array.isArray(legacy)) return legacy.map(legacyReferenceLeavesOnly);
+  if (legacy !== null && typeof legacy === 'object') {
+    const out = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(legacy as Record<string, unknown>)) {
+      out[key] = legacyReferenceLeavesOnly(value);
+    }
+    return out;
+  }
+  return legacy;
+}
+
+/**
+ * `value` with every string leaf EQUAL to a pair's legacy spelling replaced
+ * by its current one; whole leaves only, so no inline mask is ever made.
+ * Returns `value` by identity when nothing changed.
+ */
+export function replaceWholeLeaves(
+  value: unknown,
+  pairs: ReadonlyArray<readonly [string, string]>
+): unknown {
+  if (pairs.length === 0) return value;
+  if (typeof value === 'string') {
+    const hit = pairs.find(([legacy]) => legacy === value);
+    return hit === undefined ? value : hit[1];
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((item) => {
+      const next = replaceWholeLeaves(item, pairs);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed ? out : value;
+  }
+  if (value !== null && typeof value === 'object') {
+    let out: Record<string, unknown> | undefined;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const next = replaceWholeLeaves(item, pairs);
+      if (next !== item) {
+        out ??= Object.assign(
+          Object.create(null) as Record<string, unknown>,
+          value as Record<string, unknown>
+        );
+        out[key] = next;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/** A match's offsets in its leaf. */
+type MatchSpan = { start: number; end: number };
+
+/**
+ * Every match of `needles` in `value`, one per start offset (the longest
+ * there, as {@link buildNeedleRegex} sorts the alternation longest-first), in
+ * ascending order. Unlike a `replace`, a match beginning inside an earlier one
+ * is seen (go-to-k/cdkd#4986).
+ */
+function everyMatch(value: string, needles: RegExp): MatchSpan[] {
+  const matches: MatchSpan[] = [];
+  needles.lastIndex = 0;
+  for (let m = needles.exec(value); m !== null; m = needles.exec(value)) {
+    matches.push({ start: m.index, end: m.index + m[0].length });
+    // One past this START, not its end: the next match may begin inside it.
+    needles.lastIndex = m.index + 1;
+  }
+  needles.lastIndex = 0;
+  return matches;
+}
+
+/**
+ * The substring arm's answer for a leaf whose matches OVERLAP
+ * (go-to-k/cdkd#4986), or `undefined` when no two of `matches` overlap, which
+ * leaves the leaf to the ordinary leftmost-first replace.
+ *
+ * Over `redacted` (the matches the caller's `kept` predicate does not spare),
+ * each run of overlapping matches is a CLUSTER:
+ *
+ * - matches meeting end to start TILE the cluster (one match spanning it, a
+ *   needle CONTAINING the others, is the one-tile case) -> each tile's
+ *   expression, which together render exactly the cluster's text;
+ * - otherwise no sequence of expressions renders the union, and splicing one
+ *   per match would leave the shared characters' other owner in the clear ->
+ *   the WHOLE leaf is {@link SECRET_MASK}. Never an inline mask: an inline
+ *   `***` cannot be told from a literal, so `drift --revert` and the rollback
+ *   replay would send the corrupted string, while a whole `***` leaf is one
+ *   they refuse or preserve, and the masked-property fingerprints
+ *   (`masked-property-fingerprints.ts`) still see a template edit.
+ *
+ * A spared match stays text unless a redacted match covers it.
+ */
+function redactOverlappingMatches(
+  value: string,
+  matches: readonly MatchSpan[],
+  redacted: readonly MatchSpan[],
+  expressionFor: (match: string) => string
+): string | undefined {
+  let reach = 0;
+  let overlap = false;
+  for (const m of matches) {
+    if (m.start < reach) overlap = true;
+    reach = Math.max(reach, m.end);
+  }
+  if (!overlap) return undefined;
+  let out = '';
+  let cursor = 0;
+  for (let i = 0; i < redacted.length;) {
+    let end = redacted[i]!.end;
+    let j = i + 1;
+    for (; j < redacted.length && redacted[j]!.start < end; j++) {
+      end = Math.max(end, redacted[j]!.end);
+    }
+    const cluster = redacted.slice(i, j);
+    out += value.slice(cursor, cluster[0]!.start);
+    // Starts are distinct, so at most one match begins at each offset.
+    for (let at = cluster[0]!.start; at < end;) {
+      const tile = cluster.find((m) => m.start === at);
+      if (tile === undefined) return SECRET_MASK;
+      out += expressionFor(value.slice(tile.start, tile.end));
+      at = tile.end;
+    }
+    cursor = end;
+    i = j;
+  }
+  return out + value.slice(cursor);
 }
 
 /**

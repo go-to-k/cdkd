@@ -336,7 +336,7 @@ export function refuseMaskedReplayBaseline(
   // go-to-k/cdkd#4043 Phase C: a marked NoEcho leaf no call sends (see
   // `NoEchoReplaySubstitution.inert`) is no reason to refuse.
   if (inert.length > 0 && masksOnlyAt(props, inert)) return;
-  // THREE POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
+  // SEVERAL POPULATIONS REACH THIS REFUSAL, each with its own remedy, because
   // nothing in the record says which wrote the mask (issue
   // [#2881](https://github.com/go-to-k/cdkd/issues/2881)). Naming only the
   // first was a measured defect at the deploy engine's twin
@@ -380,7 +380,7 @@ export function refuseMaskedReplayBaseline(
     // `cdkd orphan` and `cdkd import` (go-to-k/cdkd#4214).
     `Cannot roll ${shownLogicalId(logicalId)} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}'), so cdkd would write that literal to the live resource. There are ` +
-      `four ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
+      `five ways a baseline comes to hold it. (1) A NoEcho custom-resource value was resolved ` +
       `there: restore the property with 'cdkd deploy' AFTER forcing that custom resource to ` +
       `update (change one of its properties, e.g. a nonce), so its handler runs again and ` +
       `supplies the real value — an ordinary re-deploy leaves the resource unchanged, so the ` +
@@ -399,7 +399,12 @@ export function refuseMaskedReplayBaseline(
       `first if the import warned that it could not read the schema), then re-run whichever ` +
       `command wrote this property. (4) A NoEcho template parameter's value, which cdkd ` +
       `stores only as the mask: restore the property with 'cdkd deploy', which sends the ` +
-      `parameter's value again. See https://github.com/go-to-k/cdkd/issues/2449.`,
+      `parameter's value again. (5) Two secret values cdkd resolved overlap inside the value, ` +
+      `so no single {{resolve:...}} reference renders it and cdkd stored the mask rather than ` +
+      `part of a secret: restore the property with a 'cdkd deploy' that changes this resource, ` +
+      `which sends it the value again. Every rollback to such a baseline refuses while the two ` +
+      `values still overlap there, so to end this, change the property (or rotate one of the ` +
+      `secrets) so that they no longer overlap. See https://github.com/go-to-k/cdkd/issues/2449.`,
     'ROLLBACK_REDACTED_BASELINE'
   );
 }

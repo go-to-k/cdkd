@@ -539,9 +539,10 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       const persisted = redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: EMBEDDED_SOURCE });
 
       expect(persisted).toEqual({ Dsn: fallThrough(leaf, secrets) });
-      // Leftmost wins in the scan: the overlapping needle consumed the start
-      // of the middle, and the remainder is no longer a needle.
-      expect(persisted).toEqual({ Dsn: `postgres://${OTHER}${PW.slice(8)}${SUFFIX}` });
+      // The overlapping needle and the middle share characters, and no single
+      // expression renders their union, so the scan masks the leaf WHOLE
+      // (go-to-k/cdkd#4986); leftmost-first used to leave PW's tail in the clear.
+      expect(persisted).toEqual({ Dsn: SECRET_MASK });
     });
 
     it('for a middle that is itself a complete token (an already-redacted record)', () => {

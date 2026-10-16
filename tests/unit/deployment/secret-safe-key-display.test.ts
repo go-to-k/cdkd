@@ -367,6 +367,18 @@ describe('secretSafeKeyDisplay', () => {
     expect(shown).toEqual({ kind: 'safe', text: 'OrdinaryKey' });
   });
 
+  it('two OVERLAPPING secrets are masked as one span, leaving neither tail (#4986)', () => {
+    // Replacing needle by needle (longest first) consumed the shared
+    // characters with the first and printed the other one's tail under a
+    // `masked` label.
+    const secrets = new Map([
+      ['us-east-1pw12', EXPR],
+      ['pw12-str4ddle-4973', EXPR],
+    ]);
+    const shown = secretSafeKeyDisplay('Out-us-east-1pw12-str4ddle-4973-X', secrets);
+    expect(shown).toEqual({ kind: 'masked', text: `Out-${SECRET_MASK}-X` });
+  });
+
   it('a needle whose EDGE whitespace is part of the secret still matches mid-key', () => {
     // The needle is stripped of invisibles but NOT trimmed. Trimming it made a
     // recorded `"ab  "` stop matching inside `x-ab  -y` -- the secret's own
