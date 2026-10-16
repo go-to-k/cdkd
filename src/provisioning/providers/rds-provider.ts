@@ -162,23 +162,14 @@ export class RDSProvider implements ResourceProvider {
   /**
    * Issue #1160: the CFn default a property REMOVED from the template is
    * reset to — the Modify/Update API keeps an absent field's live value.
+   *
+   * Empty for RDS: a real CloudFormation A/B (issue #5004) showed CFn KEEPS
+   * the live value of DBCluster DeletionProtection / EnableIAMDatabaseAuthentication
+   * and DBInstance DeletionProtection / EnableIAMDatabaseAuthentication /
+   * MonitoringInterval when they are removed, so cdkd sends no reset for them
+   * (omission is "unchanged" on ModifyDBCluster / ModifyDBInstance).
    */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    [
-      'AWS::RDS::DBCluster',
-      new Map<string, unknown>([
-        ['DeletionProtection', false],
-        ['EnableIAMDatabaseAuthentication', false],
-      ]),
-    ],
-    [
-      'AWS::RDS::DBInstance',
-      new Map<string, unknown>([
-        ['DeletionProtection', false],
-        ['EnableIAMDatabaseAuthentication', false],
-      ]),
-    ],
-  ]);
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -885,16 +876,17 @@ export class RDSProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
+      // CFn KEEPS the live value on removal for DeletionProtection and
+      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
+      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
       //     must not synthesize; leave unchanged.
       //   * ManageMasterUserPassword + MasterUserSecret — flipping
       //     ManageMasterUserPassword off requires supplying a
       //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value; inert once
-      //     MonitoringInterval is reset to 0.
+      //   * MonitoringRoleArn — no documented clear value.
       //   * ServerlessV2ScalingConfiguration — cannot be removed via Modify
       //     without engine-mode implications (the Class-2 guard above also
       //     skips empty shapes).
@@ -906,10 +898,9 @@ export class RDSProvider implements ResourceProvider {
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
-          // CFn default: deletion protection isn't enabled by default
-          // (ModifyDBClusterMessage doc).
+          // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          // CFn/API default for Aurora: 1 day (ModifyDBClusterMessage doc).
+          // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
           BackupRetentionPeriod: clearOnUpdateRemoval(
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
@@ -932,7 +923,8 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
+          // Removal resets to 0 (Enhanced Monitoring off). UNMEASURED against
+          // CloudFormation (#5004: Multi-AZ DB cluster classes only). NOTE: the AWS API docs
           // require a non-zero MonitoringInterval whenever MonitoringRoleArn
           // is present in the request, so a template that KEEPS the role but
           // DROPS the interval gets a loud InvalidParameterCombination — the
@@ -947,7 +939,7 @@ export class RDSProvider implements ResourceProvider {
               : undefined,
             0
           ),
-          // CFn default: IAM database authentication isn't enabled.
+          // Removal keeps the live value, as CFn does (#5004 A/B).
           EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
             | boolean
             | undefined,
@@ -1380,16 +1372,17 @@ export class RDSProvider implements ResourceProvider {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template must be sent as its explicit CFn-default reset value
-      // via `removalDefaults` or a local `clearOnUpdateRemoval`. Deliberately
-      // NOT reset here:
+      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
+      // CFn KEEPS the live value on removal for DeletionProtection and
+      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
+      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
       //   * EngineVersion — removal would imply moving to the engine's
       //     default version, a risky (possibly major) version change cdkd
       //     must not synthesize; leave unchanged.
       //   * ManageMasterUserPassword + MasterUserSecret — flipping
       //     ManageMasterUserPassword off requires supplying a
       //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value; inert once
-      //     MonitoringInterval is reset to 0.
+      //   * MonitoringRoleArn — no documented clear value.
       //   * PubliclyAccessible — CFn documents the default as
       //     context-dependent (varies by subnet / DNS configuration); no
       //     single safe reset value.
@@ -1412,8 +1405,7 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['AllocatedStorage'] !== undefined && {
             AllocatedStorage: Number(properties['AllocatedStorage']),
           }),
-          // CFn default: deletion protection isn't enabled by default
-          // (ModifyDBInstanceMessage doc).
+          // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           ...(newEngineVersion !== undefined && {
             EngineVersion: newEngineVersion,
@@ -1442,22 +1434,11 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // CFn default: 0 (Enhanced Monitoring off). NOTE: the AWS API docs
-          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
-          // is present in the request, so a template that KEEPS the role but
-          // DROPS the interval gets a loud InvalidParameterCombination — the
-          // same request CloudFormation would submit for that template
-          // (CFn-parity failure, never a silent keep of the old interval).
-          MonitoringInterval: clearOnUpdateRemoval(
-            properties['MonitoringInterval'] != null
-              ? Number(properties['MonitoringInterval'])
-              : undefined,
-            previousProperties['MonitoringInterval'] != null
-              ? Number(previousProperties['MonitoringInterval'])
-              : undefined,
-            0
-          ),
-          // CFn default: IAM database authentication isn't enabled.
+          // Removal keeps the live interval, as CFn does (#5004 A/B).
+          ...(properties['MonitoringInterval'] != null && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
+          // Removal keeps the live value, as CFn does (#5004 A/B).
           EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
             | boolean
             | undefined,

@@ -14,13 +14,13 @@
 #   MonitoringInterval / EnableIAMDatabaseAuthentication
 #   — asserted via DescribeDBClusters (MonitoringRoleArn deploy also proves the #794 IAM-race retry).
 #
-# #1160 (reset-on-removal): DeletionProtection + EnableIAMDatabaseAuthentication
-# are SET on the SecurityCluster in phase 1 and DROPPED in the phase-2 UPDATE
-# pass (CDKD_TEST_UPDATE=true). ModifyDBCluster has merge semantics (an absent
-# input field means "no change"), so before the #1160 fix the removed fields
-# silently kept their old live values — worst case DeletionProtection, which
-# would make the destroy fail. Phase 2 asserts both reset to their CFn
-# defaults (false / false) via DescribeDBClusters.
+# #5004 (removal KEEPS the live value, as CloudFormation does): DeletionProtection
+# + EnableIAMDatabaseAuthentication are SET on the SecurityCluster in phase 1 and
+# DROPPED in the phase-2 UPDATE pass (CDKD_TEST_UPDATE=true). A real
+# CloudFormation A/B (#5004) showed CFn KEEPS both on removal, and
+# ModifyDBCluster treats an absent field as "no change", so cdkd sends no
+# reset. Phase 2 asserts both are STILL true via DescribeDBClusters; the
+# destroys pass --remove-protection because protection is retained.
 #
 # #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
 # phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
@@ -547,7 +547,7 @@ fi
 echo "    OK: #1160 DBProxy premise: ${PROXY_LOGICAL} (sdk) records and holds DebugLogging=true"
 
 # --- Phase 2: UPDATE pass (#1160 reset-on-removal) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication, both must be KEPT; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -576,33 +576,32 @@ if [ "${POST_DEBUG}" != "True" ]; then
 fi
 echo "    OK: #1160: dropping DebugLogging kept the live value (True) and the deploy warned about it"
 
-# The removed fields must have reset to their CFn defaults (false / false),
-# NOT kept the phase-1 values (the merge-semantics silent drop #1160 closes).
-# DeletionProtection applies immediately; the IAM-auth flip can leave the
-# cluster briefly 'modifying', so poll until the cluster settles back to
-# 'available' with both fields reset (also guards the destroy below against
-# an InvalidDBClusterState race).
-echo "==> Waiting for the SecurityCluster to settle with both #1160 fields reset"
-RESET_OK=""
+# #5004: the removed fields must be KEPT (CloudFormation keeps them on
+# removal), NOT reset to false. Premise (phase 1) asserted both true above.
+# Wait for the cluster to be 'available' (guards the steps below against an
+# InvalidDBClusterState race), then assert both are still true. A deploy that
+# wrongly sent a reset would flip them to false within this window.
+echo "==> Waiting for the SecurityCluster to settle, then asserting DeletionProtection + IAM auth were KEPT (#5004)"
+SETTLED=""
 for _ in $(seq 1 60); do
   AFTER=$(aws rds describe-db-clusters \
     --db-cluster-identifier "${DB_CLUSTER_ID}" \
     --region "${REGION}" \
     --query 'DBClusters[0]' --output json)
   AFTER_STATUS=$(echo "${AFTER}" | jq -r '.Status // "null"')
-  AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
-  AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
-  if [ "${AFTER_STATUS}" = "available" ] && [ "${AFTER_PROTECTION}" = "false" ] && [ "${AFTER_IAM}" = "false" ]; then
-    RESET_OK="yes"
+  if [ "${AFTER_STATUS}" = "available" ]; then
+    SETTLED="yes"
     break
   fi
   sleep 10
 done
-if [ -z "${RESET_OK}" ]; then
-  echo "FAIL: after removal, SecurityCluster did not settle to DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}') — #1160 ModifyDBCluster reset-on-removal NOT closed" >&2
+AFTER_PROTECTION=$(echo "${AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
+AFTER_IAM=$(echo "${AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
+if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}" != "true" ]; then
+  echo "FAIL: after removal, SecurityCluster did not keep DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true (status='${AFTER_STATUS}', protection='${AFTER_PROTECTION}', iamAuth='${AFTER_IAM}') — #5004: CloudFormation keeps both on removal" >&2
   exit 1
 fi
-echo "    OK: after removal, AWS reset DeletionProtection=false + IAMDatabaseAuthenticationEnabled=false (#1160 silent-drop CLOSED)"
+echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true (#5004, matches CloudFormation)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")

@@ -1384,7 +1384,10 @@ shared report is `orphan-report.ts`):
 ## Update removal semantics: clear-on-removal
 
 CloudFormation resets a property **removed** from the template to its
-default. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
+default for MANY properties, but not all: some it KEEPS at the live value
+(issue [#5004](https://github.com/go-to-k/cdkd/issues/5004) measured this per
+type with a real CloudFormation A/B). Measure before adding a reset, and send
+none for a property CloudFormation keeps. Most AWS `Update*` / `Modify*` APIs do the opposite: an **absent**
 input field means "no change" (merge semantics). A provider `update()` that
 maps template properties straight into the SDK input therefore silently
 drops removals:
@@ -1458,6 +1461,11 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
+- Reset only what CloudFormation resets. RDS (#5004): DBCluster
+  `BackupRetentionPeriod` resets to 1; DBCluster and DBInstance
+  `DeletionProtection` / `EnableIAMDatabaseAuthentication` and DBInstance
+  `MonitoringInterval` are KEPT, so `update()` forwards them only when present
+  (DBCluster `MonitoringInterval` is unmeasured and still resets to 0).
 - Never synthesize a reset for a field that was **never** set — that turns
   every unrelated update into a spurious (and sometimes invalid) write.
 - **The reset SENTINEL can vary per API *and* per value KIND within one API,
