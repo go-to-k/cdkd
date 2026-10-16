@@ -1523,6 +1523,43 @@ function pseudoBindingOf(parentSecrets: RecordedSecretValues): ParameterBinding 
 }
 
 /**
+ * The value an `Fn::Join` / `Fn::Sub` placeholder part reading pseudo
+ * parameter `name` renders, as the table on `parentSecrets` records it (issue
+ * [#4973](https://github.com/go-to-k/cdkd/issues/4973)), for the two readers
+ * that must agree: the template parse of `positionByParameterPlaceholders`
+ * (through {@link inheritedPseudoSpan}) and the collision walk's count of the
+ * parts that parse cannot key. `undefined` for a name the table does not hold
+ * (or a poisoned table): the part stays unknown on both sides. A value equal
+ * to or overlapping a plaintext needs no test here: the parse renders it as
+ * literal text, which its final re-scan refuses like any other.
+ */
+export function inheritedPseudoValue(
+  parentSecrets: RecordedSecretValues,
+  name: string
+): string | undefined {
+  const bound = pseudoBindingOf(parentSecrets)(name)?.value;
+  return typeof bound === 'string' ? bound : undefined;
+}
+
+/**
+ * {@link inheritedPseudoValue} for a placeholder part of a leaf persisted
+ * through `childSecrets`, keyed as `positionByParameterPlaceholders` keys it
+ * (`crossStackSourceKey({Ref: <name>})`), through the parent bag the child's
+ * reads record names (issue #4973); `undefined` without such a record.
+ */
+export function inheritedPseudoSpan(
+  childSecrets: RecordedSecretValues,
+  key: string
+): string | undefined {
+  const reads = inheritedParameterReads.get(childSecrets);
+  if (reads === undefined || typeof reads === 'symbol') return undefined;
+  for (const name of REREAD_PSEUDO_PARAMETERS) {
+    if (crossStackSourceKey({ Ref: name }) === key) return inheritedPseudoValue(reads.parent, name);
+  }
+  return undefined;
+}
+
+/**
  * The intrinsics a re-read ({@link rereadParameterExpression}) evaluates. Only
  * a source holding `Fn::Select`, `Fn::Split` or `Fn::If` (issue
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)) is re-read: a `{Ref}`

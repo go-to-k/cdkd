@@ -123,6 +123,13 @@ import { Construct } from 'constructs';
  *    parameter and every output read counted a slot read, so cdkd withdrew
  *    `FallConnA2`'s literal spelling for the whole child and the outputs
  *    persisted the survivor while `cdkd diff --recursive` rendered the literal.
+ *  - `ChildFallPseudoOutput` (child Output) — THE #4973 ARM. `FallSecretB2`
+ *    read by an output beside `AWS::Region` and `AWS::AccountId` (an
+ *    `Fn::Join`). The template parse positioning the outputs bag held both
+ *    pseudo parameters unknown, so the output was a slot read and cdkd
+ *    withdrew `FallConnA2`'s literal spelling for the whole child. The parse
+ *    now binds them from the child's pseudo table (the #4962 / #4975 arm
+ *    puts `AWS::AccountId` in it).
  *  - `FallthroughColonReversed` (child) — THE #4914 / #4929 ARM.
  *    `FallConnA2` split on `:`, which occurs inside every `{{resolve:...}}`
  *    token's text: a piece (`Fn::Select [1, ...]`, the `Description`) and the
@@ -882,6 +889,15 @@ class SecretBearingChild extends cdk.NestedStack {
       description: 'cdkd nested-stack-secret integ - the same-plaintext sibling in an output (issue #4913)',
     });
     fallSecretOutput.overrideLogicalId('ChildFallSecretOutput');
+    // THE #4973 ARM: the sibling read by an output beside TWO pseudo
+    // parameters, the issue's own shape (CDK synthesizes an `Fn::Join`). The
+    // outputs bag is positioned by the template parse alone, which holds at
+    // most one part it cannot key; the child's pseudo table now keys these.
+    const fallPseudoOutput = new cdk.CfnOutput(this, 'ChildFallPseudoOutput', {
+      value: `${cdk.Aws.REGION}.${cdk.Aws.ACCOUNT_ID}.${fallSecret2.valueAsString}`,
+      description: 'cdkd nested-stack-secret integ - the sibling beside two pseudo parameters in an output (issue #4973)',
+    });
+    fallPseudoOutput.overrideLogicalId('ChildFallPseudoOutput');
 
     const output = new cdk.CfnOutput(this, 'ChildSecretOutput', {
       value: stage.valueAsString,

@@ -1,5 +1,6 @@
 import { recordReferenceProvenanceEntry } from '../secret-redaction/reference-provenance.js';
 import {
+  inheritedPseudoValue,
   recordInheritedParameterValue,
   recordInheritedPseudoParameters,
   rereadParameterExpression,
@@ -652,13 +653,19 @@ const MAX_UNKEYED_PARTS = 1;
  * it) and the parent answers the parameter with an expression, its
  * association or its rendered spelling (`inheritedParameterExpression`, the
  * function the arm's two readers share). A parameter carrying no secret, or
- * one whose answer was withdrawn, is UNKNOWN there.
+ * one whose answer was withdrawn, is UNKNOWN there. A pseudo parameter
+ * counts as keyed where the inherited bag's table binds it (issue
+ * [#4973](https://github.com/go-to-k/cdkd/issues/4973),
+ * `inheritedPseudoValue`, the value the parse renders as text).
  */
 function certifiesPlaceholder(
   name: string,
   reread: { bind: ParameterBinding; inherited: RecordedSecretValues } | undefined
 ): boolean {
   if (reread === undefined) return false;
+  // Issue #4973: a pseudo parameter the inherited bag's table binds is text
+  // the parse renders (`inheritedPseudoSpan`).
+  if (name.startsWith('AWS::')) return inheritedPseudoValue(reread.inherited, name) !== undefined;
   const bound = reread.bind(name);
   if (bound === undefined) return false;
   if (inheritedSecretsCarriedBy(bound.value, reread.inherited).length === 0) return false;

@@ -4,7 +4,7 @@ import { crossStackSourceKey, crossStackAssociations } from './cross-stack.js';
 import { redactSecretsForState } from './redact-state.js';
 import { UNKNOWN_PART, joinPartLiteralText } from './positions.js';
 import { certifiedExpressionForLeaf } from './certified-positions.js';
-import { inheritedRenderedSpan } from './nested-stack.js';
+import { inheritedPseudoSpan, inheritedRenderedSpan } from './nested-stack.js';
 
 /**
  * A part of a {@link parameterPlaceholderParts} source: literal text, a
@@ -229,9 +229,12 @@ function parameterPlaceholderParts(
  * `Fn::Join`. Where this pass kept no usable record,
  * the TEMPLATE parse below aligns the source against the leaf instead:
  *
- * AT MOST ONE UNKNOWN PART (a pseudo parameter, an intrinsic, an unassociated
- * reference). Every other part has fixed text, so the unknown span is whatever
- * lies between the fixed prefix and the fixed suffix — unambiguous, and so are
+ * AT MOST ONE UNKNOWN PART (a pseudo parameter the child's pseudo table does
+ * not bind, `inheritedPseudoSpan`, issue
+ * [#4973](https://github.com/go-to-k/cdkd/issues/4973); an intrinsic; an
+ * unassociated reference). A bound pseudo parameter is literal text. Every
+ * other part has fixed text, so the unknown span is whatever lies between the
+ * fixed prefix and the fixed suffix — unambiguous, and so are
  * adjacent placeholders with equal values (`${A}${B}`), because no span is
  * SEARCHED for. That span is kept verbatim, and the arm refuses when the
  * value scan would rewrite it at all. Two or more unknown parts could split
@@ -296,6 +299,18 @@ export function positionByParameterPlaceholders(
             expression = inherited.spelling;
           }
         }
+      }
+      // A pseudo parameter the child's table binds (issue #4973) is text the
+      // pass and the diff side both render from that table: literal, so it
+      // is no unknown part, and the re-scan below still reads it.
+      const pseudo =
+        expression === undefined && part !== UNKNOWN_PART
+          ? inheritedPseudoSpan(secrets, part.key)
+          : undefined;
+      if (pseudo !== undefined) {
+        side[0] += pseudo;
+        side[1] += pseudo;
+        continue;
       }
       if (expression === undefined) {
         if (unknown) return undefined;
