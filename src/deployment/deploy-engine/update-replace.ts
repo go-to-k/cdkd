@@ -1030,7 +1030,7 @@ export async function updateByReplacement(
     updateSecrets
   );
 
-  this.kickOffObservedCapture(
+  this.observedCapture.kickOffObservedCapture(
     replaceProvider,
     logicalId,
     createResult.physicalId,

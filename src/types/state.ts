@@ -106,7 +106,7 @@
  *       `"dev-placeholder"` where AWS holds the secret the deployed branch
  *       resolved. TWO other writers then refill exactly such a missing
  *       baseline against those same `properties`:
- *       `DeployEngine.kickOffAutoRefreshObservedProperties` at deploy start,
+ *       `DeployEngine.observedCapture.kickOffAutoRefreshObservedProperties` at deploy start,
  *       and `cdkd state refresh-observed`. Neither holds the template the
  *       refusal was based on, and a literal source leaf against a string
  *       readback PAIRS as an ordinary drifted literal, so the redaction walk
@@ -749,7 +749,7 @@ export interface ResourceState {
    * the refusal leaves `observedProperties: undefined`, and that is ALSO what
    * a pre-v3 record and a provider without `readCurrentState` leave — so the
    * two writers whose job is to fill a missing baseline cannot tell the cases
-   * apart. `DeployEngine.kickOffAutoRefreshObservedProperties` selects exactly
+   * apart. `DeployEngine.observedCapture.kickOffAutoRefreshObservedProperties` selects exactly
    * `observedProperties === undefined` at deploy start, and
    * `cdkd state refresh-observed` refreshes every resource unconditionally.
    * Both position the readback against this record's `properties`, which after

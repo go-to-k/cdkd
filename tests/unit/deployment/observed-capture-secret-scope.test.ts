@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { ConsoleLogger, getLogger, setLogger } from '../../../src/utils/logger.js';
-import { kickOffObservedCapture } from '../../../src/deployment/deploy-engine/observed-capture.js';
+import {
+  ObservedCapture,
+  type ObservedCaptureDeps,
+} from '../../../src/deployment/deploy-engine/observed-capture.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/resource.js';
 
@@ -18,16 +21,19 @@ function bag(...plaintexts: string[]): RecordedSecretValues {
   return new Map(plaintexts.map((p) => [p, `{{resolve:secretsmanager:${p}}}`]));
 }
 
-function fakeEngine() {
-  return {
+function fakeCapture(overrides: Partial<ObservedCaptureDeps> = {}): ObservedCapture {
+  return new ObservedCapture({
     options: { captureObservedState: true },
-    observedCaptureTasks: new Map<string, Promise<unknown>>(),
     logger: getLogger().child('DeployEngine'),
     // go-to-k/cdkd#4043 (review M6): the failure line also masks with the
     // resource's derived-name bag and the stack's NoEcho values.
     printingSecretsFor: () => undefined,
-    fingerprintNoEchoValues: undefined,
-  };
+    fingerprintNoEchoValues: () => undefined,
+    resolver: {} as never,
+    providerRegistry: {} as never,
+    provenanceCapture: () => ({ drainProvenanceCaptures: async () => 0 }) as never,
+    ...overrides,
+  });
 }
 
 function providerReading(behaviour: 'log' | 'reject'): ResourceProvider {
@@ -63,9 +69,8 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
   });
 
   async function capture(behaviour: 'log' | 'reject', secrets?: RecordedSecretValues) {
-    const engine = fakeEngine();
-    kickOffObservedCapture.call(
-      engine as never,
+    const oc = fakeCapture();
+    oc.kickOffObservedCapture(
       providerReading(behaviour),
       'Queue',
       SECRET,
@@ -74,7 +79,7 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
       { afterOwnWrite: true },
       secrets
     );
-    await engine.observedCaptureTasks.get('Queue');
+    await oc.observedCaptureTasks.get('Queue');
   }
 
   it("masks the provider's own readback line", async () => {
@@ -96,9 +101,8 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
   });
 
   it("masks the bagless refresh's failure line with the stack's NoEcho values (go-to-k/cdkd#4043 review M6)", async () => {
-    const engine = { ...fakeEngine(), fingerprintNoEchoValues: bag(SECRET) };
-    kickOffObservedCapture.call(
-      engine as never,
+    const oc = fakeCapture({ fingerprintNoEchoValues: () => bag(SECRET) });
+    oc.kickOffObservedCapture(
       providerReading('reject'),
       'Queue',
       SECRET,
@@ -106,7 +110,7 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
       { QueueName: SECRET },
       { afterOwnWrite: true }
     );
-    await engine.observedCaptureTasks.get('Queue');
+    await oc.observedCaptureTasks.get('Queue');
     expect(printed()).toContain('observedProperties capture for Queue');
     expect(printed()).not.toContain(SECRET);
   });
@@ -114,22 +118,15 @@ describe('kickOffObservedCapture binds the resource secret bag (issue #4362)', (
 
 describe('kickOffObservedCapture on a resource AWS reports gone (go-to-k/cdkd#4283)', () => {
   it('resolves to no baseline, never the sentinel as a property bag', async () => {
-    const engine = fakeEngine();
+    const oc = fakeCapture();
     const provider = {
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
       readCurrentState: vi.fn(async () => RESOURCE_NOT_FOUND),
     } as unknown as ResourceProvider;
-    kickOffObservedCapture.call(
-      engine as never,
-      provider,
-      'Queue',
-      'q',
-      'AWS::SQS::Queue',
-      { QueueName: 'q' }
-    );
+    oc.kickOffObservedCapture(provider, 'Queue', 'q', 'AWS::SQS::Queue', { QueueName: 'q' });
 
-    await expect(engine.observedCaptureTasks.get('Queue')).resolves.toBeUndefined();
+    await expect(oc.observedCaptureTasks.get('Queue')).resolves.toBeUndefined();
   });
 });

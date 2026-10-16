@@ -573,7 +573,7 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     // import`'s warn path writes.
     //
     // The bag is MARKED, because that is what the site produces:
-    // `DeployEngine.drainObservedCaptures` installs every drained readback
+    // `DeployEngine.observedCapture.drainObservedCaptures` installs every drained readback
     // through `markSameGenerationBag`, and since issue #2906 the derivation's
     // fail-closed arm requires that mark as well as the empty map. An UNMARKED
     // bag here would be a PREVIOUS generation's `observedProperties` being

@@ -16,7 +16,7 @@ import {
 /**
  * Every `scrubResourceRecord` call in this file models the DEPLOY PERSIST choke
  * point's `observedProperties` walk — the issue-1900 unchanged-resource path,
- * whose bag is a readback `DeployEngine.drainObservedCaptures` just took and
+ * whose bag is a readback `DeployEngine.observedCapture.drainObservedCaptures` just took and
  * installed. That site installs it through `markSameGenerationBag`
  * (`src/deployment/deploy-engine.ts`, the single `observedProperties` writer on
  * the deploy path), and since issue

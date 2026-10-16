@@ -1,4 +1,5 @@
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
+import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
@@ -1327,7 +1328,12 @@ export async function updateInPlace(
   }
   const updateCaptureSiblings = keepsParameterRefusal
     ? undefined
-    : await this.buildObservedCaptureSiblings(
+    : await buildObservedCaptureSiblings(
+        {
+          options: this.options,
+          buildResolverContext: this.buildResolverContext.bind(this),
+          resolver: this.resolver,
+        },
         resourceType,
         logicalId,
         result.physicalId,
@@ -1343,7 +1349,7 @@ export async function updateInPlace(
   // and the layer `provisionedBy` above was stamped with (issue
   // #2608).
   if (!keepsParameterRefusal) {
-    this.kickOffObservedCapture(
+    this.observedCapture.kickOffObservedCapture(
       captureProvider,
       logicalId,
       result.physicalId,

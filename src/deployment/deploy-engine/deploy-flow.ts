@@ -1,4 +1,5 @@
 import { freshNoEchoParametersWithDeclared } from './noecho.js';
+import { stampReasonlessParameterRefusals } from './observed-capture.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
@@ -467,8 +468,8 @@ export async function doDeployWithPrefetch(
     }
 
     // 1-pre. Issue #3468: read every REASON-LESS baseline refusal before
-    // anything in this deploy can take a readback. See the method's doc.
-    this.stampReasonlessParameterRefusals(currentState.resources, template);
+    // anything in this deploy can take a readback. See the function's doc.
+    stampReasonlessParameterRefusals(this.logger, currentState.resources, template);
     // 1a. Auto-refresh observedProperties for any state entry that lacks it
     // (state written by an older binary / direct edit). Fires
     // `provider.readCurrentState` fire-and-forget through the same
@@ -481,7 +482,7 @@ export async function doDeployWithPrefetch(
     // `currentState.resources`. Closes the upgrade UX gap left by
     // v3 schema: the manual `cdkd state refresh-observed` command
     // remains for non-deploy refresh.
-    this.kickOffAutoRefreshObservedProperties(currentState.resources, currentState);
+    this.observedCapture.kickOffAutoRefreshObservedProperties(currentState.resources, currentState);
 
     // 2. Template parsing is handled by DagBuilder (dependency analysis) and
     // IntrinsicResolver (intrinsic function resolution) in later steps
@@ -677,7 +678,7 @@ export async function doDeployWithPrefetch(
     // keeps that from becoming load-bearing. Idempotent, and handed the same
     // `template` object as the first pass.
     if (Object.keys(orphanPlan.adopted).length > 0) {
-      this.stampReasonlessParameterRefusals(currentState.resources, template);
+      stampReasonlessParameterRefusals(this.logger, currentState.resources, template);
       // The same re-read for go-to-k/cdkd#4451's backfill.
       if (
         backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
@@ -1097,7 +1098,8 @@ export async function doDeployWithPrefetch(
         // decided (issue #2771): it is the one await between the outputs pass
         // and the save, and a secret a released outputs-pass part records
         // during it must be visible to the save-time check below.
-        const observedRefresh = (await this.drainObservedCaptures(currentState.resources)) > 0;
+        const observedRefresh =
+          (await this.observedCapture.drainObservedCaptures(currentState.resources)) > 0;
 
         // Without `--strict-getatt`, resolveOutputs stores `undefined` for any
         // output it could not resolve (warned about there when the resolver
@@ -1620,7 +1622,7 @@ export async function doDeployWithPrefetch(
     } catch {
       // Best-effort: never in the way of the save it serves.
     }
-    await this.drainObservedCaptures(newState.resources);
+    await this.observedCapture.drainObservedCaptures(newState.resources);
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is
@@ -1794,7 +1796,7 @@ export async function doDeployWithPrefetch(
     // map so a re-used engine instance does not accumulate stale entries
     // across deploys. The underlying promises already have a `.catch` so
     // dropping the references will not produce an unhandled rejection.
-    this.observedCaptureTasks.clear();
+    this.observedCapture.observedCaptureTasks.clear();
 
     // go-to-k/cdkd#4705: under the lock, drop the name-adopting intents whose
     // create was not sent or came back. Guarded like every step before

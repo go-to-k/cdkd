@@ -2929,7 +2929,7 @@ export function unreadableResourcePropertyBags(state: StackState): readonly stri
  * and no state is written for the stack, and the deploy's lock is released by
  * its own `finally`. The deploy raises it at its STATE LOAD too, with its own
  * stack and region (go-to-k/cdkd#3211), because a provider call ran before the
- * diff: `DeployEngine.kickOffAutoRefreshObservedProperties` handed the record's
+ * diff: `DeployEngine.observedCapture.kickOffAutoRefreshObservedProperties` handed the record's
  * map to `provider.readCurrentState`. The diff call stays for `cdkd diff`'s
  * sibling caller contract and any future caller.
  *

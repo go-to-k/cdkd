@@ -367,34 +367,33 @@ describe('DeployEngine - deploy-start re-capture of a fail-closed-masked baselin
     // Drives the drain directly: a pending re-capture task, then the record
     // replaced by one without a baseline (what a rebuild whose provider takes
     // no capture of its own leaves). The task must not land on it.
-    const engine = makeEngine() as unknown as {
-      kickOffMaskedBaselineRecapture: (...a: unknown[]) => void;
-      drainObservedCaptures: (r: Record<string, ResourceState>) => Promise<number>;
-    };
+    const capture = makeEngine().observedCapture;
     const original = record();
-    engine.kickOffMaskedBaselineRecapture(mockProvider, 'TaskDef', original, [], { siblings: {} });
+    capture.kickOffMaskedBaselineRecapture(mockProvider as never, 'TaskDef', original, [], {
+      siblings: {},
+    });
     const { observedProperties: _gone, ...rebuilt } = original;
     const resources: Record<string, ResourceState> = { TaskDef: { ...rebuilt, physicalId: 'td-arn-2' } };
-    await expect(engine.drainObservedCaptures(resources)).resolves.toBe(0);
+    await expect(capture.drainObservedCaptures(resources)).resolves.toBe(0);
     expect(resources['TaskDef']!.observedProperties).toBeUndefined();
 
     // ...while the same task over the untouched record installs.
-    engine.kickOffMaskedBaselineRecapture(mockProvider, 'TaskDef', original, [], { siblings: {} });
+    capture.kickOffMaskedBaselineRecapture(mockProvider as never, 'TaskDef', original, [], {
+      siblings: {},
+    });
     const kept: Record<string, ResourceState> = { TaskDef: original };
-    await expect(engine.drainObservedCaptures(kept)).resolves.toBe(1);
+    await expect(capture.drainObservedCaptures(kept)).resolves.toBe(1);
     expect(kept['TaskDef']!.observedProperties?.['EntryPoint']).toEqual(['-p', ALPHA, '-p', BRAVO]);
   });
 
   it('a capture that cannot run still supersedes the pending refresh task', async () => {
-    const engine = makeEngine() as unknown as {
-      kickOffMaskedBaselineRecapture: (...a: unknown[]) => void;
-      kickOffObservedCapture: (...a: unknown[]) => void;
-      observedCaptureTasks: Map<string, unknown>;
-    };
-    engine.kickOffMaskedBaselineRecapture(mockProvider, 'TaskDef', record(), [], { siblings: {} });
-    expect(engine.observedCaptureTasks.has('TaskDef')).toBe(true);
-    engine.kickOffObservedCapture({ create: vi.fn() }, 'TaskDef', 'p2', 'Custom::X', {});
-    expect(engine.observedCaptureTasks.has('TaskDef')).toBe(false);
+    const capture = makeEngine().observedCapture;
+    capture.kickOffMaskedBaselineRecapture(mockProvider as never, 'TaskDef', record(), [], {
+      siblings: {},
+    });
+    expect(capture.observedCaptureTasks.has('TaskDef')).toBe(true);
+    capture.kickOffObservedCapture({ create: vi.fn() } as never, 'TaskDef', 'p2', 'Custom::X', {});
+    expect(capture.observedCaptureTasks.has('TaskDef')).toBe(false);
   });
 
   it('leaves a NoEcho record (a mask in its properties) alone', async () => {

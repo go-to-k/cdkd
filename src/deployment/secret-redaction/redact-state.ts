@@ -765,7 +765,7 @@ export function scrubResourceRecord<
         // So the arm asks the question those two answer by construction: is
         // this bag one THIS RUN PRODUCED? {@link markSameGenerationBag} already
         // answers it, and the mark is put on precisely the bag the refusal
-        // exists for — `DeployEngine.drainObservedCaptures` marks EVERY drained
+        // exists for — `DeployEngine.observedCapture.drainObservedCaptures` marks EVERY drained
         // READBACK, and it is the only writer of `observedProperties` on the
         // deploy path, so a bag arriving here UNMARKED is a previous
         // generation's by elimination. The record spread below and
