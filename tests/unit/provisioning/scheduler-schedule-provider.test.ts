@@ -361,7 +361,9 @@ describe('SchedulerScheduleProvider', () => {
         (e: unknown) => e
       );
 
+      expect(rejected).toBeInstanceOf(ProvisioningError);
       expect((rejected as Error).message).toContain('Failed to delete Schedule Sched');
+      expect((rejected as Error).message).toContain('a value that could not be converted to text');
       expect((rejected as Error).message).not.toContain(
         'Cannot convert object to primitive value'
       );

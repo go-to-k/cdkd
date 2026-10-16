@@ -66,7 +66,10 @@ import {
   GlueTriggerProvider,
   GlueConnectionProvider,
 } from '../../../../src/provisioning/providers/glue-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
   PASTE_PAYLOADS,
@@ -2573,5 +2576,27 @@ describe('GlueTriggerProvider state-machine', () => {
     const types = mockGlueSend.mock.calls.map((c) => c[0].constructor.name);
     expect(types).not.toContain('StopTriggerCommand');
     expect(types).toContain('DeleteTriggerCommand');
+  });
+});
+
+// A rethrowing catch must report the failure even when the thrown value has no
+// string form (go-to-k/cdkd#3341): a bare `String(err)` threw `TypeError:
+// Cannot convert object to primitive value` and replaced it.
+describe('GlueProvider rethrow of an unconvertible thrown value (#3341)', () => {
+  it('deleteDatabase surfaces the provider failure for a null-prototype thrown value', async () => {
+    mockGlueSend.mockReset();
+    mockStsSend.mockResolvedValue({ Account: '123456789012' });
+    mockGlueSend.mockRejectedValueOnce(Object.create(null));
+
+    const rejected = await new GlueProvider().delete('MyDb', 'mydb', 'AWS::Glue::Database').then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+    expect(rejected).toBeInstanceOf(ProvisioningError);
+    const message = (rejected as Error).message;
+    expect(message).toContain('Failed to delete Glue Database MyDb');
+    expect(message).toContain('a value that could not be converted to text');
+    expect(message).not.toContain('Cannot convert object to primitive value');
   });
 });

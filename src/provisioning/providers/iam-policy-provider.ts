@@ -1193,7 +1193,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       // The mark survives `maskError`'s clone of the chain.
       const failure = new ProvisioningError(
-        `Failed to delete IAM policy ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
+        `Failed to delete IAM policy ${logicalId}: ${mask(describeAwsFailure(error).detail)}`,
         resourceType,
         logicalId,
         physicalId,

@@ -35,6 +35,7 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * AWS Lambda Function URL Provider
@@ -322,7 +323,7 @@ export class LambdaUrlProvider implements ResourceProvider {
       // update failure. cdkd's own refusal, so masked but never stamped
       // retryable (`wrapMaskedAwsError` is for relayed AWS text only).
       throw new ProvisioningError(
-        `${log.mask(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
+        `${log.mask(describeAwsFailure(error).detail)}. Nothing was applied to ` +
           `Lambda URL ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -496,7 +497,7 @@ export class LambdaUrlProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Lambda URL ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Lambda URL ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
