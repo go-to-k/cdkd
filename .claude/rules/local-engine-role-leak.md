@@ -39,13 +39,16 @@ reads (`cdkd-local-role-identity:` sites). Do NOT "fix" the last: the state
 bucket name is derived in the ROLE's account and the calls carry
 `ExpectedBucketOwner`, so caller credentials 403.
 
-**`${AWS::AccountId}` is the DEPLOY account** (go-to-k/cdkd#5001): the account
-of the `--role-arn` role, for both state sources, on all `local` commands; with
-no `--role-arn`, your own. It is an identifier, not a permission. The
-cdkd-owned commands' lookups therefore omit `ignoreAssumedRole`, and cdk-local
-resolves its own as the role because `applyRoleArnForLocal` passes it the role
-triple (`recordAssumedRole(caller, role)`). Only that account lookup runs as
-the role; the assume-role hops and every workload input stay the caller's.
+**`${AWS::AccountId}` follows WHERE THE STACK WAS READ** (go-to-k/cdkd#5001):
+under `--from-state` and with no state source (run-task image `Fn::Sub`, bare
+`--assume-task-role`) it is the DEPLOY account, the `--role-arn` role's; under
+`--from-cfn-stack` the stack is read as the caller (#3240) and CloudFormation
+sees only the caller's account, so it is the caller's. With no `--role-arn`
+all are your own. It is an identifier, not a permission. The cdkd-owned
+commands branch at each lookup (`ignoreAssumedRole` only on the
+`--from-cfn-stack` arm), and `applyRoleArnForLocal` passes cdk-local the role
+triple (`recordAssumedRole(caller, role)`) so its account lookups follow. The
+assume-role hops and every workload input stay the caller's.
 
 The `--assume-role` / `--ecr-role-arn` / `--layer-role-arn` hops are SIGNED by
 the caller (cdkd's `ecr-puller.ts` hop opts out with `ignoreAssumedRole`); the

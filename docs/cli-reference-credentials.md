@@ -119,12 +119,16 @@ login for the role's account in your Docker config.
 
 ### Edge cases
 
-- **`${AWS::AccountId}` is the deploy account.** With `--role-arn` it resolves
-  to the account the role belongs to, where the stack lives, whichever of
-  `--from-state` and `--from-cfn-stack` you use, so a pinned ECR image URI or an
-  account-derived ARN points at the deployed resources. Without `--role-arn` it
-  is your own account. It is an identifier, not a permission: no role credential
-  reaches the workload.
+- **`${AWS::AccountId}` follows where the stack was read.** Under
+  `--from-state`, and on `local run-task` / `local invoke-agentcore` with no
+  state source (an image `Fn::Sub`, a bare `--assume-task-role`), it is the
+  deploy account: the account `--role-arn`'s role belongs to, where the stack
+  lives, so a pinned ECR image URI or an account-derived ARN points at the
+  deployed resources. Without `--role-arn` that is your own account. Under
+  `--from-cfn-stack` the stack is read as you and CloudFormation sees only your
+  own account, so it is your own account and the stack has to be readable by
+  you. It is an identifier, not a permission: no role credential reaches the
+  workload.
 - **A `[default]` profile that sources the environment.** If your own
   credentials come from a profile that reads the `AWS_*` variables
   (`credential_source = Environment`, or a `credential_process` that echoes

@@ -24,9 +24,11 @@ import {
  * workload-facing ones: whatever these resolve — container credentials, a task
  * role assumed for the container, ECS task-secret plaintext — is handed to the
  * user's locally-running code. (The `${AWS::AccountId}` substituted into the
- * emulated environment is an identifier, not a permission: it is the DEPLOY
- * account, so those lookups deliberately run as the role, and those sites say
- * so — issues go-to-k/cdkd#3230, #5001.) A deploy role is normally the more
+ * emulated environment is an identifier, not a permission: under
+ * `--from-state` (and with no state source) it is the DEPLOY account, so those
+ * lookups deliberately run as the role, and those sites say so; under
+ * `--from-cfn-stack` it is the caller's and the site opts out — issues
+ * go-to-k/cdkd#3230, #5001.) A deploy role is normally the more
  * privileged of the two identities in play, so inheriting it there lets local
  * code read what the caller's own principal cannot.
  *
@@ -112,7 +114,7 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     // all, which is how the `new AwsClients(` shape went unseen.
     expect(sites.length).toBeGreaterThanOrEqual(18);
     expect(new Set(sites.map((s) => s.file)).size).toBeGreaterThanOrEqual(5);
-    expect(sites.filter((s) => s.kind === 'awsClientDefaults').length).toBeGreaterThanOrEqual(13);
+    expect(sites.filter((s) => s.kind === 'awsClientDefaults').length).toBeGreaterThanOrEqual(15);
     expect(sites.filter((s) => s.kind === 'AwsClients').length).toBeGreaterThanOrEqual(3);
     // The credential helper's spreads (go-to-k/cdkd#3588): `ecr-puller.ts`'s
     // caller-identity client, its ECR client and its AssumeRole hop. Without
@@ -133,8 +135,9 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
         'otherwise. If what it resolves reaches the user\'s emulated code — credentials, a ' +
         'role it assumes for the container, secret values — pass ' +
         '`awsClientDefaults({ ignoreAssumedRole: true })`. An account id substituted into ' +
-        'the emulated environment is the exception: it is the DEPLOY account (issue #5001), so ' +
-        'it runs as the role and takes the comment. If it is genuinely cdkd calling AWS as itself, write a ' +
+        'the emulated environment follows where the stack was read (issue #5001): under ' +
+        '`--from-cfn-stack` it opts out, under `--from-state` / no source it is the DEPLOY ' +
+        'account, runs as the role and takes the comment. If it is genuinely cdkd calling AWS as itself, write a ' +
         '`cdkd-local-role-identity: <reason>` comment above it. A `new AwsClients({...})` ' +
         'bag has no opt-out to pass and therefore takes the comment.'
     ).toEqual([]);
@@ -147,9 +150,8 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     // on both. The sibling fence carries a floor per VERDICT for exactly this
     // reason and says so in its own header. Each floor sits below the current
     // population: deleting a client site (go-to-k/cdkd#2277 removed six opt-outs
-    // with `httpv2-service-integration.ts`; go-to-k/cdkd#5001 turned five caller-account
-    // lookups into annotated role lookups) lowers it deliberately.
-    expect(sites.filter((s) => s.optsOut).length, 'sites opting out').toBeGreaterThanOrEqual(8);
+    // with `httpv2-service-integration.ts`) lowers it deliberately.
+    expect(sites.filter((s) => s.optsOut).length, 'sites opting out').toBeGreaterThanOrEqual(10);
     expect(
       sites.filter((s) => s.annotated && !s.optsOut).length,
       'sites carrying an annotation instead'
