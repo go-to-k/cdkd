@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 38
+    "classesWithBlindSpots": 37
   },
   "classes": [
     {
@@ -9317,9 +9317,7 @@
         }
       ],
       "gaps": [],
-      "blindSpots": [
-        "withRemovalDefaults(...) in update()"
-      ]
+      "blindSpots": []
     },
     {
       "file": "elbv2-provider.ts",
