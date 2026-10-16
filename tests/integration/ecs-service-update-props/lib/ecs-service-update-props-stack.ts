@@ -147,12 +147,10 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     //   Phase 2 (update): enableECSManagedTags: true, propagateTags:
     //                     TASK_DEFINITION -> verify.sh asserts both reach AWS.
     //
-    // #1160 (reset-on-removal): PlatformVersion / HealthCheckGracePeriodSeconds
-    //   are SET in phase 1 and DROPPED in phase 2. Under UpdateService merge
-    //   semantics an absent input field means "no change", so without the #1160
-    //   fix AWS would keep the phase-1 values. verify.sh asserts they reset to
-    //   their CloudFormation defaults (LATEST / 0). Injected via the L1 escape
-    //   hatch so the phase-2 template genuinely omits them.
+    // #5004 (retain-on-removal): PlatformVersion / HealthCheckGracePeriodSeconds
+    //   are SET in phase 1 and DROPPED in phase 2. CloudFormation keeps the live
+    //   values, and so does cdkd; verify.sh asserts they are RETAINED. Injected
+    //   via the L1 escape hatch so the phase-2 template genuinely omits them.
     const service = new ecs.FargateService(this, 'Svc', {
       cluster,
       taskDefinition,
