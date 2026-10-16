@@ -12,7 +12,7 @@ alb	2026-10-16T12:12:45Z	PASS	625	verify.sh	re-run on d4ecb5100 after rebase ont
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
 api-cognito	2026-08-18T05:09:26Z	PASS	60	standard	#1920 no-MFA-props skip path; 0 errors, 2 RETAIN-by-policy APIGW account singletons
 apigateway	2026-10-15T09:01:04Z	PASS	65	verify.sh	PR #4938 (#4911 partial-replace survivor mark); rc 0, destroy clean, orph clean
-apigatewayv2-update-removal	2026-10-16T14:04:40Z	PASS	684	verify.sh	rc ok, orph clean; PR #5008 (#5004) review round, drift-revert map clear
+apigatewayv2-update-removal	2026-10-16T16:11:53Z	PASS	167	verify.sh	rc ok, orph clean; PR #5008 (#5004) final head after review round; deploy-path KEEP/RESET only (verify.sh does not run drift --revert, covered by unit tests)
 apigw-gateway-response	2026-07-31T06:27:45Z	PASS	66	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 apigw-stage-props	2026-10-11T09:33:22Z	PASS	160	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 apigw-stage-throttling	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
