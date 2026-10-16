@@ -543,6 +543,12 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         ),
       });
       overlapSecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+      // A STABLE logical id: verify.sh drops this record (it declares both
+      // values as a template literal, by design) before grepping state, and an
+      // L2 id carries a hash suffix that would make that drop a silent no-op.
+      (overlapSecret.node.defaultChild as secretsmanager.CfnSecret).overrideLogicalId(
+        'OverlapSecret'
+      );
       const overlapParam = new ssm.CfnParameter(this, 'OverlapParam', {
         name: `cdkd-test-dynref-overlap-${account}`,
         type: 'String',

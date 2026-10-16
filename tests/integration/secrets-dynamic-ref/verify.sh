@@ -1612,6 +1612,10 @@ ovl_assert_state() {
     ovl_shown "${description}" >&2
     exit 1
   fi
+  if ! jq -e '.resources | has("OverlapSecret")' "${OVL_STATE}" >/dev/null; then
+    echo "FAIL: premise: $1 records no resources.OverlapSecret -- the delete below would be a no-op (issue #4986)" >&2
+    exit 1
+  fi
   jq 'del(.resources.OverlapSecret)' "${OVL_STATE}" > "${OVL_RECORD}"
   if grep -qF -e "${OVL_HEAD}" -e "${OVL_TAIL}" -e "${OVL_TAIL_REST}" -e "shr4d" "${OVL_RECORD}"; then
     echo "FAIL: $1 holds an overlap secret value or a piece of one in plaintext outside OverlapSecret's own record (issue #4986); OverlapParam.Value follows, pieces replaced" >&2
@@ -1636,6 +1640,14 @@ if ! DEPLOY_OUT_OVL=$(CDKD_TEST_BASE64_LEAK=true CDKD_TEST_UD_INPUT=two CDKD_TES
 fi
 # Premise: the synthesized leaf is the literal prefix + the tail reference, and
 # the description the head reference, both plain strings.
+# Premise: the secret's record is `OverlapSecret` exactly, the id
+# `ovl_assert_state` deletes before its grep. An L2 hash suffix (or a rename)
+# would make that delete a silent no-op and the grep hit the secret's own
+# by-design plaintext.
+if [ "$(jq -r '.Resources.OverlapSecret.Type // "absent"' "${SYNTH_TEMPLATE}")" != "AWS::SecretsManager::Secret" ]; then
+  echo "FAIL: premise: the synthesized template holds no Resources.OverlapSecret of type AWS::SecretsManager::Secret -- ovl_assert_state's delete would be a no-op (issue #4986)" >&2
+  exit 1
+fi
 OVL_SHAPE=$(jq -r --arg s "${OVL_SECRET_NAME}" '.Resources.OverlapParam.Properties
   | if . == null then "absent"
     elif .Value == ("cdkd-ovl-head-{{resolve:secretsmanager:" + $s + ":SecretString:tail}}")
