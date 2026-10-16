@@ -37,6 +37,8 @@ import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import { secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
+import { orphanedNameCollisionAdvice } from './name-collision.js';
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
@@ -75,7 +77,7 @@ export async function provisionResource(
   // property half alone, so a `--recreate-via-*` target whose property change
   // does not itself force a replacement still rendered `Updating` over a
   // destroy + recreate.
-  const labelRecreateDirection = this.recreateDirectionFor(stackName, logicalId);
+  const labelRecreateDirection = recreateDirectionFor(this.options, stackName, logicalId);
   // The Type-change half (issue #3036) is mirrored too: the dispatch treats a
   // recorded type that differs from the template's as a replacement whatever
   // `propertyChanges` says.
@@ -112,7 +114,9 @@ export async function provisionResource(
   // here matches the real decision in the provision arms. Errors
   // here never surface — if routing inference fails, we drop the tag
   // and the real `getProviderFor` call later will re-evaluate.
-  const labelRouting = this.peekRoutingForLabel(
+  const labelRouting = peekRoutingForLabel(
+    this.providerRegistry,
+    this.options,
     change,
     stateResources[logicalId],
     stackName,
@@ -487,7 +491,12 @@ export async function provisionResource(
     // stays verbatim, and masked like it — the id is template-derived, so a
     // stack or logical id built from a resolved secret would otherwise reach
     // a DEFAULT-level line the one above is masked for.
-    const orphanAdvice = this.orphanedNameCollisionAdvice(change.changeType, logicalId, error);
+    const orphanAdvice = orphanedNameCollisionAdvice(
+      this.providerRegistry,
+      change.changeType,
+      logicalId,
+      error
+    );
     if (orphanAdvice) {
       this.logger.error(this.maskForResource(logicalId, orphanAdvice));
     }

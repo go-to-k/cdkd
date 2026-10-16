@@ -15,7 +15,7 @@ import type { ResourceChange, ResourceState } from '../types/state.js';
  *   can route ahead of the resolver run).
  * - DELETE → sticky `provisionedBy` from the existing-state record.
  *
- * Exported so {@link DeployEngine.peekRoutingForLabel} stays a 1-line
+ * Exported so `peekRoutingForLabel` (`deploy-engine/routing.ts`) stays a 1-line
  * delegate and the routing-inference logic is directly unit-testable
  * without standing up a full DeployEngine harness.
  */

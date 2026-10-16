@@ -3,21 +3,12 @@ import {
   getCurrentStackName,
   looksLikeCdkdGeneratedName,
 } from '../../provisioning/resource-name.js';
+import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import type { ChangeType } from '../../types/state.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import type { DeployEngine } from '../deploy-engine.js';
 import { isNameCollisionErrorFrom, isReplayedNameCollisionFrom } from '../retryable-errors.js';
 import { isAuxiliaryMarkOf, RETRY_AUXILIARY_OWNER } from '../../provisioning/auxiliary-failure.js';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    replacementNameOrigin: OmitThisParameter<typeof replacementNameOrigin>;
-    /** @internal */
-    orphanedNameCollisionAdvice: OmitThisParameter<typeof orphanedNameCollisionAdvice>;
-  }
-}
 
 /**
  * The name-origin half of the replacement-collision messages (issue #1636).
@@ -45,7 +36,6 @@ declare module '../deploy-engine.js' {
  * wording, which stays correct for the template-named resource.
  */
 export function replacementNameOrigin(
-  this: DeployEngine,
   logicalId: string,
   physicalId: string
 ): { descriptor: string; remedy: string } {
@@ -148,7 +138,7 @@ export function replacementNameOrigin(
  * to confirm ownership before adopting.
  */
 export function orphanedNameCollisionAdvice(
-  this: DeployEngine,
+  providerRegistry: ProviderRegistry,
   changeType: ChangeType,
   logicalId: string,
   error: unknown
@@ -258,7 +248,7 @@ export function orphanedNameCollisionAdvice(
   // nothing can drive it.
   let canImport: boolean;
   try {
-    canImport = typeof this.providerRegistry.getProvider(error.resourceType).import === 'function';
+    canImport = typeof providerRegistry.getProvider(error.resourceType).import === 'function';
   } catch {
     canImport = false;
   }

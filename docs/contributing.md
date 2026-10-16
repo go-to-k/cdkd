@@ -199,7 +199,7 @@ These are the paths behind each row:
 - **Deletion logic** is `src/provisioning/providers/**`, the destroy commands,
   and the rollback and retry code.
 - **Cross-cutting deploy and destroy code** is
-  `src/deployment/deploy-engine.ts` and its `deploy-engine/*.ts` mixins,
+  `src/deployment/deploy-engine.ts` and its `deploy-engine/*.ts` modules,
   `src/analyzer/dag-builder.ts`, intrinsic resolution, and provider
   registration.
 - **Local execution** is `src/local/**` and `src/cli/commands/local-*.ts`.

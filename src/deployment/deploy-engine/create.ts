@@ -10,7 +10,15 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../types/resource.js';
 import type { ResourceChange, ResourceState } from '../../types/state.js';
-import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './record-shape.js';
+import {
+  acceptedCreateOnlyDropsField,
+  auditResolvedAssetReferences,
+  extractAllDependencies,
+  extractTemplateAttributes,
+  propertiesToRecord,
+  secretNamedAttributesField,
+} from './record-shape.js';
+import { preparePropertiesForCcApi } from './routing.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
@@ -181,7 +189,7 @@ export async function provisionCreate(
   // associations off the same object. No-op for every other type.
   recordNestedStackParameterExpressions(createSecrets, resourceType, resolvedProps, desiredProps);
 
-  this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
+  auditResolvedAssetReferences(this.options, logicalId, resourceType, resolvedProps);
 
   // #1198: snapshot the attempted (resolved) properties so a failed
   // CREATE can be journaled with what it tried to apply.
@@ -200,7 +208,7 @@ export async function provisionCreate(
   const createProvider = createDecision.provider;
   const createProps =
     createDecision.provisionedBy === 'cc-api'
-      ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
+      ? preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
   // go-to-k/cdkd#3252: an earlier run's CREATE of this logical id that cdkd
@@ -287,10 +295,10 @@ export async function provisionCreate(
 
   // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
   // so that deletion order is correct even without implicit type-based deps
-  const dependencies = this.extractAllDependencies(template, logicalId);
-  const templateAttrs = this.extractTemplateAttributes(template, logicalId);
+  const dependencies = extractAllDependencies(template, logicalId);
+  const templateAttrs = extractTemplateAttributes(template, logicalId);
 
-  const recordedProperties = this.propertiesToRecord(
+  const recordedProperties = propertiesToRecord(
     resolvedProps,
     result,
     resourceType,

@@ -1,6 +1,12 @@
 import { childLostWithRecreatedParent, survivesParent } from '../child-of-recreated-parent.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
+import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
+import {
+  auditResolvedAssetReferences,
+  extractAllDependencies,
+  extractTemplateAttributes,
+} from './record-shape.js';
 import {
   findActionableSilentDrops,
   unwrittenCreateOnlyReplacement,
@@ -265,7 +271,7 @@ export async function provisionUpdate(
   // associations off the same object. No-op for every other type.
   recordNestedStackParameterExpressions(updateSecrets, resourceType, resolvedProps, desiredProps);
 
-  this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
+  auditResolvedAssetReferences(this.options, logicalId, resourceType, resolvedProps);
 
   // Re-check diff after resolving intrinsic functions
   // DiffCalculator compares unresolved template vs resolved state, which may produce false positives.
@@ -910,7 +916,7 @@ export async function provisionUpdate(
     stateResources[logicalId] = {
       // The record as the read-version refresh above may have left it.
       ...(stateResources[logicalId] ?? currentResource),
-      ...this.extractTemplateAttributes(template, logicalId),
+      ...extractTemplateAttributes(template, logicalId),
     };
     if (counts) counts.updated++;
     if (progress) progress.current++;
@@ -1064,7 +1070,7 @@ export async function provisionUpdate(
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
     lostChild === undefined &&
-    this.recreateDirectionFor(stackName, logicalId) === undefined &&
+    recreateDirectionFor(this.options, stackName, logicalId) === undefined &&
     recordMatchesDesired
   ) {
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
@@ -1329,7 +1335,7 @@ export async function provisionUpdate(
       keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
         keyOrderFreeJson(currentPropsAsWritten[path]);
     replacedAnyway =
-      this.recreateDirectionFor(stackName, logicalId) !== undefined ||
+      recreateDirectionFor(this.options, stackName, logicalId) !== undefined ||
       lostWithParent !== undefined ||
       (change.propertyChanges ?? []).some(
         (other) =>
@@ -1434,7 +1440,7 @@ export async function provisionUpdate(
     confirmedPaths.size > 0 &&
     !typeChanged &&
     lostChild === undefined &&
-    this.recreateDirectionFor(stackName, logicalId) === undefined &&
+    recreateDirectionFor(this.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
     Object.keys(resolvedProps).every(
       (key) =>
@@ -1603,13 +1609,15 @@ export async function provisionUpdate(
   // not confirm unchanged) turns this into a replacement, so say so.
   const liveLabel = this.liveTaskLabels.get(logicalId);
   if (needsReplacement && liveLabel !== undefined && !liveLabel.replacing) {
-    const routing = this.peekRoutingForLabel(
+    const routing = peekRoutingForLabel(
+      this.providerRegistry,
+      this.options,
       change,
       currentResource,
       stackName,
       logicalId,
       true,
-      this.recreateDirectionFor(stackName, logicalId)
+      recreateDirectionFor(this.options, stackName, logicalId)
     );
     const label = `Replacing ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
     this.liveTaskLabels.set(logicalId, {
@@ -1623,13 +1631,15 @@ export async function provisionUpdate(
     // The other direction (go-to-k/cdkd#3729): a create-only change the
     // label counted as a replacement was lowered above, because AWS
     // already holds the fresh `NoEcho` value there.
-    const routing = this.peekRoutingForLabel(
+    const routing = peekRoutingForLabel(
+      this.providerRegistry,
+      this.options,
       change,
       currentResource,
       stackName,
       logicalId,
       false,
-      this.recreateDirectionFor(stackName, logicalId)
+      recreateDirectionFor(this.options, stackName, logicalId)
     );
     const label = `Updating ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
     this.liveTaskLabels.set(logicalId, {
@@ -1641,7 +1651,7 @@ export async function provisionUpdate(
   }
 
   // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
-  const dependencies = this.extractAllDependencies(template, logicalId);
+  const dependencies = extractAllDependencies(template, logicalId);
 
   // `UpdateReplacePolicy: Retain` orphans the OLD physical resource on a
   // replacement (the create-first path below leaves it in place — see the
@@ -1938,7 +1948,7 @@ function readsProducerReplacedThisRun(
   logicalId: string,
   stateResources: Record<string, ResourceState>
 ): boolean {
-  return (this.extractAllDependencies(template, logicalId) ?? []).some((id) => {
+  return (extractAllDependencies(template, logicalId) ?? []).some((id) => {
     const loaded = Object.hasOwn(this.healBaseline, id) ? this.healBaseline[id] : undefined;
     if (loaded === undefined) return false;
     const now = Object.hasOwn(stateResources, id) ? stateResources[id] : undefined;
