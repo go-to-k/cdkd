@@ -13,21 +13,22 @@
 #      (DocDB / Neptune cluster + instance creates each take 5-10 min).
 #      The BASELINE template sets the #1160 removable cluster fields
 #      non-default: DeletionProtection=true + BackupRetentionPeriod=7 on
-#      both clusters, plus IamAuthEnabled=true on the Neptune cluster.
+#      both clusters, IamAuthEnabled=true on the Neptune cluster, and
+#      AutoMinorVersionUpgrade=false on the Neptune instance.
 #   3. cdkd state list — sanity check that state was written
-#   3b. assert the baseline fields reached AWS (describe-db-clusters) —
-#       proves the step-3d reset assertions bind to a real change
+#   3b. assert the baseline fields reached AWS (describe-db-clusters,
+#       describe-db-instances) — proves the step-3d retention assertions
+#       bind to a real, non-default value
 #   3c. CDKD_TEST_REMOVAL=true redeploy — DROPS the step-2 fields so
-#       cdkd's ModifyDBCluster sees ABSENT fields (removal, issue #1160).
-#       ModifyDBCluster has merge semantics (absent = "no change"), so
-#       before the #1160 fix the removed fields silently kept their old
-#       live values — worst case DeletionProtection, which would make
-#       the step-4 destroy fail. The same redeploy changes the DocDB
-#       subnet group description, an in-place update through the
-#       provider's update() (issue #2613).
-#   3d. poll describe-db-clusters until both clusters settle back to the
-#       CFn defaults (DeletionProtection=false, BackupRetentionPeriod=1,
-#       Neptune IAMDatabaseAuthenticationEnabled=false)
+#       cdkd's Modify* calls see ABSENT fields (removal, issues #1160 /
+#       #5004). A real CloudFormation A/B (#5004) showed CloudFormation
+#       KEEPS the live value of each, so cdkd must send no reset. The same
+#       redeploy changes the DocDB subnet group description, an in-place
+#       update through the provider's update() (issue #2613).
+#   3d. wait for both clusters to be available, then assert the baseline
+#       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
+#       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
+#       AutoMinorVersionUpgrade=false)
 #   3g. --remove-protection compensation (issue #2204): re-enable
 #       DeletionProtection on both clusters out of band, add one
 #       out-of-band instance to each (DeleteDBCluster then refuses: the
@@ -38,8 +39,9 @@
 #       delete the out-of-band instances.
 #   4. cdkd destroy --force --remove-protection with the same long
 #      per-type timeouts (DocDB / Neptune deletes can also take 5-10 min).
-#      The #1160 reset is proven by step 3d's readback; step 3g left the
-#      guard ON, so this is also the flip's live SUCCESS path.
+#      The #5004 retention is proven by step 3d's readback; the guard is
+#      ON (kept through the removal), so this is also the flip's live
+#      SUCCESS path.
 #   5. cdkd state list — must report empty for the stack
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
@@ -250,7 +252,7 @@ if [ -z "${DOCDB_CLUSTER_ID}" ] || [ -z "${NEPTUNE_CLUSTER_ID}" ]; then
 fi
 echo "[verify] resolved clusters: docdb=${DOCDB_CLUSTER_ID} neptune=${NEPTUNE_CLUSTER_ID}"
 
-echo "[verify] step 3b: baseline #1160 fields reached AWS"
+echo "[verify] step 3b: baseline #1160 / #5004 fields reached AWS"
 # jq false-vs-null trap: `//` treats false as missing — use explicit
 # has() checks for booleans.
 DOCDB_BASE=$(aws docdb describe-db-clusters \
@@ -274,7 +276,19 @@ if [ "${NEPTUNE_BASE_PROT}" != "true" ] || [ "${NEPTUNE_BASE_RETENTION}" != "7" 
   echo "[verify] FAIL: Neptune baseline fields not set (DeletionProtection='${NEPTUNE_BASE_PROT}' expected true, BackupRetentionPeriod='${NEPTUNE_BASE_RETENTION}' expected 7, IAMDatabaseAuthenticationEnabled='${NEPTUNE_BASE_IAM}' expected true)" >&2
   exit 1
 fi
-echo "[verify] step 3b ok: baseline non-default fields live on both clusters"
+NEPTUNE_INSTANCE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBInstance") | .value.physicalId] | first // ""')
+if [ -z "${NEPTUNE_INSTANCE_ID}" ]; then
+  echo "[verify] FAIL: could not resolve the Neptune instance identifier from state" >&2
+  exit 1
+fi
+NEPTUNE_BASE_AMVU=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0]' --output json \
+  | jq -r 'if has("AutoMinorVersionUpgrade") then .AutoMinorVersionUpgrade | tostring else "null" end')
+if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
+  echo "[verify] FAIL: Neptune instance baseline AutoMinorVersionUpgrade='${NEPTUNE_BASE_AMVU}', expected false" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: baseline non-default fields live on both clusters and the Neptune instance"
 
 # Issue #3650: each SSM parameter carries one DocDB / Neptune endpoint
 # `Fn::GetAtt`. Before the fix every one held the cluster / instance
@@ -347,50 +361,65 @@ if [ "${DOCDB_SG_DESC}" != "cdkd integ docdb subnet group" ]; then
   exit 1
 fi
 
-echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 fields)"
+echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 / #5004 fields)"
 CDKD_TEST_REMOVAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --verbose \
   "${TIMEOUT_OVERRIDES[@]}"
 
-echo "[verify] step 3d: wait for both clusters to settle at the CFn defaults"
+echo "[verify] step 3d: wait for both clusters to be available, then assert the baseline values are RETAINED (#5004)"
 # Cluster modifies can take a couple of minutes to settle; bounded retry,
-# no sleep after the final poll.
-RESET_OK=""
-DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION=""
-NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM=""
-for i in $(seq 1 60); do
+# no sleep after the final poll. Retention is read AFTER a settle pause: a
+# regression that resets a field applies it through ModifyDBCluster, and the
+# pause lets a pending change land before it is read.
+read_state() {
   DOCDB_AFTER=$(aws docdb describe-db-clusters \
     --db-cluster-identifier "${DOCDB_CLUSTER_ID}" \
     --region "${REGION}" \
-    --query 'DBClusters[0]' --output json)
-  DOCDB_STATUS=$(echo "${DOCDB_AFTER}" | jq -r '.Status // "null"')
-  DOCDB_PROT=$(echo "${DOCDB_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
-  DOCDB_RETENTION=$(echo "${DOCDB_AFTER}" | jq -r '.BackupRetentionPeriod // "null"')
+    --query 'DBClusters[0]' --output json) || return 1
+  DOCDB_STATUS=$(echo "${DOCDB_AFTER}" | jq -r '.Status // "null"') || return 1
+  DOCDB_PROT=$(echo "${DOCDB_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
+  DOCDB_RETENTION=$(echo "${DOCDB_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
   NEPTUNE_AFTER=$(aws neptune describe-db-clusters \
     --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
     --region "${REGION}" \
-    --query 'DBClusters[0]' --output json)
-  NEPTUNE_STATUS=$(echo "${NEPTUNE_AFTER}" | jq -r '.Status // "null"')
-  NEPTUNE_PROT=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end')
-  NEPTUNE_RETENTION=$(echo "${NEPTUNE_AFTER}" | jq -r '.BackupRetentionPeriod // "null"')
-  NEPTUNE_IAM=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end')
-  if [ "${DOCDB_STATUS}" = "available" ] && [ "${DOCDB_PROT}" = "false" ] && [ "${DOCDB_RETENTION}" = "1" ] \
-    && [ "${NEPTUNE_STATUS}" = "available" ] && [ "${NEPTUNE_PROT}" = "false" ] && [ "${NEPTUNE_RETENTION}" = "1" ] && [ "${NEPTUNE_IAM}" = "false" ]; then
-    RESET_OK="yes"
+    --query 'DBClusters[0]' --output json) || return 1
+  NEPTUNE_STATUS=$(echo "${NEPTUNE_AFTER}" | jq -r '.Status // "null"') || return 1
+  NEPTUNE_PROT=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
+  NEPTUNE_RETENTION=$(echo "${NEPTUNE_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
+  NEPTUNE_IAM=$(echo "${NEPTUNE_AFTER}" | jq -r 'if has("IAMDatabaseAuthenticationEnabled") then .IAMDatabaseAuthenticationEnabled | tostring else "null" end') || return 1
+  NEPTUNE_AMVU=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+    --region "${REGION}" --query 'DBInstances[0]' --output json \
+    | jq -r 'if has("AutoMinorVersionUpgrade") then .AutoMinorVersionUpgrade | tostring else "null" end') || return 1
+}
+DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION=""
+NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM="" NEPTUNE_AMVU=""
+SETTLED=""
+for i in $(seq 1 60); do
+  read_state || exit 1
+  if [ "${DOCDB_STATUS}" = "available" ] && [ "${NEPTUNE_STATUS}" = "available" ]; then
+    SETTLED="yes"
     break
   fi
   if [ "${i}" -lt 60 ]; then
     sleep 10
   fi
 done
-if [ -z "${RESET_OK}" ]; then
-  echo "[verify] FAIL: clusters did not settle at the CFn defaults after removal — #1160 ModifyDBCluster reset-on-removal NOT closed" >&2
-  echo "  docdb:   status='${DOCDB_STATUS}' protection='${DOCDB_PROT}' retention='${DOCDB_RETENTION}' (expected available/false/1)" >&2
-  echo "  neptune: status='${NEPTUNE_STATUS}' protection='${NEPTUNE_PROT}' retention='${NEPTUNE_RETENTION}' iamAuth='${NEPTUNE_IAM}' (expected available/false/1/false)" >&2
+if [ -z "${SETTLED}" ]; then
+  echo "[verify] FAIL: clusters did not become available after the removal redeploy (docdb='${DOCDB_STATUS}', neptune='${NEPTUNE_STATUS}')" >&2
   exit 1
 fi
-echo "[verify] step 3d ok: both clusters reset to DeletionProtection=false + BackupRetentionPeriod=1 (+ Neptune IAMDatabaseAuthenticationEnabled=false) — #1160 silent-drop CLOSED"
+sleep 30
+read_state || exit 1
+if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "${DOCDB_RETENTION}" != "7" ] \
+  || [ "${NEPTUNE_STATUS}" != "available" ] || [ "${NEPTUNE_PROT}" != "true" ] || [ "${NEPTUNE_RETENTION}" != "7" ] || [ "${NEPTUNE_IAM}" != "true" ] \
+  || [ "${NEPTUNE_AMVU}" != "false" ]; then
+  echo "[verify] FAIL: a removed property was reset — CloudFormation KEEPS the live value (#5004)" >&2
+  echo "  docdb:   status='${DOCDB_STATUS}' protection='${DOCDB_PROT}' retention='${DOCDB_RETENTION}' (expected available/true/7)" >&2
+  echo "  neptune: status='${NEPTUNE_STATUS}' protection='${NEPTUNE_PROT}' retention='${NEPTUNE_RETENTION}' iamAuth='${NEPTUNE_IAM}' autoMinorVersionUpgrade='${NEPTUNE_AMVU}' (expected available/true/7/true/false)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"
 
 # Issue #2613: the description must have changed on the recorded group.
 if ! DOCDB_SG_DESC=$(aws docdb describe-db-subnet-groups --db-subnet-group-name "${DOCDB_SG_NAME}" \
@@ -416,7 +445,9 @@ check_endpoints "step 3f"
 # "still contains DB instances"), which matches no retryable pattern.
 #
 # The discriminator is the READBACK, not cdkd's output: before #2204 the flip
-# was never undone, so both clusters read DeletionProtection=false here.
+# was never undone, so both clusters read DeletionProtection=false here. (The
+# guard is already ON going in, since a removed DeletionProtection is kept, #5004;
+# the out-of-band re-enable below is then idempotent.)
 #
 # COST, stated so a slow run is not read as a hang. cdkd's destroy has no
 # per-resource target and its level loop does not stop at a failure, so this

@@ -27,17 +27,16 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *  - 1 Neptune DBCluster (Neptune uses IAM auth so no Master credentials)
  *  - 1 Neptune DBInstance (db.t3.medium)
  *
- * #1160 (reset-on-removal) phases: the BASELINE deploy sets non-default
- * values for the reset-covered ModifyDBCluster fields on both clusters
+ * #1160 / #5004 (removal) phases: the BASELINE deploy sets non-default
+ * values for the removable ModifyDBCluster fields on both clusters
  * (`deletionProtection: true` + `backupRetentionPeriod: 7`, plus
- * `iamAuthEnabled: true` on Neptune); the `CDKD_TEST_REMOVAL=true`
- * redeploy DROPS them entirely so cdkd's ModifyDBCluster sees ABSENT
- * fields (removal), not a value change. ModifyDBCluster has merge
- * semantics (an absent input field means "no change"), so without the
- * #1160 fix AWS would keep the baseline values — and
- * DeletionProtection=true would then make the destroy fail. verify.sh
- * asserts the live values return to the CFn defaults (false / 1 /
- * false).
+ * `iamAuthEnabled: true` on Neptune) and `autoMinorVersionUpgrade: false`
+ * on the Neptune instance; the `CDKD_TEST_REMOVAL=true` redeploy DROPS them
+ * entirely so cdkd's Modify* calls see ABSENT fields (removal), not a value
+ * change. A real CloudFormation A/B (#5004) showed CloudFormation KEEPS the
+ * live value of every one of these on removal, so verify.sh asserts the
+ * baseline values are still live after the removal redeploy (cdkd must not
+ * reset them to false / 1 / false / true).
  *
  * Every L1 resource has `RemovalPolicy: DESTROY`. verify.sh then turns
  * DeletionProtection back ON out of band for its issue #2204 arm (a
@@ -115,9 +114,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
       masterUserPassword: 'TempPass1234!',
       dbSubnetGroupName: docdbSubnetGroup.ref,
       vpcSecurityGroupIds: [sg.securityGroupId],
-      // #1160 removable fields: non-default in the baseline deploy, DROPPED
-      // in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts they reset to
-      // the CFn defaults (false / 1).
+      // #1160 / #5004 removable fields: non-default in the baseline deploy,
+      // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
+      // baseline values are RETAINED (CloudFormation keeps them).
       deletionProtection: isRemoval ? undefined : true,
       backupRetentionPeriod: isRemoval ? undefined : 7,
       storageEncrypted: true,
@@ -154,9 +153,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
       vpcSecurityGroupIds: [sg.securityGroupId],
-      // #1160 removable fields: non-default in the baseline deploy, DROPPED
-      // in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts they reset to
-      // the CFn defaults (false / 1 / false). `iamAuthEnabled` is the CFn
+      // #1160 / #5004 removable fields: non-default in the baseline deploy,
+      // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
+      // baseline values are RETAINED (CloudFormation keeps them).
+      // `iamAuthEnabled` is the CFn
       // spelling of ModifyDBCluster's EnableIAMDatabaseAuthentication.
       deletionProtection: isRemoval ? undefined : true,
       backupRetentionPeriod: isRemoval ? undefined : 7,
@@ -169,6 +169,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
     const neptuneInstance = new neptune.CfnDBInstance(this, 'NeptuneInstance', {
       dbClusterIdentifier: neptuneCluster.ref,
       dbInstanceClass: 'db.t3.medium',
+      // #5004: non-default (the API default is true); dropped on removal and
+      // expected to stay false.
+      autoMinorVersionUpgrade: isRemoval ? undefined : false,
     });
     neptuneInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     neptuneInstance.addDependency(neptuneCluster);

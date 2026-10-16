@@ -1,9 +1,9 @@
-// issue #1160 (docdb batch): absent-field removal reset to CFn defaults.
-// ModifyDBCluster uses merge semantics, so a field DROPPED from the template
-// must be sent as its explicit CFn-default reset value (doc basis:
-// ModifyDBClusterMessage / ModifyDBInstanceMessage in @aws-sdk/client-docdb),
-// else the old live value silently persists. Direct pattern twin of
-// rds-provider-update-removal.test.ts (PR #1222).
+// issues #1160 / #5004 (docdb): absent-field removal semantics.
+// ModifyDBCluster uses merge semantics (an omitted field is "no change"). A
+// real CloudFormation A/B (#5004) showed CloudFormation KEEPS the live value
+// of a removed DeletionProtection / BackupRetentionPeriod, so cdkd sends NO
+// reset for them. DBSubnetGroupDescription (a separate provider) keeps its
+// create-time-fallback reset.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
-describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
+describe('DocDBProvider removal semantics (issues #1160 / #5004)', () => {
   let provider: DocDBProvider;
 
   beforeEach(() => {
@@ -56,7 +56,7 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
       mockSend.mockResolvedValueOnce({ DBClusters: [{}] });
     };
 
-    it('resets removed fields to their CFn defaults on update', async () => {
+    it('sends NO reset for removed fields CloudFormation keeps (#5004)', async () => {
       mockClusterUpdate();
 
       await provider.update(
@@ -80,11 +80,11 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
-      expect(modifyCall.input.DeletionProtection).toBe(false);
-      expect(modifyCall.input.BackupRetentionPeriod).toBe(1);
-      // Deliberate non-resets: removal of these must NOT synthesize any
-      // value — each stays absent (no change). Pins the per-field rationale
-      // comment in updateDBCluster.
+      // #5004: CloudFormation keeps the live value, so each stays absent
+      // (no change) rather than being reset to false / 1.
+      expect(modifyCall.input.DeletionProtection).toBeUndefined();
+      expect(modifyCall.input.BackupRetentionPeriod).toBeUndefined();
+      // Other deliberate non-resets: removal must NOT synthesize any value.
       expect(modifyCall.input.EngineVersion).toBeUndefined();
       expect(modifyCall.input.DBClusterParameterGroupName).toBeUndefined();
       expect(modifyCall.input.PreferredBackupWindow).toBeUndefined();
@@ -104,7 +104,7 @@ describe('DocDBProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.BackupRetentionPeriod).toBeUndefined();
     });
 
-    it('passes kept/changed fields through unchanged while removed ones reset', async () => {
+    it('passes changed fields through unchanged', async () => {
       mockClusterUpdate();
 
       await provider.update(
