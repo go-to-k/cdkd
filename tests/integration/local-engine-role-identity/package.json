@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-local-engine-role-identity",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture proving the cdkd local engine commands run the emulated workload as the caller under --role-arn (issue #3240)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
