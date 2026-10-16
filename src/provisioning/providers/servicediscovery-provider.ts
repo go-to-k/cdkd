@@ -666,7 +666,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Cloud Map namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Cloud Map namespace ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1473,7 +1473,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete service discovery service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete service discovery service ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

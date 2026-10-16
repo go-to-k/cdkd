@@ -32,6 +32,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * Serialise a CFn-shape `RedrivePolicy` (object) to the string form
@@ -329,7 +330,7 @@ export class SQSQueueProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create SQS queue ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SQS queue ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         queueName,
@@ -451,7 +452,7 @@ export class SQSQueueProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update SQS queue ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update SQS queue ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -490,7 +491,7 @@ export class SQSQueueProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SQS queue ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete SQS queue ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

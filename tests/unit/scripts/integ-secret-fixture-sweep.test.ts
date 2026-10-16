@@ -940,6 +940,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       '../../deployment/secret-redaction.js',
       '../../types/resource.js',
       '../../utils/aws-clients.js',
+      // go-to-k/cdkd#3341: the import-free LEAF `describeAwsFailure` /
+      // `safeStringify` module (no module state), read by the rethrowing
+      // catches so a thrown value with no string form cannot replace the failure.
+      '../../utils/aws-failure-text.js',
       '../../utils/error-handler.js',
       '../../utils/logger.js',
       '../config-shape.js',

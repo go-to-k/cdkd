@@ -49,6 +49,7 @@ import {
   type UpdateContext,
   type ResourceNotFound,
 } from '../../types/resource.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * `value` after a JSON round-trip: `undefined` members dropped, exactly the
@@ -492,7 +493,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // A state-borne bag can still throw here (the literal `SecretString`
       // shape refusal runs on every caller), and its remedy is not a template
       // edit — so only the template path is told to fix the template.
-      const message = v(error instanceof Error ? error.message : String(error));
+      const message = v(describeAwsFailure(error).detail);
       throw new ProvisioningError(
         stateBorneDesired
           ? `Failed to update secret ${logicalId}: ${message}`
@@ -818,7 +819,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete secret ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete secret ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

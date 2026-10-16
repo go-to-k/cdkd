@@ -393,7 +393,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create S3 Express Directory Bucket ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         bucketName,
@@ -493,7 +493,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update S3 Express Directory Bucket ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -576,7 +576,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         mask(
-          `Failed to delete S3 Express Directory Bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to delete S3 Express Directory Bucket ${logicalId}: ${describeAwsFailure(error).detail}`
         ),
         resourceType,
         logicalId,

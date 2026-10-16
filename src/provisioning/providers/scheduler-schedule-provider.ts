@@ -54,6 +54,7 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { safeStringify } from '../../utils/aws-failure-text.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -419,7 +420,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Schedule ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to create Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         undefined,
@@ -799,7 +800,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Schedule ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to update Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1043,7 +1044,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Schedule ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to delete Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1083,7 +1084,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
           ? ' Schedules in a custom group cannot be looked up by bare name; the Arn is normally served from cdkd state attributes.'
           : '';
       throw new ProvisioningError(
-        `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? String(error)}.${customGroupHint}`,
+        `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? safeStringify(error)}.${customGroupHint}`,
         resourceType,
         logicalId,
         physicalId,

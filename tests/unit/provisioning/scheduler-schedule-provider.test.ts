@@ -351,6 +351,22 @@ describe('SchedulerScheduleProvider', () => {
       ).rejects.toThrow(/eu-west-1/);
     });
 
+    // go-to-k/cdkd#3341: a bare `String(err)` threw `TypeError: Cannot convert
+    // object to primitive value` here and replaced the failure.
+    it('surfaces the delete failure when the thrown value has no string form', async () => {
+      mockSend.mockRejectedValueOnce(Object.create(null));
+
+      const rejected = await provider.delete('Sched', 'my-sched', TYPE, { ...BASE_PROPS }).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+      expect((rejected as Error).message).toContain('Failed to delete Schedule Sched');
+      expect((rejected as Error).message).not.toContain(
+        'Cannot convert object to primitive value'
+      );
+    });
+
     it('warns and deletes from the default group when the state record has no properties', async () => {
       mockSend.mockResolvedValueOnce({});
 

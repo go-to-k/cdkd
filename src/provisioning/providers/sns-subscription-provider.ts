@@ -8,7 +8,7 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
-import { safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -770,9 +770,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        mask(
-          `Failed to delete SNS subscription ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        mask(`Failed to delete SNS subscription ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,
