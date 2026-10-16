@@ -1,11 +1,8 @@
 // issue #1160 / #5004: absent-field removal (elasticache batch). Real CFn A/B (#5004):
-// KEEP SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn;
-// RESET LogDeliveryConfigurations.
-// ModifyCacheCluster / ModifyCacheSubnetGroup use merge semantics, so a field
-// DROPPED from the template must be sent as its explicit CFn-default reset
-// value (doc basis: ModifyCacheClusterMessage / ModifyCacheSubnetGroupMessage /
-// LogDeliveryConfigurationRequest in @aws-sdk/client-elasticache), else the
-// old live value silently persists.
+// KEEP SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn
+// (nothing is sent, so the live value stays); RESET LogDeliveryConfigurations
+// (delivery disabled). ModifyCacheSubnetGroup has merge semantics, so a
+// description DROPPED from the template is sent as its create-path default.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
@@ -41,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
   let provider: ElastiCacheProvider;
@@ -121,6 +119,31 @@ describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
       expect(modifyCall.input.IpDiscovery).toBeUndefined();
     });
 
+    it('declares no removalDefaults for the KEEP properties, so the caller injects none (#5004)', () => {
+      // The deploy / rollback caller runs prepareRemovalForUpdate and hands
+      // the injected properties to update(); a restored removalDefaults entry
+      // (e.g. AutoMinorVersionUpgrade: true) would be re-sent there even
+      // though the direct update() path sends nothing.
+      expect(provider.removalDefaults?.get('AWS::ElastiCache::CacheCluster')).toBeUndefined();
+
+      const baseline = {
+        Engine: 'redis',
+        SnapshotRetentionLimit: 5,
+        AutoMinorVersionUpgrade: false,
+        NotificationTopicArn: 'arn:aws:sns:us-east-1:123:topic',
+      };
+      const prepared = prepareRemovalForUpdate(
+        provider,
+        'AWS::ElastiCache::CacheCluster',
+        { Engine: 'redis' },
+        baseline
+      );
+      expect(prepared.injected).toEqual([]);
+      expect(prepared.properties).not.toHaveProperty('AutoMinorVersionUpgrade');
+      expect(prepared.properties).not.toHaveProperty('SnapshotRetentionLimit');
+      expect(prepared.properties).not.toHaveProperty('NotificationTopicArn');
+    });
+
     it('leaves a never-present field absent (no spurious reset value)', async () => {
       mockClusterUpdate();
 
@@ -165,8 +188,8 @@ describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
 
       const modifyCall = mockSend.mock.calls[0][0];
       expect(modifyCall.input.SnapshotRetentionLimit).toBe(7);
-      // Kept ARN: sent with an explicit active status so a topic re-added
-      // after a prior removal (status=inactive) reactivates delivery.
+      // Kept ARN: sent with an explicit active status so a topic that was set
+      // inactive outside cdkd (or by a pre-#5004 cdkd) is reactivated.
       expect(modifyCall.input.NotificationTopicArn).toBe('arn:aws:sns:us-east-1:123:topic');
       expect(modifyCall.input.NotificationTopicStatus).toBe('active');
       // Removed in this update (previous false): KEEP, nothing sent.

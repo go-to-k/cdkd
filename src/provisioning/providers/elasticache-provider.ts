@@ -314,8 +314,9 @@ export class ElastiCacheProvider implements ResourceProvider {
       // `createSubnetGroup` synthesizes when the template omits the
       // description, keeping create/update parity. (CFn marks `Description`
       // required on AWS::ElastiCache::SubnetGroup, so a removal is
-      // CFn-invalid anyway and could not be A/B-measured in #5004 — but cdkd's create path tolerates the absence
-      // with this default, and update must not silently keep the old value.)
+      // CFn-invalid anyway and could not be A/B-measured in #5004 — but
+      // cdkd's create path tolerates the absence with this default, and
+      // update must not silently keep the old value.)
       const modified = await this.getClient().send(
         new ModifyCacheSubnetGroupCommand({
           CacheSubnetGroupName: physicalId,
