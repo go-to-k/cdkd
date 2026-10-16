@@ -115,10 +115,10 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     expect(sites.filter((s) => s.kind === 'awsClientDefaults').length).toBeGreaterThanOrEqual(15);
     expect(sites.filter((s) => s.kind === 'AwsClients').length).toBeGreaterThanOrEqual(3);
     // The credential helper's spreads (go-to-k/cdkd#3588): `ecr-puller.ts`'s
-    // caller-identity and ECR clients (its AssumeRole hop opts out directly).
-    // Without this shape they left the population silently.
+    // caller-identity client, its ECR client and its AssumeRole hop. Without
+    // this shape they left the population silently.
     expect(sites.filter((s) => s.kind === 'ambientClientDefaults').length).toBeGreaterThanOrEqual(
-      2
+      3
     );
   });
 
