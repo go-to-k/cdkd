@@ -49,7 +49,6 @@ credentials a hop returns still do the pull or fetch.
 
 - On `start-cloudfront --from-state`, the engine's deployed S3-origin and KVS
   reads run as the caller; a cross-account deploy may need the caller's access.
-
 - cdk-local studio's children are not embedded, so they do not carry the config.
 - A `[default]` profile that sources the environment resolves whatever the
   `AWS_*` variables hold.

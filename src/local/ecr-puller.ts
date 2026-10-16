@@ -11,7 +11,6 @@ import {
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
-import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
 
@@ -482,14 +481,13 @@ async function assumeRoleForEcr(
     `Assuming role ${displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })} for ECR pull...`
   );
   const sts = new STSClient({
-    // `ignoreAssumedRole`: this AssumeRole is signed by the CALLER, not by a
+    // cdkd-local-role-identity: this AssumeRole opts out of the published role
+    // (`ignoreAssumedRole`), so it is signed by the CALLER, not by a
     // `--role-arn` role published earlier in the process, the same as the
     // engine commands' `--assume-role` hop. The `--ecr-role-arn` role's trust
     // policy must therefore trust the caller. Only this signer changes: the
     // pull below keeps using the credentials this hop returns.
-    ...awsClientDefaults({ profile: credentialConfig.profile, ignoreAssumedRole: true }),
-    ...(credentialConfig.profile && { profile: credentialConfig.profile }),
-    ...(credentialConfig.credentials && { credentials: { ...credentialConfig.credentials } }),
+    ...clientDefaultsFor(credentialConfig, true),
     ...(callerRegion && { region: callerRegion }),
   });
   try {

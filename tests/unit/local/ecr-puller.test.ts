@@ -537,6 +537,65 @@ describe('pullEcrImage', () => {
     }
   });
 
+  describe('the --ecr-role-arn hop client under a published --role-arn and a configured identity', () => {
+    const publishRole = (): void => {
+      setPreAssumeEnvCredentials({
+        accessKeyId: 'AKIACALLER',
+        secretAccessKey: 'caller-secret',
+        sessionToken: 'caller-token',
+      });
+      setAssumedRoleCredentials({
+        accessKeyId: 'ASIADEPLOYROLE',
+        secretAccessKey: 'deploy-secret',
+        sessionToken: 'deploy-token',
+      });
+    };
+    const runPull = async (): Promise<{ profile?: string; credentials?: unknown }> => {
+      stsSendMock.mockResolvedValueOnce({ Account: '111111111111' }).mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAHOP',
+          SecretAccessKey: 'hop-secret',
+          SessionToken: 'hop-token',
+        },
+      });
+      ecrSendMock.mockResolvedValue({
+        authorizationData: [
+          {
+            authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+            proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+          },
+        ],
+      });
+      process.env['AWS_REGION'] = 'us-east-1';
+      await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: 'arn:aws:iam::999999999999:role/CrossAccountEcrPull',
+      });
+      return stsConstructorMock.mock.calls[1]![0] as { profile?: string; credentials?: unknown };
+    };
+
+    afterEach(() => {
+      resetAwsClients();
+      resetAwsClientDefaults();
+    });
+
+    it('a configured profile reaches the hop client, and the role credentials do not', async () => {
+      publishRole();
+      setAwsClients(new AwsClients({ region: 'us-east-1', profile: 'workload-profile' }));
+      const hopCfg = await runPull();
+      expect(hopCfg.profile).toBe('workload-profile');
+      expect(hopCfg.credentials).toBeUndefined();
+    });
+
+    it('explicit credentials win over the ignoreAssumedRole default', async () => {
+      publishRole();
+      const explicit = { accessKeyId: 'AKIAEXPLICIT', secretAccessKey: 'explicit-secret' };
+      setAwsClients(new AwsClients({ region: 'us-east-1', credentials: explicit }));
+      const hopCfg = await runPull();
+      expect(hopCfg.credentials).toEqual(explicit);
+    });
+  });
+
   it('same-account WITH --ecr-role-arn: still issues AssumeRole (explicit opt-in)', async () => {
     // Per design: an explicit `--ecr-role-arn` always takes effect even
     // on same-account pulls — useful when the caller's identity does

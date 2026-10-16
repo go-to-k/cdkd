@@ -347,7 +347,9 @@ echo "[verify]   the container received the parameter value"
 stop_engine
 
 echo "[verify] arm C: start-alb with only an exported AWS_PROFILE strips the role's key"
-if [ -n "${AWS_PROFILE:-}" ]; then
+if [ -n "${WORKLOAD_PROFILE:-}" ]; then
+  :
+elif [ -n "${AWS_PROFILE:-}" ]; then
   WORKLOAD_PROFILE="${AWS_PROFILE}"
 elif aws configure list-profiles | grep -x default >/dev/null; then
   WORKLOAD_PROFILE="default"

@@ -79,10 +79,20 @@ export function ambientCredentialConfig(): CredentialConfig {
  * Takes the configuration as an argument for the callers that must key a cache
  * on the SAME reading they build from ({@link credentialFingerprint}); every
  * other site calls {@link ambientClientDefaults}.
+ *
+ * `ignoreAssumedRole` is forwarded to `awsClientDefaults`: the client resolves
+ * the caller, not a published `--role-arn` role. The explicit `profile` /
+ * `credentials` still follow it and win.
  */
-export function clientDefaultsFor(credentialConfig: CredentialConfig): AmbientClientDefaults {
+export function clientDefaultsFor(
+  credentialConfig: CredentialConfig,
+  ignoreAssumedRole?: boolean
+): AmbientClientDefaults {
   return {
-    ...awsClientDefaults({ profile: credentialConfig.profile }),
+    ...awsClientDefaults({
+      profile: credentialConfig.profile,
+      ...(ignoreAssumedRole !== undefined && { ignoreAssumedRole }),
+    }),
     ...(credentialConfig.profile && { profile: credentialConfig.profile }),
     ...(credentialConfig.credentials && { credentials: { ...credentialConfig.credentials } }),
   };
