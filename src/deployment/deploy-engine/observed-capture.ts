@@ -41,12 +41,12 @@ import {
 /**
  * What an {@link ObservedCapture} reads from the deploy it serves.
  *
- * `fingerprintNoEchoValues` and `provenanceCapture` are GETTERS rather than
- * plain values: `DeployEngine.deploy()` REASSIGNS both per run (the former is
- * also replaced mid-run by the schema-upgrade backfill in `deploy-flow.ts`),
- * and `ObservedCapture` is built ONCE in the constructor — see the class doc
- * — so a captured value would go stale after the first deploy. Every other
- * member here is set once in the constructor and never reassigned.
+ * `fingerprintNoEchoValues` is a GETTER rather than a value: the
+ * schema-upgrade backfill in `deploy-flow.ts` replaces it MID-run, after this
+ * deploy's capture was built, and a captured `undefined` would leave a NoEcho
+ * value unmasked in a capture-failure line. `provenanceCapture` is a getter
+ * too, so the pair never depends on the order `deploy()` rebuilds them in.
+ * Every other member here is set once in the constructor and never reassigned.
  */
 export interface ObservedCaptureDeps {
   logger: Pick<Logger, 'debug' | 'warn'>;
