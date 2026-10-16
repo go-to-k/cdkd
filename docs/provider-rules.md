@@ -1533,6 +1533,20 @@ Checklist when writing or reviewing an `update()`:
   `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
   `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
   their live value, so `ASGProvider` sends nothing for those nine.
+  `AWS::ApiGatewayV2::*` is the same per-type split (issue #5004, real
+  CloudFormation A/B): CloudFormation RESETS only Api `CorsConfiguration`, Stage
+  `AutoDeploy` / `AccessLogSettings` / `RouteSettings` and Route
+  `AuthorizationScopes`. It KEEPS exactly these, so `apigatewayv2-provider.ts`
+  sends nothing for them on a deploy: Api `Description` / `Version` /
+  `DisableExecuteApiEndpoint` / `IpAddressType` / `ApiKeySelectionExpression`;
+  Stage `StageVariables` (per key) / `ClientCertificateId`; Integration
+  `Description` / `RequestParameters` (per key); Route `AuthorizationType` /
+  `AuthorizerId` / `OperationName` / `RequestModels` / `RequestParameters` (per
+  key); Authorizer `AuthorizerCredentialsArn` / `AuthorizerPayloadFormatVersion` /
+  `AuthorizerResultTtlInSeconds` / `IdentityValidationExpression`. Route
+  `ApiKeyRequired` was not measured and is still reset (#1160). The map keys
+  above are still cleared by `cdkd drift --revert` (`desiredFromAwsReadback`),
+  which must remove a console-added key.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

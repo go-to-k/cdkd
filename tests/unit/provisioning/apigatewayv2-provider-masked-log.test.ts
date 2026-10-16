@@ -251,20 +251,6 @@ const FAILURE_SITES: Array<{
         ),
     },
     {
-      label: 'update() Route, removal-only arm',
-      prefix: 'Failed to update API Gateway V2 Route Rt:',
-      failingCommand: 'DeleteRouteRequestParameterCommand',
-      run: (p, m) =>
-        p.update(
-          'Rt',
-          'route-1',
-          'AWS::ApiGatewayV2::Route',
-          { ApiId: 'api-1' },
-          { ApiId: 'api-1', RequestParameters: { 'route.request.header.x': { Required: true } } },
-          { maskSecrets: m }
-        ),
-    },
-    {
       label: 'update() Authorizer',
       prefix: 'Failed to update API Gateway V2 Authorizer Auth:',
       failingCommand: 'UpdateAuthorizerCommand',
