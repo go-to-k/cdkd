@@ -1001,60 +1001,6 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
         .map((c) => c[0].input.RequestParameterKey);
       expect(deletes).toEqual(['route.request.header.A', 'route.request.header.B']);
     });
-
-    it('Route AuthorizerId: detached with an empty string (baseline NONE, console attached an authorizer)', async () => {
-      mockSend.mockResolvedValueOnce({});
-      await provider.update(
-        'RouteLogical',
-        'r-1',
-        'AWS::ApiGatewayV2::Route',
-        { ApiId: API_ID, RouteKey: '$default', AuthorizationType: 'NONE' },
-        {
-          ApiId: API_ID,
-          RouteKey: '$default',
-          AuthorizationType: 'JWT',
-          AuthorizerId: 'auth-1',
-        },
-        revert
-      );
-      expect(updateRouteInput()).toMatchObject({ AuthorizationType: 'NONE', AuthorizerId: '' });
-    });
-
-    it('Route AuthorizerId: a deploy (no revert flag) still KEEPS it, sending nothing', async () => {
-      await provider.update(
-        'RouteLogical',
-        'r-1',
-        'AWS::ApiGatewayV2::Route',
-        { ApiId: API_ID, RouteKey: '$default' },
-        { ApiId: API_ID, RouteKey: '$default', AuthorizerId: 'auth-1' }
-      );
-      expect(mockSend).not.toHaveBeenCalled();
-    });
-
-    it('Authorizer REQUEST-only fields: cleared on revert (CredentialsArn, PayloadFormatVersion, Ttl, IdentityValidationExpression)', async () => {
-      mockSend.mockResolvedValueOnce({});
-      await provider.update(
-        'AuthLogical',
-        'auth-1',
-        'AWS::ApiGatewayV2::Authorizer',
-        { ApiId: API_ID },
-        {
-          ApiId: API_ID,
-          AuthorizerResultTtlInSeconds: 300,
-          AuthorizerCredentialsArn: 'arn:aws:iam::1:role/r',
-          AuthorizerPayloadFormatVersion: '2.0',
-          IdentityValidationExpression: '^x$',
-        },
-        revert
-      );
-      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
-      expect(call![0].input).toMatchObject({
-        AuthorizerResultTtlInSeconds: 0,
-        AuthorizerCredentialsArn: '',
-        AuthorizerPayloadFormatVersion: '',
-        IdentityValidationExpression: '',
-      });
-    });
   });
 
   it('Integration: removed IntegrationMethod is NOT reset (required) — no SDK call', async () => {

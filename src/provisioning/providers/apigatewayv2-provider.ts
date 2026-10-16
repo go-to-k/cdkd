@@ -519,8 +519,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log,
-          context?.desiredFromAwsReadback === true
+          log
         );
       default:
         throw new ResourceUpdateNotSupportedError(
@@ -2639,21 +2638,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       changed = true;
     }
     // AuthorizerId: CloudFormation KEEPS the live value when it is removed (real
-    // CloudFormation A/B, #5004), so a deploy sends nothing on removal — an
-    // omitted member means "unchanged" in this API. `cdkd drift --revert`
-    // (`restoreFromAws`) is the opposite intent: the readback omits AuthorizerId
-    // on a NONE route, so a console-attached authorizer is detached with `''`.
-    {
-      const r = this.keepOrClearableUpdate(
-        restoreFromAws,
-        properties['AuthorizerId'] as string | undefined,
-        previousProperties['AuthorizerId'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerId = r.value;
-        changed = true;
-      }
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerId'] !== undefined &&
+      properties['AuthorizerId'] !== previousProperties['AuthorizerId']
+    ) {
+      input.AuthorizerId = properties['AuthorizerId'] as string;
+      changed = true;
     }
     // AuthorizationScopes: CloudFormation RESETS it on removal (real CloudFormation
     // A/B, #5004), so cdkd keeps the reset: clears on [] when removed.
@@ -2817,8 +2809,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks,
-    restoreFromAws = false
+    log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2890,52 +2881,36 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       changed = true;
     }
     // AuthorizerCredentialsArn: CloudFormation KEEPS the live value when it is removed (real
-    // CloudFormation A/B, #5004), so a deploy sends nothing on removal.
-    // `cdkd drift --revert` (`restoreFromAws`) clears an out-of-band value with
-    // `''`, because the readback omits the key when the baseline never set it.
-    {
-      const r = this.keepOrClearableUpdate(
-        restoreFromAws,
-        properties['AuthorizerCredentialsArn'] as string | undefined,
-        previousProperties['AuthorizerCredentialsArn'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerCredentialsArn = r.value;
-        changed = true;
-      }
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerCredentialsArn'] !== undefined &&
+      properties['AuthorizerCredentialsArn'] !== previousProperties['AuthorizerCredentialsArn']
+    ) {
+      input.AuthorizerCredentialsArn = properties['AuthorizerCredentialsArn'] as string;
+      changed = true;
     }
     // AuthorizerPayloadFormatVersion: CloudFormation KEEPS the live value when it is removed (real
-    // CloudFormation A/B, #5004), so a deploy sends nothing on removal.
-    // `cdkd drift --revert` (`restoreFromAws`) clears an out-of-band value with
-    // `''`, because the readback omits the key when the baseline never set it.
-    {
-      const r = this.keepOrClearableUpdate(
-        restoreFromAws,
-        properties['AuthorizerPayloadFormatVersion'] as string | undefined,
-        previousProperties['AuthorizerPayloadFormatVersion'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.AuthorizerPayloadFormatVersion = r.value;
-        changed = true;
-      }
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerPayloadFormatVersion'] !== undefined &&
+      properties['AuthorizerPayloadFormatVersion'] !==
+        previousProperties['AuthorizerPayloadFormatVersion']
+    ) {
+      input.AuthorizerPayloadFormatVersion = properties['AuthorizerPayloadFormatVersion'] as string;
+      changed = true;
     }
     // AuthorizerResultTtlInSeconds: CloudFormation KEEPS the live value when it is removed (real
-    // CloudFormation A/B, #5004), so a deploy sends nothing on removal.
-    // `cdkd drift --revert` (`restoreFromAws`) clears an out-of-band value with
-    // `0`, because the readback omits the key when the baseline never set it.
-    {
-      const r = this.keepOrClearableUpdate(
-        restoreFromAws,
-        properties['AuthorizerResultTtlInSeconds'] as number | undefined,
-        previousProperties['AuthorizerResultTtlInSeconds'] as number | undefined,
-        0
-      );
-      if (r.changed) {
-        input.AuthorizerResultTtlInSeconds = r.value;
-        changed = true;
-      }
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['AuthorizerResultTtlInSeconds'] !== undefined &&
+      properties['AuthorizerResultTtlInSeconds'] !==
+        previousProperties['AuthorizerResultTtlInSeconds']
+    ) {
+      input.AuthorizerResultTtlInSeconds = properties['AuthorizerResultTtlInSeconds'] as number;
+      changed = true;
     }
     // EnableSimpleResponses is REQUEST-authorizer-only — UpdateAuthorizer
     // rejects it (even `false`) on a JWT authorizer, so it cannot be blindly
@@ -2948,20 +2923,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       changed = true;
     }
     // IdentityValidationExpression: CloudFormation KEEPS the live value when it is removed (real
-    // CloudFormation A/B, #5004), so a deploy sends nothing on removal.
-    // `cdkd drift --revert` (`restoreFromAws`) clears an out-of-band value with
-    // `''`, because the readback omits the key when the baseline never set it.
-    {
-      const r = this.keepOrClearableUpdate(
-        restoreFromAws,
-        properties['IdentityValidationExpression'] as string | undefined,
-        previousProperties['IdentityValidationExpression'] as string | undefined,
-        ''
-      );
-      if (r.changed) {
-        input.IdentityValidationExpression = r.value;
-        changed = true;
-      }
+    // CloudFormation A/B, #5004), so removal sends nothing — an omitted member
+    // means "unchanged" in this API. Pass through on change only.
+    if (
+      properties['IdentityValidationExpression'] !== undefined &&
+      properties['IdentityValidationExpression'] !==
+        previousProperties['IdentityValidationExpression']
+    ) {
+      input.IdentityValidationExpression = properties['IdentityValidationExpression'] as string;
+      changed = true;
     }
 
     if (!changed) {
@@ -3027,21 +2997,6 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const resolved = next !== undefined ? next : previous !== undefined ? resetValue : undefined;
     const changed = resolved !== undefined && !this.deepEqual(resolved, previous);
     return { changed, value: resolved };
-  }
-
-  /**
-   * `clearableUpdate` on `cdkd drift --revert` (`restoreFromAws`); on a deploy
-   * it passes through on change only, because CloudFormation KEEPS the live
-   * value of these properties when they are removed (#5004).
-   */
-  private keepOrClearableUpdate<T>(
-    restoreFromAws: boolean,
-    next: T | undefined,
-    previous: T | undefined,
-    resetValue: T
-  ): { changed: boolean; value: T | undefined } {
-    if (restoreFromAws) return this.clearableUpdate(next, previous, resetValue);
-    return { changed: next !== undefined && next !== previous, value: next };
   }
 
   /**
