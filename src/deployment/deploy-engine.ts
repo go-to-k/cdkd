@@ -1009,9 +1009,9 @@ export class DeployEngine {
   private inlinePolicyWriters = new Map<string, InlinePolicyWrite>();
 
   /**
-   * This deploy's #1852 heal, built over {@link healBaseline} by
-   * {@link rebaseline}: replaced whenever the baseline is, so a reused engine never serves last deploy's
-   * read nor persists it against today's records.
+   * This deploy's #1852 heal, holding {@link healBaseline}; replaced by
+   * {@link rebaseline}, so a reused engine never serves last deploy's read
+   * nor persists it against today's records.
    * @internal
    */
   attributeHealer: AttributeHealer;
