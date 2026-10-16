@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1174** (**1172** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **38**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -53,7 +53,6 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `ECSProvider` (ecs-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |
-| `ElastiCacheProvider` (elasticache-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `ELBv2Provider` (elbv2-provider.ts) | `computed key in canonicalizeDriftPair()`, `computed key in updateListener()`, `computed key in updateLoadBalancer()`, `computed key in updateTargetGroup()`, `Object.keys(...) in updateLoadBalancer()` |
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |

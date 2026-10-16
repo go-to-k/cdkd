@@ -1442,6 +1442,11 @@ reset it to its default — so a property with no such reset (FSx
 own warning, never into the shared line. A type without that entry is never
 warned about, because cdkd cannot say what its `update()` does.
 
+Measured per type (#5004): ElastiCache `CacheCluster` KEEPS
+`SnapshotRetentionLimit`, `AutoMinorVersionUpgrade` and `NotificationTopicArn`
+(so `update()` sends nothing for a removed one) and RESETS
+`LogDeliveryConfigurations` (delivery disabled).
+
 `drift --revert` injects nothing: its previous side is an AWS readback, not a
 template, so `UpdateContext.removedProperties` is empty there. A local
 `clearOnUpdateRemoval` still reads that readback, which is what reverts a
