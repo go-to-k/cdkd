@@ -3627,10 +3627,10 @@ export async function loadStateForRoutedStacks(
  * `${AWS::AccountId}`, the `${AWS::URLSuffix}` / `${AWS::Partition}`
  * derivation, and the `${AWS::Region}` value itself.
  *
- * `${AWS::AccountId}` follows the SOURCE the stack was read from (issue
- * go-to-k/cdkd#3230): under `--from-state` it is the account of the identity
- * that read the state record — the `--role-arn` role when one is published —
- * and under `--from-cfn-stack` it stays the caller's own.
+ * `${AWS::AccountId}` follows where the stack was read (issue
+ * go-to-k/cdkd#5001): under `--from-state` it is the DEPLOY account (the
+ * `--role-arn` role's when one is published); under `--from-cfn-stack`, which
+ * reads as the caller and sees only the caller's account, it is the caller's.
  *
  * @internal exported for unit tests.
  */
@@ -3648,26 +3648,26 @@ export async function resolvePseudoParametersForStartApi(
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     let sts: InstanceType<typeof STSClient>;
-    if (options.fromState) {
-      // cdkd-local-role-identity: `--from-state` read the state record through
-      // `awsClientDefaults`, so as a `--role-arn` role when one is published,
-      // and `ExpectedBucketOwner` (best-effort) pins that bucket to the reader's own account
-      // — the account the stack lives in (issue go-to-k/cdkd#3230). Only the
+    if (!options.fromState) {
+      // `ignoreAssumedRole` -- `${AWS::AccountId}` follows WHERE THE STACK WAS READ
+      // (go-to-k/cdkd#5001): `--from-cfn-stack` reads it as the CALLER (#3240) and
+      // CloudFormation sees only the caller's own account, so the account is the
+      // caller's, never a `--role-arn` assumed for cdkd's own calls.
+      sts = new STSClient({
+        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
+        ...(region && { region }),
+        ...(options.profile && { profile: options.profile }),
+      });
+    } else {
+      // cdkd-local-role-identity: `--from-state` read the state record as the `--role-arn`
+      // role when one is published (go-to-k/cdkd#3230), so `${AWS::AccountId}` is the DEPLOY
+      // account, asked through `awsClientDefaults` as that role (go-to-k/cdkd#5001). Only the
       // account ID is taken; no credential reaches the emulated function.
       sts = new STSClient({
         ...awsClientDefaults({ profile: options.profile }),
         ...(region && { region }),
         // `--profile` is the identity both state sources read through when no
         // role is published, so the account must be asked as it too.
-        ...(options.profile && { profile: options.profile }),
-      });
-    } else {
-      // `ignoreAssumedRole` -- under `--from-cfn-stack` the `${AWS::AccountId}` the
-      // emulated function sees stays the caller's own, never a `--role-arn`
-      // assumed for cdkd's own calls. See that option's JSDoc.
-      sts = new STSClient({
-        ...awsClientDefaults({ profile: options.profile, ignoreAssumedRole: true }),
-        ...(region && { region }),
         ...(options.profile && { profile: options.profile }),
       });
     }

@@ -8,7 +8,10 @@
  * the caller only once the assume is RECORDED with cdk-local, which is what
  * this adds: the caller's pre-assume snapshot, taken by `applyRoleArnIfSet`
  * before it overwrote `AWS_*`, is published through cdk-local's
- * `recordAssumedRole` (go-to-k/cdkd#3240, go-to-k/cdk-local#783).
+ * `recordAssumedRole` (go-to-k/cdkd#3240, go-to-k/cdk-local#783). The assumed
+ * role's own credentials go as the second argument, so cdk-local's
+ * `${AWS::AccountId}` / account lookups resolve as the role, i.e. the DEPLOY
+ * account (go-to-k/cdkd#5001, cdk-local 0.153.0+).
  *
  * The four engine commands (`start-service` / `start-alb` / `start-cloudfront`
  * / `start-agentcore`) do not come here: cdk-local's own `applyRoleArnIfSet`
@@ -29,6 +32,11 @@ export async function applyRoleArnForLocal(
   opts: Parameters<typeof applyRoleArnIfSet>[0]
 ): Promise<void> {
   await applyRoleArnIfSet(opts);
-  if (getAssumedRoleCredentials() === undefined) return;
-  recordAssumedRole(getPreAssumeEnvCredentials());
+  const role = getAssumedRoleCredentials();
+  if (role === undefined) return;
+  recordAssumedRole(getPreAssumeEnvCredentials(), {
+    accessKeyId: role.accessKeyId,
+    secretAccessKey: role.secretAccessKey,
+    sessionToken: role.sessionToken,
+  });
 }

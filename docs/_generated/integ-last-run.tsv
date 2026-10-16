@@ -216,7 +216,7 @@ legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 list-parameters	2026-10-07T19:50:43Z	PASS	105	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
 local-ecs-service-connect	2026-10-15T21:05:40Z	PASS	20	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
-local-engine-role-identity	2026-10-16T08:26:14Z	PASS	81	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
+local-engine-role-identity	2026-10-16T14:33:16Z	PASS	85	verify.sh	rc ok, docker sweep clean, orph clean, cdk-local 0.153.1 follows-the-reader
 local-invoke	2026-10-15T21:06:08Z	PASS	25	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-invoke-agentcore	2026-10-16T08:26:14Z	PASS	90	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
 local-invoke-agentcore-from-state	2026-10-15T21:08:49Z	PASS	60	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean, own state bucket
@@ -232,7 +232,7 @@ local-invoke-provided	2026-10-15T21:17:38Z	PASS	25	verify.sh	PR #4967 cdk-local 
 local-invoke-python	2026-10-15T21:18:06Z	PASS	25	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-invoke-ruby	2026-10-15T21:18:39Z	PASS	30	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-invoke-stage	2026-10-15T21:18:57Z	PASS	15	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
-local-run-task	2026-10-16T08:26:14Z	PASS	20	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
+local-run-task	2026-10-16T14:33:16Z	PASS	33	verify.sh	rc ok, docker sweep clean, orph clean, cdk-local 0.153.1 follows-the-reader
 local-run-task-awsvpc	2026-10-15T21:19:34Z	PASS	10	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-run-task-cdkd-assets	2026-10-15T21:19:56Z	PASS	15	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-run-task-from-state	2026-10-15T21:22:29Z	PASS	145	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean, own state bucket

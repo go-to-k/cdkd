@@ -8,17 +8,18 @@ import {
 import { getLogger } from '../../../src/utils/logger.js';
 
 /**
- * Issue go-to-k/cdkd#3230: `${AWS::AccountId}` in the emulated workload's
- * environment follows the SOURCE the stack was read from, not whichever
- * identity happens to answer STS.
+ * Issues go-to-k/cdkd#3230 and #5001: `${AWS::AccountId}` in the emulated
+ * workload's environment follows WHERE THE STACK WAS READ.
  *
- * - `--from-state` reads cdkd's state record AS the `--role-arn` role when one
- *   is published (and `ExpectedBucketOwner` pins that bucket to the reader's
- *   account), so the account is the ROLE's.
- * - `--from-cfn-stack` keeps the CALLER's own account.
+ * - `--from-state` and no state source (run-task image `Fn::Sub`, bare
+ *   `--assume-task-role`; `none`): the DEPLOY account, i.e. the lookup runs AS the
+ *   `--role-arn` role when one is published.
+ * - `--from-cfn-stack`: the stack is read as the CALLER and CloudFormation sees only
+ *   the caller's own account, so the account is the caller's.
+ * - Without `--role-arn` every source is the caller's own (`--profile` or default chain).
  *
  * Each of the five resolvers on the four commands is driven through its own
- * entry point in both polarities. The STS mock answers with the account that
+ * entry point per state source. The STS mock answers with the account that
  * belongs to the credentials the client was BUILT with, so the assertion is on
  * the account the workload would see, not on a config key that merely exists.
  * The case that can tell the two apart is the one with a role published and
@@ -129,7 +130,7 @@ function stubProvider(label: string): never {
   } as never;
 }
 
-type Source = 'from-state' | 'from-cfn-stack';
+type Source = 'from-state' | 'from-cfn-stack' | 'none';
 
 function sourceOptions(source: Source, profile?: string): Record<string, unknown> {
   return {
@@ -164,7 +165,7 @@ const resolvers: Array<{
       (
         await buildEcsImageResolutionContext(
           ecsStack(),
-          stubProvider(source === 'from-state' ? '--from-state' : '--from-cfn-stack'),
+          stubProvider(source === 'from-cfn-stack' ? '--from-cfn-stack' : '--from-state'),
           sourceOptions(source, profile) as never
         )
       ).context?.pseudoParameters?.accountId,
@@ -173,10 +174,8 @@ const resolvers: Array<{
     name: 'local run-task: resolvePlaceholderAccount (bare --assume-task-role)',
     resolve: async (source, profile) => {
       const arn = await resolvePlaceholderAccount('arn:aws:iam::${AWS::AccountId}:role/TaskRole', {
-        region: 'us-east-1',
-        profile,
-        fromState: source === 'from-state',
-      });
+        ...sourceOptions(source, profile),
+      } as never);
       return /^arn:aws:iam::(\d{12}):role\/TaskRole$/.exec(arn)?.[1];
     },
   },
@@ -186,7 +185,7 @@ const resolvers: Array<{
       (
         await buildAgentCoreImageContext(
           agentCoreStack(),
-          stubProvider(source === 'from-state' ? '--from-state' : '--from-cfn-stack'),
+          stubProvider(source === 'from-cfn-stack' ? '--from-cfn-stack' : '--from-state'),
           sourceOptions(source, profile) as never
         )
       ).context?.pseudoParameters?.accountId,
@@ -230,7 +229,7 @@ function publishRole(): void {
   setAssumedRoleCredentials(ROLE);
 }
 
-describe('${AWS::AccountId} follows the state source the stack was read from (issue #3230)', () => {
+describe('${AWS::AccountId} follows where the stack was read (issues #3230, #5001)', () => {
   describe.each(resolvers)('$name', ({ resolve }) => {
     it('--from-state with --role-arn: the account the state was read in (the role)', async () => {
       publishRole();
@@ -239,17 +238,28 @@ describe('${AWS::AccountId} follows the state source the stack was read from (is
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it("--from-cfn-stack with --role-arn: the caller's own account, never the role's", async () => {
+    it("--from-cfn-stack with --role-arn: the CALLER's account (CloudFormation sees only it), never the role's", async () => {
       publishRole();
       await expect(resolve('from-cfn-stack')).resolves.toBe(CALLER_ACCOUNT);
       expect(stsClientConfigs).toHaveLength(1);
+      expect((stsClientConfigs[0]?.['credentials'] as { accessKeyId?: string }).accessKeyId).toBe(
+        CALLER.accessKeyId
+      );
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
-    it('with no --role-arn, both sources resolve the same default-chain account as before', async () => {
+    it('--from-state with --role-arn: the role credentials build the STS client', async () => {
+      publishRole();
+      await resolve('from-state');
+      expect((stsClientConfigs[0]?.['credentials'] as { accessKeyId?: string }).accessKeyId).toBe(
+        ROLE.accessKeyId
+      );
+    });
+
+    it('with no --role-arn, every source resolves the same default-chain account as before', async () => {
       await expect(resolve('from-state')).resolves.toBe(DEFAULT_CHAIN_ACCOUNT);
       await expect(resolve('from-cfn-stack')).resolves.toBe(DEFAULT_CHAIN_ACCOUNT);
-      // Byte-identical client configs: the two arms differ only once a role exists.
+      // Byte-identical client configs: the arms differ only once a role exists.
       expect(stsClientConfigs).toHaveLength(2);
       expect(stsClientConfigs[0]).toEqual(stsClientConfigs[1]);
     });
@@ -259,12 +269,32 @@ describe('${AWS::AccountId} follows the state source the stack was read from (is
       await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(PROFILE_ACCOUNT);
     });
 
-    it('with --profile AND --role-arn, --from-state still takes the role the state was read as', async () => {
+    it('with --profile AND --role-arn: --from-state takes the role, --from-cfn-stack the caller (--profile)', async () => {
       publishRole();
       await expect(resolve('from-state', 'dev')).resolves.toBe(ROLE_ACCOUNT);
       await expect(resolve('from-cfn-stack', 'dev')).resolves.toBe(PROFILE_ACCOUNT);
     });
   });
+
+  // Only run-task resolves with no state source (image Fn::Sub, bare
+  // --assume-task-role): the stack is the deployed one, so the DEPLOY account.
+  // invoke-agentcore looks the account up only when a state provider exists.
+  describe.each(resolvers.filter((r) => /run-task/.test(r.name)))(
+    '$name, no state source',
+    ({ resolve }) => {
+      it('with --role-arn: the role account, built with the role credentials', async () => {
+        publishRole();
+        await expect(resolve('none')).resolves.toBe(ROLE_ACCOUNT);
+        expect((stsClientConfigs[0]?.['credentials'] as { accessKeyId?: string }).accessKeyId).toBe(
+          ROLE.accessKeyId
+        );
+      });
+
+      it('with no --role-arn: the default-chain account, unchanged', async () => {
+        await expect(resolve('none')).resolves.toBe(DEFAULT_CHAIN_ACCOUNT);
+      });
+    }
+  );
 });
 
 describe('an STS failure is warned under the state-source flag actually in use', () => {
