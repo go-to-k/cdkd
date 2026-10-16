@@ -115,7 +115,7 @@ attributes are handler `Data` / child outputs, not an AWS read-back.
 
 ### Single flight, bounds, failure
 
-`DeployEngine.attributeHeals` is a per-deploy `Map<logicalId + physicalId,
+`AttributeHealer`'s `heals` is a per-deploy `Map<logicalId + physicalId,
 Promise<outcome>>` on the ENGINE instance (one engine per stack; nothing
 module-global). Holding the promise makes concurrent misses share one read;
 never deleting an entry bounds it to ONE read per record per deploy, success or
@@ -137,7 +137,7 @@ for the deploy, so no retry inside it can change the verdict.
 
 ### Persistence
 
-The read-back is kept in `DeployEngine.healedAttributes` and merged at
+The read-back is kept in `AttributeHealer`'s `healed` map and merged at
 `redactStateForPersist` — the choke point every `saveState` of the engine passes
 through — BEFORE `scrubResourceRecord`, so a healed value takes the same
 redaction pass as a provider-recorded one. Consequences:

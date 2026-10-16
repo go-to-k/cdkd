@@ -34,7 +34,7 @@ import {
 /**
  * Read `resource`'s attributes through `provider.import()` with
  * `knownPhysicalId` and return what the read observed. The ONE copy of the
- * read: `DeployEngine.readStaleAttributes` calls it too, so a guard or masking
+ * read: `AttributeHealer.read` calls it too, so a guard or masking
  * rule cannot land in one command's read and not the other's
  * (go-to-k/cdkd#4196). Each command still serves its OWN read's answer. REJECTS when `import()` does, and for a
  * provider that answered for a different physical id;

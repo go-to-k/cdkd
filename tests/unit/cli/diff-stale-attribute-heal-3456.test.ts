@@ -318,7 +318,7 @@ describe('cdkd diff heals a stale attribute map read-only (go-to-k/cdkd#3456)', 
       registryRegion: 'eu-west-1',
       scopeRegion: 'eu-west-1',
     });
-    // Routed as `DeployEngine.readStaleAttributes` routes it: by the record's
+    // Routed as `AttributeHealer.read` routes it: by the record's
     // own type and `provisionedBy`, the record as its own baseline (#3713).
     expect(routingInputs).toEqual([
       {

@@ -264,7 +264,7 @@ So a `held` producer serves the declared attributes through a SIDE map for
 this run:
 
 - **Source.** The #1852 read primitive, `provider.import({ knownPhysicalId })`
-  (`readStaleAttributes` in `deploy-engine/heal.ts`). It is read-only, memoized per record per
+  (`AttributeHealer.read` in `deploy-engine/attribute-healer.ts`). It is read-only, memoized per record per
   deploy, and it returns the ATTRIBUTE map. The `held` readback
   (`readCurrentState`, `src/types/resource.ts:1142-1148`) returns properties,
   whose keys coincide with attribute names only by accident (SSM `Value`, but
@@ -278,7 +278,7 @@ this run:
 - **Never in the record.** The resolver's `Fn::GetAtt` reads the side map the
   way it reads the `attributeHealer` channel (`ResolverContext.attributeHealer`,
   `intrinsic-function-resolver.ts:1667`). It never goes through
-  `healedAttributes` / `withHealedAttributes`, which the persist merge reads
+  `AttributeHealer.withHealedAttributes`, which the persist merge reads
   (`deploy-engine.ts:2799`). So `stateResources[producer].attributes` is never
   written by this path. This matters for a `Number` or 1-3 character value,
   which the value arm would not re-mask on the way out.
