@@ -716,7 +716,7 @@ describe('IAMRoleProvider', () => {
       // Issue #1160: a removal reset is an UPDATE value. A rename that also
       // drops MaxSessionDuration creates the new role from the TEMPLATE bag,
       // not one carrying the injected reset.
-      it('a rename that also removes MaxSessionDuration creates the role without the reset', async () => {
+      it('a rename that also removes Description creates the role without the reset', async () => {
         mockSend.mockResolvedValueOnce({
           Role: { RoleName: 'my-role', Arn: 'arn:aws:iam::0:role/my-role', RoleId: 'r2' },
         }); // create()
@@ -727,13 +727,13 @@ describe('IAMRoleProvider', () => {
           'MyStack-my-role',
           'AWS::IAM::Role',
           { RoleName: 'my-role', AssumeRolePolicyDocument: DOC },
-          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 7200 }
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, Description: 'old' }
         );
 
         const create = sent(CreateRoleCommand);
         expect(create).toHaveLength(1);
         expect((create[0] as { input: Record<string, unknown> }).input).not.toHaveProperty(
-          'MaxSessionDuration'
+          'Description'
         );
       });
 
@@ -747,15 +747,15 @@ describe('IAMRoleProvider', () => {
           'L',
           'MyStack-my-role',
           'AWS::IAM::Role',
-          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 3600 },
-          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, MaxSessionDuration: 7200 },
-          { removedProperties: new Set(['MaxSessionDuration']) }
+          { RoleName: 'my-role', AssumeRolePolicyDocument: DOC, Description: '' },
+          { RoleName: 'MyStack-my-role', AssumeRolePolicyDocument: DOC, Description: 'old' },
+          { removedProperties: new Set(['Description']) }
         );
 
         const create = sent(CreateRoleCommand);
         expect(create).toHaveLength(1);
         expect((create[0] as { input: Record<string, unknown> }).input).not.toHaveProperty(
-          'MaxSessionDuration'
+          'Description'
         );
       });
 
@@ -925,7 +925,7 @@ describe('IAMRoleProvider', () => {
         };
       };
 
-      it('removal: Description and MaxSessionDuration present before, absent now -> explicit resets ("" / 3600)', async () => {
+      it('removal: Description is reset to "" but MaxSessionDuration is KEPT (no member sent; issue #5004)', async () => {
         mockUpdateFlow();
 
         await provider.update('L', 'my-role', 'AWS::IAM::Role', baseProps, {
@@ -935,10 +935,11 @@ describe('IAMRoleProvider', () => {
         });
 
         const input = findUpdateInput();
-        // Merge semantics: omitting the fields would silently keep the
-        // old live values, so removal must send the CFn defaults.
+        // CloudFormation resets a removed Description but KEEPS a removed
+        // MaxSessionDuration (real A/B, go-to-k/cdkd#5004); an omitted
+        // UpdateRole member means "unchanged".
         expect(input.Description).toBe('');
-        expect(input.MaxSessionDuration).toBe(3600);
+        expect(input).not.toHaveProperty('MaxSessionDuration');
       });
 
       it('never present: fields absent from both sides stay absent from the input (no spurious reset)', async () => {
@@ -951,7 +952,7 @@ describe('IAMRoleProvider', () => {
         expect(input).not.toHaveProperty('MaxSessionDuration');
       });
 
-      it('mixed: kept Description passes through unchanged while removed MaxSessionDuration resets to 3600', async () => {
+      it('mixed: kept Description passes through unchanged while removed MaxSessionDuration is not sent', async () => {
         mockUpdateFlow();
 
         await provider.update(
@@ -964,7 +965,7 @@ describe('IAMRoleProvider', () => {
 
         const input = findUpdateInput();
         expect(input.Description).toBe('kept-description');
-        expect(input.MaxSessionDuration).toBe(3600);
+        expect(input).not.toHaveProperty('MaxSessionDuration');
       });
     });
 

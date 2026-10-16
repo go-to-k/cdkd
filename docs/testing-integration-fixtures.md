@@ -124,7 +124,7 @@ CDKD_TEST_FAIL=true node ../../../dist/cli.js deploy \
 
 The removal mode exists to catch one specific provider bug. Suppose a user sets
 a property, deploys, deletes the property from the template, and deploys again.
-CloudFormation resets a removed property to its default. Most AWS update APIs
+CloudFormation resets most removed properties to their default, but KEEPS some (measured per property, go-to-k/cdkd#5004). Most AWS update APIs
 read a missing field as "no change". So a provider that passes properties
 straight through keeps the old value in AWS, reports success, and drops the
 field from state. After that, `cdkd diff` reports no changes.

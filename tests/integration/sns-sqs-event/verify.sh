@@ -12,7 +12,8 @@
 # Then re-deploys with CDKD_TEST_REMOVAL=true (drops SqsManagedSseEnabled from
 # the SSE-removal queue — issue #1160 sqs batch — AND the DeliveryStatusLogging
 # block from the delivery-status topic — issue #1160 sns batch) and asserts the
-# live queue resets to the SQS/CFn default (SSE on) and the topic's
+# live queue RETAINS SqsManagedSseEnabled=false (CloudFormation keeps it on
+# removal, issue #5004 A/B) and the topic's
 # per-protocol feedback attributes reset (RoleArns cleared, SampleRate 0 — the
 # CFn-parity removal shape, live A/B'd 2026-08-10) instead of silently keeping
 # the old values. Then destroys and confirms a clean teardown.
@@ -405,30 +406,30 @@ done
 echo "    OK: the two-topic TopicPolicy is on both out-of-stack topics"
 
 # --- Phase 2: removal-reset redeploy (issue #1160 sqs batch) --------------
-echo "==> Phase 2: re-deploy dropping SqsManagedSseEnabled (removal reset)"
+echo "==> Phase 2: re-deploy dropping SqsManagedSseEnabled (must be RETAINED, issue #5004)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
-# Pre-fix the provider passed the absent attribute through and SQS kept SSE
-# off (SetQueueAttributes merges); post-fix the removal sends the explicit
-# reset and the queue returns to the SQS/CFn default (SSE-SQS on).
-# SetQueueAttributes documents up to 60s propagation — poll with a bounded
-# retry so a read-after-write lag cannot flake the run as a false FAIL.
+# CloudFormation KEEPS SqsManagedSseEnabled on removal (issue #5004 A/B), so
+# cdkd sends no reset and the queue stays at the baseline 'false'. A wrong
+# reset only becomes visible once SetQueueAttributes propagates (documented up
+# to 60s), so sample the attribute across that window and fail if it ever reads
+# 'true'.
 SSE_P2=""
 for _i in 1 2 3 4 5 6; do
   SSE_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
     --attribute-names SqsManagedSseEnabled --region "${REGION}" \
     --query 'Attributes.SqsManagedSseEnabled' --output text)
-  [ "${SSE_P2}" = "true" ] && break
+  if [ "${SSE_P2}" != "false" ]; then break; fi
   sleep 10
 done
 SSE_CREATED_P2=$(aws sqs get-queue-attributes --queue-url "${SSE_QUEUE_URL}" \
   --attribute-names CreatedTimestamp --region "${REGION}" \
   --query 'Attributes.CreatedTimestamp' --output text)
-if [ "${SSE_P2}" != "true" ]; then
-  echo "FAIL: expected SqsManagedSseEnabled=true after the removal redeploy (waited 60s), got '${SSE_P2}'" >&2
+if [ "${SSE_P2}" != "false" ]; then
+  echo "FAIL: expected SqsManagedSseEnabled to be RETAINED as false after the removal redeploy (CloudFormation keeps it, issue #5004), got '${SSE_P2}'" >&2
   exit 1
 fi
 # Replacement guard: the removal must be an in-place UPDATE. A replacement
@@ -439,7 +440,7 @@ if [ "${SSE_CREATED_P1}" != "${SSE_CREATED_P2}" ]; then
   echo "FAIL: SSE-removal queue was REPLACED (CreatedTimestamp ${SSE_CREATED_P1} -> ${SSE_CREATED_P2})" >&2
   exit 1
 fi
-echo "    OK: SqsManagedSseEnabled reset to true in place (CreatedTimestamp unchanged)"
+echo "    OK: SqsManagedSseEnabled retained as false in place (CreatedTimestamp unchanged)"
 
 # --- Assertion 2b: DeliveryStatusLogging removal reset (issue #1160 sns) --
 # Pre-fix the provider iterated only the (now empty) desired list and the

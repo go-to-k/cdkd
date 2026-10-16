@@ -1547,6 +1547,13 @@ Checklist when writing or reviewing an `update()`:
   `ApiKeyRequired` was not measured and is still reset (#1160). The map keys
   above are still cleared by `cdkd drift --revert` (`desiredFromAwsReadback`),
   which must remove a console-added key.
+  Also real CloudFormation A/B, go-to-k/cdkd#5004: SQS `SqsManagedSseEnabled` /
+  `DeduplicationScope` / `FifoThroughputLimit`, Secrets Manager `Description` /
+  `KmsKeyId`, IAM Role `MaxSessionDuration` and Lambda Url `InvokeMode` are KEPT
+  at the live value on removal, so those providers send nothing for them. SQS's
+  other attributes, IAM Role `Description` and Lambda Url `Cors` are RESET, and
+  keep their reset. A KEPT property is not recorded after removal (state follows
+  the template), so `cdkd diff` stays clean while the live value remains.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit

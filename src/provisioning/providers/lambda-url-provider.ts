@@ -397,20 +397,16 @@ export class LambdaUrlProvider implements ResourceProvider {
       FunctionName: physicalId,
       ...(authType !== undefined && { AuthType: authType }),
     };
-    // issue #1160: UpdateFunctionUrlConfig uses merge semantics (live-probed
-    // 2026-07-27: an update omitting InvokeMode / Cors retains the live
-    // values), while CFn resets a property removed from the template to its
-    // default. Route both mutable optional fields through
-    // clearOnUpdateRemoval with the live-probed clear shapes:
-    //   InvokeMode -> 'BUFFERED' (the documented CFn/API default)
-    //   Cors       -> {} (an empty Cors object clears CORS entirely —
-    //                 GetFunctionUrlConfig omits the field afterwards)
-    const invokeMode = clearOnUpdateRemoval(
-      properties['InvokeMode'] as InvokeMode | undefined,
-      previousProperties['InvokeMode'] as InvokeMode | undefined,
-      'BUFFERED'
-    );
+    // UpdateFunctionUrlConfig uses merge semantics (live-probed 2026-07-27:
+    // an update omitting InvokeMode / Cors retains the live values). Per the
+    // real CloudFormation A/B in go-to-k/cdkd#5004, a REMOVED `Cors` is reset
+    // (below, with the `{}` clear shape) but a removed `InvokeMode` is KEPT at
+    // its live value, so InvokeMode is sent only while the template declares it.
+    const invokeMode = properties['InvokeMode'] as InvokeMode | undefined;
     if (invokeMode !== undefined) updateParams.InvokeMode = invokeMode;
+    // Cors: CloudFormation RESETS a removed Cors (go-to-k/cdkd#5004 A/B);
+    // an empty Cors object clears CORS entirely (GetFunctionUrlConfig omits
+    // the field afterwards).
     // Class 2 sanitize: `readCurrentState` always-emits a `Cors` placeholder
     // with empty arrays for `AllowOrigins` / `AllowMethods` / `AllowHeaders`
     // / `ExposeHeaders` so a console-side CORS toggle on a URL configured

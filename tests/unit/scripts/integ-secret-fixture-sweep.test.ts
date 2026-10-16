@@ -957,7 +957,6 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it
       // reads its arguments and throws or returns).
       '../tag-list.js',
-      '../update-removal.js',
       '@aws-sdk/client-secrets-manager',
       'node:util',
     ]);

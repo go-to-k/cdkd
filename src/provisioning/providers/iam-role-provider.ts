@@ -130,17 +130,17 @@ export class IAMRoleProvider implements ResourceProvider {
 
   /**
    * Issue #1160: IAM `UpdateRole` has merge semantics — an ABSENT input field
-   * means "no change" (live-verified 2026-07-27) — while CFn resets a
-   * template-removed property to its default.
+   * means "no change" (live-verified 2026-07-27). CFn resets a
+   * template-removed `Description` but KEEPS a removed `MaxSessionDuration`
+   * at its live value (real CloudFormation A/B, go-to-k/cdkd#5004), so only
+   * `Description` is reset here.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
     [
       'AWS::IAM::Role',
       new Map<string, unknown>([
-        // The AWS-documented clear sentinel.
+        // The AWS-documented clear sentinel; CFn resets it (#5004 A/B).
         ['Description', ''],
-        // The IAM / CFn default.
-        ['MaxSessionDuration', 3600],
       ]),
     ],
   ]);
@@ -159,6 +159,9 @@ export class IAMRoleProvider implements ResourceProvider {
         'ManagedPolicyArns',
         'Policies',
         'Tags',
+        // CFn keeps the live value on removal, and so does `update()`
+        // (sends nothing; go-to-k/cdkd#5004 A/B).
+        'MaxSessionDuration',
       ]),
     ],
   ]);
