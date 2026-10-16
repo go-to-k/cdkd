@@ -980,9 +980,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        log.mask(
-          `Failed to delete IAM user ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        log.mask(`Failed to delete IAM user ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,
@@ -1585,9 +1583,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        log.mask(
-          `Failed to delete IAM group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        log.mask(`Failed to delete IAM group ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,
@@ -2203,7 +2199,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       // The mark survives `maskError`'s clone of the chain.
       const failure = new ProvisioningError(
-        `Failed to delete IAM UserToGroupAddition ${logicalId}: ${mask(error instanceof Error ? error.message : String(error))}`,
+        `Failed to delete IAM UserToGroupAddition ${logicalId}: ${mask(describeAwsFailure(error).detail)}`,
         resourceType,
         logicalId,
         physicalId,

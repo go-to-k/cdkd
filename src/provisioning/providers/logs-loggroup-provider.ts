@@ -1436,7 +1436,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete log group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete log group ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

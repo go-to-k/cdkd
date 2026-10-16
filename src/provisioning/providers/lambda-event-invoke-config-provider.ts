@@ -35,6 +35,7 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /** `value` when it is a string, else `undefined` (a derived-name pair's name side). */
 function stringOrUndefined(value: unknown): string | undefined {
@@ -514,7 +515,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Lambda EventInvokeConfig ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Lambda EventInvokeConfig ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

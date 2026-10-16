@@ -383,7 +383,7 @@ export class S3VectorsProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create S3 VectorBucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create S3 VectorBucket ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -427,7 +427,7 @@ export class S3VectorsProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete S3 VectorBucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete S3 VectorBucket ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

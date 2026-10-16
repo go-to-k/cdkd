@@ -1356,7 +1356,7 @@ export class GlueProvider implements ResourceProvider {
       // update failure. Only the template path reaches here: given the warn
       // callback, every arm of the builder warns instead of throwing.
       throw new ProvisioningError(
-        `${v(error instanceof Error ? error.message : String(error))}. Nothing was applied to ` +
+        `${v(describeAwsFailure(error).detail)}. Nothing was applied to ` +
           `Glue Database ${logicalId}; fix the template value`,
         resourceType,
         logicalId,
@@ -1468,7 +1468,7 @@ export class GlueProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         log.mask(
-          `Failed to delete Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to delete Glue Database ${logicalId}: ${describeAwsFailure(error).detail}`
         ),
         resourceType,
         logicalId,
@@ -1936,9 +1936,7 @@ export class GlueProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        log.mask(
-          `Failed to delete Glue Table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        log.mask(`Failed to delete Glue Table ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,
@@ -3438,7 +3436,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Workflow ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Glue Workflow ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3777,7 +3775,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue SecurityConfiguration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Glue SecurityConfiguration ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4480,7 +4478,7 @@ export class GlueJobProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Glue Job ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -5139,9 +5137,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        log.mask(
-          `Failed to delete Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
-        ),
+        log.mask(`Failed to delete Glue Crawler ${logicalId}: ${describeAwsFailure(error).detail}`),
         resourceType,
         logicalId,
         physicalId,
@@ -5693,7 +5689,7 @@ export class GlueConnectionProvider implements ResourceProvider {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         log.mask(
-          `Failed to delete Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to delete Glue Connection ${logicalId}: ${describeAwsFailure(error).detail}`
         ),
         resourceType,
         logicalId,
@@ -6184,7 +6180,7 @@ export class GlueTriggerProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = new ProvisioningError(
-        `Failed to delete Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Glue Trigger ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

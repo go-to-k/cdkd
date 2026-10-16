@@ -395,7 +395,7 @@ export class SNSTopicProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create SNS topic ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         topicName,
@@ -453,7 +453,7 @@ export class SNSTopicProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update SNS topic ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -787,7 +787,7 @@ export class SNSTopicProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete SNS topic ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

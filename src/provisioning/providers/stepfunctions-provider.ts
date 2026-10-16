@@ -202,7 +202,7 @@ export class StepFunctionsProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Step Functions state machine ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Step Functions state machine ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         stateMachineName,
@@ -326,7 +326,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Step Functions state machine ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Step Functions state machine ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -367,7 +367,7 @@ export class StepFunctionsProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete Step Functions state machine ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete Step Functions state machine ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
