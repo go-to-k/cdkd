@@ -113,6 +113,18 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['EvaluatorConfig.LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig', ['ModelId']],
       ['EvaluatorConfig.LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig', ['ModelId']],
       ['EvaluatorConfig.LlmAsAJudge.RatingScale.Categorical', ['Definition', 'Label']],
+      [
+        'EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional',
+        ['DimensionInstruction', 'DimensionName', 'DimensionRatingScale'],
+      ],
+      [
+        'EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Categorical',
+        ['Definition', 'Label'],
+      ],
+      [
+        'EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical',
+        ['Definition', 'Label', 'Value'],
+      ],
       ['EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical', ['Definition', 'Label', 'Value']],
       ['Tags', ['Key', 'Value']],
     ]),
@@ -242,6 +254,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::CloudWatch::Alarm',
     new Map<string, readonly string[]>([
+      ['ActionConfiguration.AlarmTagsPropagation', ['Enabled']],
       ['Dimensions', ['Name', 'Value']],
       ['Metrics', ['Id']],
       ['Metrics.MetricStat', ['Metric', 'Period', 'Stat']],

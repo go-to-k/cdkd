@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Evaluator",
-  "generatedAt": "2026-10-13",
+  "generatedAt": "2026-10-16",
   "properties": [
     "CreatedAt",
     "Description",
@@ -50,6 +50,9 @@
       "CodeBased",
       "Definition",
       "Derived",
+      "DimensionInstruction",
+      "DimensionName",
+      "DimensionRatingScale",
       "Effort",
       "InferenceConfig",
       "Instructions",
@@ -62,6 +65,7 @@
       "MaxTokens",
       "ModelConfig",
       "ModelId",
+      "MultiDimensional",
       "Numerical",
       "RatingScale",
       "Reasoning",
@@ -122,6 +126,17 @@
       "LlmAsAJudge.RatingScale.Categorical",
       "LlmAsAJudge.RatingScale.Categorical.Definition",
       "LlmAsAJudge.RatingScale.Categorical.Label",
+      "LlmAsAJudge.RatingScale.MultiDimensional",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionInstruction",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionName",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Categorical",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Categorical.Definition",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Categorical.Label",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical.Definition",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical.Label",
+      "LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical.Value",
       "LlmAsAJudge.RatingScale.Numerical",
       "LlmAsAJudge.RatingScale.Numerical.Definition",
       "LlmAsAJudge.RatingScale.Numerical.Label",
@@ -170,6 +185,16 @@
       "ModelConfig": "object"
     },
     "RatingScale": {
+      "Numerical": "array",
+      "Categorical": "array",
+      "MultiDimensional": "array"
+    },
+    "EvaluationDimension": {
+      "DimensionName": "scalar",
+      "DimensionInstruction": "scalar",
+      "DimensionRatingScale": "object"
+    },
+    "DimensionRatingScale": {
       "Numerical": "array",
       "Categorical": "array"
     },
@@ -233,6 +258,11 @@
       "ModelConfig",
       "RatingScale"
     ],
+    "EvaluationDimension": [
+      "DimensionInstruction",
+      "DimensionName",
+      "DimensionRatingScale"
+    ],
     "NumericalScaleDefinition": [
       "Definition",
       "Label",
@@ -285,6 +315,20 @@
       "Definition",
       "Label"
     ],
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional": [
+      "DimensionInstruction",
+      "DimensionName",
+      "DimensionRatingScale"
+    ],
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Categorical": [
+      "Definition",
+      "Label"
+    ],
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional.DimensionRatingScale.Numerical": [
+      "Definition",
+      "Label",
+      "Value"
+    ],
     "EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical": [
       "Definition",
       "Label",
@@ -318,6 +362,13 @@
     "EvaluatorConfig.LlmAsAJudge.RatingScale": "object",
     "EvaluatorConfig.LlmAsAJudge.RatingScale.Categorical": "array",
     "EvaluatorConfig.LlmAsAJudge.RatingScale.Categorical[]": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional": "array",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[]": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[].DimensionRatingScale": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[].DimensionRatingScale.Categorical": "array",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[].DimensionRatingScale.Categorical[]": "object",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[].DimensionRatingScale.Numerical": "array",
+    "EvaluatorConfig.LlmAsAJudge.RatingScale.MultiDimensional[].DimensionRatingScale.Numerical[]": "object",
     "EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical": "array",
     "EvaluatorConfig.LlmAsAJudge.RatingScale.Numerical[]": "object",
     "Tags": "array",
