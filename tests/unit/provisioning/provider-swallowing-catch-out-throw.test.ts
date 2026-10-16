@@ -454,13 +454,16 @@ const swallowing = all.filter(
  * `String(err)` carries), so a downstream classifier that matches AWS's wording
  * sees the same text it saw before.
  *
- * A RATCHET, not a zero: each file may hold at most the count recorded here, a
- * file absent from the map holds none, and the only way to edit the map is to
- * delete an entry or lower its number. The remaining entries are files another
- * open PR or contributor claim holds, or slices of #3341 not yet merged.
+ * An EXACT ratchet, not a zero: a file's rethrowing count must EQUAL its entry
+ * here (a file absent from the map must hold none). A count above the entry
+ * fails as "over ceiling"; a count below it, or an entry whose file now holds
+ * none, fails as LOOSE and the author must lower or delete the entry. So a
+ * sweep PR deletes (or lowers) its own entries in the same change, and the map
+ * only ever shrinks. The remaining entries are the not-yet-swept slices of
+ * #3341.
  */
 const RETHROWING_CEILING: Readonly<Record<string, number>> = {
-  // Held by open PRs / a contributor claim (go-to-k/cdkd#4988, #4990, #2319): swept by their owners.
+  // Swept in the final #3341 slice (#4997); that PR deletes these entries.
   "providers/elbv2-provider.ts": 3,
   "providers/glue-provider.ts": 9,
   "providers/iam-policy-provider.ts": 1,
@@ -468,7 +471,7 @@ const RETHROWING_CEILING: Readonly<Record<string, number>> = {
   "providers/lambda-event-invoke-config-provider.ts": 1,
   "providers/lambda-url-provider.ts": 2,
   "providers/logs-loggroup-provider.ts": 1,
-  // Swept in the slice 2 PR of #3341; drop the entry there.
+  // Swept in #4995; that PR deletes these entries.
   "providers/codecommit-repository-provider.ts": 4,
   "providers/cognito-provider.ts": 5,
   "providers/custom-resource-provider.ts": 3,
@@ -486,7 +489,7 @@ const RETHROWING_CEILING: Readonly<Record<string, number>> = {
   "providers/emr-instance-fleet-config-provider.ts": 2,
   "providers/emr-instance-group-config-provider.ts": 2,
   "providers/eventbridge-bus-provider.ts": 2,
-  // Swept in the slice 3 PR of #3341; drop the entry there.
+  // Swept in #4996; that PR deletes these entries.
   "providers/eventbridge-rule-provider.ts": 3,
   "providers/firehose-provider.ts": 3,
   "providers/fsx-filesystem-provider.ts": 4,
@@ -504,7 +507,7 @@ const RETHROWING_CEILING: Readonly<Record<string, number>> = {
   "providers/pipes-provider.ts": 3,
   "providers/rds-provider.ts": 9,
   "providers/route53-provider.ts": 9,
-  // Swept in the slice 4 PR of #3341; drop the entry there.
+  // Swept in #4997; that PR deletes these entries.
   "providers/s3-directory-bucket-provider.ts": 3,
   "providers/s3-tables-provider.ts": 12,
   "providers/s3-vectors-provider.ts": 2,
@@ -769,20 +772,28 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
     }
   });
 
-  it('holds the rethrowing population at or under its ratchet (#3341)', () => {
+  it('holds the rethrowing population at EXACTLY its ratchet (#3341)', () => {
     const rethrowing = files.flatMap((f) => collect(f, 'rethrowing'));
     const perFile = new Map<string, number>();
     for (const s of rethrowing) perFile.set(s.file, (perFile.get(s.file) ?? 0) + 1);
     const over = [...perFile]
       .filter(([file, n]) => n > (RETHROWING_CEILING[file] ?? 0))
-      .map(([file, n]) => `${file}: ${n} > ${RETHROWING_CEILING[file] ?? 0}`);
+      .map(([file, n]) => `${file}: ${n} > ${RETHROWING_CEILING[file] ?? 0} (over ceiling)`);
     expect(
       over,
       'a rethrowing handler must read its caught value through `describeAwsFailure(err).detail` ' +
         '(ternary spelling) or `safeStringify(err)` (bare spelling), not `String(err)`'
     ).toEqual([]);
-    // A floor: a scan that matched nothing would satisfy the cap above.
-    expect(rethrowing.length, 'the rethrowing scan found nothing').toBeGreaterThan(0);
+    // EXACT, not a cap: an entry above the real count is slack a later
+    // regression could fill unseen. The input is proven by the 'reads the whole
+    // subtree' test below, so a population of 0 (the end state of #3341) passes.
+    const loose = Object.entries(RETHROWING_CEILING)
+      .filter(([file, ceiling]) => (perFile.get(file) ?? 0) < ceiling)
+      .map(([file, ceiling]) => `${file}: ${perFile.get(file) ?? 0} < ${ceiling} (LOOSE)`);
+    expect(
+      loose,
+      'the ratchet entry is above the file\'s real count: lower it to that count, or delete the entry when the file holds none'
+    ).toEqual([]);
   });
 
   it('classifies the rethrowing population as the exact complement of the swallowing one', () => {
@@ -800,6 +811,14 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
     expect(probe(swallows, 'rethrowing')).toBe(0);
     expect(probe(rethrows, 'swallowing')).toBe(0);
     expect(probe(swallows, 'swallowing')).toBe(1);
+    // the ternary spelling, and the `.catch` handler form, each in a rethrowing host
+    const ternaryThrow =
+      'try { a(); } catch (e) {\n  throw new Error(`w: ${e instanceof Error ? e.message : String(e)}`);\n}';
+    const catchThrow = 'p.catch((e) => {\n  throw new Error(String(e));\n});';
+    expect(probe(ternaryThrow, 'rethrowing')).toBe(1);
+    expect(probe(ternaryThrow, 'swallowing')).toBe(0);
+    expect(probe(catchThrow, 'rethrowing')).toBe(1);
+    expect(probe(catchThrow, 'swallowing')).toBe(0);
   });
 
   it('refuses a STALE ratchet entry', () => {

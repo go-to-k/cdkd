@@ -41,6 +41,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-codebuild';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
+import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -895,9 +896,10 @@ describe('CodeBuildProvider rethrow of an unconvertible thrown value (#3341)', (
         () => undefined,
         (e: unknown) => e
       );
-    expect(rejected).toBeInstanceOf(Error);
+    expect(rejected).toBeInstanceOf(ProvisioningError);
     const message = (rejected as Error).message;
     expect(message).toContain('Failed to create CodeBuild Project MyProject');
+    expect(message).toContain('a value that could not be converted to text');
     expect(message).not.toContain('Cannot convert object to primitive value');
   });
 });
