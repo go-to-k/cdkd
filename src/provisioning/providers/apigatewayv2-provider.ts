@@ -20,6 +20,7 @@ import {
   DeleteAuthorizerCommand,
   DeleteAccessLogSettingsCommand,
   DeleteRouteSettingsCommand,
+  DeleteRouteRequestParameterCommand,
   GetAuthorizerCommand,
   UpdateAuthorizerCommand,
   GetApiCommand,
@@ -488,7 +489,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Integration':
         return this.updateIntegration(
@@ -497,7 +499,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Route':
         return this.updateRoute(
@@ -506,7 +509,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context?.desiredFromAwsReadback === true
         );
       case 'AWS::ApiGatewayV2::Authorizer':
         return this.updateAuthorizer(
@@ -2088,7 +2092,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2160,11 +2165,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Description = properties['Description'] as string;
       changed = true;
     }
-    // StageVariables merges on the AWS side. CloudFormation KEEPS a key that is
-    // dropped from the template (real CloudFormation A/B, #5004), so a removed
-    // key (or the whole block) sends nothing and stays live. Only the declared
-    // map is sent, and only when it changed.
-    if (
+    // StageVariables merges on the AWS side. On a deploy CloudFormation KEEPS a
+    // key that is dropped from the template (real CloudFormation A/B, #5004), so
+    // a removed key (or the whole block) sends nothing and stays live. Only the
+    // declared map is sent, and only when it changed. `cdkd drift --revert`
+    // (`restoreFromAws`) is the opposite intent: it must remove a key added
+    // out-of-band, so it clears each dropped key with an empty-string value.
+    if (restoreFromAws) {
+      const merged = this.mapWithRemovals(
+        properties['StageVariables'],
+        previousProperties['StageVariables']
+      );
+      if (merged !== undefined) {
+        input.StageVariables = merged;
+        changed = true;
+      }
+    } else if (
       this.mapEntryAddedOrChanged(
         properties['StageVariables'],
         previousProperties['StageVariables']
@@ -2308,7 +2324,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2375,10 +2392,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // rejects an empty reset for them, so removal is not a valid transition and
     // they pass through as plain changes only. TimeoutInMillis is likewise left
     // alone (its default is integration-type-dependent with no clean reset).
-    // RequestParameters merges per key on the AWS side. CloudFormation KEEPS a
-    // key that is dropped from the template (real CloudFormation A/B, #5004),
-    // so a removed key (or the whole block) sends nothing and stays live.
-    if (
+    // RequestParameters merges per key on the AWS side. On a deploy CloudFormation
+    // KEEPS a key that is dropped from the template (real CloudFormation A/B,
+    // #5004), so a removed key (or the whole block) sends nothing and stays live.
+    // `cdkd drift --revert` (`restoreFromAws`) clears a dropped key with an
+    // empty-string value instead (live-probed #1160 — `{}` does NOT clear).
+    if (restoreFromAws) {
+      const merged = this.mapWithRemovals(
+        properties['RequestParameters'],
+        previousProperties['RequestParameters']
+      );
+      if (merged !== undefined) {
+        input.RequestParameters = merged;
+        changed = true;
+      }
+    } else if (
       this.mapEntryAddedOrChanged(
         properties['RequestParameters'],
         previousProperties['RequestParameters']
@@ -2554,7 +2582,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    restoreFromAws = false
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2653,30 +2682,47 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
-    // RequestModels merges on the AWS side. CloudFormation KEEPS a key that is
-    // dropped from the template (real CloudFormation A/B, #5004), so a removed
-    // key (or the whole block) sends nothing and stays live.
-    if (
+    // RequestModels merges on the AWS side. On a deploy CloudFormation KEEPS a key
+    // dropped from the template (real CloudFormation A/B, #5004), so a removed key
+    // (or the whole block) sends nothing and stays live. `cdkd drift --revert`
+    // (`restoreFromAws`) clears a dropped key with an empty-string value.
+    if (restoreFromAws) {
+      const merged = this.mapWithRemovals(
+        properties['RequestModels'],
+        previousProperties['RequestModels']
+      );
+      if (merged !== undefined) {
+        input.RequestModels = merged;
+        changed = true;
+      }
+    } else if (
       this.mapEntryAddedOrChanged(properties['RequestModels'], previousProperties['RequestModels'])
     ) {
       input.RequestModels = properties['RequestModels'] as Record<string, string>;
       changed = true;
     }
     // RequestParameters here is Record<string, ParameterConstraints>, merged by
-    // UpdateRoute. CloudFormation KEEPS a parameter that is dropped from the
-    // template (real CloudFormation A/B, #5004), so a dropped key is NOT sent to
-    // DeleteRouteRequestParameter; it stays live.
+    // UpdateRoute. On a deploy CloudFormation KEEPS a parameter dropped from the
+    // template (real CloudFormation A/B, #5004), so a dropped key stays live.
+    // `cdkd drift --revert` (`restoreFromAws`) removes it with the per-key
+    // DeleteRouteRequestParameter, applied after the update below.
     if (
-      this.mapEntryAddedOrChanged(
-        properties['RequestParameters'],
-        previousProperties['RequestParameters']
-      )
+      restoreFromAws
+        ? properties['RequestParameters'] !== undefined &&
+          !this.deepEqual(properties['RequestParameters'], previousProperties['RequestParameters'])
+        : this.mapEntryAddedOrChanged(
+            properties['RequestParameters'],
+            previousProperties['RequestParameters']
+          )
     ) {
       input.RequestParameters = properties[
         'RequestParameters'
       ] as UpdateRouteCommandInput['RequestParameters'];
       changed = true;
     }
+    const droppedRequestParameterKeys = restoreFromAws
+      ? this.droppedKeys(properties['RequestParameters'], previousProperties['RequestParameters'])
+      : [];
     // ModelSelectionExpression / RouteResponseSelectionExpression are
     // WebSocket-only selection expressions. Pass-through on change only, same
     // treatment as the API-level RouteSelectionExpression above: removal is not
@@ -2701,6 +2747,28 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
 
     if (!changed) {
+      // The per-key parameter deletes are their own API calls, so a revert whose
+      // ONLY change is dropping one still has work to do here.
+      if (droppedRequestParameterKeys.length > 0) {
+        try {
+          await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
+        } catch (error) {
+          const cause = error instanceof Error ? error : undefined;
+          throw this.wrapMaskedError(
+            log,
+            error,
+            (text) =>
+              new ProvisioningError(
+                `Failed to update API Gateway V2 Route ${logicalId}: ${text}`,
+                resourceType,
+                logicalId,
+                physicalId,
+                cause
+              )
+          );
+        }
+        return { physicalId, wasReplaced: false };
+      }
       log.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
       return { physicalId, wasReplaced: false };
     }
@@ -2709,6 +2777,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
     try {
       await this.getClient().send(new UpdateRouteCommand(input));
+      await this.deleteRouteRequestParameters(apiId, physicalId, droppedRequestParameterKeys);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -2900,19 +2969,20 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    *
    * Every API Gateway V2 `Update*` API merges: an ABSENT input field means "no
    * change". Whether removal should reset is PER PROPERTY, decided by a real
-   * CloudFormation A/B (#5004). Used only for the properties CloudFormation
-   * RESETS on removal: Stage `AutoDeploy` (to `false`) and Route
-   * `AuthorizationScopes` (to `[]`); Api `CorsConfiguration`, Stage
-   * `AccessLogSettings` and `RouteSettings` are reset through dedicated
-   * `Delete*` calls. Every other removable property (Api Description /
+   * CloudFormation A/B (#5004). Used for the properties CloudFormation RESETS
+   * on removal: Stage `AutoDeploy` (to `false`) and Route `AuthorizationScopes`
+   * (to `[]`); plus Route `ApiKeyRequired` (to `false`), which the #5004
+   * measurement did NOT cover and so keeps its #1160 reset. Api
+   * `CorsConfiguration`, Stage `AccessLogSettings` and `RouteSettings` are reset
+   * through dedicated `Delete*` calls. The measured KEEP set (Api Description /
    * Version / DisableExecuteApiEndpoint / IpAddressType /
-   * ApiKeySelectionExpression, Stage StageVariables / ClientCertificateId,
-   * Integration Description / RequestParameters, Route AuthorizationType /
-   * AuthorizerId / OperationName / RequestModels / RequestParameters,
-   * Authorizer AuthorizerCredentialsArn / AuthorizerPayloadFormatVersion /
-   * AuthorizerResultTtlInSeconds / IdentityValidationExpression) is KEPT by
-   * CloudFormation, so cdkd passes it through on change only and sends nothing
-   * on removal. Fields required per protocol/authorizer type are likewise never
+   * ApiKeySelectionExpression, Stage StageVariables /
+   * ClientCertificateId, Integration Description / RequestParameters, Route
+   * AuthorizationType / AuthorizerId / OperationName / RequestModels /
+   * RequestParameters, Authorizer AuthorizerCredentialsArn /
+   * AuthorizerPayloadFormatVersion / AuthorizerResultTtlInSeconds /
+   * IdentityValidationExpression) is passed through on change only and sends
+   * nothing on removal. Fields required per protocol/authorizer type are never
    * cleared.
    *
    * Returns `{ changed, value }`: `changed` is true only when the resolved
@@ -3002,6 +3072,54 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         )
       );
     }
+  }
+
+  /**
+   * `RequestParameters` on a Route is an OBJECT-valued merge map, so a dropped
+   * key needs the per-key delete API (live-probed 2026-08-11:
+   * `DeleteRouteRequestParameter` clears exactly one parameter).
+   */
+  private async deleteRouteRequestParameters(
+    apiId: string,
+    routeId: string,
+    droppedKeys: readonly string[]
+  ): Promise<void> {
+    for (const key of droppedKeys) {
+      await this.sendTolerantOfNotFound(() =>
+        this.getClient().send(
+          new DeleteRouteRequestParameterCommand({
+            ApiId: apiId,
+            RouteId: routeId,
+            RequestParameterKey: key,
+          })
+        )
+      );
+    }
+  }
+
+  /**
+   * Resolve a `Record<string, string>` update field for `cdkd drift --revert` (`StageVariables`, Route
+   * `RequestModels`, Integration `RequestParameters`) with per-key removal
+   * awareness.
+   *
+   * These maps also merge on the AWS side: sending `{}` (or a map missing
+   * a previously-present key) does NOT delete the dropped key — it is kept
+   * live. Live-probed 2026-07-22 (and again 2026-08-11 for `RequestModels`):
+   * a key is cleared only by sending it with an empty-string value. So the
+   * resolved map is `next` plus every key present in `previous` but absent
+   * from `next`, set to `''`. Whole-block removal (next `undefined`, previous
+   * populated) therefore sends every old key as `''`. Returns `undefined` when
+   * nothing changed.
+   */
+  private mapWithRemovals(next: unknown, previous: unknown): Record<string, string> | undefined {
+    if (this.deepEqual(next, previous)) return undefined;
+    const nextMap = (next ?? {}) as Record<string, string>;
+    const prevMap = (previous ?? {}) as Record<string, string>;
+    const merged: Record<string, string> = { ...nextMap };
+    for (const key of Object.keys(prevMap)) {
+      if (!Object.hasOwn(nextMap, key)) merged[key] = '';
+    }
+    return merged;
   }
 
   /**

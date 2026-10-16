@@ -6,6 +6,7 @@ import {
   UpdateRouteCommand,
   UpdateAuthorizerCommand,
   DeleteCorsConfigurationCommand,
+  DeleteRouteRequestParameterCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -841,6 +842,142 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
       { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } }
     );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Integration: a changed RequestParameters key is sent in full; the dropped key is not blanked (#5004)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '2' } },
+      { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } }
+    );
+    expect(updateIntegrationInput()!['RequestParameters']).toEqual({ 'append:header.a': '2' });
+  });
+
+  it('Route: a changed RequestModels key is sent in full; the dropped key is not blanked (#5004)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'RouteLogical',
+      'r-1',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID, RouteKey: '$default', RequestModels: { 'application/json': 'B' } },
+      {
+        ApiId: API_ID,
+        RouteKey: '$default',
+        RequestModels: { 'application/json': 'A', 'text/plain': 'C' },
+      }
+    );
+    expect(updateRouteInput()!['RequestModels']).toEqual({ 'application/json': 'B' });
+  });
+
+  it('Route: a changed RequestParameters key is sent in full and nothing is deleted (#5004)', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.update(
+      'RouteLogical',
+      'r-1',
+      'AWS::ApiGatewayV2::Route',
+      {
+        ApiId: API_ID,
+        RouteKey: '$connect',
+        RequestParameters: { 'route.request.header.A': { Required: false } },
+      },
+      {
+        ApiId: API_ID,
+        RouteKey: '$connect',
+        RequestParameters: {
+          'route.request.header.A': { Required: true },
+          'route.request.header.B': { Required: true },
+        },
+      }
+    );
+    expect(updateRouteInput()!['RequestParameters']).toEqual({
+      'route.request.header.A': { Required: false },
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  // `cdkd drift --revert` replays the baseline over the AWS-current state with
+  // `desiredFromAwsReadback: true`; it must still remove a console-added key.
+  describe('drift --revert (desiredFromAwsReadback) still clears a console-added map key', () => {
+    const revert = { desiredFromAwsReadback: true } as const;
+
+    it('Stage StageVariables: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'StageLogical',
+        '$default',
+        'AWS::ApiGatewayV2::Stage',
+        { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1' } },
+        { ApiId: API_ID, StageName: '$default', StageVariables: { a: '1', b: '2' } },
+        revert
+      );
+      expect(updateStageInput()!['StageVariables']).toEqual({ a: '1', b: '' });
+    });
+
+    it('Integration RequestParameters: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'IntLogical',
+        'int-1',
+        'AWS::ApiGatewayV2::Integration',
+        { ApiId: API_ID, RequestParameters: { 'append:header.a': '1' } },
+        { ApiId: API_ID, RequestParameters: { 'append:header.a': '1', 'append:header.b': '2' } },
+        revert
+      );
+      expect(updateIntegrationInput()!['RequestParameters']).toEqual({
+        'append:header.a': '1',
+        'append:header.b': '',
+      });
+    });
+
+    it('Route RequestModels: the extra key is blanked', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'RouteLogical',
+        'r-1',
+        'AWS::ApiGatewayV2::Route',
+        { ApiId: API_ID, RouteKey: '$default', RequestModels: { 'application/json': 'A' } },
+        {
+          ApiId: API_ID,
+          RouteKey: '$default',
+          RequestModels: { 'application/json': 'A', 'text/plain': 'C' },
+        },
+        revert
+      );
+      expect(updateRouteInput()!['RequestModels']).toEqual({
+        'application/json': 'A',
+        'text/plain': '',
+      });
+    });
+
+    it('Route RequestParameters: the extra key is removed with DeleteRouteRequestParameter', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update(
+        'RouteLogical',
+        'r-1',
+        'AWS::ApiGatewayV2::Route',
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: { 'route.request.header.A': { Required: true } },
+        },
+        {
+          ApiId: API_ID,
+          RouteKey: '$connect',
+          RequestParameters: {
+            'route.request.header.A': { Required: true },
+            'route.request.header.B': { Required: true },
+          },
+        },
+        revert
+      );
+      const deletes = mockSend.mock.calls
+        .filter((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
+        .map((c) => c[0].input.RequestParameterKey);
+      expect(deletes).toEqual(['route.request.header.B']);
+    });
   });
 
   it('Integration: removed IntegrationMethod is NOT reset (required) — no SDK call', async () => {

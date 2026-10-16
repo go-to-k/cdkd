@@ -6,7 +6,6 @@ import {
   UpdateRouteCommand,
   DeleteAccessLogSettingsCommand,
   DeleteRouteSettingsCommand,
-  DeleteRouteRequestParameterCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -351,9 +350,6 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
         }
       );
 
-      expect(
-        mockSend.mock.calls.some((c) => c[0] instanceof DeleteRouteRequestParameterCommand)
-      ).toBe(false);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
