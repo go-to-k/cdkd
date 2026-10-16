@@ -612,7 +612,7 @@ export class EMRClusterProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      const message = `Failed to create EMR Cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`;
+      const message = `Failed to create EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`;
       if (survivorId !== undefined) {
         const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
         markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
@@ -1018,7 +1018,7 @@ export class EMRClusterProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EMR Cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1141,7 +1141,7 @@ export class EMRClusterProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to describe EMR Cluster ${logicalId} before deletion: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to describe EMR Cluster ${logicalId} before deletion: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1202,7 +1202,7 @@ export class EMRClusterProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to terminate EMR Cluster ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to terminate EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1317,7 +1317,7 @@ export class EMRClusterProvider implements ResourceProvider {
         if (error instanceof InvalidRequestException) return; // aged out of Describe = gone
         const cause = error instanceof Error ? error : undefined;
         throw new ProvisioningError(
-          `Failed to poll EMR Cluster ${clusterId} termination: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to poll EMR Cluster ${clusterId} termination: ${describeAwsFailure(error).detail}`,
           resourceType,
           logicalId,
           clusterId,

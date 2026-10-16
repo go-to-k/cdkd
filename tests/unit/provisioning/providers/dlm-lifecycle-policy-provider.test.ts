@@ -674,3 +674,29 @@ describe('DLMLifecyclePolicyProvider update region guard (issue #2613)', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
+
+// A rethrowing catch must report the failure even when the thrown value has no
+// string form (go-to-k/cdkd#3341): a bare `String(err)` threw `TypeError:
+// Cannot convert object to primitive value` and replaced it.
+describe('DLMLifecyclePolicyProvider rethrow of an unconvertible thrown value (#3341)', () => {
+  it('create surfaces a ProvisioningError for a null-prototype thrown value', async () => {
+    mockSend.mockReset();
+    mockSend.mockRejectedValue(Object.create(null));
+    const rejected = await new DLMLifecyclePolicyProvider()
+      .create('MyPolicy', RESOURCE_TYPE, {
+        Description: 'daily snapshots',
+        ExecutionRoleArn: 'arn:aws:iam::123456789012:role/dlm-role',
+        State: 'ENABLED',
+        PolicyDetails: POLICY_DETAILS,
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(rejected).toBeInstanceOf(ProvisioningError);
+    const message = (rejected as Error).message;
+    expect(message).toContain('Failed to create DLM Lifecycle Policy MyPolicy');
+    expect(message).toContain('a value that could not be converted to text');
+    expect(message).not.toContain('Cannot convert object to primitive value');
+  });
+});

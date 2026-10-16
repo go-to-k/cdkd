@@ -8,7 +8,7 @@ import {
   type InvocationResponse,
 } from '@aws-sdk/client-lambda';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import {
   S3Client,
   PutObjectCommand,
@@ -1898,7 +1898,7 @@ export class CustomResourceProvider implements ResourceProvider {
       markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create custom resource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         undefined,
@@ -1992,7 +1992,7 @@ export class CustomResourceProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update custom resource ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -3350,7 +3350,7 @@ export class CustomResourceProvider implements ResourceProvider {
         }
       );
     } catch (error) {
-      throw markNonRetryable(error instanceof Error ? error : new Error(String(error)));
+      throw markNonRetryable(error instanceof Error ? error : new Error(safeStringify(error)));
     }
 
     // Generate pre-signed PUT URL (valid for 2 hours to accommodate async Provider framework

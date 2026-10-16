@@ -48,6 +48,7 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * AWS ECR Repository Provider
@@ -300,7 +301,7 @@ export class ECRProvider implements ResourceProvider {
       if (repositoryCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create ECR Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         repositoryName,
@@ -537,7 +538,7 @@ export class ECRProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update ECR Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -614,7 +615,7 @@ export class ECRProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete ECR Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

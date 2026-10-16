@@ -491,7 +491,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = new ProvisioningError(
-        `Failed to create CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         repositoryName,
@@ -792,7 +792,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
             `PutRepositoryTriggers failed with ${retainedCount} live trigger(s) the desired ` +
               `Triggers does not name kept beside the desired ones (the recorded Triggers is ` +
               `not a list cdkd can read; CodeCommit allows at most 10 triggers per ` +
-              `repository): ${error instanceof Error ? error.message : String(error)}`,
+              `repository): ${describeAwsFailure(error).detail}`,
             { cause: error }
           );
         }
@@ -817,7 +817,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1150,7 +1150,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete CodeCommit Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete CodeCommit Repository ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

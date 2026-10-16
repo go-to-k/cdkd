@@ -403,7 +403,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to add EMR instance fleet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to add EMR instance fleet ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               undefined,
@@ -606,7 +606,7 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EMR instance fleet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EMR instance fleet ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

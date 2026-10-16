@@ -27,6 +27,7 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
 import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * AWS DocumentDB DB subnet group provider (`AWS::DocDB::DBSubnetGroup`).
@@ -137,7 +138,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         dbSubnetGroupName,
@@ -224,7 +225,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -267,7 +268,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DocDB DBSubnetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

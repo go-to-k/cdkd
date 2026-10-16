@@ -16,7 +16,7 @@ import {
   type Exclusions,
 } from '@aws-sdk/client-dlm';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -466,7 +466,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to create DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         undefined,
@@ -591,7 +591,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to update DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -627,7 +627,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to delete DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -663,7 +663,7 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to resolve Arn for DLM Lifecycle Policy ${physicalId}: ${cause?.message ?? String(error)}`,
+        `Failed to resolve Arn for DLM Lifecycle Policy ${physicalId}: ${cause?.message ?? safeStringify(error)}`,
         resourceType,
         logicalId,
         physicalId,

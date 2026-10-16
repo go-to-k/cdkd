@@ -2233,7 +2233,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to create DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to create DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               tableName,
@@ -2368,7 +2368,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         } catch (error) {
           throw new ProvisioningError(
             `AWS::DynamoDB::Table ${logicalId}: ${
-              error instanceof Error ? error.message : String(error)
+              describeAwsFailure(error).detail
             }. Nothing was applied to the table; fix the template value`,
             resourceType,
             logicalId,
@@ -3728,7 +3728,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4186,7 +4186,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // #1955.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to delete DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,

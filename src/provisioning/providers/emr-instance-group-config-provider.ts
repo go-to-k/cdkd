@@ -345,7 +345,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : new ProvisioningError(
-              `Failed to add EMR instance group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+              `Failed to add EMR instance group ${logicalId}: ${describeAwsFailure(error).detail}`,
               resourceType,
               logicalId,
               undefined,
@@ -553,7 +553,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update EMR instance group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update EMR instance group ${logicalId}: ${describeAwsFailure(error).detail}`,
         resourceType,
         logicalId,
         physicalId,
