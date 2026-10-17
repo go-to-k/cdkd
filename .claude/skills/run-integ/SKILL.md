@@ -355,7 +355,7 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   **`lambda` is the cheap default.** A name without `verify.sh` runs step 5's
   standard flow from an agent session like any other (deploy + destroy, no
   mid-run assertion). Nothing compares the copies of this list, which
-  `/pick-integ` also carries.
+  `/verify-pr`'s `references/leftover-and-integ-gates.md` also carries.
 
   **A narrow feature fixture is NOT a substitute**: a 2-stack feature fixture
   destroys cleanly without ever reaching the broad VPC / Lambda / multi-resource

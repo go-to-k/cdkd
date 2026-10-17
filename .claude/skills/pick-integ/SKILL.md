@@ -94,10 +94,11 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
    **Every name is runnable from an agent session through `/run-integ`.** A
-   fixture with no `verify.sh` / `run.sh` takes its standard flow
-   (`node dist/cli.js` synth → deploy → destroy + orphan scan): it proves the
-   deploy and destroy, asserts nothing in between — say so beside such a name
-   when the change needs a mid-run assertion.
+   fixture with no `verify.sh` takes its standard flow (`node dist/cli.js`
+   synth → deploy → destroy + orphan scan): it proves the deploy and destroy,
+   asserts nothing in between — say so beside such a name when the change
+   needs a mid-run assertion. `migrate-from-cfn` drives itself from `run.sh`,
+   which that flow never runs; recommend `bash run.sh` there instead.
 
 3. **Rank** the union of {changed-area} ∪ {failing} ∪ {stale >14d} ∪
    {expiring soon} ∪ {never-run}:
