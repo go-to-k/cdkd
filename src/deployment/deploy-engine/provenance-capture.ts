@@ -34,6 +34,7 @@
  * resolution of the same record already prints.
  */
 import type { DeployEngine } from '../deploy-engine.js';
+import type { BuildResolverContextFn } from './resolver-context.js';
 import type { Logger } from '../../types/config.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -58,7 +59,7 @@ export interface ProvenanceCaptureOutcome {
 
 /** What a {@link ProvenanceCapture} reads from the deploy it serves. */
 export interface ProvenanceCaptureDeps {
-  buildResolverContext: DeployEngine['buildResolverContext'];
+  buildResolverContext: BuildResolverContextFn;
   resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
   logger: Pick<Logger, 'warn'>;
 }

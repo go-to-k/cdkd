@@ -177,7 +177,7 @@ export async function noEchoDeleteValuesFromResolved(options: {
   noEchoParameters: ReadonlySet<string>;
   conditions?: Readonly<Record<string, boolean>> | undefined;
   secrets: RecordedSecretValues;
-  /** This deploy's input-fingerprint sources (`DeployEngine.maskedInputSources`). */
+  /** This deploy's input-fingerprint sources (`deploy-engine/resolver-context.ts`'s `maskedInputSources`). */
   inputSources?: MaskedInputSources | undefined;
 }): Promise<NoEchoDeleteValues | undefined> {
   const { record, templateResource, resolvedProperties } = options;

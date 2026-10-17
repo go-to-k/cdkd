@@ -4,6 +4,7 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
 import type { DeployEngineOptions } from './options.js';
+import type { BuildResolverContextFn } from './resolver-context.js';
 import type { NoEchoPositionSourcesFn } from './noecho.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import {
@@ -46,7 +47,7 @@ export interface OutputsDeps {
   options: Pick<DeployEngineOptions, 'strictGetAtt' | 'inheritedSecrets' | 'parameters'>;
   logger: Pick<Logger, 'warn' | 'debug'>;
   resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
-  buildResolverContext: DeployEngine['buildResolverContext'];
+  buildResolverContext: BuildResolverContextFn;
   noEchoPositionSources: NoEchoPositionSourcesFn;
 }
 

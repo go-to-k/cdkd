@@ -1,5 +1,5 @@
-import type { DeployEngine } from '../deploy-engine.js';
 import type { DeployEngineOptions } from './options.js';
+import type { BuildResolverContextFn } from './resolver-context.js';
 import type { ProvenanceCapture } from './provenance-capture.js';
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import type { Logger } from '../../types/config.js';
@@ -599,7 +599,7 @@ const STANDALONE_SIBLING: Record<'Roles' | 'Users' | 'Groups', { type: string; f
 /** What {@link buildObservedCaptureSiblings} reads from the deploy it serves. */
 export interface ObservedCaptureSiblingsDeps {
   options: Pick<DeployEngineOptions, 'captureObservedState'>;
-  buildResolverContext: DeployEngine['buildResolverContext'];
+  buildResolverContext: BuildResolverContextFn;
   resolver: Pick<IntrinsicFunctionResolver, 'resolve'>;
 }
 

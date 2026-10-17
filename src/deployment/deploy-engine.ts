@@ -92,11 +92,14 @@ import * as createMixin from './deploy-engine/create.js';
 import * as updateMixin from './deploy-engine/update.js';
 import * as updateReplaceMixin from './deploy-engine/update-replace.js';
 import * as updateInPlaceMixin from './deploy-engine/update-in-place.js';
-import * as deleteMixin from './deploy-engine/delete.js';
+import type { DeleteDeps } from './deploy-engine/delete.js';
 import * as provisionMixin from './deploy-engine/provision.js';
 import * as executeMixin from './deploy-engine/execute.js';
 import * as deployFlowMixin from './deploy-engine/deploy-flow.js';
-import * as resolverContextMixin from './deploy-engine/resolver-context.js';
+import {
+  buildResolverContext,
+  type ResolverContextDeps,
+} from './deploy-engine/resolver-context.js';
 import {
   applyNoEchoPersist,
   NoEchoRunState,
@@ -740,7 +743,7 @@ export class DeployEngine {
    */
   freshProvenanceCapture(): ProvenanceCapture {
     return new ProvenanceCapture({
-      buildResolverContext: (...args) => this.buildResolverContext(...args),
+      buildResolverContext: (...args) => buildResolverContext(this.resolverContextDeps(), ...args),
       resolver: this.resolver,
       logger: this.logger,
     });
@@ -759,7 +762,7 @@ export class DeployEngine {
       options: this.options,
       logger: this.logger,
       resolver: this.resolver,
-      buildResolverContext: (...args) => this.buildResolverContext(...args),
+      buildResolverContext: (...args) => buildResolverContext(this.resolverContextDeps(), ...args),
       noEchoPositionSources: (...args) => noEchoPositionSources(this.noEchoRun, ...args),
     };
   }
@@ -835,6 +838,59 @@ export class DeployEngine {
       maskingRetryLoggerFor: (...args) => this.maskingRetryLoggerFor(...args),
       inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
       recordEvent: (...args) => this.recordEvent(...args),
+    };
+  }
+
+  /**
+   * This engine's current deps for `deploy-engine/resolver-context.ts`'s
+   * plain functions, built fresh at each call site like
+   * {@link replacementDeps}. `options` / `stateBackend` / `exportIndexStore` /
+   * `resolver` are set only in the constructor, so they are passed by value;
+   * `secretsRun` / `noEchoRun` / `recordedImports` / `recordedOutputReads` /
+   * `runProducerRegionEvidence` (replaced per `deploy()`, the last also set
+   * mid-deploy) and `attributeHealer` / `healBaseline` (replaced by
+   * {@link rebaseline}) are live getters, so a context's healer and
+   * producer-secret closures read the CURRENT value when called.
+   * @internal
+   */
+  resolverContextDeps(): ResolverContextDeps {
+    return {
+      options: this.options,
+      stateBackend: this.stateBackend,
+      exportIndexStore: this.exportIndexStore,
+      resolver: this.resolver,
+      secretsRun: () => this.secretsRun,
+      noEchoRun: () => this.noEchoRun,
+      healBaseline: () => this.healBaseline,
+      attributeHealer: () => this.attributeHealer,
+      recordedImports: () => this.recordedImports,
+      recordedOutputReads: () => this.recordedOutputReads,
+      runProducerRegionEvidence: () => this.runProducerRegionEvidence,
+    };
+  }
+
+  /**
+   * This engine's current deps for `deploy-engine/delete.ts`'s
+   * `provisionDelete`, built fresh at each call site like
+   * {@link replacementDeps}. `options` / `stateBackend` / `stackRegion` /
+   * `logger` / `providerRegistry` are set only in the constructor, so they are
+   * passed by value; `secretsRun` (replaced per `deploy()`) is a live getter,
+   * `owner` is this engine's identity (the retained-readoption key), and the
+   * forwarded methods stay bound to THIS engine.
+   * @internal
+   */
+  deleteDeps(): DeleteDeps {
+    return {
+      owner: this,
+      options: this.options,
+      stateBackend: this.stateBackend,
+      stackRegion: this.stackRegion,
+      logger: this.logger,
+      providerRegistry: this.providerRegistry,
+      secretsRun: () => this.secretsRun,
+      replacementDeps: () => this.replacementDeps(),
+      withRetry: (...args) => this.withRetry(...args),
+      inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
     };
   }
 
@@ -1581,9 +1637,6 @@ export class DeployEngine {
   }
 }
 
-DeployEngine.prototype.buildResolverContext = resolverContextMixin.buildResolverContext;
-DeployEngine.prototype.maskedInputSources = resolverContextMixin.maskedInputSources;
-
 DeployEngine.prototype.doDeployWithPrefetch = deployFlowMixin.doDeployWithPrefetch;
 
 DeployEngine.prototype.executeDeployment = executeMixin.executeDeployment;
@@ -1591,8 +1644,6 @@ DeployEngine.prototype.persistStateAfterOutputFailure = executeMixin.persistStat
 
 DeployEngine.prototype.provisionResource = provisionMixin.provisionResource;
 DeployEngine.prototype.provisionResourceBody = provisionMixin.provisionResourceBody;
-
-DeployEngine.prototype.provisionDelete = deleteMixin.provisionDelete;
 
 DeployEngine.prototype.provisionUpdate = updateMixin.provisionUpdate;
 DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacement;

@@ -56,7 +56,11 @@ import {
   possiblyMaskedKeys,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
-import { printNestedStackReadsOnly } from './resolver-context.js';
+import {
+  buildResolverContext,
+  maskedInputSources,
+  printNestedStackReadsOnly,
+} from './resolver-context.js';
 import {
   establishNoEchoEchoFidelity,
   noEchoAttributeOverridesFor,
@@ -88,7 +92,8 @@ export async function provisionCreate(
   const desiredProps = change.desiredProperties || {};
 
   // Resolve intrinsic functions in properties
-  const context = this.buildResolverContext(
+  const context = buildResolverContext(
+    this.resolverContextDeps(),
     {
       template: template!,
       resources: stateResources,
@@ -151,7 +156,8 @@ export async function provisionCreate(
   // go-to-k/cdkd#4543: the input fingerprint of each property the save may
   // record as the mask, resolved against this deploy's state.
   const fingerprintSources =
-    template && this.maskedInputSources(template, stateResources, conditions, stackName);
+    template &&
+    maskedInputSources(this.resolverContextDeps(), template, stateResources, conditions, stackName);
   if (fingerprintSources !== undefined) {
     this.secretsRun.perResourceInputFingerprints.set(
       logicalId,
@@ -365,7 +371,7 @@ export async function provisionCreate(
   const createCaptureSiblings = await buildObservedCaptureSiblings(
     {
       options: this.options,
-      buildResolverContext: (...args) => this.buildResolverContext(...args),
+      buildResolverContext: (...args) => buildResolverContext(this.resolverContextDeps(), ...args),
       resolver: this.resolver,
     },
     resourceType,

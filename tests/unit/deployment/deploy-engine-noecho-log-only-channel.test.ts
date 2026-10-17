@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { buildResolverContext } from '../../../src/deployment/deploy-engine/resolver-context.js';
 import {
   SECRET_MASK,
   hasMaskableValues,
@@ -377,14 +378,11 @@ describe('DeployEngine - a nested child engine receives a log-only-only bag (go-
       { dryRun: false, inheritedSecrets: inherited },
       'us-east-1'
     );
-    const context = (
-      engine as unknown as {
-        buildResolverContext: (
-          base: { template: CloudFormationTemplate; resources: Record<string, never> },
-          stackName: string
-        ) => { inheritedSecrets?: RecordedSecretValues };
-      }
-    ).buildResolverContext({ template: { Resources: {} }, resources: {} }, 's');
+    const context = buildResolverContext(
+      engine.resolverContextDeps(),
+      { template: { Resources: {} }, resources: {} },
+      's'
+    );
     expect(context.inheritedSecrets).toBe(inherited);
     expect(maskSecretsInText(NOECHO, context.inheritedSecrets!)).toBe(SECRET_MASK);
   });

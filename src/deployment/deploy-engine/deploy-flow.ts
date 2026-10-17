@@ -107,6 +107,7 @@ import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js'
 import type { CrossStackRead } from '../intrinsic-resolver/context.js';
 import { resolvePendingCloudControlRequests } from '../cc-pending-requests.js';
 import { buildDisplayOutputs, resolveOutputs } from './outputs.js';
+import { buildResolverContext, maskedInputSources } from './resolver-context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -590,7 +591,8 @@ export async function doDeployWithPrefetch(
       0;
 
     // 2.6. Evaluate conditions from template
-    const context = this.buildResolverContext(
+    const context = buildResolverContext(
+      this.resolverContextDeps(),
       {
         template,
         resources: currentState.resources,
@@ -776,7 +778,8 @@ export async function doDeployWithPrefetch(
     // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
     // `Fn::Join` literal args like "-value" -> "-value2") are detected against
     // the already-resolved values stored in state.
-    const diffResolverContext = this.buildResolverContext(
+    const diffResolverContext = buildResolverContext(
+      this.resolverContextDeps(),
       {
         template: effectiveTemplate,
         resources: currentState.resources,
@@ -820,7 +823,8 @@ export async function doDeployWithPrefetch(
     const crossStackReads = new Map<string, CrossStackRead>();
     diffResolverContext.crossStackReads = crossStackReads;
     const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
-    const maskedInputSourcesForDiff = this.maskedInputSources(
+    const maskedInputSourcesForDiff = maskedInputSources(
+      this.resolverContextDeps(),
       effectiveTemplate,
       currentState.resources,
       conditions,

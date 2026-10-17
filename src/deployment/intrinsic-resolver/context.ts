@@ -883,7 +883,7 @@ export interface ResolverContext {
    * clean now reported a spurious UPDATE and then hard-failed at the
    * provisioning refusal. Fail-closed, so never an exposure, but a regression
    * for existing users and a divergence from standalone `cdkd diff` (bagless,
-   * still NO_CHANGE). `DeployEngine.buildResolverContext` therefore takes the
+   * still NO_CHANGE). The deploy's `buildResolverContext` therefore takes the
    * bag from its CALLER, and only the two provisioning sites pass one.
    */
   redactedAttributeReads?: RedactedAttributeRead[];

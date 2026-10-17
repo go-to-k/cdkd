@@ -10,14 +10,38 @@ import {
 import type { MaskedInputSources } from '../masked-property-fingerprints.js';
 import { noteSecretNamedRecord } from './masking.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    buildResolverContext: OmitThisParameter<typeof buildResolverContext>;
-    /** @internal */
-    maskedInputSources: OmitThisParameter<typeof maskedInputSources>;
-  }
+/**
+ * What {@link buildResolverContext} / {@link maskedInputSources} read from the
+ * engine, built at each call site as `this.resolverContextDeps()`.
+ * `options` / `stateBackend` / `exportIndexStore` / `resolver` are set only in
+ * the constructor, so they are passed by value; everything `deploy()` replaces
+ * per run or sets mid-run is a live getter, read where the old method read
+ * `this.<member>` — a closure on the returned context (the healer, the
+ * producer-secrets and region-evidence readers) still reads the engine's
+ * CURRENT value when the resolver calls it.
+ */
+export interface ResolverContextDeps {
+  options: DeployEngine['options'];
+  stateBackend: DeployEngine['stateBackend'];
+  exportIndexStore: DeployEngine['exportIndexStore'];
+  resolver: Pick<DeployEngine['resolver'], 'resolve'>;
+  secretsRun: () => DeployEngine['secretsRun'];
+  noEchoRun: () => DeployEngine['noEchoRun'];
+  healBaseline: () => DeployEngine['healBaseline'];
+  attributeHealer: () => DeployEngine['attributeHealer'];
+  recordedImports: () => DeployEngine['recordedImports'];
+  recordedOutputReads: () => DeployEngine['recordedOutputReads'];
+  runProducerRegionEvidence: () => DeployEngine['runProducerRegionEvidence'];
 }
+
+/**
+ * {@link buildResolverContext} bound to one engine's deps — the shape a
+ * collaborator's deps forward (`(...args) => buildResolverContext(this.resolverContextDeps(), ...args)`).
+ */
+export type BuildResolverContextFn = (
+  base: Parameters<typeof buildResolverContext>[1],
+  stackName: string
+) => import('../intrinsic-function-resolver.js').ResolverContext;
 
 /**
  * One entry the resolver pushed into `ResolverContext.redactedAttributeReads`
@@ -35,12 +59,12 @@ type RedactedAttributeRead = import('../intrinsic-function-resolver.js').Redacte
 /**
  * Resolver context with the imports-recording and exports-index
  * fields wired in. Keeps the four+ inline context construction
- * sites consistent — pass through callable as
- * `this.buildResolverContext({...}, stackName)`.
+ * sites consistent — called as
+ * `buildResolverContext(this.resolverContextDeps(), {...}, stackName)`.
  */
 /** @internal */
 export function buildResolverContext(
-  this: DeployEngine,
+  deps: ResolverContextDeps,
   base: {
     template: CloudFormationTemplate;
     resources: Record<string, ResourceState>;
@@ -94,8 +118,8 @@ export function buildResolverContext(
   // THIS bag, i.e. only for a resource whose own resolution consumed the
   // parameter. They decide WHICH expression such a leaf takes, never WHETHER
   // a leaf is rewritten.
-  if (this.options.inheritedSecrets && this.options.inheritedSecrets.size > 0) {
-    inheritNestedStackParameterAssociations(recordedSecretValues, this.options.inheritedSecrets);
+  if (deps.options.inheritedSecrets && deps.options.inheritedSecrets.size > 0) {
+    inheritNestedStackParameterAssociations(recordedSecretValues, deps.options.inheritedSecrets);
   }
   return {
     template: base.template,
@@ -104,16 +128,16 @@ export function buildResolverContext(
       Object.keys(base.parameters).length > 0 && { parameters: base.parameters }),
     ...(base.conditions &&
       Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
-    stateBackend: this.stateBackend,
+    stateBackend: deps.stateBackend,
     stackName,
-    ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
-    recordedImports: this.recordedImports,
-    recordedOutputReads: this.recordedOutputReads,
+    ...(deps.exportIndexStore && { exportIndex: deps.exportIndexStore }),
+    recordedImports: deps.recordedImports(),
+    recordedOutputReads: deps.recordedOutputReads(),
     // Issue #1852: on EVERY context this engine builds — the diff pass, both
     // provisioning arms and the outputs pass all read the same stale record,
     // and the heal is memoized, so whichever asks first pays the one read.
     attributeHealer: (logicalId, resource) =>
-      this.attributeHealer.heal(logicalId, resource, stackName),
+      deps.attributeHealer().heal(logicalId, resource, stackName),
     // The pairs the PARENT resolved for this stack, on a nested-stack child
     // engine only (issue #1903). NOT pre-loaded into the map below: the
     // resolver copies a pair across at the moment a resource's `{Ref: Param}`
@@ -149,17 +173,17 @@ export function buildResolverContext(
     // reach the child's resolver, which masks with it and carries it into the
     // bag of the child resource consuming the parameter. Every reader of
     // this field that PERSISTS or positions still asks `size` itself.
-    ...(this.options.inheritedSecrets &&
-      hasMaskableValues(this.options.inheritedSecrets) && {
-        inheritedSecrets: this.options.inheritedSecrets,
+    ...(deps.options.inheritedSecrets &&
+      hasMaskableValues(deps.options.inheritedSecrets) && {
+        inheritedSecrets: deps.options.inheritedSecrets,
       }),
     // go-to-k/cdkd#4819: the parent row's physical-id copies, ungated.
-    ...(this.options.inheritedPhysicalNameCopies && {
-      inheritedPhysicalNameCopies: this.options.inheritedPhysicalNameCopies,
+    ...(deps.options.inheritedPhysicalNameCopies && {
+      inheritedPhysicalNameCopies: deps.options.inheritedPhysicalNameCopies,
     }),
     // State schema v12 (go-to-k/cdkd#4852): the parent row's provenance.
-    ...(this.options.inheritedReferenceProvenance && {
-      inheritedReferenceProvenance: this.options.inheritedReferenceProvenance,
+    ...(deps.options.inheritedReferenceProvenance && {
+      inheritedReferenceProvenance: deps.options.inheritedReferenceProvenance,
     }),
     // FRESH per-context map: the resolver records each resolved secret
     // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
@@ -177,7 +201,7 @@ export function buildResolverContext(
     // is an OPT-IN whose presence changes what the resolver SERVES, so it
     // belongs only where a reader exists. The `base` field's own doc carries
     // the measurement that forced the split.
-    noEchoAttributeResources: this.noEchoRun.noEchoAttributeResources,
+    noEchoAttributeResources: deps.noEchoRun().noEchoAttributeResources,
     // go-to-k/cdkd#3869: on every context, the diff pass included, since each
     // one prints a `resolved to` line for what it reads. It only ADDS log-only
     // needles to the reading pass's bag, judged from `base.resources` (the
@@ -187,18 +211,18 @@ export function buildResolverContext(
     // `resolveOutputs`, and a nested-stack row (`printNestedStackReadsOnly`).
     secretNameNeedles: (logicalId: string) =>
       noteSecretNamedRecord(
-        this.secretsRun,
+        deps.secretsRun(),
         logicalId,
         Object.hasOwn(base.resources, logicalId) ? base.resources[logicalId] : undefined
       ),
     // go-to-k/cdkd#4802: the producer's own bag, for a reader of an attribute
     // this run's provider returned (see `ResolverContext.producerSecrets`).
-    producerSecrets: (logicalId: string) => this.secretsRun.perResourceSecrets.get(logicalId),
+    producerSecrets: (logicalId: string) => deps.secretsRun().perResourceSecrets.get(logicalId),
     // go-to-k/cdkd#4805: read by the recorded-reference re-resolution only.
-    secretRegionEvidence: () => this.runProducerRegionEvidence?.(),
+    secretRegionEvidence: () => deps.runProducerRegionEvidence()?.(),
     producerPreRunPhysicalId: (logicalId: string) =>
-      Object.hasOwn(this.healBaseline, logicalId)
-        ? this.healBaseline[logicalId]?.physicalId
+      Object.hasOwn(deps.healBaseline(), logicalId)
+        ? deps.healBaseline()[logicalId]?.physicalId
         : undefined,
     ...(base.redactedAttributeReads && {
       redactedAttributeReads: base.redactedAttributeReads,
@@ -257,19 +281,19 @@ function getAttTargetOf(node: unknown): string | undefined {
  */
 /** @internal */
 export function maskedInputSources(
-  this: DeployEngine,
+  deps: ResolverContextDeps,
   template: CloudFormationTemplate,
   resources: Record<string, ResourceState>,
   conditions: Record<string, boolean> | undefined,
   stackName: string
 ): MaskedInputSources | undefined {
-  const parameters = this.secretsRun.fingerprintParameters;
+  const parameters = deps.secretsRun().fingerprintParameters;
   if (parameters === undefined) return undefined;
   return {
     template,
     parameterInput: parameters.parameterInput,
     conditions,
-    childTemplate: this.secretsRun.fingerprintChildTemplates,
+    childTemplate: deps.secretsRun().fingerprintChildTemplates,
     resolve: async (node: unknown) => {
       // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the
       // resolver would answer with the physical-id FALLBACK (a guess, counted
@@ -277,7 +301,8 @@ export function maskedInputSources(
       // unknown input. The fingerprint pass must neither bump that counter nor
       // repeat the warning, and a guessed value is no input to hash.
       // `cdkd diff` builds its context the same way.
-      const { attributeHealer: _healer, ...base } = this.buildResolverContext(
+      const { attributeHealer: _healer, ...base } = buildResolverContext(
+        deps,
         {
           template,
           resources,
@@ -299,7 +324,7 @@ export function maskedInputSources(
         // written, stays as it was.
         printingSecrets: new Map<string, string>(),
       };
-      const value = await this.resolver.resolve(structuredClone(node), context);
+      const value = await deps.resolver.resolve(structuredClone(node), context);
       const secrets: RecordedSecretValues | undefined = context.recordedSecretValues;
       // An attribute of a resource whose resolution THIS deploy recorded a
       // secret for is still raw in memory (the save redacts it), so one
@@ -312,7 +337,7 @@ export function maskedInputSources(
       // go-to-k/cdkd#4543).
       const target = getAttTargetOf(node);
       const targetSecrets =
-        target === undefined ? undefined : this.secretsRun.perResourceSecrets.get(target);
+        target === undefined ? undefined : deps.secretsRun().perResourceSecrets.get(target);
       if (targetSecrets !== undefined && hasMaskableValues(targetSecrets)) {
         const probe = { value };
         const redacted = redactSecretsForState(probe, targetSecrets);
