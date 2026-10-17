@@ -2013,8 +2013,7 @@ function parseResourceOverrides(
       raw = readFileSync(mappingFile, 'utf-8');
     } catch (err) {
       throw new Error(
-        `Failed to read --resource-mapping file '${mappingFile}': ` +
-          (err instanceof Error ? err.message : String(err))
+        `Failed to read --resource-mapping file '${mappingFile}': ` + describeAwsFailure(err).detail
       );
     }
     const parsed = parseMappingJson(raw, `--resource-mapping file '${mappingFile}'`);
@@ -2052,9 +2051,7 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `Failed to parse ${source} as JSON: ` + (err instanceof Error ? err.message : String(err))
-    );
+    throw new Error(`Failed to parse ${source} as JSON: ` + describeAwsFailure(err).detail);
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${source} must be a JSON object {logicalId: physicalId}`);
@@ -2096,7 +2093,7 @@ function writeRecordedMapping(filePath: string, rows: ImportRow[]): void {
     writeFileSync(filePath, body, 'utf-8');
     logger.info(`Wrote resolved mapping to ${filePath} (${Object.keys(map).length} entry(ies))`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeAwsFailure(err).detail;
     logger.error(
       `Failed to write --record-resource-mapping file '${filePath}': ${msg}. ` +
         `Continuing — the import already resolved every physical id in memory.`
@@ -4786,7 +4783,7 @@ function readNestedChildTemplate(
   } catch (err) {
     throw new Error(
       `Failed to read nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+        `${templatePath}: ${describeAwsFailure(err).detail}`
     );
   }
   try {
@@ -4794,7 +4791,7 @@ function readNestedChildTemplate(
   } catch (err) {
     throw new Error(
       `Failed to parse nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${err instanceof Error ? err.message : String(err)}`
+        `${templatePath}: ${describeAwsFailure(err).detail}`
     );
   }
 }

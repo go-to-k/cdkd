@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 
 const CDK_CONTEXT_FILE = 'cdk.context.json';
@@ -37,9 +38,7 @@ export class ContextStore {
       );
       return context;
     } catch (error) {
-      this.logger.warn(
-        `Failed to parse cdk.context.json: ${error instanceof Error ? error.message : String(error)}`
-      );
+      this.logger.warn(`Failed to parse cdk.context.json: ${describeAwsFailure(error).detail}`);
       return {};
     }
   }

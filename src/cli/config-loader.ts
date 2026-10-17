@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { StateError } from '../utils/error-handler.js';
@@ -40,9 +41,7 @@ function loadJsonConfig(filePath: string): CdkConfig | null {
     logger.debug(`Loaded config from ${filePath}`);
     return config;
   } catch (error) {
-    logger.warn(
-      `Failed to parse ${filePath}: ${error instanceof Error ? error.message : String(error)}`
-    );
+    logger.warn(`Failed to parse ${filePath}: ${describeAwsFailure(error).detail}`);
     return null;
   }
 }

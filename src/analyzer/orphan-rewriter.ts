@@ -467,7 +467,7 @@ class AttributeFetcher {
     } catch (err) {
       return {
         ok: false,
-        reason: `no provider available for ${orphan.resourceType}: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `no provider available for ${orphan.resourceType}: ${describeAwsFailure(err).detail}`,
       };
     }
 
