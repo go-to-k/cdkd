@@ -76,6 +76,7 @@ import { updatePartialMessage, updatePartialReason } from '../update-outcome.js'
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { buildResolverContext, maskedInputSources } from './resolver-context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -649,7 +650,8 @@ export async function updateInPlace(
         secrets: updateSecrets,
         inputSources:
           template &&
-          this.maskedInputSources(
+          maskedInputSources(
+            this.resolverContextDeps(),
             template,
             stateResources,
             this.noEchoRun.noEchoConditions,
@@ -1352,7 +1354,8 @@ export async function updateInPlace(
     : await buildObservedCaptureSiblings(
         {
           options: this.options,
-          buildResolverContext: (...args) => this.buildResolverContext(...args),
+          buildResolverContext: (...args) =>
+            buildResolverContext(this.resolverContextDeps(), ...args),
           resolver: this.resolver,
         },
         resourceType,

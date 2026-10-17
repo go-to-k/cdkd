@@ -91,7 +91,7 @@ const PARAMETERS = { [PARAM_A]: EMBEDDED, [PARAM_B]: SHARED };
 function makeContext(
   inherited: RecordedSecretValues
 ): ResolverContext & { recordedSecretValues: Map<string, string> } {
-  // As `DeployEngine.buildResolverContext` builds it: a fresh bag carrying the
+  // As the deploy's `buildResolverContext` builds it: a fresh bag carrying the
   // parent's per-parameter associations.
   const recordedSecretValues = new Map<string, string>();
   inheritNestedStackParameterAssociations(recordedSecretValues, inherited);

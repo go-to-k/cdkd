@@ -30,11 +30,9 @@ const HOSTS = [
     cls: DeployEngine,
     files: [
       'deploy-engine/create.ts',
-      'deploy-engine/delete.ts',
       'deploy-engine/deploy-flow.ts',
       'deploy-engine/execute.ts',
       'deploy-engine/provision.ts',
-      'deploy-engine/resolver-context.ts',
       'deploy-engine/rollback.ts',
       'deploy-engine/update-in-place.ts',
       'deploy-engine/update-replace.ts',
@@ -46,11 +44,9 @@ const HOSTS = [
       'provisionUpdate',
       'updateByReplacement',
       'updateInPlace',
-      'provisionDelete',
       'provisionResource',
       'executeDeployment',
       'doDeployWithPrefetch',
-      'buildResolverContext',
     ],
   },
   {

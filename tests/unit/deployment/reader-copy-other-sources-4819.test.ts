@@ -289,7 +289,7 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
     source: Record<string, unknown>,
     value: string = URL
   ) {
-    // As `DeployEngine.buildResolverContext` builds a child pass's bag.
+    // As the deploy's `buildResolverContext` builds a child pass's bag.
     const child: RecordedSecretValues = new Map();
     inheritNestedStackParameterAssociations(child, parent);
     const resolver = new IntrinsicFunctionResolver('us-east-1');
@@ -362,6 +362,9 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
 
   it("a child engine binds the row's copies into its resolver contexts", async () => {
     const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    const { buildResolverContext } = await import(
+      '../../../src/deployment/deploy-engine/resolver-context.js'
+    );
     const copies = new Set([URL]);
     const engine = new DeployEngine(
       {} as never,
@@ -372,14 +375,11 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
       { dryRun: false, inheritedPhysicalNameCopies: copies },
       'us-east-1'
     );
-    const context = (
-      engine as unknown as {
-        buildResolverContext: (
-          base: { template: CloudFormationTemplate; resources: Record<string, never> },
-          stackName: string
-        ) => { inheritedPhysicalNameCopies?: ReadonlySet<string>; inheritedSecrets?: unknown };
-      }
-    ).buildResolverContext({ template: { Resources: {} } as CloudFormationTemplate, resources: {} }, 's');
+    const context = buildResolverContext(
+      engine.resolverContextDeps(),
+      { template: { Resources: {} } as CloudFormationTemplate, resources: {} },
+      's'
+    );
     expect(context.inheritedPhysicalNameCopies).toBe(copies);
     expect(context.inheritedSecrets).toBeUndefined();
   });

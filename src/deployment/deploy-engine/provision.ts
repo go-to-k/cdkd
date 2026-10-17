@@ -46,6 +46,7 @@ import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-s
 import { safeMsg } from '../../utils/display-safe.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { orphanedNameCollisionAdvice } from './name-collision.js';
+import { provisionDelete } from './delete.js';
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
@@ -618,7 +619,8 @@ export async function provisionResourceBody(
             )
           );
         case 'DELETE':
-          return this.provisionDelete(
+          return provisionDelete(
+            this.deleteDeps(),
             logicalId,
             change,
             stateResources,

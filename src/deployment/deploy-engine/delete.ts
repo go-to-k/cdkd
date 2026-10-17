@@ -1,6 +1,6 @@
 import { createUnionSecretMasker } from '../secret-redaction.js';
 import { secretNameBagFor } from './masking.js';
-import { prepareFinalSnapshotForDelete } from './replacement.js';
+import { prepareFinalSnapshotForDelete, type ReplacementDeps } from './replacement.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
@@ -28,11 +28,25 @@ import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    provisionDelete: OmitThisParameter<typeof provisionDelete>;
-  }
+/**
+ * What {@link provisionDelete} reads from the engine, built at each call site
+ * as `this.deleteDeps()`. `options` / `stateBackend` / `stackRegion` /
+ * `logger` / `providerRegistry` are set only in the constructor, so they are
+ * passed by value; `secretsRun` (replaced per `deploy()`) is a live getter,
+ * and the engine methods it calls are forwarded bound to THIS engine.
+ */
+export interface DeleteDeps {
+  /** The engine's identity, the key of {@link keptByEngine} only — never read. */
+  owner: object;
+  options: DeployEngine['options'];
+  stateBackend: DeployEngine['stateBackend'];
+  stackRegion: DeployEngine['stackRegion'];
+  logger: DeployEngine['logger'];
+  providerRegistry: DeployEngine['providerRegistry'];
+  secretsRun: () => DeployEngine['secretsRun'];
+  replacementDeps: () => ReplacementDeps;
+  withRetry: DeployEngine['withRetry'];
+  inlinePolicyClaimedFor: DeployEngine['inlinePolicyClaimedFor'];
 }
 
 /**
@@ -40,7 +54,7 @@ declare module '../deploy-engine.js' {
  * recorded in ONE `retained.json` write when the deploy ends
  * ({@link flushKeptForReadoption}) rather than a read-merge-write each.
  */
-const keptByEngine = new WeakMap<DeployEngine, KeptForReadoption>();
+const keptByEngine = new WeakMap<object, KeptForReadoption>();
 
 /**
  * Record what this engine's deploy kept (one write; the read started with the
@@ -53,7 +67,7 @@ export async function flushKeptForReadoption(engine: DeployEngine): Promise<void
 
 /** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
 export async function provisionDelete(
-  this: DeployEngine,
+  deps: DeleteDeps,
   logicalId: string,
   change: ResourceChange,
   stateResources: Record<string, ResourceState>,
@@ -83,7 +97,7 @@ export async function provisionDelete(
   const deletionPolicy =
     currentResource.deletionPolicy ?? template?.Resources?.[logicalId]?.DeletionPolicy;
   if (shouldRetainResource(deletionPolicy)) {
-    this.logger.info(
+    deps.logger.info(
       safeMsg`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
     );
     delete stateResources[logicalId];
@@ -93,10 +107,10 @@ export async function provisionDelete(
     // go-to-k/cdkd#4705: and a later deploy that adds it back takes it back
     // by its generated name rather than refusing that name.
     if (keptForReadoption(currentResource)) {
-      let kept = keptByEngine.get(this);
+      let kept = keptByEngine.get(deps.owner);
       if (kept === undefined) {
-        kept = new KeptForReadoption(this.stateBackend, stackName, this.stackRegion, this.logger);
-        keptByEngine.set(this, kept);
+        kept = new KeptForReadoption(deps.stateBackend, stackName, deps.stackRegion, deps.logger);
+        keptByEngine.set(deps.owner, kept);
       }
       kept.add({ logicalId, resourceType, physicalId: currentResource.physicalId });
     }
@@ -125,19 +139,19 @@ export async function provisionDelete(
     const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
     renderer.removeTask(logicalId);
     const skipLine = formatResourceLine('skipped', logicalId, resourceType, `skipped (${reason})`);
-    this.logger.info(safeMsg`${skipPrefix}${skipLine}`);
+    deps.logger.info(safeMsg`${skipPrefix}${skipLine}`);
     // The run's account flags ride on both commands (go-to-k/cdkd#4648), so a
     // pasted drop removes the record in the bucket this deploy read.
-    const recovery = this.options.refusalRecovery;
+    const recovery = deps.options.refusalRecovery;
     const account = accountArgs(recovery);
     const showCommand = pasteableCommand('cdkd state show', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
-      { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+      { flag: '--stack-region', value: deps.stackRegion, hole: 'region' },
       ...account,
     ]).command;
     const dropCommand = pasteableCommand('cdkd state orphan', [
       { value: stackName, hole: 'stack', opts: { plainIdent: true } },
-      { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+      { flag: '--stack-region', value: deps.stackRegion, hole: 'region' },
       { flag: '--resource', value: logicalId, hole: 'logicalId', opts: { plainIdent: true } },
       ...account,
     ]).command;
@@ -145,7 +159,7 @@ export async function provisionDelete(
       recovery,
       'the command lines below print'
     ).trimEnd();
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`Resource ${displaySafe(logicalId)} (${displaySafe(resourceType)}) has no non-empty string 'physicalId' in its state record, so cdkd cannot address it in AWS and did not try to delete it while removing it from the template. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the delete. Repair the record's 'physicalId', or delete the resource by hand and drop the record.${accountClause === '' ? '' : ` ${accountClause}`}
 Inspect it with: ${showCommand}
 Drop the record with: ${dropCommand}`
@@ -164,7 +178,7 @@ Drop the record with: ${dropCommand}`
     currentResource.properties
   );
   const finalSnapshotIdentifier = await prepareFinalSnapshotForDelete(
-    this.replacementDeps(),
+    deps.replacementDeps(),
     logicalId,
     resourceType,
     currentResource,
@@ -174,20 +188,20 @@ Drop the record with: ${dropCommand}`
   // Schema v7+: route DELETE through the layer recorded on state
   // (`provisionedBy: 'cc-api'` → Cloud Control; absent / `'sdk'`
   // → SDK provider — legacy default).
-  const deleteRoute = this.providerRegistry.getProviderFor({
+  const deleteRoute = deps.providerRegistry.getProviderFor({
     resourceType,
     provisionedBy: currentResource.provisionedBy,
   });
   const deleteProvider = deleteRoute.provider;
 
-  this.logger.debug(safeMsg`Deleting ${logicalId} (${resourceType})`);
+  deps.logger.debug(safeMsg`Deleting ${logicalId} (${resourceType})`);
   // Issue #1762: what the provider actually DID. `undefined` (the
   // back-compat `void` return) means "deleted"; a `'skipped'` outcome
   // means the resource was NOT deleted and may still be alive.
   let deleteResult: void | ResourceDeleteResult = undefined;
-  const inlinePolicyClaimed = this.inlinePolicyClaimedFor(resourceType, logicalId, stateResources);
+  const inlinePolicyClaimed = deps.inlinePolicyClaimedFor(resourceType, logicalId, stateResources);
   try {
-    deleteResult = await this.withRetry(
+    deleteResult = await deps.withRetry(
       () =>
         deleteProvider.delete(
           logicalId,
@@ -195,12 +209,12 @@ Drop the record with: ${dropCommand}`
           resourceType,
           currentResource.properties,
           {
-            expectedRegion: this.stackRegion,
+            expectedRegion: deps.stackRegion,
             ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
             ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             // Issue #4029: absent is CloudFormation's `Delete` here.
             deletionPolicy: governingPolicy ?? 'Delete',
-            ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+            ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
             // Issue #4157: the identity evidence of the record deleted.
             recordedAttributes: currentResource.attributes,
             // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
@@ -208,7 +222,7 @@ Drop the record with: ${dropCommand}`
             // go-to-k/cdkd#2007: the record is the persisted, redacted one,
             // so this deploy resolved nothing for it; the masker is its
             // derived-name registry, the printing bag this delete runs under.
-            maskSecrets: createUnionSecretMasker([secretNameBagFor(this.secretsRun, logicalId)]),
+            maskSecrets: createUnionSecretMasker([secretNameBagFor(deps.secretsRun(), logicalId)]),
           }
         ),
       logicalId,
@@ -252,7 +266,7 @@ Drop the record with: ${dropCommand}`
         msg.includes('NotFoundException') ||
         msg.includes('ResourceNotFoundException'))
     ) {
-      this.logger.debug(
+      deps.logger.debug(
         safeMsg`Resource ${logicalId} already deleted (${asIsMessage(msg)}), removing from state`
       );
     } else {
@@ -280,7 +294,7 @@ Drop the record with: ${dropCommand}`
     if (progress) progress.current++;
     const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
     renderer.removeTask(logicalId);
-    this.logger.info(
+    deps.logger.info(
       safeMsg`${skipPrefix}${formatResourceLine(
         'skipped',
         logicalId,
@@ -302,7 +316,7 @@ Drop the record with: ${dropCommand}`
     // it. An interrupted child destroy is resumed by re-running the deploy;
     // advising to drop its record first would untrack resources mid-teardown.
     const interrupted = nested && deleteSkipped.endsWith(' was interrupted');
-    const recovery = this.options.refusalRecovery;
+    const recovery = deps.options.refusalRecovery;
     const account = accountArgs(recovery);
     const accountClause = withheldAccountClause(
       recovery,
@@ -315,7 +329,7 @@ Drop the record with: ${dropCommand}`
       hole: nested ? 'child-stack' : 'stack',
       opts: { plainIdent: true },
     };
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`${deleteSkippedMessage(
         logicalId,
         currentResource.physicalId,
@@ -352,14 +366,14 @@ Drop the record with: ${dropCommand}`
         safeMsg`\nInspect it with: ${
           pasteableCommand('cdkd state show', [
             stackArg,
-            { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+            { flag: '--stack-region', value: deps.stackRegion, hole: 'region' },
             ...account,
           ]).command
         }` +
         safeMsg`\nDrop the record with: ${
           pasteableCommand('cdkd state orphan', [
             stackArg,
-            { flag: '--stack-region', value: this.stackRegion, hole: 'region' },
+            { flag: '--stack-region', value: deps.stackRegion, hole: 'region' },
             // The same gate `stateOrphanRecordRemedy` puts the id through.
             ...(nested
               ? []
@@ -391,7 +405,7 @@ Drop the record with: ${dropCommand}`
   if (progress) progress.current++;
   const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  this.logger.info(
+  deps.logger.info(
     safeMsg`${deletePrefix}${formatResourceLine('deleted', logicalId, resourceType)}`
   );
   return;

@@ -6701,7 +6701,7 @@ export async function scrubStack(
       : undefined;
   /**
    * A FRESH per-context bag, carrying the parent's per-parameter position
-   * associations on a nested child — what `DeployEngine.buildResolverContext`
+   * associations on a nested child — what the deploy's `buildResolverContext`
    * does for every context it builds (issue #2291). They decide WHICH
    * expression a `{Ref: <Param>}` leaf is positioned onto, never WHETHER a leaf
    * is rewritten.
@@ -7213,7 +7213,7 @@ export async function scrubStack(
       producerRegions,
       bestEffort: true,
       // A NESTED CHILD's parent bag (go-to-k/cdkd#2252) — the channel
-      // `DeployEngine.buildResolverContext` opens for a child engine. The
+      // the deploy's `buildResolverContext` opens for a child engine. The
       // resolver copies a pair into THIS context's `recordedSecretValues` only
       // where a `{Ref: <Param>}` resolves to a value carrying its plaintext, so
       // the needle lands in the bag of the resource that consumed the

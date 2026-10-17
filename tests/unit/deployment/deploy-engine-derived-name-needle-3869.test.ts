@@ -18,6 +18,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import {
+  buildResolverContext,
+  maskedInputSources,
+} from '../../../src/deployment/deploy-engine/resolver-context.js';
+import {
   maskForResource,
   noteSecretNamedReads,
   printingSecretsFor,
@@ -356,7 +360,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
         dependencies: [],
       } as ResourceState,
     };
-    const context = engine.buildResolverContext({ template: { Resources: {} }, resources }, stackName);
+    const context = buildResolverContext(engine.resolverContextDeps(), { template: { Resources: {} }, resources }, stackName);
     expect([...(context.secretNameNeedles?.('Role') ?? [])]).toContain(ROLE_ID);
     // A name resolved this deploy is plaintext in memory: only the target's
     // OWN bag says it is a secret.
@@ -538,7 +542,8 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     // A reader resolving it (noteSecretNamedRecord's embedded bag).
     const engine = makeEngine();
     engine.secretsRun.fingerprintNoEchoValues = noEcho;
-    const context = engine.buildResolverContext(
+    const context = buildResolverContext(
+      engine.resolverContextDeps(),
       { template: { Resources: {} }, resources: { Field: resolverRecord } },
       stackName
     );
@@ -580,7 +585,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
         dependencies: [],
       } as ResourceState,
     };
-    const context = engine.buildResolverContext({ template: { Resources: {} }, resources }, stackName);
+    const context = buildResolverContext(engine.resolverContextDeps(), { template: { Resources: {} }, resources }, stackName);
     expect([...(context.secretNameNeedles?.('Bucket') ?? [])]).toContain('noecho-bucket-name');
   });
 
@@ -668,14 +673,16 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     };
 
     // Each pass on its own, so neither can satisfy the other's floor.
-    await engine.maskedInputSources(template, {}, undefined, stackName)!.resolve('v');
+    await maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, stackName)!.resolve(
+      'v'
+    );
     expectPrintOnly();
     contexts = [];
     await resolveOutputs(engine.outputsRun, engine.outputsDeps(), template, {}, stackName, template);
     expectPrintOnly();
     // The control: an ordinary provisioning-shaped context records into its own bag.
     expect(
-      engine.buildResolverContext({ template, resources: {} }, stackName)
+      buildResolverContext(engine.resolverContextDeps(), { template, resources: {} }, stackName)
     ).not.toHaveProperty('printingSecrets');
   });
 });

@@ -86,7 +86,7 @@ that `cdkd import` of a `DBInstance` records those attributes too.
   concurrently resolving resource of a stack. The signal cannot escape: only the
   wrapper builds a probe context, and it catches the signal on the same `await`.
   No `guardedPhysicalIdFallback` call site sits inside a `try` of its own.
-- **Engine** (`deploy-engine.ts`). `buildResolverContext` sets `attributeHealer`
+- **Engine** (`deploy-engine/resolver-context.ts`). `buildResolverContext` sets `attributeHealer`
   on EVERY context — the deploy-internal diff pass, both provisioning arms and
   the outputs pass read the same stale record, and whichever asks first pays.
 - **`cdkd diff` supplies a READ-ONLY healer** (issue #3456,

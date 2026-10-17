@@ -98,6 +98,7 @@ vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { buildResolverContext } from '../../../src/deployment/deploy-engine/resolver-context.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { dynamicReferenceRetryDelays } from '../../../src/deployment/intrinsic-resolver/account-drain.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -516,7 +517,11 @@ describe('the recording seam and the persist writer (written records)', () => {
       { inheritedReferenceProvenance: snapshot },
       'us-east-1'
     );
-    const context = engine.buildResolverContext({ template: { Resources: {} }, resources: {} }, 's');
+    const context = buildResolverContext(
+      engine.resolverContextDeps(),
+      { template: { Resources: {} }, resources: {} },
+      's'
+    );
     expect(context.inheritedReferenceProvenance).toBe(snapshot);
   });
 

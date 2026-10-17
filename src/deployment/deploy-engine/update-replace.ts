@@ -60,6 +60,7 @@ import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { maskedInputSources } from './resolver-context.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -137,7 +138,13 @@ export async function updateByReplacement(
     secrets: updateSecrets,
     inputSources:
       template &&
-      this.maskedInputSources(template, stateResources, this.noEchoRun.noEchoConditions, stackName),
+      maskedInputSources(
+        this.resolverContextDeps(),
+        template,
+        stateResources,
+        this.noEchoRun.noEchoConditions,
+        stackName
+      ),
   });
   // Stateful guard for PROPERTY-DRIVEN replacement (an immutable /
   // createOnly property changed in the template). DELETE+CREATEing a

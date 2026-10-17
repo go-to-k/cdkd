@@ -91,7 +91,11 @@ import {
   possiblyMaskedKeys,
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
-import { printNestedStackReadsOnly } from './resolver-context.js';
+import {
+  buildResolverContext,
+  maskedInputSources,
+  printNestedStackReadsOnly,
+} from './resolver-context.js';
 import {
   confirmValueMoves,
   readProvenanceMovedPaths,
@@ -230,7 +234,8 @@ export async function provisionUpdate(
   // question about the desired side.
 
   // Resolve intrinsic functions in properties
-  const context = this.buildResolverContext(
+  const context = buildResolverContext(
+    this.resolverContextDeps(),
     {
       template: template!,
       resources: stateResources,
@@ -485,7 +490,8 @@ export async function provisionUpdate(
   // `Ref` to a resource the deploy just replaced (the diff saw the old one)
   // moves it too.
   const fingerprintSources =
-    template && this.maskedInputSources(template, stateResources, conditions, stackName);
+    template &&
+    maskedInputSources(this.resolverContextDeps(), template, stateResources, conditions, stackName);
   const fingerprints = fingerprintSources && inputFingerprinter(desiredProps, fingerprintSources);
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)
