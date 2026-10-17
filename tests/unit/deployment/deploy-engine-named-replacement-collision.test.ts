@@ -377,6 +377,56 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(callOrder).toEqual(['create', 'delete', 'create', 'create']);
   }, 15_000);
 
+  it('stops the delete-first re-create retry on a sibling-failure interrupt, and the thrown cause says so (not "user")', async () => {
+    // The re-create's retry loop (`replaceDeleteFirstAndRecreate`'s outer
+    // `withRetry`) checks `isInterrupted()` between attempts, not before the
+    // FIRST one — so the re-create attempt still runs once, but a second one
+    // must never fire once the engine is interrupted. The mock flips
+    // `engine.interrupted` / `engine.interruptCause` ITSELF, right before
+    // throwing the re-create's retryable collision, to simulate a SIBLING
+    // resource's failure racing this one's retry — exactly what
+    // `DeployEngine.replacementDeps()`'s live getters are for.
+    const engine = makeEngine({ replace: true });
+    const fields = engine as unknown as {
+      interrupted: boolean;
+      interruptCause: 'user' | 'sibling-failure' | null;
+    };
+    vi.mocked(provider.create).mockImplementation(async () => {
+      callOrder.push('create');
+      if (callOrder.filter((c) => c === 'create').length === 1) {
+        // The create-first attempt: collides, triggering the delete-first
+        // fallback under --replace.
+        throw alreadyExists();
+      }
+      // The re-create's first (and, if the retry is wired correctly, ONLY)
+      // attempt: another retryable collision, but the engine is ALREADY
+      // interrupted by the time this throws — the shape an interleaved
+      // sibling failure takes, set by the failing resource's own code path,
+      // never by this retry loop.
+      fields.interrupted = true;
+      fields.interruptCause = 'sibling-failure';
+      throw alreadyExists();
+    });
+
+    const err = await invokeProvision(engine).then(
+      () => null,
+      (e) => e as Error & { cause?: Error & { cause?: Error } }
+    );
+
+    // Exactly one create before the delete (the collision) and exactly one
+    // after it (the re-create's first and only attempt) — the retry stopped
+    // on the interrupt rather than spending its ~64s collision-retry budget.
+    expect(callOrder).toEqual(['create', 'delete', 'create']);
+    expect(err).not.toBeNull();
+    // `InterruptedError`'s message is keyed on the CAUSE: 'user' renders
+    // "interrupted by user (Ctrl+C)", anything else (here 'sibling-failure')
+    // renders "aborted after another resource failed". Asserting the message
+    // is what proves the engine's `interruptCause` getter — not a value
+    // captured once when `replacementDeps()` was built — reached the retry.
+    expect(err!.cause?.cause?.message).toBe('Deployment aborted after another resource failed');
+    expect(err!.cause?.cause?.message).not.toMatch(/interrupted by user/);
+  }, 15_000);
+
   it('reports that the old resource is already gone when the re-create ultimately fails', async () => {
     const raw = new Error('AccessDenied: not authorized');
     createFailures = [alreadyExists(), raw];
@@ -411,11 +461,17 @@ describe('DeployEngine — custom-named replacement collision', () => {
     createFailures = [alreadyExists(), new Error('AccessDenied: not authorized')];
     const engine = makeEngine({ replace: true });
     await invokeProvision(engine).catch(() => undefined);
-    expect((engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.has('Pipe')).toBe(true);
+    expect(
+      (engine as unknown as { replacementRun: { oldDeletedBeforeCreate: Set<string> } })
+        .replacementRun.oldDeletedBeforeCreate.has('Pipe')
+    ).toBe(true);
     const plain = makeEngine();
     createFailures = [alreadyExists()];
     await invokeProvision(plain).catch(() => undefined);
-    expect((plain as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.size).toBe(0);
+    expect(
+      (plain as unknown as { replacementRun: { oldDeletedBeforeCreate: Set<string> } })
+        .replacementRun.oldDeletedBeforeCreate.size
+    ).toBe(0);
   });
 
   it('passes a NON-collision create failure through unchanged', async () => {

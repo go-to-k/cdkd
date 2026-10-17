@@ -292,9 +292,9 @@ export async function provisionResource(
             updatePartial = bodyResult?.updatePartial;
             // go-to-k/cdkd#4043 (review MEDIUM-3): a replacement whose old
             // resource's delete was skipped left a survivor: a partial update.
-            const replacedSkip = this.replacedDeleteSkips.get(logicalId);
+            const replacedSkip = this.replacementRun.replacedDeleteSkips.get(logicalId);
             if (replacedSkip !== undefined) {
-              this.replacedDeleteSkips.delete(logicalId);
+              this.replacementRun.replacedDeleteSkips.delete(logicalId);
               if (updatePartial === undefined) {
                 updatePartial = replacedSkip;
                 if (counts) {
@@ -309,7 +309,7 @@ export async function provisionResource(
             }
             // go-to-k/cdkd#4900: a deferred delete of this row's old resource
             // that the retry skips must not count the row partial twice.
-            const deferred = this.deferredReplacedDeletes?.get(logicalId);
+            const deferred = this.replacementRun.deferredReplacedDeletes?.get(logicalId);
             if (deferred !== undefined && updatePartial !== undefined) deferred.rowPartial = true;
             nestedChildUnaddressed = unaddressed;
           } finally {

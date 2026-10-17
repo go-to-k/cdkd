@@ -23,7 +23,7 @@ import {
   withReferenceProvenance,
 } from './reference-provenance-record.js';
 import { ProvenanceCapture } from './deploy-engine/provenance-capture.js';
-import type { DeferredReplacedDelete } from './deploy-engine/replacement.js';
+import { ReplacementRunState, type ReplacementDeps } from './deploy-engine/replacement.js';
 import {
   isWrittenFromDeployedTemplate,
   withMaskedPropertyFingerprints,
@@ -87,7 +87,6 @@ import {
   stateNamingSecrets,
   type MaskingDeps,
 } from './deploy-engine/masking.js';
-import * as replacementMixin from './deploy-engine/replacement.js';
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
 import * as createMixin from './deploy-engine/create.js';
 import * as updateMixin from './deploy-engine/update.js';
@@ -499,22 +498,16 @@ export class DeployEngine {
   /** @internal */
   noEchoRun: NoEchoRunState = new NoEchoRunState();
   /**
-   * go-to-k/cdkd#4043 (review MEDIUM-3): per logical id, why a create-first
-   * replacement's delete of the OLD resource was skipped (its delete address
-   * is a redacted `***`, or a provider otherwise declined), leaving it alive
-   * and untracked. `provisionResource` turns it into the row's
-   * `updatePartial`, so the deploy exits 2 like any survivor
-   * (`--allow-unaddressed` opts out).
+   * This deploy's replacement bookkeeping — the ten fields
+   * {@link ReplacementRunState} holds (`replacedDeleteSkips`,
+   * `deferredReplacedDeletes`, `retainedOldOnReplacement`,
+   * `replacedOldMaySurvive`, `recreatedUnderSameId`, `restoredLostChildren`,
+   * `updatesThatSentNothing`, `updateWasReplaced`, `inPlaceCreateOnlyPaths`,
+   * `oldDeletedBeforeCreate`) — replaced, not cleared in place, per
+   * `deploy()`, like {@link secretsRun}.
    */
   /** @internal */
-  replacedDeleteSkips = new Map<string, string>();
-  /**
-   * go-to-k/cdkd#4900: a replacement's failed delete of its OLD resource,
-   * per logical id, retried once after the DAG. Defined only while
-   * `executeDeployment` runs; a delete outside it warns at once.
-   */
-  /** @internal */
-  deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
+  replacementRun: ReplacementRunState = new ReplacementRunState();
   /**
    * This deploy's Outputs-pass state — the ten fields {@link OutputsRunState}
    * holds (`outputSecrets`, `outputsPassSecretMaps`, `outputsTemplateSource`,
@@ -579,98 +572,6 @@ export class DeployEngine {
   liveTaskLabels = new Map<string, { label: string; replacing: boolean; warnSuffix?: string }>();
 
   /**
-   * Logical ids whose replacement this deploy DELIBERATELY left the old
-   * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
-   * [#2603](https://github.com/go-to-k/cdkd/issues/2603)).
-   *
-   * Written by every engine path that skips the post-replacement delete, read
-   * once at the `completedOperations.push` site to stamp
-   * {@link CompletedOperation.oldResourceRetained}. It exists because the
-   * rollback classifier used to re-derive the verdict from
-   * `previousState.updateReplacePolicy` — a DIFFERENT source than the
-   * template read the engine decides from — so the two disagreed on exactly
-   * the deploy that changes the attribute, in both directions:
-   *
-   *   - ADDING `Retain`: the deploy orphans the old resource while the
-   *     previous state record carries no policy, so the rollback re-CREATED a
-   *     resource that is still alive (a duplicate for an auto-named type, an
-   *     `AlreadyExists` failure for a user-named one).
-   *   - DROPPING `Retain`: state still carries the stale `Retain`, the
-   *     template omits it so the deploy correctly DELETES the old resource,
-   *     and the rollback then re-adopted a physical id that no longer exists,
-   *     leaving state naming a deleted resource.
-   *
-   * Records only the DELIBERATE retention. A best-effort cleanup delete that
-   * FAILED, was SKIPPED, or was blocked by a failed final snapshot may also
-   * leave the old resource alive, but the deploy does not KNOW it survived —
-   * those go in {@link replacedOldMaySurvive} instead.
-   *
-   * Cleared per `deploy()` alongside the other per-run maps: a `false` here
-   * must mean "this deploy deleted it", never "a previous run said so".
-   */
-  /** @internal */
-  retainedOldOnReplacement = new Set<string>();
-
-  /**
-   * go-to-k/cdkd#2631: logical ids whose replacement's cleanup delete of the
-   * OLD resource did not confirm it gone (failed, deferred, skipped, or
-   * blocked by a failed final snapshot), with the verdict stamped as
-   * {@link CompletedOperation.oldResourceMaySurvive}, which makes the rollback
-   * read AWS for the old resource before re-creating it. Cleared per
-   * `deploy()`.
-   */
-  /** @internal */
-  replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed'>();
-
-  /**
-   * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
-   * the SAME physical id (a fixed-name recreate, a delete-first `--replace`).
-   * What AWS stored inside the old resource went with it, so the UPDATE arm
-   * re-creates such a child (`child-of-recreated-parent.ts`) rather than
-   * skipping it as unchanged. Cleared per `deploy()`.
-   */
-  /** @internal */
-  recreatedUnderSameId = new Set<string>();
-
-  /**
-   * go-to-k/cdkd#4443: the children of a `recreatedUnderSameId` parent whose
-   * re-create / re-put completed in this deploy. A failed deploy forgets the
-   * state record of every OTHER such child (it is gone from AWS), so the next
-   * deploy creates it. Cleared per `deploy()`.
-   */
-  /** @internal */
-  restoredLostChildren = new Set<string>();
-
-  /**
-   * go-to-k/cdkd#4443: logical ids whose provider update reported it sent
-   * NOTHING (`sentNothing`, Cloud Control's empty patch). A lost `reput` child
-   * among them restored nothing, so a failed deploy treats it as unwritten
-   * even though its operation completed, or threw afterwards. Cleared per
-   * `deploy()`.
-   */
-  /** @internal */
-  updatesThatSentNothing = new Set<string>();
-
-  /**
-   * go-to-k/cdkd#4615: the provider's `wasReplaced` answer for each UPDATE
-   * that ran through a provider `update()`, journaled on its completed op. An
-   * in-place update may still change the physical id (an SQS QueuePolicy's is
-   * its first queue), and only this answer tells the rollback to revert it in
-   * place instead of re-creating the old one and deleting the "new" one.
-   * Cleared per `deploy()`.
-   */
-  /** @internal */
-  updateWasReplaced = new Map<string, boolean>();
-
-  /**
-   * State schema v12 (go-to-k/cdkd#4847 / #4852): per record UPDATED IN PLACE
-   * that holds a token, its type's create-only paths (`'all'` when not known),
-   * for the persist writer's union rule. Cleared per `deploy()`.
-   */
-  /** @internal */
-  inPlaceCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]> | 'all'>();
-
-  /**
    * State schema v12: the loaded record's outputs bag and its provenance, for
    * a save that carries that bag. Set at load, cleared per `deploy()`.
    */
@@ -687,15 +588,6 @@ export class DeployEngine {
    */
   /** @internal */
   provenanceCapture: ProvenanceCapture;
-
-  /**
-   * go-to-k/cdkd#4604: logical ids whose replacement deleted (or found gone)
-   * the old resource BEFORE its create ran. A replacement orphan journaled for
-   * one says so, so a rollback warns that the old resource is gone instead of
-   * settling the failed UPDATE as a no-op. Cleared per `deploy()`.
-   */
-  /** @internal */
-  oldDeletedBeforeCreate = new Set<string>();
 
   /**
    * The pre-deploy state records, as loaded — the #1852 heal's eligibility
@@ -920,6 +812,33 @@ export class DeployEngine {
   }
 
   /**
+   * This engine's current deps for `deploy-engine/replacement.ts`'s plain
+   * functions, built fresh at each call site like {@link maskingDeps}.
+   * `options` / `stackRegion` / `logger` are never reassigned after
+   * construction, so they are passed by value; `secretsRun` (replaced per
+   * `deploy()`), `stackRecordsView` / `deployStateResources` (set by
+   * `executeDeployment`) and `interrupted` / `interruptCause` (set mid-deploy)
+   * are live getters, and the forwarded methods stay bound to THIS engine.
+   * @internal
+   */
+  replacementDeps(): ReplacementDeps {
+    return {
+      options: this.options,
+      stackRegion: this.stackRegion,
+      logger: this.logger,
+      secretsRun: () => this.secretsRun,
+      stackRecordsView: () => this.stackRecordsView,
+      deployStateResources: () => this.deployStateResources,
+      interrupted: () => this.interrupted,
+      interruptCause: () => this.interruptCause,
+      withRetry: (...args) => this.withRetry(...args),
+      maskingRetryLoggerFor: (...args) => this.maskingRetryLoggerFor(...args),
+      inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
+      recordEvent: (...args) => this.recordEvent(...args),
+    };
+  }
+
+  /**
    * Deploy a CloudFormation template
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
@@ -939,8 +858,12 @@ export class DeployEngine {
     this.secretsRun = new SecretsRunState();
     // Replaces all ten `NoEcho` positional-arm fields at once (`NoEchoRunState`).
     this.noEchoRun = new NoEchoRunState();
-    this.replacedDeleteSkips = new Map();
-    this.deferredReplacedDeletes = undefined;
+    // Replaces all ten replacement-bookkeeping fields at once
+    // (`ReplacementRunState`). Issue #2603: an engine can be reused across
+    // deploys, and a STALE `true` in `retainedOldOnReplacement` would tell the
+    // next run's rollback to re-adopt an id this run deleted. Reset in the
+    // same block as the other per-run bags.
+    this.replacementRun = new ReplacementRunState();
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -954,26 +877,15 @@ export class DeployEngine {
     // are ALSO reset per PASS at the top of `resolveOutputs`, since they
     // describe the last pass, not the deploy. In
     // particular `skippedOutputs` (issue #2740, same reuse hazard as
-    // `retainedOldOnReplacement` below: `resolveOutputs` recomputes it at the
+    // `replacementRun.retainedOldOnReplacement` above: `resolveOutputs` recomputes it at the
     // END of a pass but early-returns for a template with no `Outputs`
     // without touching it) and `outputsTemplateSource` (issue #1943's class /
     // #2740's `__proto__` case: null-prototype, keyed by TEMPLATE-CONTROLLED
     // output names, same as the bag it positions).
     this.outputsRun = new OutputsRunState();
-    // Issue #2603: an engine can be reused across deploys, and a STALE `true`
-    // here would tell the next run's rollback to re-adopt an id this run
-    // deleted. Reset in the same block as the other per-run bags.
-    this.retainedOldOnReplacement = new Set();
-    this.replacedOldMaySurvive = new Map();
-    this.recreatedUnderSameId = new Set();
-    this.restoredLostChildren = new Set();
-    this.updatesThatSentNothing = new Set();
-    this.updateWasReplaced = new Map();
-    this.inPlaceCreateOnlyPaths = new Map();
     this.provenanceBaseline = undefined;
     this.provenanceCapture = this.freshProvenanceCapture();
     this.observedCapture = this.freshObservedCapture();
-    this.oldDeletedBeforeCreate = new Set();
     // Issue #1852: per-deploy, like every bag above — a reused engine must not
     // serve last deploy's read, nor persist it against today's records.
     this.rebaseline({});
@@ -1247,15 +1159,17 @@ export class DeployEngine {
       : undefined;
     // An update whose provider sent NOTHING (Cloud Control's empty patch,
     // go-to-k/cdkd#4443) left AWS as the previous record describes it.
-    if (this.updatesThatSentNothing.has(logicalId) && previous !== undefined) {
+    if (this.replacementRun.updatesThatSentNothing.has(logicalId) && previous !== undefined) {
       return previous.referenceProvenance;
     }
     // `update-in-place.ts` records the paths for every in-place write that
     // holds pass provenance or a previous field, the only writes that reach
     // the union; `'all'` is the conservative answer for any other.
-    const createOnly = sameGeneration ? this.inPlaceCreateOnlyPaths.get(logicalId) : 'all';
+    const createOnly = sameGeneration
+      ? this.replacementRun.inPlaceCreateOnlyPaths.get(logicalId)
+      : 'all';
     const inPlace =
-      this.updateWasReplaced.get(logicalId) === false && previous !== undefined
+      this.replacementRun.updateWasReplaced.get(logicalId) === false && previous !== undefined
         ? {
             createOnly: createOnly ?? ('all' as const),
             attributesCarried:
@@ -1634,7 +1548,7 @@ export class DeployEngine {
    * `logicalId`-keyed read is the only thing available there. The two
    * `--replace` sites do hold their caller's bag and use
    * {@link maskingRetryLoggerFor} instead; see the note on
-   * {@link replaceDeleteFirstAndRecreate}'s `secrets` parameter for why binding
+   * `replacement.ts`'s `replaceDeleteFirstAndRecreate` `secrets` parameter for why binding
    * the bag beats looking it up whenever the bag is in scope.
    *
    * Do NOT restate that the engine "already masked its own error text" — an
@@ -1655,7 +1569,7 @@ export class DeployEngine {
    *
    * Preferred over {@link maskingRetryLogger} wherever the resolution pass's
    * own `RecordedSecretValues` is in scope, for the reason
-   * {@link replaceDeleteFirstAndRecreate}'s parameter list already states about
+   * `replacement.ts`'s `replaceDeleteFirstAndRecreate` parameter list already states about
    * the masker it threads: a map looked up by logical id is a DIFFERENT thing
    * from the bag this call resolved with, and one file must not argue both
    * sides. It delegates to the shared `masking-retry-logger.ts` so the deploy
@@ -1685,18 +1599,6 @@ DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacem
 DeployEngine.prototype.updateInPlace = updateInPlaceMixin.updateInPlace;
 
 DeployEngine.prototype.provisionCreate = createMixin.provisionCreate;
-
-DeployEngine.prototype.replacementDeleteContext = replacementMixin.replacementDeleteContext;
-DeployEngine.prototype.prepareFinalSnapshotForDelete =
-  replacementMixin.prepareFinalSnapshotForDelete;
-DeployEngine.prototype.replaceDeleteFirstAndRecreate =
-  replacementMixin.replaceDeleteFirstAndRecreate;
-DeployEngine.prototype.typeChangeNameQuestion = replacementMixin.typeChangeNameQuestion;
-DeployEngine.prototype.checkedReplacementNameChange = replacementMixin.checkedReplacementNameChange;
-DeployEngine.prototype.createFirstThenDeleteOld = replacementMixin.createFirstThenDeleteOld;
-DeployEngine.prototype.deleteReplacedAfterCreate = replacementMixin.deleteReplacedAfterCreate;
-DeployEngine.prototype.retryDeferredReplacedDeletes = replacementMixin.retryDeferredReplacedDeletes;
-DeployEngine.prototype.warnUnretriedReplacedDeletes = replacementMixin.warnUnretriedReplacedDeletes;
 
 DeployEngine.prototype.adoptRollbackOrphans = rollbackMixin.adoptRollbackOrphans;
 DeployEngine.prototype.performRollback = rollbackMixin.performRollback;

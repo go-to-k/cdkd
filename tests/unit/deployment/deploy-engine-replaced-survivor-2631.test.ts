@@ -8,6 +8,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  prepareFinalSnapshotForDelete,
+  retryDeferredReplacedDeletes,
+} from '../../../src/deployment/deploy-engine/replacement.js';
 import { markDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -62,6 +66,19 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
+// The retry pass and the final-snapshot gate some cases stub
+// (`deploy-engine/replacement.ts`); every other case runs the real ones, which
+// `mockReset` restores.
+vi.mock('../../../src/deployment/deploy-engine/replacement.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/replacement.js')>();
+  return {
+    ...actual,
+    retryDeferredReplacedDeletes: vi.fn(actual.retryDeferredReplacedDeletes),
+    prepareFinalSnapshotForDelete: vi.fn(actual.prepareFinalSnapshotForDelete),
+  };
+});
+
 const REVISION = 'AWS::Lambda::WebFunctionRevision';
 
 /** An AWS SDK-shaped error: its `name` is the service's error code. */
@@ -86,6 +103,8 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(retryDeferredReplacedDeletes).mockReset();
+    vi.mocked(prepareFinalSnapshotForDelete).mockReset();
     printed.info.length = 0;
     printed.warn.length = 0;
     endpointRevision = 'rev-old';
@@ -348,16 +367,15 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
     })) as unknown as ResourceProvider['update'];
     refusal = () => awsError('AccessDenied', 'denied');
     const engine = makeEngine(true);
-    const host = engine as unknown as {
-      replacedOldMaySurvive: Map<string, string>;
-      retryDeferredReplacedDeletes: () => Promise<void>;
-    };
-    host.retryDeferredReplacedDeletes = async () => {
+    vi.mocked(retryDeferredReplacedDeletes).mockImplementation(async (run) => {
       // This retry deleted it; a later entry's pass then threw.
-      host.replacedOldMaySurvive.delete('Revision');
+      run.replacedOldMaySurvive.delete('Revision');
       throw new Error('retry pass failed');
-    };
+    });
     await expect(deploy({ engine })).rejects.toThrow();
+    // The stub ran, on THIS engine's per-deploy state.
+    expect(retryDeferredReplacedDeletes).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(retryDeferredReplacedDeletes).mock.calls[0]![0]).toBe(engine.replacementRun);
     expect('oldResourceMaySurvive' in revisionOp(journaled[0]!)).toBe(false);
   });
 
@@ -385,16 +403,15 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
     })) as unknown as ResourceProvider['update'];
     refusal = () => awsError('AccessDenied', 'denied');
     const engine = makeEngine(true);
-    const host = engine as unknown as {
-      replacedOldMaySurvive: Map<string, string>;
-      retryDeferredReplacedDeletes: () => Promise<void>;
-    };
     // The retry ran (and found the delete unconfirmed), then its pass threw.
-    host.retryDeferredReplacedDeletes = async () => {
-      host.replacedOldMaySurvive.set('Revision', 'unconfirmed');
+    vi.mocked(retryDeferredReplacedDeletes).mockImplementation(async (run) => {
+      run.replacedOldMaySurvive.set('Revision', 'unconfirmed');
       throw new Error('retry pass failed');
-    };
+    });
     await expect(deploy({ engine })).rejects.toThrow();
+    // The stub ran, on THIS engine's per-deploy state.
+    expect(retryDeferredReplacedDeletes).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(retryDeferredReplacedDeletes).mock.calls[0]![0]).toBe(engine.replacementRun);
     expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('unconfirmed');
   });
 
@@ -421,12 +438,12 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
   it('marks the op kept when a failed final snapshot blocks the delete', async () => {
     endpointRevision = 'none';
     const engine = makeEngine(true);
-    (
-      engine as unknown as { prepareFinalSnapshotForDelete: () => Promise<never> }
-    ).prepareFinalSnapshotForDelete = async () => {
+    vi.mocked(prepareFinalSnapshotForDelete).mockImplementation(async () => {
       throw new Error('SnapshotQuotaExceeded');
-    };
+    });
     const result = await deploy({ engine, updateReplacePolicy: 'Snapshot' });
+    // The stub ran: the gate refused, so the delete was never sent.
+    expect(prepareFinalSnapshotForDelete).toHaveBeenCalled();
     expect(provider.delete).not.toHaveBeenCalled();
     expect(revisionOp(result.completedOperations).oldResourceMaySurvive).toBe('kept');
   });
@@ -435,8 +452,7 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
     const engine = makeEngine(true);
     endpointFails = true;
     await expect(deploy({ engine })).rejects.toThrow();
-    const marks = () =>
-      (engine as unknown as { replacedOldMaySurvive: Map<string, string> }).replacedOldMaySurvive;
+    const marks = () => engine.replacementRun.replacedOldMaySurvive;
     expect([...marks().keys()]).toEqual(['Revision']);
     // `deploy()` resets its per-run bags before its first await; the state
     // read failing right after is enough to observe it.

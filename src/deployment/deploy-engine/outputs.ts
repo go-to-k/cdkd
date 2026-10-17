@@ -127,7 +127,7 @@ export class OutputsRunState {
    * skippedOutputs`). `undefined` when nothing was skipped, so the saves that
    * persist the resolved bag spread it as-is and the field stays omitted.
    *
-   * Issue #2740, same reuse hazard as the engine's `retainedOldOnReplacement`:
+   * Issue #2740, same reuse hazard as `ReplacementRunState.retainedOldOnReplacement`:
    * `resolveOutputs` recomputes this field at the END of a pass, but
    * early-returns for a template with no `Outputs` without touching it, so a
    * STALE value from a previous deploy of a reused engine would otherwise

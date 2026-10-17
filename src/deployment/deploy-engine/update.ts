@@ -391,7 +391,7 @@ export async function provisionUpdate(
   const lostCandidate = childLostWithRecreatedParent({
     resourceType,
     templateProperties: desiredProps,
-    recreatedUnderSameId: this.recreatedUnderSameId,
+    recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
     recordedTypeOf: (id) =>
       Object.hasOwn(stateResources, id) ? stateResources[id]?.resourceType : undefined,
     conditions,
@@ -1690,7 +1690,7 @@ export async function provisionUpdate(
   // from state by the failure path, so the next deploy creates it.
   const markRestored = <T>(outcome: T): T => {
     if (lostChild === undefined) return outcome;
-    if (this.updatesThatSentNothing.has(logicalId)) {
+    if (this.replacementRun.updatesThatSentNothing.has(logicalId)) {
       // The provider sent nothing (Cloud Control's patch from record to
       // template is empty), so nothing reached the recreated parent: say so
       // rather than report it restored. A failed deploy reads the same set.
@@ -1704,7 +1704,7 @@ export async function provisionUpdate(
       );
       return outcome;
     }
-    this.restoredLostChildren.add(logicalId);
+    this.replacementRun.restoredLostChildren.add(logicalId);
     return outcome;
   };
   if (needsReplacement) {

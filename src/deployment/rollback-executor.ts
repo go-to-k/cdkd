@@ -27,7 +27,7 @@
  *    - `Retain` → ORPHANED (removed from state, left in AWS). The policy
  *      says KEEP the resource, so cdkd does.
  *    - `Snapshot` → final snapshot, THEN delete (issue #1358), through the
- *      same mechanism matrix as the deploy engine's
+ *      same mechanism matrix as `deploy-engine/replacement.ts`'s
  *      `prepareFinalSnapshotForDelete`: atomic delete parameter for the
  *      SDK-routed `ATOMIC_FINAL_SNAPSHOT_TYPES`, an explicit pre-delete
  *      snapshot for `PRE_DELETE_SNAPSHOT_TYPES`, refusal for every other

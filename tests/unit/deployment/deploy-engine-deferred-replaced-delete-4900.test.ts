@@ -12,6 +12,12 @@ import { getStackRecords } from '../../../src/deployment/stack-records-scope.js'
 import { withIndeterminateGuard } from '../../../src/deployment/delete-outcome.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction/log-only.js';
 import { secretNameBagFor } from '../../../src/deployment/deploy-engine/masking.js';
+import {
+  type DeferredReplacedDelete,
+  deleteReplacedAfterCreate,
+  retryDeferredReplacedDeletes,
+  warnUnretriedReplacedDeletes,
+} from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -376,26 +382,25 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
   });
 
   it('a retry that throws outside the provider call warns and still retries the rest', async () => {
-    const engine = makeEngine() as unknown as {
-      options: { concurrency: number };
-      deferredReplacedDeletes: Map<string, unknown> | undefined;
-      retryDeferredReplacedDeletes: (stackName: string, counts: unknown) => Promise<void>;
-    };
+    const engine = makeEngine();
     engine.options.concurrency = 1;
     const second = vi.fn(async () => undefined);
-    const entry = (retry: () => Promise<void>) => ({
+    const entry = (retry: () => Promise<void>): DeferredReplacedDelete => ({
       physicalId: 'rev-x',
       resourceType: REVISION,
       provisionedBy: 'cc-api',
       failureMessage: 'in use',
       retry,
     });
-    engine.deferredReplacedDeletes = new Map([
+    engine.replacementRun.deferredReplacedDeletes = new Map([
       ['First', entry(async () => { throw new Error('unexpected'); })],
       ['Second', entry(second)],
     ]);
 
-    await engine.retryDeferredReplacedDeletes('MyStack', { updated: 2, updatePartial: 0 });
+    await retryDeferredReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'MyStack', {
+      updated: 2,
+      updatePartial: 0,
+    });
 
     expect(second).toHaveBeenCalledTimes(1);
     const warned = lines('warn').find((l) => l.includes('Failed to delete old resource First'));
@@ -410,9 +415,7 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
     };
     await expect(deploy(engine)).rejects.toThrow();
 
-    expect(
-      (engine as unknown as { deferredReplacedDeletes: unknown }).deferredReplacedDeletes
-    ).toBeUndefined();
+    expect(engine.replacementRun.deferredReplacedDeletes).toBeUndefined();
   });
 
   it('masks a secret the deferred delete error echoes, in both the deferral and the final warning', async () => {
@@ -420,14 +423,12 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
     provider.delete = vi.fn(async () => {
       throw new Error(`ConflictException for ${secret}`);
     }) as unknown as ResourceProvider['delete'];
-    const engine = makeEngine() as unknown as {
-      deferredReplacedDeletes: Map<string, unknown> | undefined;
-      deleteReplacedAfterCreate: (...args: unknown[]) => Promise<void>;
-      warnUnretriedReplacedDeletes: (why: 'failed' | 'interrupted') => void;
-    };
-    engine.deferredReplacedDeletes = new Map();
+    const engine = makeEngine();
+    engine.replacementRun.deferredReplacedDeletes = new Map();
 
-    await engine.deleteReplacedAfterCreate(
+    await deleteReplacedAfterCreate(
+      engine.replacementRun,
+      engine.replacementDeps(),
       'Revision',
       REVISION,
       { physicalId: 'rev-old', resourceType: REVISION, properties: {} },
@@ -435,9 +436,10 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
       {},
       undefined,
       undefined,
-      new Map([[secret, '{{resolve:secretsmanager:s}}']])
+      new Map([[secret, '{{resolve:secretsmanager:s}}']]),
+      undefined
     );
-    engine.warnUnretriedReplacedDeletes('failed');
+    warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'failed');
 
     const deferral = lines('info').find((l) => l.includes('Could not delete old Revision'));
     const warned = lines('warn').find((l) => l.includes('Failed to delete old resource Revision'));

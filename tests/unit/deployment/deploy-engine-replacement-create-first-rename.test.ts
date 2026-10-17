@@ -16,6 +16,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  checkedReplacementNameChange,
+  deleteReplacedAfterCreate,
+} from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -379,11 +383,11 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
     it('masks a secret the failed old-resource delete echoes', async () => {
       const secret = 'hunter2\u0007secret-value';
       h.deleteFailure = new Error(`AccessDenied for ${secret}`);
-      const engine = makeEngine(h) as unknown as {
-        deleteReplacedAfterCreate: (...args: unknown[]) => Promise<void>;
-      };
+      const engine = makeEngine(h);
 
-      await engine.deleteReplacedAfterCreate(
+      await deleteReplacedAfterCreate(
+        engine.replacementRun,
+        engine.replacementDeps(),
         'Fn',
         'AWS::Lambda::Function',
         { physicalId: 'my-fn', resourceType: 'AWS::Lambda::Function', properties: {} },
@@ -391,7 +395,8 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         {},
         undefined,
         undefined,
-        new Map([[secret, '{{resolve:secretsmanager:s}}']])
+        new Map([[secret, '{{resolve:secretsmanager:s}}']]),
+        undefined
       );
 
       const line = warnLines().find((l) => l.includes('Failed to delete old resource Fn'));
@@ -410,11 +415,11 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         outcome: 'skipped',
         reason: 'malformed physicalId in state — no delete issued',
       });
-      const engine = makeEngine(h) as unknown as {
-        deleteReplacedAfterCreate: (...args: unknown[]) => Promise<void>;
-      };
+      const engine = makeEngine(h);
 
-      await engine.deleteReplacedAfterCreate(
+      await deleteReplacedAfterCreate(
+        engine.replacementRun,
+        engine.replacementDeps(),
         'Rec',
         'AWS::Route53::RecordSet',
         { physicalId: composite, resourceType: 'AWS::Route53::RecordSet', properties: {} },
@@ -422,7 +427,8 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         {},
         undefined,
         undefined,
-        new Map()
+        new Map(),
+        undefined
       );
 
       const line = warnLines().find((l) => l.includes('while cleaning up the replaced resource'));
@@ -634,9 +640,9 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
       expect(h.callOrder).toEqual(['create']);
       // Issue #2603: what the rollback journal's `oldResourceRetained` reads.
       expect(
-        (engine as unknown as { retainedOldOnReplacement: Set<string> }).retainedOldOnReplacement.has(
-          'Fn'
-        )
+        (
+          engine as unknown as { replacementRun: { retainedOldOnReplacement: Set<string> } }
+        ).replacementRun.retainedOldOnReplacement.has('Fn')
       ).toBe(true);
       // go-to-k/cdkd#4438: the kept resource holds the stack's create token.
       expect(noteRetained).toHaveBeenCalledTimes(1);
@@ -897,12 +903,9 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     // applied after the rendering no longer finds the value.
     const secret = 'hunter2\u0007secret-value';
     h.importResult = new Error(`AccessDenied for ${secret} on GetQueueUrl`);
-    const engine = makeEngine(h) as unknown as {
-      checkedReplacementNameChange: (input: Record<string, unknown>) => Promise<unknown>;
-    };
+    const engine = makeEngine(h);
 
-    const err = (await engine
-      .checkedReplacementNameChange({
+    const err = (await checkedReplacementNameChange(engine.replacementDeps(), {
         logicalId: 'Fn',
         resourceType: QUEUE,
         oldResourceType: QUEUE,

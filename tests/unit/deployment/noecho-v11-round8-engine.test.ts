@@ -306,7 +306,7 @@ describe('DeployEngine - NoEcho round 8', () => {
       .mockImplementation(async function (this: DeployEngine, logicalId: string, ...rest: unknown[]) {
         const counts = rest[6] as { updatePartial: number } | undefined;
         if (counts) counts.updatePartial++;
-        this.replacedDeleteSkips.set(logicalId, 'reason-B');
+        this.replacementRun.replacedDeleteSkips.set(logicalId, 'reason-B');
         return { updatePartial: 'reason-A' };
       });
     try {

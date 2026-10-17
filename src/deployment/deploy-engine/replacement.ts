@@ -62,27 +62,146 @@ import {
   unionOfSecretBags,
 } from '../secret-redaction.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    replacementDeleteContext: OmitThisParameter<typeof replacementDeleteContext>;
-    /** @internal */
-    prepareFinalSnapshotForDelete: OmitThisParameter<typeof prepareFinalSnapshotForDelete>;
-    /** @internal */
-    replaceDeleteFirstAndRecreate: OmitThisParameter<typeof replaceDeleteFirstAndRecreate>;
-    /** @internal */
-    typeChangeNameQuestion: OmitThisParameter<typeof typeChangeNameQuestion>;
-    /** @internal */
-    checkedReplacementNameChange: OmitThisParameter<typeof checkedReplacementNameChange>;
-    /** @internal */
-    createFirstThenDeleteOld: OmitThisParameter<typeof createFirstThenDeleteOld>;
-    /** @internal */
-    deleteReplacedAfterCreate: OmitThisParameter<typeof deleteReplacedAfterCreate>;
-    /** @internal */
-    retryDeferredReplacedDeletes: OmitThisParameter<typeof retryDeferredReplacedDeletes>;
-    /** @internal */
-    warnUnretriedReplacedDeletes: OmitThisParameter<typeof warnUnretriedReplacedDeletes>;
-  }
+/**
+ * One deploy's replacement bookkeeping: what each replacement did to its OLD
+ * resource (retained, may survive, deleted before the create, re-created
+ * under the same id), the deletes it deferred or skipped, and what each
+ * in-place update reported. `deploy()` replaces the whole object rather than
+ * clearing it in place, so a reused engine never journals or rolls back with
+ * a previous deploy's verdicts.
+ */
+export class ReplacementRunState {
+  /**
+   * go-to-k/cdkd#4043 (review MEDIUM-3): per logical id, why a create-first
+   * replacement's delete of the OLD resource was skipped (its delete address
+   * is a redacted `***`, or a provider otherwise declined), leaving it alive
+   * and untracked. `provisionResource` turns it into the row's
+   * `updatePartial`, so the deploy exits 2 like any survivor
+   * (`--allow-unaddressed` opts out).
+   */
+  replacedDeleteSkips = new Map<string, string>();
+  /**
+   * go-to-k/cdkd#4900: a replacement's failed delete of its OLD resource,
+   * per logical id, retried once after the DAG. Defined only while
+   * `executeDeployment` runs; a delete outside it warns at once.
+   */
+  deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
+  /**
+   * Logical ids whose replacement this deploy DELIBERATELY left the old
+   * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
+   * [#2603](https://github.com/go-to-k/cdkd/issues/2603)).
+   *
+   * Written by every engine path that skips the post-replacement delete, read
+   * once at the `completedOperations.push` site to stamp
+   * {@link CompletedOperation.oldResourceRetained}. It exists because the
+   * rollback classifier used to re-derive the verdict from
+   * `previousState.updateReplacePolicy` — a DIFFERENT source than the
+   * template read the engine decides from — so the two disagreed on exactly
+   * the deploy that changes the attribute, in both directions:
+   *
+   *   - ADDING `Retain`: the deploy orphans the old resource while the
+   *     previous state record carries no policy, so the rollback re-CREATED a
+   *     resource that is still alive (a duplicate for an auto-named type, an
+   *     `AlreadyExists` failure for a user-named one).
+   *   - DROPPING `Retain`: state still carries the stale `Retain`, the
+   *     template omits it so the deploy correctly DELETES the old resource,
+   *     and the rollback then re-adopted a physical id that no longer exists,
+   *     leaving state naming a deleted resource.
+   *
+   * Records only the DELIBERATE retention. A best-effort cleanup delete that
+   * FAILED, was SKIPPED, or was blocked by a failed final snapshot may also
+   * leave the old resource alive, but the deploy does not KNOW it survived —
+   * those go in {@link replacedOldMaySurvive} instead.
+   *
+   * Cleared per `deploy()` alongside the other per-run maps: a `false` here
+   * must mean "this deploy deleted it", never "a previous run said so".
+   */
+  retainedOldOnReplacement = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#2631: logical ids whose replacement's cleanup delete of the
+   * OLD resource did not confirm it gone (failed, deferred, skipped, or
+   * blocked by a failed final snapshot), with the verdict stamped as
+   * {@link CompletedOperation.oldResourceMaySurvive}, which makes the rollback
+   * read AWS for the old resource before re-creating it. Cleared per
+   * `deploy()`.
+   */
+  replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed'>();
+
+  /**
+   * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
+   * the SAME physical id (a fixed-name recreate, a delete-first `--replace`).
+   * What AWS stored inside the old resource went with it, so the UPDATE arm
+   * re-creates such a child (`child-of-recreated-parent.ts`) rather than
+   * skipping it as unchanged. Cleared per `deploy()`.
+   */
+  recreatedUnderSameId = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#4443: the children of a `recreatedUnderSameId` parent whose
+   * re-create / re-put completed in this deploy. A failed deploy forgets the
+   * state record of every OTHER such child (it is gone from AWS), so the next
+   * deploy creates it. Cleared per `deploy()`.
+   */
+  restoredLostChildren = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#4443: logical ids whose provider update reported it sent
+   * NOTHING (`sentNothing`, Cloud Control's empty patch). A lost `reput` child
+   * among them restored nothing, so a failed deploy treats it as unwritten
+   * even though its operation completed, or threw afterwards. Cleared per
+   * `deploy()`.
+   */
+  updatesThatSentNothing = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#4615: the provider's `wasReplaced` answer for each UPDATE
+   * that ran through a provider `update()`, journaled on its completed op. An
+   * in-place update may still change the physical id (an SQS QueuePolicy's is
+   * its first queue), and only this answer tells the rollback to revert it in
+   * place instead of re-creating the old one and deleting the "new" one.
+   * Cleared per `deploy()`.
+   */
+  updateWasReplaced = new Map<string, boolean>();
+
+  /**
+   * State schema v12 (go-to-k/cdkd#4847 / #4852): per record UPDATED IN PLACE
+   * that holds a token, its type's create-only paths (`'all'` when not known),
+   * for the persist writer's union rule. Cleared per `deploy()`.
+   */
+  inPlaceCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]> | 'all'>();
+
+  /**
+   * go-to-k/cdkd#4604: logical ids whose replacement deleted (or found gone)
+   * the old resource BEFORE its create ran. A replacement orphan journaled for
+   * one says so, so a rollback warns that the old resource is gone instead of
+   * settling the failed UPDATE as a no-op. Cleared per `deploy()`.
+   */
+  oldDeletedBeforeCreate = new Set<string>();
+}
+
+/**
+ * What this module's plain functions read from the engine beyond
+ * {@link ReplacementRunState}, built at each call site as
+ * `this.replacementDeps()`. `options` / `stackRegion` / `logger` are never
+ * reassigned after construction, so they are values; `secretsRun` (replaced
+ * per `deploy()`), `stackRecordsView` / `deployStateResources` (set by
+ * `executeDeployment`) and `interrupted` / `interruptCause` (set mid-deploy)
+ * are live getters, and the engine methods stay bound to the calling engine.
+ */
+export interface ReplacementDeps {
+  options: DeployEngine['options'];
+  stackRegion: DeployEngine['stackRegion'];
+  logger: DeployEngine['logger'];
+  secretsRun: () => DeployEngine['secretsRun'];
+  stackRecordsView: () => DeployEngine['stackRecordsView'];
+  deployStateResources: () => DeployEngine['deployStateResources'];
+  interrupted: () => DeployEngine['interrupted'];
+  interruptCause: () => DeployEngine['interruptCause'];
+  withRetry: DeployEngine['withRetry'];
+  maskingRetryLoggerFor: DeployEngine['maskingRetryLoggerFor'];
+  inlinePolicyClaimedFor: DeployEngine['inlinePolicyClaimedFor'];
+  recordEvent: DeployEngine['recordEvent'];
 }
 
 /**
@@ -93,7 +212,7 @@ declare module '../deploy-engine.js' {
  * otherwise take an untagged snapshot of its own.
  */
 export function replacementDeleteContext(
-  this: DeployEngine,
+  deps: ReplacementDeps,
   updateReplacePolicy: string | undefined
 ): {
   deletionPolicy: string;
@@ -101,7 +220,7 @@ export function replacementDeleteContext(
 } {
   return {
     deletionPolicy: replacementDeletePolicy(updateReplacePolicy),
-    ...(this.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
+    ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
   };
 }
 
@@ -123,13 +242,13 @@ export function replacementDeleteContext(
  *   - anything else Snapshot-tagged → refuses.
  */
 export async function prepareFinalSnapshotForDelete(
-  this: DeployEngine,
+  deps: ReplacementDeps,
   logicalId: string,
   resourceType: string,
   currentResource: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
   policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
 ): Promise<string | undefined> {
-  if (policy !== 'Snapshot' || this.options.skipFinalSnapshot === true) return undefined;
+  if (policy !== 'Snapshot' || deps.options.skipFinalSnapshot === true) return undefined;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) && currentResource.provisionedBy !== 'cc-api') {
     return buildFinalSnapshotIdentifier(currentResource.physicalId, resourceType);
   }
@@ -147,8 +266,8 @@ export async function prepareFinalSnapshotForDelete(
       resourceType,
       currentResource.physicalId,
       logicalId,
-      this.options.finalSnapshotClients ?? getAwsClients(),
-      this.logger
+      deps.options.finalSnapshotClients ?? getAwsClients(),
+      deps.logger
     );
     return undefined;
   }
@@ -163,7 +282,8 @@ export async function prepareFinalSnapshotForDelete(
  * the two --replace escape hatches cannot drift apart.
  */
 export async function replaceDeleteFirstAndRecreate(
-  this: DeployEngine,
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
   logicalId: string,
   /** The TEMPLATE's type — what the re-create routes on. */
   resourceType: string,
@@ -205,7 +325,8 @@ export async function replaceDeleteFirstAndRecreate(
   // delete's try: a snapshot failure/refusal here must surface with its
   // own typed FINAL_SNAPSHOT_* error, not be rewrapped as "Failed to
   // delete old resource ..." for a delete that was never attempted.
-  const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
+  const finalSnapshotIdentifier = await prepareFinalSnapshotForDelete(
+    deps,
     logicalId,
     oldResourceType,
     currentResource,
@@ -220,13 +341,13 @@ export async function replaceDeleteFirstAndRecreate(
         oldResourceType,
         currentResource.properties,
         {
-          expectedRegion: this.stackRegion,
+          expectedRegion: deps.stackRegion,
           // Replacement delete: `--force-stateful-recreation` is the user's
           // explicit data-loss consent, so thread it to the provider's data
           // guard (issue #1340).
-          forceDataDelete: this.options.forceStatefulRecreation === true,
+          forceDataDelete: deps.options.forceStatefulRecreation === true,
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-          ...this.replacementDeleteContext(updateReplacePolicy),
+          ...replacementDeleteContext(deps, updateReplacePolicy),
           recordedAttributes: currentResource.attributes,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: currentResource.noEchoLeaves,
@@ -235,7 +356,7 @@ export async function replaceDeleteFirstAndRecreate(
           // also logs under; the physical id can be a name it derives.
           maskSecrets: createUnionSecretMasker([
             secrets,
-            secretNameBagFor(this.secretsRun, logicalId),
+            secretNameBagFor(deps.secretsRun(), logicalId),
           ]),
         }
       )
@@ -273,7 +394,7 @@ export async function replaceDeleteFirstAndRecreate(
     // that holds a newline.
     const shownSecrets = unionOfSecretBags([
       secrets,
-      printingSecretsFor(this.secretsRun, logicalId),
+      printingSecretsFor(deps.secretsRun(), logicalId),
     ]);
     throw new Error(
       // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
@@ -310,9 +431,9 @@ export async function replaceDeleteFirstAndRecreate(
       )
     );
   }
-  this.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
-  this.oldDeletedBeforeCreate.add(logicalId);
-  this.logger.info(safeMsg`  Re-creating ${logicalId}...`);
+  deps.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
+  run.oldDeletedBeforeCreate.add(logicalId);
+  deps.logger.info(safeMsg`  Re-creating ${logicalId}...`);
   try {
     // Some providers return from delete() before the name is
     // actually released (async deletes: Step Functions, Kinesis,
@@ -327,7 +448,7 @@ export async function replaceDeleteFirstAndRecreate(
     // generic retry's budget is exhausted first.
     return await withRetry(
       () =>
-        this.withRetry(
+        deps.withRetry(
           // Issue #1903, same scope as the ordinary CREATE path: bind the
           // resolved-secrets bag around every provider create, so no
           // replacement route can silently skip the nested-stack seed.
@@ -348,10 +469,10 @@ export async function replaceDeleteFirstAndRecreate(
         // Issue #2038: `replaceProps` is RESOLVED, so mask the AWS message
         // this retry echoes. Bound to the CALLER's bag (the `secrets`
         // parameter above), not looked up by logical id -- see
-        // {@link maskingRetryLoggerFor}.
-        logger: this.maskingRetryLoggerFor(secrets),
-        isInterrupted: () => this.interrupted,
-        onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+        // `DeployEngine.maskingRetryLoggerFor`.
+        logger: deps.maskingRetryLoggerFor(secrets),
+        isInterrupted: () => deps.interrupted(),
+        onInterrupted: () => new InterruptedError(deps.interruptCause() ?? 'user'),
         isRetryable: isRecreateRetryableError,
       }
     );
@@ -384,7 +505,7 @@ export async function replaceDeleteFirstAndRecreate(
     // that holds a newline.
     const shownSecrets = unionOfSecretBags([
       secrets,
-      printingSecretsFor(this.secretsRun, logicalId),
+      printingSecretsFor(deps.secretsRun(), logicalId),
     ]);
     throw new Error(
       safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
@@ -407,7 +528,6 @@ export async function replaceDeleteFirstAndRecreate(
  * explicit, plain name (a generated one is not compared).
  */
 export function typeChangeNameQuestion(
-  this: DeployEngine,
   resourceType: string,
   input: { desiredProperties: Record<string, unknown>; currentResource: ResourceState }
 ): ReplacementNameChange | undefined {
@@ -448,7 +568,7 @@ export function typeChangeNameQuestion(
  * ANOTHER type has is still refused: two namespaces, two resources.
  */
 export async function checkedReplacementNameChange(
-  this: DeployEngine,
+  deps: ReplacementDeps,
   input: {
     logicalId: string;
     resourceType: string;
@@ -491,13 +611,13 @@ export async function checkedReplacementNameChange(
       physicalId: currentResource.physicalId,
       logicalId,
     }) ??
-    (adopts && typeChanged ? this.typeChangeNameQuestion(resourceType, input) : undefined);
+    (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined);
   if (change === undefined) return undefined;
   const probe = replacementNameProbe({
     resourceType,
     createdVia: input.createdVia,
     change,
-    region: this.stackRegion,
+    region: deps.stackRegion,
   });
   if (probe === undefined) return change;
   // A secret-derived name a provider rewrites before sending (ELBv2) is
@@ -529,13 +649,13 @@ export async function checkedReplacementNameChange(
   if (lookup === undefined) return change;
   let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
   try {
-    found = await this.withRetry(
+    found = await deps.withRetry(
       () =>
         lookup({
           logicalId,
           resourceType,
           stackName: input.stackName,
-          region: this.stackRegion,
+          region: deps.stackRegion,
           properties: input.createProps,
           ...probe,
         }),
@@ -611,7 +731,8 @@ export async function checkedReplacementNameChange(
  * ({@link deleteReplacedAfterCreate}).
  */
 export async function createFirstThenDeleteOld(
-  this: DeployEngine,
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
   input: {
     logicalId: string;
     resourceType: string;
@@ -645,13 +766,14 @@ export async function createFirstThenDeleteOld(
   // reaches this method.
   const finalSnapshotIdentifier = retainOld
     ? undefined
-    : await this.prepareFinalSnapshotForDelete(
+    : await prepareFinalSnapshotForDelete(
+        deps,
         logicalId,
         input.oldResourceType,
         currentResource,
         input.snapshotPolicy
       );
-  this.logger.info(
+  deps.logger.info(
     retainOld
       ? safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource (the old one is retained)...`
       : safeMsg`  ${logicalId}'s new name differs from the one the old resource holds — creating the new resource before deleting the old one...`
@@ -664,7 +786,7 @@ export async function createFirstThenDeleteOld(
   );
   let createResult: ResourceCreateResult;
   try {
-    createResult = await this.withRetry(
+    createResult = await deps.withRetry(
       () =>
         withCurrentResourceSecrets(secrets, () =>
           input.createProvider.create(logicalId, resourceType, input.createProps, {
@@ -717,8 +839,10 @@ export async function createFirstThenDeleteOld(
     );
   }
   if (retainOld) return createResult;
-  this.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
-  await this.deleteReplacedAfterCreate(
+  deps.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+  await deleteReplacedAfterCreate(
+    run,
+    deps,
     logicalId,
     input.oldResourceType,
     currentResource,
@@ -745,7 +869,8 @@ export async function createFirstThenDeleteOld(
  * a resolved value.
  */
 export async function deleteReplacedAfterCreate(
-  this: DeployEngine,
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
   logicalId: string,
   oldResourceType: string,
   currentResource: ResourceState,
@@ -770,7 +895,7 @@ export async function deleteReplacedAfterCreate(
   // same principal (a swap of names with an `AWS::IAM::Policy`). Only those
   // types are handed the predicate, so every other replacement is unchanged.
   const inlinePolicyClaimed = isStandaloneInlinePolicyType(oldResourceType)
-    ? this.inlinePolicyClaimedFor(oldResourceType, logicalId, this.deployStateResources)
+    ? deps.inlinePolicyClaimedFor(oldResourceType, logicalId, deps.deployStateResources())
     : undefined;
   try {
     deleteResult = await withPrintingSecrets(secrets, () =>
@@ -780,10 +905,10 @@ export async function deleteReplacedAfterCreate(
         oldResourceType,
         deleteProperties,
         {
-          expectedRegion: this.stackRegion,
-          forceDataDelete: this.options.forceStatefulRecreation === true,
+          expectedRegion: deps.stackRegion,
+          forceDataDelete: deps.options.forceStatefulRecreation === true,
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-          ...this.replacementDeleteContext(updateReplacePolicy),
+          ...replacementDeleteContext(deps, updateReplacePolicy),
           // Issue #4157: the identity evidence of the record deleted.
           recordedAttributes: currentResource.attributes,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
@@ -794,7 +919,7 @@ export async function deleteReplacedAfterCreate(
           // error below is masked with.
           maskSecrets: createUnionSecretMasker([
             secrets,
-            secretNameBagFor(this.secretsRun, logicalId),
+            secretNameBagFor(deps.secretsRun(), logicalId),
           ]),
         }
       )
@@ -812,9 +937,9 @@ export async function deleteReplacedAfterCreate(
     // re-creates, as it would have.
     // A retry never upgrades an earlier `'unconfirmed'`: that delete may
     // still be running.
-    this.replacedOldMaySurvive.set(
+    run.replacedOldMaySurvive.set(
       logicalId,
-      this.replacedOldMaySurvive.get(logicalId) === 'unconfirmed'
+      run.replacedOldMaySurvive.get(logicalId) === 'unconfirmed'
         ? 'unconfirmed'
         : replacedDeleteFailureVerdict(deleteError)
     );
@@ -823,9 +948,9 @@ export async function deleteReplacedAfterCreate(
     // delete), so the first failure inside a deploy's DAG is retried once
     // after the rest of the deploy, as CloudFormation's cleanup phase
     // deletes old resources only after every update.
-    const deferred = this.deferredReplacedDeletes;
+    const deferred = run.deferredReplacedDeletes;
     if (!isRetry && deferred !== undefined) {
-      this.logger.info(
+      deps.logger.info(
         safeMsg`  Could not delete old ${logicalId} (${currentResource.physicalId}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
       );
       deferred.set(logicalId, {
@@ -834,7 +959,9 @@ export async function deleteReplacedAfterCreate(
         provisionedBy: deleteProvisionedBy,
         failureMessage: deleteMsg,
         retry: () =>
-          this.deleteReplacedAfterCreate(
+          deleteReplacedAfterCreate(
+            run,
+            deps,
             logicalId,
             oldResourceType,
             currentResource,
@@ -855,7 +982,7 @@ export async function deleteReplacedAfterCreate(
     // `PageNotFound`, or a delete failing on a KMS key or role "not found"
     // while the old resource is alive, would silence the one line telling
     // the user an untracked resource may be left.
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
     );
   }
@@ -869,15 +996,15 @@ export async function deleteReplacedAfterCreate(
   if (skipReason !== undefined) {
     // A skip does not say the delete was not sent (a custom-resource handler
     // that refused DID get it), so it never licenses a re-adopt.
-    this.replacedOldMaySurvive.set(logicalId, 'unconfirmed');
+    run.replacedOldMaySurvive.set(logicalId, 'unconfirmed');
     // go-to-k/cdkd#4043 (review MEDIUM-3): the old resource survives
     // untracked, so the row is a PARTIAL update and the deploy exits 2 unless
     // `--allow-unaddressed` (the #1819 survivor contract), not a clean one.
-    this.replacedDeleteSkips.set(
+    run.replacedDeleteSkips.set(
       logicalId,
       `the replaced ${oldResourceType} (${currentResource.physicalId}) was not deleted (${skipReason}) and is no longer tracked by cdkd`
     );
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`  ⚠ ${deleteSkippedMessage(
         logicalId,
         currentResource.physicalId,
@@ -893,8 +1020,8 @@ export async function deleteReplacedAfterCreate(
     // go-to-k/cdkd#2631: the retry deleted it, so the mark goes: a rollback's
     // read of an eventually consistent API could still see the old resource
     // and re-adopt a deleted id.
-    if (isRetry) this.replacedOldMaySurvive.delete(logicalId);
-    this.logger.info(
+    if (isRetry) run.replacedOldMaySurvive.delete(logicalId);
+    deps.logger.info(
       isRetry
         ? safeMsg`  ${green('✓')} Old ${logicalId} (${currentResource.physicalId}) deleted`
         : safeMsg`  ${green('✓')} Old resource deleted`
@@ -927,28 +1054,29 @@ export interface DeferredReplacedDelete {
  * partial update, as it would have inline. At most `--concurrency` at once.
  */
 export async function retryDeferredReplacedDeletes(
-  this: DeployEngine,
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
   stackName: string,
   counts: { updated: number; updatePartial: number }
 ): Promise<void> {
-  const deferred = this.deferredReplacedDeletes;
-  this.deferredReplacedDeletes = undefined;
+  const deferred = run.deferredReplacedDeletes;
+  run.deferredReplacedDeletes = undefined;
   if (deferred === undefined || deferred.size === 0) return;
-  this.logger.info(safeMsg`Retrying the delete of ${deferred.size} replaced resource(s)`);
+  deps.logger.info(safeMsg`Retrying the delete of ${deferred.size} replaced resource(s)`);
   const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
     const guards: ReportedDeleteGuard[] = [];
     try {
-      await withPrintingSecrets(secretNameBagFor(this.secretsRun, logicalId), () =>
-        withStackRecords(this.stackRecordsView, () =>
+      await withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
+        withStackRecords(deps.stackRecordsView(), () =>
           collectDeleteGuards(guards, async () => {
-            this.logger.info(safeMsg`  Deleting old ${logicalId} (${entry.physicalId})...`);
+            deps.logger.info(safeMsg`  Deleting old ${logicalId} (${entry.physicalId})...`);
             try {
               await entry.retry();
             } catch {
               // `deleteReplacedAfterCreate` catches the provider's own error;
               // anything else must not strand the entries still queued. Its
               // text is not shown: nothing masked it.
-              this.logger.warn(
+              deps.logger.warn(
                 safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): the retry failed unexpectedly`
               );
             }
@@ -958,7 +1086,7 @@ export async function retryDeferredReplacedDeletes(
     } finally {
       // As `provisionResource` emits the row's guards (issue #2422).
       for (const guard of guards) {
-        this.recordEvent({
+        deps.recordEvent({
           eventType: 'RESOURCE_GUARD_INDETERMINATE',
           stackName,
           operation: 'DELETE',
@@ -968,7 +1096,7 @@ export async function retryDeferredReplacedDeletes(
           ...(guard.physicalId && {
             physicalId: maskSecretsInText(
               guard.physicalId,
-              this.secretsRun.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+              deps.secretsRun().perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
             ),
           }),
           guard: guard.guard,
@@ -976,16 +1104,16 @@ export async function retryDeferredReplacedDeletes(
         });
       }
     }
-    const skip = this.replacedDeleteSkips.get(logicalId);
+    const skip = run.replacedDeleteSkips.get(logicalId);
     if (skip === undefined) return;
-    this.replacedDeleteSkips.delete(logicalId);
+    run.replacedDeleteSkips.delete(logicalId);
     // As `provisionResource` turns an inline skip into the row's partial
     // update: counted once, and the survivor named in its own event.
     if (entry.rowPartial !== true) {
       counts.updated = Math.max(0, counts.updated - 1);
       counts.updatePartial++;
     }
-    this.recordEvent({
+    deps.recordEvent({
       eventType: 'RESOURCE_SKIPPED',
       stackName,
       operation: 'UPDATE',
@@ -997,7 +1125,7 @@ export async function retryDeferredReplacedDeletes(
     });
   };
   const queue = [...deferred];
-  const workers = Math.max(1, Math.min(this.options.concurrency ?? 1, queue.length));
+  const workers = Math.max(1, Math.min(deps.options.concurrency ?? 1, queue.length));
   await Promise.all(
     Array.from({ length: workers }, async () => {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
@@ -1012,18 +1140,19 @@ export async function retryDeferredReplacedDeletes(
  * gets the warning its inline failure would have printed (go-to-k/cdkd#4900).
  */
 export function warnUnretriedReplacedDeletes(
-  this: DeployEngine,
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
   why: 'failed' | 'interrupted'
 ): void {
-  const deferred = this.deferredReplacedDeletes;
-  this.deferredReplacedDeletes = undefined;
+  const deferred = run.deferredReplacedDeletes;
+  run.deferredReplacedDeletes = undefined;
   const note =
     why === 'failed'
       ? 'not retried: the deploy failed first'
       : 'not retried: the deploy was interrupted';
   for (const [logicalId, entry] of deferred ?? []) {
-    withPrintingSecrets(secretNameBagFor(this.secretsRun, logicalId), () =>
-      this.logger.warn(
+    withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
+      deps.logger.warn(
         safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${note})`
       )
     );

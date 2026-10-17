@@ -7,6 +7,7 @@ import {
 } from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
 import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
+import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import {
   type DeployEngine,
   type ProvisionCounts,
@@ -187,7 +188,7 @@ export async function executeDeployment(
     (logicalId) => startedUpdates.has(logicalId) && !settledUpdates.has(logicalId),
     () => [...inFlightWrites.values()].map(({ write }) => write)
   );
-  this.deferredReplacedDeletes = new Map();
+  this.replacementRun.deferredReplacedDeletes = new Map();
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -262,7 +263,7 @@ export async function executeDeployment(
           changes,
           skip: deleteChanges,
           templateResources: template.Resources ?? {},
-          recreatedUnderSameId: this.recreatedUnderSameId,
+          recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
           recordedTypeOf: (id) =>
             Object.hasOwn(newResources, id) ? newResources[id]?.resourceType : undefined,
           conditions,
@@ -458,9 +459,11 @@ export async function executeDeployment(
             // go-to-k/cdkd#4690: the old resource is gone even when the create
             // made nothing, which `replacementOrphaned` cannot say.
             ...(change.changeType === 'UPDATE' &&
-              this.oldDeletedBeforeCreate.has(logicalId) && { oldDeletedBeforeCreate: true }),
+              this.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
+                oldDeletedBeforeCreate: true,
+              }),
             ...(orphanedBy !== undefined && {
-              replacementOrphaned: this.oldDeletedBeforeCreate.has(logicalId)
+              replacementOrphaned: this.replacementRun.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)
                 : ('create-first' as const),
             }),
@@ -485,7 +488,7 @@ export async function executeDeployment(
               replacedResourceType: orphanedBy.record.resourceType,
               // The replacement deleted the old resource before its create:
               // the record names a resource that is gone.
-              ...(this.oldDeletedBeforeCreate.has(logicalId) && {
+              ...(this.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
                 replacedResourceDeleted: true,
               }),
               ...(!refused && {
@@ -559,23 +562,23 @@ export async function executeDeployment(
           // falls back to the old (wrong) read for those, so recording
           // only the `true` case would leave the DROP direction live.
           ...(change.changeType === 'UPDATE' && {
-            oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+            oldResourceRetained: this.replacementRun.retainedOldOnReplacement.has(logicalId),
             // go-to-k/cdkd#4690: the reversal deletes the new resource first
             // when the forward deleted the old one first.
-            oldDeletedBeforeCreate: this.oldDeletedBeforeCreate.has(logicalId),
+            oldDeletedBeforeCreate: this.replacementRun.oldDeletedBeforeCreate.has(logicalId),
           }),
           // go-to-k/cdkd#2631: the cleanup delete did not confirm the old
           // resource gone, so the rollback reads AWS before re-creating it.
           ...(change.changeType === 'UPDATE' &&
-            this.replacedOldMaySurvive.has(logicalId) && {
-              oldResourceMaySurvive: this.replacedOldMaySurvive.get(logicalId),
+            this.replacementRun.replacedOldMaySurvive.has(logicalId) && {
+              oldResourceMaySurvive: this.replacementRun.replacedOldMaySurvive.get(logicalId),
             }),
           // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
           // gave one; absent, the rollback infers a replacement from a changed
           // physical id, as it does for a journal an older binary wrote.
           ...(change.changeType === 'UPDATE' &&
-            this.updateWasReplaced.has(logicalId) && {
-              wasReplaced: this.updateWasReplaced.get(logicalId),
+            this.replacementRun.updateWasReplaced.has(logicalId) && {
+              wasReplaced: this.replacementRun.updateWasReplaced.get(logicalId),
             }),
           // Issue #2668: `resourceType` above is the TEMPLATE's type, so
           // on a Type change the journal would otherwise name only the
@@ -591,7 +594,8 @@ export async function executeDeployment(
         });
 
         saveStateAfterResource(logicalId);
-        if (this.recreatedUnderSameId.has(logicalId)) enqueueLostChildren(createUpdateExecutor);
+        if (this.replacementRun.recreatedUnderSameId.has(logicalId))
+          enqueueLostChildren(createUpdateExecutor);
       };
 
       try {
@@ -699,10 +703,16 @@ export async function executeDeployment(
 
     // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
     // still-unupdated dependent refused inside the DAG.
-    if (this.interrupted) this.warnUnretriedReplacedDeletes('interrupted');
-    else {
+    if (this.interrupted) {
+      warnUnretriedReplacedDeletes(this.replacementRun, this.replacementDeps(), 'interrupted');
+    } else {
       try {
-        await this.retryDeferredReplacedDeletes(stackName, actualCounts);
+        await retryDeferredReplacedDeletes(
+          this.replacementRun,
+          this.replacementDeps(),
+          stackName,
+          actualCounts
+        );
       } finally {
         // go-to-k/cdkd#2631: the ops were journaled with the FIRST failure's
         // verdict; a retry that failed differently (a waiter that gave up)
@@ -710,7 +720,7 @@ export async function executeDeployment(
         // nor a retry pass that threw before returning.
         for (const op of completedOperations) {
           if (op.changeType !== 'UPDATE') continue;
-          const verdict = this.replacedOldMaySurvive.get(op.logicalId);
+          const verdict = this.replacementRun.replacedOldMaySurvive.get(op.logicalId);
           // A retry that deleted it dropped the verdict: so does the op.
           if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
           else delete op.oldResourceMaySurvive;
@@ -718,7 +728,11 @@ export async function executeDeployment(
       }
     }
   } catch (error) {
-    this.warnUnretriedReplacedDeletes(this.interruptCause === 'user' ? 'interrupted' : 'failed');
+    warnUnretriedReplacedDeletes(
+      this.replacementRun,
+      this.replacementDeps(),
+      this.interruptCause === 'user' ? 'interrupted' : 'failed'
+    );
     // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
     // (no prior state loaded). Captured BEFORE the partial-state save below,
     // which reassigns `currentEtag`. Recorded on the journal segment so
@@ -735,10 +749,10 @@ export async function executeDeployment(
     // Written: restored, or any completed operation -- minus a re-put child on
     // Cloud Control, whose completed update sent nothing.
     const written = new Set([
-      ...this.restoredLostChildren,
+      ...this.replacementRun.restoredLostChildren,
       ...completedOperations.map((op) => op.logicalId),
     ]);
-    for (const logicalId of this.updatesThatSentNothing) written.delete(logicalId);
+    for (const logicalId of this.replacementRun.updatesThatSentNothing) written.delete(logicalId);
     // A child whose own write was ATTEMPTED and then threw (a deadline race, a
     // lost response, a definite AWS rejection -- only EC2 marks a refusal as
     // never applied, so the rest all carry an attempted bag; a multi-holder put
@@ -753,7 +767,8 @@ export async function executeDeployment(
       failedOperations
         .filter(
           (op) =>
-            op.attemptedProperties !== undefined && !this.updatesThatSentNothing.has(op.logicalId)
+            op.attemptedProperties !== undefined &&
+            !this.replacementRun.updatesThatSentNothing.has(op.logicalId)
         )
         .map((op) => op.logicalId)
     );
@@ -781,7 +796,7 @@ export async function executeDeployment(
     for (const lost of lostChildActions({
       templateResources: template.Resources ?? {},
       records: newResources,
-      recreatedUnderSameId: this.recreatedUnderSameId,
+      recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
       written,
       conditions,
     })) {

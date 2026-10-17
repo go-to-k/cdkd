@@ -222,7 +222,9 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
   it('records each resource whose old copy was gone before its create', async () => {
     const engine = makeEngine();
     await engine.deploy(STACK, template());
-    const gone = (engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate;
+    const gone = (
+      engine as unknown as { replacementRun: { oldDeletedBeforeCreate: Set<string> } }
+    ).replacementRun.oldDeletedBeforeCreate;
     expect([...gone].sort()).toEqual(['Fn', 'Perm']);
   });
 
