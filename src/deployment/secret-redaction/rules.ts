@@ -561,7 +561,7 @@ export function isDynamicReferenceString(value: unknown): value is string {
  * [#1936](https://github.com/go-to-k/cdkd/issues/1936)).
  *
  * **THE AUTHORITY IS THE RESOLVER.**
- * `IntrinsicFunctionResolver.resolveDynamicReferences`
+ * `resolveDynamicReferencesWithLogTwin`
  * (`src/deployment/intrinsic-resolver/dynamic-refs.ts`) scans with
  * `/\{\{resolve:([^}]+)\}\}/g`, so what cdkd will actually RESOLVE is exactly
  * `{{resolve:` followed by one or more non-`}` characters followed by `}}`.

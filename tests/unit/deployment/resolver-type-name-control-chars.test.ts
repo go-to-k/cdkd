@@ -33,6 +33,7 @@ import {
   resetAccountInfoCache,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -369,7 +370,7 @@ describe('a hostile SSM-reported Type cannot reach the unrecognized-Type WARN (#
     });
     const resolver = new IntrinsicFunctionResolver();
     const got = await capture(() =>
-      resolver.resolveDynamicReferences('{{resolve:ssm-secure:/prod/db/password}}', {
+      resolveDynamicReferences(resolver, '{{resolve:ssm-secure:/prod/db/password}}', {
         template: { Resources: {} },
         resources: {},
       } as ResolverContext)
@@ -387,7 +388,7 @@ describe('a hostile SSM-reported Type cannot reach the unrecognized-Type WARN (#
     // warn.
     mockSSMSend.mockResolvedValue({ Parameter: { Value: 'v', Type: 'StringList' } });
     const refused = await capture(() =>
-      new IntrinsicFunctionResolver().resolveDynamicReferences(
+      resolveDynamicReferences(new IntrinsicFunctionResolver(),
         '{{resolve:ssm-secure:/prod/db/other}}',
         { template: { Resources: {} }, resources: {} } as ResolverContext
       )
@@ -396,7 +397,7 @@ describe('a hostile SSM-reported Type cannot reach the unrecognized-Type WARN (#
 
     mockSSMSend.mockResolvedValue({ Parameter: { Value: 'w', Type: 'FutureSecretType' } });
     const plain = await capture(() =>
-      new IntrinsicFunctionResolver().resolveDynamicReferences(
+      resolveDynamicReferences(new IntrinsicFunctionResolver(),
         '{{resolve:ssm-secure:/prod/db/third}}',
         { template: { Resources: {} }, resources: {} } as ResolverContext
       )

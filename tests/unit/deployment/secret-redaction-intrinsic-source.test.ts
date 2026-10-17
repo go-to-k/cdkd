@@ -4,6 +4,7 @@ import {
   type ResolverContext,
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   redactSecretsForState,
   recordSecretExpression,
@@ -711,7 +712,7 @@ describe('IntrinsicFunctionResolver - records every secret expression (issue #19
 
     const recordedSecretValues: RecordedSecretValues = new Map();
     const expression = '{{resolve:ssm:/app/unknown-type}}';
-    await resolver.resolveDynamicReferences(expression, {
+    await resolveDynamicReferences(resolver, expression, {
       template,
       resources: {},
       recordedSecretValues,

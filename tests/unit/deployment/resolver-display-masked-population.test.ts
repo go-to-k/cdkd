@@ -219,7 +219,13 @@ function referencesByEnclosingMethod(name: string): { line: number; method: stri
           /\.prototype$/.test(wiring.left.expression.getText()) &&
           wiring.left.name.text === name &&
           wiring.right.name.text === name);
-      if (!isDeclarationName && !isWiring) {
+      // Not a call either: an UNALIASED import binding of a plain function
+      // (`import { maskSecretsRaw } from './masking.js'`), whose calls are
+      // counted where they are made. An alias (`{ maskSecretsRaw as m }`)
+      // would rename every call out of this walk's sight, so it stays in.
+      const isPlainImport =
+        ts.isImportSpecifier(node.parent) && node.parent.propertyName === undefined;
+      if (!isDeclarationName && !isWiring && !isPlainImport) {
         let p: ts.Node | undefined = node.parent;
         let method = '<module scope>';
         while (p) {
@@ -254,8 +260,9 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
       150_000
     );
     // A method, a split-out mixin function (#4337) whose first parameter is
-    // `this`, or a plain function taking the resolver as its masker.
-    const SELF = '\\s*(?:(?:this: IntrinsicFunctionResolver|masker: ResolverMasker),\\s*)?';
+    // `this`, or a plain function taking the resolver (as its masker).
+    const SELF =
+      '\\s*(?:(?:this: IntrinsicFunctionResolver|masker: ResolverMasker|resolver: IntrinsicFunctionResolver),\\s*)?';
     const ARGS = (first: string): string =>
       `${SELF}${first}: string,\\s*context\\?: ResolverContext,?\\s*\\): string`;
     expect(code, 'the display builder is gone or renamed').toMatch(
@@ -431,7 +438,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     // drop the strip and the `displaySafe` pass from all nine `origin` sites
     // while both scanners stayed green.
     expect(code).toMatch(
-      /displayLeaf\([^)]*\): string \{\s*return displayMasked\(resolver, resolver\.logTextOfLeaf\(value, context\), context\);\s*\}/
+      /displayLeaf\([^)]*\): string \{\s*return displayMasked\(resolver, logTextOfLeaf\(resolver, value, context\), context\);\s*\}/
     );
     // The THIRD `MASKERS` entry with a body in this file, and the one a sweep
     // would forget: `maskInherited` masks against the inherited bag alone and

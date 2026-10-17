@@ -31,18 +31,17 @@ const HOSTS = [
   {
     module: 'intrinsic-function-resolver',
     cls: IntrinsicFunctionResolver,
-    // `clients.ts` / `cfn-fallback.ts` (collaborator classes) and
-    // `stack-state.ts` / `masking-display.ts` / `parameter-secrets.ts` (plain
-    // functions) no longer augment the class, so they are not listed.
+    // `clients.ts` / `cfn-fallback.ts` (collaborator classes),
+    // `stack-state.ts` / `masking-display.ts` / `parameter-secrets.ts` /
+    // `masking.ts` / `dynamic-ref-lookups.ts` (plain functions) and
+    // `dynamic-refs.ts` (plain functions plus the `DynamicReferenceCache`
+    // collaborator) no longer augment the class, so they are not listed.
     files: [
       'intrinsic-resolver/cross-stack.ts',
-      'intrinsic-resolver/dynamic-refs.ts',
-      'intrinsic-resolver/dynamic-ref-lookups.ts',
       'intrinsic-resolver/functions.ts',
       'intrinsic-resolver/getatt.ts',
       'intrinsic-resolver/getatt-heal.ts',
       'intrinsic-resolver/getatt-refusals.ts',
-      'intrinsic-resolver/masking.ts',
       'intrinsic-resolver/params-conditions.ts',
       'intrinsic-resolver/refs.ts',
       'intrinsic-resolver/stack-output.ts',
@@ -54,18 +53,16 @@ const HOSTS = [
       'constructAttribute',
       'refuseUnconstructibleAttribute',
       'healBeforeConstructing',
-      'resolveSecretsManagerReference',
       'resolveImportValue',
       'resolveGetStackOutput',
       'positionalNameMask',
+      'pinSecretVerdict',
       'evaluateConditions',
       'resolveKeyUnit',
       'resolveRef',
-      'resolveDynamicReferencesWithLogTwin',
-      'sendWithThrottleRetry',
       'resolveSub',
       'resolveIf',
-      'maskSecretsRaw',
+      'resolveJoin',
     ],
   },
 ] as const;

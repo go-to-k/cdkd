@@ -164,7 +164,7 @@ describe('the drift leaf walk mirrors the rollback replay leaf walk (issue #2108
       // The resolver-context argument is one of the declared ALIASES, so it is
       // spelled differently on each side and is left out of this probe — the
       // equality test above is what pins it.
-      expect(normalized).toContain('resolvers.primary.resolveDynamicReferences(leaf,');
+      expect(normalized).toContain('resolveDynamicReferences(resolvers.primary,leaf,');
       // The segment rebuild: the moving cursor, both splices, the advance.
       expect(normalized).toContain('leaf.indexOf(token,cursor)');
       expect(normalized).toContain('out+=leaf.slice(cursor,at)');

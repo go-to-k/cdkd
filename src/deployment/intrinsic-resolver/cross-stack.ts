@@ -1,5 +1,6 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayLeaf, displayMasked } from './masking-display.js';
+import { resolveDynamicReferences } from './dynamic-refs.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
@@ -377,7 +378,8 @@ export async function reresolveCrossStackValue(
   const walk = async (v: unknown): Promise<unknown> => {
     if (typeof v === 'string') {
       return v.includes('{{resolve:')
-        ? await resolver.resolveDynamicReferences(v, pinnedContext)
+        ? // The PRODUCER-region resolver above, never `this`.
+          await resolveDynamicReferences(resolver, v, pinnedContext)
         : v;
     }
     if (Array.isArray(v)) {

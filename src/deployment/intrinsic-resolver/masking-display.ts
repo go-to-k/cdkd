@@ -3,14 +3,16 @@ import { displaySafe } from '../../utils/display-safe.js';
 import { UNSHOWABLE_VALUE } from '../../utils/pasteable-command.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { type ResolverContext, boundAltered, isLogInert, isLogInertJson } from './support.js';
+import { logTextOfLeaf, maskSecretsRaw } from './masking.js';
 
 /**
- * The one resolver member the display builders read: its raw masker. Callers
- * pass the resolver itself, so the masking answer stays the resolver's own
- * (bags, twins, log-only needles) and only the strip and the `displaySafe`
- * pass are added here.
+ * The resolver the display builders mask for: its raw masker is
+ * `maskSecretsRaw` in `masking.ts`, called with it. Callers pass the resolver
+ * itself, so the masking answer stays the resolver's own (bags, twins,
+ * log-only needles) and only the strip and the `displaySafe` pass are added
+ * here.
  */
-export type ResolverMasker = Pick<IntrinsicFunctionResolver, 'maskSecretsRaw'>;
+export type ResolverMasker = IntrinsicFunctionResolver;
 
 /**
  * A copy of `value` with every string LEAF (and every object KEY) masked, for
@@ -170,7 +172,7 @@ function maskThenStripThenMask(
   value: string,
   context?: ResolverContext
 ): string {
-  return masker.maskSecretsRaw(stripControlChars(masker.maskSecretsRaw(value, context)), context);
+  return maskSecretsRaw(masker, stripControlChars(maskSecretsRaw(masker, value, context)), context);
 }
 
 /**
@@ -367,9 +369,9 @@ export function displayMaskedIdent(
  */
 /** @internal */
 export function displayLeaf(
-  resolver: ResolverMasker & Pick<IntrinsicFunctionResolver, 'logTextOfLeaf'>,
+  resolver: ResolverMasker,
   value: string,
   context?: ResolverContext
 ): string {
-  return displayMasked(resolver, resolver.logTextOfLeaf(value, context), context);
+  return displayMasked(resolver, logTextOfLeaf(resolver, value, context), context);
 }

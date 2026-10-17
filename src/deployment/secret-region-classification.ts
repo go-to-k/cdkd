@@ -3,7 +3,7 @@
  *
  * Extracted from `rollback-executor.ts` for issue
  * [#2134](https://github.com/go-to-k/cdkd/issues/2134), which needs the same
- * answer inside `IntrinsicFunctionResolver.resolveDynamicReferences` -- and
+ * answer inside `resolveDynamicReferences` (`intrinsic-resolver/dynamic-refs.ts`) -- and
  * `rollback-executor/*.ts` IMPORTS that resolver, so importing the classifier
  * back out of it would close a cycle. The module is deliberately a LEAF: its
  * only runtime dependency is `canonicalizeRegion`, which is itself
@@ -60,7 +60,7 @@ export type ReplaySecretRegionVerdict =
 /**
  * Split a `{{resolve:secretsmanager:...}}` inner body into its SECRET_ID.
  *
- * Mirrors `IntrinsicFunctionResolver.resolveSecretsManagerReference`'s own
+ * Mirrors `resolveSecretsManagerReference`'s (`intrinsic-resolver/dynamic-ref-lookups.ts`) own
  * split — including the END-ANCHORED whole-secret form — because a secret ID
  * may legitimately contain colons (an ARN always does), so `split(':')[1]` is
  * wrong for exactly the shape this file cares about most.
@@ -86,7 +86,7 @@ function secretsManagerSecretId(inner: string): string {
 
 /**
  * The parameter name an `{{resolve:ssm:...}}` reference asks for — byte-for-byte
- * what `IntrinsicFunctionResolver.resolveSSMReference` passes as `GetParameter`'s
+ * what `resolveSSMReference` (`intrinsic-resolver/dynamic-ref-lookups.ts`) passes as `GetParameter`'s
  * `Name`, which is `parts.slice(1).join(':')` on the colon-split inner body.
  *
  * The whole remainder, deliberately, with NOTHING stripped:

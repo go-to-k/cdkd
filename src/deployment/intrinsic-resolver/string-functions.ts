@@ -5,6 +5,18 @@ import {
   maskValueLeaves,
   splitDelimiterRender,
 } from './masking-display.js';
+import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
+import {
+  hasLogOnlyNeedles,
+  logTwinOfProduct,
+  logTwinText,
+  maskRenderedNeedlesForLog,
+  nestedPartResolution,
+  productLogTwin,
+  recordLeafResolution,
+  rememberLogTwin,
+  splitLogTwins,
+} from './masking.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
   type LogTwin,
@@ -186,9 +198,10 @@ export async function resolveJoin(
             // itself a recorded secret (a token-shaped plaintext, issue #1917),
             // so for a literal the seed can only mask more.
             const part = v.includes('{{resolve:')
-              ? await this.resolveDynamicReferencesWithLogTwin(
+              ? await resolveDynamicReferencesWithLogTwin(
+                  this,
                   v,
-                  this.logTwinOfProduct({ result: v, twin: v }, context).twin,
+                  logTwinOfProduct(this, { result: v, twin: v }, context).twin,
                   context
                 )
               : { result: v, twin: v, substitutions: [], complete: true };
@@ -215,7 +228,7 @@ export async function resolveJoin(
             parameterSpans: literalList ? partParameterSpans(context, v, resolved) : [],
             // A nested `Fn::Join` / `Fn::Sub` / `Fn::If` part lends its own
             // record (issue #3306).
-            ...this.nestedPartResolution(context, v, resolved),
+            ...nestedPartResolution(this, context, v, resolved),
           };
         }
       ),
@@ -227,8 +240,8 @@ export async function resolveJoin(
     // elements' twins through the stringification; a string element of a
     // list an intrinsic returned keeps its own twin rule.
     if (part.raw)
-      return { result: part.result, twin: this.productLogTwin(part.raw.value, context) };
-    return this.logTwinOfProduct(part, context);
+      return { result: part.result, twin: productLogTwin(this, part.raw.value, context) };
+    return logTwinOfProduct(this, part, context);
   });
 
   let result = parts.map((part) => part.result).join(delimiter);
@@ -255,23 +268,23 @@ export async function resolveJoin(
   // CDK `secretValueFromJson` shape completes its token only HERE, so this
   // substitution is the write the twin most needs to see.
   if (result.includes('{{resolve:')) {
-    const joined = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+    const joined = await resolveDynamicReferencesWithLogTwin(this, result, twin, context);
     // The spans index the joined text; a pass that rewrote it moved them.
     if (joined.result !== result) spansValid = false;
     ({ result, twin } = joined);
     substitutions.push(...joined.substitutions);
     complete &&= joined.complete;
   }
-  this.recordLeafResolution(context, source, {
+  recordLeafResolution(this, context, source, {
     input: resolvedParts.map((part) => part.input).join(delimiter),
     output: result,
     substitutions,
     complete,
     ...(spansValid ? { parameterSpans } : {}),
   });
-  this.rememberLogTwin(context, result, twin);
+  rememberLogTwin(this, context, result, twin);
   this.logger.debug(
-    `Resolved Fn::Join: ${logRender(this, this.logTwinText(result, twin, context), context)}`
+    `Resolved Fn::Join: ${logRender(this, logTwinText(this, result, twin, context), context)}`
   );
   return result;
 }
@@ -667,7 +680,7 @@ export async function resolveSplit(
   // print-only corpus by this call's line alone: it must not rely on some
   // earlier resolution having recorded them.
   let lineContext = context;
-  if (this.hasLogOnlyNeedles(context)) {
+  if (hasLogOnlyNeedles(this, context)) {
     if (context.recordedSecretValues) {
       recordLogOnlySplitFragments(
         [context.inheritedSecrets, context.recordedSecretValues],
@@ -723,9 +736,9 @@ export async function resolveSplit(
   // `Fn::Base64` persist detector, which would move state.)
   const pieceTwins =
     String(delimiter) === '' &&
-    this.maskRenderedNeedlesForLog(resolvedValue, lineContext) !== resolvedValue
+    maskRenderedNeedlesForLog(this, resolvedValue, lineContext) !== resolvedValue
       ? result.map(() => SECRET_MASK)
-      : this.splitLogTwins(resolvedValue, delimiter, result, context);
+      : splitLogTwins(this, resolvedValue, delimiter, result, context);
   this.logger.debug(
     // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The

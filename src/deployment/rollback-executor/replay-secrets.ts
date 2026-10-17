@@ -4,6 +4,7 @@ import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from '../intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
@@ -294,7 +295,7 @@ export async function resolveLeafByRegion(
       ([, verdict]) => verdict.kind === 'named-region' || verdict.kind === 'recorded-region'
     )
   ) {
-    return await resolvers.primary.resolveDynamicReferences(leaf, resolverContext);
+    return await resolveDynamicReferences(resolvers.primary, leaf, resolverContext);
   }
 
   let out = '';
@@ -325,7 +326,8 @@ export async function resolveLeafByRegion(
         : verdict.kind === 'recorded-region'
           ? resolvers.forRecordedRegion(verdict.region)
           : resolvers.primary;
-    out += await resolver.resolveDynamicReferences(token, resolverContext);
+    // The verdict's region-pinned resolver chosen above, not the primary.
+    out += await resolveDynamicReferences(resolver, token, resolverContext);
     cursor = at + token.length;
   }
   return out + leaf.slice(cursor);

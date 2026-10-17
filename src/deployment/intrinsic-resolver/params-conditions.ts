@@ -16,6 +16,7 @@ import {
   refuseCoercedInheritedSecret,
 } from './parameter-secrets.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
+import { abandonedUnit } from './masking.js';
 import {
   type AbandonedResolution,
   type ResolverContext,
@@ -598,7 +599,7 @@ export async function resolveKeyUnit(
   } catch (err) {
     // The refusal gate, in the same order as the token loop's catch.
     if (isDeliberateResolutionRefusal(err)) throw err;
-    abandoned.push(this.abandonedUnit('key', key, err, context, val));
+    abandoned.push(abandonedUnit(this, 'key', key, err, context, val));
     return val;
   }
 }

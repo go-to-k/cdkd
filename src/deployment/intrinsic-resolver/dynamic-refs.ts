@@ -10,6 +10,7 @@ import {
   IntrinsicResolutionRefusalError,
 } from '../../utils/error-handler.js';
 import {
+  type CachedDynamicReference,
   type DynamicReferencePass,
   type ResolverContext,
   isDeliberateResolutionRefusal,
@@ -33,16 +34,106 @@ import {
 import { classifyReplaySecretRegion } from '../secret-region-classification.js';
 import { recordReferenceResolution } from '../secret-redaction/reference-provenance.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    resolveDynamicReferences: OmitThisParameter<typeof resolveDynamicReferences>;
-    /** @internal */
-    resolveTemplateLeafReferences: OmitThisParameter<typeof resolveTemplateLeafReferences>;
-    /** @internal */
-    resolveDynamicReferencesWithLogTwin: OmitThisParameter<
-      typeof resolveDynamicReferencesWithLogTwin
-    >;
-  }
+import { resolveSSMReference, resolveSecretsManagerReference } from './dynamic-ref-lookups.js';
+import {
+  abandonedUnit,
+  dynamicReferenceNameLogText,
+  refuseSecretAssembledReference,
+  rememberLogTwin,
+  straddleSafeTwin,
+  tokenAssembledForRecording,
+  tokenAssembledFromSecret,
+} from './masking.js';
+
+/**
+ * The dynamic-reference memos of ONE resolver. Created once in the resolver's
+ * constructor and never replaced or cleared, so both live exactly as long as
+ * that resolver, as the resolver fields they replace did. A producer-region
+ * guest (`resolverForProducerRegion`) is a separate resolver and so owns its
+ * own: nothing is shared between a resolver and its guests.
+ */
+export class DynamicReferenceCache {
+  /**
+   * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
+   * keyed by the full expression and the credential identity that read it
+   * (`injectiveKey(credentialFingerprint, expression)`, issue
+   * [#3660](https://github.com/go-to-k/cdkd/issues/3660): a library caller can
+   * drive one resolver under two `AwsClients` identities, and the same NAME
+   * read by two accounts is two values) — INSTANCE-scoped, which closes the CACHE half
+   * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
+   * only PARTIALLY addressed by this field: see "what this does NOT settle"
+   * below.
+   *
+   * It used to be a module-global map keyed by the expression ALONE, and both
+   * halves of that were wrong for the same reason: the key and the lifetime
+   * were narrower than the value they stood for.
+   *
+   * - REGION. Secrets Manager secrets and SSM parameters are regional and
+   *   independent — the same NAME in `us-east-1` and `ap-northeast-1` is two
+   *   different values, routinely two different credentials — so the first
+   *   region to resolve an expression won it for the whole process, and every
+   *   later stack in every other region silently reused that value.
+   * - STACK. Nothing reset the map between stacks, so a second stack's
+   *   resolution cache-HIT and skipped the lookup that re-records the value as
+   *   a secret. `cdkd scrub --all` then found an empty secrets map for that
+   *   stack and reported it clean.
+   *
+   * Instance scope settles both at once because a region boundary and a stack
+   * boundary are BOTH resolver boundaries in cdkd: the resolver's
+   * `resolverRegion` is fixed at construction, and every caller builds one
+   * resolver per stack (`DeployEngine` per deploy, `scrub` / `import` /
+   * `diff-recursive` / `rollback-executor` per stack). Re-keying by region
+   * alone would have left the stack half open, which is why the lifetime — not
+   * the key — is what moved.
+   *
+   * ONE caller is a known EXCEPTION to that invariant, and it is written down
+   * here because an invariant recorded without its exception is how the next
+   * change breaks it: `cdkd export` builds a single `paramResolver`
+   * (`src/cli/commands/export.ts`, the `buildResolvedParametersPerStack`
+   * pre-pass) and shares it across every node of a nested-stack tree, while the
+   * nodes carry a per-node `region`. It is safe TODAY for two independent
+   * reasons — the resolver is constructed with the tree's single `rootRegion`
+   * and nested children do not yet diverge from it, and that pre-pass passes no
+   * `recordedSecretValues` bag, so neither the region nor the secrets-recording
+   * dimension has anything to cross. Both stop holding the moment cross-region
+   * nested stacks ship or that pass starts recording secrets; a resolver per
+   * node is the fix then, not a wider key here.
+   *
+   * The OTHER half of the same outcome — the lookups themselves reading the
+   * process-ambient `getAwsClients()` singleton, whose region is whichever the
+   * process installed last — was issue
+   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) and is now closed by
+   * `ResolverClients.clientsForRegion`: a resolver whose region differs from the ambient
+   * one builds its own region-pinned clients (carrying the ambient profile /
+   * credentials) instead of reading whatever the singleton currently holds.
+   * The two halves remain SEPARATE mechanisms and both are needed — this field
+   * stops a resolved value from travelling between regions or stacks, while
+   * the scoped clients stop the FIRST resolution from reading the wrong region
+   * (no cache involved, so nothing here could ever have prevented it).
+   */
+  readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
+
+  /**
+   * `(parameter name, reported Type)` pairs this resolver has already
+   * warned about (issue #1933 review).
+   *
+   * Keyed on the PAIR rather than the name alone: two different anomalous types
+   * for one parameter are two different facts — the line REPORTS the type, so
+   * suppressing the second would hide a `Type` nobody has seen yet behind one
+   * that was already explained. The volume problem this set exists for is N
+   * IDENTICAL lines for N occurrences of one reference, which the pair still
+   * bounds, because the type is a property of the parameter rather than of the
+   * occurrence.
+   *
+   * The warning is per LOOKUP, and a parameter with an anomalous `Type` is
+   * deliberately never cached (see `cacheable` in `resolveDynamicReferences`),
+   * so it is re-looked-up for every occurrence of the reference in the stack —
+   * which without this set means one identical warn line per occurrence per
+   * pass, on the exact template that most needs the line to be READ. Scoped to
+   * the resolver, like the value cache: a different stack genuinely deserves
+   * its own warning, since the parameter it names may be a different region's.
+   */
+  readonly warnedUnrecognizedSsmTypes = new Set<string>();
 }
 
 /**
@@ -126,21 +217,22 @@ function recordProvenanceOfResolution(
  * the reference (issue #4166); here it resolves, for the same two reasons.
  */
 export async function resolveDynamicReferences(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: string,
   context?: ResolverContext
 ): Promise<string> {
-  return (await this.resolveDynamicReferencesWithLogTwin(value, value, context, undefined, true))
-    .result;
+  return (
+    await resolveDynamicReferencesWithLogTwin(resolver, value, value, context, undefined, true)
+  ).result;
 }
 
 /** A TEMPLATE string leaf: the refusing route (see {@link resolveDynamicReferences}). */
 export async function resolveTemplateLeafReferences(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: string,
   context?: ResolverContext
 ): Promise<string> {
-  return (await this.resolveDynamicReferencesWithLogTwin(value, value, context)).result;
+  return (await resolveDynamicReferencesWithLogTwin(resolver, value, value, context)).result;
 }
 
 /**
@@ -164,7 +256,7 @@ export async function resolveTemplateLeafReferences(
  * through `logTwinText` rather than masking the twin alone.
  */
 export async function resolveDynamicReferencesWithLogTwin(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: string,
   logTwin: string,
   context?: ResolverContext,
@@ -188,7 +280,8 @@ export async function resolveDynamicReferencesWithLogTwin(
     for (const { placeholder, because } of takeKeptPlaceholdersInsideReferences(bag, value)) {
       const reason = because instanceof Error ? because.message : String(because);
       bag.push(
-        this.abandonedUnit(
+        abandonedUnit(
+          resolver,
           'placeholder',
           placeholder,
           new Error(
@@ -235,12 +328,12 @@ export async function resolveDynamicReferencesWithLogTwin(
       inherited?.tokenLogText ??
       (pairedTwin === undefined
         ? SECRET_MASK
-        : this.straddleSafeTwin(fullMatch, pairedTwin, context));
+        : straddleSafeTwin(resolver, fullMatch, pairedTwin, context));
     const nameLogText =
       inherited?.nameLogText ??
       (pairedTwin === undefined
         ? () => SECRET_MASK
-        : this.dynamicReferenceNameLogText(inner, pairedTwin, context));
+        : dynamicReferenceNameLogText(resolver, inner, pairedTwin, context));
 
     // PER-TOKEN `try`, so one unfetchable reference stops abandoning every
     // LATER token in the same leaf (go-to-k/cdkd#3181). This loop was a bare
@@ -281,7 +374,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       // below leave a public `String` token unresolved on every diff. The
       // scope is read ONCE here and handed to every `pinSecretVerdict` for
       // this token, so the verdict is filed under the scope that asked.
-      const verdictScope = secretVerdictScope(this);
+      const verdictScope = secretVerdictScope(resolver);
       const isKnownSecret =
         service === 'secretsmanager' ||
         service === 'ssm-secure' ||
@@ -340,7 +433,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // fields' own docs). The guess is used rather than `''` because an
         // empty consumer region reads EVERY recorded producer region as
         // foreign, turning the refusal below into a blanket one.
-        this.explicitRegion ?? this.resolverRegion,
+        resolver.explicitRegion ?? resolver.resolverRegion,
         context?.producerRegions
       );
 
@@ -355,9 +448,9 @@ export async function resolveDynamicReferencesWithLogTwin(
             // so `resolveSub` re-entering with an assembled body puts a
             // plaintext here — the same plaintext the sibling throws mask after
             // parsing it out of this very token (issue #2827 review round 2).
-            `Refusing to resolve the secret reference ${displayMasked(this, tokenLogText, context)}: it names ` +
-              `${quotedRender(displayMasked(this, nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
-              `${displayMasked(this, regionVerdict.foreignProducerRegions.map((r) => displayMasked(this, r, context)).join(', '), context)} as well as its own ` +
+            `Refusing to resolve the secret reference ${displayMasked(resolver, tokenLogText, context)}: it names ` +
+              `${quotedRender(displayMasked(resolver, nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
+              `${displayMasked(resolver, regionVerdict.foreignProducerRegions.map((r) => displayMasked(resolver, r, context)).join(', '), context)} as well as its own ` +
               `region. cdkd cannot tell which one must answer, and resolving against ` +
               `the wrong one yields a different secret. Spell the reference as a full ARN ` +
               `to say which region owns it.`
@@ -374,7 +467,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       // `ssm` token still needs the lookup to learn its `Type`, and is
       // refused after it.
       if (!persistedText && (service === 'secretsmanager' || service === 'ssm-secure')) {
-        this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+        refuseSecretAssembledReference(resolver, fullMatch, tokenLogText, context);
       }
 
       if (regionVerdict.kind === 'named-region') {
@@ -391,7 +484,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // region against its own and returns `local`. A name-form reference can
         // never arrive here at all, because only the `named-region` arm
         // delegates.
-        const sibling = this.resolverForProducerRegion(
+        const sibling = resolver.resolverForProducerRegion(
           regionVerdict.region,
           context,
           nameLogText(regionVerdict.region)
@@ -401,7 +494,10 @@ export async function resolveDynamicReferencesWithLogTwin(
         // by construction, so the sibling verdicts `local` whatever evidence it
         // holds -- but the shape is identical, and leaving one site to depend
         // on that argument is how the other one broke.
-        const foreign = await sibling.resolveDynamicReferencesWithLogTwin(
+        // The SIBLING is the receiver: it resolves in its own region, through
+        // its own clients and its own value cache.
+        const foreign = await resolveDynamicReferencesWithLogTwin(
+          sibling,
           fullMatch,
           fullMatch,
           // Unconditional here: this arm is reached only for an ARN-form token,
@@ -456,14 +552,16 @@ export async function resolveDynamicReferencesWithLogTwin(
       const pin = context?.referencePins?.get(fullMatch);
       const credentialKey = credentialFingerprint(ambientCredentialConfig());
       let dynamicReferenceCacheKey = injectiveKey(credentialKey, fullMatch);
-      let cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
+      let cached =
+        resolver.dynamicReferenceCache.cachedDynamicReferences.get(dynamicReferenceCacheKey);
       // A value read at a pin OTHER than the unpinned entry's: possibly a
       // second generation of the token, whose pair is not recorded (see the
       // fresh seam below).
       const pinnedGeneration = pin !== undefined && cached?.version !== pin;
       if (pinnedGeneration) {
         dynamicReferenceCacheKey = injectiveKey(credentialKey, fullMatch, pin);
-        cached = this.cachedDynamicReferences.get(dynamicReferenceCacheKey);
+        cached =
+          resolver.dynamicReferenceCache.cachedDynamicReferences.get(dynamicReferenceCacheKey);
       }
       if (cached) {
         // The `cached.value` test excludes the empty string: an empty secret is
@@ -505,7 +603,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // Reachable for a plain `ssm` token only: the other two services are
         // refused above, before the cache (issue #4266).
         if (cached.secret && cached.value && !persistedText) {
-          this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+          refuseSecretAssembledReference(resolver, fullMatch, tokenLogText, context);
         }
         const recorded = context?.recordedSecretValues;
         if (cached.secret && cached.value && recorded) {
@@ -518,12 +616,12 @@ export async function resolveDynamicReferencesWithLogTwin(
         // State schema v12: the provenance the lookup that filled this entry
         // read, recorded for THIS pass as the fresh seam below does.
         if (cached.secret && cached.value) {
-          recordProvenanceOfResolution(this, context, fullMatch, cached.version);
+          recordProvenanceOfResolution(resolver, context, fullMatch, cached.version);
         }
         // The PUBLIC proof travels with the entry too (issue #2036), for the
         // same reason the secret pair does: a later pass's bag must not lose
         // it to the cache. See the fresh-lookup arm's twin note.
-        if (service === 'ssm' && !cached.secret && recorded && !this.producerRegionGuest) {
+        if (service === 'ssm' && !cached.secret && recorded && !resolver.producerRegionGuest) {
           recordProvenPublicExpression(recorded, fullMatch, cached.value);
         }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
@@ -567,7 +665,8 @@ export async function resolveDynamicReferencesWithLogTwin(
       let resolvedVersion: string | undefined;
       if (service === 'secretsmanager') {
         const versionOut: { version?: string } = {};
-        resolved = await this.resolveSecretsManagerReference(
+        resolved = await resolveSecretsManagerReference(
+          resolver,
           inner,
           context,
           nameLogText,
@@ -582,7 +681,8 @@ export async function resolveDynamicReferencesWithLogTwin(
         // `StringList` are unaffected by the flag, so the value is the same one
         // the deploy path would resolve and is safe to cache and substitute.
         const decrypt = context?.skipDynamicReferences !== true;
-        const param = await this.resolveSSMReference(
+        const param = await resolveSSMReference(
+          resolver,
           parts,
           decrypt,
           'ssm',
@@ -616,12 +716,13 @@ export async function resolveDynamicReferencesWithLogTwin(
           // still must not pin a token the deploy path would refuse.
           else if (
             writesVerdict &&
-            (persistedText || !this.tokenAssembledForRecording(fullMatch, tokenLogText, context))
+            (persistedText ||
+              !tokenAssembledForRecording(resolver, fullMatch, tokenLogText, context))
           ) {
-            this.pinSecretVerdict(fullMatch, true, verdictScope);
+            resolver.pinSecretVerdict(fullMatch, true, verdictScope);
           }
         } else if (!param.secure) {
-          if (writesVerdict) this.pinSecretVerdict(fullMatch, false, verdictScope);
+          if (writesVerdict) resolver.pinSecretVerdict(fullMatch, false, verdictScope);
           // ...and a PER-BAG proof (issue #2036), read by the empty-map arm of
           // `mixedLeafMayCarryPublicReference`. Filed under THIS pass's bag, not
           // under the bare expression: the bag is one record's pass in this
@@ -630,7 +731,7 @@ export async function resolveDynamicReferencesWithLogTwin(
           // producer-region GUEST files none, for the reason `pinSecretVerdict`
           // suppresses its write: its answer is another region's. The VALUE is
           // filed too: the reader admits a readback only when it equals it.
-          if (proofBag && !this.producerRegionGuest) {
+          if (proofBag && !resolver.producerRegionGuest) {
             recordProvenPublicExpression(proofBag, fullMatch, param.value);
           }
         } else {
@@ -679,7 +780,8 @@ export async function resolveDynamicReferencesWithLogTwin(
         // resolving it would record a public value as a redaction needle over
         // that disagreement. `markNonRetryable` because the parameter's type
         // is not something a retry can change.
-        const param = await this.resolveSSMReference(
+        const param = await resolveSSMReference(
+          resolver,
           parts,
           true,
           'ssm-secure',
@@ -696,7 +798,7 @@ export async function resolveDynamicReferencesWithLogTwin(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               // Masked for the reason the `ssm-secure` refusal above states.
-              `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: the parameter is a ${param.type} ` +
+              `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: the parameter is a ${param.type} ` +
                 `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
                 `Reference it as {{resolve:ssm:...}} if it is public configuration.`
             )
@@ -744,20 +846,23 @@ export async function resolveDynamicReferencesWithLogTwin(
         // needle half can fire there (that entry point passes the value as
         // its own twin, so every token pairs with itself), and it is the one
         // that must not: see {@link resolveDynamicReferences}.
-        if (!persistedText && this.tokenAssembledFromSecret(fullMatch, tokenLogText, context)) {
+        if (
+          !persistedText &&
+          tokenAssembledFromSecret(resolver, fullMatch, tokenLogText, context)
+        ) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: its service is not one cdkd ` +
+              `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: its service is not one cdkd ` +
                 `resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a ` +
                 `secret value, so leaving it as written would send that value to AWS and record it ` +
                 `in state in the clear.`
             )
           );
         }
-        this.logger.warn(
+        resolver.logger.warn(
           displayMasked(
-            this,
-            `Unsupported dynamic reference service: ${displayMasked(this, nameLogText(String(service)), context)}`,
+            resolver,
+            `Unsupported dynamic reference service: ${displayMasked(resolver, nameLogText(String(service)), context)}`,
             context
           )
         );
@@ -768,16 +873,16 @@ export async function resolveDynamicReferencesWithLogTwin(
       // Issue #4166: refused BEFORE the cache write too, so a later pass
       // cannot take the value from the cache arm without the same check.
       if (isSecret && resolved && !persistedText) {
-        this.refuseSecretAssembledReference(fullMatch, tokenLogText, context);
+        refuseSecretAssembledReference(resolver, fullMatch, tokenLogText, context);
       }
-      if (pinSecureVerdict) this.pinSecretVerdict(fullMatch, true, verdictScope);
+      if (pinSecureVerdict) resolver.pinSecretVerdict(fullMatch, true, verdictScope);
 
       // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
       // re-record it into a later pass's bag on its own, without depending on a
       // process-global verdict store another stack's resolver can retract from
       // under it (issue #1933).
       if (cacheable) {
-        this.cachedDynamicReferences.set(dynamicReferenceCacheKey, {
+        resolver.dynamicReferenceCache.cachedDynamicReferences.set(dynamicReferenceCacheKey, {
           value: resolved,
           secret: isSecret,
           ...(resolvedVersion !== undefined && { version: resolvedVersion }),
@@ -806,7 +911,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         }
         // State schema v12 (go-to-k/cdkd#4847 / #4852): which region answered
         // and which version it read, beside the pair and in the same pass.
-        recordProvenanceOfResolution(this, context, fullMatch, resolvedVersion);
+        recordProvenanceOfResolution(resolver, context, fullMatch, resolvedVersion);
         // The value-keyed map above COLLAPSES a group of expressions sharing a
         // resolved value down to its last member; this set does not, which is
         // what lets the redaction path name the losing member (issue #1916).
@@ -828,7 +933,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // two intrinsic-shaped `ssm-secure` references sharing a value would
         // persist the winner's expression at the loser's position.
         if (service === 'secretsmanager' || service === 'ssm-secure') {
-          this.pinSecretVerdict(fullMatch, true, verdictScope);
+          resolver.pinSecretVerdict(fullMatch, true, verdictScope);
         }
       }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
@@ -843,7 +948,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       // decision that must stop the run into a silently skipped token.
       if (isDeliberateResolutionRefusal(err)) throw err;
       context.abandonedResolutions.push(
-        this.abandonedUnit('token', tokenLogText, err, context, fullMatch, (text) => {
+        abandonedUnit(resolver, 'token', tokenLogText, err, context, fullMatch, (text) => {
           // The thrown text can echo the reference's own ARGUMENT back —
           // SSM's `ValidationException` / `ParameterNotFound` name the
           // parameter. `sendWithThrottleRetry` masks that echo by position
@@ -898,6 +1003,6 @@ export async function resolveDynamicReferencesWithLogTwin(
   // method, so an `Fn::Join` / `Fn::Sub` whose part arrived by any of them
   // (`Fn::Select`, `Fn::If`, `Fn::ImportValue`, ...) still masks where the
   // substitution wrote. A per-caller registration missed each route in turn.
-  if (context) this.rememberLogTwin(context, result, twin);
+  if (context) rememberLogTwin(resolver, context, result, twin);
   return { result, twin, substitutions, complete };
 }

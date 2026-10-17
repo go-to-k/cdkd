@@ -15,26 +15,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const SECRETS = vi.hoisted(() => ({}) as Record<string, string>);
-vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('../../../src/deployment/intrinsic-function-resolver.js')>();
-  class Resolver extends actual.IntrinsicFunctionResolver {
-    constructor(...args: ConstructorParameters<typeof actual.IntrinsicFunctionResolver>) {
-      super(...args);
-      (this as unknown as { resolveDynamicReferences: unknown }).resolveDynamicReferences = async (
-        value: unknown,
-        ctx?: { recordedSecretValues?: Map<string, string> }
-      ): Promise<unknown> => {
-        if (typeof value === 'string' && Object.hasOwn(SECRETS, value)) {
-          ctx?.recordedSecretValues?.set(SECRETS[value]!, value);
-          return SECRETS[value];
-        }
-        return value;
-      };
+// The replay's resolution entry, a plain function taking its resolver first.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>()),
+  resolveDynamicReferences: vi.fn(
+    async (
+      _resolver: unknown,
+      value: unknown,
+      ctx?: { recordedSecretValues?: Map<string, string> }
+    ): Promise<unknown> => {
+      if (typeof value === 'string' && Object.hasOwn(SECRETS, value)) {
+        ctx?.recordedSecretValues?.set(SECRETS[value]!, value);
+        return SECRETS[value];
+      }
+      return value;
     }
-  }
-  return { ...actual, IntrinsicFunctionResolver: Resolver };
-});
+  ),
+}));
 vi.mock('../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), setLevel: vi.fn(), child: () => l };
   return { getLogger: () => l };

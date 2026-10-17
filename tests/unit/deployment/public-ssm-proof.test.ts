@@ -79,6 +79,7 @@ import {
   resetAccountInfoCache,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import { PublicSsmProver } from '../../../src/deployment/public-ssm-proof.js';
 import {
   clearRecordedSecretExpressions,
@@ -264,16 +265,16 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
   it('a fresh String lookup proves the token in THIS pass bag', async () => {
     const resolver = new IntrinsicFunctionResolver(HOME);
     const bag: RecordedSecretValues = new Map();
-    await resolver.resolveDynamicReferences(`https://${PUBLIC}/x`, ctx(bag));
+    await resolveDynamicReferences(resolver, `https://${PUBLIC}/x`, ctx(bag));
     expect(isProvenPublicExpression(bag, PUBLIC)).toBe(true);
     expect(bag.size).toBe(0);
   });
 
   it('a CACHE HIT proves the token in a later pass bag too', async () => {
     const resolver = new IntrinsicFunctionResolver(HOME);
-    await resolver.resolveDynamicReferences(PUBLIC, ctx(new Map()));
+    await resolveDynamicReferences(resolver, PUBLIC, ctx(new Map()));
     const later: RecordedSecretValues = new Map();
-    await resolver.resolveDynamicReferences(`a-${PUBLIC}`, ctx(later));
+    await resolveDynamicReferences(resolver, `a-${PUBLIC}`, ctx(later));
     expect(ssmSends).toHaveLength(1);
     expect(provenPublicValue(later, PUBLIC)).toBe('db.public.internal');
   });
@@ -282,7 +283,7 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     prime(HOME, SECURE_NAME, { Parameter: { Value: 'decrypted', Type: 'SecureString' } });
     const resolver = new IntrinsicFunctionResolver(HOME);
     const bag: RecordedSecretValues = new Map();
-    await resolver.resolveDynamicReferences(`pw=${SECURE}`, ctx(bag));
+    await resolveDynamicReferences(resolver, `pw=${SECURE}`, ctx(bag));
     expect(bag.get('decrypted')).toBe(SECURE);
     expect(isProvenPublicExpression(bag, SECURE)).toBe(false);
   });
@@ -290,16 +291,16 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
   it('an unclassifiable Type proves nothing', async () => {
     const resolver = new IntrinsicFunctionResolver(HOME);
     const bag: RecordedSecretValues = new Map();
-    await resolver.resolveDynamicReferences(`x-${ODD}`, ctx(bag));
+    await resolveDynamicReferences(resolver, `x-${ODD}`, ctx(bag));
     expect(isProvenPublicExpression(bag, ODD)).toBe(false);
   });
 
   it('a SecureString CACHE HIT files no proof, even with every other veto removed', async () => {
     prime(HOME, SECURE_NAME, { Parameter: { Value: 'decrypted', Type: 'SecureString' } });
     const resolver = new IntrinsicFunctionResolver(HOME);
-    await resolver.resolveDynamicReferences(SECURE, ctx(new Map()));
+    await resolveDynamicReferences(resolver, SECURE, ctx(new Map()));
     const later: RecordedSecretValues = new Map();
-    await resolver.resolveDynamicReferences(`pw=${SECURE}`, ctx(later));
+    await resolveDynamicReferences(resolver, `pw=${SECURE}`, ctx(later));
     expect(ssmSends).toHaveLength(1);
     // Strip the two vetoes that would hide a proof filed by mistake: the
     // bag's own secret pair and the process-wide verdict.
@@ -310,12 +311,12 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
 
   it('a LATER SecureString answer in the same bag voids an earlier proof (comparison path)', async () => {
     const bag: RecordedSecretValues = new Map();
-    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(`a-${PUBLIC}`, ctx(bag));
+    await resolveDynamicReferences(new IntrinsicFunctionResolver(HOME),`a-${PUBLIC}`, ctx(bag));
     expect(isProvenPublicExpression(bag, PUBLIC)).toBe(true);
     // Retyped between two lookups, answered on the no-decryption path: nothing
     // is recorded into the bag there, so only the contradiction can void it.
     prime(HOME, PUBLIC_NAME, { Parameter: { Value: 'AQICAH-ciphertext', Type: 'SecureString' } });
-    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(
+    await resolveDynamicReferences(new IntrinsicFunctionResolver(HOME),
       `b-${PUBLIC}`,
       ctx(bag, { skipDynamicReferences: true })
     );
@@ -328,9 +329,9 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
 
   it('a LATER unclassifiable answer in the same bag voids an earlier proof', async () => {
     const bag: RecordedSecretValues = new Map();
-    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(`a-${PUBLIC}`, ctx(bag));
+    await resolveDynamicReferences(new IntrinsicFunctionResolver(HOME),`a-${PUBLIC}`, ctx(bag));
     prime(HOME, PUBLIC_NAME, { Parameter: { Value: 'v' } });
-    await new IntrinsicFunctionResolver(HOME).resolveDynamicReferences(
+    await resolveDynamicReferences(new IntrinsicFunctionResolver(HOME),
       `b-${PUBLIC}`,
       ctx(bag, { skipDynamicReferences: true })
     );
@@ -343,13 +344,13 @@ describe('the resolver files the per-bag proof (cdkd drift)', () => {
     prime('eu-west-1', arnName, { Parameter: { Value: 'eu', Type: 'String' } });
     const resolver = new IntrinsicFunctionResolver(HOME);
     const bag: RecordedSecretValues = new Map();
-    const out = await resolver.resolveDynamicReferences(`x-${arn}`, ctx(bag));
+    const out = await resolveDynamicReferences(resolver, `x-${arn}`, ctx(bag));
     expect(out).toBe('x-eu');
     expect(ssmSends.map((s) => s.region)).toEqual(['eu-west-1']);
     expect(isProvenPublicExpression(bag, arn)).toBe(false);
     // ...and the guest's CACHE HIT on a later pass files none either.
     const later: RecordedSecretValues = new Map();
-    expect(await resolver.resolveDynamicReferences(`y-${arn}`, ctx(later))).toBe('y-eu');
+    expect(await resolveDynamicReferences(resolver, `y-${arn}`, ctx(later))).toBe('y-eu');
     expect(ssmSends).toHaveLength(1);
     expect(isProvenPublicExpression(later, arn)).toBe(false);
   });

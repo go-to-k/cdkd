@@ -1,5 +1,6 @@
 import { IntrinsicFunctionResolver } from '../deployment/intrinsic-function-resolver.js';
 import type { ResolverContext } from '../deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   classifyRecordedSecretRegion,
   producerRegionsFromState,
@@ -55,14 +56,7 @@ export interface SecretPrincipalRetryMemo {
  * The resolver {@link resolveSecretDerivedPrincipals} resolves through: the
  * stack region's own, and its producer-region guest for a recorded region.
  */
-export type SecretPrincipalResolver = Pick<
-  IntrinsicFunctionResolver,
-  'resolveDynamicReferences'
-> & {
-  resolverForRecordedRegion(
-    region: string
-  ): Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
-};
+export type SecretPrincipalResolver = IntrinsicFunctionResolver;
 
 /** Whether {@link resolveSecretDerivedPrincipals} may resolve a token with this verdict. */
 function resolvableVerdict(verdict: RecordedSecretRegionVerdict): boolean {
@@ -91,7 +85,7 @@ function unprovenRegionLessToken(
  *
  * Each expression is resolved the way a rollback replay re-resolves a
  * journaled one (`rollback-executor/replay-props.ts`'s `resolveReplayProps`): the SAME
- * resolver seam (`IntrinsicFunctionResolver.resolveDynamicReferences`), after
+ * resolver seam (`resolveDynamicReferences`, `intrinsic-resolver/dynamic-refs.ts`), after
  * the SAME region classification (`classifyRecordedSecretRegion`) armed with the
  * SAME producer-region evidence (`producerRegionsFromState`, passed by the
  * caller). Only a token classified `local` is resolved, or a region-less one
@@ -232,7 +226,7 @@ async function resolveEntry(
 ): Promise<string> {
   const tokens = dynamicReferenceTokens(entry).map((t) => [t, verdictOf(t)] as const);
   if (!tokens.some(([, v]) => v.kind === 'recorded-region')) {
-    return await primary.resolveDynamicReferences(entry, context);
+    return await resolveDynamicReferences(primary, entry, context);
   }
   let out = '';
   let cursor = 0;
@@ -246,7 +240,8 @@ async function resolveEntry(
       verdict.kind === 'recorded-region'
         ? primary.resolverForRecordedRegion(verdict.region)
         : primary;
-    out += await resolver.resolveDynamicReferences(token, context);
+    // The recorded region's guest chosen above, not the primary.
+    out += await resolveDynamicReferences(resolver, token, context);
     cursor = at + token.length;
   }
   return out + entry.slice(cursor);

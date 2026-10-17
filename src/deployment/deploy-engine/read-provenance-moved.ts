@@ -21,6 +21,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import type { ResolverContext } from '../intrinsic-resolver/context.js';
 import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
+import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import type { ReferenceProvenance, ResourceState } from '../../types/state.js';
 import {
   referenceProvenanceOf,
@@ -167,8 +168,9 @@ export async function sameValueAtVersions(
   if (entry.region === undefined) return undefined;
   const reader = resolver.resolverForRecordedRegion(entry.region);
   try {
-    const now = await reader.resolveDynamicReferences(entry.token, context(served));
-    const then = await reader.resolveDynamicReferences(entry.token, context(recorded));
+    // The recorded region's READER, never `resolver` itself.
+    const now = await resolveDynamicReferences(reader, entry.token, context(served));
+    const then = await resolveDynamicReferences(reader, entry.token, context(recorded));
     if (now.includes('{{resolve:') || then.includes('{{resolve:')) return undefined;
     return now === then;
   } catch (err) {

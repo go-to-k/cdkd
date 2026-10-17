@@ -93,6 +93,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { resolveDynamicReferences } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+);
 
 const PIN_REF = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin}}`;
 
@@ -408,7 +411,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const ctx = freshContext();
     // The public method is what `reresolveCrossStackValue`, `cdkd scrub` and
     // `drift` call; none of them goes through `resolveValue`.
-    const imported = await resolver.resolveDynamicReferences(`port:${PIN_REF}`, ctx as never);
+    const imported = await resolveDynamicReferences(resolver, `port:${PIN_REF}`, ctx as never);
     expect(imported).toBe(`port:${PIN}`);
 
     // A product equal to that string, reached with no reference of its own.

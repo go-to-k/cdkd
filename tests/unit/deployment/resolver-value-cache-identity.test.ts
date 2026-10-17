@@ -89,6 +89,7 @@ import {
   resetAccountInfoCache,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 
 const REGION = 'us-east-1';
 const A = { accessKeyId: 'AKIDVALUECACHEA3660', secretAccessKey: 'secret-a' };
@@ -295,7 +296,7 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       const expression = '{{resolve:ssm:/shared/config}}';
       const lookup = (credentials: typeof A): Promise<unknown> =>
         runWithStackAwsClients(clientsFor(credentials), () =>
-          resolver.resolveDynamicReferences(expression, emptyContext)
+          resolveDynamicReferences(resolver, expression, emptyContext)
         );
 
       const results = [await lookup(A), await lookup(B), await lookup(A)];
@@ -315,7 +316,7 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       const expression = '{{resolve:secretsmanager:shared/db:SecretString}}';
       const lookup = (credentials: typeof A): Promise<unknown> =>
         runWithStackAwsClients(clientsFor(credentials), () =>
-          resolver.resolveDynamicReferences(expression, emptyContext)
+          resolveDynamicReferences(resolver, expression, emptyContext)
         );
 
       const results = [await lookup(A), await lookup(B), await lookup(A)];

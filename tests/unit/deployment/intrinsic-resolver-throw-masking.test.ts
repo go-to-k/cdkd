@@ -254,6 +254,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { resolveDynamicReferences } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+);
 const { redactSecretsForState } = await import('../../../src/deployment/secret-redaction.js');
 const { maskValueLeaves } = await import(
   '../../../src/deployment/intrinsic-resolver/masking-display.js'
@@ -351,7 +354,7 @@ async function persistedMessageOf(h: Harness, token: string): Promise<string> {
     await h.resolver.resolve(assembled('password'), h.context as never),
     'the needle must be recorded first'
   ).toBe(PASSWORD);
-  const thrown = await h.resolver.resolveDynamicReferences(token, h.context as never).then(
+  const thrown = await resolveDynamicReferences(h.resolver,token, h.context as never).then(
     (resolved) => ({ [RESOLVED_INSTEAD]: resolved }) as const,
     (reason: unknown) => reason
   );
@@ -1029,7 +1032,7 @@ describe('#2827 review — the SUCCESS-path log lines beside every masked throw'
       await h.resolver.resolve(assembled('password'), h.context as never),
       'the needle must be recorded first'
     ).toBe(PASSWORD);
-    const resolved = await h.resolver.resolveDynamicReferences(
+    const resolved = await resolveDynamicReferences(h.resolver,
       `{{resolve:secretsmanager:${SECRET_ID}:SecretString:password:${PASSWORD}}}`,
       h.context as never
     );

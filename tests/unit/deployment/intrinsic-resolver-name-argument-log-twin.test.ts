@@ -326,6 +326,12 @@ function withRegionOf<T extends object>(clients: T): T & { withRegion: () => T }
 const { IntrinsicFunctionResolver, resetAccountInfoCache, dynamicReferenceRetryDelays } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { resolveDynamicReferences } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+);
+const { resolveSSMReference, resolveSecretsManagerReference } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-ref-lookups.js'
+);
 
 const ref = (jsonKey: string): string =>
   `{{resolve:secretsmanager:${SECRET_ID}:SecretString:${jsonKey}}}`;
@@ -417,7 +423,7 @@ async function persistedOutcome(writes: unknown[], token: string): Promise<unkno
   const resolver = new IntrinsicFunctionResolver('us-east-1');
   const context = makeContext();
   for (const write of writes) await resolver.resolve(write, context as never);
-  return resolver.resolveDynamicReferences(token, context as never).then(
+  return resolveDynamicReferences(resolver, token, context as never).then(
     (resolved) => ({ resolvedInstead: resolved }),
     (reason: unknown) => reason
   );
@@ -1655,9 +1661,9 @@ describe('issue #3150: names assembled inside the SAME Fn::Sub as their dynamic 
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const omitted = (): void => {
       // @ts-expect-error -- `nameLogText` is required
-      void resolver['resolveSecretsManagerReference'](`secretsmanager:${SECRET_ID}:SecretString:pin`, undefined);
+      void resolveSecretsManagerReference(resolver, `secretsmanager:${SECRET_ID}:SecretString:pin`, undefined);
       // @ts-expect-error -- `nameLogText` is required
-      void resolver['resolveSSMReference'](['ssm', 'host'], true, 'ssm', undefined);
+      void resolveSSMReference(resolver, ['ssm', 'host'], true, 'ssm', undefined);
     };
     expect(typeof omitted).toBe('function');
   });

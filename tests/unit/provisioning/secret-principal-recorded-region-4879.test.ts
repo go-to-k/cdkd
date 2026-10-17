@@ -46,6 +46,21 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
     })),
   };
 });
+// `resolveDynamicReferences` is a plain function taking its resolver first,
+// so a fake resolver's stub is reached through this forwarder: it calls the
+// stub of the resolver it was HANDED, which keeps the primary / guest
+// distinction every case below asserts.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>();
+  return {
+    ...actual,
+    resolveDynamicReferences: vi.fn(
+      (resolver: { resolveDynamicReferences: (v: string, c: unknown) => Promise<string> }, value: string, context: unknown) =>
+        resolver.resolveDynamicReferences(value, context)
+    ),
+  };
+});
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
@@ -54,6 +69,7 @@ import {
   TRANSIENT_RESOLUTION_MESSAGE,
 } from '../../../src/provisioning/secret-principal-resolution.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 
 const REF = '{{resolve:secretsmanager:sdp:SecretString:role::}}';
 const OTHER = '{{resolve:secretsmanager:sdp2:SecretString:role::}}';
@@ -64,7 +80,7 @@ const recorded = (entries: Record<string, string>): ReadonlyMap<string, string> 
   new Map(Object.entries(entries));
 
 const primary = { resolveDynamicReferences: primaryResolve, resolverForRecordedRegion: guestFor };
-const make = (): typeof primary => primary;
+const make = (): IntrinsicFunctionResolver => primary as unknown as IntrinsicFunctionResolver;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -93,6 +109,12 @@ describe('resolveSecretDerivedPrincipals with a recorded region (go-to-k/cdkd#48
     );
     expect(r?.lists).toEqual({ Roles: ['plain', ROLE_WEST] });
     expect(guestFor).toHaveBeenCalledWith('us-west-2');
+    // RAN-GUARD and receiver pin: the module function ran, handed the GUEST.
+    expect(vi.mocked(resolveDynamicReferences)).toHaveBeenCalledWith(
+      guestFor.mock.results[0]!.value,
+      REF,
+      expect.anything()
+    );
     // Never resolved in the consumer's region, where the same name holds another value.
     expect(primaryResolve).not.toHaveBeenCalled();
     expect(r?.resolvedNames['Roles']).toEqual(new Set([ROLE_WEST]));
