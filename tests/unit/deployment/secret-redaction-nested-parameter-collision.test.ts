@@ -155,7 +155,7 @@ async function persistAndDesired(
   const desired = (await resolver.resolve(properties, {
     template,
     resources: {},
-    parameters: redactParametersForDiff(engine.maskingDeps(), PARAMETERS),
+    parameters: redactParametersForDiff(engine, PARAMETERS),
     // As `buildResolverContext` sets it on the deploy's diff context.
     inheritedSecrets: parent,
     skipDynamicReferences: true,
@@ -380,7 +380,7 @@ describe('a slot read no re-read answers keeps the pre-#4644 answer (#4731)', ()
       const desired = await resolver.resolve(other, {
         template,
         resources: {},
-        parameters: redactParametersForDiff(engine.maskingDeps(), params),
+        parameters: redactParametersForDiff(engine, params),
         skipDynamicReferences: true,
         conditions: CONDITIONS,
       } as unknown as ResolverContext);
@@ -595,7 +595,7 @@ describe('a child resource reading BOTH parameters through Fn::Select / Fn::Spli
       const desired = await resolver.resolve(properties, {
         template,
         resources: {},
-        parameters: redactParametersForDiff(engine.maskingDeps(), params),
+        parameters: redactParametersForDiff(engine, params),
         skipDynamicReferences: true,
         conditions: CONDITIONS,
       } as unknown as ResolverContext);
@@ -764,7 +764,7 @@ describe('Fn::If, Fn::Sub under Fn::Select and a shrinkable array keep each spel
     const desired = (await resolver.resolve(properties, {
       template,
       resources: {},
-      parameters: redactParametersForDiff(engine.maskingDeps(), PARAMETERS),
+      parameters: redactParametersForDiff(engine, PARAMETERS),
       inheritedSecrets: parent,
       skipDynamicReferences: true,
       conditions: BRANCHES,
@@ -1326,7 +1326,7 @@ describe('the resolver records the Fn::If branch and the array elements a pass t
     const desired = (await resolver.resolve(properties, {
       template,
       resources: {},
-      parameters: redactParametersForDiff(engine.maskingDeps(), PARAMETERS),
+      parameters: redactParametersForDiff(engine, PARAMETERS),
       inheritedSecrets: parent,
       skipDynamicReferences: true,
       conditions,

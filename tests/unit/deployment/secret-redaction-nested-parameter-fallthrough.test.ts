@@ -107,7 +107,7 @@ function makeContext(
 /** The real diff-side binding, on an engine that holds only what it reads. */
 function diffBinding(inherited: RecordedSecretValues): Record<string, unknown> {
   const engine = { options: { inheritedSecrets: inherited } } as unknown as MaskingDeps;
-  return redactParametersForDiff(engine.maskingDeps(), PARAMETERS);
+  return redactParametersForDiff(engine, PARAMETERS);
 }
 
 describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#2349)', () => {
@@ -183,7 +183,7 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
       unknown
     >;
     const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
-    const desired = redactParametersForDiff(engine.maskingDeps(), params);
+    const desired = redactParametersForDiff(engine, params);
     expect(persisted['Description']).toBe(desired[PARAM_A]);
     expect(persisted['Value']).toBe(desired[PARAM_B]);
     expect(persisted['Description']).toBe(`postgres://${USER_EXPR}:${EXPR_A}@host`);
@@ -526,7 +526,7 @@ describe('a two-token literal parameter persists its own spelling in either pare
         unknown
       >;
       const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
-      const desired = redactParametersForDiff(engine.maskingDeps(), ctx.parameters);
+      const desired = redactParametersForDiff(engine, ctx.parameters);
 
       expect(desired[PARAM_A]).toBe(spelling);
       expect(persisted['Env']).toBe(`x-${spelling}`);
@@ -648,7 +648,7 @@ describe('a two-token literal parameter persists its own spelling in either pare
 
   function diffBinding4644(parent: RecordedSecretValues): Record<string, unknown> {
     const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
-    return redactParametersForDiff(engine.maskingDeps(), { [PARAM_A]: CONN, [PARAM_B]: SHARED });
+    return redactParametersForDiff(engine, { [PARAM_A]: CONN, [PARAM_B]: SHARED });
   }
 
   it('REFUSES a value the spelling does not render to: the recorder writes nothing and the diff side keeps the scan', () => {
@@ -927,7 +927,7 @@ describe('every child read shape of a literal-spelled parameter persists what th
           const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source);
 
           const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
-          const bindings = redactParametersForDiff(engine.maskingDeps(), ctx.parameters);
+          const bindings = redactParametersForDiff(engine, ctx.parameters);
           expect(bindings[PARAM_A]).toBe(spelling);
           const desired = await resolver.resolve(source, {
             template: shapeTemplate,
