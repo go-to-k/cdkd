@@ -1,6 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { describeAvailableOutputs } from './cfn-fallback.js';
 import { displayLeaf, displayMasked, displayMaskedIdent } from './masking-display.js';
+import { logTextOfLeaf, regionLogText } from './masking.js';
 import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
 import { hasReadableOutputs } from '../../state/malformed-resources-bag.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -142,7 +143,7 @@ export async function resolveGetStackOutput(
   // log text of the resolver's own region, which a string this pass
   // assembled can equal, or of a template-supplied region's RAW value, since
   // `canonicalizeRegion` lowercases it past any twin lookup.
-  let loggedRegionText = this.logTextOfLeaf(region, context);
+  let loggedRegionText = logTextOfLeaf(this, region, context);
   if ('Region' in args && args['Region'] !== undefined && args['Region'] !== null) {
     const resolvedRegion = await this.resolveValue(args['Region'], context);
     if (typeof resolvedRegion !== 'string' || resolvedRegion === '') {
@@ -181,14 +182,14 @@ export async function resolveGetStackOutput(
       throw markNonRetryable(
         new Error(
           // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
-          `Fn::GetStackOutput: ${displayMaskedIdent(this, this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
+          `Fn::GetStackOutput: ${displayMaskedIdent(this, logTextOfLeaf(this, resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         )
       );
     }
     region = requestedRegion;
-    loggedRegionText = this.regionLogText(resolvedRegion, context);
+    loggedRegionText = regionLogText(this, resolvedRegion, context);
   }
 
   // RoleArn must be a LITERAL string in the template — we check the raw

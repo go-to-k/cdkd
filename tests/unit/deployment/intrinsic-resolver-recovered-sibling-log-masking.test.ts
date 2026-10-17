@@ -57,6 +57,9 @@ vi.mock('@aws-sdk/client-ssm', () => ({
 const { IntrinsicFunctionResolver } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { resolveDynamicReferences } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+);
 
 const DEAD = '{{resolve:ssm-secure:/deleted/param}}';
 const LIVE = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
@@ -94,7 +97,7 @@ describe('recovery keeps secrets out of logs and keeps the twin pairing (go-to-k
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: unknown[] = [];
 
-    const out = await resolver.resolveDynamicReferences(`${DEAD}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver,`${DEAD}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -149,7 +152,7 @@ describe('recovery keeps secrets out of logs and keeps the twin pairing (go-to-k
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const abandonedResolutions: Array<{ subject: string }> = [];
 
-    const out = await resolver.resolveDynamicReferences(`${FIRST}/${DEAD}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver,`${FIRST}/${DEAD}/${LIVE}`, {
       recordedSecretValues: new Map<string, string>(),
       abandonedResolutions,
     } as never);

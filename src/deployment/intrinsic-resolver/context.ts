@@ -999,7 +999,7 @@ export interface ResolverContext {
   /**
    * The FOREIGN-region evidence for the secret-region classification issue
    * [#2134](https://github.com/go-to-k/cdkd/issues/2134) performs inside
-   * {@link IntrinsicFunctionResolver.resolveDynamicReferences} -- the producer
+   * `resolveDynamicReferences` (`dynamic-refs.ts`) -- the producer
    * regions this stack is on record as reading from, i.e.
    * `producerRegionsFromState(state)` over `state.imports[].sourceRegion` plus
    * `state.outputReads[].sourceRegion`.
@@ -1115,7 +1115,7 @@ export const cachedAvailabilityZones = new Map<string, string[]>();
 
 /**
  * One resolved dynamic reference, as remembered by
- * {@link IntrinsicFunctionResolver.cachedDynamicReferences}.
+ * `DynamicReferenceCache.cachedDynamicReferences` (`dynamic-refs.ts`).
  *
  * `secret` is the verdict the resolution that PRODUCED this value reached —
  * `true` for every `secretsmanager` spelling and for an `ssm` parameter whose

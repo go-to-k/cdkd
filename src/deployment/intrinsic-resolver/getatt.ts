@@ -1,5 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayLeaf, displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import { resolveDynamicReferences } from './dynamic-refs.js';
+import { outputNameLogText } from './masking.js';
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
@@ -520,7 +522,7 @@ export async function resolveGetAtt(
     const declared = Object.keys(resource.attributes ?? {})
       .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
       .sort()
-      .map((k) => displayMasked(this, this.outputNameLogText(k, context), context));
+      .map((k) => displayMasked(this, outputNameLogText(this, k, context), context));
     const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
     // Bound once because the message renders it TWICE (go-to-k/cdkd#3432). Two independent
     // `displayMasked(this,logicalId, context)` calls would also be correct, but a single binding is what
@@ -537,7 +539,7 @@ export async function resolveGetAtt(
         // the unknown-account refusal in `constructGuardedAttribute`.
         `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${displayMasked(this, attributeName, context)}]: the nested stack ` +
           `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
-          `${quotedRender(displayMasked(this, this.outputNameLogText(attributeName, context), context), "'")}. ` +
+          `${quotedRender(displayMasked(this, outputNameLogText(this, attributeName, context), context), "'")}. ` +
           `Its outputs are ${displayMasked(this, declaredText, context)}. ` +
           `Check the output name in the nested stack's template, and deploy the child ` +
           `stack again if you have just added it.`
@@ -986,8 +988,9 @@ export async function referencesMatchPhysicalId(
       const route = routeOf?.(token);
       const plaintext =
         route === undefined
-          ? await this.resolveDynamicReferences(token, context)
-          : await route.resolver.resolveDynamicReferences(token, route.context);
+          ? await resolveDynamicReferences(this, token, context)
+          : // The ROUTE's resolver (its recorded region's), never this one.
+            await resolveDynamicReferences(route.resolver, token, route.context);
       if (plaintext.includes('{{resolve:')) continue;
       if (plaintext.length < MIN_NEEDLE_LENGTH) return false;
       if (!physicalId.includes(plaintext.toLowerCase())) return false;

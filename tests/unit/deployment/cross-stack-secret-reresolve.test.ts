@@ -145,6 +145,7 @@ import {
   type AbandonedResolution,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { StateImportEntry } from '../../../src/types/state.js';
@@ -1133,7 +1134,7 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
 
       // 2. The consumer's OWN pass, on the comparison path, must still ask AWS
       //    and resolve ITS region's public value.
-      const diffResult = await resolver.resolveDynamicReferences(ssmExpression, {
+      const diffResult = await resolveDynamicReferences(resolver,ssmExpression, {
         ...context,
         skipDynamicReferences: true,
       });

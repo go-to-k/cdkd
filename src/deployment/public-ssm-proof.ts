@@ -1,5 +1,6 @@
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import type { ResolverContext } from './intrinsic-resolver/context.js';
+import { resolveDynamicReferences } from './intrinsic-resolver/dynamic-refs.js';
 import type { RecordedSecretValues } from './secret-redaction/pairs.js';
 import { dynamicReferenceTokens } from './secret-redaction/redact-path.js';
 import { isSingleDynamicReferenceToken } from './secret-redaction/rules.js';
@@ -131,7 +132,7 @@ export class PublicSsmProver {
       skipDynamicReferences: true,
     };
     try {
-      await this.resolver.resolveDynamicReferences(token, context);
+      await resolveDynamicReferences(this.resolver, token, context);
     } catch (err) {
       // The error's NAME only: its message can carry the parameter name, and a
       // reader of this line needs only to know why the proof is missing.

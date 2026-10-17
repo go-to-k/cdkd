@@ -115,6 +115,7 @@ import {
   resetAccountInfoCache,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const CONSUMER_REGION = 'ap-northeast-1';
@@ -318,7 +319,7 @@ describe('the region a reference resolves in is decided AFTER assembly (issue #2
       }
     ).resolverForProducerRegion(PRODUCER_REGION);
 
-    const imported = await sibling.resolveDynamicReferences(
+    const imported = await resolveDynamicReferences(sibling,
       `port:{{resolve:secretsmanager:${PRODUCER_ARN}:SecretString:password}}`,
       ctx({ recordedSecretValues })
     );

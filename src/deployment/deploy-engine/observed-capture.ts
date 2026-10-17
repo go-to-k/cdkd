@@ -4,6 +4,7 @@ import type { ProvenanceCapture } from './provenance-capture.js';
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import type { Logger } from '../../types/config.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import {
   type ParameterNamingVerdict,
   resourcesNamingDeclaredParameter,
@@ -51,7 +52,7 @@ import {
 export interface ObservedCaptureDeps {
   logger: Pick<Logger, 'debug' | 'warn'>;
   options: Pick<DeployEngineOptions, 'captureObservedState' | 'dryRun'>;
-  resolver: Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
+  resolver: IntrinsicFunctionResolver;
   providerRegistry: ProviderRegistry;
   /** `masking.ts`'s `printingSecretsFor` with the engine's live `secretsRun` bound. */
   printingSecretsFor: (logicalId: string) => RecordedSecretValues | undefined;
@@ -547,7 +548,8 @@ export class ObservedCapture {
     const properties = resource.properties ?? {};
     const task = (async (): Promise<Record<string, unknown> | undefined> => {
       const secrets = await resolveRecordSecrets(properties, (token, own) =>
-        this.deps.resolver.resolveDynamicReferences(
+        resolveDynamicReferences(
+          this.deps.resolver,
           token,
           // The CONSUMER's cross-region evidence rides it, so a region-less
           // reference this stack may have read from another region refuses

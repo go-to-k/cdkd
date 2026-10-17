@@ -131,6 +131,7 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   carriesSecretMask,
   createSecretMasker,
@@ -2586,7 +2587,7 @@ async function resolveDriftLeafByRegion(
       ([, verdict]) => verdict.kind === 'named-region' || verdict.kind === 'recorded-region'
     )
   ) {
-    return await resolvers.primary.resolveDynamicReferences(leaf, ctx);
+    return await resolveDynamicReferences(resolvers.primary, leaf, ctx);
   }
 
   let out = '';
@@ -2616,7 +2617,8 @@ async function resolveDriftLeafByRegion(
         : verdict.kind === 'recorded-region'
           ? resolvers.forRecordedRegion(verdict.region)
           : resolvers.primary;
-    out += await resolver.resolveDynamicReferences(token, ctx);
+    // The verdict's region-pinned resolver chosen above, not the primary.
+    out += await resolveDynamicReferences(resolver, token, ctx);
     cursor = at + token.length;
   }
   return out + leaf.slice(cursor);

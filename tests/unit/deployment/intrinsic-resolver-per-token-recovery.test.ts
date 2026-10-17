@@ -44,6 +44,9 @@ vi.mock('@aws-sdk/client-ssm', () => ({
 const { IntrinsicFunctionResolver } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { resolveDynamicReferences } = await import(
+  '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+);
 
 const DELETED = '{{resolve:ssm-secure:/deleted/param}}';
 const LIVE = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
@@ -74,7 +77,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    const out = await resolver.resolveDynamicReferences(`${DELETED}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -293,11 +296,11 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     } as never;
 
     // Record both needles, as the walk that resolved them would have.
-    await resolver.resolveDynamicReferences(
+    await resolveDynamicReferences(resolver,
       '{{resolve:secretsmanager:app/short:SecretString}}/{{resolve:secretsmanager:app/long:SecretString}}',
       context
     );
-    await resolver.resolveDynamicReferences(
+    await resolveDynamicReferences(resolver,
       `{{resolve:secretsmanager:${SHORT}:SecretString:pw:${LONG}}}`,
       context
     );
@@ -331,7 +334,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     // still aborts, so no existing consumer changed behaviour silently.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     await expect(
-      resolver.resolveDynamicReferences(`${DELETED}/${LIVE}`, {
+      resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
       } as never)
     ).rejects.toThrow(/not found/);
@@ -352,7 +355,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await expect(
-      resolver.resolveDynamicReferences(`{{resolve:ssm-secure:/public/p}}/${LIVE}`, {
+      resolveDynamicReferences(resolver,`{{resolve:ssm-secure:/public/p}}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never)
@@ -373,7 +376,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await expect(
-      resolver.resolveDynamicReferences(`{{resolve:secretsmanager:}}/${LIVE}`, {
+      resolveDynamicReferences(resolver,`{{resolve:secretsmanager:}}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never)
@@ -407,7 +410,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    await resolver.resolveDynamicReferences(
+    await resolveDynamicReferences(resolver,
       `{{resolve:ssm-secure:/app/SECRET_ID is required}}/${LIVE}`,
       { recordedSecretValues, abandonedResolutions } as never
     );
@@ -496,7 +499,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     return (async (): Promise<void> => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const abandonedResolutions: AbandonedResolution[] = [];
-      await resolver.resolveDynamicReferences(`${DELETED}/${LIVE}`, {
+      await resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never);
@@ -551,7 +554,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    await resolver.resolveDynamicReferences(`${FIRST}/${DELETED}/${LIVE}`, {
+    await resolveDynamicReferences(resolver,`${FIRST}/${DELETED}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -616,7 +619,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    await resolver.resolveDynamicReferences(`${ARN}/${LIVE}`, {
+    await resolveDynamicReferences(resolver,`${ARN}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -641,7 +644,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await expect(
-      resolver.resolveDynamicReferences(
+      resolveDynamicReferences(resolver,
         '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1.evil:111122223333:secret:s}}',
         { recordedSecretValues: new Map<string, string>(), abandonedResolutions } as never
       )

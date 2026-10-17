@@ -30,6 +30,20 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
     })),
   };
 });
+// The Secrets Manager lookup is a plain function since the resolver's
+// dynamic-reference split, so the P29 case observes it through the module
+// rather than a prototype spy (which nothing would call). The real
+// implementation runs unless a case replaces it.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-ref-lookups.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../../src/deployment/intrinsic-resolver/dynamic-ref-lookups.js')
+    >();
+  return {
+    ...actual,
+    resolveSecretsManagerReference: vi.fn(actual.resolveSecretsManagerReference),
+  };
+});
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -290,10 +304,24 @@ describe('cdkd diff never fetches a secret a masked property input yields (go-to
     const { IntrinsicFunctionResolver } = await import(
       '../../../src/deployment/intrinsic-function-resolver.js'
     );
+    const lookups = await import(
+      '../../../src/deployment/intrinsic-resolver/dynamic-ref-lookups.js'
+    );
+    const { resolveDynamicReferences } = await import(
+      '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
+    );
     let fetched = 0;
     const fetch = vi
-      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveSecretsManagerReference')
+      .mocked(lookups.resolveSecretsManagerReference)
       .mockImplementation(() => Promise.resolve(`fetched-plaintext-${++fetched}`));
+    // RAN-GUARD: the mocked lookup is the one a resolution really reaches, so
+    // the `not.toHaveBeenCalled()` below cannot pass on an unwired stub.
+    await resolveDynamicReferences(
+      new IntrinsicFunctionResolver('us-east-1'),
+      '{{resolve:secretsmanager:ran-guard}}'
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockClear();
     try {
       const IMPORT = { 'Fn::ImportValue': 'shared-pw' };
       const value = {

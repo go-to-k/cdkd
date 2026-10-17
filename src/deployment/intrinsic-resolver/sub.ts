@@ -1,5 +1,13 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender } from './masking-display.js';
+import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
+import {
+  logTwinText,
+  nestedPartResolution,
+  productLogTwin,
+  recordLeafResolution,
+  rememberLogTwin,
+} from './masking.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
   type ResolverContext,
@@ -373,7 +381,7 @@ export async function resolveSub(
         // directly, which recovers per TOKEN and only throws for a refusal —
         // and a refusal must abort this walk too.
         const resolved = val.includes('{{resolve:')
-          ? await this.resolveDynamicReferencesWithLogTwin(val, val, context)
+          ? await resolveDynamicReferencesWithLogTwin(this, val, val, context)
           : { result: val, twin: val, substitutions: [], complete: true };
         variables[key] = resolved.result;
         variableTwins[key] = resolved.twin;
@@ -488,10 +496,10 @@ export async function resolveSub(
       replacement = String(variables[varNameStr]);
       twinReplacement = Object.hasOwn(variableTwins, varNameStr)
         ? variableTwins[varNameStr]
-        : this.productLogTwin(variables[varNameStr], context);
+        : productLogTwin(this, variables[varNameStr], context);
       if (Object.hasOwn(variableRecords, varNameStr)) record = variableRecords[varNameStr];
       else if (Object.hasOwn(variableSources, varNameStr)) {
-        record = this.nestedPartResolution(context, variableSources[varNameStr], replacement);
+        record = nestedPartResolution(this, context, variableSources[varNameStr], replacement);
         // A bound intrinsic (`{V: {Ref: A}}`, a nested Sub / Join / If) places
         // its own record's spans (issue #4446).
         parameterSpans = partParameterSpans(context, variableSources[varNameStr], replacement);
@@ -520,7 +528,7 @@ export async function resolveSub(
           const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
           listRefusal ??= refusal;
           replacement = refusal ? match[0] : String(value);
-          if (!refusal) twinReplacement = this.productLogTwin(value, context);
+          if (!refusal) twinReplacement = productLogTwin(this, value, context);
           // The parameter arm answered: the whole replacement is that
           // parameter's value (issue #4446).
           if (!refusal && fromParameter) {
@@ -540,7 +548,7 @@ export async function resolveSub(
               listRefusal ??= refusal;
               replacement = refusal ? match[0] : String(value);
               if (!refusal) {
-                twinReplacement = this.productLogTwin(value, context);
+                twinReplacement = productLogTwin(this, value, context);
                 // The whole replacement is this attribute's value, keyed as the
                 // `Fn::GetAtt` the cross-stack writer records a nested-stack
                 // output read under (issue #4527).
@@ -666,7 +674,7 @@ export async function resolveSub(
   // Resolve any dynamic references in the substituted result (secret refs are
   // left unresolved per-reference when skipDynamicReferences is set).
   if (result.includes('{{resolve:')) {
-    const substituted = await this.resolveDynamicReferencesWithLogTwin(result, twin, context);
+    const substituted = await resolveDynamicReferencesWithLogTwin(this, result, twin, context);
     // The spans index the substituted template; a pass that rewrote it moved them.
     if (substituted.result !== result) parameterSpans = undefined;
     ({ result, twin } = substituted);
@@ -675,16 +683,16 @@ export async function resolveSub(
   }
   // After the final pass, so every reference in the template has recorded.
   if (listRefusal) throw listRefusal;
-  this.recordLeafResolution(context, source, {
+  recordLeafResolution(this, context, source, {
     input,
     output: result,
     substitutions,
     complete,
     ...(parameterSpans === undefined ? {} : { parameterSpans }),
   });
-  this.rememberLogTwin(context, result, twin);
+  rememberLogTwin(this, context, result, twin);
   this.logger.debug(
-    `Resolved Fn::Sub: ${logRender(this, this.logTwinText(result, twin, context), context)}`
+    `Resolved Fn::Sub: ${logRender(this, logTwinText(this, result, twin, context), context)}`
   );
   return result;
 }

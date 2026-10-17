@@ -2,6 +2,7 @@ import { CdkdError } from '../../utils/error-handler.js';
 import { recordedReferenceRegions, referenceProvenanceOf } from '../reference-provenance-record.js';
 import { type ResolverContext } from '../intrinsic-function-resolver.js';
 import { isDeliberateResolutionRefusal } from '../intrinsic-resolver/context.js';
+import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import { classifyRecordedSecretRegion } from '../secret-region-classification.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -264,7 +265,7 @@ class ReplayPins {
     // embedded leaf in the restored record; only a genuinely different
     // version goes unpaired. A failure here is no verdict on the pin.
     try {
-      await resolver.resolveDynamicReferences(token, {
+      await resolveDynamicReferences(resolver, token, {
         template: { Resources: {} },
         resources: {},
         recordedSecretValues: new Map(),
@@ -275,7 +276,7 @@ class ReplayPins {
     }
     try {
       // A throwaway bag, and no provenance: the walk records what it serves.
-      const served = await resolver.resolveDynamicReferences(token, {
+      const served = await resolveDynamicReferences(resolver, token, {
         template: { Resources: {} },
         resources: {},
         recordedSecretValues: new Map(),

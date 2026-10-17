@@ -81,6 +81,15 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
 }));
+// `resolveDynamicReferences` is a plain function taking its resolver first:
+// forward to the stub of the resolver double it was handed (above).
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>()),
+  resolveDynamicReferences: vi.fn(
+    (resolver: { resolveDynamicReferences: (...args: unknown[]) => unknown }, ...rest: unknown[]) =>
+      resolver.resolveDynamicReferences(...rest)
+  ),
+}));
 
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),

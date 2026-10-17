@@ -1,5 +1,15 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
+import {
+  hasLogOnlyNeedles,
+  logTextOfLeaf,
+  maskNeedlesForLog,
+  maskNeedlesOfBags,
+  maskPrintedNeedlesForLog,
+  recordLeafResolution,
+  regionLogText,
+} from './masking.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
@@ -86,8 +96,8 @@ export async function resolveIf(
   // recorded; an object branch lends its own record, when the pass kept one.
   const resolveBranch = async (branch: unknown): Promise<unknown> => {
     if (typeof branch === 'string') {
-      const pass = await this.resolveDynamicReferencesWithLogTwin(branch, branch, context);
-      this.recordLeafResolution(context, source, {
+      const pass = await resolveDynamicReferencesWithLogTwin(this, branch, branch, context);
+      recordLeafResolution(this, context, source, {
         input: branch,
         output: pass.result,
         substitutions: pass.substitutions,
@@ -499,7 +509,7 @@ export async function resolveBase64(
     )
   ) {
     this.logger.debug(
-      safeMsg`Resolved Fn::Base64: ${logRender(this, this.logTextOfLeaf(resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
+      safeMsg`Resolved Fn::Base64: ${logRender(this, logTextOfLeaf(this, resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
     );
     return SECRET_MASK;
   }
@@ -553,11 +563,11 @@ export async function resolveBase64(
   // mask catch its right half; the line masks the right half whole on a
   // positioned input regardless, since the encoding decodes straight back
   // to the plaintext the input's mask hides.
-  const inputLogText = this.logTextOfLeaf(resolvedValue, context);
+  const inputLogText = logTextOfLeaf(this, resolvedValue, context);
   if (
     context.recordedSecretValues &&
     (inputLogText !== resolvedValue ||
-      this.maskNeedlesForLog(resolvedValue, context) !== resolvedValue)
+      maskNeedlesForLog(this, resolvedValue, context) !== resolvedValue)
   ) {
     // DERIVED, so a leaf EMBEDDING the encoding is masked whole too
     // (go-to-k/cdkd#2453).
@@ -583,9 +593,9 @@ export async function resolveBase64(
   // above: that guard decides what is PERSISTED and must not see this class.
   if (
     context.recordedSecretValues &&
-    this.hasLogOnlyNeedles(context) &&
-    this.maskPrintedNeedlesForLog(resolvedValue, context) !==
-      this.maskNeedlesForLog(resolvedValue, context)
+    hasLogOnlyNeedles(this, context) &&
+    maskPrintedNeedlesForLog(this, resolvedValue, context) !==
+      maskNeedlesForLog(this, resolvedValue, context)
   ) {
     recordLogOnlyValue(context.recordedSecretValues, result);
   }
@@ -597,11 +607,11 @@ export async function resolveBase64(
   const printing = context.printingSecrets;
   let withPrinting: string | undefined;
   const maskedWithPrinting = (): string =>
-    (withPrinting ??= this.maskNeedlesOfBags(resolvedValue, context, printing));
+    (withPrinting ??= maskNeedlesOfBags(this, resolvedValue, context, printing));
   if (
     printing !== undefined &&
     hasMaskableValues(printing) &&
-    maskedWithPrinting() !== this.maskPrintedNeedlesForLog(resolvedValue, context)
+    maskedWithPrinting() !== maskPrintedNeedlesForLog(this, resolvedValue, context)
   ) {
     recordLogOnlyValue(printing, result);
   }
@@ -612,7 +622,7 @@ export async function resolveBase64(
   if (
     sink !== undefined &&
     hasMaskableValues(sink) &&
-    this.maskNeedlesOfBags(resolvedValue, context, printing, sink) !== maskedWithPrinting()
+    maskNeedlesOfBags(this, resolvedValue, context, printing, sink) !== maskedWithPrinting()
   ) {
     recordLogOnlyValue(sink, result);
   }
@@ -697,7 +707,7 @@ export async function resolveGetAZs(
           // `the value` LEADS the clause: after `: ` a quoted value would be
           // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
           // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
-          `Fn::GetAZs: the value ${quotedRender(displayMasked(this, this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
+          `Fn::GetAZs: the value ${quotedRender(displayMasked(this, logTextOfLeaf(this, resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         )
@@ -705,7 +715,7 @@ export async function resolveGetAZs(
     }
     region = requested;
     clientRegion = requested;
-    loggedRegionText = this.regionLogText(resolvedValue, context);
+    loggedRegionText = regionLogText(this, resolvedValue, context);
   } else {
     // Empty string or non-string: use current region. The SAME value
     // `AWS::Region` answers, and like it, with no STS hop: an AZ list needs no

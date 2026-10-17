@@ -6,7 +6,6 @@ import { SECRET_MASK } from './secret-redaction.js';
 import { markNonRetryable } from './retryable-errors.js';
 import {
   type ResolverContext,
-  type CachedDynamicReference,
   AWS_NO_VALUE,
   detectUnknownIntrinsicKey,
   buildUnknownIntrinsicError,
@@ -21,12 +20,14 @@ import * as getAttHealMixin from './intrinsic-resolver/getatt-heal.js';
 import * as crossStackMixin from './intrinsic-resolver/cross-stack.js';
 import { CfnFallbackCache } from './intrinsic-resolver/cfn-fallback.js';
 import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
-import * as dynamicRefsMixin from './intrinsic-resolver/dynamic-refs.js';
-import * as dynamicRefLookupsMixin from './intrinsic-resolver/dynamic-ref-lookups.js';
+import {
+  DynamicReferenceCache,
+  resolveTemplateLeafReferences,
+} from './intrinsic-resolver/dynamic-refs.js';
 import * as stringFnMixin from './intrinsic-resolver/string-functions.js';
 import * as subMixin from './intrinsic-resolver/sub.js';
 import * as fnMixin from './intrinsic-resolver/functions.js';
-import * as maskingMixin from './intrinsic-resolver/masking.js';
+import { recordLeafResolution, regionLogText } from './intrinsic-resolver/masking.js';
 import { displayMasked, logRender } from './intrinsic-resolver/masking-display.js';
 import * as paramsConditionsMixin from './intrinsic-resolver/params-conditions.js';
 import { recordDroppedArrayElementsIn } from './intrinsic-resolver/parameter-secrets.js';
@@ -196,7 +197,7 @@ export class IntrinsicFunctionResolver {
    *
    * A whole resolver rather than a client bag, because what has to be
    * region-scoped is not only the lookup but the VALUE CACHE behind it:
-   * {@link cachedDynamicReferences} is keyed by the expression (plus the
+   * `DynamicReferenceCache.cachedDynamicReferences` is keyed by the expression (plus the
    * credential identity, issue #3660) and is sound only because one resolver
    * stands for one stack in one region (issue #1933). Resolving a producer's expression inside THIS resolver would put a
    * foreign region's answer under a key the consumer's own lookups read — the
@@ -280,88 +281,14 @@ export class IntrinsicFunctionResolver {
   physicalIdFallbackCount = 0;
 
   /**
-   * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
-   * keyed by the full expression and the credential identity that read it
-   * (`injectiveKey(credentialFingerprint, expression)`, issue
-   * [#3660](https://github.com/go-to-k/cdkd/issues/3660): a library caller can
-   * drive one resolver under two `AwsClients` identities, and the same NAME
-   * read by two accounts is two values) — INSTANCE-scoped, which closes the CACHE half
-   * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
-   * only PARTIALLY addressed by this field: see "what this does NOT settle"
-   * below.
-   *
-   * It used to be a module-global map keyed by the expression ALONE, and both
-   * halves of that were wrong for the same reason: the key and the lifetime
-   * were narrower than the value they stood for.
-   *
-   * - REGION. Secrets Manager secrets and SSM parameters are regional and
-   *   independent — the same NAME in `us-east-1` and `ap-northeast-1` is two
-   *   different values, routinely two different credentials — so the first
-   *   region to resolve an expression won it for the whole process, and every
-   *   later stack in every other region silently reused that value.
-   * - STACK. Nothing reset the map between stacks, so a second stack's
-   *   resolution cache-HIT and skipped the lookup that re-records the value as
-   *   a secret. `cdkd scrub --all` then found an empty secrets map for that
-   *   stack and reported it clean.
-   *
-   * Instance scope settles both at once because a region boundary and a stack
-   * boundary are BOTH resolver boundaries in cdkd: {@link resolverRegion} is
-   * fixed at construction, and every caller builds one resolver per stack
-   * (`DeployEngine` per deploy, `scrub` / `import` / `diff-recursive` /
-   * `rollback-executor` per stack). Re-keying by region alone would have left
-   * the stack half open, which is why the lifetime — not the key — is what
-   * moved.
-   *
-   * ONE caller is a known EXCEPTION to that invariant, and it is written down
-   * here because an invariant recorded without its exception is how the next
-   * change breaks it: `cdkd export` builds a single `paramResolver`
-   * (`src/cli/commands/export.ts`, the `buildResolvedParametersPerStack`
-   * pre-pass) and shares it across every node of a nested-stack tree, while the
-   * nodes carry a per-node `region`. It is safe TODAY for two independent
-   * reasons — the resolver is constructed with the tree's single `rootRegion`
-   * and nested children do not yet diverge from it, and that pre-pass passes no
-   * `recordedSecretValues` bag, so neither the region nor the secrets-recording
-   * dimension has anything to cross. Both stop holding the moment cross-region
-   * nested stacks ship or that pass starts recording secrets; a resolver per
-   * node is the fix then, not a wider key here.
-   *
-   * The OTHER half of the same outcome — the lookups themselves reading the
-   * process-ambient `getAwsClients()` singleton, whose region is whichever the
-   * process installed last — was issue
-   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) and is now closed by
-   * `ResolverClients.clientsForRegion`: a resolver whose region differs from the ambient
-   * one builds its own region-pinned clients (carrying the ambient profile /
-   * credentials) instead of reading whatever the singleton currently holds.
-   * The two halves remain SEPARATE mechanisms and both are needed — this field
-   * stops a resolved value from travelling between regions or stacks, while
-   * the scoped clients stop the FIRST resolution from reading the wrong region
-   * (no cache involved, so nothing here could ever have prevented it).
+   * The dynamic-reference value cache (`cachedDynamicReferences`, issues
+   * #1933, #3660) and the warned-once set for anomalous SSM `Type`s
+   * (`warnedUnrecognizedSsmTypes`). Created once in the constructor and never
+   * replaced or cleared, like {@link clients}; a producer-region guest is its
+   * own resolver and builds its own.
+   * @internal
    */
-  /** @internal */
-  readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
-
-  /**
-   * `(parameter name, reported Type)` pairs this resolver has already
-   * warned about (issue #1933 review).
-   *
-   * Keyed on the PAIR rather than the name alone: two different anomalous types
-   * for one parameter are two different facts — the line REPORTS the type, so
-   * suppressing the second would hide a `Type` nobody has seen yet behind one
-   * that was already explained. The volume problem this set exists for is N
-   * IDENTICAL lines for N occurrences of one reference, which the pair still
-   * bounds, because the type is a property of the parameter rather than of the
-   * occurrence.
-   *
-   * The warning is per LOOKUP, and a parameter with an anomalous `Type` is
-   * deliberately never cached (see `cacheable` in `resolveDynamicReferences`),
-   * so it is re-looked-up for every occurrence of the reference in the stack —
-   * which without this set means one identical warn line per occurrence per
-   * pass, on the exact template that most needs the line to be READ. Scoped to
-   * the resolver, like the value cache: a different stack genuinely deserves
-   * its own warning, since the parameter it names may be a different region's.
-   */
-  /** @internal */
-  readonly warnedUnrecognizedSsmTypes = new Set<string>();
+  readonly dynamicReferenceCache: DynamicReferenceCache;
 
   constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
@@ -386,6 +313,7 @@ export class IntrinsicFunctionResolver {
       logger: () => this.logger,
       resolver: this,
     });
+    this.dynamicReferenceCache = new DynamicReferenceCache();
   }
 
   /** Unknown-attribute physicalId fallbacks recorded since the last reset. */
@@ -466,7 +394,7 @@ export class IntrinsicFunctionResolver {
     value: unknown
   ): unknown {
     if (typeof value === 'string') {
-      this.recordLeafResolution(context, source, {
+      recordLeafResolution(this, context, source, {
         input: value,
         output: value,
         substitutions: [],
@@ -489,7 +417,7 @@ export class IntrinsicFunctionResolver {
         // config, stored RESOLVED in state, so the diff must resolve it too to
         // compare like-for-like. An ssm reference to a `SecureString` is a
         // secret and is left unresolved with the rest (issue #1901).
-        return await this.resolveTemplateLeafReferences(value, context);
+        return await resolveTemplateLeafReferences(this, value, context);
       }
       return value;
     }
@@ -533,7 +461,7 @@ export class IntrinsicFunctionResolver {
         fromParameter = true;
       });
       if (fromParameter && typeof value === 'string') {
-        this.recordLeafResolution(context, obj, {
+        recordLeafResolution(this, context, obj, {
           input: value,
           output: value,
           substitutions: [],
@@ -764,7 +692,7 @@ export class IntrinsicFunctionResolver {
     const regionText =
       producerRegionLogText !== undefined
         ? canonicalizeRegion(producerRegionLogText)
-        : this.regionLogText(producerRegion, context);
+        : regionLogText(this, producerRegion, context);
     // THE BUILDER, not the bare strip-and-mask helper (go-to-k/cdkd#3426):
     // this text is printed on the line below AND carried on the guest as
     // `explicitRegionLogText`, which `clientsForRegion` prints again, so it
@@ -800,38 +728,6 @@ export class IntrinsicFunctionResolver {
   }
 }
 
-IntrinsicFunctionResolver.prototype.maskSecretsRaw = maskingMixin.maskSecretsRaw;
-IntrinsicFunctionResolver.prototype.abandonedUnit = maskingMixin.abandonedUnit;
-IntrinsicFunctionResolver.prototype.maskNeedlesForLog = maskingMixin.maskNeedlesForLog;
-IntrinsicFunctionResolver.prototype.hasLogOnlyNeedles = maskingMixin.hasLogOnlyNeedles;
-IntrinsicFunctionResolver.prototype.maskPrintedNeedlesForLog =
-  maskingMixin.maskPrintedNeedlesForLog;
-IntrinsicFunctionResolver.prototype.maskRenderedNeedlesForLog =
-  maskingMixin.maskRenderedNeedlesForLog;
-IntrinsicFunctionResolver.prototype.maskNeedlesOfBags = maskingMixin.maskNeedlesOfBags;
-IntrinsicFunctionResolver.prototype.isRecordedSecretForLog = maskingMixin.isRecordedSecretForLog;
-IntrinsicFunctionResolver.prototype.logTwinText = maskingMixin.logTwinText;
-IntrinsicFunctionResolver.prototype.splitLogTwins = maskingMixin.splitLogTwins;
-IntrinsicFunctionResolver.prototype.productLogTwin = maskingMixin.productLogTwin;
-IntrinsicFunctionResolver.prototype.logTextOfLeaf = maskingMixin.logTextOfLeaf;
-IntrinsicFunctionResolver.prototype.outputNameLogText = maskingMixin.outputNameLogText;
-IntrinsicFunctionResolver.prototype.regionLogText = maskingMixin.regionLogText;
-IntrinsicFunctionResolver.prototype.tokenAssembledFromSecret =
-  maskingMixin.tokenAssembledFromSecret;
-IntrinsicFunctionResolver.prototype.tokenAssembledForRecording =
-  maskingMixin.tokenAssembledForRecording;
-IntrinsicFunctionResolver.prototype.refuseSecretAssembledReference =
-  maskingMixin.refuseSecretAssembledReference;
-IntrinsicFunctionResolver.prototype.straddleSafeTwin = maskingMixin.straddleSafeTwin;
-IntrinsicFunctionResolver.prototype.dynamicReferenceNameLogText =
-  maskingMixin.dynamicReferenceNameLogText;
-IntrinsicFunctionResolver.prototype.logTwinBag = maskingMixin.logTwinBag;
-IntrinsicFunctionResolver.prototype.registeredLogTwin = maskingMixin.registeredLogTwin;
-IntrinsicFunctionResolver.prototype.logTwinOfProduct = maskingMixin.logTwinOfProduct;
-IntrinsicFunctionResolver.prototype.recordLeafResolution = maskingMixin.recordLeafResolution;
-IntrinsicFunctionResolver.prototype.nestedPartResolution = maskingMixin.nestedPartResolution;
-IntrinsicFunctionResolver.prototype.rememberLogTwin = maskingMixin.rememberLogTwin;
-
 IntrinsicFunctionResolver.prototype.resolveIf = fnMixin.resolveIf;
 IntrinsicFunctionResolver.prototype.resolveEquals = fnMixin.resolveEquals;
 IntrinsicFunctionResolver.prototype.resolveConditionReference = fnMixin.resolveConditionReference;
@@ -861,19 +757,6 @@ IntrinsicFunctionResolver.prototype.describeOperandShape = stringFnMixin.describ
 IntrinsicFunctionResolver.prototype.describeSplitValueSource =
   stringFnMixin.describeSplitValueSource;
 IntrinsicFunctionResolver.prototype.resolveSplit = stringFnMixin.resolveSplit;
-
-IntrinsicFunctionResolver.prototype.resolveDynamicReferences =
-  dynamicRefsMixin.resolveDynamicReferences;
-IntrinsicFunctionResolver.prototype.resolveTemplateLeafReferences =
-  dynamicRefsMixin.resolveTemplateLeafReferences;
-IntrinsicFunctionResolver.prototype.resolveDynamicReferencesWithLogTwin =
-  dynamicRefsMixin.resolveDynamicReferencesWithLogTwin;
-IntrinsicFunctionResolver.prototype.resolveSecretsManagerReference =
-  dynamicRefLookupsMixin.resolveSecretsManagerReference;
-IntrinsicFunctionResolver.prototype.sendWithThrottleRetry =
-  dynamicRefLookupsMixin.sendWithThrottleRetry;
-IntrinsicFunctionResolver.prototype.resolveSSMReference =
-  dynamicRefLookupsMixin.resolveSSMReference;
 
 IntrinsicFunctionResolver.prototype.reresolveCrossStackValue =
   crossStackMixin.reresolveCrossStackValue;

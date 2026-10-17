@@ -2,7 +2,7 @@
  * Secret redaction for resolved dynamic references (GHSA fix).
  *
  * CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`) are
- * resolved to plaintext by `IntrinsicFunctionResolver.resolveDynamicReferences`
+ * resolved to plaintext by `resolveDynamicReferences` (`intrinsic-resolver/dynamic-refs.ts`)
  * so the concrete secret can be handed to the AWS API on create / update. That
  * plaintext must NEVER be persisted to cdkd state or shown in CLI output, or
  * anyone with read access to the state bucket / terminal logs recovers the

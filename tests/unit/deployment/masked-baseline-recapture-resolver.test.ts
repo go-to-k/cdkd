@@ -3,6 +3,7 @@ import {
   IntrinsicFunctionResolver,
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   persistedTokenResolverContext,
   resolveRecordSecrets,
@@ -51,7 +52,7 @@ describe('masked-baseline re-capture through the real resolver (issue #3595)', (
   const resolveWith =
     (resolver: IntrinsicFunctionResolver, producerRegions: readonly string[]) =>
     (token: string, own: Map<string, string>) =>
-      resolver.resolveDynamicReferences(token, persistedTokenResolverContext(own, producerRegions));
+      resolveDynamicReferences(resolver,token, persistedTokenResolverContext(own, producerRegions));
 
   it('records each reference into the pass map', async () => {
     mockSecretsManagerSend.mockResolvedValue({
@@ -86,7 +87,7 @@ describe('masked-baseline re-capture through the real resolver (issue #3595)', (
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const own = new Map<string, string>();
     await expect(
-      resolver.resolveDynamicReferences(A, persistedTokenResolverContext(own, ['eu-west-1']))
+      resolveDynamicReferences(resolver,A, persistedTokenResolverContext(own, ['eu-west-1']))
     ).rejects.toBeInstanceOf(DynamicReferenceRegionAmbiguousError);
     expect(own.size).toBe(0);
     expect(mockSecretsManagerSend).not.toHaveBeenCalled();

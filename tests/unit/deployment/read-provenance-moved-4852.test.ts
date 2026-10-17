@@ -3,7 +3,18 @@
  * moved when it holds a token at a read-derived leaf and this run's read-route
  * versions are not a subset of the record's `readVersions`.
  */
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
+
+// `resolveDynamicReferences` is a plain function taking its resolver first:
+// forward to the stub of the resolver double it was handed.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>()),
+  resolveDynamicReferences: vi.fn(
+    (resolver: { resolveDynamicReferences: (...args: unknown[]) => unknown }, ...rest: unknown[]) =>
+      resolver.resolveDynamicReferences(...rest)
+  ),
+}));
+
 import {
   confirmValueMoves,
   readProvenanceMovedPaths,
@@ -212,6 +223,15 @@ describe('confirmValueMoves', () => {
       await sameValueAtVersions(resolver as never, entry, V1, V2, { template: { Resources: {} }, resources: {} })
     ).toBeUndefined();
     expect(reads).toBe(0);
+    // RAN-GUARD: with a recorded region the same double IS read, so `reads`
+    // above counts real reads rather than an unreachable stub.
+    expect(
+      await sameValueAtVersions(resolver as never, { ...entry, region: 'us-east-1' }, V1, V2, {
+        template: { Resources: {} },
+        resources: {},
+      })
+    ).toBe(true);
+    expect(reads).toBeGreaterThan(1);
   });
 
   it('withRefreshedReadVersions leaves a token whose versions would pass the cap of 8', () => {

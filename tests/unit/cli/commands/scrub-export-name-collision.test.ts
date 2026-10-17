@@ -347,6 +347,16 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (impo
       }),
   })),
 }));
+// `resolveDynamicReferences` is a plain function taking its resolver first:
+// forward to the stub of the resolver double it was handed, so
+// `dynamicRefCalls` still records the region of the resolver that answered.
+vi.mock('../../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>()),
+  resolveDynamicReferences: vi.fn(
+    (resolver: { resolveDynamicReferences: (...args: unknown[]) => unknown }, ...rest: unknown[]) =>
+      resolver.resolveDynamicReferences(...rest)
+  ),
+}));
 
 import {
   scrubStack,

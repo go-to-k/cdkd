@@ -25,61 +25,6 @@ import {
   unionOfSecretBags,
 } from '../secret-redaction.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    maskSecretsRaw: OmitThisParameter<typeof maskSecretsRaw>;
-    /** @internal */
-    abandonedUnit: OmitThisParameter<typeof abandonedUnit>;
-    /** @internal */
-    maskNeedlesForLog: OmitThisParameter<typeof maskNeedlesForLog>;
-    /** @internal */
-    hasLogOnlyNeedles: OmitThisParameter<typeof hasLogOnlyNeedles>;
-    /** @internal */
-    maskPrintedNeedlesForLog: OmitThisParameter<typeof maskPrintedNeedlesForLog>;
-    /** @internal */
-    maskRenderedNeedlesForLog: OmitThisParameter<typeof maskRenderedNeedlesForLog>;
-    /** @internal */
-    maskNeedlesOfBags: OmitThisParameter<typeof maskNeedlesOfBags>;
-    /** @internal */
-    isRecordedSecretForLog: OmitThisParameter<typeof isRecordedSecretForLog>;
-    /** @internal */
-    logTwinText: OmitThisParameter<typeof logTwinText>;
-    /** @internal */
-    splitLogTwins: OmitThisParameter<typeof splitLogTwins>;
-    /** @internal */
-    productLogTwin: OmitThisParameter<typeof productLogTwin>;
-    /** @internal */
-    logTextOfLeaf: OmitThisParameter<typeof logTextOfLeaf>;
-    /** @internal */
-    outputNameLogText: OmitThisParameter<typeof outputNameLogText>;
-    /** @internal */
-    regionLogText: OmitThisParameter<typeof regionLogText>;
-    /** @internal */
-    tokenAssembledFromSecret: OmitThisParameter<typeof tokenAssembledFromSecret>;
-    /** @internal */
-    tokenAssembledForRecording: OmitThisParameter<typeof tokenAssembledForRecording>;
-    /** @internal */
-    refuseSecretAssembledReference: OmitThisParameter<typeof refuseSecretAssembledReference>;
-    /** @internal */
-    straddleSafeTwin: OmitThisParameter<typeof straddleSafeTwin>;
-    /** @internal */
-    dynamicReferenceNameLogText: OmitThisParameter<typeof dynamicReferenceNameLogText>;
-    /** @internal */
-    logTwinBag: OmitThisParameter<typeof logTwinBag>;
-    /** @internal */
-    registeredLogTwin: OmitThisParameter<typeof registeredLogTwin>;
-    /** @internal */
-    logTwinOfProduct: OmitThisParameter<typeof logTwinOfProduct>;
-    /** @internal */
-    recordLeafResolution: OmitThisParameter<typeof recordLeafResolution>;
-    /** @internal */
-    nestedPartResolution: OmitThisParameter<typeof nestedPartResolution>;
-    /** @internal */
-    rememberLogTwin: OmitThisParameter<typeof rememberLogTwin>;
-  }
-}
-
 /**
  * The SECRET answer alone: mask any resolved secret value out of `text`,
  * using the secrets recorded on the resolution pass (GHSA fix). No-op when
@@ -95,7 +40,7 @@ declare module '../intrinsic-function-resolver.js' {
  * `ESC[2K` + CR from a template-supplied export name (measured on this tree,
  * at DEFAULT verbosity, on the DEFAULT path). Renaming it is what makes the
  * hazard visible at the BINDING rather than at the render: `const x =
- * this.maskSecretsRaw(...)` states that more work is owed.
+ * maskSecretsRaw(resolver, ...)` states that more work is owed.
  *
  * Reachable from ONE place, {@link maskThenStripThenMask}, which is itself
  * reachable only from {@link displayMasked}. That containment is the whole
@@ -142,12 +87,12 @@ declare module '../intrinsic-function-resolver.js' {
  * take the strip whole.
  */
 export function maskSecretsRaw(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext
 ): string {
-  const registered = this.registeredLogTwin(text, context);
-  const needled = this.maskNeedlesForLog(text, context);
+  const registered = registeredLogTwin(resolver, text, context);
+  const needled = maskNeedlesForLog(resolver, text, context);
   // go-to-k/cdkd#1998: the LOG-ONLY needles join here, at the render, and
   // nowhere upstream of it. When they change nothing this is the recorded
   // answer byte for byte. When they do and no twin is registered, the
@@ -155,11 +100,11 @@ export function maskSecretsRaw(
   // with the log-only ones, so the whole text is masked — the rule the two
   // lines below already apply to the recorded needles.
   if (
-    this.hasLogOnlyNeedles(context) ||
+    hasLogOnlyNeedles(resolver, context) ||
     hasMaskableValues(context?.printingSecrets) ||
     hasMaskableValues(context?.secretNameSink)
   ) {
-    const printed = this.maskRenderedNeedlesForLog(text, context);
+    const printed = maskRenderedNeedlesForLog(resolver, text, context);
     if (printed !== needled) return registered === undefined ? printed : SECRET_MASK;
   }
   if (registered === undefined) return needled;
@@ -179,7 +124,7 @@ export function maskSecretsRaw(
  */
 /** @internal */
 export function abandonedUnit(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   unit: AbandonedResolution['unit'],
   subject: string,
   error: unknown,
@@ -202,8 +147,8 @@ export function abandonedUnit(
   const raw = error instanceof Error ? error.message : String(error);
   return {
     unit,
-    subject: displayMasked(this, subject, context),
-    message: displayMasked(this, preRedact === undefined ? raw : preRedact(raw), context),
+    subject: displayMasked(resolver, subject, context),
+    message: displayMasked(resolver, preRedact === undefined ? raw : preRedact(raw), context),
     error,
     carriedDynamicReference: carriesDynamicReference(rawInput),
     carriedFetchableReference: carriesFetchableDynamicReference(rawInput),
@@ -218,7 +163,7 @@ export function abandonedUnit(
  * message masks through `displayMasked`.
  */
 export function maskNeedlesForLog(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext
 ): string {
@@ -261,7 +206,7 @@ export function maskNeedlesForLog(
  * common case, where there is none.
  */
 export function hasLogOnlyNeedles(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context?: ResolverContext
 ): boolean {
   return (
@@ -276,11 +221,11 @@ export function hasLogOnlyNeedles(
  * overlaps. Never a detector: see {@link maskNeedlesForLog}.
  */
 export function maskPrintedNeedlesForLog(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext
 ): string {
-  return this.maskNeedlesOfBags(text, context);
+  return maskNeedlesOfBags(resolver, text, context);
 }
 
 /**
@@ -294,15 +239,21 @@ export function maskPrintedNeedlesForLog(
  * another.
  */
 export function maskRenderedNeedlesForLog(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext
 ): string {
-  return this.maskNeedlesOfBags(text, context, context?.printingSecrets, context?.secretNameSink);
+  return maskNeedlesOfBags(
+    resolver,
+    text,
+    context,
+    context?.printingSecrets,
+    context?.secretNameSink
+  );
 }
 
 export function maskNeedlesOfBags(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   text: string,
   context?: ResolverContext,
   ...printing: ReadonlyArray<RecordedSecretValues | undefined>
@@ -322,7 +273,7 @@ export function maskNeedlesOfBags(
  * at any length is a verdict about what was written, not a floorless needle.
  */
 export function isRecordedSecretForLog(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   value: string,
   context?: ResolverContext
 ): boolean {
@@ -348,12 +299,12 @@ export function isRecordedSecretForLog(
  * sanitization happens at the render rather than here.
  */
 export function logTwinText(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   result: string,
   twin: string,
   context?: ResolverContext
 ): string {
-  const bothMasksFire = twin !== result && this.maskNeedlesForLog(result, context) !== result;
+  const bothMasksFire = twin !== result && maskNeedlesForLog(resolver, result, context) !== result;
   return bothMasksFire ? SECRET_MASK : twin;
 }
 
@@ -371,7 +322,7 @@ export function logTwinText(
  * pass is masked too: the over-masking direction `logTwinOfProduct` accepts.
  */
 export function splitLogTwins(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: string,
   delimiter: string,
   pieces: string[],
@@ -380,9 +331,9 @@ export function splitLogTwins(
   // A source that IS a recorded or inherited secret is masked whole even
   // with no registered twin — a `Ref` to a parameter holding one is never
   // registered, since no substitution in this pass wrote it.
-  const sourceTwin = this.isRecordedSecretForLog(value, context)
+  const sourceTwin = isRecordedSecretForLog(resolver, value, context)
     ? SECRET_MASK
-    : this.registeredLogTwin(value, context);
+    : registeredLogTwin(resolver, value, context);
   if (sourceTwin === undefined) return pieces;
   const twinPieces = sourceTwin.split(delimiter);
   // A delimiter that occurs in the mask itself splits `***` into pieces that
@@ -392,12 +343,13 @@ export function splitLogTwins(
   return pieces.map((piece, index) => {
     // Through `logTwinText`, like the Join / Sub lines: a piece's twin can
     // split a 4+ character secret the piece still holds whole.
-    const twin = this.logTwinText(
+    const twin = logTwinText(
+      resolver,
       piece,
       aligned ? (twinPieces[index] ?? SECRET_MASK) : SECRET_MASK,
       context
     );
-    this.rememberLogTwin(context, piece, twin);
+    rememberLogTwin(resolver, context, piece, twin);
     return twin;
   });
 }
@@ -412,19 +364,19 @@ export function splitLogTwins(
  * resolution result, and neither can hold a self-referencing list.
  */
 export function productLogTwin(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   context: ResolverContext
 ): string {
   if (Array.isArray(value)) {
     return value
       .map((element: unknown) =>
-        element === null || element === undefined ? '' : this.productLogTwin(element, context)
+        element === null || element === undefined ? '' : productLogTwin(resolver, element, context)
       )
       .join(',');
   }
   const text = String(value);
-  return this.logTwinOfProduct({ result: text, twin: text }, context).twin;
+  return logTwinOfProduct(resolver, { result: text, twin: text }, context).twin;
 }
 
 /**
@@ -444,13 +396,14 @@ export function productLogTwin(
  */
 /** @internal */
 export function logTextOfLeaf(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: string,
   context?: ResolverContext
 ): string {
-  return this.logTwinText(
+  return logTwinText(
+    resolver,
     value,
-    this.logTwinOfProduct({ result: value, twin: value }, context).twin,
+    logTwinOfProduct(resolver, { result: value, twin: value }, context).twin,
     context
   );
 }
@@ -466,11 +419,11 @@ export function logTextOfLeaf(
  */
 /** @internal */
 export function outputNameLogText(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   attributeName: string,
   context?: ResolverContext
 ): string {
-  const twin = this.logTextOfLeaf(attributeName, context);
+  const twin = logTextOfLeaf(resolver, attributeName, context);
   return twin.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
     ? twin.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length)
     : SECRET_MASK;
@@ -485,16 +438,16 @@ export function outputNameLogText(
  */
 /** @internal */
 export function regionLogText(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   rawRegion: string,
   context?: ResolverContext
 ): string {
   const canonical = canonicalizeRegion(rawRegion);
-  const text = canonicalizeRegion(this.logTextOfLeaf(rawRegion, context));
+  const text = canonicalizeRegion(logTextOfLeaf(resolver, rawRegion, context));
   // Lowercasing can FORM a recorded needle the raw value's case hid, and it
   // may overlap a masked span, where masking the twin cannot see it: the
   // whole region is masked then, the rule `logTwinText` applies.
-  return text !== canonical && this.maskNeedlesForLog(canonical, context) !== canonical
+  return text !== canonical && maskNeedlesForLog(resolver, canonical, context) !== canonical
     ? SECRET_MASK
     : text;
 }
@@ -510,12 +463,14 @@ export function regionLogText(
  */
 /** @internal */
 export function tokenAssembledFromSecret(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   fullMatch: string,
   tokenLogText: string,
   context: ResolverContext | undefined
 ): boolean {
-  return tokenLogText !== fullMatch || this.maskNeedlesForLog(fullMatch, context) !== fullMatch;
+  return (
+    tokenLogText !== fullMatch || maskNeedlesForLog(resolver, fullMatch, context) !== fullMatch
+  );
 }
 
 /**
@@ -530,7 +485,7 @@ export function tokenAssembledFromSecret(
  */
 /** @internal */
 export function tokenAssembledForRecording(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   fullMatch: string,
   tokenLogText: string,
   context: ResolverContext | undefined
@@ -568,15 +523,15 @@ export function tokenAssembledForRecording(
  */
 /** @internal */
 export function refuseSecretAssembledReference(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   fullMatch: string,
   tokenLogText: string,
   context: ResolverContext | undefined
 ): void {
-  if (!this.tokenAssembledForRecording(fullMatch, tokenLogText, context)) return;
+  if (!tokenAssembledForRecording(resolver, fullMatch, tokenLogText, context)) return;
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: the reference was ` +
+      `Refusing to resolve ${displayMasked(resolver, tokenLogText, context)}: the reference was ` +
         `assembled from a secret value and resolves to a secret, so recording it would write ` +
         `that value into state inside the reference. Build the reference name from non-secret values.`
     )
@@ -595,13 +550,13 @@ export function refuseSecretAssembledReference(
  */
 /** @internal */
 export function straddleSafeTwin(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   raw: string,
   twin: string,
   context?: ResolverContext
 ): string {
   if (twin === raw) return twin;
-  const needled = this.maskNeedlesForLog(raw, context);
+  const needled = maskNeedlesForLog(resolver, raw, context);
   if (needled === raw) return twin;
   return needled === twin ? twin : SECRET_MASK;
 }
@@ -630,7 +585,7 @@ export function straddleSafeTwin(
  */
 /** @internal */
 export function dynamicReferenceNameLogText(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   inner: string,
   tokenTwin: string,
   context?: ResolverContext
@@ -646,7 +601,12 @@ export function dynamicReferenceNameLogText(
         // Through `straddleSafeTwin`: a 4+ character recorded secret that
         // overlaps a masked span is split in the twin, and only the raw
         // name's needle mask can still see it.
-        const twin = this.straddleSafeTwin(name, twinPieces.slice(start, end).join(':'), context);
+        const twin = straddleSafeTwin(
+          resolver,
+          name,
+          twinPieces.slice(start, end).join(':'),
+          context
+        );
         if (text !== undefined && text !== twin) return SECRET_MASK;
         text = twin;
         // A longer run from the same start is a longer string.
@@ -659,7 +619,7 @@ export function dynamicReferenceNameLogText(
 
 /** The bag a pass's log twins are keyed by (issue #3100): the recorded one, else the inherited one. */
 export function logTwinBag(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context?: ResolverContext
 ): RecordedSecretValues | undefined {
   return context?.recordedSecretValues ?? context?.inheritedSecrets;
@@ -706,7 +666,7 @@ export function logTwinBag(
  * within one pass, now reachable across the parent / child boundary.
  */
 export function registeredLogTwin(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   value: string,
   context?: ResolverContext
 ): string | undefined {
@@ -744,14 +704,14 @@ export function registeredLogTwin(
  * resolves, so what stays printed is a public value that coincides with it.
  */
 export function logTwinOfProduct(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   part: LogTwin,
   context?: ResolverContext
 ): LogTwin {
-  if (this.isRecordedSecretForLog(part.result, context)) {
+  if (isRecordedSecretForLog(resolver, part.result, context)) {
     return { result: part.result, twin: SECRET_MASK };
   }
-  const registered = this.registeredLogTwin(part.result, context);
+  const registered = registeredLogTwin(resolver, part.result, context);
   if (registered === undefined || registered === part.twin) return part;
   return { result: part.result, twin: part.twin === part.result ? registered : SECRET_MASK };
 }
@@ -767,7 +727,7 @@ export function logTwinOfProduct(
  * to scope it to.
  */
 export function recordLeafResolution(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   source: object,
   resolution: IntrinsicLeafResolution
@@ -790,7 +750,7 @@ export function recordLeafResolution(
  * `input`, a second span the carry refuses on its own, so no case pins it.
  */
 export function nestedPartResolution(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   part: unknown,
   resolved: string
@@ -815,13 +775,13 @@ export function nestedPartResolution(
  */
 /** @internal */
 export function rememberLogTwin(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   result: string,
   twin: string
 ): void {
   if (twin === result) return;
-  const bag = this.logTwinBag(context);
+  const bag = logTwinBag(resolver, context);
   if (!bag) return;
   let twins = LOG_TWINS_BY_PASS.get(bag);
   if (!twins) {

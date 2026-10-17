@@ -13,6 +13,7 @@
  */
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
+import { resolveDynamicReferences } from './dynamic-refs.js';
 import type { ReferenceProvenance } from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
@@ -301,13 +302,13 @@ async function readsPinnedVersion(
   const { abandonedResolutions: _collected, ...throwing } = context;
   const quiet: ResolverContext = { ...throwing, provenanceSuppressed: true };
   try {
-    await resolver.resolveDynamicReferences(token, quiet);
+    await resolveDynamicReferences(resolver, token, quiet);
   } catch (err) {
     if (isDeliberateResolutionRefusal(err)) throw err;
     // The current version could not be read; the pinned read may still be.
   }
   try {
-    const served = await resolver.resolveDynamicReferences(token, {
+    const served = await resolveDynamicReferences(resolver, token, {
       ...quiet,
       referencePins: new Map([[token, pin]]),
     });

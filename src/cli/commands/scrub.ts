@@ -69,6 +69,7 @@ import {
   type AbandonedResolution,
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
@@ -3436,7 +3437,7 @@ async function resolveForeignRegionTokens(
         // resolver's own recording rules apply: an `ssm` reference is recorded
         // only when the producer region says `SecureString`, which is precisely
         // the verdict the stack's own region cannot be trusted to give (#1957).
-        out += await resolver.resolveDynamicReferences(token, {
+        out += await resolveDynamicReferences(resolver, token, {
           template: { Resources: {} },
           resources: {},
           recordedSecretValues: ctx.recordedSecretValues,

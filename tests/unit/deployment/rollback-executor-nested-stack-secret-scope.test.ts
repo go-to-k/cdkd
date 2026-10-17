@@ -43,11 +43,19 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import {
-  IntrinsicFunctionResolver,
-  resetAccountInfoCache,
-} from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+
+// The replay's resolution entry is a plain function since the resolver's
+// dynamic-reference split, so the bag-identity case observes it through the
+// module (a prototype spy would see nothing). The real implementation runs
+// unless a case wraps it.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>();
+  return { ...actual, resolveDynamicReferences: vi.fn(actual.resolveDynamicReferences) };
+});
 
 // The REAL retry loop with its waits removed, NOT a pass-through stub. The
 // binding under test sits INSIDE the thunk `withRetry` re-invokes, so a
@@ -365,17 +373,13 @@ describe('rollback-executor binds the nested-stack secrets scope (#2086)', () =>
     // The content assertions above stay green on `new Map(secrets)`; identity
     // does not.
     const resolvedWith = new Set<unknown>();
-    const original = IntrinsicFunctionResolver.prototype.resolveDynamicReferences;
-    const spy = vi
-      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveDynamicReferences')
-      .mockImplementation(function (
-        this: IntrinsicFunctionResolver,
-        ...args: Parameters<IntrinsicFunctionResolver['resolveDynamicReferences']>
-      ) {
-        const bag: RecordedSecretValues | undefined = args[1]?.recordedSecretValues;
-        if (bag) resolvedWith.add(bag);
-        return original.apply(this, args);
-      });
+    const spy = vi.mocked(resolveDynamicReferences);
+    const original = spy.getMockImplementation()!;
+    spy.mockImplementation((...args: Parameters<typeof resolveDynamicReferences>) => {
+      const bag: RecordedSecretValues | undefined = args[2]?.recordedSecretValues;
+      if (bag) resolvedWith.add(bag);
+      return original(...args);
+    });
     try {
       const bound: unknown[] = [];
       const update = vi.fn(async () => {
@@ -404,7 +408,7 @@ describe('rollback-executor binds the nested-stack secrets scope (#2086)', () =>
       expect(bound).toHaveLength(1);
       expect(resolvedWith.has(bound[0])).toBe(true);
     } finally {
-      spy.mockRestore();
+      spy.mockImplementation(original);
     }
   });
 });

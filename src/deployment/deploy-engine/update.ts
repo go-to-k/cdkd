@@ -1,5 +1,6 @@
 import { childLostWithRecreatedParent, survivesParent } from '../child-of-recreated-parent.js';
 import { type DeployEngine } from '../deploy-engine.js';
+import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { updateByReplacement } from './update-replace.js';
@@ -581,7 +582,8 @@ export async function provisionUpdate(
       ? await resolveRecordSecrets(
           { properties: currentResource.properties, attributes: currentResource.attributes },
           (token, own) =>
-            engine.resolver.resolveDynamicReferences(
+            resolveDynamicReferences(
+              engine.resolver,
               token,
               persistedTokenResolverContext(own, regionEvidence.regions)
             )

@@ -45,6 +45,20 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
     })),
   };
 });
+// `resolveDynamicReferences` is a plain function taking its resolver first,
+// so a fake resolver's stub is reached through this forwarder, which calls the
+// stub of the resolver it was handed.
+vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>();
+  return {
+    ...actual,
+    resolveDynamicReferences: vi.fn(
+      (resolver: { resolveDynamicReferences: (v: string, c: unknown) => Promise<string> }, value: string, context: unknown) =>
+        resolver.resolveDynamicReferences(value, context)
+    ),
+  };
+});
 
 import {
   IAMPolicyProvider,
@@ -64,6 +78,7 @@ import {
   TRANSIENT_RESOLUTION_MESSAGE,
 } from '../../../src/provisioning/secret-principal-resolution.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
@@ -111,11 +126,13 @@ beforeEach(() => {
 
 describe('resolveSecretDerivedPrincipals (go-to-k/cdkd#4150)', () => {
   const fake = { resolveDynamicReferences: resolveSpy, resolverForRecordedRegion: vi.fn() };
-  const make = () => fake;
+  const make = (): IntrinsicFunctionResolver => fake as unknown as IntrinsicFunctionResolver;
 
   it('resolves a local reference, keeps plain entries, and masks every resolved name', async () => {
     const r = await resolveSecretDerivedPrincipals({ Roles: ['plain', REF] }, 'us-east-1', [], undefined, make);
     expect(r?.lists).toEqual({ Roles: ['plain', ROLE] });
+    // RAN-GUARD: the module function ran, handed the resolver `make` built.
+    expect(vi.mocked(resolveDynamicReferences)).toHaveBeenCalledWith(fake, REF, expect.anything());
     expect(r?.mask(`removed from role ${ROLE}`)).not.toContain(ROLE);
     expect(r?.mask(ROLE)).not.toBe(ROLE);
   });

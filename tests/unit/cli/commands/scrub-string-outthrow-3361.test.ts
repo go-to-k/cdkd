@@ -154,12 +154,22 @@ vi.mock('../../../../src/state/lock-manager.js', () => ({
     releaseLock: vi.fn().mockResolvedValue(undefined),
   })),
 }));
+// `resolveDynamicReferences` is a plain function taking its resolver first:
+// forward to the stub of the resolver double it was handed (above).
+vi.mock('../../../../src/deployment/intrinsic-resolver/dynamic-refs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/deployment/intrinsic-resolver/dynamic-refs.js')>()),
+  resolveDynamicReferences: vi.fn(
+    (resolver: { resolveDynamicReferences: (...args: unknown[]) => unknown }, ...rest: unknown[]) =>
+      resolver.resolveDynamicReferences(...rest)
+  ),
+}));
 
 import {
   scrubCommand,
   scrubStack,
   type ScrubOptions,
 } from '../../../../src/cli/commands/scrub.js';
+import { resolveDynamicReferences } from '../../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 
 /** What `describeAwsFailure(x).detail` / `safeStringify(x)` render for a value `String()` cannot convert. */
 const PLACEHOLDER = 'a value that could not be converted to text';
@@ -521,6 +531,12 @@ describe('scrubStack: refusals that interpolate the failure (#3361)', () => {
 
     expect((err as { code?: string }).code).toBe('SCRUB_CROSS_REGION_SECRET_UNRESOLVED');
     expect((err as Error).message).toContain(PLACEHOLDER);
+    // RAN-GUARD: the rejection came from the resolver double's lookup.
+    expect(vi.mocked(resolveDynamicReferences)).toHaveBeenCalledWith(
+      expect.anything(),
+      foreign,
+      expect.anything()
+    );
   });
 });
 
