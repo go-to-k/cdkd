@@ -93,19 +93,12 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `src/synthesis/macro-*` | `macro-expansion` |
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
-   **Mark every name an agent session cannot run, and offer a substitute.** A
-   fixture drives itself from `verify.sh`, or from `run.sh` invoked directly;
-   with neither, `/run-integ` falls back to a flow needing a bare `cdkd deploy`,
-   which the harness refuses — legal only when a human drives the shell. Such a
-   name is a MAINTAINER-only recommendation, never a lane's. Several BROAD-set
-   entries are in this state, so derive the split rather than recalling it:
-
-   ```bash
-   for t in NAME1 NAME2; do   # the names about to be recommended
-     d=<LANE_TREE>/tests/integration/$t
-     [ -f "$d/verify.sh" ] || [ -f "$d/run.sh" ] || echo "MAINTAINER-ONLY: $t"
-   done
-   ```
+   **Every name is runnable from an agent session.** A
+   fixture with no `verify.sh` takes its standard flow (`node dist/cli.js`
+   synth → deploy → destroy + orphan scan): it proves the deploy and destroy,
+   asserts nothing in between — say so beside such a name when the change
+   needs a mid-run assertion. `migrate-from-cfn` drives itself from `run.sh`,
+   which that flow never runs; recommend `bash run.sh` there instead.
 
 3. **Rank** the union of {changed-area} ∪ {failing} ∪ {stale >14d} ∪
    {expiring soon} ∪ {never-run}:

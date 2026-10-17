@@ -54,9 +54,7 @@ tests passing is necessary but NOT sufficient:
   multi-resource VPC / Lambda / Custom-Resource paths. Run one via
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
   bypass being not those NAMES but **any real-AWS work outside a fixture**.
-  `/pick-integ` picks the fixture(s); never one it marks maintainer-only (no
-  `verify.sh` / `run.sh` to run) — run its check on EVERY name you report,
-  picked there or not.
+  `/pick-integ` picks the fixture(s).
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
