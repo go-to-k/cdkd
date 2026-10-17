@@ -95,8 +95,6 @@ dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a321dac, PreferredMaintenanceWindow companion change proves Modify* fired before KEEP asserts; rc 0, destroy clean, orph clean
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-drift-revert	2026-10-17T10:48:50Z	PASS	391	verify.sh	rc ok, orph clean (rollback refactor #5027)
-docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 drift-revert	2026-10-17T13:29:07Z	PASS	386	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-17T13:29:07Z	PASS	421	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
@@ -140,8 +138,6 @@ eventbridge-pipes	2026-10-16T08:48:48Z	PASS	165	verify.sh	rc ok, orph clean (#33
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-17T13:23:24Z	PASS	236	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-export-nested-stack	2026-10-17T13:23:24Z	PASS	186	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 export	2026-10-17T13:29:07Z	PASS	231	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 export-nested-stack	2026-10-17T13:29:07Z	PASS	191	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
