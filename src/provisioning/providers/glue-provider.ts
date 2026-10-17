@@ -135,7 +135,11 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
@@ -912,6 +916,8 @@ async function refuseCatalogMove(args: {
   stateful: boolean;
   callerAccountId: () => Promise<string>;
   warn: (message: string) => void;
+  /** Where AWS's own text for a failed STS call goes (go-to-k/cdkd#2319). */
+  debug: (message: string) => void;
   /**
    * The update's masker (issue #2177): the entity name, every literal catalog
    * id and the STS failure text are masked RAW before they join a sentence.
@@ -942,8 +948,9 @@ async function refuseCatalogMove(args: {
     try {
       callerAccount = await args.callerAccountId();
     } catch (error) {
-      throw wrapMaskedAwsError(
+      throw wrapGlueError(
         mask,
+        args.debug,
         error,
         (text) =>
           new ProvisioningError(
@@ -1019,6 +1026,42 @@ function newGlueClients(region: string | undefined): {
 }
 
 /**
+ * Wrap what a Glue operation caught into the error it throws, keeping the
+ * caller's identity out of the thrown message (go-to-k/cdkd#2319; the S3
+ * bucket provider's twin is go-to-k/cdkd#2302).
+ *
+ * A thrown message is persisted to `deployments/{runId}.jsonl`, and Glue words
+ * an `AccessDeniedException` as `User:
+ * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized to
+ * perform: ...`. So an AWS-authored failure (`describeAwsFailure`) reaches
+ * `build` as its CLASS, and the message `build` would have made from AWS's own
+ * text goes to `debug`, through the operation's masker. A cdkd-authored or
+ * transport error keeps its text and the masked-quote wrap it had
+ * (`wrapMaskedAwsError`). A non-`Error` throw no longer out-throws a value
+ * `String()` cannot convert.
+ *
+ * `build` must thread `error` as the wrap's `cause`: the redaction is stamped
+ * so the retry classifiers read that chain, where the withheld `not authorized
+ * to perform` still is. A non-`Error` throw has no chain, so it is not stamped.
+ * No Glue caller reads the message for "already deleted": every delete checks
+ * `EntityNotFoundException` by type before it wraps.
+ */
+function wrapGlueError(
+  mask: MaskerFn,
+  debug: (message: string) => void,
+  error: unknown,
+  build: (text: string) => ProvisioningError
+): ProvisioningError {
+  const failure = describeAwsFailure(error);
+  if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+  // `build` runs twice here (debug text, then the throw), so it must stay a
+  // side-effect-free constructor call.
+  debug(mask(build(failure.detail).message));
+  const wrapped = build(mask(failure.summary));
+  return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+}
+
+/**
  * SDK Provider for AWS Glue resources
  *
  * Supports:
@@ -1039,7 +1082,8 @@ export class GlueProvider implements ResourceProvider {
    * A failure wrap quoting the caught error's text through the operation's
    * masker (issue #2177), stamped when the mask changed it so the retry
    * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). Each Glue class carries this member rather than calling the module
+   * #4244), and naming an AWS-authored failure by its class only
+   * ({@link wrapGlueError}, go-to-k/cdkd#2319). Each Glue class carries this member rather than calling the module
    * function, so `gen-update-wrap-coverage` sees the catch that throws it as a
    * wrap.
    */
@@ -1048,7 +1092,7 @@ export class GlueProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -1317,6 +1361,7 @@ export class GlueProvider implements ResourceProvider {
       stateful: true,
       callerAccountId: this.callerAccountId,
       warn: log.warn,
+      debug: log.debug,
       mask: log.mask,
     });
 
@@ -1466,14 +1511,17 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        log.mask(
-          `Failed to delete Glue Database ${logicalId}: ${describeAwsFailure(error).detail}`
-        ),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Database ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1727,6 +1775,7 @@ export class GlueProvider implements ResourceProvider {
       stateful: true,
       callerAccountId: this.callerAccountId,
       warn: log.warn,
+      debug: log.debug,
       mask: log.mask,
     });
 
@@ -1845,7 +1894,9 @@ export class GlueProvider implements ResourceProvider {
         error,
         (detail) =>
           new ProvisioningError(
-            `Failed to update Glue Table ${logicalId}: ${detail}${hint}`,
+            // Each half brings its own sentence end: a redacted `detail` ends
+            // in a period and `hint` opens with one.
+            `Failed to update Glue Table ${logicalId}: ${hint ? withoutFinalPeriod(detail) : detail}${hint}`,
             resourceType,
             logicalId,
             physicalId,
@@ -1935,12 +1986,17 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        log.mask(`Failed to delete Glue Table ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3239,7 +3295,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -3435,12 +3491,17 @@ export class GlueWorkflowProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Glue Workflow ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Workflow ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3613,7 +3674,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -3774,12 +3835,17 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Glue SecurityConfiguration ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue SecurityConfiguration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4261,7 +4327,7 @@ export class GlueJobProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -4477,12 +4543,17 @@ export class GlueJobProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Glue Job ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Job ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4759,6 +4830,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * `text` without one trailing period, for a builder that appends its own
+ * sentence end: a redacted summary ends in one (go-to-k/cdkd#2319), and so
+ * does most AWS text.
+ */
+function withoutFinalPeriod(text: string): string {
+  return text.endsWith('.') ? text.slice(0, -1) : text;
+}
+
+/**
  * Message for a failed pre-update `Get*` read (issue #1461). Names the IAM
  * action so a permission gap is one line away from fixed, and says what the
  * read is FOR so the failure does not read as gratuitous. `detail` is AWS's
@@ -4772,7 +4852,7 @@ function preUpdateReadFailureMessage(
   detail: string
 ): string {
   return (
-    `Failed to read the current Glue ${kind} ${logicalId} before update: ${detail}. ` +
+    `Failed to read the current Glue ${kind} ${logicalId} before update: ${withoutFinalPeriod(detail)}. ` +
     `cdkd reads the live ${kind.toLowerCase()} so AWS-managed Parameters (Apache Iceberg's ` +
     `table_type / metadata_location, a crawler's classification, Lake Formation markers) ` +
     `survive an update that Glue applies as a full replace. Grant ${iamAction} to the ` +
@@ -4904,7 +4984,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -5129,19 +5209,38 @@ export class GlueCrawlerProvider implements ResourceProvider {
       // A crawler that is mid-run rejects DeleteCrawler with
       // CrawlerRunningException. Stop it, wait for it to settle, then retry the
       // delete so destroy does not fail on an actively-crawling crawler.
+      // A failure of the retry goes through the same wrap rather than escaping
+      // raw, so its AWS text is withheld from the thrown message too
+      // (go-to-k/cdkd#2319).
+      let failure: unknown = error;
       if (error instanceof CrawlerRunningException) {
         log.debug(`Glue Crawler ${v(physicalId)} is running; stopping before delete and retrying`);
-        await this.stopCrawlerAndWait(physicalId, log);
-        await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
-        return;
+        try {
+          await this.stopCrawlerAndWait(physicalId, log);
+          await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
+          return;
+        } catch (retryError) {
+          // Gone between the stop and the retry: the region was confirmed
+          // before the first call, so this is ordinary idempotency.
+          if (retryError instanceof EntityNotFoundException) {
+            log.debug(`Glue Crawler ${v(physicalId)} does not exist, skipping deletion`);
+            return;
+          }
+          failure = retryError;
+        }
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        log.mask(`Failed to delete Glue Crawler ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const cause = failure instanceof Error ? failure : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        failure,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Crawler ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5469,7 +5568,7 @@ export class GlueConnectionProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -5591,6 +5690,7 @@ export class GlueConnectionProvider implements ResourceProvider {
       stateful: false,
       callerAccountId: this.callerAccountId,
       warn: log.warn,
+      debug: log.debug,
       mask: log.mask,
     });
     const catalogId = updateCatalogId(properties['CatalogId']);
@@ -5687,14 +5787,17 @@ export class GlueConnectionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        log.mask(
-          `Failed to delete Glue Connection ${logicalId}: ${describeAwsFailure(error).detail}`
-        ),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Connection ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5848,7 +5951,7 @@ export class GlueTriggerProvider implements ResourceProvider {
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    return wrapGlueError(mask, (message) => this.logger.debug(message), error, build);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -6055,11 +6158,17 @@ export class GlueTriggerProvider implements ResourceProvider {
           await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
         } catch (restartError) {
           if (updateError === undefined) throw restartError;
+          // The class at default level, AWS's text (which can name the
+          // caller) at debug only (go-to-k/cdkd#2319).
+          const restartFailure = describeAwsFailure(restartError);
           log.warn(
-            `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${
-              describeAwsFailure(restartError).detail
-            }`
+            `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${restartFailure.summary}`
           );
+          if (restartFailure.redacted) {
+            log.debug(
+              `Failed to re-activate Glue Trigger ${v(physicalId)} after a failed update: ${restartFailure.detail}`
+            );
+          }
         }
       }
       if (updateError !== undefined) throw updateError;
@@ -6179,12 +6288,17 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete Glue Trigger ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapMaskedError(
+        context?.maskSecrets ?? ((text: string) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Glue Trigger ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }

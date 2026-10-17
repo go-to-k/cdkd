@@ -218,8 +218,12 @@ describe('a Glue table replacement meeting an occupied address (issue #3932)', (
       expect(error?.code).toBe('NAMED_REPLACEMENT_COLLISION');
       expect(error!.message).toContain(
         'Table (AWS::Glue::Table) requires replacement, but the create-first attempt collided ' +
-          'with the existing resource: Failed to create Glue Table Table: Table already exists.'
+          'with the existing resource: Failed to create Glue Table Table: AlreadyExistsException. ' +
+            "Re-run with --verbose for AWS's own message. The resource has"
       );
+      // The provider's summary ends in a period and the refusal adds its own
+      // sentence end: one period, not two (go-to-k/cdkd#2319).
+      expect(error!.message).not.toContain('..');
       expect(error!.message).toContain('re-run with `cdkd deploy --replace`');
       expect(sentCommands()).toEqual(['CreateTableCommand']);
     });
@@ -240,8 +244,11 @@ describe('a Glue table replacement meeting an occupied address (issue #3932)', (
       expect(error?.code).toBe('NAMED_REPLACEMENT_COLLISION');
       expect(error!.message).toContain('--replace was NOT applied and nothing was deleted');
       expect(error!.message).toContain(
-        'Underlying collision: Failed to create Glue Table Table: Table already exists.'
+        // AWS's text is withheld from the thrown message (go-to-k/cdkd#2319).
+        'Underlying collision: Failed to create Glue Table Table: AlreadyExistsException. ' +
+          "Re-run with --verbose for AWS's own message."
       );
+      expect(error!.message).not.toContain('..');
       expect(sentCommands()).toEqual(['CreateTableCommand']);
     });
   });

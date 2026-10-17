@@ -1680,8 +1680,13 @@ describe('Glue CreateTable name collision (issues #3750, #3932)', () => {
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(Error);
+    // Named by its class (go-to-k/cdkd#2319). The class token IS load-bearing:
+    // `relaysNameCollision` needs the TOP message to relay an already-exists
+    // (`AlreadyExistsException` here, where AWS's prose is withheld) as well as
+    // the cause's own wording, so the summary must keep it.
+    expect((error as Error).message).toContain(': AlreadyExistsException.');
     expect((error as Error).message).toBe(
-      'Failed to create Glue Table MyTable: Table already exists.'
+      "Failed to create Glue Table MyTable: AlreadyExistsException. Re-run with --verbose for AWS's own message."
     );
     expect(isNameCollisionErrorFrom(error, 'MyTable')).toBe(true);
     // Anchored on the logical id: another resource's create cannot claim it.
@@ -2596,7 +2601,12 @@ describe('GlueProvider rethrow of an unconvertible thrown value (#3341)', () => 
     expect(rejected).toBeInstanceOf(ProvisioningError);
     const message = (rejected as Error).message;
     expect(message).toContain('Failed to delete Glue Database MyDb');
-    expect(message).toContain('a value that could not be converted to text');
+    // A non-Error value is withheld from the thrown message (go-to-k/cdkd#2319)
+    // and its stand-in text goes to debug.
+    expect(message).toContain('a non-Error value of type object');
     expect(message).not.toContain('Cannot convert object to primitive value');
+    expect(mockLoggerDebug.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to delete Glue Database MyDb: a value that could not be converted to text'
+    );
   });
 });
