@@ -93,7 +93,7 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `src/synthesis/macro-*` | `macro-expansion` |
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
-   **Every name is runnable from an agent session through `/run-integ`.** A
+   **Every name is runnable from an agent session.** A
    fixture with no `verify.sh` takes its standard flow (`node dist/cli.js`
    synth → deploy → destroy + orphan scan): it proves the deploy and destroy,
    asserts nothing in between — say so beside such a name when the change
