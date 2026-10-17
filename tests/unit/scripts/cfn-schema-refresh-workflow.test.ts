@@ -39,6 +39,7 @@ import { tmpdir } from 'node:os';
 import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'cfn-schema-refresh.yml');
@@ -1383,7 +1384,8 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           `filter ${JSON.stringify(needle)} matches no test file`
         ).toBe(true);
       }
-    });
+      // Walks and reads every file under tests/** and src/**.
+    }, CONTENDED_CASE_TIMEOUT_MS);
 
     it('names every collected check in the operator runbook', () => {
       // The last unfenced pair. `run_check` names are fenced against
