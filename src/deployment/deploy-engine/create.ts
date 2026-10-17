@@ -51,6 +51,11 @@ import {
   recordPassedParameterClasses,
 } from '../masked-property-fingerprints.js';
 import { printNestedStackReadsOnly } from './resolver-context.js';
+import {
+  establishNoEchoEchoFidelity,
+  noEchoAttributeOverridesFor,
+  noEchoPositionSources,
+} from './noecho.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -115,7 +120,9 @@ export async function provisionCreate(
   }
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
-  const noEchoOverrides = await this.noEchoAttributeOverridesFor(
+  const noEchoOverrides = await noEchoAttributeOverridesFor(
+    this.noEchoRun,
+    this.noEchoDeps(),
     desiredProps,
     stateResources,
     stackName
@@ -170,7 +177,7 @@ export async function provisionCreate(
     recordPassedNoEchoParameters(
       createSecrets,
       desiredProps['Parameters'],
-      this.noEchoPositionSources(stateResources)
+      noEchoPositionSources(this.noEchoRun, stateResources)
     );
   }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
@@ -332,7 +339,9 @@ export async function provisionCreate(
   this.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: does the provider echo a create-only value a `NoEcho`
   // parameter fed exactly? Read once, against the masked record.
-  await this.establishNoEchoEchoFidelity(
+  await establishNoEchoEchoFidelity(
+    this.noEchoRun,
+    this.noEchoDeps(),
     logicalId,
     stateResources[logicalId]!,
     resolvedProps,

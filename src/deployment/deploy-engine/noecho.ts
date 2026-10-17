@@ -1,4 +1,4 @@
-import { type DeployEngine } from '../deploy-engine.js';
+import type { DeployEngine } from '../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import type { NoEchoCompareFn } from '../../analyzer/diff-calculator.js';
@@ -26,32 +26,119 @@ import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-prope
 import { safeMsg } from '../../utils/display-safe.js';
 import { declaresNoEcho } from '../noecho-declared.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    noEchoPositionSources: OmitThisParameter<typeof noEchoPositionSources>;
-    /** @internal */
-    noEchoLeavesFor: OmitThisParameter<typeof noEchoLeavesFor>;
-    /** @internal */
-    applyNoEchoPersist: OmitThisParameter<typeof applyNoEchoPersist>;
-    /** @internal */
-    maskOutputsByPosition: OmitThisParameter<typeof maskOutputsByPosition>;
-    /** @internal */
-    warnNoEchoPhysicalId: OmitThisParameter<typeof warnNoEchoPhysicalId>;
-    /** @internal */
-    seedPersistedNoEchoAttributes: OmitThisParameter<typeof seedPersistedNoEchoAttributes>;
-    /** @internal */
-    noEchoAttributeOverridesFor: OmitThisParameter<typeof noEchoAttributeOverridesFor>;
-    /** @internal */
-    noEchoDiffComparison: OmitThisParameter<typeof noEchoDiffComparison>;
-    /** @internal */
-    noteNoEchoExactEchoes: OmitThisParameter<typeof noteNoEchoExactEchoes>;
-    /** @internal */
-    establishNoEchoEchoFidelity: OmitThisParameter<typeof establishNoEchoEchoFidelity>;
-    /** @internal */
-    withNoEchoExactEchoes: OmitThisParameter<typeof withNoEchoExactEchoes>;
-  }
+/**
+ * One deploy's `NoEcho` positional-arm state (go-to-k/cdkd#4043, #2449,
+ * #4656, #4831): what the plain functions of this module, the masking arms
+ * (`masking.ts`), the resolver context and the provisioning arms read and
+ * write across one deploy.
+ *
+ * Replaced, not cleared in place, by `deploy()`'s per-run reset — like
+ * `OutputsRunState` / `AttributeHealer` / `ProvenanceCapture`. ENGINE-instance
+ * state, never module-global: one engine deploys one stack, and
+ * `--stack-concurrency` runs several at once.
+ */
+export class NoEchoRunState {
+  /**
+   * Logical ids whose provider declared THIS RUN's `attributes` sensitive
+   * (`ResourceCreateResult.noEchoAttributes` — issue
+   * [#2274](https://github.com/go-to-k/cdkd/issues/2274)). One producer today:
+   * `CustomResourceProvider`, relaying the handler's `NoEcho: true`.
+   *
+   * IN-RUN ONLY, and that is the whole shape of the feature rather than a
+   * shortcut. `NoEcho` arrives on a RESPONSE, so cdkd knows it exactly when the
+   * handler answered — this deploy — and `ResourceState` carries no durable
+   * per-attribute flag to remember it by (a v9 -> v10 schema bump, issue
+   * [#2449](https://github.com/go-to-k/cdkd/issues/2449)). Within the run that
+   * is enough: the DAG provisions the custom resource before anything that
+   * depends on it, so every dependent's resolution sees the entry. Across runs
+   * the persisted `***` is the signal instead — see
+   * `ResolverContext.redactedAttributeReads`.
+   *
+   * Reset per `deploy()`, like `perResourceSecrets`.
+   *
+   * `true` means the WHOLE attributes bag is sensitive (a custom resource's
+   * `NoEcho` response); a SET names the sensitive members only (a nested
+   * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
+   */
+  noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
+  /**
+   * go-to-k/cdkd#2449: the attributes each record of the PREVIOUS state
+   * declared `NoEcho` (`ResourceState.noEchoAttributeNames`), seeded at deploy
+   * start. Read-only evidence for the positional arm and the refusal's
+   * wording; never a source of needles (its values are the mask).
+   */
+  persistedNoEchoAttributes = new Map<string, ReadonlySet<string>>();
+  /**
+   * go-to-k/cdkd#4043: the condition verdicts of the deploy in progress, so the
+   * positional arm opens only the `Fn::If` branch the deploy selected.
+   */
+  noEchoConditions: Record<string, boolean> | undefined = undefined;
+  /**
+   * go-to-k/cdkd#4043 (review round 9): a NESTED child's parameters whose value
+   * carries a `NoEcho` value its parent supplied. The child template declares
+   * them plain, so they are positioned as `NoEcho` parameters here: every
+   * surface the top level masks by position (records, `noEchoLeaves`,
+   * outputs, the journal, the custom-resource delete skip) covers the child.
+   */
+  inheritedNoEchoParameters: ReadonlySet<string> = new Set();
+  noEchoPhysicalIdWarned = new Set<string>();
+  /**
+   * go-to-k/cdkd#4043 §3.3: per resource resolved this deploy, the canonical
+   * JSON of each leaf a `NoEcho` PARAMETER served it, so a HELD producer's
+   * echoed attribute can be matched against a value it was given without a
+   * needle (a `Number`, a value under the floor). Never persisted.
+   */
+  noEchoPositionedValues = new Map<string, Set<string>>();
+  /**
+   * go-to-k/cdkd#4656: per resource, the `NoEcho` parameter coordinates a
+   * readback of THIS deploy proved its provider echoes exactly, bound to the
+   * physical id that readback judged, unioned into
+   * `noEchoExactEchoLeaves` at the save (`withNoEchoExactEchoes`). Coordinates
+   * only, never a value.
+   */
+  noEchoExactEchoes = new Map<string, { physicalId: string; coordinates: string[][] }>();
+  noEchoAttributeReads = new Map<string, Promise<Record<string, unknown> | undefined>>();
+  /**
+   * go-to-k/cdkd#4831: per logical id, the coordinates where the migration
+   * witness CONFIRMED a MARKED record's stored plaintext equal to today's
+   * `NoEcho` value. `noEchoLeavesFor` adds them to the record's own field on
+   * its save, so the leaf persisted as `***` is also named there.
+   */
+  witnessConfirmedLeaves = new Map<string, (string | number)[][]>();
+  /**
+   * The condition-pruned template of the deploy in progress, read by
+   * `redactStateForPersist` to stamp each record's `constructPath` on every
+   * save. `undefined` until the template is pruned; reset per deploy.
+   */
+  constructPathTemplate: CloudFormationTemplate | undefined = undefined;
 }
+
+/**
+ * What this module's plain functions read from the engine beyond
+ * {@link NoEchoRunState}, built at each call site as `this.noEchoDeps()`.
+ * `perResourceSecrets` / `perResourceTemplateProps` /
+ * `perResourceResolvedType` / `outputsRun` are REASSIGNED by every `deploy()`,
+ * so they are live getters; a forwarded METHOD stays bound to the calling
+ * engine.
+ */
+export interface NoEchoDeps {
+  stackRegion: DeployEngine['stackRegion'];
+  logger: Pick<DeployEngine['logger'], 'warn'>;
+  providerRegistry: Pick<DeployEngine['providerRegistry'], 'getProviderFor'>;
+  perResourceSecrets: () => DeployEngine['perResourceSecrets'];
+  perResourceTemplateProps: () => DeployEngine['perResourceTemplateProps'];
+  perResourceResolvedType: () => DeployEngine['perResourceResolvedType'];
+  outputsRun: () => DeployEngine['outputsRun'];
+  readReaderForFreshNoEchoCeiling: DeployEngine['readReaderForFreshNoEchoCeiling'];
+  maskForResource: DeployEngine['maskForResource'];
+}
+
+/** {@link noEchoPositionSources} with its {@link NoEchoRunState} bound. */
+export type NoEchoPositionSourcesFn = (
+  resources?: Record<string, ResourceState>,
+  template?: CloudFormationTemplate,
+  conditions?: Record<string, boolean>
+) => NoEchoPositionSources | undefined;
 
 /**
  * Read a persisted `noEchoExactEchoLeaves` field (go-to-k/cdkd#4656),
@@ -168,7 +255,7 @@ export function provesEchoChangeAt(
  * `add` changes nothing. A `differs` never removes an entry.
  */
 export function noteNoEchoExactEchoes(
-  this: DeployEngine,
+  run: NoEchoRunState,
   logicalId: string,
   physicalId: string,
   read: FreshNoEchoReadback,
@@ -182,9 +269,9 @@ export function noteNoEchoExactEchoes(
       : candidates
           .filter((candidate) => echoesExactlyAt(read.live, handed, candidate))
           .map((candidate) => [...candidate.coordinate]);
-  const noted = this.noEchoExactEchoes.get(logicalId);
+  const noted = run.noEchoExactEchoes.get(logicalId);
   const previous = mode === 'add' && noted?.physicalId === physicalId ? noted.coordinates : [];
-  this.noEchoExactEchoes.set(logicalId, {
+  run.noEchoExactEchoes.set(logicalId, {
     physicalId,
     coordinates: sortedCoordinates([...previous, ...exact]),
   });
@@ -208,16 +295,17 @@ function sortedCoordinates(coordinates: readonly (readonly string[])[]): string[
  * judge the same candidates.
  */
 export async function establishNoEchoEchoFidelity(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   logicalId: string,
   record: ResourceState,
   resolvedProps: Record<string, unknown>,
   stateResources: Record<string, ResourceState>,
   secrets: RecordedSecretValues
 ): Promise<void> {
-  this.noEchoExactEchoes.delete(logicalId);
-  const templateProps = this.perResourceTemplateProps.get(logicalId);
-  const sources = this.noEchoPositionSources(stateResources);
+  run.noEchoExactEchoes.delete(logicalId);
+  const templateProps = deps.perResourceTemplateProps().get(logicalId);
+  const sources = noEchoPositionSources(run, stateResources);
   if (templateProps === undefined || sources === undefined || sources.parameters.size === 0) {
     return;
   }
@@ -234,8 +322,9 @@ export async function establishNoEchoEchoFidelity(
   const candidates = echoFidelityCandidates(coordinates, resolvedProps, createOnly);
   if (candidates.length === 0) return;
   const handed = { ...record, properties: maskAtCoordinates(record.properties, coordinates) };
-  const read = await this.readReaderForFreshNoEchoCeiling(logicalId, handed, secrets);
-  this.noteNoEchoExactEchoes(
+  const read = await deps.readReaderForFreshNoEchoCeiling(logicalId, handed, secrets);
+  noteNoEchoExactEchoes(
+    run,
     logicalId,
     record.physicalId,
     read,
@@ -251,11 +340,11 @@ export async function establishNoEchoEchoFidelity(
  * save then keeps only entries still in `noEchoLeaves` (`applyNoEchoPersist`).
  */
 export function withNoEchoExactEchoes(
-  this: DeployEngine,
+  run: NoEchoRunState,
   logicalId: string,
   record: ResourceState
 ): ResourceState {
-  const noted = this.noEchoExactEchoes.get(logicalId);
+  const noted = run.noEchoExactEchoes.get(logicalId);
   if (noted === undefined || noted.coordinates.length === 0) return record;
   // A verdict on another physical resource (a rollback restored the record a
   // replacement superseded) says nothing about this one.
@@ -301,21 +390,21 @@ export function noEchoAttributeNamesOf(record: ResourceState | undefined): strin
  * the deploy has a template.
  */
 export function noEchoPositionSources(
-  this: DeployEngine,
+  run: NoEchoRunState,
   resources: Record<string, ResourceState> = {},
-  template: CloudFormationTemplate | undefined = this.constructPathTemplate,
-  conditions: Record<string, boolean> | undefined = this.noEchoConditions
+  template: CloudFormationTemplate | undefined = run.constructPathTemplate,
+  conditions: Record<string, boolean> | undefined = run.noEchoConditions
 ): NoEchoPositionSources | undefined {
   if (template === undefined) return undefined;
-  const declared = this.noEchoAttributeResources;
+  const declared = run.noEchoAttributeResources;
   return {
-    parameters: new Set([...noEchoParameterNamesOf(template), ...this.inheritedNoEchoParameters]),
+    parameters: new Set([...noEchoParameterNamesOf(template), ...run.inheritedNoEchoParameters]),
     attributeIsNoEcho: (logicalId, attribute) => {
       const live = declared.get(logicalId);
       if (live === true || (live !== undefined && live.has(attribute))) return true;
       const record = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
       if (noEchoAttributeNamesOf(record)?.includes(attribute) === true) return true;
-      return this.persistedNoEchoAttributes.get(logicalId)?.has(attribute) === true;
+      return run.persistedNoEchoAttributes.get(logicalId)?.has(attribute) === true;
     },
     ...(conditions !== undefined && { conditions }),
   };
@@ -336,7 +425,8 @@ export function noEchoPositionSources(
  *   the next deploy a re-send; leaving one unmasked would keep the plaintext.
  */
 export function noEchoLeavesFor(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   logicalId: string,
   record: ResourceState,
   templateProps: Record<string, unknown> | undefined,
@@ -348,25 +438,25 @@ export function noEchoLeavesFor(
   const existing = noEchoLeavesOf(record);
   if (existing !== undefined) {
     // Plus every leaf the migration witness confirmed this deploy (#4831).
-    const confirmed = this.witnessConfirmedLeaves.get(logicalId) ?? [];
+    const confirmed = run.witnessConfirmedLeaves.get(logicalId) ?? [];
     return canonicalCoordinates([...existing, ...confirmed]);
   }
   // The bag THIS deploy resolved describes the record only when it was
   // resolved as the record's own type (a failed Type change did not write it).
-  const resolvedAsSame = this.perResourceResolvedType.get(logicalId) === record.resourceType;
+  const resolvedAsSame = deps.perResourceResolvedType().get(logicalId) === record.resourceType;
   const source =
     (templateProps !== undefined && resolvedAsSame ? templateProps : undefined) ??
-    templatePropertiesFor(this, logicalId, record.resourceType);
+    templatePropertiesFor(run, logicalId, record.resourceType);
   if (source === undefined) return undefined;
   return canonicalCoordinates(noEchoCoordinatesOf(source, record.properties, sources));
 }
 
 function templatePropertiesFor(
-  engine: DeployEngine,
+  run: NoEchoRunState,
   logicalId: string,
   resourceType: string
 ): Record<string, unknown> | undefined {
-  const resources = engine.constructPathTemplate?.Resources;
+  const resources = run.constructPathTemplate?.Resources;
   if (resources === undefined || !Object.hasOwn(resources, logicalId)) return undefined;
   const definition = resources[logicalId];
   if (definition?.Type !== resourceType) return undefined;
@@ -383,7 +473,7 @@ function templatePropertiesFor(
  * still holds the mask. `undefined` when there is neither.
  */
 function noEchoAttributeNamesFor(
-  engine: DeployEngine,
+  run: NoEchoRunState,
   logicalId: string,
   record: ResourceState,
   carried: boolean,
@@ -424,7 +514,7 @@ function noEchoAttributeNamesFor(
   }
   // A CARRIED record (a journal's previous state) predates this run's
   // declaration, which describes the record the run wrote.
-  const declared = carried ? undefined : engine.noEchoAttributeResources.get(logicalId);
+  const declared = carried ? undefined : run.noEchoAttributeResources.get(logicalId);
   if (declared === true) {
     for (const name of Object.keys(attributes)) names.add(name);
   } else if (declared !== undefined) {
@@ -450,7 +540,8 @@ function noEchoAttributeNamesFor(
  * - both fields are written, an empty set omitted.
  */
 export function applyNoEchoPersist(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   logicalId: string,
   record: ResourceState,
   scrubbed: ResourceState,
@@ -459,10 +550,10 @@ export function applyNoEchoPersist(
   secrets?: RecordedSecretValues,
   carried = false
 ): ResourceState {
-  const sources = this.noEchoPositionSources(resources);
+  const sources = noEchoPositionSources(run, resources);
   if (sources === undefined) return scrubbed;
-  const leaves = this.noEchoLeavesFor(logicalId, record, templateProps, sources);
-  const names = noEchoAttributeNamesFor(this, logicalId, record, carried, leaves);
+  const leaves = noEchoLeavesFor(run, deps, logicalId, record, templateProps, sources);
+  const names = noEchoAttributeNamesFor(run, logicalId, record, carried, leaves);
   if (leaves === undefined && names === undefined) return scrubbed;
   const next: ResourceState = { ...scrubbed };
   if (leaves !== undefined) {
@@ -499,7 +590,7 @@ export function applyNoEchoPersist(
     if (names.length > 0) next.noEchoAttributeNames = names;
     else delete next.noEchoAttributeNames;
   }
-  this.warnNoEchoPhysicalId(logicalId, record, secrets);
+  warnNoEchoPhysicalId(run, deps, logicalId, record, secrets);
   return next;
 }
 
@@ -510,18 +601,19 @@ export function applyNoEchoPersist(
  * resource, naming no value.
  */
 export function warnNoEchoPhysicalId(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   logicalId: string,
   record: ResourceState,
   secrets: RecordedSecretValues | undefined
 ): void {
-  if (secrets === undefined || this.noEchoPhysicalIdWarned.has(logicalId)) return;
+  if (secrets === undefined || run.noEchoPhysicalIdWarned.has(logicalId)) return;
   const values = noEchoParameterPlaintextsOf(secrets);
   if (values.length === 0 || typeof record.physicalId !== 'string') return;
   if (!values.some((value) => record.physicalId.includes(value))) return;
-  this.noEchoPhysicalIdWarned.add(logicalId);
-  this.logger.warn(
-    this.maskForResource(
+  run.noEchoPhysicalIdWarned.add(logicalId);
+  deps.logger.warn(
+    deps.maskForResource(
       logicalId,
       safeMsg`${logicalId}: its physical id contains a NoEcho parameter value. AWS publishes a resource's name, so cdkd keeps the physical id in state as AWS returns it.`
     )
@@ -534,14 +626,14 @@ export function warnNoEchoPhysicalId(
  * the record is not in hand (the outputs pass) still sees the declaration.
  */
 export function seedPersistedNoEchoAttributes(
-  this: DeployEngine,
+  run: NoEchoRunState,
   resources: Record<string, ResourceState>
 ): void {
-  this.persistedNoEchoAttributes = new Map();
+  run.persistedNoEchoAttributes = new Map();
   for (const [logicalId, record] of Object.entries(resources)) {
     const names = noEchoAttributeNamesOf(record);
     if (names !== undefined && names.length > 0) {
-      this.persistedNoEchoAttributes.set(logicalId, new Set(names));
+      run.persistedNoEchoAttributes.set(logicalId, new Set(names));
     }
   }
 }
@@ -553,21 +645,22 @@ export function seedPersistedNoEchoAttributes(
  * reference redaction uses. Skipped while that source is not usable.
  */
 export function maskOutputsByPosition(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   outputs: Record<string, unknown>
 ): Record<string, unknown> {
-  const sources = this.noEchoPositionSources();
+  const sources = noEchoPositionSources(run);
   if (sources === undefined) return outputs;
   // The template's own `Outputs` values position every save, the partial
   // saves BEFORE the outputs pass included: those carry the PREVIOUS
   // record's bag, which a pre-v11 binary wrote in the clear. The outputs
   // pass's source (aliases included) refines it once usable.
   const templateValues: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const [name, definition] of Object.entries(this.constructPathTemplate?.Outputs ?? {})) {
+  for (const [name, definition] of Object.entries(run.constructPathTemplate?.Outputs ?? {})) {
     templateValues[name] = (definition as { Value?: unknown } | undefined)?.Value;
   }
-  if (this.outputsRun.outputsSourceUsable) {
-    for (const [name, value] of Object.entries(this.outputsRun.outputsTemplateSource)) {
+  if (deps.outputsRun().outputsSourceUsable) {
+    for (const [name, value] of Object.entries(deps.outputsRun().outputsTemplateSource)) {
       templateValues[name] = value;
     }
   }
@@ -650,7 +743,8 @@ function getAttTargetsOf(node: unknown): [string, string][] {
  * record keeps its mask.
  */
 export async function noEchoAttributeOverridesFor(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   desiredProps: Record<string, unknown>,
   stateResources: Record<string, ResourceState>,
   stackName: string
@@ -661,7 +755,7 @@ export async function noEchoAttributeOverridesFor(
     if (record === undefined) continue;
     if (noEchoAttributeNamesOf(record)?.includes(attribute) !== true) continue;
     if (!carriesSecretMask(record.attributes?.[attribute])) continue;
-    if (!this.perResourceSecrets.has(logicalId)) continue;
+    if (!deps.perResourceSecrets().has(logicalId)) continue;
     const set = wanted.get(logicalId) ?? new Set<string>();
     set.add(attribute);
     wanted.set(logicalId, set);
@@ -670,11 +764,11 @@ export async function noEchoAttributeOverridesFor(
   const overrides = new Map<string, Record<string, unknown>>();
   for (const [logicalId, attributes] of wanted) {
     const record = stateResources[logicalId]!;
-    let read = this.noEchoAttributeReads.get(logicalId);
+    let read = run.noEchoAttributeReads.get(logicalId);
     if (read === undefined) {
       read = (async () => {
         try {
-          const { provider } = this.providerRegistry.getProviderFor({
+          const { provider } = deps.providerRegistry.getProviderFor({
             resourceType: record.resourceType,
             properties: record.properties,
             provisionedBy: record.provisionedBy,
@@ -685,20 +779,20 @@ export async function noEchoAttributeOverridesFor(
             logicalId,
             resource: record,
             stackName,
-            region: this.stackRegion,
+            region: deps.stackRegion,
           });
           return outcome.kind === 'read' ? outcome.attributes : undefined;
         } catch {
           return undefined;
         }
       })();
-      this.noEchoAttributeReads.set(logicalId, read);
+      run.noEchoAttributeReads.set(logicalId, read);
     }
     const live = await read;
     if (live === undefined) continue;
-    const secrets = this.perResourceSecrets.get(logicalId)!;
+    const secrets = deps.perResourceSecrets().get(logicalId)!;
     const fresh = noEchoParameterPlaintextsOf(secrets);
-    const positioned = this.noEchoPositionedValues.get(logicalId) ?? new Set<string>();
+    const positioned = run.noEchoPositionedValues.get(logicalId) ?? new Set<string>();
     const served: Record<string, unknown> = {};
     for (const attribute of attributes) {
       if (!Object.hasOwn(live, attribute)) continue;
@@ -720,20 +814,21 @@ export async function noEchoAttributeOverridesFor(
  * template and verdicts, with the bound parameter values as the value arm.
  */
 export function noEchoDiffComparison(
-  this: DeployEngine,
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
   resources: Record<string, ResourceState>,
   template: CloudFormationTemplate,
   conditions: Record<string, boolean>,
   parameterValues: Record<string, unknown>,
   stackName?: string
 ): NoEchoCompareFn | undefined {
-  const sources = this.noEchoPositionSources(resources, template, conditions);
+  const sources = noEchoPositionSources(run, resources, template, conditions);
   if (sources === undefined) return undefined;
   const compare = noEchoComparison({
     sources,
     values: parameterValues,
     minNeedleLength: MIN_NEEDLE_LENGTH,
-    publicTokens: new Set([this.stackRegion, ...(stackName === undefined ? [] : [stackName])]),
+    publicTokens: new Set([deps.stackRegion, ...(stackName === undefined ? [] : [stackName])]),
   });
   return (input) => compare(input);
 }

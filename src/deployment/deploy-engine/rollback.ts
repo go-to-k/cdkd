@@ -55,6 +55,7 @@ import {
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
 import { keepPersistedPlainRecordLeaves } from '../rollback-executor/replay-secrets.js';
+import { applyNoEchoPersist, maskOutputsByPosition, noEchoPositionSources } from './noecho.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
@@ -111,7 +112,7 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
     // go-to-k/cdkd#4043 (review B3): the positional `NoEcho` arm needs no
     // secrets, so a bag positioned by this deploy's template is masked even
     // when the resource recorded none.
-    const sources = templateProps === undefined ? undefined : this.noEchoPositionSources();
+    const sources = templateProps === undefined ? undefined : noEchoPositionSources(this.noEchoRun);
     const byPosition = <B>(bag: B): B =>
       sources === undefined || templateProps === undefined
         ? bag
@@ -175,7 +176,9 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // `noEchoLeaves` when it has them, else today's template positions for
       // the same logical id and type, so a pre-v11 record's plaintext does not
       // reach this journal on a failed migration deploy.
-      next.previousState = this.applyNoEchoPersist(
+      next.previousState = applyNoEchoPersist(
+        this.noEchoRun,
+        this.noEchoDeps(),
         op.logicalId,
         previous,
         keepPersistedPlainRecordLeaves(
@@ -1000,7 +1003,11 @@ export async function writeRollbackJournalSegment(
       ...(nestedPending?.previousOutputs && {
         previousOutputs: {
           ...nestedPending.previousOutputs,
-          outputs: this.maskOutputsByPosition(nestedPending.previousOutputs.outputs),
+          outputs: maskOutputsByPosition(
+            this.noEchoRun,
+            this.noEchoDeps(),
+            nestedPending.previousOutputs.outputs
+          ),
         },
       }),
       ...(nestedPending?.previousCrossStackReads && {

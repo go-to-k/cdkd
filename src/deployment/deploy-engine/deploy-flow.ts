@@ -1,4 +1,8 @@
-import { freshNoEchoParametersWithDeclared } from './noecho.js';
+import {
+  freshNoEchoParametersWithDeclared,
+  noEchoDiffComparison,
+  seedPersistedNoEchoAttributes,
+} from './noecho.js';
 import { stampReasonlessParameterRefusals } from './observed-capture.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
@@ -535,7 +539,7 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4043 (review round 9): a nested child positions each
     // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
     // here on (every save, the journal, the outputs pass).
-    this.inheritedNoEchoParameters = new Set([
+    this.noEchoRun.inheritedNoEchoParameters = new Set([
       ...(this.freshNoEchoParameters(parameterValues) ?? []),
       ...(this.options.passedNoEchoParameters ?? []),
     ]);
@@ -641,12 +645,12 @@ export async function doDeployWithPrefetch(
     // place.
     const effectiveTemplate = this.templateParser.filterResourcesByCondition(template, conditions);
     // Every save from here on stamps each record's construct path from it.
-    this.constructPathTemplate = effectiveTemplate;
+    this.noEchoRun.constructPathTemplate = effectiveTemplate;
     // go-to-k/cdkd#4043: the positional `NoEcho` arm opens only the `Fn::If`
     // branch this deploy selected, and reads the previous records' declared
     // `NoEcho` attributes (go-to-k/cdkd#2449).
-    this.noEchoConditions = conditions;
-    this.seedPersistedNoEchoAttributes(currentState.resources);
+    this.noEchoRun.noEchoConditions = conditions;
+    seedPersistedNoEchoAttributes(this.noEchoRun, currentState.resources);
 
     // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
     //
@@ -851,7 +855,10 @@ export async function doDeployWithPrefetch(
       // with the value in hand (a readback, or the migration witness).
       // Review round 9: a nested child's parameters its parent fills from a
       // `NoEcho` source too (`inheritedNoEchoParameters`, set above).
-      freshNoEchoParametersWithDeclared(this.inheritedNoEchoParameters, effectiveTemplate),
+      freshNoEchoParametersWithDeclared(
+        this.noEchoRun.inheritedNoEchoParameters,
+        effectiveTemplate
+      ),
       // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
       // parameter to its plaintext and records it as a log-only needle of
       // THIS context's bag, so the calculator's replacement line masks with
@@ -880,7 +887,9 @@ export async function doDeployWithPrefetch(
       // go-to-k/cdkd#4043: compare what the persist side writes for a value
       // a `NoEcho` source served, and read a pre-v11 record's plaintext as
       // the migration witness.
-      this.noEchoDiffComparison(
+      noEchoDiffComparison(
+        this.noEchoRun,
+        this.noEchoDeps(),
         currentState.resources,
         effectiveTemplate,
         conditions,

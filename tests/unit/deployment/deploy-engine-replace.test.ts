@@ -1351,11 +1351,7 @@ describe('DeployEngine — --replace wire-through', () => {
       // and error mask those values. Asserted as the exact SET, which reds in
       // BOTH directions: a dropped declaration registers nothing, and an
       // over-broad one registers `true` instead of the set.
-      const registered = (
-        engine as unknown as {
-          noEchoAttributeResources: Map<string, true | Set<string>>;
-        }
-      ).noEchoAttributeResources.get('MyResource');
+      const registered = engine.noEchoRun.noEchoAttributeResources.get('MyResource');
       expect(registered).toEqual(new Set(['Secret']));
     });
 
@@ -1382,11 +1378,7 @@ describe('DeployEngine — --replace wire-through', () => {
       const engine = makeEngine({});
       await invokeProvision(engine, 'AWS::DynamoDB::Table', 'Retain');
       expect(callOrder).toEqual(['update', 'create']);
-      const registered = (
-        engine as unknown as {
-          noEchoAttributeResources: Map<string, true | Set<string>>;
-        }
-      ).noEchoAttributeResources.get('MyResource');
+      const registered = engine.noEchoRun.noEchoAttributeResources.get('MyResource');
       // `true`, not a Set: the whole-bag arm and the per-name arm are distinct
       // registrations, so asserting the exact value keeps them apart.
       expect(registered).toBe(true);

@@ -176,7 +176,7 @@ export function buildResolverContext(
     // is an OPT-IN whose presence changes what the resolver SERVES, so it
     // belongs only where a reader exists. The `base` field's own doc carries
     // the measurement that forced the split.
-    noEchoAttributeResources: this.noEchoAttributeResources,
+    noEchoAttributeResources: this.noEchoRun.noEchoAttributeResources,
     // go-to-k/cdkd#3869: on every context, the diff pass included, since each
     // one prints a `resolved to` line for what it reads. It only ADDS log-only
     // needles to the reading pass's bag, judged from `base.resources` (the
