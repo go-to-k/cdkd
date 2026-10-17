@@ -44,7 +44,7 @@ describe('maskedInputSources - an attribute of a resource that read a secret thi
 
   it('keeps an attribute the save redacts as written: a mask-only needle filling the whole leaf, either GetAtt spelling', async () => {
     const { engine } = engineReturning('noecho-handler-token-1');
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     expect(await sources.resolve({ 'Fn::GetAtt': ['X', 'Echo'] })).toMatchObject({
       keepAsWritten: true,
     });
@@ -59,7 +59,7 @@ describe('maskedInputSources - an attribute of a resource that read a secret thi
       'Y',
       new Map([['db-password-77', '{{resolve:secretsmanager:db:SecretString:pw}}']])
     );
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     expect(await sources.resolve({ 'Fn::GetAtt': ['Y', 'Url'] })).toMatchObject({
       keepAsWritten: true,
     });
@@ -67,7 +67,7 @@ describe('maskedInputSources - an attribute of a resource that read a secret thi
 
   it('resolves a mask-only needle only EMBEDDED in a longer value: the save persists that as written, so the next diff hashes it too', async () => {
     const { engine } = engineReturning('prefix-noecho-handler-token-1');
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     const attribute = await sources.resolve({ 'Fn::GetAtt': ['X', 'Echo'] });
     expect(attribute.keepAsWritten).toBeUndefined();
     expect(attribute.value).toBe('prefix-noecho-handler-token-1');
@@ -75,12 +75,12 @@ describe('maskedInputSources - an attribute of a resource that read a secret thi
 
   it('resolves an attribute that does not hold it, and a Ref (a physical id is persisted unredacted)', async () => {
     const { engine } = engineReturning('arn:aws:sns:us-east-1:1:x');
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     const attribute = await sources.resolve({ 'Fn::GetAtt': ['X', 'Arn'] });
     expect(attribute.keepAsWritten).toBeUndefined();
     expect(attribute.value).toBe('arn:aws:sns:us-east-1:1:x');
     const { engine: echoing } = engineReturning('noecho-handler-token-1');
-    const refSources = maskedInputSources(echoing.resolverContextDeps(),template, {}, undefined, 's')!;
+    const refSources = maskedInputSources(echoing.resolverContextDeps(), template, {}, undefined, 's')!;
     expect((await refSources.resolve({ Ref: 'X' })).keepAsWritten).toBeUndefined();
   });
 });
@@ -110,7 +110,7 @@ describe('maskedInputSources - a physical-id fallback is no input (go-to-k/cdkd#
     const resources = {
       A: { physicalId: 'arn:aws:sns:us-east-1:1:a', resourceType: 'AWS::SNS::Topic', properties: {} },
     };
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, resources, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, resources, undefined, 's')!;
     // An attribute no handler knows: the ordinary resolution would warn and
     // answer the physical id.
     await expect(sources.resolve({ 'Fn::GetAtt': ['A', 'NotAnAttribute'] })).rejects.toBeDefined();
@@ -141,7 +141,7 @@ describe('maskedInputSources - what a node read reaches the screen (go-to-k/cdkd
         return Promise.resolve(plaintext);
       }),
     };
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     const read = await sources.resolve({ 'Fn::ImportValue': 'shared' });
     expect([...(read.secrets?.keys() ?? [])]).toContain('recovered-output-one');
     const value = {
@@ -179,7 +179,7 @@ describe('maskedInputSources - what a node read reaches the screen (go-to-k/cdkd
       contexts.push(context as Record<string, unknown>);
       return real(node, context);
     };
-    const sources = maskedInputSources(engine.resolverContextDeps(),template, {}, undefined, 's')!;
+    const sources = maskedInputSources(engine.resolverContextDeps(), template, {}, undefined, 's')!;
     // Resolving it would need an SSM call this test does not mock.
     expect((await sources.resolve({ 'Fn::FindInMap': ['M', 'k', 'v'] })).value).toBe(token);
     // The context every input node resolves through: no reference resolved,

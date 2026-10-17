@@ -157,7 +157,7 @@ export interface DeployEngineOptions {
    * WHAT IT IS USED FOR, both halves being needed or the fix trades one bug for
    * another:
    *
-   * 1. {@link buildResolverContext} puts it on the resolver context as
+   * 1. `buildResolverContext` (`resolver-context.ts`) puts it on the resolver context as
    *    `ResolverContext.inheritedSecrets`, and the resolver copies a pair into
    *    the context's own `recordedSecretValues` at the moment a `{Ref: Param}`
    *    resolves to a value carrying that plaintext

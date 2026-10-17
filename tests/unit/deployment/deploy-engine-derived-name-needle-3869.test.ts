@@ -360,7 +360,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
         dependencies: [],
       } as ResourceState,
     };
-    const context = buildResolverContext(engine.resolverContextDeps(),{ template: { Resources: {} }, resources }, stackName);
+    const context = buildResolverContext(engine.resolverContextDeps(), { template: { Resources: {} }, resources }, stackName);
     expect([...(context.secretNameNeedles?.('Role') ?? [])]).toContain(ROLE_ID);
     // A name resolved this deploy is plaintext in memory: only the target's
     // OWN bag says it is a secret.
@@ -542,7 +542,8 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     // A reader resolving it (noteSecretNamedRecord's embedded bag).
     const engine = makeEngine();
     engine.secretsRun.fingerprintNoEchoValues = noEcho;
-    const context = buildResolverContext(engine.resolverContextDeps(),
+    const context = buildResolverContext(
+      engine.resolverContextDeps(),
       { template: { Resources: {} }, resources: { Field: resolverRecord } },
       stackName
     );
@@ -584,7 +585,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
         dependencies: [],
       } as ResourceState,
     };
-    const context = buildResolverContext(engine.resolverContextDeps(),{ template: { Resources: {} }, resources }, stackName);
+    const context = buildResolverContext(engine.resolverContextDeps(), { template: { Resources: {} }, resources }, stackName);
     expect([...(context.secretNameNeedles?.('Bucket') ?? [])]).toContain('noecho-bucket-name');
   });
 
@@ -681,7 +682,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expectPrintOnly();
     // The control: an ordinary provisioning-shaped context records into its own bag.
     expect(
-      buildResolverContext(engine.resolverContextDeps(),{ template, resources: {} }, stackName)
+      buildResolverContext(engine.resolverContextDeps(), { template, resources: {} }, stackName)
     ).not.toHaveProperty('printingSecrets');
   });
 });
