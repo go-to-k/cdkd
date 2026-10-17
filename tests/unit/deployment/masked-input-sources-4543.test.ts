@@ -29,12 +29,12 @@ function engineReturning(value: unknown): {
     { dryRun: false },
     'us-east-1'
   );
-  engine.fingerprintParameters = parameterInputsFor({ template: { Resources: {} }, values: {} });
+  engine.secretsRun.fingerprintParameters =parameterInputsFor({ template: { Resources: {} }, values: {} });
   const resolve = vi.fn().mockResolvedValue(value);
   (engine as unknown as { resolver: { resolve: unknown } }).resolver = { resolve };
   const bag = new Map<string, string>();
   recordMaskOnlyValue(bag, 'noecho-handler-token-1');
-  engine.perResourceSecrets.set('X', bag);
+  engine.secretsRun.perResourceSecrets.set('X', bag);
   return { engine, resolve };
 }
 
@@ -54,7 +54,7 @@ describe('maskedInputSources - an attribute of a resource that read a secret thi
 
   it('keeps one embedding an EXPRESSION needle, which the save replaces in place', async () => {
     const { engine } = engineReturning('postgres://u:db-password-77@h');
-    engine.perResourceSecrets.set(
+    engine.secretsRun.perResourceSecrets.set(
       'Y',
       new Map([['db-password-77', '{{resolve:secretsmanager:db:SecretString:pw}}']])
     );
@@ -98,7 +98,7 @@ describe('maskedInputSources - a physical-id fallback is no input (go-to-k/cdkd#
     const template: CloudFormationTemplate = {
       Resources: { A: { Type: 'AWS::SNS::Topic', Properties: {} } },
     };
-    engine.fingerprintParameters = parameterInputsFor({ template, values: {} });
+    engine.secretsRun.fingerprintParameters =parameterInputsFor({ template, values: {} });
     const resolver = (
       engine as unknown as {
         resolver: { getPhysicalIdFallbackCount(): number; logger: { warn: unknown } };
@@ -130,7 +130,7 @@ describe('maskedInputSources - what a node read reaches the screen (go-to-k/cdkd
       'us-east-1'
     );
     const template: CloudFormationTemplate = { Resources: {} };
-    engine.fingerprintParameters = parameterInputsFor({ template, values: {} });
+    engine.secretsRun.fingerprintParameters =parameterInputsFor({ template, values: {} });
     // A cross-stack read recovered in-process (`recoverMaskedOutput`): the
     // resolver re-registers the plaintext into the node's own bag.
     let plaintext = 'recovered-output-one';
@@ -169,7 +169,7 @@ describe('maskedInputSources - what a node read reaches the screen (go-to-k/cdkd
       Mappings: { M: { k: { v: token } } },
       Resources: {},
     } as CloudFormationTemplate;
-    engine.fingerprintParameters = parameterInputsFor({ template, values: {} });
+    engine.secretsRun.fingerprintParameters =parameterInputsFor({ template, values: {} });
     const resolver = (engine as unknown as { resolver: { resolve: (...a: unknown[]) => unknown } })
       .resolver;
     const real = resolver.resolve.bind(resolver);

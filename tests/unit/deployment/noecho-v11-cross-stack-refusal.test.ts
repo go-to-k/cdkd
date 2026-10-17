@@ -70,12 +70,7 @@ describe('a consumer of a NoEcho-parameter-served export (decision 2)', () => {
     expect(reads[0]?.kind).toBe('cross-stack');
     let refusal: unknown;
     try {
-      refuseRedactedAttributeReads.call(
-        {} as never,
-        'ConsumerParam',
-        'AWS::SSM::Parameter',
-        consumerContext(reads)
-      );
+      refuseRedactedAttributeReads('ConsumerParam', 'AWS::SSM::Parameter', consumerContext(reads));
     } catch (error) {
       refusal = error;
     }
@@ -102,12 +97,7 @@ describe('a consumer of a NoEcho-parameter-served export (decision 2)', () => {
     expect(value).toBe(PARAM_VALUE);
     expect(reads).toEqual([]);
     expect(() =>
-      refuseRedactedAttributeReads.call(
-        {} as never,
-        'ConsumerParam',
-        'AWS::SSM::Parameter',
-        consumerContext(reads)
-      )
+      refuseRedactedAttributeReads('ConsumerParam', 'AWS::SSM::Parameter', consumerContext(reads))
     ).not.toThrow();
   });
 });

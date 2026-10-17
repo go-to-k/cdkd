@@ -3,6 +3,13 @@ import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import {
+  noteSecretNamedRecord,
+  readReaderForFreshNoEchoCeiling,
+  refuseRedactedAttributeReads,
+  registerNoEchoAttributes,
+  secretNameBagFor,
+} from './masking.js';
+import {
   auditResolvedAssetReferences,
   extractAllDependencies,
   extractTemplateAttributes,
@@ -241,7 +248,7 @@ export async function provisionUpdate(
   // from inside `resolve()` after a substitution otherwise reaches the
   // shared catch with an empty bag.
   const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
-  this.perResourceSecrets.set(logicalId, updateSecrets);
+  this.secretsRun.perResourceSecrets.set(logicalId, updateSecrets);
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
   const noEchoOverrides = await noEchoAttributeOverridesFor(
@@ -252,14 +259,14 @@ export async function provisionUpdate(
     stackName
   );
   if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
-  printNestedStackReadsOnly(context, resourceType, this.secretNameBagFor(logicalId));
+  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(this.secretsRun, logicalId));
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
   // go-to-k/cdkd#3869: the name this deploy resolved, before the provider
   // prints it (a rename, or a replacement's new resource).
-  this.noteSecretNamedRecord(logicalId, {
+  noteSecretNamedRecord(this.secretsRun, logicalId, {
     resourceType,
     physicalId: stateResources[logicalId]?.physicalId,
     properties: resolvedProps,
@@ -267,8 +274,8 @@ export async function provisionUpdate(
   // The #2274 refusal of a redacted read runs BELOW the no-change skip
   // (go-to-k/cdkd#3662), not here; see the note at that call.
   // Same position source on the UPDATE path (#1904).
-  this.perResourceTemplateProps.set(logicalId, desiredProps);
-  this.perResourceResolvedType.set(logicalId, resourceType);
+  this.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
+  this.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
   // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
   // `{{resolve:...}}` expression each `Parameters` entry was resolved
   // FROM, keyed by the child's parameter NAME. The bag above is keyed by
@@ -403,7 +410,9 @@ export async function provisionUpdate(
   // `NoEcho` value this resource was given is declared now, before any skip,
   // so a held (or witness-confirmed) producer still masks it on the save and
   // its same-stack readers position it. A provider result re-declares below.
-  this.registerNoEchoAttributes(
+  registerNoEchoAttributes(
+    this.secretsRun,
+    this.maskingDeps(),
     logicalId,
     Object.assign(
       currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
@@ -484,12 +493,12 @@ export async function provisionUpdate(
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.
   if (fingerprints !== undefined) {
-    this.perResourceInputFingerprints.set(
+    this.secretsRun.perResourceInputFingerprints.set(
       logicalId,
       await maskedInputFingerprintsFor(
         possiblyMaskedKeys(resolvedProps, [
           updateSecrets,
-          this.fingerprintNoEchoValues,
+          this.secretsRun.fingerprintNoEchoValues,
           this.options.inheritedSecrets,
         ]),
         fingerprints
@@ -740,7 +749,7 @@ export async function provisionUpdate(
   for (const coordinate of witness?.differing ?? []) {
     const desiredAt = valueAtCoordinate(desiredForSkipCheckAsWritten, coordinate);
     recordPreviousNoEchoLeaves(
-      this.secretNameBagFor(logicalId),
+      secretNameBagFor(this.secretsRun, logicalId),
       valueAtCoordinate(recordedAsWritten, coordinate),
       scalarLeavesOf(desiredAt),
       updateSecrets,
@@ -964,7 +973,8 @@ export async function provisionUpdate(
       : currentResource;
   let readback: Promise<FreshNoEchoReadback> | undefined;
   const readOnce = (): Promise<FreshNoEchoReadback> =>
-    (readback ??= this.readReaderForFreshNoEchoCeiling(
+    (readback ??= readReaderForFreshNoEchoCeiling(
+      this.maskingDeps(),
       logicalId,
       readbackRecord,
       updateSecrets
@@ -1119,7 +1129,7 @@ export async function provisionUpdate(
   // read resolves to the literal mask, so it passes the skip only where
   // the record holds the mask at that same position and nothing else
   // moved, which is exactly the case with nothing to send.
-  this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+  refuseRedactedAttributeReads(logicalId, resourceType, context);
 
   // go-to-k/cdkd#3211: a record with no usable physical id cannot be
   // ADDRESSED, and every arm below hands it to a provider (the in-place

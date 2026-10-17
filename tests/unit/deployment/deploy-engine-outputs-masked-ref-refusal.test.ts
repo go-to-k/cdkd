@@ -3,7 +3,7 @@
  * NOTHING (issue [#2847](https://github.com/go-to-k/cdkd/issues/2847),
  * independent round-2 review — the BLOCKER).
  *
- * `DeployEngine.refuseRedactedAttributeReads` is called at exactly two sites,
+ * The engine's `refuseRedactedAttributeReads` is called at exactly two sites,
  * both per-resource CREATE / UPDATE. `resolveOutputs` builds its OWN resolver
  * context, so the note `noteRefStateMask` records during the Outputs pass was
  * written and never read. That was harmless while a masked recovery key made

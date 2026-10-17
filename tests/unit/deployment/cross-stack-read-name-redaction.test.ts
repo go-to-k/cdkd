@@ -69,10 +69,10 @@ function seedSecrets(
   pairs: RecordedSecretValues
 ): void {
   const priv = engine as unknown as {
-    perResourceSecrets: Map<string, RecordedSecretValues>;
+    secretsRun: { perResourceSecrets: Map<string, RecordedSecretValues> };
     outputsRun: { outputsPassSecretMaps: RecordedSecretValues[] };
   };
-  if (where === 'resource') priv.perResourceSecrets.set('SomeResource', pairs);
+  if (where === 'resource') priv.secretsRun.perResourceSecrets.set('SomeResource', pairs);
   else priv.outputsRun.outputsPassSecretMaps.push(pairs);
 }
 

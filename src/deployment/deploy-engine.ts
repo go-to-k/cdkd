@@ -25,8 +25,6 @@ import {
 import { ProvenanceCapture } from './deploy-engine/provenance-capture.js';
 import type { DeferredReplacedDelete } from './deploy-engine/replacement.js';
 import {
-  type ChildTemplateLoader,
-  type parameterInputsFor,
   isWrittenFromDeployedTemplate,
   withMaskedPropertyFingerprints,
 } from './masked-property-fingerprints.js';
@@ -77,7 +75,18 @@ import {
 import { OutputsRunState, type OutputsDeps } from './deploy-engine/outputs.js';
 import * as rollbackMixin from './deploy-engine/rollback.js';
 import { ObservedCapture } from './deploy-engine/observed-capture.js';
-import * as maskingMixin from './deploy-engine/masking.js';
+import {
+  SecretsRunState,
+  allRecordedSecrets,
+  absorbOutputsPassSecrets,
+  maskForResource,
+  maskedRecordRemedyFor,
+  printingSecretsFor,
+  readReaderForFreshNoEchoCeiling,
+  redactOutputs,
+  stateNamingSecrets,
+  type MaskingDeps,
+} from './deploy-engine/masking.js';
 import * as replacementMixin from './deploy-engine/replacement.js';
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
 import * as createMixin from './deploy-engine/create.js';
@@ -468,23 +477,16 @@ export class DeployEngine {
   /** @internal */
   recordedOutputReads: StateOutputReadEntry[] = [];
   /**
-   * PER-RESOURCE map of resolved SECRET dynamic-reference values
-   * (plaintext -> `{{resolve:...}}` expression) the resolver records for each
-   * resource's own resolution (GHSA fix). Keyed by logicalId. Per-resource, NOT
-   * session-wide, because a session-wide map cross-contaminates: if resource A
-   * resolves a `{{resolve:...:SecretString}}` whole-secret reference to value V,
-   * and resource B (e.g. the `AWS::SecretsManager::Secret` that OWNS the secret)
-   * carries V as its own LITERAL property, a session-wide value scan would
-   * wrongly rewrite B's literal to A's expression — a false positive that shows
-   * up as a permanent spurious diff. Redacting each resource only with the
-   * secrets substituted during ITS OWN resolution scopes the value match
-   * correctly. Kept on the engine (not just the resolver context) so the async
-   * observed-property capture — which drains after the context is gone — can
-   * still redact an AWS-readback secret (Cognito `client_secret`). Reset per
-   * `deploy()`. See `secret-redaction.ts`.
+   * This deploy's secret-masking and masked-property fingerprint state — the
+   * ten fields {@link SecretsRunState} holds (`perResourceSecrets`,
+   * `secretNameNeedles`, `perResourceTemplateProps`, `perResourceResolvedType`,
+   * `fingerprintNoEchoValues`, `preDeploySecretNamedRecords`,
+   * `storedNoEchoNamingValues`, `fingerprintParameters`,
+   * `fingerprintChildTemplates`, `perResourceInputFingerprints`) — replaced,
+   * not cleared in place, per `deploy()`, like {@link noEchoRun}.
    */
   /** @internal */
-  perResourceSecrets = new Map<string, RecordedSecretValues>();
+  secretsRun: SecretsRunState = new SecretsRunState();
   /**
    * This deploy's `NoEcho` positional-arm state — the ten fields
    * {@link NoEchoRunState} holds (`noEchoAttributeResources`,
@@ -513,93 +515,6 @@ export class DeployEngine {
    */
   /** @internal */
   deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
-  /**
-   * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
-   * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
-   * when its name came from a secret (`noteSecretNamedRecord` in
-   * `deploy-engine/masking.ts`). The resource's own printed lines mask with it
-   * (`printingSecretsFor`, and the printing bag `provisionResource` binds),
-   * and a resource reading it through `Ref` / `Fn::GetAtt` records its needles,
-   * with the value it read, as LOG-ONLY needles of its own bag. Never
-   * persisted. Reset per `deploy()`, like `perResourceSecrets`.
-   */
-  /** @internal */
-  secretNameNeedles = new Map<string, RecordedSecretValues>();
-  /**
-   * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
-   * #1904 / #1900). The redaction choke point uses this as the POSITION source:
-   * wherever the template leaf is a `{{resolve:...}}` string, state persists
-   * that string verbatim instead of asking the value-keyed map which expression
-   * a plaintext came from — a question that map cannot answer when two
-   * expressions resolve to the same value. Captured at the same two sites that
-   * populate `perResourceSecrets`, where the unresolved bag is already in hand.
-   * Reset per `deploy()`.
-   */
-  /** @internal */
-  perResourceTemplateProps = new Map<string, Record<string, unknown>>();
-
-  /**
-   * The resource TYPE each logical id was resolved as during THIS deploy
-   * (issue #2934), the sibling of {@link perResourceSecrets} and
-   * {@link perResourceTemplateProps}.
-   *
-   * Exists only so the orphan-record redaction can tell "these needles belong
-   * to this record" from "a CDK refactor reused this logical id for a different
-   * resource". Keying that on `state.resources` instead was tried and is WRONG
-   * in the direction that matters: an orphan is by definition NOT in
-   * `resources`, so the gate read false for the record being minted, the
-   * needles went empty, and the plaintext survived into `state.json`. The
-   * real-AWS secret fixture caught it.
-   */
-  /** @internal */
-  perResourceResolvedType = new Map<string, string>();
-  /**
-   * The stack's `NoEcho` parameter values, set once parameters resolve
-   * (go-to-k/cdkd#4451): a masked property whose template text holds one is
-   * refused a fingerprint at the save. Reset per `deploy()`.
-   */
-  /** @internal */
-  fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
-  /**
-   * The needles of every record named from a secret AS THE DEPLOY FOUND THEM
-   * (go-to-k/cdkd#3869), judged once before anything provisions: a nested
-   * stack row's registry carries them into the child's deploy, whose stored
-   * values can hold a name a parent record replaced earlier in the same run no
-   * longer spells. Printing only. Reset per `deploy()`.
-   */
-  /** @internal */
-  preDeploySecretNamedRecords: RecordedSecretValues | undefined = undefined;
-  /**
-   * Per record AS THE DEPLOY FOUND IT, what it stores where a `NoEcho`
-   * parameter served it (`recordedNoEchoValuesOf`, go-to-k/cdkd#3869), as
-   * log-only needles: a name taken from a value since CHANGED, or a short or
-   * `Number` one, which `fingerprintNoEchoValues` cannot judge. Read by
-   * `namingSecretsFor` alone. Judging and printing only. Reset per `deploy()`.
-   */
-  /** @internal */
-  storedNoEchoNamingValues: ReadonlyMap<string, RecordedSecretValues> = new Map();
-  /**
-   * How each template parameter enters a masked property's INPUT fingerprint
-   * (go-to-k/cdkd#4543), set once parameters resolve, so the diff pass and the
-   * provisioning arms classify every parameter alike. Reset per `deploy()`.
-   */
-  /** @internal */
-  fingerprintParameters: ReturnType<typeof parameterInputsFor> | undefined = undefined;
-  /**
-   * The nested-stack templates of the cloud assembly this deploy reads
-   * (go-to-k/cdkd#4565), so a masked property reading a clean nested-stack
-   * output is resolved alike in the diff pass and the provisioning arms. Set
-   * with {@link fingerprintParameters}; reset per `deploy()`.
-   */
-  /** @internal */
-  fingerprintChildTemplates: ChildTemplateLoader | undefined = undefined;
-  /**
-   * The input fingerprints (layout 2) each resource's masked properties
-   * resolved to when this deploy provisioned it (go-to-k/cdkd#4543): what the
-   * save stamps on a record this deploy wrote. Reset per `deploy()`.
-   */
-  /** @internal */
-  perResourceInputFingerprints = new Map<string, Record<string, string>>();
   /**
    * This deploy's Outputs-pass state — the ten fields {@link OutputsRunState}
    * holds (`outputSecrets`, `outputsPassSecretMaps`, `outputsTemplateSource`,
@@ -900,9 +815,9 @@ export class DeployEngine {
       options: this.options,
       resolver: this.resolver,
       providerRegistry: this.providerRegistry,
-      printingSecretsFor: (logicalId) => this.printingSecretsFor(logicalId),
+      printingSecretsFor: (logicalId) => printingSecretsFor(this.secretsRun, logicalId),
       // Live: replaced mid-run by the schema-upgrade backfill (deploy-flow.ts).
-      fingerprintNoEchoValues: () => this.fingerprintNoEchoValues,
+      fingerprintNoEchoValues: () => this.secretsRun.fingerprintNoEchoValues,
       provenanceCapture: () => this.provenanceCapture,
     });
   }
@@ -917,10 +832,10 @@ export class DeployEngine {
       stackRegion: this.stackRegion,
       logger: this.logger,
       baseline: resources,
-      // Read at merge time: `perResourceSecrets` is replaced per deploy.
-      resolvedSecretsOf: (logicalId) => this.perResourceSecrets.get(logicalId),
+      // Read at merge time: `secretsRun` is replaced per deploy.
+      resolvedSecretsOf: (logicalId) => this.secretsRun.perResourceSecrets.get(logicalId),
       // Read at heal time: bound and captured after this rebaseline.
-      namingSecrets: () => this.stateNamingSecrets(),
+      namingSecrets: () => stateNamingSecrets(this.secretsRun),
     });
     return this.attributeHealer;
   }
@@ -960,9 +875,10 @@ export class DeployEngine {
   /**
    * This engine's current deps for `deploy-engine/noecho.ts`'s plain
    * functions, built fresh at each call site like {@link outputsDeps}. The
-   * per-deploy maps `deploy()` REASSIGNS (`perResourceSecrets`,
-   * `perResourceTemplateProps`, `perResourceResolvedType`, `outputsRun`) are
-   * live getters, and a forwarded method stays bound to THIS engine.
+   * per-deploy state `deploy()` REASSIGNS (`secretsRun`'s
+   * `perResourceSecrets` / `perResourceTemplateProps` /
+   * `perResourceResolvedType`, `outputsRun`) is read through live getters,
+   * and a forwarded function stays bound to THIS engine.
    * @internal
    */
   noEchoDeps(): NoEchoDeps {
@@ -970,12 +886,36 @@ export class DeployEngine {
       stackRegion: this.stackRegion,
       logger: this.logger,
       providerRegistry: this.providerRegistry,
-      perResourceSecrets: () => this.perResourceSecrets,
-      perResourceTemplateProps: () => this.perResourceTemplateProps,
-      perResourceResolvedType: () => this.perResourceResolvedType,
+      perResourceSecrets: () => this.secretsRun.perResourceSecrets,
+      perResourceTemplateProps: () => this.secretsRun.perResourceTemplateProps,
+      perResourceResolvedType: () => this.secretsRun.perResourceResolvedType,
       outputsRun: () => this.outputsRun,
-      readReaderForFreshNoEchoCeiling: (...args) => this.readReaderForFreshNoEchoCeiling(...args),
-      maskForResource: (...args) => this.maskForResource(...args),
+      readReaderForFreshNoEchoCeiling: (...args) =>
+        readReaderForFreshNoEchoCeiling(this.maskingDeps(), ...args),
+      maskForResource: (...args) => maskForResource(this.secretsRun, ...args),
+    };
+  }
+
+  /**
+   * This engine's current deps for `deploy-engine/masking.ts`'s plain
+   * functions, built fresh at each call site like {@link noEchoDeps}.
+   * `options` / `stackRegion` / `logger` / `providerRegistry` are never
+   * reassigned after construction, so they are passed by value; `outputsRun`
+   * and `noEchoRun` (replaced per `deploy()`) and
+   * `noEchoCeilingReadbackTimeoutMs` (a field a test shortens) are live
+   * getters, and `noEchoDeps` stays bound to THIS engine.
+   * @internal
+   */
+  maskingDeps(): MaskingDeps {
+    return {
+      options: this.options,
+      stackRegion: this.stackRegion,
+      logger: this.logger,
+      providerRegistry: this.providerRegistry,
+      outputsRun: () => this.outputsRun,
+      noEchoRun: () => this.noEchoRun,
+      noEchoDeps: () => this.noEchoDeps(),
+      noEchoCeilingReadbackTimeoutMs: () => this.noEchoCeilingReadbackTimeoutMs,
     };
   }
 
@@ -990,24 +930,17 @@ export class DeployEngine {
     // `state.outputReads`.
     this.recordedImports = [];
     this.recordedOutputReads = [];
-    this.perResourceSecrets = new Map();
+    // Replaces all ten secret-masking / fingerprint fields at once
+    // (`SecretsRunState`). `perResourceResolvedType` is reset with its
+    // siblings (issue #2934). Inert today — a stale TRUE pairs with cleared
+    // needle maps and reduces to the identity fallback — but that map's whole
+    // job is to answer "do those needles describe THIS record", and a reused
+    // engine carrying last deploy's answer is the #2516 class.
+    this.secretsRun = new SecretsRunState();
     // Replaces all ten `NoEcho` positional-arm fields at once (`NoEchoRunState`).
     this.noEchoRun = new NoEchoRunState();
     this.replacedDeleteSkips = new Map();
     this.deferredReplacedDeletes = undefined;
-    this.secretNameNeedles = new Map();
-    this.perResourceTemplateProps = new Map();
-    // Reset with its siblings (issue #2934). Inert today — a stale TRUE pairs
-    // with cleared needle maps and reduces to the identity fallback — but this
-    // map's whole job is to answer "do those needles describe THIS record",
-    // and a reused engine carrying last deploy's answer is the #2516 class.
-    this.perResourceResolvedType = new Map();
-    this.fingerprintNoEchoValues = undefined;
-    this.preDeploySecretNamedRecords = undefined;
-    this.storedNoEchoNamingValues = new Map();
-    this.fingerprintParameters = undefined;
-    this.fingerprintChildTemplates = undefined;
-    this.perResourceInputFingerprints = new Map();
     // Issue #2516: reset with the other per-deploy maps. A reused engine
     // whose next deploy fails before its own attempted bag is recorded would
     // otherwise journal the PREVIOUS run's bag against today's template and
@@ -1068,18 +1001,18 @@ export class DeployEngine {
   }
 
   /** @internal Body in `deploy-engine/masking.ts` (#4200). */
-  static maskedRecordRemedyFor = maskingMixin.maskedRecordRemedyFor;
+  static maskedRecordRemedyFor = maskedRecordRemedyFor;
 
   private redactStateForPersist(state: StackState): StackState {
     const resources: Record<string, ResourceState> = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
       // Redact each record ONLY with the secrets substituted during that
       // resource's own resolution — see the `perResourceSecrets` field doc.
-      const secrets = this.perResourceSecrets.get(logicalId);
+      const secrets = this.secretsRun.perResourceSecrets.get(logicalId);
       // The template bag is the POSITION source (#1904); when this resource was
       // not resolved this deploy there is none, and `scrubResourceRecord` falls
       // back to the record's own `properties` for the observed bag (#1900).
-      const templateProps = this.perResourceTemplateProps.get(logicalId);
+      const templateProps = this.secretsRun.perResourceTemplateProps.get(logicalId);
       const scrubbed = scrubResourceRecord(
         // Issue #1852: merged BEFORE the scrub, so a healed value enters the
         // same pass a provider-recorded attribute does. That pass has no needles
@@ -1121,8 +1054,8 @@ export class DeployEngine {
             record.properties,
             templateProps,
             secrets,
-            this.fingerprintNoEchoValues,
-            this.perResourceInputFingerprints.get(logicalId)
+            this.secretsRun.fingerprintNoEchoValues,
+            this.secretsRun.perResourceInputFingerprints.get(logicalId)
           ),
           constructPathOf(this.noEchoRun.constructPathTemplate, logicalId)
         ),
@@ -1170,9 +1103,9 @@ export class DeployEngine {
       // for the record being MINTED — the needles went empty and the plaintext
       // survived. Measured by `tests/integration/retain-orphan-secret`.
       const sameResource =
-        this.perResourceResolvedType.get(entry.logicalId) === entry.state.resourceType;
+        this.secretsRun.perResourceResolvedType.get(entry.logicalId) === entry.state.resourceType;
       const orphanTemplateProps = sameResource
-        ? this.perResourceTemplateProps.get(entry.logicalId)
+        ? this.secretsRun.perResourceTemplateProps.get(entry.logicalId)
         : undefined;
       return {
         ...entry,
@@ -1191,8 +1124,9 @@ export class DeployEngine {
             entry.state,
             scrubResourceRecord(
               entry.state,
-              (sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined) ??
-                new Map<string, string>(),
+              (sameResource
+                ? this.secretsRun.perResourceSecrets.get(entry.logicalId)
+                : undefined) ?? new Map<string, string>(),
               orphanTemplateProps
             ),
             orphanTemplateProps,
@@ -1200,9 +1134,11 @@ export class DeployEngine {
           ),
           entry.state.properties,
           orphanTemplateProps,
-          sameResource ? this.perResourceSecrets.get(entry.logicalId) : undefined,
-          sameResource ? this.fingerprintNoEchoValues : undefined,
-          sameResource ? this.perResourceInputFingerprints.get(entry.logicalId) : undefined
+          sameResource ? this.secretsRun.perResourceSecrets.get(entry.logicalId) : undefined,
+          sameResource ? this.secretsRun.fingerprintNoEchoValues : undefined,
+          sameResource
+            ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId)
+            : undefined
         ),
       };
     });
@@ -1218,7 +1154,7 @@ export class DeployEngine {
     // the shape this redaction exists for: an `Fn::GetStackOutput` whose
     // StackName an `Fn::Sub` built from a secret, in a deploy whose outputs
     // pass then threw. Redact the outputs FIRST so the bag is filled.
-    const outputs = this.redactOutputs(state.outputs);
+    const outputs = redactOutputs(this.maskingDeps(), state.outputs);
     const crossStackReads = this.redactCrossStackReads(state);
     // State schema v12: written from the bag this save persists, per key.
     const { outputReferenceProvenance: _incoming, ...rest } = state;
@@ -1259,7 +1195,10 @@ export class DeployEngine {
       baseline.outputReferenceProvenance === undefined &&
       !baseline.tokenFree &&
       this.outputsRun.resolvedOutputsBag !== undefined &&
-      outputMapsEqual(this.redactOutputs(this.outputsRun.resolvedOutputsBag), redacted)
+      outputMapsEqual(
+        redactOutputs(this.maskingDeps(), this.outputsRun.resolvedOutputsBag),
+        redacted
+      )
     ) {
       return outputProvenanceForPersist({
         outputs: redacted,
@@ -1373,7 +1312,7 @@ export class DeployEngine {
    */
   private redactCrossStackReads(state: StackState): Pick<StackState, 'imports' | 'outputReads'> {
     if (state.imports === undefined && state.outputReads === undefined) return {};
-    const secrets = this.allRecordedSecrets();
+    const secrets = allRecordedSecrets(this.secretsRun, this.maskingDeps());
     // No early return for an EMPTY bag. There was one, returning the lists
     // verbatim, and it was behaviourally DEAD: the caller spreads `...state`
     // first, so an absent key here leaves the original in place either way.
@@ -1436,8 +1375,8 @@ export class DeployEngine {
     // shipped twice in one PR. Calling the absorb from both places is safe:
     // measured, a second call re-sets equal entries and `recordResolvedPair`
     // leaves an unchanged pair alone, so it invents no CONFLICTING marker.
-    this.absorbOutputsPassSecrets();
-    const secrets = this.allRecordedSecrets();
+    absorbOutputsPassSecrets(this.maskingDeps());
+    const secrets = allRecordedSecrets(this.secretsRun, this.maskingDeps());
     if (secrets.size === 0) return (name) => name;
     return (name) => redactSecretsForState(name, secrets);
   }
@@ -1623,7 +1562,7 @@ export class DeployEngine {
     // physical-id needles here (go-to-k/cdkd#3869). The event's `physicalId`
     // FIELD is left as is: it is the id a cleanup pass needs, and `state.json`
     // beside this store records it too.
-    const own = event.logicalId ? this.printingSecretsFor(event.logicalId) : undefined;
+    const own = event.logicalId ? printingSecretsFor(this.secretsRun, event.logicalId) : undefined;
     if (own === undefined || !hasMaskableValues(own)) return maskEventTextWithBoundBags(event);
     const masked = withPrintingSecrets(own, () => maskEventTextWithBoundBags(event));
     const message = masked.error?.message;
@@ -1705,8 +1644,8 @@ export class DeployEngine {
    */
   private maskingRetryLogger(logicalId: string): RetryLogger {
     return {
-      debug: (msg) => this.logger.debug(this.maskForResource(logicalId, msg)),
-      warn: (msg) => this.logger.warn(this.maskForResource(logicalId, msg)),
+      debug: (msg) => this.logger.debug(maskForResource(this.secretsRun, logicalId, msg)),
+      warn: (msg) => this.logger.warn(maskForResource(this.secretsRun, logicalId, msg)),
     };
   }
 
@@ -1758,28 +1697,6 @@ DeployEngine.prototype.createFirstThenDeleteOld = replacementMixin.createFirstTh
 DeployEngine.prototype.deleteReplacedAfterCreate = replacementMixin.deleteReplacedAfterCreate;
 DeployEngine.prototype.retryDeferredReplacedDeletes = replacementMixin.retryDeferredReplacedDeletes;
 DeployEngine.prototype.warnUnretriedReplacedDeletes = replacementMixin.warnUnretriedReplacedDeletes;
-
-DeployEngine.prototype.diffLogMasker = maskingMixin.diffLogMasker;
-DeployEngine.prototype.freshNoEchoParameters = maskingMixin.freshNoEchoParameters;
-DeployEngine.prototype.redactParametersForDiff = maskingMixin.redactParametersForDiff;
-DeployEngine.prototype.rememberRecoverableMaskedOutputs =
-  maskingMixin.rememberRecoverableMaskedOutputs;
-DeployEngine.prototype.absorbOutputsPassSecrets = maskingMixin.absorbOutputsPassSecrets;
-DeployEngine.prototype.redactOutputs = maskingMixin.redactOutputs;
-DeployEngine.prototype.registerNoEchoAttributes = maskingMixin.registerNoEchoAttributes;
-DeployEngine.prototype.refuseRedactedAttributeReads = maskingMixin.refuseRedactedAttributeReads;
-DeployEngine.prototype.allRecordedSecrets = maskingMixin.allRecordedSecrets;
-DeployEngine.prototype.readReaderForFreshNoEchoCeiling =
-  maskingMixin.readReaderForFreshNoEchoCeiling;
-DeployEngine.prototype.maskForResource = maskingMixin.maskForResource;
-DeployEngine.prototype.secretNameBagFor = maskingMixin.secretNameBagFor;
-DeployEngine.prototype.noteSecretNamedRecord = maskingMixin.noteSecretNamedRecord;
-DeployEngine.prototype.printingSecretsFor = maskingMixin.printingSecretsFor;
-DeployEngine.prototype.namingSecretsFor = maskingMixin.namingSecretsFor;
-DeployEngine.prototype.stateNamingSecrets = maskingMixin.stateNamingSecrets;
-DeployEngine.prototype.captureStoredNoEchoNamingValues =
-  maskingMixin.captureStoredNoEchoNamingValues;
-DeployEngine.prototype.noteSecretNamedReads = maskingMixin.noteSecretNamedReads;
 
 DeployEngine.prototype.adoptRollbackOrphans = rollbackMixin.adoptRollbackOrphans;
 DeployEngine.prototype.performRollback = rollbackMixin.performRollback;

@@ -42,7 +42,7 @@ import { isPlainObject, isSingleDynamicReferenceToken } from './rules.js';
  * So the store is keyed by the RESOLUTION PASS's own {@link RecordedSecretValues}
  * bag, and a foreign entry is not merely refused — it cannot be REACHED. That
  * bag is already per-pass and already travels from the resolver context to the
- * redaction path (`DeployEngine.perResourceSecrets`, `cdkd scrub`'s
+ * redaction path (`SecretsRunState.perResourceSecrets`, `cdkd scrub`'s
  * `perResourceSecrets`, `rollback-executor.ts`'s `secrets`, each storing the
  * very object the resolver mutated), so this is a scope change rather than new
  * plumbing, and no call site had to grow a parameter. A caller that hands the

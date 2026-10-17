@@ -105,7 +105,7 @@ declare module '../intrinsic-function-resolver.js' {
  * EMBEDDING shape (`Fn::Sub`, `Fn::Join`, and `{'Fn::Sub': '${P}'}`, which
  * `crossStackSourceKey` refuses because its `Fn::Sub` arm requires a dotted
  * attribute) fell to the plaintext-keyed VALUE SCAN, which reads exactly this
- * bag. Meanwhile `DeployEngine.redactParametersForDiff` answers PER PARAMETER.
+ * bag. Meanwhile the engine's `redactParametersForDiff` answers PER PARAMETER.
  * So `Fn::Sub "postgres://u:${LoserParam}@host"` — the dominant CDK
  * connection-string shape — persisted the SURVIVOR's expression while the
  * desired side computed the LOSER's, and the two never matched again: a

@@ -1,6 +1,12 @@
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { noEchoPositionSources } from './noecho.js';
+import {
+  noteSecretNamedRecord,
+  printingSecretsFor,
+  registerNoEchoAttributes,
+  secretNameBagFor,
+} from './masking.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
@@ -712,7 +718,7 @@ export async function updateInPlace(
                 // also logs under; the physical id can be a name it derives.
                 maskSecrets: createUnionSecretMasker([
                   updateSecrets,
-                  this.secretNameBagFor(logicalId),
+                  secretNameBagFor(this.secretsRun, logicalId),
                 ]),
               }
             )
@@ -900,7 +906,7 @@ export async function updateInPlace(
           // that holds a newline.
           const shownSecrets = unionOfSecretBags([
             updateSecrets,
-            this.printingSecretsFor(logicalId),
+            printingSecretsFor(this.secretsRun, logicalId),
           ]);
           throw new Error(
             // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
@@ -1188,7 +1194,7 @@ export async function updateInPlace(
   if (result.wasReplaced) {
     // go-to-k/cdkd#3869: the NEW id, judged with this deploy's bag, before
     // the line names it (the old one was judged before the body ran).
-    this.noteSecretNamedRecord(logicalId, {
+    noteSecretNamedRecord(this.secretsRun, logicalId, {
       resourceType,
       physicalId: result.physicalId,
       properties: resolvedProps,
@@ -1251,7 +1257,9 @@ export async function updateInPlace(
   // PERSISTED. The two differ exactly when a provider declared `NoEcho`
   // and returned no fresh attributes, where the carried-forward set is
   // what state keeps.
-  this.registerNoEchoAttributes(
+  registerNoEchoAttributes(
+    this.secretsRun,
+    this.maskingDeps(),
     logicalId,
     {
       ...(carriedAttributes && { attributes: carriedAttributes }),

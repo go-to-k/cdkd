@@ -1,4 +1,5 @@
 import { DeployEngine, EMPTY_SECRETS } from '../deploy-engine.js';
+import type { ChildTemplateLoader, parameterInputsFor } from '../masked-property-fingerprints.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
 type RedactedAttributeRead = import('../intrinsic-function-resolver.js').RedactedAttributeRead;
@@ -48,51 +49,133 @@ import {
   storedSecretNameNeedles,
 } from '../secret-name-needles.js';
 import { declaresNoEcho } from '../noecho-declared.js';
-import { maskOutputsByPosition, noEchoPositionSources } from './noecho.js';
+import { maskOutputsByPosition, noEchoPositionSources, type NoEchoDeps } from './noecho.js';
 
 // The judge lives in `../secret-name-needles.ts`, shared with the CLI commands
 // that resolve against state (go-to-k/cdkd#3869); re-exported for its callers.
 export { secretNameNeedlesOf };
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    diffLogMasker: OmitThisParameter<typeof diffLogMasker>;
-    /** @internal */
-    freshNoEchoParameters: OmitThisParameter<typeof freshNoEchoParameters>;
-    /** @internal */
-    redactParametersForDiff: OmitThisParameter<typeof redactParametersForDiff>;
-    /** @internal */
-    rememberRecoverableMaskedOutputs: OmitThisParameter<typeof rememberRecoverableMaskedOutputs>;
-    /** @internal */
-    absorbOutputsPassSecrets: OmitThisParameter<typeof absorbOutputsPassSecrets>;
-    /** @internal */
-    redactOutputs: OmitThisParameter<typeof redactOutputs>;
-    /** @internal */
-    registerNoEchoAttributes: OmitThisParameter<typeof registerNoEchoAttributes>;
-    /** @internal */
-    refuseRedactedAttributeReads: OmitThisParameter<typeof refuseRedactedAttributeReads>;
-    /** @internal */
-    allRecordedSecrets: OmitThisParameter<typeof allRecordedSecrets>;
-    /** @internal */
-    readReaderForFreshNoEchoCeiling: OmitThisParameter<typeof readReaderForFreshNoEchoCeiling>;
-    /** @internal */
-    maskForResource: OmitThisParameter<typeof maskForResource>;
-    /** @internal */
-    secretNameBagFor: OmitThisParameter<typeof secretNameBagFor>;
-    /** @internal */
-    noteSecretNamedRecord: OmitThisParameter<typeof noteSecretNamedRecord>;
-    /** @internal */
-    printingSecretsFor: OmitThisParameter<typeof printingSecretsFor>;
-    /** @internal */
-    namingSecretsFor: OmitThisParameter<typeof namingSecretsFor>;
-    /** @internal */
-    stateNamingSecrets: OmitThisParameter<typeof stateNamingSecrets>;
-    /** @internal */
-    captureStoredNoEchoNamingValues: OmitThisParameter<typeof captureStoredNoEchoNamingValues>;
-    /** @internal */
-    noteSecretNamedReads: OmitThisParameter<typeof noteSecretNamedReads>;
-  }
+/**
+ * One deploy's secret-masking and masked-property fingerprint state: the
+ * per-resource secret bags, their position sources, the derived-name
+ * registry, and the stack's `NoEcho` judging inputs. `deploy()` replaces the
+ * whole object rather than clearing it in place, so a reused engine never
+ * masks, persists or judges with a previous deploy's bags.
+ */
+export class SecretsRunState {
+  /**
+   * PER-RESOURCE map of resolved SECRET dynamic-reference values
+   * (plaintext -> `{{resolve:...}}` expression) the resolver records for each
+   * resource's own resolution (GHSA fix). Keyed by logicalId. Per-resource, NOT
+   * session-wide, because a session-wide map cross-contaminates: if resource A
+   * resolves a `{{resolve:...:SecretString}}` whole-secret reference to value V,
+   * and resource B (e.g. the `AWS::SecretsManager::Secret` that OWNS the secret)
+   * carries V as its own LITERAL property, a session-wide value scan would
+   * wrongly rewrite B's literal to A's expression — a false positive that shows
+   * up as a permanent spurious diff. Redacting each resource only with the
+   * secrets substituted during ITS OWN resolution scopes the value match
+   * correctly. Kept on the engine (not just the resolver context) so the async
+   * observed-property capture — which drains after the context is gone — can
+   * still redact an AWS-readback secret (Cognito `client_secret`). Reset per
+   * `deploy()`. See `secret-redaction.ts`.
+   */
+  perResourceSecrets = new Map<string, RecordedSecretValues>();
+  /**
+   * The deploy-wide DERIVED-NAME registry (go-to-k/cdkd#3869): per logical
+   * id, an EMPTY map whose LOG-ONLY needles are what its physical ids print as
+   * when its name came from a secret ({@link noteSecretNamedRecord}). The
+   * resource's own printed lines mask with it ({@link printingSecretsFor}, and
+   * the printing bag `provisionResource` binds), and a resource reading it
+   * through `Ref` / `Fn::GetAtt` records its needles, with the value it read,
+   * as LOG-ONLY needles of its own bag. Never persisted. Reset per `deploy()`,
+   * like `perResourceSecrets`.
+   */
+  secretNameNeedles = new Map<string, RecordedSecretValues>();
+  /**
+   * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
+   * #1904 / #1900). The redaction choke point uses this as the POSITION source:
+   * wherever the template leaf is a `{{resolve:...}}` string, state persists
+   * that string verbatim instead of asking the value-keyed map which expression
+   * a plaintext came from — a question that map cannot answer when two
+   * expressions resolve to the same value. Captured at the same two sites that
+   * populate `perResourceSecrets`, where the unresolved bag is already in hand.
+   * Reset per `deploy()`.
+   */
+  perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+
+  /**
+   * The resource TYPE each logical id was resolved as during THIS deploy
+   * (issue #2934), the sibling of {@link perResourceSecrets} and
+   * {@link perResourceTemplateProps}.
+   *
+   * Exists only so the orphan-record redaction can tell "these needles belong
+   * to this record" from "a CDK refactor reused this logical id for a different
+   * resource". Keying that on `state.resources` instead was tried and is WRONG
+   * in the direction that matters: an orphan is by definition NOT in
+   * `resources`, so the gate read false for the record being minted, the
+   * needles went empty, and the plaintext survived into `state.json`. The
+   * real-AWS secret fixture caught it.
+   */
+  perResourceResolvedType = new Map<string, string>();
+  /**
+   * The stack's `NoEcho` parameter values, set once parameters resolve
+   * (go-to-k/cdkd#4451): a masked property whose template text holds one is
+   * refused a fingerprint at the save. Reset per `deploy()`.
+   */
+  fingerprintNoEchoValues: RecordedSecretValues | undefined = undefined;
+  /**
+   * The needles of every record named from a secret AS THE DEPLOY FOUND THEM
+   * (go-to-k/cdkd#3869), judged once before anything provisions: a nested
+   * stack row's registry carries them into the child's deploy, whose stored
+   * values can hold a name a parent record replaced earlier in the same run no
+   * longer spells. Printing only. Reset per `deploy()`.
+   */
+  preDeploySecretNamedRecords: RecordedSecretValues | undefined = undefined;
+  /**
+   * Per record AS THE DEPLOY FOUND IT, what it stores where a `NoEcho`
+   * parameter served it (`recordedNoEchoValuesOf`, go-to-k/cdkd#3869), as
+   * log-only needles: a name taken from a value since CHANGED, or a short or
+   * `Number` one, which `fingerprintNoEchoValues` cannot judge. Read by
+   * `namingSecretsFor` alone. Judging and printing only. Reset per `deploy()`.
+   */
+  storedNoEchoNamingValues: ReadonlyMap<string, RecordedSecretValues> = new Map();
+  /**
+   * How each template parameter enters a masked property's INPUT fingerprint
+   * (go-to-k/cdkd#4543), set once parameters resolve, so the diff pass and the
+   * provisioning arms classify every parameter alike. Reset per `deploy()`.
+   */
+  fingerprintParameters: ReturnType<typeof parameterInputsFor> | undefined = undefined;
+  /**
+   * The nested-stack templates of the cloud assembly this deploy reads
+   * (go-to-k/cdkd#4565), so a masked property reading a clean nested-stack
+   * output is resolved alike in the diff pass and the provisioning arms. Set
+   * with {@link fingerprintParameters}; reset per `deploy()`.
+   */
+  fingerprintChildTemplates: ChildTemplateLoader | undefined = undefined;
+  /**
+   * The input fingerprints (layout 2) each resource's masked properties
+   * resolved to when this deploy provisioned it (go-to-k/cdkd#4543): what the
+   * save stamps on a record this deploy wrote. Reset per `deploy()`.
+   */
+  perResourceInputFingerprints = new Map<string, Record<string, string>>();
+}
+
+/**
+ * What this module's plain functions read from the engine beyond
+ * {@link SecretsRunState}, built at each call site as `this.maskingDeps()`.
+ * `outputsRun` / `noEchoRun` are REASSIGNED by every `deploy()` and
+ * `noEchoCeilingReadbackTimeoutMs` is a field a test shortens, so they are
+ * live getters; `noEchoDeps` stays bound to the calling engine.
+ */
+export interface MaskingDeps {
+  options: Pick<DeployEngine['options'], 'inheritedSecrets'>;
+  stackRegion: DeployEngine['stackRegion'];
+  logger: Pick<DeployEngine['logger'], 'debug'>;
+  providerRegistry: Pick<DeployEngine['providerRegistry'], 'getProviderFor'>;
+  outputsRun: () => DeployEngine['outputsRun'];
+  noEchoRun: () => DeployEngine['noEchoRun'];
+  noEchoDeps: () => NoEchoDeps;
+  noEchoCeilingReadbackTimeoutMs: () => number;
 }
 
 /**
@@ -113,7 +196,8 @@ declare module '../deploy-engine.js' {
  * the rest of it.
  */
 export function diffLogMasker(
-  this: DeployEngine,
+  run: SecretsRunState,
+  deps: MaskingDeps,
   diffSecrets: RecordedSecretValues | undefined,
   template: CloudFormationTemplate,
   parameterValues: Record<string, unknown>,
@@ -126,7 +210,7 @@ export function diffLogMasker(
    */
   resources: Readonly<Record<string, ResourceState>>
 ): SecretMasker {
-  const inherited = this.options.inheritedSecrets;
+  const inherited = deps.options.inheritedSecrets;
   const noEchoValues: RecordedSecretValues = new Map();
   // The pieces of every literal `Fn::Split` over a `NoEcho` value too
   // (go-to-k/cdkd#4049), for a property that stopped reading one.
@@ -154,7 +238,7 @@ export function diffLogMasker(
       // too. Records still spelling a reference or the mask need none.
       // go-to-k/cdkd#3869: per record, plus what each stored where a
       // `NoEcho` parameter served it (a value since changed).
-      storedSecretNameNeedles(resources, this.stateNamingSecrets(), stateNames);
+      storedSecretNameNeedles(resources, stateNamingSecrets(run), stateNames);
     }
     return union(text);
   };
@@ -171,10 +255,10 @@ export function diffLogMasker(
  * `carriesFreshNoEchoValue` shares its predicate.
  */
 export function freshNoEchoParameters(
-  this: DeployEngine,
+  deps: MaskingDeps,
   parameterValues: Record<string, unknown>
 ): ReadonlySet<string> | undefined {
-  const inherited = this.options.inheritedSecrets;
+  const inherited = deps.options.inheritedSecrets;
   if (!inherited || inherited.size === 0) return undefined;
   const fresh = new Set<string>();
   for (const [name, value] of Object.entries(parameterValues)) {
@@ -205,10 +289,10 @@ export function freshNoEchoParameters(
  * Identity-returns when nothing was inherited.
  */
 export function redactParametersForDiff(
-  this: DeployEngine,
+  deps: MaskingDeps,
   parameterValues: Record<string, unknown>
 ): Record<string, unknown> {
-  const inherited = this.options.inheritedSecrets;
+  const inherited = deps.options.inheritedSecrets;
   if (!inherited || inherited.size === 0) return parameterValues;
   // `Object.create(null)` (issue #2802). Since the resolver's parameters bag
   // became null-prototype, a template parameter named `__proto__` is a real
@@ -280,7 +364,7 @@ export function redactParametersForDiff(
  * previous-generation, when only the persist walk was one.)
  */
 export function rememberRecoverableMaskedOutputs(
-  this: DeployEngine,
+  deps: MaskingDeps,
   stackName: string,
   resolved: Record<string, unknown>,
   redacted: Record<string, unknown>
@@ -294,7 +378,7 @@ export function rememberRecoverableMaskedOutputs(
     if (!carriesSecretMask(redactedValue)) continue;
     const plaintext = resolved[key];
     if (plaintext === undefined || carriesSecretMask(plaintext)) continue;
-    recordRecoverableMaskedOutput(identity, stackName, this.stackRegion, key, plaintext);
+    recordRecoverableMaskedOutput(identity, stackName, deps.stackRegion, key, plaintext);
   }
 }
 
@@ -336,17 +420,18 @@ export function rememberRecoverableMaskedOutputs(
  * is stored, not a disclosure — and the alternative, dropping the late
  * pair, would keep a positioning the pass itself no longer vouches for.
  */
-export function absorbOutputsPassSecrets(this: DeployEngine): void {
-  for (const passSecrets of this.outputsRun.outputsPassSecretMaps) {
+export function absorbOutputsPassSecrets(deps: MaskingDeps): void {
+  const outputsRun = deps.outputsRun();
+  for (const passSecrets of outputsRun.outputsPassSecretMaps) {
     for (const [value, expr] of passSecrets) {
-      this.outputsRun.outputSecrets.set(value, expr);
+      outputsRun.outputSecrets.set(value, expr);
     }
-    mergeResolvedPairs(passSecrets, this.outputsRun.outputSecrets);
+    mergeResolvedPairs(passSecrets, outputsRun.outputSecrets);
     // go-to-k/cdkd#4849: the physical ids the pass read stay copies of an id
     // in the outputs bag too (an `!Ref Topic` output, its export), or a
     // resource NAMED from a `NoEcho` value stores its ARN output as `***`.
     for (const physicalId of physicalNameCopiesOf.get(passSecrets) ?? []) {
-      recordPhysicalNameCopy(this.outputsRun.outputSecrets, physicalId);
+      recordPhysicalNameCopy(outputsRun.outputSecrets, physicalId);
     }
   }
 }
@@ -360,30 +445,30 @@ export function absorbOutputsPassSecrets(this: DeployEngine): void {
  * {@link absorbOutputsPassSecrets}, which states what a late one costs.
  */
 export function redactOutputs(
-  this: DeployEngine,
+  deps: MaskingDeps,
   outputs: Record<string, unknown>
 ): Record<string, unknown> {
-  const redacted = redactOutputsBag.call(this, outputs);
+  const redacted = redactOutputsBag(deps, outputs);
   // State schema v12: a redacted copy of a bag this deploy resolved is still
   // that bag, for the persist writer's provenance (`outputsResolvedThisRun`).
-  if (this.outputsRun.outputsResolvedThisRun.has(outputs)) {
-    this.outputsRun.outputsResolvedThisRun.add(redacted);
+  if (deps.outputsRun().outputsResolvedThisRun.has(outputs)) {
+    deps.outputsRun().outputsResolvedThisRun.add(redacted);
   }
   return redacted;
 }
 
 function redactOutputsBag(
-  this: DeployEngine,
+  deps: MaskingDeps,
   outputs: Record<string, unknown>
 ): Record<string, unknown> {
   // First, and before the empty-bag return: a late recording (issue #2814)
   // may be the only needle there is.
-  this.absorbOutputsPassSecrets();
+  absorbOutputsPassSecrets(deps);
   // go-to-k/cdkd#4043: the positional `NoEcho` arm runs on every call, after
   // the dynamic-reference redaction, so an output a `NoEcho` parameter served
   // persists `***` whatever its type or length.
-  if (this.outputsRun.outputSecrets.size === 0) {
-    return maskOutputsByPosition(this.noEchoRun, this.noEchoDeps(), outputs);
+  if (deps.outputsRun().outputSecrets.size === 0) {
+    return maskOutputsByPosition(deps.noEchoRun(), deps.noEchoDeps(), outputs);
   }
   // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
   // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
@@ -415,13 +500,14 @@ function redactOutputsBag(
   // sibling `cdkd scrub` outputs call still passes the default and records
   // the inertness measurement for its own bag; converging the two is issue
   // [#2099](https://github.com/go-to-k/cdkd/issues/2099).
+  const outputsRun = deps.outputsRun();
   return maskOutputsByPosition(
-    this.noEchoRun,
-    this.noEchoDeps(),
+    deps.noEchoRun(),
+    deps.noEchoDeps(),
     redactSecretsForState(
       outputs,
-      this.outputsRun.outputSecrets,
-      this.outputsRun.outputsSourceUsable ? this.outputsRun.outputsTemplateSource : undefined,
+      outputsRun.outputSecrets,
+      outputsRun.outputsSourceUsable ? outputsRun.outputsTemplateSource : undefined,
       TEMPLATE_SOURCED_RULES
     )
   );
@@ -491,7 +577,8 @@ function redactOutputsBag(
  * `recordMaskOnlyValue` would refuse to demote anyway.
  */
 export function registerNoEchoAttributes(
-  this: DeployEngine,
+  run: SecretsRunState,
+  deps: MaskingDeps,
   logicalId: string,
   result: {
     attributes?: Record<string, unknown>;
@@ -510,7 +597,8 @@ export function registerNoEchoAttributes(
   // same-stack `Fn::GetAtt` reader masks it and its record persists `***`
   // there whatever the value's type or length.
   const echoed = echoedNoEchoAttributes(
-    this,
+    run,
+    deps,
     logicalId,
     result.attributes,
     secrets,
@@ -518,12 +606,11 @@ export function registerNoEchoAttributes(
     (result as { physicalId?: unknown }).physicalId
   );
   if (declared === true) {
-    this.noEchoRun.noEchoAttributeResources.set(logicalId, true);
+    deps.noEchoRun().noEchoAttributeResources.set(logicalId, true);
   } else if (declared !== undefined || echoed.size > 0) {
-    this.noEchoRun.noEchoAttributeResources.set(
-      logicalId,
-      new Set([...(declared ?? []), ...echoed])
-    );
+    deps
+      .noEchoRun()
+      .noEchoAttributeResources.set(logicalId, new Set([...(declared ?? []), ...echoed]));
   }
 }
 
@@ -534,7 +621,8 @@ export function registerNoEchoAttributes(
  * PARAMETER positions (a `Number`, a value under the needle floor).
  */
 function echoedNoEchoAttributes(
-  engine: DeployEngine,
+  run: SecretsRunState,
+  deps: MaskingDeps,
   logicalId: string,
   attributes: Record<string, unknown> | undefined,
   secrets: RecordedSecretValues,
@@ -546,8 +634,8 @@ function echoedNoEchoAttributes(
   const fresh = [...(freshNoEchoValuesOf.get(secrets) ?? [])].filter((value) =>
     isMaskOnlyPlaintextOf(secrets, value)
   );
-  const templateProps = engine.perResourceTemplateProps.get(logicalId);
-  const sources = noEchoPositionSources(engine.noEchoRun);
+  const templateProps = run.perResourceTemplateProps.get(logicalId);
+  const sources = noEchoPositionSources(deps.noEchoRun());
   // A POSITIONED value (a `Number`, one under the needle floor) counts only
   // for the attribute named like the property it was given through
   // (`AWS::SSM::Parameter`'s `Value`): a short value equals unrelated
@@ -626,7 +714,6 @@ function echoedNoEchoAttributes(
  * takes this doc.
  */
 export function refuseRedactedAttributeReads(
-  this: DeployEngine,
   logicalId: string,
   resourceType: string,
   context: import('../intrinsic-function-resolver.js').ResolverContext
@@ -782,12 +869,12 @@ export function refuseRedactedAttributeReads(
  * matching a substring, and an export name that genuinely equals another
  * resource's secret is a name that should not be persisted either.
  */
-export function allRecordedSecrets(this: DeployEngine): RecordedSecretValues {
+export function allRecordedSecrets(run: SecretsRunState, deps: MaskingDeps): RecordedSecretValues {
   const all: RecordedSecretValues = new Map();
-  for (const bag of this.perResourceSecrets.values()) {
+  for (const bag of run.perResourceSecrets.values()) {
     for (const [plaintext, expression] of bag) all.set(plaintext, expression);
   }
-  for (const [plaintext, expression] of this.outputsRun.outputSecrets)
+  for (const [plaintext, expression] of deps.outputsRun().outputSecrets)
     all.set(plaintext, expression);
   return all;
 }
@@ -816,14 +903,14 @@ export function allRecordedSecrets(this: DeployEngine): RecordedSecretValues {
  *    never its message, which could echo the value.
  */
 export async function readReaderForFreshNoEchoCeiling(
-  this: DeployEngine,
+  deps: MaskingDeps,
   logicalId: string,
   currentResource: ResourceState,
   secrets: RecordedSecretValues
 ): Promise<FreshNoEchoReadback> {
   let provider: ResourceProvider;
   try {
-    provider = this.providerRegistry.getProviderFor({
+    provider = deps.providerRegistry.getProviderFor({
       resourceType: currentResource.resourceType,
       provisionedBy: currentResource.provisionedBy,
     }).provider;
@@ -846,7 +933,7 @@ export async function readReaderForFreshNoEchoCeiling(
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error('readback timed out')),
-          this.noEchoCeilingReadbackTimeoutMs
+          deps.noEchoCeilingReadbackTimeoutMs()
         );
       }),
     ]);
@@ -866,7 +953,7 @@ export async function readReaderForFreshNoEchoCeiling(
     } catch {
       // keep 'Error'
     }
-    this.logger.debug(
+    deps.logger.debug(
       safeMsg`Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
     );
     return { failure: 'read-failed' };
@@ -884,8 +971,8 @@ export async function readReaderForFreshNoEchoCeiling(
  * `logicalId` with no entry (or an empty bag) forwards verbatim, so every
  * non-secret resource is byte-identical to before.
  */
-export function maskForResource(this: DeployEngine, logicalId: string, text: string): string {
-  return maskSecretsInText(text, this.printingSecretsFor(logicalId) ?? EMPTY_SECRETS);
+export function maskForResource(run: SecretsRunState, logicalId: string, text: string): string {
+  return maskSecretsInText(text, printingSecretsFor(run, logicalId) ?? EMPTY_SECRETS);
 }
 
 /**
@@ -899,11 +986,11 @@ export function maskForResource(this: DeployEngine, logicalId: string, text: str
  * binds it as a PRINTING bag around the resource's whole body, so every line
  * logged there masks a needle registered mid-body too.
  */
-export function secretNameBagFor(this: DeployEngine, logicalId: string): RecordedSecretValues {
-  let bag = this.secretNameNeedles.get(logicalId);
+export function secretNameBagFor(run: SecretsRunState, logicalId: string): RecordedSecretValues {
+  let bag = run.secretNameNeedles.get(logicalId);
   if (bag === undefined) {
     bag = new Map();
-    this.secretNameNeedles.set(logicalId, bag);
+    run.secretNameNeedles.set(logicalId, bag);
   }
   return bag;
 }
@@ -919,15 +1006,15 @@ export function secretNameBagFor(this: DeployEngine, logicalId: string): Recorde
  * naming the old resource still print.
  */
 export function noteSecretNamedRecord(
-  this: DeployEngine,
+  run: SecretsRunState,
   logicalId: string,
   record: Parameters<typeof secretNameNeedlesOf>[1]
 ): ReadonlySet<string> | undefined {
-  const needles = secretNameNeedlesOf(logicalId, record, this.namingSecretsFor(logicalId), {
-    embedded: this.perResourceSecrets.get(logicalId),
+  const needles = secretNameNeedlesOf(logicalId, record, namingSecretsFor(run, logicalId), {
+    embedded: run.perResourceSecrets.get(logicalId),
   });
   if (needles === undefined) return undefined;
-  const registry = this.secretNameBagFor(logicalId);
+  const registry = secretNameBagFor(run, logicalId);
   for (const needle of needles) recordLogOnlyValue(registry, needle);
   return needles;
 }
@@ -940,14 +1027,14 @@ export function noteSecretNamedRecord(
  * this deploy. Judging only: never persisted or masked with as such.
  */
 export function namingSecretsFor(
-  this: DeployEngine,
+  run: SecretsRunState,
   logicalId: string
 ): RecordedSecretValues | undefined {
-  const own = this.perResourceSecrets.get(logicalId);
-  const noEcho = this.fingerprintNoEchoValues;
+  const own = run.perResourceSecrets.get(logicalId);
+  const noEcho = run.fingerprintNoEchoValues;
   // go-to-k/cdkd#3869: what the record stored where a `NoEcho` parameter
   // served it, for a name taken from a value since changed.
-  const stored = this.storedNoEchoNamingValues.get(logicalId);
+  const stored = run.storedNoEchoNamingValues.get(logicalId);
   if (!hasMaskableValues(noEcho) && !hasMaskableValues(stored)) return own;
   return unionOfSecretBags([own, noEcho, stored]);
 }
@@ -957,9 +1044,9 @@ export function namingSecretsFor(
  * (go-to-k/cdkd#3869): the stack's `NoEcho` values plus what each record
  * stored where a `NoEcho` parameter served it (`storedNoEchoNamingValues`).
  */
-export function stateNamingSecrets(this: DeployEngine): StateNamingSecrets {
-  const base = this.fingerprintNoEchoValues;
-  const stored = this.storedNoEchoNamingValues;
+export function stateNamingSecrets(run: SecretsRunState): StateNamingSecrets {
+  const base = run.fingerprintNoEchoValues;
+  const stored = run.storedNoEchoNamingValues;
   if (stored.size === 0) return base;
   // The same bag while its inputs hold, so a caller memoizing on it (the
   // heal's judge) judges each record once; both inputs are replaced, never
@@ -986,12 +1073,13 @@ const namingSecretsMemo = new WeakMap<
  * only; no AWS call.
  */
 export function captureStoredNoEchoNamingValues(
-  this: DeployEngine,
+  run: SecretsRunState,
+  deps: MaskingDeps,
   resources: Readonly<Record<string, ResourceState>>,
   template: CloudFormationTemplate,
   conditions: Readonly<Record<string, boolean>>
 ): void {
-  const names = new Set(this.noEchoRun.inheritedNoEchoParameters);
+  const names = new Set(deps.noEchoRun().inheritedNoEchoParameters);
   for (const [name, definition] of Object.entries(template.Parameters ?? {})) {
     if (declaresNoEcho(definition)) names.add(name);
   }
@@ -1012,7 +1100,7 @@ export function captureStoredNoEchoNamingValues(
     );
     if (hasMaskableValues(bag)) captured.set(logicalId, bag);
   }
-  this.storedNoEchoNamingValues = captured;
+  run.storedNoEchoNamingValues = captured;
 }
 
 /**
@@ -1024,17 +1112,17 @@ export function captureStoredNoEchoNamingValues(
  * lines print it. A reader that resolves records the same needles itself.
  */
 export function noteSecretNamedReads(
-  this: DeployEngine,
+  run: SecretsRunState,
   logicalId: string,
   record: { properties?: unknown } | undefined,
   resources: Record<string, ResourceState>
 ): void {
   const read = secretNamesReadBy(logicalId, record, resources, (otherId: string) => ({
-    secrets: this.namingSecretsFor(otherId),
-    embedded: this.perResourceSecrets.get(otherId),
+    secrets: namingSecretsFor(run, otherId),
+    embedded: run.perResourceSecrets.get(otherId),
   }));
   if (read.size === 0) return;
-  const registry = this.secretNameBagFor(logicalId);
+  const registry = secretNameBagFor(run, logicalId);
   for (const needle of read) recordLogOnlyValue(registry, needle);
 }
 
@@ -1046,11 +1134,11 @@ export function noteSecretNamedReads(
  * anything that persists, positions or decides.
  */
 export function printingSecretsFor(
-  this: DeployEngine,
+  run: SecretsRunState,
   logicalId: string
 ): RecordedSecretValues | undefined {
-  const secrets = this.perResourceSecrets.get(logicalId);
-  const registry = this.secretNameNeedles.get(logicalId);
+  const secrets = run.perResourceSecrets.get(logicalId);
+  const registry = run.secretNameNeedles.get(logicalId);
   if (!hasMaskableValues(registry)) return secrets;
   return unionOfSecretBags([secrets, registry]);
 }

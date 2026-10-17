@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { printingSecretsFor } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import {
@@ -74,6 +75,14 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
 }));
 
+// The printing bag a case stubs (`masking.ts`'s `printingSecretsFor`); every
+// other case runs the real one, which `mockReset` restores.
+vi.mock('../../../src/deployment/deploy-engine/masking.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/masking.js')>();
+  return { ...actual, printingSecretsFor: vi.fn(actual.printingSecretsFor) };
+});
+
 /**
  * Per arm: a non-stateful type, so the stateful guard stays out of the way.
  * The recreate arm takes Lambda because `AWS::Pipes::Pipe` is refused by the
@@ -91,6 +100,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
   let provider: ResourceProvider;
 
   beforeEach(() => {
+    vi.mocked(printingSecretsFor).mockReset();
     secretsToRecord = [];
     createFailures = [];
     deleteRejection = undefined;
@@ -154,8 +164,7 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
   function withoutBoundaryMask(
     engine: InstanceType<typeof DeployEngine>
   ): InstanceType<typeof DeployEngine> {
-    (engine as unknown as { printingSecretsFor: () => undefined }).printingSecretsFor = () =>
-      undefined;
+    vi.mocked(printingSecretsFor).mockReturnValue(undefined);
     return engine;
   }
 
@@ -401,11 +410,13 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
       deleteRejection = () =>
         markNonRetryable(awsSdkError(`Handler failed: '${multiLine}' is still referenced`));
       const engine = makeEngine('recreate');
-      (engine as unknown as { printingSecretsFor: () => Map<string, string> }).printingSecretsFor =
-        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']]);
+      vi.mocked(printingSecretsFor).mockImplementation(
+        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+      );
 
       const wrap = await provisionExpectingWrap(engine, 'recreate');
 
+      expect(printingSecretsFor).toHaveBeenCalledWith(engine.secretsRun, 'Pipe');
       expect(wrap.message).toContain('Failed to destroy old resource Pipe (my-pipe)');
       expect(wrap.message).toContain(`Handler failed: '***' is still referenced`);
       expect(wrap.message).not.toContain('prev-noecho-one-2676');

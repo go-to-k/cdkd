@@ -288,11 +288,13 @@ describe('DeployEngine - a rollback-orphaned record this deploy created keeps it
       { dryRun: false },
       'us-east-1'
     );
-    engine.perResourceTemplateProps.set('R', templateProps);
-    engine.perResourceResolvedType.set('R', resolvedType);
-    engine.perResourceSecrets.set('R', secrets);
-    engine.fingerprintNoEchoValues = noEchoValues;
-    if (inputFingerprints) engine.perResourceInputFingerprints.set('R', inputFingerprints);
+    engine.secretsRun.perResourceTemplateProps.set('R', templateProps);
+    engine.secretsRun.perResourceResolvedType.set('R', resolvedType);
+    engine.secretsRun.perResourceSecrets.set('R', secrets);
+    engine.secretsRun.fingerprintNoEchoValues = noEchoValues;
+    if (inputFingerprints) {
+      engine.secretsRun.perResourceInputFingerprints.set('R', inputFingerprints);
+    }
     const state: StackState = {
       version: 10,
       stackName: 's',

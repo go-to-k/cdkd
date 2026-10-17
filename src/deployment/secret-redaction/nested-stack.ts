@@ -1310,7 +1310,7 @@ export function recordInheritedParameterRead(
  * secrets rewritten back to their expressions, read off the PARENT's bag
  * (issue [#2349](https://github.com/go-to-k/cdkd/issues/2349)).
  *
- * The DIFF side (`DeployEngine.redactParametersForDiff`) binds this for every
+ * The DIFF side (the engine's `redactParametersForDiff`) binds this for every
  * parameter, and the PERSIST side ({@link positionByInheritedParameter})
  * writes it for a leaf the child template spells `{Ref: <Param>}`. One
  * function, so the two cannot disagree on any input.
@@ -2049,7 +2049,7 @@ function rereadAssignments(
  * [#4919](https://github.com/go-to-k/cdkd/issues/4919)): `resolved` is the
  * source evaluated with `bind`'s real values, `redacted` with each value as
  * {@link redactInheritedParameterValue} answers it -- the function
- * `DeployEngine.redactParametersForDiff` binds -- so `redacted` is what the
+ * the engine's `redactParametersForDiff` binds -- so `redacted` is what the
  * diff side computes for the leaf, splitting as it does
  * ({@link splitOutsideDynamicReferences}: a token stays whole, issue
  * [#4914](https://github.com/go-to-k/cdkd/issues/4914)). A re-read requires

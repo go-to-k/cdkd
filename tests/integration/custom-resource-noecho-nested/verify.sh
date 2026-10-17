@@ -6,7 +6,7 @@
 # `NoEcho` custom resource's `Data` is persisted as the mask `***`. Every
 # cross-stack route reads the PRODUCER's persisted outputs, so without a
 # recovery the first deploy of a consumer is REFUSED. The recovery is
-# `DeployEngine.rememberRecoverableMaskedOutputs` recording, for THIS PROCESS,
+# the deploy engine's `rememberRecoverableMaskedOutputs` recording, for THIS PROCESS,
 # `stack + region + output key -> plaintext`, read back by
 # `NestedStackProvider.readChildOutputsAsAttributes` (a nested stack's
 # `Outputs.<Key>`, reported PER ATTRIBUTE via `noEchoAttributeNames`) and by

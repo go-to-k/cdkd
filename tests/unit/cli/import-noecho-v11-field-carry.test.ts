@@ -4,6 +4,7 @@ import { TemplateParser } from '../../../src/analyzer/template-parser.js';
 import { SECRET_MASK, scrubResourceRecord } from '../../../src/deployment/secret-redaction.js';
 import { recordAfterRollbackUpdate } from '../../../src/deployment/rollback-executor/replay-retry.js';
 import { deleteReplacedAfterCreate } from '../../../src/deployment/deploy-engine/replacement.js';
+import { SecretsRunState } from '../../../src/deployment/deploy-engine/masking.js';
 import { REDACTED_DELETE_ADDRESS_SKIP_REASON } from '../../../src/provisioning/redacted-delete-address.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -150,7 +151,7 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
       // go-to-k/cdkd#2631: the skip marks the old resource as a possible survivor.
       replacedOldMaySurvive: new Map<string, string>(),
       // go-to-k/cdkd#2007: the delete masker reads the derived-name registry.
-      secretNameBagFor: () => new Map(),
+      secretsRun: new SecretsRunState(),
     } as unknown as DeployEngine;
     const provider = {
       delete: vi.fn().mockResolvedValue({

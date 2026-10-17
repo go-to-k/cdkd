@@ -4829,7 +4829,7 @@ export class CloudControlProvider implements ResourceProvider {
    *
    * Masking keeps the KEY present, so the lookup HITS and the value flows
    * through `noteAttributeSecrecy` into `ResolverContext.redactedAttributeReads`,
-   * where `DeployEngine.refuseRedactedAttributeReads` FAILS the resource rather
+   * where the engine's `refuseRedactedAttributeReads` FAILS the resource rather
    * than sending the mask. So the outcome is a loud, named refusal instead of a
    * wrong value — which is the trade this repo already made for the mask-only
    * channel (issue #2274), reusing its machinery rather than inventing a second

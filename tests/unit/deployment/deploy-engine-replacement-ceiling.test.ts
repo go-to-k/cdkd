@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { readReaderForFreshNoEchoCeiling } from '../../../src/deployment/deploy-engine/masking.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -882,9 +883,12 @@ describe('DeployEngine - a synthetic replacement is a ceiling the resolved value
     it('reads a RESOURCE_NOT_FOUND readback as not-readable (go-to-k/cdkd#4283)', async () => {
       provider.readCurrentState.mockResolvedValue(RESOURCE_NOT_FOUND);
 
-      const result = await makeEngine({
-        captureObservedState: false,
-      }).readReaderForFreshNoEchoCeiling('Reader', noEchoState().resources['Reader']!, new Map());
+      const result = await readReaderForFreshNoEchoCeiling(
+        makeEngine({ captureObservedState: false }).maskingDeps(),
+        'Reader',
+        noEchoState().resources['Reader']!,
+        new Map()
+      );
 
       expect(provider.readCurrentState).toHaveBeenCalledTimes(1);
       expect(result).toEqual({ failure: 'not-readable' });

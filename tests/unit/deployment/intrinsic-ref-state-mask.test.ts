@@ -15,7 +15,7 @@
  * `SECRET_MASK` is a non-empty string, so `{"Ref": "MyTable"}` resolved to
  * `'***'`, `resolveRef` returned it verbatim with no `carriesSecretMask` test
  * and no note, `redactedAttributeReads` stayed empty,
- * `DeployEngine.refuseRedactedAttributeReads` never fired, and a GREEN deploy
+ * the engine's `refuseRedactedAttributeReads` never fired, and a GREEN deploy
  * substituted the literal `***` into the consumer's property and sent it to
  * AWS — the issue #1498 / #1501 corrupted-write class.
  *
@@ -186,7 +186,7 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // NEGATIVE: the literal mask must not be the value a provider would send.
     expect(value).not.toBe(SECRET_MASK);
     // POSITIVE: and the read is recorded, which is what makes
-    // `DeployEngine.refuseRedactedAttributeReads` fail the resource rather than
+    // the engine's `refuseRedactedAttributeReads` fail the resource rather than
     // let the (wrong-but-not-secret) ARN ship. Without this the negative above
     // would be satisfied by a plain silent fall-through.
     expect(redactedAttributeReads.map((read) => read.display)).toEqual([

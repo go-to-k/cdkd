@@ -1,5 +1,6 @@
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
 import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
+import { printingSecretsFor, secretNameBagFor } from './masking.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
@@ -232,7 +233,10 @@ export async function replaceDeleteFirstAndRecreate(
           ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
           // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
           // also logs under; the physical id can be a name it derives.
-          maskSecrets: createUnionSecretMasker([secrets, this.secretNameBagFor(logicalId)]),
+          maskSecrets: createUnionSecretMasker([
+            secrets,
+            secretNameBagFor(this.secretsRun, logicalId),
+          ]),
         }
       )
     );
@@ -267,7 +271,10 @@ export async function replaceDeleteFirstAndRecreate(
     // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
     // value): a later mask sees only the flattened text and misses a needle
     // that holds a newline.
-    const shownSecrets = unionOfSecretBags([secrets, this.printingSecretsFor(logicalId)]);
+    const shownSecrets = unionOfSecretBags([
+      secrets,
+      printingSecretsFor(this.secretsRun, logicalId),
+    ]);
     throw new Error(
       // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
       // flattened newline inside a secret would no longer match its needle.
@@ -375,7 +382,10 @@ export async function replaceDeleteFirstAndRecreate(
     // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
     // value): a later mask sees only the flattened text and misses a needle
     // that holds a newline.
-    const shownSecrets = unionOfSecretBags([secrets, this.printingSecretsFor(logicalId)]);
+    const shownSecrets = unionOfSecretBags([
+      secrets,
+      printingSecretsFor(this.secretsRun, logicalId),
+    ]);
     throw new Error(
       safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
         safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}). ` +
@@ -782,7 +792,10 @@ export async function deleteReplacedAfterCreate(
           ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
           // go-to-k/cdkd#2007: the bag the call logs under and the delete
           // error below is masked with.
-          maskSecrets: createUnionSecretMasker([secrets, this.secretNameBagFor(logicalId)]),
+          maskSecrets: createUnionSecretMasker([
+            secrets,
+            secretNameBagFor(this.secretsRun, logicalId),
+          ]),
         }
       )
     );
@@ -925,7 +938,7 @@ export async function retryDeferredReplacedDeletes(
   const retryOne = async (logicalId: string, entry: DeferredReplacedDelete): Promise<void> => {
     const guards: ReportedDeleteGuard[] = [];
     try {
-      await withPrintingSecrets(this.secretNameBagFor(logicalId), () =>
+      await withPrintingSecrets(secretNameBagFor(this.secretsRun, logicalId), () =>
         withStackRecords(this.stackRecordsView, () =>
           collectDeleteGuards(guards, async () => {
             this.logger.info(safeMsg`  Deleting old ${logicalId} (${entry.physicalId})...`);
@@ -955,7 +968,7 @@ export async function retryDeferredReplacedDeletes(
           ...(guard.physicalId && {
             physicalId: maskSecretsInText(
               guard.physicalId,
-              this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+              this.secretsRun.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
             ),
           }),
           guard: guard.guard,
@@ -1009,7 +1022,7 @@ export function warnUnretriedReplacedDeletes(
       ? 'not retried: the deploy failed first'
       : 'not retried: the deploy was interrupted';
   for (const [logicalId, entry] of deferred ?? []) {
-    withPrintingSecrets(this.secretNameBagFor(logicalId), () =>
+    withPrintingSecrets(secretNameBagFor(this.secretsRun, logicalId), () =>
       this.logger.warn(
         safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${note})`
       )

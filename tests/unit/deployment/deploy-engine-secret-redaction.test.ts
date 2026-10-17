@@ -644,8 +644,8 @@ describe('the deploy journal previousState is a REPLAYED baseline, not a fresh o
     const NOECHO_PLAINTEXT = 'journal-noecho-plaintext-2886';
     const engine = makeBareEngine();
     (
-      engine as unknown as { perResourceSecrets: Map<string, Map<string, string>> }
-    ).perResourceSecrets.set('Db', new Map([[NOECHO_PLAINTEXT, SECRET_MASK]]));
+      engine as unknown as { secretsRun: { perResourceSecrets: Map<string, Map<string, string>> } }
+    ).secretsRun.perResourceSecrets.set('Db', new Map([[NOECHO_PLAINTEXT, SECRET_MASK]]));
     const redact = (
       engine as unknown as {
         redactOperationsForJournal: <T>(ops: T[]) => T[];

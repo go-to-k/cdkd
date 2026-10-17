@@ -19,6 +19,12 @@ import {
   secretNamedAttributesField,
 } from './record-shape.js';
 import { preparePropertiesForCcApi } from './routing.js';
+import {
+  noteSecretNamedRecord,
+  refuseRedactedAttributeReads,
+  registerNoEchoAttributes,
+  secretNameBagFor,
+} from './masking.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -116,7 +122,7 @@ export async function provisionCreate(
   // this resource's own map, empty, which every masking site treats
   // identically to an absent entry.
   if (context.recordedSecretValues) {
-    this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
+    this.secretsRun.perResourceSecrets.set(logicalId, context.recordedSecretValues);
   }
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
@@ -128,38 +134,38 @@ export async function provisionCreate(
     stackName
   );
   if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
-  printNestedStackReadsOnly(context, resourceType, this.secretNameBagFor(logicalId));
+  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(this.secretsRun, logicalId));
   const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
   // go-to-k/cdkd#3869: the name this deploy resolved, registered before the
   // provider creates (and prints) it; there is no physical id yet.
-  this.noteSecretNamedRecord(logicalId, { resourceType, properties: resolvedProps });
+  noteSecretNamedRecord(this.secretsRun, logicalId, { resourceType, properties: resolvedProps });
   // Issue #2274: before ANY of the resolved bag reaches a provider, refuse
   // if the resolution had to serve an attribute a previous deploy
   // redacted. See the helper — the value would be the literal `***`.
-  this.refuseRedactedAttributeReads(logicalId, resourceType, context);
+  refuseRedactedAttributeReads(logicalId, resourceType, context);
   // Capture the UNRESOLVED bag as the redaction position source (#1904).
-  this.perResourceTemplateProps.set(logicalId, desiredProps);
+  this.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
   // go-to-k/cdkd#4543: the input fingerprint of each property the save may
   // record as the mask, resolved against this deploy's state.
   const fingerprintSources =
     template && this.maskedInputSources(template, stateResources, conditions, stackName);
   if (fingerprintSources !== undefined) {
-    this.perResourceInputFingerprints.set(
+    this.secretsRun.perResourceInputFingerprints.set(
       logicalId,
       await maskedInputFingerprintsFor(
         possiblyMaskedKeys(resolvedProps, [
           context.recordedSecretValues,
-          this.fingerprintNoEchoValues,
+          this.secretsRun.fingerprintNoEchoValues,
           this.options.inheritedSecrets,
         ]),
         inputFingerprinter(desiredProps, fingerprintSources)
       )
     );
   }
-  this.perResourceResolvedType.set(logicalId, resourceType);
+  this.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
   // Named so the provider call below can bind the SAME bag into its
   // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
   // path. `?? new Map()` rather than a conditional: `buildResolverContext`
@@ -299,7 +305,14 @@ export async function provisionCreate(
   // Issue #2274: BEFORE the record is built, so the needles exist by the
   // time anything is persisted, and before any dependent resolves against
   // this resource's fresh attributes.
-  this.registerNoEchoAttributes(logicalId, result, createSecrets, resolvedProps);
+  registerNoEchoAttributes(
+    this.secretsRun,
+    this.maskingDeps(),
+    logicalId,
+    result,
+    createSecrets,
+    resolvedProps
+  );
 
   // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
   // so that deletion order is correct even without implicit type-based deps

@@ -1,6 +1,7 @@
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withoutPendingRequest } from '../cc-pending-requests.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
+import { namingSecretsFor, printingSecretsFor } from './masking.js';
 import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../state/deployment-events-store.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
@@ -104,8 +105,8 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
   operations: T[]
 ): T[] {
   return operations.map((op) => {
-    const secrets = this.perResourceSecrets.get(op.logicalId);
-    const templateProps = this.perResourceTemplateProps.get(op.logicalId);
+    const secrets = this.secretsRun.perResourceSecrets.get(op.logicalId);
+    const templateProps = this.secretsRun.perResourceTemplateProps.get(op.logicalId);
     // `previousState` is redactable with NO secrets map at all (#1900), so the
     // early return has to let that case through or the whole state-sourced
     // half is dead code.
@@ -334,8 +335,8 @@ function replayPrintingBag(
       { properties: entry.properties },
       stateResources,
       (otherId) => ({
-        secrets: engine.namingSecretsFor(otherId),
-        embedded: engine.perResourceSecrets.get(otherId),
+        secrets: namingSecretsFor(engine.secretsRun, otherId),
+        embedded: engine.secretsRun.perResourceSecrets.get(otherId),
       })
     );
     for (const needle of names) recordLogOnlyValue(read, needle);
@@ -352,13 +353,13 @@ function replayPrintingBag(
         physicalId: entry.physicalId,
         properties: entry.properties,
       },
-      engine.namingSecretsFor(entry.logicalId),
-      { embedded: engine.perResourceSecrets.get(entry.logicalId) }
+      namingSecretsFor(engine.secretsRun, entry.logicalId),
+      { embedded: engine.secretsRun.perResourceSecrets.get(entry.logicalId) }
     );
     for (const needle of needles ?? []) recordLogOnlyValue(own, needle);
   }
   return unionOfSecretBags([
-    ...entries.map((entry) => engine.printingSecretsFor(entry.logicalId)),
+    ...entries.map((entry) => printingSecretsFor(engine.secretsRun, entry.logicalId)),
     own,
     read,
   ]);
@@ -907,7 +908,7 @@ export function rollbackExecutorContext(
     // go-to-k/cdkd#1998: the LOG-ONLY needles (a `NoEcho` parameter's
     // value) this deploy recorded per resource, which the replay's own
     // re-resolution of the journal cannot re-derive.
-    logOnlyNeedlesFor: (logicalId) => this.perResourceSecrets.get(logicalId),
+    logOnlyNeedlesFor: (logicalId) => this.secretsRun.perResourceSecrets.get(logicalId),
     // See `producerRegionEvidence`.
     importedProducerRegions: producerRegions.regions,
     producerRegionsIncomplete: !producerRegions.complete,

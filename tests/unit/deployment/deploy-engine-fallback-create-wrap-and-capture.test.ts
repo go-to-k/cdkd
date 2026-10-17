@@ -25,6 +25,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { printingSecretsFor } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
@@ -43,8 +44,16 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () =
   >('../../../src/provisioning/providers/create-token-ledger.js');
   return { ...actual, noteRetainedResource: noteRetained };
 });
+// The printing bag a case stubs (`masking.ts`'s `printingSecretsFor`); every
+// other case runs the real one, which `mockReset` restores.
+vi.mock('../../../src/deployment/deploy-engine/masking.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/masking.js')>();
+  return { ...actual, printingSecretsFor: vi.fn(actual.printingSecretsFor) };
+});
 beforeEach(() => {
   noteRetained.mockClear();
+  vi.mocked(printingSecretsFor).mockReset();
 });
 
 /** What the engine's outer `ProvisioningError` carries as its `cause`. */
@@ -400,11 +409,13 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       const multiLine = 'prev-noecho-one-2676\nprev-noecho-two-2676';
       createRejection = () => new Error(`Handler failed: '${multiLine}' is still referenced`);
       const engine = makeEngine();
-      (engine as unknown as { printingSecretsFor: () => Map<string, string> }).printingSecretsFor =
-        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']]);
+      vi.mocked(printingSecretsFor).mockImplementation(
+        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+      );
 
       const err = await invokeExpectingFailure(engine);
 
+      expect(printingSecretsFor).toHaveBeenCalledWith(engine.secretsRun, 'MyResource');
       expect(err).not.toBeNull();
       expect(err!.message).toContain(`Handler failed: '***' is still referenced`);
       expect(err!.message).not.toContain('prev-noecho-one-2676');

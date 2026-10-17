@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { redactOutputs } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -43,6 +44,13 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
+
+// Counted by the late-needle case: every engine call site imports it.
+vi.mock('../../../src/deployment/deploy-engine/masking.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/masking.js')>();
+  return { ...actual, redactOutputs: vi.fn(actual.redactOutputs) };
+});
 
 /**
  * Issue #875: an Outputs-only change (a new Export added because a downstream
@@ -610,7 +618,6 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
           skippedOutputs: Record<string, string> | undefined;
           outputsPassSecretMaps: Map<string, string>[];
         };
-        redactOutputs: (outputs: Record<string, unknown>) => Record<string, unknown>;
       };
       // The outputs pass redacts its bag ONCE before the drain; the save-time
       // re-check and the save itself redact again after it. Counting the calls
@@ -620,7 +627,8 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       // `await` inserted between the outputs pass and the drain would let the
       // merge's own gate refuse first, and the case would keep passing on the
       // safe verdict it also wants.
-      const redactSpy = vi.spyOn(internals, 'redactOutputs');
+      const redactSpy = vi.mocked(redactOutputs);
+      redactSpy.mockClear();
       let redactCallsWhenNeedleLanded = -1;
       // MICROTASK yields only: a timer yield would also run whatever timer an
       // EARLIER test in this file left pending, inside this test's window. The

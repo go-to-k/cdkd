@@ -480,8 +480,8 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
     // A resolved secret can name a resource; the event store outlives destroy.
     const engine = makeEngine();
     (
-      engine as unknown as { perResourceSecrets: Map<string, Map<string, string>> }
-    ).perResourceSecrets.set('MyResource', new Map([['Query', '***']]));
+      engine as unknown as { secretsRun: { perResourceSecrets: Map<string, Map<string, string>> } }
+    ).secretsRun.perResourceSecrets.set('MyResource', new Map([['Query', '***']]));
     await invokeTemplateDelete(engine);
     const [row] = guardRows();
     expect(row?.physicalId).toBe('api1|***|field');

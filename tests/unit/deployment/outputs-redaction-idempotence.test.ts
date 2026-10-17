@@ -15,7 +15,7 @@
  * idempotent, those two are different strings for the same output, and the
  * convergence would write a value no deploy produces.
  *
- * `R` here is spelled exactly as `DeployEngine.redactOutputs` spells it —
+ * `R` here is spelled exactly as the engine's `redactOutputs` spells it —
  * `redactSecretsForState(bag, outputSecrets, outputsTemplateSource,
  * TEMPLATE_SOURCED_RULES)`. The second describe covers the ANCHOR arm, which
  * that constant cannot reach (`refuseUncertifiedReadbackPositions` is gated on
@@ -41,7 +41,7 @@ const SECRET_PLAINTEXT = 'super-secret-plaintext-value';
 const SECOND_EXPR = '{{resolve:ssm:/prod/db/token}}';
 const SECOND_PLAINTEXT = 'decrypted-securestring-value';
 
-/** The bag `DeployEngine.redactOutputs` is built from, in its own spelling. */
+/** The bag the engine's `redactOutputs` is built from, in its own spelling. */
 function outputsSecrets(): RecordedSecretValues {
   return new Map([
     [SECRET_PLAINTEXT, SECRET_EXPR],

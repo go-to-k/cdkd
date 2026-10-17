@@ -118,7 +118,7 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
    * positions it through the parent's per-parameter association and never reads
    * this bag's VALUE — but every EMBEDDING shape falls to the plaintext-keyed
    * value scan, which reads exactly this bag, while
-   * `DeployEngine.redactParametersForDiff` answers PER PARAMETER. The two
+   * the engine's `redactParametersForDiff` answers PER PARAMETER. The two
    * halves then disagree forever: a perpetual UPDATE.
    *
    * The DISCRIMINATOR is therefore the LOSING parameter — `PAIR_A`, whose

@@ -20,6 +20,10 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import {
+  redactOutputs,
+  redactParametersForDiff,
+} from '../../../src/deployment/deploy-engine/masking.js';
+import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -153,7 +157,10 @@ async function persistAndDesired(
     PARAMETERS
   );
   // Twice, as the save's choke point re-redacts the pass's own redaction.
-  const persisted = engine.redactOutputs(engine.redactOutputs(resolved));
+  const persisted = redactOutputs(
+    engine.maskingDeps(),
+    redactOutputs(engine.maskingDeps(), resolved)
+  );
   const resolveOutputsWith = async (parameters: Record<string, unknown>) => {
     const out: Record<string, unknown> = {};
     for (const [key, output] of Object.entries(template.Outputs ?? {})) {
@@ -169,7 +176,9 @@ async function persistAndDesired(
     }
     return out;
   };
-  const desired = await resolveOutputsWith(engine.redactParametersForDiff(PARAMETERS));
+  const desired = await resolveOutputsWith(
+    redactParametersForDiff(engine.maskingDeps(), PARAMETERS)
+  );
   const literal = await resolveOutputsWith({
     [PARAM_A]: SPELLING,
     [PARAM_B]: EXPR_B,
@@ -351,17 +360,17 @@ describe('the no-change path keeps a previous generation\'s outputs (#4913)', ()
         template,
         PARAMETERS
       );
-      const current = engine.redactOutputs(resolved);
+      const current = redactOutputs(engine.maskingDeps(),resolved);
       // This generation's bag, and an older one holding the survivor's
       // spelling (what a deploy before this fix persisted), are both kept
       // as they are: the walk rewrites no expression it did not resolve.
-      expect(engine.redactOutputs(current)).toEqual(current);
+      expect(redactOutputs(engine.maskingDeps(),current)).toEqual(current);
       const older = {
         OA: `postgres://${USER_EXPR}:${EXPR_B}@host`,
         OB: EXPR_B,
         OC: `postgres://${USER_EXPR}:${EXPR_B}`,
       };
-      expect(engine.redactOutputs(older)).toEqual(older);
+      expect(redactOutputs(engine.maskingDeps(),older)).toEqual(older);
       // ...and the older one differs from what the pass resolved, so the
       // no-change path's `outputsChanged` persists the fresh bag once.
       expect(current).not.toEqual(older);

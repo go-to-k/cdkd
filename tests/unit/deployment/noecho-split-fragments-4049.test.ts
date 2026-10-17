@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { diffLogMasker } from '../../../src/deployment/deploy-engine/masking.js';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -374,31 +375,22 @@ describe('the up-front record of a NoEcho value records its split pieces (go-to-
       { dryRun: false },
       'us-east-1'
     );
-    const masker = (
-      engine as unknown as {
-        diffLogMasker: (
-          d: RecordedSecretValues | undefined,
-          t: CloudFormationTemplate,
-          p: Record<string, unknown>,
-          r: Record<string, unknown>
-        ) => (text: string) => string;
-      }
-    ).diffLogMasker(new Map(), splitTemplate(true), { Secret: NOECHO }, {});
+    const masker = diffLogMasker(
+      engine.secretsRun,
+      engine.maskingDeps(),
+      new Map(),
+      splitTemplate(true),
+      { Secret: NOECHO },
+      {}
+    );
     expect(masker(`requires replacement ("${SECOND}" -> "new")`)).toBe(
       `requires replacement ("${SECRET_MASK}" -> "new")`
     );
     // Negative control: with no Fn::Split in the template, no delimiter is
     // known and the piece prints (the documented residual).
-    const noSplit = (
-      engine as unknown as {
-        diffLogMasker: (
-          d: RecordedSecretValues | undefined,
-          t: CloudFormationTemplate,
-          p: Record<string, unknown>,
-          r: Record<string, unknown>
-        ) => (text: string) => string;
-      }
-    ).diffLogMasker(
+    const noSplit = diffLogMasker(
+      engine.secretsRun,
+      engine.maskingDeps(),
       new Map(),
       {
         Parameters: { Secret: { Type: 'String', NoEcho: true } },

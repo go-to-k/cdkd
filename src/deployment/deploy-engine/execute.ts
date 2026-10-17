@@ -6,6 +6,7 @@ import {
   survivesParent,
 } from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
+import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
 import {
   type DeployEngine,
   type ProvisionCounts,
@@ -1223,7 +1224,7 @@ export async function executeDeployment(
     // with the unresolved values that position
     // them (#1910).
     const resolvedOutputsBeforeRedaction = outputs;
-    outputs = this.redactOutputs(outputs);
+    outputs = redactOutputs(this.maskingDeps(), outputs);
     // Issue #2274: remember, FOR THIS PROCESS ONLY, the plaintext behind any
     // output the redaction just replaced with the mask. Every cross-stack
     // route — a nested stack's `Outputs.<Key>`, `Fn::ImportValue`,
@@ -1239,7 +1240,12 @@ export async function executeDeployment(
     // in-process cross-stack consumer of that output is then refused on
     // `***` instead of being served the plaintext, which is the fail-safe
     // direction and the reason this is stated rather than fixed.
-    this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
+    rememberRecoverableMaskedOutputs(
+      this.maskingDeps(),
+      stackName,
+      resolvedOutputsBeforeRedaction,
+      outputs
+    );
   } catch (outputError) {
     await this.persistStateAfterOutputFailure(
       stackName,

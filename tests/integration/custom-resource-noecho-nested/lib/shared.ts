@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * The value each resource returns is ASSEMBLED by the handler
  * (`<Prefix>-<Seed>`), never a whole property leaf of its own. That matters:
- * `DeployEngine.registerNoEchoAttributes` EXCLUDES a resource's own whole
+ * The deploy engine's `registerNoEchoAttributes` EXCLUDES a resource's own whole
  * string leaves from the mask-only needles (so an echoed `ServiceToken` is not
  * masked out of the record), and a value equal to a template leaf would be
  * excluded and persist in the clear for a reason that has nothing to do with

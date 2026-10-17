@@ -8615,7 +8615,7 @@ export async function scrubStack(
     }
 
     // `TEMPLATE_SOURCED_RULES`, converging this call with its deploy-side twin
-    // `DeployEngine.redactOutputs` (issues
+    // `redactOutputs` in `deployment/deploy-engine/masking.ts` (issues
     // [#1943](https://github.com/go-to-k/cdkd/issues/1943) /
     // [#2099](https://github.com/go-to-k/cdkd/issues/2099)). `state.outputs` is
     // a PERSISTED bag while `outputsTemplateSource` is TODAY's template, so

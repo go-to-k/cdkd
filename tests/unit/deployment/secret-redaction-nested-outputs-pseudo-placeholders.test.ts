@@ -26,6 +26,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
 import {
+  redactOutputs,
+  redactParametersForDiff,
+} from '../../../src/deployment/deploy-engine/masking.js';
+import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -171,8 +175,8 @@ async function persistAndDesired(
     parameters
   );
   // Twice, as the save's choke point re-redacts the pass's own redaction.
-  const once = engine.redactOutputs(resolved);
-  const persisted = engine.redactOutputs(once);
+  const once = redactOutputs(engine.maskingDeps(), resolved);
+  const persisted = redactOutputs(engine.maskingDeps(), once);
   const resolveOutputsWith = async (bound: Record<string, unknown>) => {
     const out: Record<string, unknown> = {};
     for (const [key, output] of Object.entries(template.Outputs ?? {})) {
@@ -187,7 +191,9 @@ async function persistAndDesired(
     }
     return out;
   };
-  const desired = await resolveOutputsWith(engine.redactParametersForDiff(parameters));
+  const desired = await resolveOutputsWith(
+    redactParametersForDiff(engine.maskingDeps(), parameters)
+  );
   const literal = await resolveOutputsWith({ [PARAM_A]: SPELLING, [PARAM_B]: EXPR_B });
   return { persisted, once, desired, literal };
 }
