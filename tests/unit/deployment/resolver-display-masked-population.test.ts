@@ -312,7 +312,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     // revert to per-site spellings looks like from here.
     // `displayMasked(this, ...)`: the builder is a plain function taking the
     // resolver as its masker.
-    const rendered = code.match(/\bdisplayMasked\(\s*this,/g) ?? [];
+    const rendered = code.match(/\bdisplayMasked\(\s*[\w.]+,/g) ?? [];
     expect(rendered.length, 'display-builder call sites').toBeGreaterThanOrEqual(107);
   });
 

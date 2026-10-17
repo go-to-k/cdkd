@@ -70,7 +70,7 @@ const seen = vi.hoisted(() => ({
  *
  * Since issue #2087 the `plaintext -> expression` pair is recorded by the
  * RESOLVER, at the moment a `{Ref: <Param>}` resolves to a value carrying that
- * plaintext (`IntrinsicFunctionResolver.recordInheritedParameterSecrets`) —
+ * plaintext (`recordInheritedParameterSecrets` (`intrinsic-resolver/parameter-secrets.ts`)) —
  * NOT pre-seeded into every context by the engine, which is what the first cut
  * did and what over-redacted an unrelated resource. A mock that "records
  * nothing" (this file's first shape, written against the pre-seed design) would

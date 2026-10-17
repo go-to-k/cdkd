@@ -1032,7 +1032,7 @@ export function inheritNestedStackParameterAssociations(
  * TWO CALLERS, and the widened return type is why the second one asks a
  * different question. `redactParametersForDiff` assigns the result into a
  * `Record<string, unknown>` and needs the whole parameter's answer, array
- * included. `IntrinsicFunctionResolver.recordInheritedParameterSecrets` writes
+ * included. `recordInheritedParameterSecrets` (`intrinsic-resolver/parameter-secrets.ts`) writes
  * into a `Map<string, string>` keyed by PLAINTEXT, so it asks this per
  * PLAINTEXT — passing the carried plaintext rather than the parameter's value —
  * and keeps only a `string` answer. That is not a workaround for the type: a
@@ -1293,7 +1293,7 @@ export function recordInheritedParameterValue(
 /**
  * Record that the child resource owning `childSecrets` read `parameterName`
  * and that its value carried a plaintext of `parentSecrets` (issue #2349).
- * Called by `IntrinsicFunctionResolver.recordInheritedParameterSecrets` at the
+ * Called by `recordInheritedParameterSecrets` (`intrinsic-resolver/parameter-secrets.ts`) at the
  * moment it carries such a pair into the child bag, so the record exists for
  * exactly the parameters the #2087 scoping already admits into that bag.
  */
