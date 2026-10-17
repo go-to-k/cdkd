@@ -196,7 +196,8 @@ describe('docker push auth classification (#3361)', () => {
  * per-stack loop and lock release, `cdkd import`'s mapping write, the
  * transient-template version purge) sit inside command bodies, so the files
  * are scanned instead: no `catch` clause or `.catch(cb)` handler in them may
- * read its own binding through `String(...)`.
+ * read its own binding through `String(...)`, and no
+ * `x instanceof Error ? x.message : String(x)` ternary may remain anywhere.
  */
 describe('no handler in the slice stringifies its caught value with String() (#3361)', () => {
   /** File -> the floor of handlers the scan must see, so a parse that saw nothing cannot pass. */
@@ -234,6 +235,25 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       walk(body);
     };
     const visit = (node: ts.Node): void => {
+      // The ternary shape ANYWHERE, not only inside a handler: two sites hold
+      // a thrown value outside a catch binding (`isAuthorizationShapedError`'s
+      // parameter, called from inside a catch; the `--warm` pre-warm's settled
+      // `result.reason`), which the catch-scoped walk below cannot see.
+      if (
+        ts.isConditionalExpression(node) &&
+        ts.isBinaryExpression(node.condition) &&
+        node.condition.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+        node.condition.right.getText(sf) === 'Error' &&
+        ts.isCallExpression(node.whenFalse) &&
+        ts.isIdentifier(node.whenFalse.expression) &&
+        node.whenFalse.expression.text === 'String' &&
+        node.whenFalse.arguments.length === 1 &&
+        node.whenFalse.arguments[0]!.getText(sf) === node.condition.left.getText(sf)
+      ) {
+        offenders.push(
+          `${file}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1} (ternary)`
+        );
+      }
       if (
         ts.isCatchClause(node) &&
         node.variableDeclaration !== undefined &&
