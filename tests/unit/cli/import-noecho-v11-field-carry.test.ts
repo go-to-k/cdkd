@@ -3,13 +3,16 @@ import { buildStackState } from '../../../src/cli/commands/import.js';
 import { TemplateParser } from '../../../src/analyzer/template-parser.js';
 import { SECRET_MASK, scrubResourceRecord } from '../../../src/deployment/secret-redaction.js';
 import { recordAfterRollbackUpdate } from '../../../src/deployment/rollback-executor/replay-retry.js';
-import { deleteReplacedAfterCreate } from '../../../src/deployment/deploy-engine/replacement.js';
+import {
+  type ReplacementDeps,
+  ReplacementRunState,
+  deleteReplacedAfterCreate,
+} from '../../../src/deployment/deploy-engine/replacement.js';
 import { SecretsRunState } from '../../../src/deployment/deploy-engine/masking.js';
 import { REDACTED_DELETE_ADDRESS_SKIP_REASON } from '../../../src/provisioning/redacted-delete-address.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 
 /**
  * go-to-k/cdkd#4043 / #2449 (schema v11, review M1): a writer that rebuilds a
@@ -142,17 +145,17 @@ describe('v11 NoEcho fields survive the record writers', () => {
 describe('replacement delete of an old record whose address is the NoEcho mask', () => {
   it('warns that the old resource is left untracked, and does not throw', async () => {
     const lines: string[] = [];
-    const engine = {
+    // `replacedDeleteSkips` and (go-to-k/cdkd#2631: the skip marks the old
+    // resource as a possible survivor) `replacedOldMaySurvive` live here.
+    const run = new ReplacementRunState();
+    const secretsRun = new SecretsRunState();
+    const deps = {
       stackRegion: 'us-east-1',
       options: {},
       logger: { warn: (m: string) => lines.push(m), info: () => undefined, debug: () => undefined },
-      replacementDeleteContext: () => ({}),
-      replacedDeleteSkips: new Map<string, string>(),
-      // go-to-k/cdkd#2631: the skip marks the old resource as a possible survivor.
-      replacedOldMaySurvive: new Map<string, string>(),
       // go-to-k/cdkd#2007: the delete masker reads the derived-name registry.
-      secretsRun: new SecretsRunState(),
-    } as unknown as DeployEngine;
+      secretsRun: () => secretsRun,
+    } as unknown as ReplacementDeps;
     const provider = {
       delete: vi.fn().mockResolvedValue({
         outcome: 'skipped',
@@ -166,8 +169,9 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
       noEchoLeaves: [['FunctionName']],
     };
     await expect(
-      deleteReplacedAfterCreate.call(
-        engine,
+      deleteReplacedAfterCreate(
+        run,
+        deps,
         'Perm',
         'AWS::Lambda::Permission',
         old,
@@ -183,8 +187,7 @@ describe('replacement delete of an old record whose address is the NoEcho mask',
     expect(lines.some((line) => line.includes('it is no longer tracked in state'))).toBe(true);
     // Review MEDIUM-3: recorded as a survivor, so the row is a partial update
     // and the deploy exits 2 unless --allow-unaddressed.
-    const skips = (engine as unknown as { replacedDeleteSkips: Map<string, string> })
-      .replacedDeleteSkips;
+    const skips = run.replacedDeleteSkips;
     expect(skips.get('Perm')).toContain('was not deleted');
   });
 });

@@ -303,7 +303,8 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
     // so a missing entry here makes a rollback RE-CREATE a resource this arm
     // deliberately left running.
     const retainedSet = (engine: InstanceType<typeof DeployEngine>): Set<string> =>
-      (engine as unknown as { retainedOldOnReplacement: Set<string> }).retainedOldOnReplacement;
+      (engine as unknown as { replacementRun: { retainedOldOnReplacement: Set<string> } })
+        .replacementRun.retainedOldOnReplacement;
 
     function templateWithRetain(): CloudFormationTemplate {
       return {

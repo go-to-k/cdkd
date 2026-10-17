@@ -488,7 +488,8 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
     // journal-side stamp has its own cases in
     // `deploy-engine-rollback-journal.test.ts`.
     const retainedSet = (engine: InstanceType<typeof DeployEngine>): Set<string> =>
-      (engine as unknown as { retainedOldOnReplacement: Set<string> }).retainedOldOnReplacement;
+      (engine as unknown as { replacementRun: { retainedOldOnReplacement: Set<string> } })
+        .replacementRun.retainedOldOnReplacement;
 
     it('records the logical id when Retain makes the fallback create-ONLY', async () => {
       const engine = makeEngine();

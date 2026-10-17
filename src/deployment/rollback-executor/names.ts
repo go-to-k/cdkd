@@ -588,7 +588,7 @@ function isRestorableBag(bag: unknown): bag is Record<string, unknown> {
 
 /**
  * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
- * executor's copy of the deploy engine's `prepareFinalSnapshotForDelete`
+ * executor's copy of `deploy-engine/replacement.ts`'s `prepareFinalSnapshotForDelete`
  * mechanism matrix, run BEFORE the delete. Shared with the FAILED in-flight
  * CREATE's delete (`--revert-failed`, issue #1362) so the two sibling paths
  * cannot drift; that caller's op is a {@link FailedOperation}, hence the

@@ -34,7 +34,6 @@ const HOSTS = [
       'deploy-engine/deploy-flow.ts',
       'deploy-engine/execute.ts',
       'deploy-engine/provision.ts',
-      'deploy-engine/replacement.ts',
       'deploy-engine/resolver-context.ts',
       'deploy-engine/rollback.ts',
       'deploy-engine/update-in-place.ts',
@@ -43,7 +42,6 @@ const HOSTS = [
     ],
     members: [
       'performRollback',
-      'replaceDeleteFirstAndRecreate',
       'provisionCreate',
       'provisionUpdate',
       'updateByReplacement',

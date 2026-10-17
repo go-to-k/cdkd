@@ -1,5 +1,6 @@
 import { createUnionSecretMasker } from '../secret-redaction.js';
 import { secretNameBagFor } from './masking.js';
+import { prepareFinalSnapshotForDelete } from './replacement.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
@@ -162,7 +163,8 @@ Drop the record with: ${dropCommand}`
     deletionPolicy,
     currentResource.properties
   );
-  const finalSnapshotIdentifier = await this.prepareFinalSnapshotForDelete(
+  const finalSnapshotIdentifier = await prepareFinalSnapshotForDelete(
+    this.replacementDeps(),
     logicalId,
     resourceType,
     currentResource,

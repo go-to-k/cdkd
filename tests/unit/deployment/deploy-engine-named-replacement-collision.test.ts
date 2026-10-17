@@ -411,11 +411,17 @@ describe('DeployEngine — custom-named replacement collision', () => {
     createFailures = [alreadyExists(), new Error('AccessDenied: not authorized')];
     const engine = makeEngine({ replace: true });
     await invokeProvision(engine).catch(() => undefined);
-    expect((engine as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.has('Pipe')).toBe(true);
+    expect(
+      (engine as unknown as { replacementRun: { oldDeletedBeforeCreate: Set<string> } })
+        .replacementRun.oldDeletedBeforeCreate.has('Pipe')
+    ).toBe(true);
     const plain = makeEngine();
     createFailures = [alreadyExists()];
     await invokeProvision(plain).catch(() => undefined);
-    expect((plain as unknown as { oldDeletedBeforeCreate: Set<string> }).oldDeletedBeforeCreate.size).toBe(0);
+    expect(
+      (plain as unknown as { replacementRun: { oldDeletedBeforeCreate: Set<string> } })
+        .replacementRun.oldDeletedBeforeCreate.size
+    ).toBe(0);
   });
 
   it('passes a NON-collision create failure through unchanged', async () => {

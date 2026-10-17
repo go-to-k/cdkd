@@ -16,6 +16,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { prepareFinalSnapshotForDelete } from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
@@ -75,6 +76,15 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
+// The final-snapshot gate two cases count or stub
+// (`deploy-engine/replacement.ts`); every other case runs the real one, which
+// `mockReset` restores.
+vi.mock('../../../src/deployment/deploy-engine/replacement.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/replacement.js')>();
+  return { ...actual, prepareFinalSnapshotForDelete: vi.fn(actual.prepareFinalSnapshotForDelete) };
+});
+
 const TYPE = 'AWS::SSM::Parameter';
 const NESTED = 'AWS::CloudFormation::Stack';
 
@@ -131,6 +141,7 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prepareFinalSnapshotForDelete).mockReset();
     events = [];
     provider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'new-pid', attributes: {} }),
@@ -313,10 +324,7 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
       const state = record('', 'AWS::RDS::DBInstance');
       (state.Res as Record<string, unknown>)['deletionPolicy'] = 'Snapshot';
       const engine = makeEngine();
-      const prepare = vi.spyOn(
-        engine as unknown as { prepareFinalSnapshotForDelete: () => Promise<unknown> },
-        'prepareFinalSnapshotForDelete'
-      );
+      const prepare = vi.mocked(prepareFinalSnapshotForDelete);
       const counts = freshCounts();
       await provision(
         engine,
@@ -335,12 +343,7 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
       const state = record('db-1', 'AWS::RDS::DBInstance');
       (state.Res as Record<string, unknown>)['deletionPolicy'] = 'Snapshot';
       const engine = makeEngine();
-      const prepare = vi
-        .spyOn(
-          engine as unknown as { prepareFinalSnapshotForDelete: () => Promise<unknown> },
-          'prepareFinalSnapshotForDelete'
-        )
-        .mockResolvedValue(undefined);
+      const prepare = vi.mocked(prepareFinalSnapshotForDelete).mockResolvedValue(undefined);
       await provision(
         engine,
         deleteChange('AWS::RDS::DBInstance'),
