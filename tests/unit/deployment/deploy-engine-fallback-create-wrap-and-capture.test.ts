@@ -405,12 +405,22 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       expect(err!.message).toContain('the old resource (old-pid) is now gone');
     });
 
+    // Discriminating against the OUTER boundary mask (`provisionResource`'s
+    // catch in provision.ts, which also calls `printingSecretsFor`): if the
+    // stub answered the needle bag unconditionally, the boundary would mask
+    // the needle too and hide a deleted printing-bag argument at THIS wrap
+    // site. The bag is handed back only to a caller inside update-in-place.ts
+    // (the wrap site itself) — by CALLER, not by call order/count, since a
+    // call-count stub would still answer the boundary's lone remaining call
+    // if this site's own call were deleted, defeating the discrimination.
     it('masks a multi-line needle only the printing bag holds (#2676)', async () => {
       const multiLine = 'prev-noecho-one-2676\nprev-noecho-two-2676';
       createRejection = () => new Error(`Handler failed: '${multiLine}' is still referenced`);
       const engine = makeEngine();
-      vi.mocked(printingSecretsFor).mockImplementation(
-        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+      vi.mocked(printingSecretsFor).mockImplementation(() =>
+        (new Error().stack ?? '').includes('update-in-place.ts')
+          ? new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+          : undefined
       );
 
       const err = await invokeExpectingFailure(engine);

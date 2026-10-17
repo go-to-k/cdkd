@@ -405,13 +405,28 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     // secret-derived name, #4741's previous NoEcho value) used to be masked
     // by `provisionResource`'s boundary mask on the raw text. The wrap now
     // flattens at construction, so it must mask with that bag itself.
+    // Discriminating against the OUTER boundary mask (`provisionResource`'s
+    // catch in provision.ts, which also calls `printingSecretsFor`): if the
+    // stub answered the needle bag unconditionally, the boundary would mask
+    // the needle too and hide a deleted printing-bag argument at THIS wrap
+    // site. The bag is handed back only to a caller inside update-replace.ts
+    // (the wrap site itself) — by CALLER, not by call order/count, since a
+    // call-count stub would still answer the boundary's lone remaining call
+    // if this site's own call were deleted, defeating the discrimination.
     it('masks a multi-line needle held only by the printing bag (#2676)', async () => {
       const multiLine = 'prev-noecho-one-2676\nprev-noecho-two-2676';
       deleteRejection = () =>
         markNonRetryable(awsSdkError(`Handler failed: '${multiLine}' is still referenced`));
       const engine = makeEngine('recreate');
-      vi.mocked(printingSecretsFor).mockImplementation(
-        () => new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+      vi.mocked(printingSecretsFor).mockImplementation(() =>
+        // Discriminates the wrap site's OWN call from the outer boundary
+        // mask's call (`provisionResource`'s catch in provision.ts) by
+        // caller, not by call order/count: a call-count stub would still
+        // answer the boundary's lone remaining call if this site's own call
+        // were deleted, which is exactly the gap this case probes for.
+        (new Error().stack ?? '').includes('update-replace.ts')
+          ? new Map([[multiLine, '{{resolve:secretsmanager:prev:SecretString:pw}}']])
+          : undefined
       );
 
       const wrap = await provisionExpectingWrap(engine, 'recreate');
