@@ -63,7 +63,7 @@ composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness r
 conditions	2026-10-11T09:33:22Z	PASS	35	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
 conditions-update-2	2026-10-14T05:21:01Z	PASS	85	verify.sh	rc ok, orph clean
-context-test	2026-07-26T18:43:33Z	PASS	24	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
+context-test	2026-10-17T13:23:24Z	PASS	30	standard	PR #5029 head dd1a5504a; rc ok, orph clean
 created-before-failure-revert	2026-10-15T12:20:43Z	PASS	121	verify.sh	PR #4956 us-east-1 own state bucket; rc 0, destroy clean, orph clean
 cross-backend-same-stack	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cross-backend-same-stack-migration	2026-10-11T09:33:22Z	PASS	386	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -94,7 +94,7 @@ diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4
 dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re-run on 41c3c1321 (post-rebase, comment-only commits); rc ok, orph clean; removal retained
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a321dac, PreferredMaintenanceWindow companion change proves Modify* fired before KEEP asserts; rc 0, destroy clean, orph clean
-docker-image-asset	2026-09-25T09:36:54Z	PASS	88	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
+docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-17T10:48:50Z	PASS	391	verify.sh	rc ok, orph clean (rollback refactor #5027)
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-17T10:48:50Z	PASS	406	verify.sh	rc ok, orph clean (rollback refactor #5027)
@@ -138,8 +138,8 @@ eventbridge-pipes	2026-10-16T08:48:48Z	PASS	165	verify.sh	rc ok, orph clean (#33
 eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-17T10:48:50Z	PASS	230	verify.sh	rc ok, orph clean (rollback refactor #5027)
-export-nested-stack	2026-10-16T21:07:57Z	PASS	190	verify.sh	rc ok, orph clean (OutputsRunState refactor #5021)
+export	2026-10-17T13:23:24Z	PASS	236	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
+export-nested-stack	2026-10-17T13:23:24Z	PASS	186	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
 fsx-lustre	2026-10-07T15:51:34Z	PASS	2425	verify.sh	#4606 Phase 2c fix-forward deletes the journaled OrphanFs; destroy 0 errors, 0 orphans, 0 backups
@@ -176,12 +176,12 @@ import-deployed-parameter-secret	2026-10-14T22:28:38Z	PASS	361	verify.sh	PR #491
 import-heal-prefix-record	2026-10-17T07:24:50Z	PASS	150	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
-import-nested-stack	2026-10-14T22:52:33Z	PASS	143	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
+import-nested-stack	2026-10-17T13:23:24Z	PASS	150	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
 import-reimport-masked-attrs	2026-10-12T05:11:28Z	PASS	210	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: deploy record masks non-attribute keys (EncryptionConfiguration, Tags), Name clear; reverted-fix run (8-d) went RED at Phase 1 (EncryptionConfiguration recorded in the clear); destroy 0 errors, orph clean
 import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-secret-observed	2026-10-17T02:35:06Z	PASS	151	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
-import-value-strong-ref	2026-10-17T07:24:50Z	PASS	190	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
+import-value-strong-ref	2026-10-17T13:23:24Z	PASS	160	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-10-03T05:58:37Z	PASS	60	verify.sh	rc ok, orph clean (#4497)
@@ -240,7 +240,7 @@ local-run-task-multi-container	2026-10-15T21:22:43Z	PASS	10	verify.sh	PR #4967 c
 local-start-agentcore	2026-10-16T08:26:14Z	PASS	15	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
 local-start-alb	2026-10-16T08:26:14Z	PASS	20	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
 local-start-alb-from-state	2026-10-16T10:47:20Z	PASS	225	verify.sh	re-run on 4db3e92f0 for #5002 (Lambda target Active logged before RegisterTargets); rc ok, docker sweep clean, orph clean
-local-start-api	2026-10-16T08:26:14Z	PASS	25	verify.sh	rc ok, orph clean; PR #5000 head (#3240) re-run
+local-start-api	2026-10-17T13:23:24Z	PASS	30	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 local-start-api-container	2026-10-15T21:24:10Z	PASS	10	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-start-api-rest-v1-non-proxy	2026-10-15T21:24:23Z	PASS	10	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
 local-start-api-websocket	2026-10-15T21:26:12Z	PASS	106	verify.sh	PR #4967 cdk-local 0.151.1 abeb369d1; rc ok, docker sweep clean, orph clean
@@ -256,7 +256,7 @@ logs-loggroup-fix-forward-orphan	2026-10-16T09:35:29Z	PASS	95	verify.sh	rc ok, o
 lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
 microservices	2026-10-09T06:35:11Z	PASS	45	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-migrate-from-cfn	2026-10-14T22:59:17Z	PASS	391	run.sh	PR #4916 (#3869) 958f7bc5f; both stacks; own state bucket; rc ok, destroy clean, orph clean
+migrate-from-cfn	2026-10-17T13:23:24Z	PASS	366	run.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
