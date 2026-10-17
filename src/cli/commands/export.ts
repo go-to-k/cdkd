@@ -76,6 +76,7 @@ import {
 } from '../options.js';
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
 import { resourcesNamingDeclaredParameter } from '../../analyzer/parameter-dependence.js';
@@ -1901,7 +1902,7 @@ const MAX_SG_RULE_THROTTLE_RETRIES = 4;
  */
 function isAuthorizationShapedError(err: unknown): boolean {
   const errName = err instanceof Error ? err.name : '';
-  const message = err instanceof Error ? err.message : String(err);
+  const message = describeAwsFailure(err).detail;
   return /AccessDenied|UnauthorizedOperation|AuthFailure|not authorized to perform/i.test(
     `${errName} ${message}`
   );
@@ -1950,7 +1951,7 @@ async function describeAllSecurityGroupRules(
         }
       );
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = describeAwsFailure(err).detail;
       const kind = isAuthorizationShapedError(err)
         ? 'auth'
         : isThrottlingError(err)
@@ -3413,7 +3414,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             await handler(entry);
             logger.info(`  ${preDeletedLine(entry.physicalId)}`);
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
+            const msg = describeAwsFailure(err).detail;
             const orphan = orphanCommandFor(resolvedStackName, targetRegion, lockRecovery);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${plainOrNotShown(entry.logicalId)} ` +
@@ -3475,7 +3476,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           }
           logger.info(`✓ Phase 2: ${parts.join('; ')}.`);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = describeAwsFailure(err).detail;
           const recreateNote =
             recreateBeforePhase2.length > 0
               ? `  - cdkd deleted ${recreateBeforePhase2.length} AWS resource(s) before ` +
@@ -3528,9 +3529,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     } finally {
       if (!options.dryRun) {
         await lockManager.releaseLock(resolvedStackName, targetRegion).catch((err) => {
-          logger.warn(
-            `Failed to release lock: ${err instanceof Error ? err.message : String(err)}`
-          );
+          logger.warn(`Failed to release lock: ${describeAwsFailure(err).detail}`);
         });
       }
     }
@@ -3674,7 +3673,7 @@ async function assertCfnStackAbsent(
         `or pass --cfn-stack-name to choose a different name.`
     );
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeAwsFailure(err).detail;
     if (/does not exist/i.test(msg)) {
       // Expected: stack does not exist, we can proceed.
       return;
@@ -5572,9 +5571,7 @@ export async function buildImportPlan(
       blocked.push({
         logicalId,
         resourceType,
-        reason:
-          'could not resolve resource identifier: ' +
-          (err instanceof Error ? err.message : String(err)),
+        reason: 'could not resolve resource identifier: ' + describeAwsFailure(err).detail,
         ...(err instanceof RepairableRefusal ? { repair: err.repair } : {}),
       });
       continue;
@@ -6037,8 +6034,7 @@ async function resolveResourceIdentifier(
     result = splitter(physicalId, properties);
   } catch (err) {
     throw new Error(
-      `composite-id splitter for ${resourceType} failed: ` +
-        (err instanceof Error ? err.message : String(err))
+      `composite-id splitter for ${resourceType} failed: ` + describeAwsFailure(err).detail
     );
   }
   // Sanity check: splitter must produce one resourceIdentifier entry per declared field.
@@ -6227,7 +6223,7 @@ export async function fetchPrimaryIdentifier(
       }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeAwsFailure(err).detail;
     getLogger().debug(
       `DescribeType failed for ${quotedOrNotShown(resourceType)}: ${safeDetail(msg)} — using fallback`
     );
@@ -7640,7 +7636,7 @@ async function runTemplateUploadCleanup(
   try {
     await cleanup();
   } catch (cleanupErr) {
-    const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+    const msg = describeAwsFailure(cleanupErr).detail;
     logger.warn(
       `Failed to delete temporary template upload from ${quotedOrNotShown(bucket)}. ` +
         `Clean up manually under prefix 'cdkd-migrate-tmp/'. Cause: ${safeDetail(msg)}`
@@ -7737,7 +7733,7 @@ export async function submitImportChangeSet(
         })
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = describeAwsFailure(err).detail;
       throw new Error(`Failed to create IMPORT changeset: ${displayAwsMessage(msg)}`);
     }
 
@@ -8739,7 +8735,7 @@ export async function runPerStackImportLoop(args: {
     // warns and plans with no child values, so their principals read as
     // unconfirmed; a real run still refuses, since it would submit them. An
     // unreadable SSM-typed parent Parameter (go-to-k/cdkd#3915) takes the same arm.
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeAwsFailure(err).detail;
     const plannable =
       message.startsWith('buildResolvedParametersPerStack:') ||
       err instanceof SsmChildParameterRefusalError;
@@ -9115,7 +9111,7 @@ export async function runPerStackImportLoop(args: {
             throw new Error(
               `${what} failed for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn name ` +
                 `${quotedOrNotShown(plan.cfnName)}), after its Phase 1A IMPORT succeeded. ` +
-                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                `Cause: ${displayAwsMessage(describeAwsFailure(err).detail)}\n` +
                 nestedResumeTail(i, stage),
               { cause: err instanceof Error ? err : undefined }
             );
@@ -9170,7 +9166,7 @@ export async function runPerStackImportLoop(args: {
               // Bounded and folded: the waiter's bare rethrow and a
               // DescribeChangeSet failure carry AWS's text, which can quote a
               // recorded value back (go-to-k/cdkd#3910).
-              `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+              `Cause: ${displayAwsMessage(describeAwsFailure(err).detail)}\n` +
               nestedResumeTail(i, 'phase1'),
             { cause: err instanceof Error ? err : undefined }
           );
@@ -9394,7 +9390,7 @@ export async function runPerStackImportLoop(args: {
                 `stack" procedure. Do NOT run cdkd destroy on the tree: that would tear down the ` +
                 `live AWS resources. ` +
                 // Bounded and folded, as at Phase 1A (go-to-k/cdkd#3910).
-                `Cause: ${displayAwsMessage(err instanceof Error ? err.message : String(err))}\n` +
+                `Cause: ${displayAwsMessage(describeAwsFailure(err).detail)}\n` +
                 // Which records to clean up, and when, go through the same gated,
                 // region-bearing tail as the other nested failures — never a
                 // bare `cdkd state orphan <stack>`, which drops that name's
@@ -9454,7 +9450,7 @@ export async function runPerStackImportLoop(args: {
               // The single-stack path's wrapper, for the nested path
               // (go-to-k/cdkd#3910): AWS's text can quote a recorded policy name
               // or principal name back, and nothing above this renders it.
-              const msg = err instanceof Error ? err.message : String(err);
+              const msg = describeAwsFailure(err).detail;
               const importedSummary = importedStacks
                 .map(
                   (s) =>
@@ -9518,7 +9514,7 @@ export async function runPerStackImportLoop(args: {
             throw new Error(
               `Phase 2 (UPDATE) failed for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn name ` +
                 `${quotedOrNotShown(plan.cfnName)}): ` +
-                `${displayAwsMessage(err instanceof Error ? err.message : String(err))}. Its ` +
+                `${displayAwsMessage(describeAwsFailure(err).detail)}. Its ` +
                 `phase-1 IMPORT succeeded and cdkd state is preserved; fix the cause and run the ` +
                 `phase-2 UPDATE by hand with its full synth template. ` +
                 nestedResumeTail(i, 'phase2'),
@@ -9558,7 +9554,7 @@ export async function runPerStackImportLoop(args: {
           stateDeletionFailures.push({
             stackName: node.stackName,
             region: node.region,
-            reason: err instanceof Error ? err.message : String(err),
+            reason: describeAwsFailure(err).detail,
           });
           const orphan = orphanCommandFor(node.stackName, node.region, args.lockRecovery);
           logger.warn(
@@ -9799,7 +9795,7 @@ export async function executeUpdateChangeSet(
         })
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = describeAwsFailure(err).detail;
       throw new Error(`Failed to create UPDATE changeset: ${displayAwsMessage(msg)}`);
     }
 

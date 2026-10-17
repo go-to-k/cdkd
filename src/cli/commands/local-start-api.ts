@@ -915,7 +915,7 @@ async function localStartApiCommand(
           groupPool.release(result.value);
         } else {
           logger.warn(
-            `Pre-warm failed for one Lambda in ${group.displayName} (cold start cost will apply on first request): ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+            `Pre-warm failed for one Lambda in ${group.displayName} (cold start cost will apply on first request): ${describeAwsFailure(result.reason).detail}`
           );
         }
       }
@@ -1254,7 +1254,7 @@ async function localStartApiCommand(
       try {
         await watcher.close();
       } catch (err) {
-        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(`watcher.close() failed: ${describeAwsFailure(err).detail}`);
       }
     }
     // Close every server in parallel, then dispose every (possibly hot-
@@ -1273,7 +1273,7 @@ async function localStartApiCommand(
           await ws.attached.close();
         } catch (err) {
           logger.warn(
-            `WebSocket close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+            `WebSocket close() failed for ${ws.api.apiLogicalId}: ${describeAwsFailure(err).detail}`
           );
         }
       })
@@ -1284,7 +1284,7 @@ async function localStartApiCommand(
           await server.close();
         } catch (err) {
           logger.warn(
-            `server.close() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+            `server.close() failed for ${group.displayName}: ${describeAwsFailure(err).detail}`
           );
         }
       })
@@ -1295,7 +1295,7 @@ async function localStartApiCommand(
           await ws.server.close();
         } catch (err) {
           logger.warn(
-            `WebSocket server.close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+            `WebSocket server.close() failed for ${ws.api.apiLogicalId}: ${describeAwsFailure(err).detail}`
           );
         }
       })
@@ -1306,7 +1306,7 @@ async function localStartApiCommand(
           await server.getServerState().pool.dispose();
         } catch (err) {
           logger.warn(
-            `pool.dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+            `pool.dispose() failed for ${group.displayName}: ${describeAwsFailure(err).detail}`
           );
         }
       })
@@ -1324,7 +1324,7 @@ async function localStartApiCommand(
           await ws.server.getServerState().pool.dispose();
         } catch (err) {
           logger.warn(
-            `WebSocket pool.dispose() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+            `WebSocket pool.dispose() failed for ${ws.api.apiLogicalId}: ${describeAwsFailure(err).detail}`
           );
         }
       })
@@ -1338,7 +1338,7 @@ async function localStartApiCommand(
         rmSync(dir, { recursive: true, force: true });
       } catch (err) {
         logger.warn(
-          `Failed to remove inline-code tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to remove inline-code tmpdir ${dir}: ${describeAwsFailure(err).detail}`
         );
       }
     }
@@ -1347,7 +1347,7 @@ async function localStartApiCommand(
         rmSync(dir, { recursive: true, force: true });
       } catch (err) {
         logger.warn(
-          `Failed to remove merged-layers tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to remove merged-layers tmpdir ${dir}: ${describeAwsFailure(err).detail}`
         );
       }
     }
@@ -1361,7 +1361,7 @@ async function localStartApiCommand(
         await profileCredsFile.dispose();
       } catch (err) {
         logger.warn(
-          `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${describeAwsFailure(err).detail}`
         );
       }
     }
@@ -2899,7 +2899,7 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`
     );
   }
   let parsed: unknown;
@@ -2907,7 +2907,7 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeAwsFailure(err).detail}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -3439,7 +3439,7 @@ export async function reloadAllServers(args: {
     // waits for in-flight requests to drain (30s per-entry cap).
     const disposal = previousState.pool.dispose().catch((err) => {
       logger.debug(
-        `Previous pool dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+        `Previous pool dispose() failed for ${group.displayName}: ${describeAwsFailure(err).detail}`
       );
     });
     retiredPoolDisposals?.add(disposal);

@@ -11,6 +11,7 @@ import {
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { safeStringify } from '../utils/aws-failure-text.js';
 import { AssetError } from '../utils/error-handler.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { buildDockerImage } from './docker-build.js';
@@ -307,8 +308,8 @@ export class DockerAssetPublisher {
       await this.pushImage(fullUri);
       return;
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
-      const errText = e.stderr || e.message || String(err);
+      const e = err as { stderr?: string; message?: string } | null | undefined;
+      const errText = e?.stderr || e?.message || safeStringify(err);
       if (!isDockerAuthFailure(errText)) {
         // Non-auth failure (network, repo-not-found, ...) — surface unchanged.
         throw err;

@@ -5,6 +5,7 @@ import type { TemplateFormat } from './yaml-cfn.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
@@ -219,7 +220,7 @@ export async function uploadCfnTemplate(
             `via GetObject with a VersionId. Grant s3:ListBucketVersions and ` +
             `s3:DeleteObjectVersion on the state bucket, or purge the key by hand. ` +
             `Underlying error: ` +
-            `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+            `${describeAwsFailure(purgeError).detail}`
         );
       } finally {
         s3.destroy();
