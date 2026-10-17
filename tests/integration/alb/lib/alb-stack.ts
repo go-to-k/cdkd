@@ -130,6 +130,13 @@ export class AlbStack extends cdk.Stack {
     cfnTargetGroup.addPropertyOverride('Targets', [
       { Id: update ? '10.0.0.101' : '10.0.0.100', Port: 80 },
     ]);
+    // An IP target must sit inside a SUBNET, not just the VPC, when it is
+    // registered, but the group only references the VPC. With the dual-stack
+    // VPC the subnets also wait on the IPv6 CIDR block, so without this edge
+    // the group can be created first, in CloudFormation as in cdkd ("is within
+    // the VPC, but is not within a VPC subnet"). 10.0.0.100 / .101 are in the
+    // first public subnet (10.0.0.0/24).
+    targetGroup.node.addDependency(vpc.publicSubnets[0]!);
 
     // GENEVE target group (issue #1160): CloudFormation resets a removed
     // HealthCheckPort to `traffic-port` on a GENEVE group too, although that
