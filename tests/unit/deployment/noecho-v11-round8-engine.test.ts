@@ -64,6 +64,23 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
 
 vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
+// The UPDATE arm of the per-resource body, replaceable per case (the body
+// returns its result verbatim). Pass-through otherwise.
+const updateArm = vi.hoisted(() => ({
+  impl: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+}));
+vi.mock('../../../src/deployment/deploy-engine/update.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/update.js')>();
+  const real = actual.provisionUpdate as unknown as (...a: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    provisionUpdate: vi.fn((...args: unknown[]) =>
+      updateArm.impl ? updateArm.impl(...args) : real(...args)
+    ),
+  };
+});
+
 /**
  * Round 8 of go-to-k/cdkd#4043 / #2449: the deploy-start observed refresh of a
  * record holding `***` (SECURITY 4) and a create-first replacement whose old
@@ -301,16 +318,18 @@ describe('DeployEngine - NoEcho round 8', () => {
 
   it('joins a skipped old-resource delete with a partial reason the row already had (CODE m3)', async () => {
     stateBackend.getState!.mockResolvedValue({ state: replacementState(), etag: 'etag-old' });
-    const body = vi
-      .spyOn(DeployEngine.prototype, 'provisionResourceBody')
-      .mockImplementation(async function (this: DeployEngine, logicalId: string, ...rest: unknown[]) {
-        const counts = rest[6] as { updatePartial: number } | undefined;
-        if (counts) counts.updatePartial++;
-        this.replacementRun.replacedDeleteSkips.set(logicalId, 'reason-B');
-        return { updatePartial: 'reason-A' };
-      });
+    const armed: string[] = [];
+    updateArm.impl = async (...args: unknown[]) => {
+      const [engine, logicalId, ...rest] = args as [DeployEngine, string, ...unknown[]];
+      armed.push(logicalId);
+      const counts = rest[6] as { updatePartial: number } | undefined;
+      if (counts) counts.updatePartial++;
+      engine.replacementRun.replacedDeleteSkips.set(logicalId, 'reason-B');
+      return { updatePartial: 'reason-A' };
+    };
     try {
       const result = await makeEngine({ captureObservedState: false }).deploy(STACK, renamed);
+      expect(armed).toEqual(['Topic']);
       expect(result.updatePartial).toBe(1);
       const skipped = events.find(
         (e) => e['eventType'] === 'RESOURCE_SKIPPED' && e['logicalId'] === 'Topic'
@@ -318,7 +337,7 @@ describe('DeployEngine - NoEcho round 8', () => {
       expect(String(skipped?.['reason'])).toContain('reason-A');
       expect(String(skipped?.['reason'])).toContain('reason-B');
     } finally {
-      body.mockRestore();
+      updateArm.impl = undefined;
     }
   });
 });

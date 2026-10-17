@@ -3091,7 +3091,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
    * this flow makes after its guard. Both are excluded below and pinned.
    */
   const ANCHORS: Record<string, string> = {
-    'src/deployment/deploy-engine/deploy-flow.ts': 'await this.stateBackend.saveState(',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'await engine.stateBackend.saveState(',
     'src/cli/commands/destroy-runner.ts': 'state.orphans ?? []',
     'src/cli/commands/rollback.ts': 'orphansAfterRollback(',
     'src/cli/commands/scrub.ts': 'state.orphans ?? []',
@@ -3160,7 +3160,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // The engine host reads the container only in `redactStateForPersist`,
       // and `deploy-engine/execute.ts` only inside `executeDeployment` /
       // `persistStateAfterOutputFailure`, both reached only through the deploy
-      // flow's single `this.executeDeployment(` below its guard. Pinned below.
+      // flow's single `executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
       return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
@@ -3197,11 +3197,11 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // `deploy-engine/execute.ts` reads it only in the two methods the deploy
     // flow reaches through ONE call, placed below that flow's guard.
     const flow = code('src/deployment/deploy-engine/deploy-flow.ts');
-    expect(flow.split('this.executeDeployment(').length - 1, 'the deploy flow calls executeDeployment more than once').toBe(1);
+    expect(flow.split('executeDeployment(').length - 1, 'the deploy flow calls executeDeployment more than once').toBe(1);
     expect(flow.indexOf('refuseMalformedOrphans('), 'the deploy flow lost its orphans guard').toBeGreaterThan(-1);
-    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('this.executeDeployment('));
+    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('executeDeployment('));
     expect(flow.indexOf('refuseMalformedOrphanRecords('), 'the deploy flow lost its row guard').toBeGreaterThan(-1);
-    expect(flow.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(flow.indexOf('this.executeDeployment('));
+    expect(flow.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(flow.indexOf('executeDeployment('));
     // The flow's anchor is its first SAVE, so a read added ABOVE the guard in
     // the same method would slip under it: there must be none.
     expect(

@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
@@ -164,20 +165,8 @@ describe('DeployEngine — a provider-reported partial update (#1819)', () => {
     const template: CloudFormationTemplate = {
       Resources: { MyResource: { Type: TYPE, Properties: { Mode: 'b' } } },
     };
-    await (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>,
-          conditions?: Record<string, boolean>,
-          counts?: CountsBag
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine)(
+    await provisionResource(
+      engine,
       'MyResource',
       change,
       {
@@ -189,12 +178,12 @@ describe('DeployEngine — a provider-reported partial update (#1819)', () => {
           dependencies: [],
           provisionedBy: 'sdk',
         },
-      },
+      } as unknown as Record<string, never>,
       'MyStack',
       template,
       undefined,
       undefined,
-      counts
+      counts as never
     );
   }
 

@@ -183,7 +183,7 @@ export class ReplacementRunState {
 /**
  * What this module's plain functions read from the engine beyond
  * {@link ReplacementRunState}, built at each call site as
- * `this.replacementDeps()`. `options` / `stackRegion` / `logger` are never
+ * `DeployEngine.replacementDeps()`. `options` / `stackRegion` / `logger` are never
  * reassigned after construction, so they are values; `secretsRun` (replaced
  * per `deploy()`), `stackRecordsView` / `deployStateResources` (set by
  * `executeDeployment`) and `interrupted` / `interruptCause` (set mid-deploy)

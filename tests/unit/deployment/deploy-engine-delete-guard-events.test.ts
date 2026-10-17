@@ -16,6 +16,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type {
   CloudFormationTemplate,
@@ -190,16 +191,12 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
 
   function provisionOf(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, StateRecord>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) => provisionResource(engine, logicalId, change, stateResources, stackName, template);
   }
 
   async function invokeTemplateDelete(engine: InstanceType<typeof DeployEngine>): Promise<void> {

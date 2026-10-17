@@ -2,6 +2,8 @@ import { childLostWithRecreatedParent, survivesParent } from '../child-of-recrea
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
+import { updateByReplacement } from './update-replace.js';
+import { updateInPlace } from './update-in-place.js';
 import {
   noteSecretNamedRecord,
   readReaderForFreshNoEchoCeiling,
@@ -125,13 +127,6 @@ import {
   serviceTokenUpdateRefusal,
 } from '../custom-resource-service-token.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    provisionUpdate: OmitThisParameter<typeof provisionUpdate>;
-  }
-}
-
 /**
  * Is `value` the mask at every leaf (a scalar `***`, or a list / object of
  * nothing but masks, as `maskWholeValue` writes a list parameter)?
@@ -169,9 +164,9 @@ function setAtCoordinate(
   return write(bag, 0) as Record<string, unknown>;
 }
 
-/** The `UPDATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
+/** The `UPDATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionUpdate(
-  this: DeployEngine,
+  engine: DeployEngine,
   logicalId: string,
   change: ResourceChange,
   stateResources: Record<string, ResourceState>,
@@ -235,7 +230,7 @@ export async function provisionUpdate(
 
   // Resolve intrinsic functions in properties
   const context = buildResolverContext(
-    this.resolverContextDeps(),
+    engine.resolverContextDeps(),
     {
       template: template!,
       resources: stateResources,
@@ -253,25 +248,25 @@ export async function provisionUpdate(
   // from inside `resolve()` after a substitution otherwise reaches the
   // shared catch with an empty bag.
   const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
-  this.secretsRun.perResourceSecrets.set(logicalId, updateSecrets);
+  engine.secretsRun.perResourceSecrets.set(logicalId, updateSecrets);
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
   const noEchoOverrides = await noEchoAttributeOverridesFor(
-    this.noEchoRun,
-    this.noEchoDeps(),
+    engine.noEchoRun,
+    engine.noEchoDeps(),
     desiredProps,
     stateResources,
     stackName
   );
   if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
-  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(this.secretsRun, logicalId));
-  const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
+  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(engine.secretsRun, logicalId));
+  const resolvedProps = (await engine.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
   // go-to-k/cdkd#3869: the name this deploy resolved, before the provider
   // prints it (a rename, or a replacement's new resource).
-  noteSecretNamedRecord(this.secretsRun, logicalId, {
+  noteSecretNamedRecord(engine.secretsRun, logicalId, {
     resourceType,
     physicalId: stateResources[logicalId]?.physicalId,
     properties: resolvedProps,
@@ -279,8 +274,8 @@ export async function provisionUpdate(
   // The #2274 refusal of a redacted read runs BELOW the no-change skip
   // (go-to-k/cdkd#3662), not here; see the note at that call.
   // Same position source on the UPDATE path (#1904).
-  this.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
-  this.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
+  engine.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
+  engine.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
   // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
   // `{{resolve:...}}` expression each `Parameters` entry was resolved
   // FROM, keyed by the child's parameter NAME. The bag above is keyed by
@@ -292,7 +287,7 @@ export async function provisionUpdate(
   // associations off the same object. No-op for every other type.
   recordNestedStackParameterExpressions(updateSecrets, resourceType, resolvedProps, desiredProps);
 
-  auditResolvedAssetReferences(this.options, logicalId, resourceType, resolvedProps);
+  auditResolvedAssetReferences(engine.options, logicalId, resourceType, resolvedProps);
 
   // Re-check diff after resolving intrinsic functions
   // DiffCalculator compares unresolved template vs resolved state, which may produce false positives.
@@ -396,7 +391,7 @@ export async function provisionUpdate(
   const lostCandidate = childLostWithRecreatedParent({
     resourceType,
     templateProperties: desiredProps,
-    recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
+    recreatedUnderSameId: engine.replacementRun.recreatedUnderSameId,
     recordedTypeOf: (id) =>
       Object.hasOwn(stateResources, id) ? stateResources[id]?.resourceType : undefined,
     conditions,
@@ -416,8 +411,8 @@ export async function provisionUpdate(
   // so a held (or witness-confirmed) producer still masks it on the save and
   // its same-stack readers position it. A provider result re-declares below.
   registerNoEchoAttributes(
-    this.secretsRun,
-    this.maskingDeps(),
+    engine.secretsRun,
+    engine.maskingDeps(),
     logicalId,
     Object.assign(
       currentResource.attributes === undefined ? {} : { attributes: currentResource.attributes },
@@ -429,7 +424,12 @@ export async function provisionUpdate(
   // go-to-k/cdkd#4043: where a `NoEcho` PARAMETER (or an attribute declared
   // `NoEcho`) served this bag, by template position. The persisted bag holds
   // `***` at each, so the comparison side does too.
-  const noEchoSources = noEchoPositionSources(this.noEchoRun, stateResources, template, conditions);
+  const noEchoSources = noEchoPositionSources(
+    engine.noEchoRun,
+    stateResources,
+    template,
+    conditions
+  );
   // Two classes, positioned separately: a PARAMETER's value, and an attribute
   // a producer declared `NoEcho` (the custom-resource class of #3729).
   const parameterCoordinates =
@@ -470,7 +470,7 @@ export async function provisionUpdate(
   });
   const comparisonCoordinates = canonicalCoordinates([...noEchoCoordinates, ...staleCoordinates]);
   if (parameterCoordinates.length > 0) {
-    this.noEchoRun.noEchoPositionedValues.set(
+    engine.noEchoRun.noEchoPositionedValues.set(
       logicalId,
       new Set(
         parameterCoordinates.map((coordinate) =>
@@ -491,7 +491,13 @@ export async function provisionUpdate(
   // moves it too.
   const fingerprintSources =
     template &&
-    maskedInputSources(this.resolverContextDeps(), template, stateResources, conditions, stackName);
+    maskedInputSources(
+      engine.resolverContextDeps(),
+      template,
+      stateResources,
+      conditions,
+      stackName
+    );
   const fingerprints = fingerprintSources && inputFingerprinter(desiredProps, fingerprintSources);
   const movedMasked = new Set(
     await movedMaskedProperties(currentResource, desiredProps, fingerprints)
@@ -499,13 +505,13 @@ export async function provisionUpdate(
   // What the save stamps if this deploy writes the record: the input
   // fingerprint of each property it may record as the mask.
   if (fingerprints !== undefined) {
-    this.secretsRun.perResourceInputFingerprints.set(
+    engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
       await maskedInputFingerprintsFor(
         possiblyMaskedKeys(resolvedProps, [
           updateSecrets,
-          this.secretsRun.fingerprintNoEchoValues,
-          this.options.inheritedSecrets,
+          engine.secretsRun.fingerprintNoEchoValues,
+          engine.options.inheritedSecrets,
         ]),
         fingerprints
       )
@@ -521,7 +527,7 @@ export async function provisionUpdate(
     recordPassedNoEchoParameters(
       updateSecrets,
       desiredProps['Parameters'],
-      noEchoPositionSources(this.noEchoRun, stateResources)
+      noEchoPositionSources(engine.noEchoRun, stateResources)
     );
   }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
@@ -575,7 +581,7 @@ export async function provisionUpdate(
       ? await resolveRecordSecrets(
           { properties: currentResource.properties, attributes: currentResource.attributes },
           (token, own) =>
-            this.resolver.resolveDynamicReferences(
+            engine.resolver.resolveDynamicReferences(
               token,
               persistedTokenResolverContext(own, regionEvidence.regions)
             )
@@ -658,7 +664,7 @@ export async function provisionUpdate(
       if (repaired !== attributes[key]) attributes[key] = repaired;
     }
   }
-  const allowedSilentDrops = this.providerRegistry.getAllowedUnsupportedProperties?.();
+  const allowedSilentDrops = engine.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
     currentResource.provisionedBy !== 'cc-api' && allowedSilentDrops
       ? withoutAcceptedSilentDropProperties(
@@ -734,7 +740,7 @@ export async function provisionUpdate(
   // marker describe it exactly (go-to-k/cdkd#4831). Only a confirmed leaf: a
   // differing one keeps the old plaintext the record holds until it is sent.
   if (!unmarkedRecord && witness !== undefined && witness.confirmed.length > 0) {
-    this.noEchoRun.witnessConfirmedLeaves.set(
+    engine.noEchoRun.witnessConfirmedLeaves.set(
       logicalId,
       witness.confirmed.map((coordinate) => [...coordinate])
     );
@@ -755,7 +761,7 @@ export async function provisionUpdate(
   for (const coordinate of witness?.differing ?? []) {
     const desiredAt = valueAtCoordinate(desiredForSkipCheckAsWritten, coordinate);
     recordPreviousNoEchoLeaves(
-      secretNameBagFor(this.secretsRun, logicalId),
+      secretNameBagFor(engine.secretsRun, logicalId),
       valueAtCoordinate(recordedAsWritten, coordinate),
       scalarLeavesOf(desiredAt),
       updateSecrets,
@@ -864,7 +870,7 @@ export async function provisionUpdate(
   const warnWitnessReplacement = (key: string): void => {
     const cause = witnessCauseAt(key);
     if (cause === undefined) return;
-    this.logger.warn(
+    engine.logger.warn(
       cause === 'parameter'
         ? safeMsg`${logicalId}.${key} is a create-only property, and a NoEcho parameter's value changed since the last deploy: ${logicalId} is replaced.`
         : safeMsg`${logicalId}.${key} is a create-only property, and the value at its NoEcho position changed since the last deploy: ${logicalId} is replaced.`
@@ -886,12 +892,7 @@ export async function provisionUpdate(
   // queue's ARN). Such a resource is sent, never skipped, and a create-only
   // path the redaction rewrote counts as MOVED, so a replacement it carries
   // stands.
-  const rewrittenPaths = readsProducerReplacedThisRun.call(
-    this,
-    template,
-    logicalId,
-    stateResources
-  )
+  const rewrittenPaths = readsProducerReplacedThisRun(engine, template, logicalId, stateResources)
     ? redactionRewrittenPaths(resolvedProps, desiredForSkipCheck, comparisonCoordinates)
     : new Set<string>();
   // State schema v12 (go-to-k/cdkd#4852): the same, across runs. A path
@@ -911,7 +912,7 @@ export async function provisionUpdate(
       secrets: updateSecrets,
     }),
     (entry, recordedVersion, servedVersion) =>
-      sameValueAtVersions(this.resolver, entry, recordedVersion, servedVersion, {
+      sameValueAtVersions(engine.resolver, entry, recordedVersion, servedVersion, {
         template: template!,
         resources: stateResources,
       })
@@ -920,7 +921,7 @@ export async function provisionUpdate(
   if (provenanceMoved.paths.size > 0) {
     // Decision 5: the deploy names why a resource was sent. The ids and the
     // property names only, never a token or a version.
-    this.logger.info(
+    engine.logger.info(
       safeMsg`${logicalId} is sent: ${[...provenanceMoved.paths].sort().join(', ')} read a secret-derived value at a newer version than ${logicalId} was deployed with (its upstream changed since then)`
     );
   }
@@ -936,7 +937,9 @@ export async function provisionUpdate(
     const attrSummary = attributeChanges
       .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
       .join(', ');
-    this.logger.info(safeMsg`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+    engine.logger.info(
+      safeMsg`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`
+    );
     stateResources[logicalId] = {
       // The record as the read-version refresh above may have left it.
       ...(stateResources[logicalId] ?? currentResource),
@@ -946,7 +949,7 @@ export async function provisionUpdate(
     if (progress) progress.current++;
     const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
     renderer.removeTask(logicalId);
-    this.logger.info(
+    engine.logger.info(
       safeMsg`${attrPrefix}${formatResourceLine('updated', logicalId, resourceType, 'updated (metadata)')}`
     );
   };
@@ -980,7 +983,7 @@ export async function provisionUpdate(
   let readback: Promise<FreshNoEchoReadback> | undefined;
   const readOnce = (): Promise<FreshNoEchoReadback> =>
     (readback ??= readReaderForFreshNoEchoCeiling(
-      this.maskingDeps(),
+      engine.maskingDeps(),
       logicalId,
       readbackRecord,
       updateSecrets
@@ -988,7 +991,7 @@ export async function provisionUpdate(
       // Every coordinate this read echoed exactly gains the flag; a differing
       // or failed one changes nothing.
       noteNoEchoExactEchoes(
-        this.noEchoRun,
+        engine.noEchoRun,
         logicalId,
         currentResource.physicalId,
         read,
@@ -1045,7 +1048,7 @@ export async function provisionUpdate(
       propertyChanges: [{ ...asReplacement, requiresReplacement: true }],
     };
     lateApproval ??= (async () => {
-      const crossPrefixGate = this.options.onDestructivePlan;
+      const crossPrefixGate = engine.options.onDestructivePlan;
       if (crossPrefixGate !== undefined) {
         try {
           await crossPrefixGate(
@@ -1057,18 +1060,18 @@ export async function provisionUpdate(
           if (!(error instanceof CdkdError) || error.code !== STACK_UNDER_OTHER_PREFIX) throw error;
           lateCrossPrefixRefused = true;
           if (counts) counts.crossPrefixKept = (counts.crossPrefixKept ?? 0) + 1;
-          this.logger.warn(error.message);
+          engine.logger.warn(error.message);
           return false;
         }
       }
       return approveLateReplacement({
-        options: this.options,
+        options: engine.options,
         stackName,
         change: asChange,
         records: stateResources,
         template,
         // go-to-k/cdkd#4705: the prompt may have waited, as the up-front one.
-        onAsked: () => this.generatedNameGuard?.noteApprovalPrompted(),
+        onAsked: () => engine.generatedNameGuard?.noteApprovalPrompted(),
       });
     })();
     return lateApproval;
@@ -1080,7 +1083,7 @@ export async function provisionUpdate(
       ? 'differs; the provider is not known to report this property exactly, so the difference may be its normalization'
       : lateCrossPrefixRefused
         ? 'differs; the replacement was refused: see the state-prefix warning above'
-        : `differs; the replacement was not approved (--require-approval=${this.options.requireApproval ?? 'never'})`;
+        : `differs; the replacement was not approved (--require-approval=${engine.options.requireApproval ?? 'never'})`;
   // go-to-k/cdkd#4656: the MIGRATION deploy (`witnessMigrates`) takes the
   // echo-fidelity readback even when its witness settles every value (so no
   // block below would read), before the skip just below can return.
@@ -1096,7 +1099,7 @@ export async function provisionUpdate(
     !typeChanged &&
     !suppliesFreshMaskOnlyValue &&
     lostChild === undefined &&
-    recreateDirectionFor(this.options, stackName, logicalId) === undefined &&
+    recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired
   ) {
     // go-to-k/cdkd#4852: a reader whose read versions moved with an equal
@@ -1115,7 +1118,7 @@ export async function provisionUpdate(
       applyAttributeOnlyUpdate(change.attributeChanges);
       return;
     }
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Skipping ${logicalId}: no actual changes after intrinsic function resolution`
     );
     if (counts) counts.skipped++;
@@ -1158,10 +1161,10 @@ export async function provisionUpdate(
         new CdkdError(
           unaddressableUpdateRefusalMessage(
             stackName,
-            this.stackRegion,
+            engine.stackRegion,
             logicalId,
             oldResourceType,
-            this.options.refusalRecovery
+            engine.options.refusalRecovery
           ),
           STATE_RESOURCES_MALFORMED
         )
@@ -1173,7 +1176,7 @@ export async function provisionUpdate(
   // UPDATE can be journaled with what it tried to apply (load-bearing
   // for the --revert-failed patch generation). Below the refusal, as it
   // was before the refusal moved: a refused UPDATE attempted nothing.
-  this.attemptedResolvedProps.set(logicalId, resolvedProps);
+  engine.attemptedResolvedProps.set(logicalId, resolvedProps);
 
   // A synthetic change's `requiresReplacement` is a CEILING
   // (go-to-k/cdkd#3662): the diff promoted this reader because an
@@ -1265,7 +1268,7 @@ export async function provisionUpdate(
       // it; a template-diff replacement is the diff's verdict already.
       const conditionalVerdict =
         moved && !typeChanged && isReplacementCeiling(pc)
-          ? this.diffCalculator.conditionalReplacementVerdict?.(
+          ? engine.diffCalculator.conditionalReplacementVerdict?.(
               resourceType,
               pc.path,
               currentPropsAsWritten[pc.path],
@@ -1304,7 +1307,7 @@ export async function provisionUpdate(
           !('failure' in read) &&
           liveHoldsFreshLeaves(read.live[pc.path], otherFreshAt(pc.path))
         ) {
-          this.logger.warn(
+          engine.logger.warn(
             safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (differs). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
           );
           noEchoHeldPaths.add(pc.path);
@@ -1315,13 +1318,13 @@ export async function provisionUpdate(
           // WARN, not debug: this is what turns the update into a
           // replacement, and a `Replacing` label must never be
           // unexplained. The id, the path and the class only.
-          this.logger.warn(
+          engine.logger.warn(
             safeMsg`${logicalId}.${pc.path} carries a NoEcho value that AWS could not confirm unchanged (${verdict}): replacement kept.`
           );
           lowered.push(pc);
           continue;
         }
-        this.logger.debug(
+        engine.logger.debug(
           safeMsg`${logicalId}.${pc.path} carries a NoEcho value AWS already holds: not replaced.`
         );
         noEchoHeldPaths.add(pc.path);
@@ -1361,7 +1364,7 @@ export async function provisionUpdate(
       keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
         keyOrderFreeJson(currentPropsAsWritten[path]);
     replacedAnyway =
-      recreateDirectionFor(this.options, stackName, logicalId) !== undefined ||
+      recreateDirectionFor(engine.options, stackName, logicalId) !== undefined ||
       lostWithParent !== undefined ||
       (change.propertyChanges ?? []).some(
         (other) =>
@@ -1396,7 +1399,7 @@ export async function provisionUpdate(
       }
       if (verdict === 'held') {
         parameterHeldKeys.add(pc.path);
-        this.logger.debug(
+        engine.logger.debug(
           safeMsg`${logicalId}.${pc.path} carries a NoEcho parameter value AWS already holds: not replaced.`
         );
       } else if (
@@ -1406,7 +1409,7 @@ export async function provisionUpdate(
       ) {
         // go-to-k/cdkd#4656: the provider echoes this leaf exactly, so the
         // difference is the value's. The id, the path and the cause only.
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and AWS, which reports it exactly, holds a different value: ${logicalId} is replaced.`
         );
         lowered.push({ ...pc, requiresReplacement: true });
@@ -1421,7 +1424,7 @@ export async function provisionUpdate(
           lateReplacementDeclined.add(pc.path);
         }
         const why = verdict === 'differs' ? differsWhy(pc.path) : verdict;
-        this.logger.warn(
+        engine.logger.warn(
           staleOnly
             ? safeMsg`${logicalId}.${pc.path} is a create-only property whose recorded value is only the NoEcho mask, and cdkd cannot confirm AWS holds its current value (${why}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
             : safeMsg`${logicalId}.${pc.path} is a create-only property fed by a NoEcho parameter, and cdkd cannot confirm AWS holds its current value (${why}). It is not replaced, so a change to that value is not applied: to apply one, deploy with --recreate-via-cc-api ${logicalId} or --recreate-via-sdk-provider ${logicalId}.`
@@ -1466,7 +1469,7 @@ export async function provisionUpdate(
     confirmedPaths.size > 0 &&
     !typeChanged &&
     lostChild === undefined &&
-    recreateDirectionFor(this.options, stackName, logicalId) === undefined &&
+    recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
     Object.keys(resolvedProps).every(
       (key) =>
@@ -1474,7 +1477,7 @@ export async function provisionUpdate(
         (otherFreshAt(key).length === 0 && !pendingParameterLeaves.has(key))
     )
   ) {
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Skipping ${logicalId}: AWS already holds every NoEcho value it carries, and nothing else changed`
     );
     // go-to-k/cdkd#4043 (review round 8 m2): a STALE coordinate (the record
@@ -1513,7 +1516,7 @@ export async function provisionUpdate(
       );
     }
     // Nothing was attempted, as on the skip above the refusal.
-    this.attemptedResolvedProps.delete(logicalId);
+    engine.attemptedResolvedProps.delete(logicalId);
     if (change.attributeChanges && change.attributeChanges.length > 0) {
       applyAttributeOnlyUpdate(change.attributeChanges);
       return;
@@ -1526,7 +1529,7 @@ export async function provisionUpdate(
   // (write-only, or a type with no readback) is re-sent on every deploy, and
   // one line per resource says why the update ran.
   if (recordMatchesDesired && parameterUnreadablePaths.length > 0) {
-    this.logger.info(
+    engine.logger.info(
       safeMsg`  ${logicalId}: re-sending ${parameterUnreadablePaths.join(', ')}, fed by a NoEcho parameter. AWS does not report the value back, so cdkd cannot tell whether it changed.`
     );
   }
@@ -1553,8 +1556,8 @@ export async function provisionUpdate(
   // here because `promoteRecreateTargets` made it an UPDATE, and the
   // no-op skips above exempt it (issue #2651).
   const recreateTargets =
-    this.options.recreateTargets?.stackName === stackName
-      ? this.options.recreateTargets
+    engine.options.recreateTargets?.stackName === stackName
+      ? engine.options.recreateTargets
       : undefined;
   // Issue [#615] — the user explicitly named this resource via
   // `--recreate-via-cc-api <LogicalId>` so this deploy MUST destroy
@@ -1584,7 +1587,7 @@ export async function provisionUpdate(
     !typeChanged &&
     !recreateFlagged &&
     lostWithParent === undefined &&
-    this.options.replace !== true &&
+    engine.options.replace !== true &&
     currentResource.provisionedBy !== 'cc-api'
   ) {
     const unwritten = unwrittenCreateOnlyReplacement(
@@ -1612,7 +1615,7 @@ export async function provisionUpdate(
                 allowedForRecord,
                 currentProps
               ).map(({ property }) => property),
-              nested: this.options.parentStackInfo !== undefined,
+              nested: engine.options.parentStackInfo !== undefined,
               // Issue #2610: the replacement's delete never clears a
               // deletion protection, so the remedy says so where the record
               // shows one -- as the stateful guard does.
@@ -1620,7 +1623,7 @@ export async function provisionUpdate(
                 resourceType,
                 currentProps,
                 currentResource.observedProperties,
-                this.stackRegion
+                engine.stackRegion
               ),
             }),
             'CREATE_ONLY_DROP_NEEDS_REPLACEMENT'
@@ -1633,20 +1636,20 @@ export async function provisionUpdate(
   // The label `provisionResource` chose left ceilings out; one that
   // stood (the value moved, or it is a fresh `NoEcho` value AWS could
   // not confirm unchanged) turns this into a replacement, so say so.
-  const liveLabel = this.liveTaskLabels.get(logicalId);
+  const liveLabel = engine.liveTaskLabels.get(logicalId);
   if (needsReplacement && liveLabel !== undefined && !liveLabel.replacing) {
     const routing = peekRoutingForLabel(
-      this.providerRegistry,
-      this.options,
+      engine.providerRegistry,
+      engine.options,
       change,
       currentResource,
       stackName,
       logicalId,
       true,
-      recreateDirectionFor(this.options, stackName, logicalId)
+      recreateDirectionFor(engine.options, stackName, logicalId)
     );
     const label = `Replacing ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
-    this.liveTaskLabels.set(logicalId, {
+    engine.liveTaskLabels.set(logicalId, {
       label,
       replacing: true,
       ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
@@ -1658,17 +1661,17 @@ export async function provisionUpdate(
     // label counted as a replacement was lowered above, because AWS
     // already holds the fresh `NoEcho` value there.
     const routing = peekRoutingForLabel(
-      this.providerRegistry,
-      this.options,
+      engine.providerRegistry,
+      engine.options,
       change,
       currentResource,
       stackName,
       logicalId,
       false,
-      recreateDirectionFor(this.options, stackName, logicalId)
+      recreateDirectionFor(engine.options, stackName, logicalId)
     );
     const label = `Updating ${logicalId} (${resourceType})${routing === 'cc-api' ? ' [CC API]' : ''}`;
-    this.liveTaskLabels.set(logicalId, {
+    engine.liveTaskLabels.set(logicalId, {
       label,
       replacing: false,
       ...(liveLabel.warnSuffix !== undefined && { warnSuffix: liveLabel.warnSuffix }),
@@ -1696,26 +1699,26 @@ export async function provisionUpdate(
   // from state by the failure path, so the next deploy creates it.
   const markRestored = <T>(outcome: T): T => {
     if (lostChild === undefined) return outcome;
-    if (this.replacementRun.updatesThatSentNothing.has(logicalId)) {
+    if (engine.replacementRun.updatesThatSentNothing.has(logicalId)) {
       // The provider sent nothing (Cloud Control's patch from record to
       // template is empty), so nothing reached the recreated parent: say so
       // rather than report it restored. A failed deploy reads the same set.
       // A resource merely attached to the parent (go-to-k/cdkd#4461) is not
       // pointed at a recreate flag: re-creating it to redo one attach would,
       // for an IAM user, revoke its access keys.
-      this.logger.warn(
+      engine.logger.warn(
         survivesParent(resourceType)
           ? safeMsg`  ⚠ ${logicalId} lost its attachment to ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); it may no longer be attached to ${lostChild.parent}. Attach it there by hand.`
           : safeMsg`  ⚠ ${logicalId} went with ${lostChild.parent}, which was re-created, but its update sent no change (it is recorded on Cloud Control, which patches record against template); its policy may be missing from ${lostChild.parent}. Re-run with --recreate-via-sdk-provider ${logicalId} to write it again.`
       );
       return outcome;
     }
-    this.replacementRun.restoredLostChildren.add(logicalId);
+    engine.replacementRun.restoredLostChildren.add(logicalId);
     return outcome;
   };
   if (needsReplacement) {
     return markRestored(
-      await this.updateByReplacement({
+      await updateByReplacement(engine, {
         change,
         counts,
         currentProps,
@@ -1782,7 +1785,7 @@ export async function provisionUpdate(
       previousForProvider = setAtCoordinate(previousForProvider, coordinate, value);
   }
   return markRestored(
-    await this.updateInPlace({
+    await updateInPlace(engine, {
       conditions,
       counts,
       currentProps,
@@ -1969,13 +1972,13 @@ function redactionRewrittenPaths(
  * consumer is not seen (go-to-k/cdkd#4852).
  */
 function readsProducerReplacedThisRun(
-  this: DeployEngine,
+  engine: DeployEngine,
   template: CloudFormationTemplate | undefined,
   logicalId: string,
   stateResources: Record<string, ResourceState>
 ): boolean {
   return (extractAllDependencies(template, logicalId) ?? []).some((id) => {
-    const loaded = Object.hasOwn(this.healBaseline, id) ? this.healBaseline[id] : undefined;
+    const loaded = Object.hasOwn(engine.healBaseline, id) ? engine.healBaseline[id] : undefined;
     if (loaded === undefined) return false;
     const now = Object.hasOwn(stateResources, id) ? stateResources[id] : undefined;
     return now !== undefined && now.physicalId !== loaded.physicalId;

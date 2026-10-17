@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
@@ -191,18 +192,7 @@ describe('DeployEngine — an equal Glue table id that names a different table (
         },
       },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    await provisionResource('Table', change, stateResources, 'MyStack', template);
+    await provisionResource(engine, 'Table', change, stateResources, 'MyStack', template);
     return stateResources;
   }
 

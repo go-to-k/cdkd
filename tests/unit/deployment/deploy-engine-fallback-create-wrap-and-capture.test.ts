@@ -25,6 +25,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { printingSecretsFor } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -238,17 +239,7 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
         },
       },
     };
-    await (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine)('MyResource', change, stateResources, 'MyStack', template);
+    await provisionResource(engine, 'MyResource', change, stateResources, 'MyStack', template);
     return stateResources as unknown as Record<
       string,
       { physicalId: string; provisionedBy?: string }

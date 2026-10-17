@@ -31,8 +31,8 @@ import { STATEFUL_TYPES } from '../../../src/provisioning/stateful-types.js';
 import { hasNoCloudControlHandlers } from '../../../src/provisioning/unsupported-types.js';
 
 const REPO_ROOT = join(import.meta.dirname, '../../..');
-// `DeployEngine`'s source: the class file plus its mixin modules (#4200) —
-// the files that augment it, where the provisioning arms now live. Joined, so
+// `DeployEngine`'s source: the class file plus the modules split out of it
+// (#4200), where the provisioning arms now live. Joined, so
 // a phrase counted once is counted once across the whole engine.
 const DEPLOY_ENGINE = (() => {
   const engine = readFileSync(join(REPO_ROOT, 'src/deployment/deploy-engine.ts'), 'utf8');
@@ -40,8 +40,7 @@ const DEPLOY_ENGINE = (() => {
   const mixins = readdirSync(dir)
     .filter((f) => f.endsWith('.ts'))
     .sort()
-    .map((f) => readFileSync(join(dir, f), 'utf8'))
-    .filter((src) => src.includes("declare module '../deploy-engine.js'"));
+    .map((f) => readFileSync(join(dir, f), 'utf8'));
   return [engine, ...mixins].join('\n');
 })();
 const STATEFUL_TYPES_SRC = readFileSync(

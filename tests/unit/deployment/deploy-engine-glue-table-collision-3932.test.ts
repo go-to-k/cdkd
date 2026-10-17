@@ -63,6 +63,7 @@ import {
   DeleteTableCommand,
 } from '@aws-sdk/client-glue';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { GlueProvider } from '../../../src/provisioning/providers/glue-provider.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -75,7 +76,14 @@ const OLD = {
   TableInput: { Name: 't', TableType: 'EXTERNAL_TABLE' },
 };
 
-type StateRecord = { physicalId: string; properties: Record<string, unknown> };
+type StateRecord = {
+  physicalId: string;
+  resourceType: string;
+  properties: Record<string, unknown>;
+  attributes: Record<string, unknown>;
+  dependencies: string[];
+  provisionedBy?: 'sdk' | 'cc-api';
+};
 
 /** The Glue WRITE commands `send` was called with, in order (reads omitted). */
 function sentCommands(): string[] {
@@ -150,18 +158,7 @@ async function replaceTable(
     Resources: { [LID]: { Type: TYPE, Properties: newProps } },
   };
   const engine = makeEngine(replace);
-  const run = (
-    engine as unknown as {
-      provisionResource: (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-    }
-  ).provisionResource.bind(engine);
-  const error = await run(LID, change, state, 'MyStack', template).then(
+  const error = await provisionResource(engine, LID, change, state, 'MyStack', template).then(
     () => null,
     (e: unknown) => ((e as { cause?: unknown }).cause ?? e) as Error & { code?: string }
   );

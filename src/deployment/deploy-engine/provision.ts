@@ -47,24 +47,17 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { orphanedNameCollisionAdvice } from './name-collision.js';
 import { provisionDelete } from './delete.js';
+import { provisionCreate } from './create.js';
+import { provisionUpdate } from './update.js';
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    provisionResource: OmitThisParameter<typeof provisionResource>;
-    /** @internal */
-    provisionResourceBody: OmitThisParameter<typeof provisionResourceBody>;
-  }
-}
 
 /**
  * Provision a single resource (CREATE/UPDATE/DELETE)
  */
 export async function provisionResource(
-  this: DeployEngine,
+  engine: DeployEngine,
   logicalId: string,
   change: ResourceChange,
   stateResources: Record<string, ResourceState>,
@@ -85,7 +78,7 @@ export async function provisionResource(
   // property half alone, so a `--recreate-via-*` target whose property change
   // does not itself force a replacement still rendered `Updating` over a
   // destroy + recreate.
-  const labelRecreateDirection = recreateDirectionFor(this.options, stackName, logicalId);
+  const labelRecreateDirection = recreateDirectionFor(engine.options, stackName, logicalId);
   // The Type-change half (issue #3036) is mirrored too: the dispatch treats a
   // recorded type that differs from the template's as a replacement whatever
   // `propertyChanges` says.
@@ -123,8 +116,8 @@ export async function provisionResource(
   // here never surface — if routing inference fails, we drop the tag
   // and the real `getProviderFor` call later will re-evaluate.
   const labelRouting = peekRoutingForLabel(
-    this.providerRegistry,
-    this.options,
+    engine.providerRegistry,
+    engine.options,
     change,
     stateResources[logicalId],
     stackName,
@@ -135,7 +128,7 @@ export async function provisionResource(
   const routingTag = labelRouting === 'cc-api' ? ' [CC API]' : '';
   const baseLabel = `${verb} ${logicalId} (${resourceType})${routingTag}`;
   renderer.addTask(logicalId, baseLabel);
-  this.liveTaskLabels.set(logicalId, { label: baseLabel, replacing: needsReplacement });
+  engine.liveTaskLabels.set(logicalId, { label: baseLabel, replacing: needsReplacement });
 
   // Operation classification for the timeout error message. UPDATE and
   // its replacement-replacement form are both surfaced as 'UPDATE' since
@@ -165,20 +158,20 @@ export async function provisionResource(
   // `getMinResourceTimeoutMs`. The real routing decision (which can
   // promote a Tier 1 resource to Cloud Control under #614) happens
   // inside the provision arms via `getProviderFor`.
-  const provider = this.providerRegistry.getProvider(resourceType);
+  const provider = engine.providerRegistry.getProvider(resourceType);
   const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
   const warnAfterMs =
-    this.options.resourceWarnAfterByType?.[resourceType] ??
-    this.options.resourceWarnAfterMs ??
+    engine.options.resourceWarnAfterByType?.[resourceType] ??
+    engine.options.resourceWarnAfterMs ??
     DEFAULT_RESOURCE_WARN_AFTER_MS;
-  const globalTimeoutMs = this.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+  const globalTimeoutMs = engine.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
   // Known-slow types (OpenSearch domains, RDS / Redshift / ElastiCache
   // clusters) lift the outer deadline to match the CC inner poll cap so a
   // slow CREATE / UPDATE is not aborted by the 30-min default. A per-type CLI
   // override still wins (explicit escape hatch).
   const slowTypeMinTimeoutMs = slowCcOperationTimeoutMs(resourceType, operationKind);
   const timeoutMs =
-    this.options.resourceTimeoutByType?.[resourceType] ??
+    engine.options.resourceTimeoutByType?.[resourceType] ??
     Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
 
   // #808 best-effort event: per-resource op started. `provisionedBy`
@@ -186,7 +179,7 @@ export async function provisionResource(
   // real provider call makes); good enough for the event metadata.
   const eventOp: DeploymentResourceOperation = operationKind;
   const resourceStartedAt = Date.now();
-  this.recordEvent({
+  engine.recordEvent({
     eventType: 'RESOURCE_STARTED',
     stackName,
     operation: eventOp,
@@ -215,7 +208,7 @@ export async function provisionResource(
   // its id when its name came from a secret. Judged from the persisted
   // record here; the new name is judged right after it resolves, in
   // `create.ts` / `update.ts`, and a replacement's new id before `was replaced`.
-  noteSecretNamedRecord(this.secretsRun, logicalId, stateResources[logicalId]);
+  noteSecretNamedRecord(engine.secretsRun, logicalId, stateResources[logicalId]);
   // What the record READ from a secret-named resource, carried for every row
   // with a record: a DELETE resolves nothing, and an UPDATE resolves only
   // what it reads NOW, while a replacement's `Deleting old <id> (<old id>)`
@@ -228,17 +221,17 @@ export async function provisionResource(
   // deploy (a leaf scan of this record alone, not a per-row walk of every
   // record): the records as the deploy FOUND them, so a name a record
   // replaced earlier in this run no longer spells still counts.
-  const readsRegistry = secretNameBagFor(this.secretsRun, logicalId);
+  const readsRegistry = secretNameBagFor(engine.secretsRun, logicalId);
   for (const needle of secretNamesStoredIn(
     stateResources[logicalId],
-    printingCorpusOf(this.secretsRun.preDeploySecretNamedRecords ?? new Map()).keys()
+    printingCorpusOf(engine.secretsRun.preDeploySecretNamedRecords ?? new Map()).keys()
   )) {
     recordLogOnlyValue(readsRegistry, needle);
   }
   // A DELETE also judges the records as they stand now, with what each
   // resolved this deploy.
   if (change.changeType === 'DELETE') {
-    noteSecretNamedReads(this.secretsRun, logicalId, stateResources[logicalId], stateResources);
+    noteSecretNamedReads(engine.secretsRun, logicalId, stateResources[logicalId], stateResources);
   }
   // A nested stack's child judges only its OWN records, and its stored values
   // can hold a name this stack's row used to pass, one no read of this deploy
@@ -250,9 +243,9 @@ export async function provisionResource(
   // no longer spells the old name. A name the row passes down THIS run is the
   // row's own read (`printNestedStackReadsOnly`). Printing only.
   if (resourceType === NESTED_STACK_ROW_TYPE) {
-    const registry = secretNameBagFor(this.secretsRun, logicalId);
+    const registry = secretNameBagFor(engine.secretsRun, logicalId);
     for (const needle of printingCorpusOf(
-      this.secretsRun.preDeploySecretNamedRecords ?? new Map()
+      engine.secretsRun.preDeploySecretNamedRecords ?? new Map()
     ).keys()) {
       recordLogOnlyValue(registry, needle);
     }
@@ -260,7 +253,7 @@ export async function provisionResource(
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a
   // provider's) masks the registry's needles, one registered mid-body too.
-  const printingRegistry = secretNameBagFor(this.secretsRun, logicalId);
+  const printingRegistry = secretNameBagFor(engine.secretsRun, logicalId);
   // Issue #1989: what a nested child's deploy left unaddressed, when this row
   // is an `AWS::CloudFormation::Stack`. Added to `counts` only once the row
   // has succeeded, beside the row's own outcome, never in place of it.
@@ -276,7 +269,8 @@ export async function provisionResource(
           try {
             const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
               collectNestedChildUnaddressed(() =>
-                this.provisionResourceBody(
+                provisionResourceBody(
+                  engine,
                   logicalId,
                   change,
                   stateResources,
@@ -293,9 +287,9 @@ export async function provisionResource(
             updatePartial = bodyResult?.updatePartial;
             // go-to-k/cdkd#4043 (review MEDIUM-3): a replacement whose old
             // resource's delete was skipped left a survivor: a partial update.
-            const replacedSkip = this.replacementRun.replacedDeleteSkips.get(logicalId);
+            const replacedSkip = engine.replacementRun.replacedDeleteSkips.get(logicalId);
             if (replacedSkip !== undefined) {
-              this.replacementRun.replacedDeleteSkips.delete(logicalId);
+              engine.replacementRun.replacedDeleteSkips.delete(logicalId);
               if (updatePartial === undefined) {
                 updatePartial = replacedSkip;
                 if (counts) {
@@ -310,7 +304,7 @@ export async function provisionResource(
             }
             // go-to-k/cdkd#4900: a deferred delete of this row's old resource
             // that the retry skips must not count the row partial twice.
-            const deferred = this.replacementRun.deferredReplacedDeletes?.get(logicalId);
+            const deferred = engine.replacementRun.deferredReplacedDeletes?.get(logicalId);
             if (deferred !== undefined && updatePartial !== undefined) deferred.rowPartial = true;
             nestedChildUnaddressed = unaddressed;
           } finally {
@@ -336,7 +330,7 @@ export async function provisionResource(
             // other event's `physicalId`: it is the id a cleanup needs, and
             // after a replacement no record holds it any more.
             for (const guard of deleteGuards.splice(0)) {
-              this.recordEvent({
+              engine.recordEvent({
                 eventType: 'RESOURCE_GUARD_INDETERMINATE',
                 stackName,
                 operation: 'DELETE',
@@ -346,7 +340,7 @@ export async function provisionResource(
                 ...(guard.physicalId && {
                   physicalId: maskSecretsInText(
                     guard.physicalId,
-                    this.secretsRun.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+                    engine.secretsRun.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
                   ),
                 }),
                 guard: guard.guard,
@@ -363,11 +357,11 @@ export async function provisionResource(
             const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
             // Mutate the live renderer's task label in place (TTY mode)
             // and emit a warn line above the live area (non-TTY / verbose).
-            const current = this.liveTaskLabels.get(logicalId);
+            const current = engine.liveTaskLabels.get(logicalId);
             if (current !== undefined) current.warnSuffix = warnSuffix;
             renderer.updateTaskLabel(logicalId, `${current?.label ?? baseLabel}${warnSuffix}`);
             renderer.printAbove(() => {
-              this.logger.warn(
+              engine.logger.warn(
                 safeMsg`${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
               );
             });
@@ -376,7 +370,7 @@ export async function provisionResource(
             new ResourceTimeoutError(
               logicalId,
               resourceType,
-              this.stackRegion,
+              engine.stackRegion,
               elapsedMs,
               operationKind,
               timeoutMs
@@ -400,7 +394,7 @@ export async function provisionResource(
     // is still alive. Mirrors destroy-runner.ts's RESOURCE_SKIPPED emit,
     // `reason` included: a bare event cannot tell the user why.
     if (deleteSkipped !== undefined) {
-      this.recordEvent({
+      engine.recordEvent({
         eventType: 'RESOURCE_SKIPPED',
         stackName,
         operation: eventOp,
@@ -428,7 +422,7 @@ export async function provisionResource(
     // row. Emitting only the skip, as the issue first proposed, would have
     // put the events store at odds with its own contract.
     if (updatePartial !== undefined) {
-      this.recordEvent({
+      engine.recordEvent({
         eventType: 'RESOURCE_SKIPPED',
         stackName,
         operation: eventOp,
@@ -451,7 +445,7 @@ export async function provisionResource(
     // #808 best-effort event: per-resource op succeeded. Read the
     // freshly-stamped routing layer + physical id off the state record
     // the body just wrote (falls back to the label inference / undefined).
-    this.recordEvent({
+    engine.recordEvent({
       eventType: 'RESOURCE_SUCCEEDED',
       stackName,
       operation: eventOp,
@@ -487,11 +481,11 @@ export async function provisionResource(
     // flattened), and a provider's message is that site's to sanitize.
     // An UNTAGGED template on purpose: `scripts/check-docs-error-strings.ts`
     // reads only untagged ones, and docs quote lines of this shape.
-    const shownMessage = maskForResource(this.secretsRun, logicalId, message);
+    const shownMessage = maskForResource(engine.secretsRun, logicalId, message);
     const shownId = safeMsg`${logicalId}`;
-    this.logger.error(
+    engine.logger.error(
       maskForResource(
-        this.secretsRun,
+        engine.secretsRun,
         logicalId,
         `Failed to ${change.changeType.toLowerCase()} ${shownId}: ${shownMessage}`
       )
@@ -503,18 +497,18 @@ export async function provisionResource(
     // stack or logical id built from a resolved secret would otherwise reach
     // a DEFAULT-level line the one above is masked for.
     const orphanAdvice = orphanedNameCollisionAdvice(
-      this.providerRegistry,
+      engine.providerRegistry,
       change.changeType,
       logicalId,
       error
     );
     if (orphanAdvice) {
-      this.logger.error(maskForResource(this.secretsRun, logicalId, orphanAdvice));
+      engine.logger.error(maskForResource(engine.secretsRun, logicalId, orphanAdvice));
     }
 
     // #808 best-effort event: per-resource op failed. Error metadata
     // only — no resource properties.
-    this.recordEvent({
+    engine.recordEvent({
       eventType: 'RESOURCE_FAILED',
       stackName,
       operation: eventOp,
@@ -545,7 +539,10 @@ export async function provisionResource(
       logicalId,
       stateResources[logicalId]?.physicalId,
       error instanceof Error
-        ? maskSecretsInError(error, printingSecretsFor(this.secretsRun, logicalId) ?? EMPTY_SECRETS)
+        ? maskSecretsInError(
+            error,
+            printingSecretsFor(engine.secretsRun, logicalId) ?? EMPTY_SECRETS
+          )
         : undefined
     );
   } finally {
@@ -563,7 +560,7 @@ export async function provisionResource(
  * logic. Behaviour is unchanged from the pre-deadline implementation.
  */
 export async function provisionResourceBody(
-  this: DeployEngine,
+  engine: DeployEngine,
   logicalId: string,
   change: ResourceChange,
   stateResources: Record<string, ResourceState>,
@@ -579,7 +576,7 @@ export async function provisionResourceBody(
   // another owner's identical resource. Read only when a provider asks.
   const priorAttempts = priorAttemptLookup(logicalId, async () =>
     priorAttemptsInJournal(
-      await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
+      await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
       logicalId,
       change.resourceType
     )
@@ -587,12 +584,13 @@ export async function provisionResourceBody(
   // go-to-k/cdkd#4492: bound for every change type — a DELETE asks which other
   // records of the stack still hold its resource.
   return withStackRecords(
-    this.stackRecordsView,
+    engine.stackRecordsView,
     (): Promise<ResourceOutcomeSignal | void> | undefined => {
       switch (change.changeType) {
         case 'CREATE':
           return withPriorAttempts(priorAttempts, () =>
-            this.provisionCreate(
+            provisionCreate(
+              engine,
               logicalId,
               change,
               stateResources,
@@ -606,7 +604,8 @@ export async function provisionResourceBody(
           );
         case 'UPDATE':
           return withPriorAttempts(priorAttempts, () =>
-            this.provisionUpdate(
+            provisionUpdate(
+              engine,
               logicalId,
               change,
               stateResources,
@@ -620,7 +619,7 @@ export async function provisionResourceBody(
           );
         case 'DELETE':
           return provisionDelete(
-            this.deleteDeps(),
+            engine.deleteDeps(),
             logicalId,
             change,
             stateResources,

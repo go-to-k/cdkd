@@ -6,7 +6,7 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 /**
  * `DeployEngine` (#4200) and `IntrinsicFunctionResolver` (#4337) split their
- * methods into mixin modules, and a member a mixin reads went from `private` to
+ * methods into separate modules, and a member such a module reads went from `private` to
  * `@internal`. `@internal` only keeps the member out of the published `.d.ts`;
  * inside `src/` it is plain public, so the compiler no longer stops another
  * module from calling it. Fences that reason about who can reach a member (the

@@ -88,14 +88,8 @@ import {
   type MaskingDeps,
 } from './deploy-engine/masking.js';
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
-import * as createMixin from './deploy-engine/create.js';
-import * as updateMixin from './deploy-engine/update.js';
-import * as updateReplaceMixin from './deploy-engine/update-replace.js';
-import * as updateInPlaceMixin from './deploy-engine/update-in-place.js';
 import type { DeleteDeps } from './deploy-engine/delete.js';
-import * as provisionMixin from './deploy-engine/provision.js';
-import * as executeMixin from './deploy-engine/execute.js';
-import * as deployFlowMixin from './deploy-engine/deploy-flow.js';
+import { doDeployWithPrefetch } from './deploy-engine/deploy-flow.js';
 import {
   buildResolverContext,
   type ResolverContextDeps,
@@ -1508,7 +1502,7 @@ export class DeployEngine {
       templateResourceTypes(template.Resources).filter((type) => !hasNoRegistrySchema(type))
     );
     try {
-      return await this.doDeployWithPrefetch(stackName, template, createOnlyPrefetch);
+      return await doDeployWithPrefetch(this, stackName, template, createOnlyPrefetch);
     } finally {
       createOnlyPrefetch.cancel();
     }
@@ -1675,17 +1669,3 @@ export class DeployEngine {
     return maskingRetryLogger(this.logger, secrets);
   }
 }
-
-DeployEngine.prototype.doDeployWithPrefetch = deployFlowMixin.doDeployWithPrefetch;
-
-DeployEngine.prototype.executeDeployment = executeMixin.executeDeployment;
-DeployEngine.prototype.persistStateAfterOutputFailure = executeMixin.persistStateAfterOutputFailure;
-
-DeployEngine.prototype.provisionResource = provisionMixin.provisionResource;
-DeployEngine.prototype.provisionResourceBody = provisionMixin.provisionResourceBody;
-
-DeployEngine.prototype.provisionUpdate = updateMixin.provisionUpdate;
-DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacement;
-DeployEngine.prototype.updateInPlace = updateInPlaceMixin.updateInPlace;
-
-DeployEngine.prototype.provisionCreate = createMixin.provisionCreate;

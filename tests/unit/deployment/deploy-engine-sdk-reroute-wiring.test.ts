@@ -93,6 +93,7 @@ vi.mock('../../../src/utils/aws-clients.js', async () => {
   };
 });
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
 import type { ResourceProvider, CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -194,16 +195,20 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
 
   function provisionOf(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) =>
+      provisionResource(
+        engine,
+        logicalId,
+        change,
+        stateResources as unknown as Record<string, never>,
+        stackName,
+        template
+      );
   }
 
   function stateResources(resourceType: string = TYPE): Record<string, StateRecord> {
@@ -598,17 +603,22 @@ describe('the #3729 relabel colors its downgraded [CC API] tag through the pin',
   /** Same shape as the file's own `provisionOf`, scoped to this block. */
   function provisionOfPinned(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template?: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template?: CloudFormationTemplate,
+      parameterValues?: Record<string, unknown>
+    ) =>
+      provisionResource(
+        engine,
+        logicalId,
+        change,
+        stateResources as unknown as Record<string, never>,
+        stackName,
+        template,
+        parameterValues
+      );
   }
 
   it('shows [CC API] on the downgraded label for a resource pinned via --pin-cc-api', async () => {

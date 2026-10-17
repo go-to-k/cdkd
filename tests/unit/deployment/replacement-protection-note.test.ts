@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -143,18 +144,14 @@ async function refusal(opts: {
     },
   };
   const engine = makeEngine({ ...(opts.replace !== undefined && { replace: opts.replace }) });
-  const provision = (
-    engine as unknown as {
-      provisionResource: (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-    }
-  ).provisionResource.bind(engine);
-  const err = await provision('Logs', change, stateResources, 'MyStack', template).then(
+  const err = await provisionResource(
+    engine,
+    'Logs',
+    change,
+    stateResources as unknown as Record<string, never>,
+    'MyStack',
+    template
+  ).then(
     () => null,
     (e: unknown) => e
   );

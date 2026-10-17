@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   looksLikeCdkdGeneratedName,
   withStackName,
@@ -201,20 +202,8 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
     const template: CloudFormationTemplate = {
       Resources: { Pipe: { Type: TYPE, Properties: { ...named, Source: 'arn:b' } } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-
     return withStackName(STACK, () =>
-      provisionResource('Pipe', change, stateResources, STACK, template).then(
+      provisionResource(engine, 'Pipe', change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the collision refusal');
         },
@@ -299,20 +288,8 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
       const template: CloudFormationTemplate = {
         Resources: { Pipe: { Type: TYPE, Properties: { Source: 'arn:b' } } },
       };
-      const provisionResource = (
-        engine as unknown as {
-          provisionResource: (
-            logicalId: string,
-            change: ResourceChange,
-            stateResources: Record<string, unknown>,
-            stackName: string,
-            template: CloudFormationTemplate
-          ) => Promise<void>;
-        }
-      ).provisionResource.bind(engine);
-
       const err = await withStackName(STACK, () =>
-        provisionResource('Pipe', change, stateResources, STACK, template).then(
+        provisionResource(engine, 'Pipe', change, stateResources, STACK, template).then(
           () => {
             throw new Error('expected the idempotent-create refusal');
           },

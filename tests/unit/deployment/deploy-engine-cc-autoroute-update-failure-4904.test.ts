@@ -27,7 +27,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
   LogLevel: { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 },
 }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import type { ResourceProvider, CloudFormationTemplate } from '../../../src/types/resource.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState as StateRecord } from '../../../src/types/state.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
@@ -119,20 +120,16 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
       dependencies: [],
       ...(recordedBy !== undefined && { provisionedBy: recordedBy }),
     } as unknown as StateRecord;
-    const provision = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<unknown>;
+    return provisionResource(
+      engine,
+      LOGICAL_ID,
+      change,
+      { [LOGICAL_ID]: record },
+      STACK,
+      {
+        Resources: { [LOGICAL_ID]: { Type: TYPE, Properties: DESIRED_PROPS } },
       }
-    ).provisionResource.bind(engine);
-    return provision(LOGICAL_ID, change, { [LOGICAL_ID]: record }, STACK, {
-      Resources: { [LOGICAL_ID]: { Type: TYPE, Properties: DESIRED_PROPS } },
-    }).then(
+    ).then(
       () => undefined,
       // The engine wraps the provider error as `Failed to update resource <id>`
       // and renders it as `Caused by:`; the cause is the object the note lands on.

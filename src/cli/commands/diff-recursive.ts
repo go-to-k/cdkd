@@ -1361,7 +1361,7 @@ export async function computeStackDiff(
      * every stack that has not had a rollback orphan something.
      *
      * Receives the CONDITION-PRUNED template, matching
-     * `DeployEngine.executeDeployment` — reading the raw template would
+     * `executeDeployment` (`deployment/deploy-engine/execute.ts`) — reading the raw template would
      * re-orphan a resource an `Fn::If` currently excludes.
      */
     previewOrphanAdoption?: (

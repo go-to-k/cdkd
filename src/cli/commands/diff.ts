@@ -436,7 +436,7 @@ async function diffCommand(
       return scope;
     };
 
-    // The SAME pre-pass `DeployEngine.executeDeployment` runs, wired from the
+    // The SAME pre-pass `executeDeployment` (`deployment/deploy-engine/execute.ts`) runs, wired from the
     // diff's own registry and state backend (issue go-to-k/cdkd#2943). It is
     // shared code, not a reimplementation: the two must agree on which records
     // they adopt and which they refuse, or the preview stops predicting the

@@ -71,6 +71,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 import { KinesisClient } from '@aws-sdk/client-kinesis';
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
@@ -178,19 +179,15 @@ async function replaceOnce(opts: {
     },
   };
   const engine = makeEngine(opts.provider, opts.provisionedBy, opts.replace ?? true);
-  const run = (
-    engine as unknown as {
-      provisionResource: (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-    }
-  ).provisionResource.bind(engine);
   return withStackName(STACK, () =>
-    run(opts.logicalId, change, stateResources, STACK, template).then(
+    provisionResource(
+      engine,
+      opts.logicalId,
+      change,
+      stateResources as unknown as Record<string, never>,
+      STACK,
+      template
+    ).then(
       () => null,
       (e) => (e as { cause?: unknown }).cause as Inner
     )
@@ -486,18 +483,19 @@ describe('the proof reads what THIS create sent (#3979)', () => {
     };
     const engine = makeEngine(provider);
     const err = await withStackName(STACK, () =>
-      (
-        engine as unknown as {
-          provisionResource: (...a: unknown[]) => Promise<void>;
-        }
-      )
-        .provisionResource('Stage', change, stateResources, STACK, {
+      provisionResource(
+        engine,
+        'Stage',
+        change,
+        stateResources as unknown as Record<string, never>,
+        STACK,
+        {
           Resources: { Stage: { Type: STAGE, Properties: change.desiredProperties } },
-        })
-        .then(
-          () => null,
-          (e: unknown) => e
-        )
+        }
+      ).then(
+        () => null,
+        (e: unknown) => e
+      )
     );
 
     expect(err).toBeNull();

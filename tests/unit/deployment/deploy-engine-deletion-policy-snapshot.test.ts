@@ -14,8 +14,9 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange } from '../../../src/types/state.js';
+import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -124,17 +125,14 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
         ...stateExtra,
       },
     };
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('Target', change, stateResources, 'MyStack', template);
+    await provisionResource(
+      engine,
+      'Target',
+      change,
+      stateResources as Record<string, ResourceState>,
+      'MyStack',
+      template
+    );
     return stateResources;
   }
 
@@ -176,24 +174,13 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
         skipped: 0,
         deleteSkipped: 0,
         updatePartial: 0,
+        nestedUpdatePartial: 0,
       };
-      type ProvisionResourceFn = (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate,
-        parameterValues: undefined,
-        conditions: undefined,
-        counts: Record<string, number>
-      ) => Promise<void>;
-      const provisionResource = (
-        engine as unknown as { provisionResource: ProvisionResourceFn }
-      ).provisionResource.bind(engine);
       await provisionResource(
+        engine,
         'Target',
         change,
-        stateResources,
+        stateResources as Record<string, ResourceState>,
         'MyStack',
         template,
         undefined,
@@ -460,17 +447,14 @@ describe('UpdateReplacePolicy: Snapshot on the create-first cleanup delete (#135
         },
       },
     } as unknown as CloudFormationTemplate;
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('Target', change, stateResources, 'MyStack', template);
+    await provisionResource(
+      engine,
+      'Target',
+      change,
+      stateResources as Record<string, ResourceState>,
+      'MyStack',
+      template
+    );
   }
 
   it('threads a generated identifier into the cleanup delete', async () => {
@@ -585,17 +569,14 @@ describe('UpdateReplacePolicy: Snapshot on the --replace delete-first (#4292)', 
         },
       },
     } as unknown as CloudFormationTemplate;
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('Target', change, stateResources, 'MyStack', template);
+    await provisionResource(
+      engine,
+      'Target',
+      change,
+      stateResources as Record<string, ResourceState>,
+      'MyStack',
+      template
+    );
   }
 
   it('threads a generated identifier into the delete-first of the old resource', async () => {
@@ -671,21 +652,18 @@ describe('UpdateReplacePolicy: Snapshot on the update-not-supported replacement 
         ...stateExtra,
       },
     };
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('Target', change, stateResources, 'MyStack', {
-      Resources: {
-        Target: { Type: 'AWS::RDS::DBInstance', Properties: { AllocatedStorage: '20' } },
-      },
-    } as unknown as CloudFormationTemplate);
+    await provisionResource(
+      engine,
+      'Target',
+      change,
+      stateResources as Record<string, ResourceState>,
+      'MyStack',
+      {
+        Resources: {
+          Target: { Type: 'AWS::RDS::DBInstance', Properties: { AllocatedStorage: '20' } },
+        },
+      } as unknown as CloudFormationTemplate
+    );
   }
 
   it('threads a generated identifier into the fallback replacement delete', async () => {

@@ -78,16 +78,9 @@ import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    updateInPlace: OmitThisParameter<typeof updateInPlace>;
-  }
-}
-
 /** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
 export async function updateInPlace(
-  this: DeployEngine,
+  engine: DeployEngine,
   {
     conditions,
     counts,
@@ -144,8 +137,8 @@ export async function updateInPlace(
   // via `--allow-unsupported-properties`. Once a resource flips
   // to CC mid-life, it stays there (the state record's
   // `provisionedBy: 'cc-api'` written below sticks).
-  this.logger.debug(safeMsg`Updating ${logicalId} (${resourceType})`);
-  const updateDecision = this.providerRegistry.getProviderFor({
+  engine.logger.debug(safeMsg`Updating ${logicalId} (${resourceType})`);
+  const updateDecision = engine.providerRegistry.getProviderFor({
     resourceType,
     properties: resolvedProps,
     provisionedBy: currentResource.provisionedBy,
@@ -156,7 +149,7 @@ export async function updateInPlace(
     // desired-only flip condition gets wrong (see
     // `GetProviderForInput.previousProperties`).
     previousProperties: currentResource.properties,
-    ...(isPinnedToCcApi(this.options, stackName, logicalId) && { forceCcApi: true }),
+    ...(isPinnedToCcApi(engine.options, stackName, logicalId) && { forceCcApi: true }),
   });
   if (updateDecision.sdkMigration === true) {
     // The ONLY reader of `sdkMigration`, and the reason the field
@@ -196,7 +189,7 @@ export async function updateInPlace(
       default:
         message = safeMsg`${logicalId} (${resourceType}): moving to the SDK provider. ${preserved}.`;
     }
-    this.logger.info(message);
+    engine.logger.info(message);
   }
   const updateProvider = updateDecision.provider;
   const updateProps =
@@ -204,7 +197,7 @@ export async function updateInPlace(
       ? withoutGeneratedFallbackName(
           resourceType,
           resolvedProps,
-          preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
+          preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
         )
       : resolvedProps;
   // The previous side the provider diffs against, with each create-only
@@ -250,14 +243,14 @@ export async function updateInPlace(
           resourceType,
           templateProperties: template?.Resources?.[logicalId]?.Properties,
           previous: previousWithSecretsDropped,
-          recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
+          recreatedUnderSameId: engine.replacementRun.recreatedUnderSameId,
           recordOf: (id) => (Object.hasOwn(stateResources, id) ? stateResources[id] : undefined),
           conditions,
         })
       : undefined;
   const previousForUpdate = reattached?.previous ?? previousWithSecretsDropped;
   if (reattached !== undefined) {
-    this.logger.info(
+    engine.logger.info(
       safeMsg`  ${logicalId} (${resourceType}) lost its attachment to ${reattached.parents.join(', ')}, which this deploy re-created under the same name: attaching it again`
     );
   }
@@ -266,7 +259,7 @@ export async function updateInPlace(
     // last deploy under the same reference is not visible here: the
     // record keeps only the reference.
     const kinds = droppedPrincipalKinds.join(' / ');
-    this.logger.warn(
+    engine.logger.warn(
       safeMsg`${logicalId} (${resourceType}): the recorded ${kinds} holds a secret reference the template still spells the same way, so cdkd re-applies it to the principals this deploy resolved it to and removes it from none of them. If that secret's value changed since the last deploy, a principal only the OLD value named still has the policy or membership: remove it from that principal by hand.`
     );
   }
@@ -318,9 +311,13 @@ export async function updateInPlace(
   // observed-capture site, which relies on that same no-bags refusal. The property-driven replacement
   // twin in `update-replace.ts` passes `replaceProvider` for the same reason.
   let captureProvider = updateProvider;
-  const inlinePolicyClaimed = this.inlinePolicyClaimedFor(resourceType, logicalId, stateResources);
+  const inlinePolicyClaimed = engine.inlinePolicyClaimedFor(
+    resourceType,
+    logicalId,
+    stateResources
+  );
   try {
-    result = await this.withRetry(
+    result = await engine.withRetry(
       () =>
         // The UPDATE twin of the CREATE call's async-local scope (issue
         // #1903). Both paths bind it or a nested stack that already
@@ -363,7 +360,7 @@ export async function updateInPlace(
             // of the record `currentResource.physicalId` came from.
             {
               maskSecrets: createSecretMasker(updateSecrets),
-              expectedRegion: this.stackRegion,
+              expectedRegion: engine.stackRegion,
               recordedAttributes: currentResource.attributes,
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
@@ -378,7 +375,7 @@ export async function updateInPlace(
     // go-to-k/cdkd#4443: the provider's own word that it sent nothing, taken
     // before anything below can throw, so a failed deploy can tell a re-put
     // child that wrote nothing from one that may have.
-    if (result.sentNothing === true) this.replacementRun.updatesThatSentNothing.add(logicalId);
+    if (result.sentNothing === true) engine.replacementRun.updatesThatSentNothing.add(logicalId);
     // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
     // `update()` and reports `'partial'` could not delete the OLD one (its
     // delete threw or was skipped), so the rollback must read AWS before
@@ -387,7 +384,7 @@ export async function updateInPlace(
     // recorded through `retainedOldOnReplacement`. `'kept'` only on the
     // provider's own word that AWS refused the delete outright.
     if (result.wasReplaced === true && result.outcome === 'partial') {
-      this.replacementRun.replacedOldMaySurvive.set(
+      engine.replacementRun.replacedOldMaySurvive.set(
         logicalId,
         result.oldResourceSurvivor === 'kept' ? 'kept' : 'unconfirmed'
       );
@@ -395,7 +392,7 @@ export async function updateInPlace(
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
     if (removal.unhandled.length > 0) {
-      this.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
+      engine.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
     }
   } catch (updateError) {
     // If UPDATE is not supported, fall back to a replacement. Two
@@ -427,7 +424,7 @@ export async function updateInPlace(
     // measured wire shape, and the codes it deliberately refuses.
     const ccUnsupported = isUpdateUnsupportedError(updateError, logicalId);
     const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
-    const replaceOptIn = typedUnsupported && this.options.replace === true;
+    const replaceOptIn = typedUnsupported && engine.options.replace === true;
     if (ccUnsupported || replaceOptIn) {
       // `UpdateReplacePolicy: Retain` on the fallback replacement
       // (issue #2518). Until this landed, the fallback deleted the old
@@ -522,7 +519,7 @@ export async function updateInPlace(
             // guard in `update-replace.ts` passes it (issue [#2521]).
             currentResource.observedProperties
           );
-      if (statefulReason && this.options.forceStatefulRecreation !== true) {
+      if (statefulReason && engine.options.forceStatefulRecreation !== true) {
         // No `Retain` note here any more (issue #2518): reaching this
         // throw MEANS the template is not applying `Retain`, because
         // `retainOldOnReplace` short-circuits `statefulReason` to
@@ -560,7 +557,7 @@ export async function updateInPlace(
           resourceType,
           currentProps,
           currentResource.observedProperties,
-          this.stackRegion
+          engine.stackRegion
         );
         throw markNonRetryable(
           new CdkdError(
@@ -611,7 +608,7 @@ export async function updateInPlace(
       // the record as its unrecognized-property baseline (issue #3713,
       // same reason as `replaceDecision`). Taken before anything is
       // deleted, since the name check below needs its route.
-      const replDecision = this.providerRegistry.getProviderFor({
+      const replDecision = engine.providerRegistry.getProviderFor({
         resourceType,
         properties: resolvedProps,
         previousProperties: currentResource.properties,
@@ -619,12 +616,17 @@ export async function updateInPlace(
       const replProvider = replDecision.provider;
       const replProps =
         replDecision.provisionedBy === 'cc-api'
-          ? preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
+          ? preparePropertiesForCcApi(
+              engine.providerRegistry,
+              resourceType,
+              resolvedProps,
+              logicalId
+            )
           : resolvedProps;
       // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
       // name known to move off the old resource's, probed where the
       // create would adopt a taken one. Under Retain it only probes.
-      const fallbackNameChange = await checkedReplacementNameChange(this.replacementDeps(), {
+      const fallbackNameChange = await checkedReplacementNameChange(engine.replacementDeps(), {
         logicalId,
         resourceType,
         oldResourceType: resourceType,
@@ -645,20 +647,21 @@ export async function updateInPlace(
         templateResource: template?.Resources?.[logicalId],
         resolvedProperties: resolvedProps,
         noEchoParameters:
-          noEchoPositionSources(this.noEchoRun, stateResources, template)?.parameters ?? new Set(),
-        conditions: this.noEchoRun.noEchoConditions,
+          noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
+          new Set(),
+        conditions: engine.noEchoRun.noEchoConditions,
         secrets: updateSecrets,
         inputSources:
           template &&
           maskedInputSources(
-            this.resolverContextDeps(),
+            engine.resolverContextDeps(),
             template,
             stateResources,
-            this.noEchoRun.noEchoConditions,
+            engine.noEchoRun.noEchoConditions,
             stackName
           ),
       });
-      this.logger.info(
+      engine.logger.info(
         retainOldOnReplace
           ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
               `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
@@ -697,7 +700,7 @@ export async function updateInPlace(
           template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
           currentResource.updateReplacePolicy;
         const fallbackFinalSnapshotId = await prepareFinalSnapshotForDelete(
-          this.replacementDeps(),
+          engine.replacementDeps(),
           logicalId,
           resourceType,
           currentResource,
@@ -713,12 +716,12 @@ export async function updateInPlace(
               resourceType,
               currentProps,
               {
-                expectedRegion: this.stackRegion,
-                forceDataDelete: this.options.forceStatefulRecreation === true,
+                expectedRegion: engine.stackRegion,
+                forceDataDelete: engine.options.forceStatefulRecreation === true,
                 ...(fallbackFinalSnapshotId !== undefined && {
                   finalSnapshotIdentifier: fallbackFinalSnapshotId,
                 }),
-                ...replacementDeleteContext(this.replacementDeps(), fallbackUpdateReplacePolicy),
+                ...replacementDeleteContext(engine.replacementDeps(), fallbackUpdateReplacePolicy),
                 recordedAttributes: currentResource.attributes,
                 // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
                 recordedNoEchoLeaves: currentResource.noEchoLeaves,
@@ -727,7 +730,7 @@ export async function updateInPlace(
                 // also logs under; the physical id can be a name it derives.
                 maskSecrets: createUnionSecretMasker([
                   updateSecrets,
-                  secretNameBagFor(this.secretsRun, logicalId),
+                  secretNameBagFor(engine.secretsRun, logicalId),
                 ]),
               }
             )
@@ -760,7 +763,7 @@ export async function updateInPlace(
               deleteMsg.includes('not found') ||
               deleteMsg.includes('NotFound'))
           ) {
-            this.logger.debug(
+            engine.logger.debug(
               safeMsg`Old resource ${logicalId} already gone, proceeding with CREATE`
             );
           } else {
@@ -791,7 +794,7 @@ export async function updateInPlace(
             )
           );
         }
-        this.replacementRun.oldDeletedBeforeCreate.add(logicalId);
+        engine.replacementRun.oldDeletedBeforeCreate.add(logicalId);
       }
       // Set only on the retain arm; drives the `partial` outcome below.
       let retainedSurvivorReason: string | undefined;
@@ -799,7 +802,7 @@ export async function updateInPlace(
       try {
         createResult =
           createFirst && fallbackNameChange !== undefined
-            ? await createFirstThenDeleteOld(this.replacementRun, this.replacementDeps(), {
+            ? await createFirstThenDeleteOld(engine.replacementRun, engine.replacementDeps(), {
                 logicalId,
                 resourceType,
                 oldResourceType: resourceType,
@@ -828,7 +831,7 @@ export async function updateInPlace(
                 trigger: 'the provisioning layer cannot update it in place',
                 noEchoDeleteValues,
               })
-            : await this.withRetry(
+            : await engine.withRetry(
                 () =>
                   withCurrentResourceSecrets(updateSecrets, () =>
                     replProvider.create(logicalId, resourceType, replProps, {
@@ -889,7 +892,7 @@ export async function updateInPlace(
           // Wrapping without a `cause` would have silently traded that
           // for the sentence. Safe to chain here: nothing between this
           // throw and the DAG executor re-classifies it — the retry
-          // lives INSIDE `this.withRetry` above, which has already
+          // lives INSIDE `engine.withRetry` above, which has already
           // given up — so no substring classifier reads the cause's
           // text (contrast the `Retain` arm below, which needs
           // `markNonRetryable` because its refusal quotes name-cooldown
@@ -915,7 +918,7 @@ export async function updateInPlace(
           // that holds a newline.
           const shownSecrets = unionOfSecretBags([
             updateSecrets,
-            printingSecretsFor(this.secretsRun, logicalId),
+            printingSecretsFor(engine.secretsRun, logicalId),
           ]);
           throw new Error(
             // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
@@ -1009,7 +1012,7 @@ export async function updateInPlace(
           newProperties: resolvedProps,
         })
       ) {
-        this.replacementRun.recreatedUnderSameId.add(logicalId);
+        engine.replacementRun.recreatedUnderSameId.add(logicalId);
       }
       if (retainOldOnReplace) {
         // Issue #1238's shape, on this path: a name-idempotent Create
@@ -1054,7 +1057,7 @@ export async function updateInPlace(
         // the idempotent-create refusal above, which throws — a
         // resource that fails never reaches `completedOperations`, so
         // the placement is belt-and-braces rather than load-bearing.
-        this.replacementRun.retainedOldOnReplacement.add(logicalId);
+        engine.replacementRun.retainedOldOnReplacement.add(logicalId);
         // WARN, not info, and louder than the line the property-driven
         // cleanup prints. The two arms leak identically, but they are
         // reached on completely different terms: the property-driven
@@ -1068,7 +1071,7 @@ export async function updateInPlace(
         // STATEFUL_REPLACE_BLOCKED. Same `⚠` shape as the
         // `--recreate-via-*` leak warning in `update-replace.ts`, which announces the
         // strictly LESS surprising version of this outcome.
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
             safeMsg`resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
             `tracked by cdkd: it keeps running and incurring cost, and ` +
@@ -1175,7 +1178,7 @@ export async function updateInPlace(
           logicalId,
           resourceType,
           updateDecision.ccRouteReason.properties,
-          this.options.parentStackInfo !== undefined
+          engine.options.parentStackInfo !== undefined
         );
       }
       throw updateError;
@@ -1184,7 +1187,7 @@ export async function updateInPlace(
 
   // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
   // in-place update in place even when it changed the physical id.
-  this.replacementRun.updateWasReplaced.set(logicalId, result.wasReplaced === true);
+  engine.replacementRun.updateWasReplaced.set(logicalId, result.wasReplaced === true);
   // State schema v12 (go-to-k/cdkd#4847 / #4852): an in-place update of a
   // record holding a token keeps the create-only paths for the persist
   // writer's union rule. Read from the per-type cache (or the committed
@@ -1195,7 +1198,7 @@ export async function updateInPlace(
     (hasPassProvenance(updateSecrets) || referenceProvenanceOf(currentResource) !== undefined)
   ) {
     const cached = cachedCreateOnlyPropertyPaths(resourceType);
-    this.replacementRun.inPlaceCreateOnlyPaths.set(
+    engine.replacementRun.inPlaceCreateOnlyPaths.set(
       logicalId,
       cached === undefined ? 'all' : await cached.catch(() => 'all' as const)
     );
@@ -1203,12 +1206,12 @@ export async function updateInPlace(
   if (result.wasReplaced) {
     // go-to-k/cdkd#3869: the NEW id, judged with this deploy's bag, before
     // the line names it (the old one was judged before the body ran).
-    noteSecretNamedRecord(this.secretsRun, logicalId, {
+    noteSecretNamedRecord(engine.secretsRun, logicalId, {
       resourceType,
       physicalId: result.physicalId,
       properties: resolvedProps,
     });
-    this.logger.info(
+    engine.logger.info(
       safeMsg`Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
     );
   }
@@ -1267,8 +1270,8 @@ export async function updateInPlace(
   // and returned no fresh attributes, where the carried-forward set is
   // what state keeps.
   registerNoEchoAttributes(
-    this.secretsRun,
-    this.maskingDeps(),
+    engine.secretsRun,
+    engine.maskingDeps(),
     logicalId,
     {
       ...(carriedAttributes && { attributes: carriedAttributes }),
@@ -1289,7 +1292,7 @@ export async function updateInPlace(
   );
   // go-to-k/cdkd#4656: what this deploy read of the OLD resource does not
   // describe a resource the fallback replaced.
-  if (result.wasReplaced) this.noEchoRun.noEchoExactEchoes.delete(logicalId);
+  if (result.wasReplaced) engine.noEchoRun.noEchoExactEchoes.delete(logicalId);
   stateResources[logicalId] = {
     physicalId: result.physicalId,
     resourceType,
@@ -1338,14 +1341,14 @@ export async function updateInPlace(
   // 'update' even after the replacement fallback: a principal then
   // claims only on its own `Policies` change (the fewer claims).
   if (updatePartialReason(result) === undefined) {
-    this.recordInlinePolicyWrite(logicalId, 'update');
+    engine.recordInlinePolicyWrite(logicalId, 'update');
   }
 
   if (keepsParameterRefusal) {
     // No readback is TAKEN, not merely not persisted: a value that is
     // never read cannot reach the record, the journal, an event or a
     // log line by any route.
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`observedProperties capture SKIPPED for updated ${logicalId} (${resourceType}): 'cdkd import' refused its baseline because a template parameter was not provably deployed at its 'Default', and this deploy bound the same 'Default' — an in-place update cannot show that AWS no longer holds the deployed value. The refusal stands until the resource is replaced or re-imported against a CloudFormation stack that proves the parameter.`
     );
   }
@@ -1353,10 +1356,10 @@ export async function updateInPlace(
     ? undefined
     : await buildObservedCaptureSiblings(
         {
-          options: this.options,
+          options: engine.options,
           buildResolverContext: (...args) =>
-            buildResolverContext(this.resolverContextDeps(), ...args),
-          resolver: this.resolver,
+            buildResolverContext(engine.resolverContextDeps(), ...args),
+          resolver: engine.resolver,
         },
         resourceType,
         logicalId,
@@ -1373,7 +1376,7 @@ export async function updateInPlace(
   // and the layer `provisionedBy` above was stamped with (issue
   // #2608).
   if (!keepsParameterRefusal) {
-    this.observedCapture.kickOffObservedCapture(
+    engine.observedCapture.kickOffObservedCapture(
       captureProvider,
       logicalId,
       result.physicalId,
@@ -1400,20 +1403,20 @@ export async function updateInPlace(
   // go-to-k/cdkd#4043 (review CODE m1): an update-failure fallback's skipped
   // old-resource delete makes the row partial too (`provisionResource` counts
   // it); the line names every reason.
-  const replacedSkip = this.replacementRun.replacedDeleteSkips.get(logicalId);
+  const replacedSkip = engine.replacementRun.replacedDeleteSkips.get(logicalId);
   const shownPartial =
     updatePartial !== undefined && replacedSkip !== undefined
       ? `${updatePartial}; ${replacedSkip}`
       : (updatePartial ?? replacedSkip);
   if (shownPartial !== undefined) {
-    this.logger.warn(
+    engine.logger.warn(
       safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
         safeMsg`${updatePartialMessage(shownPartial)}`
     );
     if (updatePartial !== undefined) return { updatePartial };
     return;
   }
-  this.logger.info(
+  engine.logger.info(
     safeMsg`${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`
   );
 }

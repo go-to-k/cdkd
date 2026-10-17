@@ -55,6 +55,7 @@ import {
 import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/orphan-identity.js';
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
+import { provisionResource } from './provision.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -62,15 +63,6 @@ const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
   'AWS::SQS::QueuePolicy',
   'AWS::SNS::TopicPolicy',
 ]);
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    executeDeployment: OmitThisParameter<typeof executeDeployment>;
-    /** @internal */
-    persistStateAfterOutputFailure: OmitThisParameter<typeof persistStateAfterOutputFailure>;
-  }
-}
 
 /**
  * Execute deployment by processing resources via event-driven DAG dispatch.
@@ -82,7 +74,7 @@ declare module '../deploy-engine.js' {
  *   resources that depend ON it have finished deleting)
  */
 export async function executeDeployment(
-  this: DeployEngine,
+  engine: DeployEngine,
   template: CloudFormationTemplate,
   currentState: StackState,
   changes: Map<string, ResourceChange>,
@@ -102,11 +94,11 @@ export async function executeDeployment(
   /** Issue #3754: journaled by a NESTED engine on success. */
   completedOperations: CompletedOperation[];
 }> {
-  const concurrency = this.options.concurrency!;
-  this.deployChanges = changes;
+  const concurrency = engine.options.concurrency!;
+  engine.deployChanges = changes;
   const newResources: Record<string, ResourceState> = { ...currentState.resources };
   // go-to-k/cdkd#4821: read by a replacement's delete of its old copy.
-  this.deployStateResources = newResources;
+  engine.deployStateResources = newResources;
   const actualCounts: ProvisionCounts = {
     created: 0,
     updated: 0,
@@ -133,7 +125,7 @@ export async function executeDeployment(
       try {
         const partialState: StackState = {
           version: STATE_SCHEMA_VERSION_CURRENT,
-          region: this.stackRegion,
+          region: engine.stackRegion,
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
@@ -146,9 +138,9 @@ export async function executeDeployment(
           // cross-stack read its own resources were built from.
           ...crossStackReadsForPartialSave(
             currentState,
-            this.recordedImports,
-            this.recordedOutputReads,
-            this.crossStackReadKeyNormalizer()
+            engine.recordedImports,
+            engine.recordedOutputReads,
+            engine.crossStackReadKeyNormalizer()
           ),
           lastModified: Date.now(),
         };
@@ -156,16 +148,16 @@ export async function executeDeployment(
         // overwrite the new key in-place under optimistic locking.
         const migrate = pendingMigration;
         const expectedEtag = migrate ? undefined : currentEtag;
-        currentEtag = await this.stateBackend.saveState(
+        currentEtag = await engine.stateBackend.saveState(
           stackName,
-          this.stackRegion,
-          this.withParentInfo(partialState),
+          engine.stackRegion,
+          engine.withParentInfo(partialState),
           { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
         );
         if (migrate) pendingMigration = false;
-        this.logger.debug(safeMsg`State saved after ${logicalId}`);
+        engine.logger.debug(safeMsg`State saved after ${logicalId}`);
       } catch (error) {
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`Failed to save state after ${logicalId}: ${asIsMessage(error instanceof Error ? error.message : String(error))}`
         );
       }
@@ -188,14 +180,14 @@ export async function executeDeployment(
   // Every create / update in flight, with the promise its settlement resolves:
   // a write that met its twin's identical rule waits for it (#4492).
   const inFlightWrites = new Map<string, { write: InFlightWrite; settle: (ok: boolean) => void }>();
-  this.stackRecordsView = deployStackRecordsView(
+  engine.stackRecordsView = deployStackRecordsView(
     newResources,
     currentState.resources,
     deleteChanges,
     (logicalId) => startedUpdates.has(logicalId) && !settledUpdates.has(logicalId),
     () => [...inFlightWrites.values()].map(({ write }) => write)
   );
-  this.replacementRun.deferredReplacedDeletes = new Map();
+  engine.replacementRun.deferredReplacedDeletes = new Map();
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -209,7 +201,7 @@ export async function executeDeployment(
     }
 
     if (createUpdateIds.length > 0) {
-      this.logger.info(
+      engine.logger.info(
         safeMsg`${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
       );
 
@@ -217,7 +209,7 @@ export async function executeDeployment(
       const provisionable = new Set(createUpdateIds);
       const createUpdateDeps = new Map<string, Set<string>>();
       for (const id of createUpdateIds) {
-        const allDeps = this.dagBuilder.getDirectDependencies(dag, id);
+        const allDeps = engine.dagBuilder.getDirectDependencies(dag, id);
         // Only carry deps that are themselves being provisioned in this phase;
         // NO_CHANGE / DELETE / non-DAG deps are already satisfied.
         createUpdateDeps.set(id, new Set(allDeps.filter((d) => provisionable.has(d))));
@@ -238,7 +230,7 @@ export async function executeDeployment(
         dependencies: createUpdateDeps,
         rank: (id) => levelOf.get(id) ?? Number.MAX_SAFE_INTEGER,
       })) {
-        this.logger.debug(
+        engine.logger.debug(
           safeMsg`${after} waits for ${before}: both write an inline policy name on the same IAM principal`
         );
       }
@@ -270,7 +262,7 @@ export async function executeDeployment(
           changes,
           skip: deleteChanges,
           templateResources: template.Resources ?? {},
-          recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
+          recreatedUnderSameId: engine.replacementRun.recreatedUnderSameId,
           recordedTypeOf: (id) =>
             Object.hasOwn(newResources, id) ? newResources[id]?.resourceType : undefined,
           conditions,
@@ -279,7 +271,7 @@ export async function executeDeployment(
           const change = changes.get(id)!;
           change.changeType = 'UPDATE';
           change.propertyChanges = [];
-          this.logger.info(
+          engine.logger.info(
             survivesParent(change.resourceType)
               ? safeMsg`  ${id} was attached to a resource the update-failure fallback re-created under the same name: attaching it again`
               : safeMsg`  ${id} went with a resource the update-failure fallback re-created under the same id: re-creating it`
@@ -290,7 +282,7 @@ export async function executeDeployment(
           executor.add({
             id,
             dependencies: new Set(
-              this.dagBuilder.getDirectDependencies(dag, id).filter((d) => executor.has(d))
+              engine.dagBuilder.getDirectDependencies(dag, id).filter((d) => executor.has(d))
             ),
             state: 'pending',
             data: changes.get(id)!,
@@ -298,7 +290,7 @@ export async function executeDeployment(
         }
         for (const node of executor.values()) {
           if (node.state !== 'pending') continue;
-          for (const dep of this.dagBuilder.getDirectDependencies(dag, node.id)) {
+          for (const dep of engine.dagBuilder.getDirectDependencies(dag, node.id)) {
             if (lostIds.includes(dep)) node.dependencies.add(dep);
           }
         }
@@ -321,7 +313,7 @@ export async function executeDeployment(
           write: {
             logicalId,
             resourceType: change.resourceType,
-            properties: () => this.attemptedResolvedProps.get(logicalId),
+            properties: () => engine.attemptedResolvedProps.get(logicalId),
             settled,
           },
           settle,
@@ -331,7 +323,8 @@ export async function executeDeployment(
         let succeeded = false;
         try {
           try {
-            await this.provisionResource(
+            await provisionResource(
+              engine,
               logicalId,
               change,
               newResources,
@@ -353,8 +346,8 @@ export async function executeDeployment(
           // Signal interruption so that long-running operations (e.g., CloudFront
           // waitForDeployed) in sibling tasks abort promptly instead of blocking
           // until their own polling timeouts fire.
-          this.interrupted = true;
-          this.interruptCause ??= 'sibling-failure';
+          engine.interrupted = true;
+          engine.interruptCause ??= 'sibling-failure';
           // #1198: journal the failed op's pre-op state + attempted
           // properties so `cdkd rollback --revert-failed` can act on it.
           //
@@ -466,16 +459,16 @@ export async function executeDeployment(
             // go-to-k/cdkd#4690: the old resource is gone even when the create
             // made nothing, which `replacementOrphaned` cannot say.
             ...(change.changeType === 'UPDATE' &&
-              this.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
+              engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
                 oldDeletedBeforeCreate: true,
               }),
             ...(orphanedBy !== undefined && {
-              replacementOrphaned: this.replacementRun.oldDeletedBeforeCreate.has(logicalId)
+              replacementOrphaned: engine.replacementRun.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)
                 : ('create-first' as const),
             }),
             ...(!refused && {
-              attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+              attemptedProperties: engine.attemptedResolvedProps.get(logicalId),
             }),
           };
           failedOperations.push(failedOp);
@@ -495,11 +488,11 @@ export async function executeDeployment(
               replacedResourceType: orphanedBy.record.resourceType,
               // The replacement deleted the old resource before its create:
               // the record names a resource that is gone.
-              ...(this.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
+              ...(engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
                 replacedResourceDeleted: true,
               }),
               ...(!refused && {
-                attemptedProperties: this.attemptedResolvedProps.get(logicalId),
+                attemptedProperties: engine.attemptedResolvedProps.get(logicalId),
               }),
             };
             failedOperations.push(replacementOrphanOp);
@@ -529,15 +522,15 @@ export async function executeDeployment(
             );
             if (markedIdentity !== undefined) {
               orphanOp.createdResourceIdentity = markedIdentity;
-            } else if (this.interruptCause !== 'user') {
+            } else if (engine.interruptCause !== 'user') {
               const identity = await readResourceIdentity(
-                this.providerRegistry,
+                engine.providerRegistry,
                 {
                   resourceType: orphanOp.resourceType,
                   physicalId: orphanOp.physicalId,
                   provisionedBy: orphanOp.provisionedBy,
                 },
-                this.stackRegion
+                engine.stackRegion
               );
               if (typeof identity === 'string') orphanOp.createdResourceIdentity = identity;
             }
@@ -569,23 +562,23 @@ export async function executeDeployment(
           // falls back to the old (wrong) read for those, so recording
           // only the `true` case would leave the DROP direction live.
           ...(change.changeType === 'UPDATE' && {
-            oldResourceRetained: this.replacementRun.retainedOldOnReplacement.has(logicalId),
+            oldResourceRetained: engine.replacementRun.retainedOldOnReplacement.has(logicalId),
             // go-to-k/cdkd#4690: the reversal deletes the new resource first
             // when the forward deleted the old one first.
-            oldDeletedBeforeCreate: this.replacementRun.oldDeletedBeforeCreate.has(logicalId),
+            oldDeletedBeforeCreate: engine.replacementRun.oldDeletedBeforeCreate.has(logicalId),
           }),
           // go-to-k/cdkd#2631: the cleanup delete did not confirm the old
           // resource gone, so the rollback reads AWS before re-creating it.
           ...(change.changeType === 'UPDATE' &&
-            this.replacementRun.replacedOldMaySurvive.has(logicalId) && {
-              oldResourceMaySurvive: this.replacementRun.replacedOldMaySurvive.get(logicalId),
+            engine.replacementRun.replacedOldMaySurvive.has(logicalId) && {
+              oldResourceMaySurvive: engine.replacementRun.replacedOldMaySurvive.get(logicalId),
             }),
           // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
           // gave one; absent, the rollback infers a replacement from a changed
           // physical id, as it does for a journal an older binary wrote.
           ...(change.changeType === 'UPDATE' &&
-            this.replacementRun.updateWasReplaced.has(logicalId) && {
-              wasReplaced: this.replacementRun.updateWasReplaced.get(logicalId),
+            engine.replacementRun.updateWasReplaced.has(logicalId) && {
+              wasReplaced: engine.replacementRun.updateWasReplaced.get(logicalId),
             }),
           // Issue #2668: `resourceType` above is the TEMPLATE's type, so
           // on a Type change the journal would otherwise name only the
@@ -601,12 +594,12 @@ export async function executeDeployment(
         });
 
         saveStateAfterResource(logicalId);
-        if (this.replacementRun.recreatedUnderSameId.has(logicalId))
+        if (engine.replacementRun.recreatedUnderSameId.has(logicalId))
           enqueueLostChildren(createUpdateExecutor);
       };
 
       try {
-        await createUpdateExecutor.execute(concurrency, provisionNode, () => this.interrupted);
+        await createUpdateExecutor.execute(concurrency, provisionNode, () => engine.interrupted);
       } finally {
         // Wait for any pending per-resource state saves before the next phase or
         // before propagating an error — prevents partial-save races.
@@ -619,16 +612,16 @@ export async function executeDeployment(
       // If every node already completed before SIGINT landed, treat the deploy
       // as fully successful — matches the prior level-loop's "loop exits, no
       // check" behaviour at the very end of execution.
-      if (this.interrupted && hasPending(createUpdateExecutor)) {
-        throw new InterruptedError(this.interruptCause ?? 'user');
+      if (engine.interrupted && hasPending(createUpdateExecutor)) {
+        throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
 
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {
-      this.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
+      engine.logger.info(safeMsg`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
-      const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, this.logger);
+      const deleteDeps = buildDeletionDependencies(deleteChanges, currentState, engine.logger);
       const deleteExecutor = new DagExecutor<ResourceChange>();
       for (const id of deleteChanges) {
         deleteExecutor.add({
@@ -652,7 +645,8 @@ export async function executeDeployment(
 
             let deleteOutcome: ResourceOutcomeSignal | void;
             try {
-              deleteOutcome = await this.provisionResource(
+              deleteOutcome = await provisionResource(
+                engine,
                 logicalId,
                 change,
                 newResources,
@@ -664,8 +658,8 @@ export async function executeDeployment(
                 progress
               );
             } catch (provisionError) {
-              this.interrupted = true;
-              this.interruptCause ??= 'sibling-failure';
+              engine.interrupted = true;
+              engine.interruptCause ??= 'sibling-failure';
               // #1198: a failed DELETE leaves the resource in place — the
               // record documents it in the journal (no revert needed).
               failedOperations.push({
@@ -697,26 +691,26 @@ export async function executeDeployment(
 
             saveStateAfterResource(logicalId);
           },
-          () => this.interrupted
+          () => engine.interrupted
         );
       } finally {
         await saveChain;
       }
 
-      if (this.interrupted && hasPending(deleteExecutor)) {
-        throw new InterruptedError(this.interruptCause ?? 'user');
+      if (engine.interrupted && hasPending(deleteExecutor)) {
+        throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
 
     // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
     // still-unupdated dependent refused inside the DAG.
-    if (this.interrupted) {
-      warnUnretriedReplacedDeletes(this.replacementRun, this.replacementDeps(), 'interrupted');
+    if (engine.interrupted) {
+      warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'interrupted');
     } else {
       try {
         await retryDeferredReplacedDeletes(
-          this.replacementRun,
-          this.replacementDeps(),
+          engine.replacementRun,
+          engine.replacementDeps(),
           stackName,
           actualCounts
         );
@@ -727,7 +721,7 @@ export async function executeDeployment(
         // nor a retry pass that threw before returning.
         for (const op of completedOperations) {
           if (op.changeType !== 'UPDATE') continue;
-          const verdict = this.replacementRun.replacedOldMaySurvive.get(op.logicalId);
+          const verdict = engine.replacementRun.replacedOldMaySurvive.get(op.logicalId);
           // A retry that deleted it dropped the verdict: so does the op.
           if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
           else delete op.oldResourceMaySurvive;
@@ -736,9 +730,9 @@ export async function executeDeployment(
     }
   } catch (error) {
     warnUnretriedReplacedDeletes(
-      this.replacementRun,
-      this.replacementDeps(),
-      this.interruptCause === 'user' ? 'interrupted' : 'failed'
+      engine.replacementRun,
+      engine.replacementDeps(),
+      engine.interruptCause === 'user' ? 'interrupted' : 'failed'
     );
     // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
     // (no prior state loaded). Captured BEFORE the partial-state save below,
@@ -756,10 +750,10 @@ export async function executeDeployment(
     // Written: restored, or any completed operation -- minus a re-put child on
     // Cloud Control, whose completed update sent nothing.
     const written = new Set([
-      ...this.replacementRun.restoredLostChildren,
+      ...engine.replacementRun.restoredLostChildren,
       ...completedOperations.map((op) => op.logicalId),
     ]);
-    for (const logicalId of this.replacementRun.updatesThatSentNothing) written.delete(logicalId);
+    for (const logicalId of engine.replacementRun.updatesThatSentNothing) written.delete(logicalId);
     // A child whose own write was ATTEMPTED and then threw (a deadline race, a
     // lost response, a definite AWS rejection -- only EC2 marks a refusal as
     // never applied, so the rest all carry an attempted bag; a multi-holder put
@@ -775,7 +769,7 @@ export async function executeDeployment(
         .filter(
           (op) =>
             op.attemptedProperties !== undefined &&
-            !this.replacementRun.updatesThatSentNothing.has(op.logicalId)
+            !engine.replacementRun.updatesThatSentNothing.has(op.logicalId)
         )
         .map((op) => op.logicalId)
     );
@@ -788,13 +782,13 @@ export async function executeDeployment(
         // The validator can still refuse it while the template uses a
         // property the SDK provider does not cover; its refusal names the
         // `--prefer-sdk-route` that lets it through.
-        return this.providerRegistry.getProviderType?.(type) === 'sdk'
+        return engine.providerRegistry.getProviderType?.(type) === 'sdk'
           ? safeMsg`--recreate-via-sdk-provider ${logicalId} (adding the --prefer-sdk-route the refusal names, if it is refused over a property the SDK provider does not cover)`
           : undefined;
       }
       const noCcRoute =
         hasNoCloudControlHandlers(type) ||
-        this.providerRegistry.ccRouteUnavailableReason?.(type) !== undefined ||
+        engine.providerRegistry.ccRouteUnavailableReason?.(type) !== undefined ||
         ccBrokenReason(type) !== undefined;
       return noCcRoute
         ? undefined
@@ -803,7 +797,7 @@ export async function executeDeployment(
     for (const lost of lostChildActions({
       templateResources: template.Resources ?? {},
       records: newResources,
-      recreatedUnderSameId: this.replacementRun.recreatedUnderSameId,
+      recreatedUnderSameId: engine.replacementRun.recreatedUnderSameId,
       written,
       conditions,
     })) {
@@ -833,7 +827,7 @@ export async function executeDeployment(
         recovery !== undefined &&
         !survivesParent(record.resourceType)
       ) {
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) went with a resource this deploy re-created under the same id; restoring it failed, and its state record is kept because the write may have reached AWS. If it is missing there, re-run the deploy with `.concat(
             recovery,
             ' to write it again.'
@@ -858,14 +852,14 @@ export async function executeDeployment(
         : '';
       if (lost.action === 'forget' && mayStillBeLive !== '') {
         Reflect.deleteProperty(newResources, lost.logicalId);
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) went with a resource this deploy re-created under the same id, and restoring it failed: its state record is dropped, so the next deploy creates it again.`.concat(
             mayStillBeLive
           )
         );
       } else if (lost.action === 'forget') {
         Reflect.deleteProperty(newResources, lost.logicalId);
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) went with a resource this deploy re-created under the same id, and the deploy failed before restoring it: it is gone from AWS and the resource runs without it until the next deploy, which creates it again (its state record is dropped).`
         );
       } else if (survivesParent(record.resourceType)) {
@@ -881,7 +875,7 @@ export async function executeDeployment(
           properties: { ...record.properties, ...lost.trimmed },
         };
         const lists = Object.keys(lost.trimmed).join(' / ');
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) lost its attachment to a resource this deploy re-created under the same name, and the deploy failed before attaching it again: its record keeps only the attachments that survived, so the next deploy attaches it again.`.concat(
             attempted.has(lost.logicalId)
               ? safeMsg` Its attach may already have landed on `.concat(
@@ -896,7 +890,7 @@ export async function executeDeployment(
           ...record,
           properties: { ...record.properties, ...lost.trimmed },
         };
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) was removed from a resource this deploy re-created under the same id, and the deploy failed before writing it again: the next deploy writes it there again (its record keeps only the holders it is still on).`.concat(
             mayStillBeLive
           )
@@ -911,7 +905,7 @@ export async function executeDeployment(
     try {
       const preRollbackState: StackState = {
         version: STATE_SCHEMA_VERSION_CURRENT,
-        region: this.stackRegion,
+        region: engine.stackRegion,
         stackName: currentState.stackName,
         resources: newResources,
         outputs: currentState.outputs,
@@ -924,24 +918,24 @@ export async function executeDeployment(
         // cross-stack read its own resources were built from.
         ...crossStackReadsForPartialSave(
           currentState,
-          this.recordedImports,
-          this.recordedOutputReads,
-          this.crossStackReadKeyNormalizer()
+          engine.recordedImports,
+          engine.recordedOutputReads,
+          engine.crossStackReadKeyNormalizer()
         ),
         lastModified: Date.now(),
       };
       const migrate = pendingMigration;
       const expectedEtag = migrate ? undefined : currentEtag;
-      currentEtag = await this.stateBackend.saveState(
+      currentEtag = await engine.stateBackend.saveState(
         stackName,
-        this.stackRegion,
-        this.withParentInfo(preRollbackState),
+        engine.stackRegion,
+        engine.withParentInfo(preRollbackState),
         { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
       );
       if (migrate) pendingMigration = false;
-      this.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
+      engine.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
     } catch (saveError) {
-      this.logger.warn(
+      engine.logger.warn(
         safeMsg`Failed to save partial state before rollback: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
       );
     }
@@ -992,17 +986,17 @@ export async function executeDeployment(
     if (
       error instanceof InterruptedError ||
       isInterruptedWaitError(error) ||
-      this.interruptCause === 'user'
+      engine.interruptCause === 'user'
     ) {
       await writeRollbackJournalSegment(
-        this.rollbackDeps(),
+        engine.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
         'interrupted',
         initialDeploy
       );
-      this.logger.info(
+      engine.logger.info(
         safeMsg`Partial state saved (${Object.keys(newResources).length} resources). ` +
           "Run deploy again to resume, 'cdkd rollback' to revert, or destroy to clean up."
       );
@@ -1010,21 +1004,21 @@ export async function executeDeployment(
     }
 
     // Deployment failed — attempt rollback unless --no-rollback is set
-    if (this.options.noRollback) {
+    if (engine.options.noRollback) {
       // Record a journal segment so `cdkd rollback` can revert the failed
       // deploy later instead of only fixing forward / destroying.
       await writeRollbackJournalSegment(
-        this.rollbackDeps(),
+        engine.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
         'no-rollback-failure',
         initialDeploy
       );
-      this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
-      this.logger.warn(
+      engine.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
+      engine.logger.warn(
         safeMsg`Partial state has been saved. ${recoveryHint(
-          this.rollbackDeps(),
+          engine.rollbackDeps(),
           "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
         )}`
       );
@@ -1034,7 +1028,7 @@ export async function executeDeployment(
       // leaves the segment behind and becomes resumable via `cdkd
       // rollback`; the segment is deleted after a clean replay + save.
       autoRollbackJournaled = await writeRollbackJournalSegment(
-        this.rollbackDeps(),
+        engine.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
@@ -1042,7 +1036,7 @@ export async function executeDeployment(
         initialDeploy
       );
       const rollbackResult = await performRollback(
-        this.rollbackDeps(),
+        engine.rollbackDeps(),
         completedOperations,
         newResources,
         stackName,
@@ -1063,7 +1057,7 @@ export async function executeDeployment(
         // no longer points at, so name `--revert-failed` here. Not for a
         // nested child: its stack-less `cdkd rollback` would resolve to the
         // top-level stack (go-to-k/cdkd#3864).
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`The automatic rollback could not revert ${rollbackResult.skipped} operation(s) ` +
             `(see the warnings above; each is recorded as a ROLLBACK_RESOURCE_SKIPPED event).` +
             // A failed journal write already warned that nothing was kept.
@@ -1073,13 +1067,13 @@ export async function executeDeployment(
         // and `--revert-failed` would act on an OLDER attempt's record.
         if (
           autoRollbackJournaled &&
-          this.options.parentStackInfo === undefined &&
+          engine.options.parentStackInfo === undefined &&
           // What the replay left, not every failed op: one it settled (a
           // replacement's UPDATE warned about with its orphan) is gone, and a
           // `--revert-failed` would only repeat its warning.
           rollbackResult.remainingFailedOps.some((op) => op.changeType !== 'DELETE')
         ) {
-          this.logger.warn(
+          engine.logger.warn(
             safeMsg`The record of the operation that failed is kept too. Revert it with: ${
               pasteableCommand('cdkd rollback', [
                 { value: stackName, hole: 'stack' },
@@ -1103,7 +1097,7 @@ export async function executeDeployment(
     try {
       const postRollbackState: StackState = {
         version: STATE_SCHEMA_VERSION_CURRENT,
-        region: this.stackRegion,
+        region: engine.stackRegion,
         stackName: currentState.stackName,
         resources: newResources,
         outputs: currentState.outputs,
@@ -1116,21 +1110,21 @@ export async function executeDeployment(
         // cross-stack read its own resources were built from.
         ...crossStackReadsForPartialSave(
           currentState,
-          this.recordedImports,
-          this.recordedOutputReads,
-          this.crossStackReadKeyNormalizer()
+          engine.recordedImports,
+          engine.recordedOutputReads,
+          engine.crossStackReadKeyNormalizer()
         ),
         lastModified: Date.now(),
       };
-      await this.stateBackend.saveState(
+      await engine.stateBackend.saveState(
         stackName,
-        this.stackRegion,
-        this.withParentInfo(postRollbackState),
+        engine.stackRegion,
+        engine.withParentInfo(postRollbackState),
         {
           ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
         }
       );
-      this.logger.debug('State saved after deployment failure');
+      engine.logger.debug('State saved after deployment failure');
       // Auto-rollback replayed cleanly AND the post-rollback state save
       // succeeded — the pre-deploy baseline is restored, so settle the
       // journal (issue #1183): drop it entirely, or — when the segment
@@ -1140,11 +1134,11 @@ export async function executeDeployment(
       // rollback` can resume.
       if (autoRollbackClean) {
         await settleNestedChildrenAfterCleanRollback(
-          this.rollbackDeps(),
+          engine.rollbackDeps(),
           stackName,
           rollbackSettledNested,
           await settleJournalAfterCleanRollback(
-            this.rollbackDeps(),
+            engine.rollbackDeps(),
             stackName,
             rollbackRemainingFailedOps,
             initialDeploy
@@ -1153,15 +1147,15 @@ export async function executeDeployment(
       }
     } catch (saveError) {
       // ETag mismatch from per-resource saves — force overwrite with fresh ETag
-      this.logger.debug(
+      engine.logger.debug(
         safeMsg`Retrying state save after rollback (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
       );
       try {
-        const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
+        const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
         const freshEtag = freshState?.etag;
         const postRollbackState: StackState = {
           version: STATE_SCHEMA_VERSION_CURRENT,
-          region: this.stackRegion,
+          region: engine.stackRegion,
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
@@ -1174,28 +1168,28 @@ export async function executeDeployment(
           // cross-stack read its own resources were built from.
           ...crossStackReadsForPartialSave(
             currentState,
-            this.recordedImports,
-            this.recordedOutputReads,
-            this.crossStackReadKeyNormalizer()
+            engine.recordedImports,
+            engine.recordedOutputReads,
+            engine.crossStackReadKeyNormalizer()
           ),
           lastModified: Date.now(),
         };
-        await this.stateBackend.saveState(
+        await engine.stateBackend.saveState(
           stackName,
-          this.stackRegion,
-          this.withParentInfo(postRollbackState),
+          engine.stackRegion,
+          engine.withParentInfo(postRollbackState),
           {
             ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
           }
         );
-        this.logger.debug('State saved after deployment failure (retry succeeded)');
+        engine.logger.debug('State saved after deployment failure (retry succeeded)');
         if (autoRollbackClean) {
           await settleNestedChildrenAfterCleanRollback(
-            this.rollbackDeps(),
+            engine.rollbackDeps(),
             stackName,
             rollbackSettledNested,
             await settleJournalAfterCleanRollback(
-              this.rollbackDeps(),
+              engine.rollbackDeps(),
               stackName,
               rollbackRemainingFailedOps,
               initialDeploy
@@ -1203,7 +1197,7 @@ export async function executeDeployment(
           );
         }
       } catch (retryError) {
-        this.logger.warn(
+        engine.logger.warn(
           safeMsg`Failed to save state after rollback: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))}`
         );
       }
@@ -1235,8 +1229,8 @@ export async function executeDeployment(
     // `withSharedDrainBudget`.
     outputs = await withSharedDrainBudget(() =>
       resolveOutputs(
-        this.outputsRun,
-        this.outputsDeps(),
+        engine.outputsRun,
+        engine.outputsDeps(),
         template,
         newResources,
         stackName,
@@ -1250,12 +1244,12 @@ export async function executeDeployment(
     // (`withParentInfo`), the exports-index `updateForStack` and
     // `buildDisplayOutputs` each redact this bag again when they read it
     // (issue #2814). `redactOutputs` folds the outputs pass map into
-    // `this.outputsRun.outputSecrets` — the outputs' own substituted
-    // references — and `resolveOutputs` filled `this.outputsRun.outputsTemplateSource`
+    // `engine.outputsRun.outputSecrets` — the outputs' own substituted
+    // references — and `resolveOutputs` filled `engine.outputsRun.outputsTemplateSource`
     // with the unresolved values that position
     // them (#1910).
     const resolvedOutputsBeforeRedaction = outputs;
-    outputs = redactOutputs(this.maskingDeps(), outputs);
+    outputs = redactOutputs(engine.maskingDeps(), outputs);
     // Issue #2274: remember, FOR THIS PROCESS ONLY, the plaintext behind any
     // output the redaction just replaced with the mask. Every cross-stack
     // route — a nested stack's `Outputs.<Key>`, `Fn::ImportValue`,
@@ -1272,13 +1266,14 @@ export async function executeDeployment(
     // `***` instead of being served the plaintext, which is the fail-safe
     // direction and the reason this is stated rather than fixed.
     rememberRecoverableMaskedOutputs(
-      this.maskingDeps(),
+      engine.maskingDeps(),
       stackName,
       resolvedOutputsBeforeRedaction,
       outputs
     );
   } catch (outputError) {
-    await this.persistStateAfterOutputFailure(
+    await persistStateAfterOutputFailure(
+      engine,
       stackName,
       currentState,
       newResources,
@@ -1289,7 +1284,7 @@ export async function executeDeployment(
     // output resolution failed — so rolling back is a legitimate use case
     // (issue #1183). Record a journal segment so `cdkd rollback` can revert.
     await writeRollbackJournalSegment(
-      this.rollbackDeps(),
+      engine.rollbackDeps(),
       stackName,
       completedOperations,
       failedOperations,
@@ -1302,22 +1297,22 @@ export async function executeDeployment(
   return {
     state: {
       version: STATE_SCHEMA_VERSION_CURRENT,
-      region: this.stackRegion,
+      region: engine.stackRegion,
       stackName: currentState.stackName,
       resources: newResources,
       ...orphansCarriedFrom(currentState),
       outputs,
       // Always written, `[]` included: on this path the bag was re-resolved,
       // so the set is KNOWN (issue #2193). Absent would read as "not known".
-      exportNames: [...this.outputsRun.resolvedExportNames],
+      exportNames: [...engine.outputsRun.resolvedExportNames],
       // This pass's skipped set, omitted when empty (issue #2740). Copied,
       // like the `exportNames` / `imports` spreads beside it.
-      ...(this.outputsRun.skippedOutputs && {
-        skippedOutputs: { ...this.outputsRun.skippedOutputs },
+      ...(engine.outputsRun.skippedOutputs && {
+        skippedOutputs: { ...engine.outputsRun.skippedOutputs },
       }),
-      ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
-      ...(this.recordedOutputReads.length > 0 && {
-        outputReads: [...this.recordedOutputReads],
+      ...(engine.recordedImports.length > 0 && { imports: [...engine.recordedImports] }),
+      ...(engine.recordedOutputReads.length > 0 && {
+        outputReads: [...engine.recordedOutputReads],
       }),
       lastModified: Date.now(),
     },
@@ -1350,7 +1345,7 @@ export async function executeDeployment(
  * rethrown is the primary signal; a failed save only warns.
  */
 export async function persistStateAfterOutputFailure(
-  this: DeployEngine,
+  engine: DeployEngine,
   stackName: string,
   currentState: StackState,
   newResources: Record<string, ResourceState>,
@@ -1359,7 +1354,7 @@ export async function persistStateAfterOutputFailure(
 ): Promise<void> {
   const buildState = (): StackState => ({
     version: STATE_SCHEMA_VERSION_CURRENT,
-    region: this.stackRegion,
+    region: engine.stackRegion,
     stackName: currentState.stackName,
     resources: newResources,
     outputs: currentState.outputs,
@@ -1367,7 +1362,7 @@ export async function persistStateAfterOutputFailure(
     ...skippedOutputsCarriedFrom(currentState),
     ...orphansCarriedFrom(currentState),
     // Issue #2057: the UNION, like every other non-success save. This one
-    // used to write `[...this.recordedImports]` WHOLESALE, copying the
+    // used to write `[...engine.recordedImports]` WHOLESALE, copying the
     // SUCCESS path's shape onto a path that is not one — provisioning
     // succeeded, but output resolution threw, and the caller writes a
     // rollback journal segment and rethrows, so `cdkd rollback` reads
@@ -1381,42 +1376,42 @@ export async function persistStateAfterOutputFailure(
     // resolved it locally.
     ...crossStackReadsForPartialSave(
       currentState,
-      this.recordedImports,
-      this.recordedOutputReads,
-      this.crossStackReadKeyNormalizer()
+      engine.recordedImports,
+      engine.recordedOutputReads,
+      engine.crossStackReadKeyNormalizer()
     ),
     lastModified: Date.now(),
   });
   try {
     const expectedEtag = pendingMigration ? undefined : currentEtag;
-    await this.stateBackend.saveState(
+    await engine.stateBackend.saveState(
       stackName,
-      this.stackRegion,
-      this.withParentInfo(buildState()),
+      engine.stackRegion,
+      engine.withParentInfo(buildState()),
       {
         ...(expectedEtag !== undefined && { expectedEtag }),
         migrateLegacy: pendingMigration,
       }
     );
-    this.logger.debug('State saved after output resolution failure');
+    engine.logger.debug('State saved after output resolution failure');
   } catch (saveError) {
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Retrying state save after output resolution failure (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
     );
     try {
-      const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
+      const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
       const freshEtag = freshState?.etag;
-      await this.stateBackend.saveState(
+      await engine.stateBackend.saveState(
         stackName,
-        this.stackRegion,
-        this.withParentInfo(buildState()),
+        engine.stackRegion,
+        engine.withParentInfo(buildState()),
         {
           ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
         }
       );
-      this.logger.debug('State saved after output resolution failure (retry succeeded)');
+      engine.logger.debug('State saved after output resolution failure (retry succeeded)');
     } catch (retryError) {
-      this.logger.warn(
+      engine.logger.warn(
         safeMsg`Failed to save state after output resolution failure: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))} — resources were provisioned but not recorded; run deploy again to reconcile.`
       );
     }

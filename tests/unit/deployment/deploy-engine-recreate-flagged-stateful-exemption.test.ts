@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState as StateRecord } from '../../../src/types/state.js';
@@ -120,19 +121,26 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
 
   function provisionOf(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>,
-          conditions?: Record<string, boolean>,
-          counts?: unknown
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, StateRecord>,
+      stackName: string,
+      template: CloudFormationTemplate,
+      parameterValues?: Record<string, unknown>,
+      conditions?: Record<string, boolean>,
+      counts?: Parameters<typeof provisionResource>[8]
+    ) =>
+      provisionResource(
+        engine,
+        logicalId,
+        change,
+        stateResources,
+        stackName,
+        template,
+        parameterValues,
+        conditions,
+        counts
+      );
   }
 
   /**

@@ -12,7 +12,7 @@ import { noteSecretNamedRecord } from './masking.js';
 
 /**
  * What {@link buildResolverContext} / {@link maskedInputSources} read from the
- * engine, built at each call site as `this.resolverContextDeps()`.
+ * engine, built at each call site as `DeployEngine.resolverContextDeps()`.
  * `options` / `stateBackend` / `exportIndexStore` / `resolver` are set only in
  * the constructor, so they are passed by value; everything `deploy()` replaces
  * per run or sets mid-run is a live getter, read where the old method read

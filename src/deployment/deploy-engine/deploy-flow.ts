@@ -112,14 +112,8 @@ import { crossStackOutputProvenanceSource } from '../read-provenance-sources.js'
 import type { CrossStackRead } from '../intrinsic-resolver/context.js';
 import { resolvePendingCloudControlRequests } from '../cc-pending-requests.js';
 import { buildDisplayOutputs, resolveOutputs } from './outputs.js';
+import { executeDeployment } from './execute.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
-
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    doDeployWithPrefetch: OmitThisParameter<typeof doDeployWithPrefetch>;
-  }
-}
 
 /**
  * Connections `warmConnections` opens before the tail (#4837): the state
@@ -129,13 +123,13 @@ declare module '../deploy-engine.js' {
 const TAIL_WARM_CONNECTIONS = 3;
 
 export async function doDeployWithPrefetch(
-  this: DeployEngine,
+  engine: DeployEngine,
   stackName: string,
   template: CloudFormationTemplate,
   createOnlyPrefetch: CreateOnlyPrefetch
 ): Promise<DeployResult> {
   const startTime = Date.now();
-  this.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
+  engine.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
 
   // Live progress renderer: shows in-flight resources as a multi-line area
   // at the bottom of the terminal. Self-disables on non-TTY and when
@@ -153,8 +147,8 @@ export async function doDeployWithPrefetch(
   // fallback) and stranding the just-written lock: with the flag set, the
   // DAG executor dispatches no work and the `finally` below releases the
   // lock through the normal path.
-  this.interrupted = false;
-  this.interruptCause = null;
+  engine.interrupted = false;
+  engine.interruptCause = null;
   const sigintHandler = () => {
     // Route the interrupt notice through the live renderer so it does not
     // collide with the in-flight task display.
@@ -163,14 +157,19 @@ export async function doDeployWithPrefetch(
         '\nInterrupted — saving partial state after current operations complete...\n'
       );
     });
-    this.interrupted = true;
-    this.interruptCause ??= 'user';
+    engine.interrupted = true;
+    engine.interruptCause ??= 'user';
   };
   process.on('SIGINT', sigintHandler);
 
   // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
   try {
-    await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
+    await engine.lockManager.acquireLockWithRetry(
+      stackName,
+      engine.stackRegion,
+      undefined,
+      'deploy'
+    );
   } catch (error) {
     // The try/finally that owns the listener removal starts below — clean
     // up here so an acquire failure does not leak the handler.
@@ -199,13 +198,13 @@ export async function doDeployWithPrefetch(
     renderer.start();
 
     // 1. Load current state
-    const currentStateData = await this.stateBackend.getState(stackName, this.stackRegion);
+    const currentStateData = await engine.stateBackend.getState(stackName, engine.stackRegion);
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
     noteDeployStateRecord(currentStateData?.state !== undefined);
     const currentState: StackState = currentStateData?.state ?? {
       version: STATE_SCHEMA_VERSION_CURRENT,
-      region: this.stackRegion,
+      region: engine.stackRegion,
       stackName,
       resources: {},
       outputs: {},
@@ -216,9 +215,9 @@ export async function doDeployWithPrefetch(
       lastModified: Date.now(),
     };
     const currentEtag = currentStateData?.etag;
-    this.rebaseline(currentState.resources ?? {});
-    this.runProducerRegionEvidence = () =>
-      producerRegionEvidence(this.rollbackDeps(), currentState);
+    engine.rebaseline(currentState.resources ?? {});
+    engine.runProducerRegionEvidence = () =>
+      producerRegionEvidence(engine.rollbackDeps(), currentState);
     // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
     // the most write-capable consumer of this bag there is: the no-change
     // merge path below carries `currentState.outputs ?? {}` into
@@ -235,7 +234,12 @@ export async function doDeployWithPrefetch(
     // `repairMalformedResourcesForReadOnly`'s own note records: a per-walk
     // `?? {}` is inert for this class, since each flow dereferences the
     // container a line earlier.
-    refuseMalformedOutputs(currentState, stackName, this.stackRegion, this.options.refusalRecovery);
+    refuseMalformedOutputs(
+      currentState,
+      stackName,
+      engine.stackRegion,
+      engine.options.refusalRecovery
+    );
     // And the `resources` bag, a SEPARATE container with a separate absence
     // rule, refused separately so the message names the one that is broken
     // (issue go-to-k/cdkd#3161).
@@ -257,8 +261,8 @@ export async function doDeployWithPrefetch(
     refuseMalformedResourcesForDeploy(
       currentState,
       stackName,
-      this.stackRegion,
-      this.options.refusalRecovery
+      engine.stackRegion,
+      engine.options.refusalRecovery
     );
     // And each ROW of that bag (go-to-k/cdkd#3314). A `null` or typeless row
     // reads as absent in the diff and is planned as a CREATE of a resource
@@ -271,8 +275,8 @@ export async function doDeployWithPrefetch(
     refuseMalformedResourceEntriesForDeploy(
       currentState,
       stackName,
-      this.stackRegion,
-      this.options.refusalRecovery
+      engine.stackRegion,
+      engine.options.refusalRecovery
     );
     // And each row's `properties` MAP (go-to-k/cdkd#3211), BELOW the row guard,
     // which names a typeless row with a torn map more precisely. `calculateDiff`
@@ -282,15 +286,20 @@ export async function doDeployWithPrefetch(
     refuseMalformedResourceProperties(
       currentState,
       stackName,
-      this.stackRegion,
-      this.options.refusalRecovery
+      engine.stackRegion,
+      engine.options.refusalRecovery
     );
     // The `orphans` CONTAINER, beside it and for the same placement reason
     // (go-to-k/cdkd#3379): the adoption pass below reads it on a bare `?? []`
     // and ASSIGNS `currentState.orphans` from what it read, so an unreadable
     // container is rewritten by a writer. AFTER the lock, so the guarantee is
     // "before any resource operation" rather than "before any lock".
-    refuseMalformedOrphans(currentState, stackName, this.stackRegion, this.options.refusalRecovery);
+    refuseMalformedOrphans(
+      currentState,
+      stackName,
+      engine.stackRegion,
+      engine.options.refusalRecovery
+    );
     // The ROWS of a readable list (go-to-k/cdkd#3500). Its own call because
     // the questions are independent: the adoption pass below dereferences
     // each row's `state`, and `orphansAfterRollback` keys its merge map on
@@ -299,13 +308,13 @@ export async function doDeployWithPrefetch(
     refuseMalformedOrphanRecords(
       currentState,
       stackName,
-      this.stackRegion,
-      this.options.refusalRecovery
+      engine.stackRegion,
+      engine.options.refusalRecovery
     );
     // State schema v12: the loaded outputs bag and its provenance, for a save
     // that carries that bag forward. After the refusals, which own the first
     // read of the bag.
-    this.provenanceBaseline = provenanceBaselineOf(
+    engine.provenanceBaseline = provenanceBaselineOf(
       currentState,
       isKnownTokenFreeState(currentStateData?.state)
     );
@@ -313,7 +322,7 @@ export async function doDeployWithPrefetch(
     // migrates it to the new key.
     const migrationPending = currentStateData?.migrationPending ?? false;
 
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Loaded current state: ${Object.keys(currentState.resources).length} resources`
     );
 
@@ -328,8 +337,8 @@ export async function doDeployWithPrefetch(
     // for a stack with no record; it is awaited before anything acts on the
     // plan (`firstDeployStateGate` below). A loaded record keeps the gate
     // strictly first.
-    if (this.options.onCurrentStateLoaded) {
-      const gate = this.options.onCurrentStateLoaded(stackName, currentStateData?.state);
+    if (engine.options.onCurrentStateLoaded) {
+      const gate = engine.options.onCurrentStateLoaded(stackName, currentStateData?.state);
       if (currentStateData === null || currentStateData === undefined) {
         firstDeployStateGate = gate;
         firstDeploy = true;
@@ -354,14 +363,14 @@ export async function doDeployWithPrefetch(
       (gate === undefined ? Promise.resolve() : gate)
         .then(start, () => undefined)
         .catch(() => undefined);
-    if (!this.options.dryRun) {
+    if (!engine.options.dryRun) {
       void prefetchCreateTokenLedger();
-      const exportIndexStore = this.exportIndexStore;
+      const exportIndexStore = engine.exportIndexStore;
       if (exportIndexStore && importableOutputKeys(currentState).length === 0) {
         exportsPrefetch = afterGate(() => exportIndexStore.prefetch());
       }
     }
-    this.absentJournalVersionPurge = undefined;
+    engine.absentJournalVersionPurge = undefined;
 
     // 1b-pre. go-to-k/cdkd#3252: settle the Cloud Control CREATEs an earlier
     // run stopped waiting for, before anything reads the journal or plans. A
@@ -371,23 +380,23 @@ export async function doDeployWithPrefetch(
     // before anything is written. It reads the journal step 1b reads, so a
     // stack with nothing pending pays no extra read; the read error, if any,
     // is 1b's to swallow.
-    let journalAtStart: Awaited<ReturnType<typeof this.stateBackend.loadRollbackJournal>> = null;
+    let journalAtStart: Awaited<ReturnType<typeof engine.stateBackend.loadRollbackJournal>> = null;
     let journalReadError: unknown;
     try {
-      journalAtStart = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+      journalAtStart = await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion);
     } catch (error) {
       journalReadError = error ?? new Error('unreadable rollback journal');
     }
     if (
-      !this.options.dryRun &&
+      !engine.options.dryRun &&
       (await resolvePendingCloudControlRequests({
-        journal: this.stateBackend,
+        journal: engine.stateBackend,
         loaded: journalAtStart,
-        reader: () => this.providerRegistry.getCloudControlProvider(),
+        reader: () => engine.providerRegistry.getCloudControlProvider(),
         stackName,
-        region: this.stackRegion,
+        region: engine.stackRegion,
         command: 'deploy',
-        logger: this.logger,
+        logger: engine.logger,
         stateResources: currentState.resources,
         // A CREATE that completed is RESUMED when the template still declares
         // its logical id with the type and the journal holds the bag it sent
@@ -408,7 +417,7 @@ export async function doDeployWithPrefetch(
           ) {
             return false;
           }
-          this.resumedCreates.set(op.logicalId, {
+          engine.resumedCreates.set(op.logicalId, {
             requestToken: op.pendingCloudControlRequest.requestToken,
             identifier,
             resourceType: op.resourceType,
@@ -420,7 +429,10 @@ export async function doDeployWithPrefetch(
       }))
     ) {
       try {
-        journalAtStart = await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion);
+        journalAtStart = await engine.stateBackend.loadRollbackJournal(
+          stackName,
+          engine.stackRegion
+        );
       } catch (error) {
         journalReadError = error ?? new Error('unreadable rollback journal');
       }
@@ -436,9 +448,9 @@ export async function doDeployWithPrefetch(
       const loaded = journalAtStart;
       // No journal: purge what an earlier delete's unfinished purge left, now,
       // beside the deploy, so the success settle need not touch the key.
-      if (loaded === null && !this.options.parentStackInfo && !this.options.dryRun) {
-        this.absentJournalVersionPurge = afterGate(() =>
-          this.stateBackend.purgeRollbackJournalVersions(stackName, this.stackRegion)
+      if (loaded === null && !engine.options.parentStackInfo && !engine.options.dryRun) {
+        engine.absentJournalVersionPurge = afterGate(() =>
+          engine.stateBackend.purgeRollbackJournalVersions(stackName, engine.stackRegion)
         );
       }
       // A nested child's `nested-pending-parent` segments record a deploy
@@ -459,14 +471,14 @@ export async function doDeployWithPrefetch(
         const failedOnly =
           journal.segments.every((s) => s.operations.length === 0) &&
           journal.segments.some((s) => (s.failedOperations?.length ?? 0) > 0);
-        this.logger.info(
+        engine.logger.info(
           failedOnly
             ? safeMsg`A previous deploy of ${displayStackName(stackName)} failed and was automatically rolled back. ` +
                 `The failed resource may be partially applied — revert it, or continue ` +
                 safeMsg`deploying to fix forward (${
                   // Issue #3754: a nested child's journal is cleared by its
                   // TOP-LEVEL stack's success, not by its own.
-                  this.options.parentStackInfo
+                  engine.options.parentStackInfo
                     ? 'a successful deploy of the top-level stack clears this note'
                     : 'a successful deploy clears this note'
                 }).` +
@@ -489,7 +501,7 @@ export async function doDeployWithPrefetch(
 
     // 1-pre. Issue #3468: read every REASON-LESS baseline refusal before
     // anything in this deploy can take a readback. See the function's doc.
-    stampReasonlessParameterRefusals(this.logger, currentState.resources, template);
+    stampReasonlessParameterRefusals(engine.logger, currentState.resources, template);
     // 1a. Auto-refresh observedProperties for any state entry that lacks it
     // (state written by an older binary / direct edit). Fires
     // `provider.readCurrentState` fire-and-forget through the same
@@ -502,11 +514,14 @@ export async function doDeployWithPrefetch(
     // `currentState.resources`. Closes the upgrade UX gap left by
     // v3 schema: the manual `cdkd state refresh-observed` command
     // remains for non-deploy refresh.
-    this.observedCapture.kickOffAutoRefreshObservedProperties(currentState.resources, currentState);
+    engine.observedCapture.kickOffAutoRefreshObservedProperties(
+      currentState.resources,
+      currentState
+    );
 
     // 2. Template parsing is handled by DagBuilder (dependency analysis) and
     // IntrinsicResolver (intrinsic function resolution) in later steps
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Template has ${Object.keys(template.Resources || {}).length} resources`
     );
 
@@ -532,31 +547,31 @@ export async function doDeployWithPrefetch(
     // engine, so it is where both the `--verbose` parameter lines are masked
     // and where a declared `Type` that would coerce the value out of cdkd's
     // string-keyed redaction model is refused.
-    const parameterValues = await this.resolver.resolveParameters(
+    const parameterValues = await engine.resolver.resolveParameters(
       template,
-      this.options.parameters,
+      engine.options.parameters,
       {
         // `hasMaskableValues` (go-to-k/cdkd#1998): only the `--verbose`
         // lines read a bag holding log-only needles alone here; the
         // coercion refusal asks `size` itself.
-        ...(this.options.inheritedSecrets &&
-          hasMaskableValues(this.options.inheritedSecrets) && {
-            inheritedSecrets: this.options.inheritedSecrets,
+        ...(engine.options.inheritedSecrets &&
+          hasMaskableValues(engine.options.inheritedSecrets) && {
+            inheritedSecrets: engine.options.inheritedSecrets,
           }),
       }
     );
-    this.logger.debug(
+    engine.logger.debug(
       safeMsg`Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
     );
     // Issue #4731: before the diff binding and any resource resolution, so
     // both read one answer per parameter whatever order resources resolve in.
-    poisonRenderedSpellingsCollidingIn(template, parameterValues, this.options.inheritedSecrets);
+    poisonRenderedSpellingsCollidingIn(template, parameterValues, engine.options.inheritedSecrets);
     // go-to-k/cdkd#4043 (review round 9): a nested child positions each
     // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
     // here on (every save, the journal, the outputs pass).
-    this.noEchoRun.inheritedNoEchoParameters = new Set([
-      ...(freshNoEchoParameters(this.maskingDeps(), parameterValues) ?? []),
-      ...(this.options.passedNoEchoParameters ?? []),
+    engine.noEchoRun.inheritedNoEchoParameters = new Set([
+      ...(freshNoEchoParameters(engine.maskingDeps(), parameterValues) ?? []),
+      ...(engine.options.passedNoEchoParameters ?? []),
     ]);
     // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
     // older cdkd recorded) takes today's template's, which is what this
@@ -568,20 +583,20 @@ export async function doDeployWithPrefetch(
     const backfillNoEchoValues = noEchoParameterValueSeed(
       template.Parameters,
       parameterValues,
-      this.options.inheritedSecrets,
-      this.options.parameters
+      engine.options.inheritedSecrets,
+      engine.options.parameters
     );
     // The save reads the same corpus for a record it stamps or carries.
-    this.secretsRun.fingerprintNoEchoValues = backfillNoEchoValues;
+    engine.secretsRun.fingerprintNoEchoValues = backfillNoEchoValues;
     // go-to-k/cdkd#4543: how each parameter enters a masked property's INPUT
     // fingerprint, decided once from the REAL values so the diff pass (which
     // binds a nested child's redacted bag) and the provisioning arms agree.
-    this.secretsRun.fingerprintParameters = parameterInputsFor({
+    engine.secretsRun.fingerprintParameters = parameterInputsFor({
       template,
       values: parameterValues,
-      nestedChild: this.options.parentStackInfo !== undefined,
-      supplied: this.options.parameters,
-      passedClasses: this.options.passedParameterClasses,
+      nestedChild: engine.options.parentStackInfo !== undefined,
+      supplied: engine.options.parameters,
+      passedClasses: engine.options.passedParameterClasses,
     });
     // go-to-k/cdkd#4565: the nested-stack templates one level below this
     // stack, from the assembly the surrounding nested-stack context carries
@@ -589,7 +604,7 @@ export async function doDeployWithPrefetch(
     // index for a child). The loader is built once here, never from inside a
     // fingerprint walk; each file is read on first use and cached for the
     // rest of this deploy.
-    this.secretsRun.fingerprintChildTemplates = childTemplateLoader(
+    engine.secretsRun.fingerprintChildTemplates = childTemplateLoader(
       getCurrentNestedStackContext()?.nestedTemplates
     );
     let maskedFingerprintsBackfilled =
@@ -598,7 +613,7 @@ export async function doDeployWithPrefetch(
 
     // 2.6. Evaluate conditions from template
     const context = buildResolverContext(
-      this.resolverContextDeps(),
+      engine.resolverContextDeps(),
       {
         template,
         resources: currentState.resources,
@@ -606,8 +621,8 @@ export async function doDeployWithPrefetch(
       },
       stackName
     );
-    const conditions = await this.resolver.evaluateConditions(context);
-    this.logger.debug(
+    const conditions = await engine.resolver.evaluateConditions(context);
+    engine.logger.debug(
       safeMsg`Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
     );
     // CloudFormation rejects an Output whose Value evaluates to
@@ -629,14 +644,14 @@ export async function doDeployWithPrefetch(
       // logical id (`Ref` checks resources first) is no input.
       const { tokens, unavailable } = deployConditionInputs(
         parameterValues,
-        this.options.inheritedSecrets,
+        engine.options.inheritedSecrets,
         new Set(Object.keys(currentState.resources))
       );
       // A plain value the parent supplied is no input either: the inherited
       // corpus can miss a short ancestor secret embedded in it.
       for (const name of parentSuppliedValues(
         template,
-        this.options.parameters,
+        engine.options.parameters,
         new Set(Object.keys(tokens))
       )) {
         unavailable.add(name);
@@ -659,14 +674,17 @@ export async function doDeployWithPrefetch(
     // "in state but not in desired -> DELETE" path (CFn removes it the same
     // way), and a condition-false resource is never created in the first
     // place.
-    const effectiveTemplate = this.templateParser.filterResourcesByCondition(template, conditions);
+    const effectiveTemplate = engine.templateParser.filterResourcesByCondition(
+      template,
+      conditions
+    );
     // Every save from here on stamps each record's construct path from it.
-    this.noEchoRun.constructPathTemplate = effectiveTemplate;
+    engine.noEchoRun.constructPathTemplate = effectiveTemplate;
     // go-to-k/cdkd#4043: the positional `NoEcho` arm opens only the `Fn::If`
     // branch this deploy selected, and reads the previous records' declared
     // `NoEcho` attributes (go-to-k/cdkd#2449).
-    this.noEchoRun.noEchoConditions = conditions;
-    seedPersistedNoEchoAttributes(this.noEchoRun, currentState.resources);
+    engine.noEchoRun.noEchoConditions = conditions;
+    seedPersistedNoEchoAttributes(engine.noEchoRun, currentState.resources);
 
     // 2b. Re-adopt anything a previous rollback left in AWS (issue #2934).
     //
@@ -684,7 +702,7 @@ export async function doDeployWithPrefetch(
     // below persists it; the carried-forward spreads read this same object.
     const orphanCountBeforeAdoption = (currentState.orphans ?? []).length;
     const orphanPlan = await adoptRollbackOrphans(
-      this.rollbackDeps(),
+      engine.rollbackDeps(),
       currentState,
       effectiveTemplate
     );
@@ -694,22 +712,22 @@ export async function doDeployWithPrefetch(
     // judged with what it stored where a `NoEcho` parameter served it, for a
     // name taken from a value since changed (no AWS call).
     captureStoredNoEchoNamingValues(
-      this.secretsRun,
-      this.maskingDeps(),
+      engine.secretsRun,
+      engine.maskingDeps(),
       currentState.resources,
       effectiveTemplate,
       conditions
     );
-    this.secretsRun.preDeploySecretNamedRecords = secretNamedRecordNeedles(
+    engine.secretsRun.preDeploySecretNamedRecords = secretNamedRecordNeedles(
       currentState.resources,
-      stateNamingSecrets(this.secretsRun)
+      stateNamingSecrets(engine.secretsRun)
     );
     // Issue #3468: an adopted record entered `resources` AFTER the deploy-start
     // stamp. No writer produces a marked orphan record today; re-reading here
     // keeps that from becoming load-bearing. Idempotent, and handed the same
     // `template` object as the first pass.
     if (Object.keys(orphanPlan.adopted).length > 0) {
-      stampReasonlessParameterRefusals(this.logger, currentState.resources, template);
+      stampReasonlessParameterRefusals(engine.logger, currentState.resources, template);
       // The same re-read for go-to-k/cdkd#4451's backfill.
       if (
         backfillMaskedPropertyFingerprints(currentState.resources, template, backfillNoEchoValues) >
@@ -742,8 +760,8 @@ export async function doDeployWithPrefetch(
         .map((r) => r.Type)
         .filter((type) => type !== 'AWS::CDK::Metadata')
     );
-    this.providerRegistry.validateResourceTypes(resourceTypes);
-    this.logger.debug(`All resource types validated`);
+    engine.providerRegistry.validateResourceTypes(resourceTypes);
+    engine.logger.debug(`All resource types validated`);
 
     // 3.5. Report top-level resource property routing decisions
     // (#614). For each resource using a silent-drop top-level property,
@@ -776,20 +794,20 @@ export async function doDeployWithPrefetch(
         // routing lines describe the route `getProviderFor` takes (#3713).
         previousProperties: currentState.resources[logicalId]?.properties,
       }));
-    this.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
-    this.logger.debug(`All resource properties validated`);
+    engine.providerRegistry.validateResourceProperties(resourcesForPropertyCheck);
+    engine.logger.debug(`All resource properties validated`);
 
     // 4. Build dependency graph
-    const dag = this.dagBuilder.buildGraph(effectiveTemplate);
-    const executionLevels = this.dagBuilder.getExecutionLevels(dag);
-    this.logger.debug(safeMsg`Dependency graph: ${executionLevels.length} execution levels`);
+    const dag = engine.dagBuilder.buildGraph(effectiveTemplate);
+    const executionLevels = engine.dagBuilder.getExecutionLevels(dag);
+    engine.logger.debug(safeMsg`Dependency graph: ${executionLevels.length} execution levels`);
 
     // 5. Calculate diff
     // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
     // `Fn::Join` literal args like "-value" -> "-value2") are detected against
     // the already-resolved values stored in state.
     const diffResolverContext = buildResolverContext(
-      this.resolverContextDeps(),
+      engine.resolverContextDeps(),
       {
         template: effectiveTemplate,
         resources: currentState.resources,
@@ -799,7 +817,7 @@ export async function doDeployWithPrefetch(
         // so does the condition evaluation above, where substituting an
         // expression would flip an `Fn::Equals` over a parameter. See
         // `redactParametersForDiff`.
-        parameters: redactParametersForDiff(this.maskingDeps(), parameterValues),
+        parameters: redactParametersForDiff(engine.maskingDeps(), parameterValues),
         conditions,
       },
       stackName
@@ -832,9 +850,9 @@ export async function doDeployWithPrefetch(
     // diff pass read, for the read-provenance arm below.
     const crossStackReads = new Map<string, CrossStackRead>();
     diffResolverContext.crossStackReads = crossStackReads;
-    const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
+    const diffResolveFn = (value: unknown) => engine.resolver.resolve(value, diffResolverContext);
     const maskedInputSourcesForDiff = maskedInputSources(
-      this.resolverContextDeps(),
+      engine.resolverContextDeps(),
       effectiveTemplate,
       currentState.resources,
       conditions,
@@ -844,14 +862,14 @@ export async function doDeployWithPrefetch(
       sources: maskedInputSourcesForDiff,
       rebaselined: new Map<string, Record<string, string>>(),
     };
-    const changes = await this.diffCalculator.calculateDiff(
+    const changes = await engine.diffCalculator.calculateDiff(
       currentState,
       effectiveTemplate,
       diffResolveFn,
       // Shared with `cdkd diff` (issue #1591): a preview that narrows
       // differently from the apply forecasts a change the deploy will never
       // make, which is this issue's own bug class moved one command over.
-      makeCanonicalizePropertiesFn(this.providerRegistry),
+      makeCanonicalizePropertiesFn(engine.providerRegistry),
       // Issue #2750: the drops THIS deploy opted into via
       // `--allow-unsupported-properties` are not written, so comparing them
       // would report a change the SDK route will never make. `cdkd diff`
@@ -872,7 +890,7 @@ export async function doDeployWithPrefetch(
       // the method's existence is pinned directly on `ProviderRegistry` by
       // `provider-registry-report-silent-drops.test.ts`, since a mocked
       // registry cannot witness the real one losing it.
-      this.providerRegistry.getAllowedUnsupportedProperties?.(),
+      engine.providerRegistry.getAllowedUnsupportedProperties?.(),
       // go-to-k/cdkd#3717: a nested child's parameters carrying a `NoEcho`
       // value the parent supplied in THIS deploy. The diff side binds the
       // redacted bag above, where such a value is `***` like its record, so
@@ -884,7 +902,7 @@ export async function doDeployWithPrefetch(
       // Review round 9: a nested child's parameters its parent fills from a
       // `NoEcho` source too (`inheritedNoEchoParameters`, set above).
       freshNoEchoParametersWithDeclared(
-        this.noEchoRun.inheritedNoEchoParameters,
+        engine.noEchoRun.inheritedNoEchoParameters,
         effectiveTemplate
       ),
       // go-to-k/cdkd#4049: the diff pass resolves a `Ref` to a `NoEcho`
@@ -895,8 +913,8 @@ export async function doDeployWithPrefetch(
       // go-to-k/cdkd#3869: and the name spellings of each record named from
       // a secret, for an OLD side no read of the diff pass names.
       diffLogMasker(
-        this.secretsRun,
-        this.maskingDeps(),
+        engine.secretsRun,
+        engine.maskingDeps(),
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
         parameterValues,
@@ -906,20 +924,20 @@ export async function doDeployWithPrefetch(
       // its same-stack readers are promoted as for a property-driven
       // replacement, before anything below counts the changes. This stack's
       // targets only, never a nested child's or another stack's.
-      recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      recreateTargetIdsFor(engine.options.recreateTargets, stackName),
       // go-to-k/cdkd#4543: a masked property's resolved inputs, so a changed
       // parameter or flipped condition behind unchanged template text diffs.
       // A layout-1 fingerprint whose text still matches is re-baselined to
       // layout 2 from these same inputs, stamped below without sending.
       maskedInputs,
       // go-to-k/cdkd#4159: the account flags the load's refusals above carry.
-      this.options.refusalRecovery,
+      engine.options.refusalRecovery,
       // go-to-k/cdkd#4043: compare what the persist side writes for a value
       // a `NoEcho` source served, and read a pre-v11 record's plaintext as
       // the migration witness.
       noEchoDiffComparison(
-        this.noEchoRun,
-        this.noEchoDeps(),
+        engine.noEchoRun,
+        engine.noEchoDeps(),
         currentState.resources,
         effectiveTemplate,
         conditions,
@@ -931,13 +949,13 @@ export async function doDeployWithPrefetch(
       // snapshot, and each producer output a consumer read, through the run's
       // producer-state cache (the consumer's provisioning reuses the read).
       {
-        ...(this.options.inheritedReferenceProvenance && {
-          inherited: this.options.inheritedReferenceProvenance,
+        ...(engine.options.inheritedReferenceProvenance && {
+          inherited: engine.options.inheritedReferenceProvenance,
         }),
         crossStackOutputs: crossStackOutputProvenanceSource(
           crossStackReads,
-          this.recordedImports,
-          this.stateBackend
+          engine.recordedImports,
+          engine.stateBackend
         ),
       }
     );
@@ -1012,12 +1030,12 @@ export async function doDeployWithPrefetch(
     const serviceTokenRefusals = findServiceTokenRefusals({
       changes,
       stateResources: currentState.resources,
-      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
     }).refused;
     if (serviceTokenRefusals.length > 0) {
       const mask = diffLogMasker(
-        this.secretsRun,
-        this.maskingDeps(),
+        engine.secretsRun,
+        engine.maskingDeps(),
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
         parameterValues,
@@ -1039,16 +1057,16 @@ export async function doDeployWithPrefetch(
     // what turned a run with only such a target into "No changes detected".
     const recreatePromotion = promoteRecreateTargets(
       changes,
-      this.options.recreateTargets,
+      engine.options.recreateTargets,
       stackName
     );
     for (const id of recreatePromotion.promoted) {
-      this.logger.debug(
+      engine.logger.debug(
         safeMsg`UPDATE (recreate target): ${id} has no template change; recreating it as requested`
       );
     }
     for (const { logicalId, flag, changeType } of recreatePromotion.unreached) {
-      this.logger.warn(
+      engine.logger.warn(
         changeType === undefined
           ? safeMsg`${flag} ${logicalId}: not recreated, this deploy has no such resource.`
           : safeMsg`${flag} ${logicalId}: not recreated, this deploy will ${changeType.toLowerCase()} it instead.`
@@ -1061,14 +1079,14 @@ export async function doDeployWithPrefetch(
     // on the condition-evaluated template this diff ran on and before any
     // provider call (and before `--dry-run` returns), rather than by the
     // replacement guard once the target has been destroyed and recreated.
-    const ownRecreateTargets = recreateTargetIdsFor(this.options.recreateTargets, stackName);
+    const ownRecreateTargets = recreateTargetIdsFor(engine.options.recreateTargets, stackName);
     if (ownRecreateTargets !== undefined) {
       await refuseStatefulReplacedReaders({
         template: effectiveTemplate,
         state: currentState,
         targetIds: [...ownRecreateTargets],
         conditions,
-        forceStatefulRecreation: this.options.forceStatefulRecreation === true,
+        forceStatefulRecreation: engine.options.forceStatefulRecreation === true,
       });
     }
 
@@ -1086,9 +1104,9 @@ export async function doDeployWithPrefetch(
     // a refused or declined deploy spends no lookup. A token-free stack never
     // enters it; `--dry-run` saves nothing.
     const startProvenanceCapture = (): void => {
-      if (this.options.dryRun || isKnownTokenFreeState(currentStateData?.state)) return;
-      this.provenanceCapture.kickOffProvenanceCapture({
-        noChange: this.diffCalculator
+      if (engine.options.dryRun || isKnownTokenFreeState(currentStateData?.state)) return;
+      engine.provenanceCapture.kickOffProvenanceCapture({
+        noChange: engine.diffCalculator
           .filterByType(changes, 'NO_CHANGE')
           .map((change) => change.logicalId),
         resources: currentState.resources,
@@ -1098,10 +1116,10 @@ export async function doDeployWithPrefetch(
         stackName,
       });
     };
-    const hasChanges = this.diffCalculator.hasChanges(changes);
+    const hasChanges = engine.diffCalculator.hasChanges(changes);
 
     if (!hasChanges) {
-      this.logger.info('No changes detected. Stack is up to date.');
+      engine.logger.info('No changes detected. Stack is up to date.');
       startProvenanceCapture();
 
       // The diff only inspects Resources, so an Outputs-only change (a new
@@ -1115,19 +1133,19 @@ export async function doDeployWithPrefetch(
       // refresh (e.g. a v2 → v3 schema upgrade on a stack with nothing to
       // deploy). Both are skipped in dry-run.
       let persistedOutputs: Record<string, unknown> = currentState.outputs ?? {};
-      if (!this.options.dryRun) {
+      if (!engine.options.dryRun) {
         // Resolve against `effectiveTemplate` (condition-pruned) — the same
         // map the executeDeployment path resolves. Outputs reference
         // resources, which come from `currentState.resources` (the arg), and
         // condition pruning only touches `Resources`, so resolving against
         // `effectiveTemplate` vs the raw `template` is equivalent here.
         const resolvedOutputs = redactOutputs(
-          this.maskingDeps(),
+          engine.maskingDeps(),
           // One budget for the whole pass, as on the deploy path above.
           await withSharedDrainBudget(() =>
             resolveOutputs(
-              this.outputsRun,
-              this.outputsDeps(),
+              engine.outputsRun,
+              engine.outputsDeps(),
               effectiveTemplate,
               currentState.resources,
               stackName,
@@ -1144,7 +1162,7 @@ export async function doDeployWithPrefetch(
         // and the save, and a secret a released outputs-pass part records
         // during it must be visible to the save-time check below.
         const observedRefresh =
-          (await this.observedCapture.drainObservedCaptures(currentState.resources)) > 0;
+          (await engine.observedCapture.drainObservedCaptures(currentState.resources)) > 0;
 
         // Without `--strict-getatt`, resolveOutputs stores `undefined` for any
         // output it could not resolve (warned about there when the resolver
@@ -1165,14 +1183,14 @@ export async function doDeployWithPrefetch(
               resolved: resolvedOutputs,
               declaredOutputs: effectiveTemplate.Outputs,
               previousExportNames: currentEffectiveExports,
-              resolvedExportNames: this.outputsRun.resolvedExportNames,
+              resolvedExportNames: engine.outputsRun.resolvedExportNames,
               // go-to-k/cdkd#4657: the outputs pass's own verdict. Always set by
               // a pass with `Outputs`, which is what a failed key needs; absent,
               // carry nothing.
               refusesCarriedAlias: (outputKey, exportName) =>
-                this.outputsRun.carriedExportAliasRefusal === undefined
+                engine.outputsRun.carriedExportAliasRefusal === undefined
                   ? 'An export alias was not carried: no export-name verdict is available.'
-                  : this.outputsRun.carriedExportAliasRefusal(outputKey, exportName),
+                  : engine.outputsRun.carriedExportAliasRefusal(outputKey, exportName),
             })
           : undefined;
         // Today's template may position only the keys THIS pass wrote. The save
@@ -1183,7 +1201,7 @@ export async function doDeployWithPrefetch(
         // never came from. Those keys fall to the value scan instead.
         if (merge?.kind === 'merged') {
           for (const key of merge.carriedKeys) {
-            Reflect.deleteProperty(this.outputsRun.outputsTemplateSource, key);
+            Reflect.deleteProperty(engine.outputsRun.outputsTemplateSource, key);
           }
           // The merge's own mixed-generation check read the bag BEFORE this
           // save's redaction, which can still give it a first expression (a
@@ -1193,17 +1211,17 @@ export async function doDeployWithPrefetch(
           if (
             merge.carriedKeys.length > 0 &&
             !bagHoldsSecretExpression(persistedOutputs) &&
-            bagHoldsSecretExpression(redactOutputs(this.maskingDeps(), merge.outputs))
+            bagHoldsSecretExpression(redactOutputs(engine.maskingDeps(), merge.outputs))
           ) {
             merge = { kind: 'kept', reason: 'mixed-generation' };
           }
         }
-        if (merge?.kind === 'kept') this.outputsRun.outputsSourceUsable = false;
+        if (merge?.kind === 'kept') engine.outputsRun.outputsSourceUsable = false;
         // A carried alias the export-name verdict refused (go-to-k/cdkd#4657),
         // reported as the alias pass reports its own refusals. Only for a bag
         // that is written: a kept one holds the previous aliases whole.
         if (merge?.kind === 'merged') {
-          for (const { reason } of merge.refusedAliases) this.logger.warn(reason);
+          for (const { reason } of merge.refusedAliases) engine.logger.warn(reason);
         }
         // The bag and export set this save describes: this pass's when every
         // output resolved, the merge's when one did not, and the previous
@@ -1219,7 +1237,7 @@ export async function doDeployWithPrefetch(
               : persistedOutputs;
         const exportNamesToPersist: readonly string[] | undefined =
           merge === undefined
-            ? this.outputsRun.resolvedExportNames
+            ? engine.outputsRun.resolvedExportNames
             : merge.kind === 'merged'
               ? merge.exportNames
               : undefined;
@@ -1260,12 +1278,12 @@ export async function doDeployWithPrefetch(
         // `--strict-getatt` (which fails the deploy for it before this
         // point) — the #2740 record still names it.
         if (merge?.kind === 'kept' && !outputMapsEqual(persistedOutputs, resolvedOutputs)) {
-          this.logger.warn(
+          engine.logger.warn(
             safeMsg`Outputs changed but one or more could not be resolved; keeping the previously persisted outputs. ${keptWholeReasonText(merge.reason)} ` +
               'A downstream Fn::ImportValue may fail until the next deploy.'
           );
         } else if (merge?.kind === 'merged' && merge.carriedKeys.length > 0) {
-          this.logger.debug(
+          engine.logger.debug(
             safeMsg`Kept the previously persisted value of ${merge.carriedKeys.length} output key(s), ` +
               'carried export aliases included, that could not be resolved (no-change path)'
           );
@@ -1285,7 +1303,7 @@ export async function doDeployWithPrefetch(
         // field yet whose broken output is skipped again today.
         const skippedOutputsChanged = !skippedOutputsEqual(
           currentState.skippedOutputs,
-          this.outputsRun.skippedOutputs
+          engine.outputsRun.skippedOutputs
         );
 
         // Issue #1852: a heal the outputs pass (or the diff pass above) read
@@ -1294,7 +1312,7 @@ export async function doDeployWithPrefetch(
         // every run (its healer is read-only and saves nothing,
         // go-to-k/cdkd#3456), and `cdkd drift`, which re-reads nothing,
         // never sees the attribute at all.
-        const healedAttributesPending = this.attributeHealer.hasUnpersistedHeals(
+        const healedAttributesPending = engine.attributeHealer.hasUnpersistedHeals(
           currentState.resources
         );
 
@@ -1316,7 +1334,7 @@ export async function doDeployWithPrefetch(
         // that list, not a change the user made: asking there would fail every
         // non-interactive deploy of an unchanged stack.
         if (outputsChanged || (exportSetChanged && currentState.exportNames !== undefined)) {
-          await requireOutputsOnlyApproval({ options: this.options, stackName });
+          await requireOutputsOnlyApproval({ options: engine.options, stackName });
         }
 
         // State schema v12: the outputs' share of the migration. A record
@@ -1325,10 +1343,10 @@ export async function doDeployWithPrefetch(
         const outputProvenanceBackfill =
           !outputsChanged &&
           currentState.outputReferenceProvenance === undefined &&
-          this.provenanceBaseline?.tokenFree === false &&
-          this.outputReferenceProvenanceFor(
+          engine.provenanceBaseline?.tokenFree === false &&
+          engine.outputReferenceProvenanceFor(
             persistedOutputs,
-            redactOutputs(this.maskingDeps(), persistedOutputs)
+            redactOutputs(engine.maskingDeps(), persistedOutputs)
           ) !== undefined;
 
         if (
@@ -1345,7 +1363,7 @@ export async function doDeployWithPrefetch(
           try {
             const refreshedState: StackState = {
               version: STATE_SCHEMA_VERSION_CURRENT,
-              region: this.stackRegion,
+              region: engine.stackRegion,
               stackName: currentState.stackName,
               resources: currentState.resources,
               ...orphansCarriedFrom(currentState),
@@ -1369,8 +1387,8 @@ export async function doDeployWithPrefetch(
               // object each pass, so no alias outlives one and no test can
               // tell a copy from an alias here. Stated so the absence of a
               // fence is not read as an oversight.
-              ...(this.outputsRun.skippedOutputs && {
-                skippedOutputs: { ...this.outputsRun.skippedOutputs },
+              ...(engine.outputsRun.skippedOutputs && {
+                skippedOutputs: { ...engine.outputsRun.skippedOutputs },
               }),
               // Preserve existing imports[] / outputReads[] (v8+) — otherwise
               // the refresh would silently strip the strong-reference record
@@ -1382,9 +1400,9 @@ export async function doDeployWithPrefetch(
               // `crossStackReadsForPartialSave`.
               ...crossStackReadsForPartialSave(
                 currentState,
-                this.recordedImports,
-                this.recordedOutputReads,
-                this.crossStackReadKeyNormalizer()
+                engine.recordedImports,
+                engine.recordedOutputReads,
+                engine.crossStackReadKeyNormalizer()
               ),
               ...(conditionVerdicts && { conditionVerdicts }),
               lastModified: Date.now(),
@@ -1392,18 +1410,18 @@ export async function doDeployWithPrefetch(
             const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
             if (currentEtag !== undefined) saveOptions.expectedEtag = currentEtag;
             if (migrationPending) saveOptions.migrateLegacy = true;
-            await this.stateBackend.saveState(
+            await engine.stateBackend.saveState(
               stackName,
-              this.stackRegion,
-              this.withParentInfo(refreshedState),
+              engine.stackRegion,
+              engine.withParentInfo(refreshedState),
               saveOptions
             );
             if (outputsChanged || exportSetChanged) {
               persistedOutputs = refreshedState.outputs;
               if (outputsChanged) {
-                this.logger.info('Persisted Outputs-only change (no resource diff).');
+                engine.logger.info('Persisted Outputs-only change (no resource diff).');
               } else {
-                this.logger.debug(
+                engine.logger.debug(
                   'Persisted export-set change (no outputs-value diff, no-change path)'
                 );
               }
@@ -1413,10 +1431,10 @@ export async function doDeployWithPrefetch(
               // entries a pre-v9 deploy published. Inside the try so a failed
               // state save doesn't publish an export that wasn't persisted;
               // updateForStack is itself best-effort (swallows + warns).
-              if (this.exportIndexStore) {
-                await this.exportIndexStore.updateForStack(
+              if (engine.exportIndexStore) {
+                await engine.exportIndexStore.updateForStack(
                   stackName,
-                  this.stackRegion,
+                  engine.stackRegion,
                   // Redacted again as the save above redacts it (issue
                   // #2814), so this path's index cannot diverge from what
                   // state holds. Since issue #2771 the call is load-bearing
@@ -1433,23 +1451,23 @@ export async function doDeployWithPrefetch(
                   // than state, never less.
                   importableOutputs({
                     ...refreshedState,
-                    outputs: redactOutputs(this.maskingDeps(), refreshedState.outputs),
+                    outputs: redactOutputs(engine.maskingDeps(), refreshedState.outputs),
                   })
                 );
               }
             } else if (observedRefresh) {
-              this.logger.debug('Persisted refreshed observedProperties (no-change path)');
+              engine.logger.debug('Persisted refreshed observedProperties (no-change path)');
             } else if (healedAttributesPending) {
-              this.logger.debug(
+              engine.logger.debug(
                 'Persisted attributes re-read from AWS for a stale record (no-change path)'
               );
             } else {
-              this.logger.debug(
+              engine.logger.debug(
                 'Persisted skipped-outputs record (no outputs-value diff, no-change path)'
               );
             }
           } catch (saveError) {
-            this.logger.warn(
+            engine.logger.warn(
               safeMsg`Failed to persist no-change state update: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))} — drift baseline / outputs will be re-resolved on next deploy.`
             );
           }
@@ -1467,10 +1485,10 @@ export async function doDeployWithPrefetch(
       //
       // go-to-k/cdkd#4600: a journaled proven orphan it could not delete is
       // a resource left in AWS, counted with the skipped deletes (exit 2).
-      const journaledOrphansLeft = this.options.dryRun
+      const journaledOrphansLeft = engine.options.dryRun
         ? 0
         : await settleJournalAfterSuccess(
-            this.rollbackDeps(),
+            engine.rollbackDeps(),
             stackName,
             [],
             currentState,
@@ -1491,22 +1509,25 @@ export async function doDeployWithPrefetch(
         // #2814): a part the drain cap stopped waiting for can record after
         // the outputs pass, and the bag kept here may be the PREVIOUS
         // deploy's, holding a literal nothing resolved then.
-        outputs: buildDisplayOutputs(template, redactOutputs(this.maskingDeps(), persistedOutputs)),
-        attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
+        outputs: buildDisplayOutputs(
+          template,
+          redactOutputs(engine.maskingDeps(), persistedOutputs)
+        ),
+        attributeFallbackCount: engine.resolver.getPhysicalIdFallbackCount(),
       };
     }
 
     // Log changes summary
-    const createChanges = this.diffCalculator.filterByType(changes, 'CREATE');
-    const updateChanges = this.diffCalculator.filterByType(changes, 'UPDATE');
-    const deleteChanges = this.diffCalculator.filterByType(changes, 'DELETE');
+    const createChanges = engine.diffCalculator.filterByType(changes, 'CREATE');
+    const updateChanges = engine.diffCalculator.filterByType(changes, 'UPDATE');
+    const deleteChanges = engine.diffCalculator.filterByType(changes, 'DELETE');
 
-    this.logger.info(
+    engine.logger.info(
       safeMsg`Changes: ${green(createChanges.length)} to create, ${yellow(updateChanges.length)} to update, ${red(deleteChanges.length)} to delete`
     );
 
-    if (this.options.dryRun) {
-      this.logger.info('Dry run mode - skipping actual deployment');
+    if (engine.options.dryRun) {
+      engine.logger.info('Dry run mode - skipping actual deployment');
       return {
         stackName,
         created: createChanges.length,
@@ -1515,9 +1536,9 @@ export async function doDeployWithPrefetch(
         // A dry run issues no provider call, so nothing can be skipped.
         deleteSkipped: 0,
         updatePartial: 0,
-        unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
+        unchanged: engine.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
         durationMs: Date.now() - startTime,
-        attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
+        attributeFallbackCount: engine.resolver.getPhysicalIdFallbackCount(),
       };
     }
 
@@ -1530,7 +1551,7 @@ export async function doDeployWithPrefetch(
     );
     if (nonNoEchoChanges.length === 0) {
       const readers = [...changes.values()].filter(isNoEchoPromotionOnly).length;
-      this.logger.info(
+      engine.logger.info(
         safeMsg`No changes detected in the template. Comparing ${String(readers)} resource(s) that read a NoEcho parameter with AWS.`
       );
     }
@@ -1541,38 +1562,38 @@ export async function doDeployWithPrefetch(
     // own verdict (`refuseUnlicensedGeneratedName`). Reads only: the intents
     // are written per type after the approval, and settled in the `finally`.
     const abandonedRunAt = (
-      this.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
-    ).abandonedRunEndedBy?.(stackName, this.stackRegion);
+      engine.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
+    ).abandonedRunEndedBy?.(stackName, engine.stackRegion);
     if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
-    this.generatedNameGuard = GeneratedNameGuard.start({
+    engine.generatedNameGuard = GeneratedNameGuard.start({
       stackName,
-      region: this.stackRegion,
+      region: engine.stackRegion,
       changes: changes.values(),
-      providerFor: (input) => this.providerRegistry.getProviderFor({ ...input, quiet: true }),
+      providerFor: (input) => engine.providerRegistry.getProviderFor({ ...input, quiet: true }),
       records: currentState.resources,
       orphans: currentState.orphans,
-      loadJournal: () => this.stateBackend.loadRollbackJournal(stackName, this.stackRegion),
-      loadRetained: () => this.stateBackend.loadRetainedRecord(stackName, this.stackRegion),
+      loadJournal: () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
+      loadRetained: () => engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
       loadKeptInHistory: () => {
-        const reader = new DeploymentEventsReader(this.stateBackend);
+        const reader = new DeploymentEventsReader(engine.stateBackend);
         return loadKeptInHistory(
           {
-            earlierStateResources: (s, r) => this.stateBackend.earlierStateResources(s, r),
+            earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
             listRuns: (s, r) => reader.listRuns(s, r),
             readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
           },
           stackName,
-          this.stackRegion
+          engine.stackRegion
         );
       },
-      accountInfo: () => getAccountInfo(this.stackRegion),
-      warn: (message) => this.logger.warn(message),
+      accountInfo: () => getAccountInfo(engine.stackRegion),
+      warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.
       ...(abandonedRunAt !== undefined && { abandonedRunAt }),
     });
-    if (this.generatedNameGuard !== undefined) {
-      this.logger.debug(
-        safeMsg`Generated-name check: looking up ${String(this.generatedNameGuard.size)} planned create(s)`
+    if (engine.generatedNameGuard !== undefined) {
+      engine.logger.debug(
+        safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
       );
     }
 
@@ -1580,29 +1601,29 @@ export async function doDeployWithPrefetch(
     // is checked against the bucket's other state prefixes BEFORE the approval
     // prompt and any provider call.
     await checkDestructivePlan({
-      options: this.options,
+      options: engine.options,
       stackName,
       changes: changes.values(),
       records: currentState.resources,
       template: effectiveTemplate,
-      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
     });
 
     // `--require-approval`: asked on the diff this deploy executes, before any
     // provider call. The lock is released by the `finally`.
     const prompted = await requireDeploymentApproval({
-      options: this.options,
+      options: engine.options,
       stackName,
       changes: changes.values(),
       records: currentState.resources,
       template: effectiveTemplate,
-      recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
+      recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
       // go-to-k/cdkd#4601: the `broadening` table prints resolved values;
       // built only if that level asks.
       secretMask: () =>
         diffLogMasker(
-          this.secretsRun,
-          this.maskingDeps(),
+          engine.secretsRun,
+          engine.maskingDeps(),
           diffResolverContext.recordedSecretValues,
           effectiveTemplate,
           parameterValues,
@@ -1611,11 +1632,11 @@ export async function doDeployWithPrefetch(
     });
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.
-    if (prompted) this.generatedNameGuard?.noteApprovalPrompted();
+    if (prompted) engine.generatedNameGuard?.noteApprovalPrompted();
     startProvenanceCapture();
     // The one intent write (review P1): past the prompt and the destructive
     // check, under the lock, before the first create (each awaits it).
-    this.generatedNameGuard?.recordPlannedIntents();
+    engine.generatedNameGuard?.recordPlannedIntents();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path
@@ -1628,7 +1649,7 @@ export async function doDeployWithPrefetch(
     // path's output resolution), so nothing double-counts there. Full
     // semantics in the counter's JSDoc
     // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
-    this.resolver.resetPhysicalIdFallbackCount();
+    engine.resolver.resetPhysicalIdFallbackCount();
 
     // Progress counter for tracking overall deployment progress
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
@@ -1641,9 +1662,10 @@ export async function doDeployWithPrefetch(
       completedOperations,
     } = await withProducerRegions(
       // go-to-k/cdkd#4174: for the child engine a nested-stack row builds.
-      () => producerRegionEvidence(this.rollbackDeps(), currentState),
+      () => producerRegionEvidence(engine.rollbackDeps(), currentState),
       () =>
-        this.executeDeployment(
+        executeDeployment(
+          engine,
           effectiveTemplate,
           currentState,
           changes,
@@ -1668,11 +1690,15 @@ export async function doDeployWithPrefetch(
     // backend's client; open its connections now, beside the drain (#4837).
     // A dry run returned before this point.
     try {
-      void this.stateBackend.warmConnections(stackName, this.stackRegion, TAIL_WARM_CONNECTIONS);
+      void engine.stateBackend.warmConnections(
+        stackName,
+        engine.stackRegion,
+        TAIL_WARM_CONNECTIONS
+      );
     } catch {
       // Best-effort: never in the way of the save it serves.
     }
-    await this.observedCapture.drainObservedCaptures(newState.resources);
+    await engine.observedCapture.drainObservedCaptures(newState.resources);
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is
@@ -1694,17 +1720,17 @@ export async function doDeployWithPrefetch(
     // the documented residual: unrecorded, its re-create is refused with the
     // `cdkd import` remedy.
     const [newEtag] = await Promise.all([
-      this.stateBackend.saveState(
+      engine.stateBackend.saveState(
         stackName,
-        this.stackRegion,
+        engine.stackRegion,
         // The record joins here, on the save that ends a successful deploy
         // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
         // field, so none of its saves carries it.
-        this.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
+        engine.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
       ),
-      flushKeptForReadoption(this),
+      flushKeptForReadoption(engine),
     ]);
-    this.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
+    engine.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
@@ -1713,17 +1739,20 @@ export async function doDeployWithPrefetch(
     // neither, so no serial round trip on a successful deploy.
     const ledgerAndKeptCleanup = (async (): Promise<void> => {
       await forgetRecordedCreateTokens(Object.keys(newState.resources));
-      const readopted = (await this.generatedNameGuard?.readoptedFromRetained()) ?? [];
+      const readopted = (await engine.generatedNameGuard?.readoptedFromRetained()) ?? [];
       if (readopted.length > 0) {
         try {
-          const kept = await this.stateBackend.loadRetainedResources(stackName, this.stackRegion);
-          await this.stateBackend.saveRetainedResources(
+          const kept = await engine.stateBackend.loadRetainedResources(
             stackName,
-            this.stackRegion,
+            engine.stackRegion
+          );
+          await engine.stateBackend.saveRetainedResources(
+            stackName,
+            engine.stackRegion,
             kept.filter((entry) => !readopted.includes(entry.logicalId))
           );
         } catch (error) {
-          this.logger.debug(
+          engine.logger.debug(
             safeMsg`Could not clear re-adopted resources from the kept-resource record: ${describeAwsFailure(error).summary}`
           );
         }
@@ -1763,24 +1792,24 @@ export async function doDeployWithPrefetch(
     // delete is a resource left in AWS, counted with the skipped deletes.
     const [journaledOrphansLeft] = await Promise.all([
       settleJournalAfterSuccess(
-        this.rollbackDeps(),
+        engine.rollbackDeps(),
         stackName,
         completedOperations,
         currentState,
         newState.resources,
         currentEtag === undefined
       ),
-      this.exportIndexStore
-        ? this.exportIndexStore.updateForStack(
+      engine.exportIndexStore
+        ? engine.exportIndexStore.updateForStack(
             stackName,
-            this.stackRegion,
+            engine.stackRegion,
             // The EXPORTS only (issue #2193): the bag also holds every plain
             // Output name, and an index fed the whole bag served those to
             // `Fn::ImportValue` — a same-named plain Output in an unrelated
             // stack could shadow a real export.
             importableOutputs({
               ...newState,
-              outputs: redactOutputs(this.maskingDeps(), newState.outputs),
+              outputs: redactOutputs(engine.maskingDeps(), newState.outputs),
             })
           )
         : Promise.resolve(),
@@ -1789,7 +1818,7 @@ export async function doDeployWithPrefetch(
 
     const durationMs = Date.now() - startTime;
     const unchangedCount =
-      this.diffCalculator.filterByType(changes, 'NO_CHANGE').length + actualCounts.skipped;
+      engine.diffCalculator.filterByType(changes, 'NO_CHANGE').length + actualCounts.skipped;
 
     return {
       stackName,
@@ -1806,9 +1835,9 @@ export async function doDeployWithPrefetch(
       durationMs,
       outputs: buildDisplayOutputs(
         template,
-        redactOutputs(this.maskingDeps(), newState.outputs ?? {})
+        redactOutputs(engine.maskingDeps(), newState.outputs ?? {})
       ),
-      attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
+      attributeFallbackCount: engine.resolver.getPhysicalIdFallbackCount(),
     };
   } catch (error) {
     failed = true;
@@ -1850,7 +1879,7 @@ export async function doDeployWithPrefetch(
     // map to drop the references now (the next `deploy()` replaces the whole
     // capture anyway). The underlying promises already have a `.catch` so
     // dropping the references will not produce an unhandled rejection.
-    this.observedCapture.observedCaptureTasks.clear();
+    engine.observedCapture.observedCaptureTasks.clear();
 
     // go-to-k/cdkd#4705: under the lock, drop the name-adopting intents whose
     // create was not sent or came back. Guarded like every step before
@@ -1858,8 +1887,8 @@ export async function doDeployWithPrefetch(
     try {
       // A deploy that failed after keeping something still records it (a
       // no-op once the success path flushed).
-      await flushKeptForReadoption(this);
-      await this.generatedNameGuard?.settle();
+      await flushKeptForReadoption(engine);
+      await engine.generatedNameGuard?.settle();
     } catch {
       // Both warn on their own failures.
     }
@@ -1867,7 +1896,7 @@ export async function doDeployWithPrefetch(
     // finishes before the lock goes and before the caller destroys the
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
-    await Promise.all([this.absentJournalVersionPurge, exportsPrefetch]);
+    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed
@@ -1877,18 +1906,23 @@ export async function doDeployWithPrefetch(
     // marker exists" keeps meaning "this prefix can own the stack's
     // resources". Anything it did leave keeps the marker; a read that fails
     // keeps it too (fail closed). Best-effort.
-    if (firstDeploy && failed && this.options.onFirstDeployLeftNoRecord && !this.options.dryRun) {
+    if (
+      firstDeploy &&
+      failed &&
+      engine.options.onFirstDeployLeftNoRecord &&
+      !engine.options.dryRun
+    ) {
       try {
-        const left = await this.stateBackend.getState(stackName, this.stackRegion);
+        const left = await engine.stateBackend.getState(stackName, engine.stackRegion);
         const journal =
           left === null
-            ? await this.stateBackend.loadRollbackJournal(stackName, this.stackRegion)
+            ? await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion)
             : undefined;
         if (left === null && !journalCanOwnResources(journal ?? null)) {
-          await this.options.onFirstDeployLeftNoRecord(stackName);
+          await engine.options.onFirstDeployLeftNoRecord(stackName);
         }
       } catch (error) {
-        this.logger.debug(
+        engine.logger.debug(
           safeMsg`Could not check whether the failed first deploy left a record: ${describeAwsFailure(error).summary}`
         );
       }
@@ -1896,10 +1930,10 @@ export async function doDeployWithPrefetch(
 
     // Always release lock
     try {
-      await this.lockManager.releaseLock(stackName, this.stackRegion);
-      this.logger.debug('Lock released');
+      await engine.lockManager.releaseLock(stackName, engine.stackRegion);
+      engine.logger.debug('Lock released');
     } catch (lockError) {
-      this.logger.warn(
+      engine.logger.warn(
         safeMsg`Failed to release lock: ${asIsMessage(lockError instanceof Error ? lockError.message : String(lockError))}`
       );
     }

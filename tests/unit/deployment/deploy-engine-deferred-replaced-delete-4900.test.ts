@@ -8,6 +8,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { provisionUpdate } from '../../../src/deployment/deploy-engine/update.js';
 import { getStackRecords } from '../../../src/deployment/stack-records-scope.js';
 import { withIndeterminateGuard } from '../../../src/deployment/delete-outcome.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction/log-only.js';
@@ -51,6 +53,25 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     evaluateConditions: vi.fn().mockResolvedValue({}),
   })),
 }));
+
+// The UPDATE arm of the per-resource body, wrapped so a case can change the
+// outcome a row reports (the body returns it verbatim). Pass-through otherwise.
+const updateArm = vi.hoisted(() => ({
+  wrap: undefined as
+    | undefined
+    | ((actual: (...a: unknown[]) => Promise<unknown>, args: unknown[]) => Promise<unknown>),
+}));
+vi.mock('../../../src/deployment/deploy-engine/update.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/update.js')>();
+  const real = actual.provisionUpdate as unknown as (...a: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    provisionUpdate: vi.fn((...args: unknown[]) =>
+      updateArm.wrap ? updateArm.wrap(real, args) : real(...args)
+    ),
+  };
+});
 
 vi.mock('../../../src/deployment/resource-deadline.js', () => ({
   withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
@@ -202,17 +223,16 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
         } as unknown as ResourceChange,
       ],
     ]);
-    return (await (
-      engine as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }
-    ).executeDeployment(
+    return (await executeDeployment(
+      engine,
       template,
       currentState,
       changes,
-      {},
+      {} as never,
       [['Revision'], ['Endpoint']],
       'MyStack',
       template
-    )) as { actualCounts: Record<string, number> };
+    )) as unknown as { actualCounts: Record<string, number> };
   }
 
   it('deletes the old revision once the endpoint has moved off it, with no warning', async () => {
@@ -364,19 +384,23 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
   it('a skipped retry on a row already partial does not count it twice', async () => {
     retryOutcome = async () => ({ outcome: 'skipped', reason: 'malformed physicalId in state' });
     const engine = makeEngine();
-    const original = (engine as unknown as { provisionResourceBody: (...a: unknown[]) => Promise<unknown> })
-      .provisionResourceBody;
-    (engine as unknown as { provisionResourceBody: (...a: unknown[]) => Promise<unknown> }).provisionResourceBody =
-      async function (this: unknown, ...args: unknown[]) {
-        const result = await original.apply(this, args);
-        return args[0] === 'Revision' ? { updatePartial: 'another survivor' } : result;
-      };
-    (engine as unknown as { provisionResourceBody: unknown }).provisionResourceBody = (
-      engine as unknown as { provisionResourceBody: (...a: unknown[]) => Promise<unknown> }
-    ).provisionResourceBody.bind(engine);
+    const wrapped: unknown[] = [];
+    updateArm.wrap = async (actual, args) => {
+      const result = await actual(...args);
+      wrapped.push(args[1]);
+      return args[1] === 'Revision' ? { updatePartial: 'another survivor' } : result;
+    };
 
-    const result = await deploy(engine);
+    let result: Awaited<ReturnType<typeof deploy>>;
+    try {
+      result = await deploy(engine);
+    } finally {
+      updateArm.wrap = undefined;
+    }
 
+    // The wrapper sat on the path: the Revision row reported partial through it.
+    expect(vi.mocked(provisionUpdate)).toHaveBeenCalled();
+    expect(wrapped).toContain('Revision');
     expect(provider.delete).toHaveBeenCalledTimes(2);
     expect(result.actualCounts['updatePartial']).toBe(0);
   });

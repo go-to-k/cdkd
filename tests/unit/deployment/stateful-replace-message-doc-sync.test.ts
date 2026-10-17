@@ -172,8 +172,8 @@ describe('the stateful-replace refusal and its documented example stay in sync',
       flattenWhitespace(readFileSync(path, 'utf8')),
     ])
   ) as Record<keyof typeof SOURCE_PATHS, string>;
-  // `engine` is `DeployEngine`'s whole source: the class file plus the mixin
-  // modules that augment it (#4200), where the provisioning arms now live.
+  // `engine` is `DeployEngine`'s whole source: the class file plus the
+  // modules split out of it (#4200), where the provisioning arms now live.
   const mixinDir = join(repoRoot, 'src', 'deployment', 'deploy-engine');
   sources.engine = flattenWhitespace(
     [
@@ -181,8 +181,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
       ...readdirSync(mixinDir)
         .filter((f) => f.endsWith('.ts'))
         .sort()
-        .map((f) => readFileSync(join(mixinDir, f), 'utf8'))
-        .filter((src) => src.includes("declare module '../deploy-engine.js'")),
+        .map((f) => readFileSync(join(mixinDir, f), 'utf8')),
     ].join('\n')
   );
   const doc = readFileSync(docPath, 'utf8');

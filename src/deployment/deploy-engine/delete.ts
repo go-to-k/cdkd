@@ -30,7 +30,7 @@ import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js'
 
 /**
  * What {@link provisionDelete} reads from the engine, built at each call site
- * as `this.deleteDeps()`. `options` / `stateBackend` / `stackRegion` /
+ * as `DeployEngine.deleteDeps()`. `options` / `stateBackend` / `stackRegion` /
  * `logger` / `providerRegistry` are set only in the constructor, so they are
  * passed by value; `secretsRun` (replaced per `deploy()`) is a live getter,
  * and the engine methods it calls are forwarded bound to THIS engine.
@@ -65,7 +65,7 @@ export async function flushKeptForReadoption(engine: DeployEngine): Promise<void
   await keptByEngine.get(engine)?.flush();
 }
 
-/** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
+/** The `DELETE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionDelete(
   deps: DeleteDeps,
   logicalId: string,

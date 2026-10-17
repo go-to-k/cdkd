@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { buildAssetRedirectMap } from '../../../src/assets/asset-redirect.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -145,18 +146,7 @@ describe('DeployEngine — post-resolution asset-reference audit (#1002 PR 2)', 
     const template: CloudFormationTemplate = {
       Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: properties } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    return provisionResource('Fn', change, {}, 'MyStack', template).then(
+    return provisionResource(engine, 'Fn', change, {}, 'MyStack', template).then(
       () => null,
       (e) => e as Error
     );
@@ -226,18 +216,14 @@ describe('DeployEngine — post-resolution asset-reference audit (#1002 PR 2)', 
         provisionedBy: 'sdk' as const,
       },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    const err = await provisionResource('Fn', change, stateResources, 'MyStack', template).then(
+    const err = await provisionResource(
+      engine,
+      'Fn',
+      change,
+      stateResources,
+      'MyStack',
+      template
+    ).then(
       () => null,
       (e) => e as Error & { cause?: Error }
     );

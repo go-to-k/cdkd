@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { UNSPECIFIED_SKIP_REASON } from '../../../src/deployment/delete-outcome.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type {
@@ -106,10 +107,19 @@ type ProvisionCountsBag = {
   skipped: number;
   deleteSkipped: number;
   updatePartial: number;
+  nestedUpdatePartial: number;
 };
 
 function freshCounts(): ProvisionCountsBag {
-  return { created: 0, updated: 0, deleted: 0, skipped: 0, deleteSkipped: 0, updatePartial: 0 };
+  return {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    skipped: 0,
+    deleteSkipped: 0,
+    updatePartial: 0,
+    nestedUpdatePartial: 0,
+  };
 }
 
 /**
@@ -241,19 +251,26 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
 
   function provisionOf(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>,
-          conditions?: Record<string, boolean>,
-          counts?: ProvisionCountsBag
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, StateRecord>,
+      stackName: string,
+      template: CloudFormationTemplate,
+      parameterValues?: Record<string, unknown>,
+      conditions?: Record<string, boolean>,
+      counts?: ProvisionCountsBag
+    ) =>
+      provisionResource(
+        engine,
+        logicalId,
+        change,
+        stateResources,
+        stackName,
+        template,
+        parameterValues,
+        conditions,
+        counts
+      );
   }
 
   /** The template-DELETE branch: the resource was removed from the template. */

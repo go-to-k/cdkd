@@ -349,7 +349,7 @@ re-deployed**, with no explicit migration step from the user.
 
 Until 2026-08-20 the gap above had a second, permanent instance. Only the
 terminal SUCCESS save persisted the imports this session recorded. Every other
-save in `deploy-engine.ts` wrote the PRE-deploy `imports[]` / `outputReads[]`
+save in the deploy engine wrote the PRE-deploy `imports[]` / `outputReads[]`
 snapshot beside the POST-deploy resource records -- the diff-clean no-change
 save, the per-resource partial save, the pre-rollback save, the two
 post-rollback saves (primary and ETag retry) and

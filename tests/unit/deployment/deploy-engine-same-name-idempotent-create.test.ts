@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -163,18 +164,14 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
         },
       },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    await provisionResource('Queue', change, stateResources, 'MyStack', template);
+    await provisionResource(
+      engine,
+      'Queue',
+      change,
+      stateResources as unknown as Record<string, never>,
+      'MyStack',
+      template
+    );
     return stateResources;
   }
 
@@ -230,20 +227,15 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
     const template: CloudFormationTemplate = {
       Resources: { Queue: { Type: TYPE, Properties: { QueueName: 'my-queue.fifo' } } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-
     await expect(
-      provisionResource('Queue', change, stateResources, 'MyStack', template)
+      provisionResource(
+        engine,
+        'Queue',
+        change,
+        stateResources as unknown as Record<string, never>,
+        'MyStack',
+        template
+      )
     ).rejects.toThrow();
 
     // State still records the old, live resource — untouched.

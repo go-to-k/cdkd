@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
@@ -96,17 +97,7 @@ describe('provisionUpdate branches keep policy attributes and dependencies (#435
       },
     };
     const engine = makeEngine();
-    await (
-      engine as unknown as {
-        provisionResource: (
-          id: string,
-          c: ResourceChange,
-          s: Record<string, ResourceState>,
-          stack: string,
-          t: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource('Target', change, stateResources, 'MyStack', TEMPLATE);
+    await provisionResource(engine, 'Target', change, stateResources, 'MyStack', TEMPLATE);
     return stateResources['Target']!;
   }
 

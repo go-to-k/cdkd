@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   createLookupArn,
   createNameQuestion,
@@ -15,7 +16,7 @@ import {
 import { getAccountInfo } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange } from '../../../src/types/state.js';
+import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 
@@ -132,7 +133,7 @@ async function create(
   engine: InstanceType<typeof DeployEngine>,
   type: string,
   props: Record<string, unknown>,
-  stateResources: Record<string, unknown> = {},
+  stateResources: Record<string, ResourceState> = {},
   stackName = 'MyStack'
 ): Promise<Inner | null> {
   const change: ResourceChange = {
@@ -144,18 +145,7 @@ async function create(
   const template: CloudFormationTemplate = {
     Resources: { Res: { Type: type, Properties: props } },
   };
-  const run = (
-    engine as unknown as {
-      provisionResource: (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-    }
-  ).provisionResource.bind(engine);
-  return run('Res', change, stateResources, stackName, template).then(
+  return provisionResource(engine, 'Res', change, stateResources, stackName, template).then(
     () => null,
     (e) => (e as { cause?: unknown }).cause as Inner
   );
@@ -542,28 +532,17 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     h.importResult = { physicalId: THEIRS };
     const engine = makeEngine(h);
     const props = { QueueName: 'their-queue' };
-    const outer = await (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    )
-      .provisionResource(
-        'Res',
-        { logicalId: 'Res', changeType: 'CREATE', resourceType: QUEUE, desiredProperties: props },
-        {},
-        'MyStack',
-        { Resources: { Res: { Type: QUEUE, Properties: props } } }
-      )
-      .then(
-        () => null,
-        (e: unknown) => e
-      );
+    const outer = await provisionResource(
+      engine,
+      'Res',
+      { logicalId: 'Res', changeType: 'CREATE', resourceType: QUEUE, desiredProperties: props },
+      {},
+      'MyStack',
+      { Resources: { Res: { Type: QUEUE, Properties: props } } }
+    ).then(
+      () => null,
+      (e: unknown) => e
+    );
     expect(outer).not.toBeNull();
     expect(isRefusedBeforeApplying(outer, 'Res')).toBe(true);
   });

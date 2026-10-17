@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { flushKeptForReadoption } from '../../../src/deployment/deploy-engine/delete.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -98,21 +99,14 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
         { physicalId: r.physicalId, resourceType: r.type, properties: r.properties ?? {}, attributes: {}, dependencies: [], deletionPolicy: r.policy, provisionedBy: 'sdk' },
       ])
     );
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (e as unknown as { provisionResource: ProvisionResourceFn }).provisionResource.bind(e);
     (e as unknown as { doDeploy: () => Promise<unknown> }).doDeploy = async () => {
       await Promise.all(
         rows.map((r) =>
-          provisionResource(
+          provisionResourceFn(
+            e,
             r.id,
-            { logicalId: r.id, changeType: 'DELETE', resourceType: r.type, currentProperties: {} },
-            stateResources,
+            { logicalId: r.id, changeType: 'DELETE', resourceType: r.type, currentProperties: {} } as ResourceChange,
+            stateResources as unknown as Record<string, never>,
             'MyStack',
             { Resources: {} }
           )

@@ -89,9 +89,9 @@ const SUCCESS_PATH_WRITES: readonly string[] = [
   // `exportNamesCarriedFrom` (fenced separately below).
   'exportNames: [],',
   ': { exportNames: [...exportNamesToPersist] }),',
-  'exportNames: [...this.outputsRun.resolvedExportNames],',
-  '...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),',
-  'outputReads: [...this.recordedOutputReads],',
+  'exportNames: [...engine.outputsRun.resolvedExportNames],',
+  '...(engine.recordedImports.length > 0 && { imports: [...engine.recordedImports] }),',
+  'outputReads: [...engine.recordedOutputReads],',
 ];
 
 /**
@@ -173,7 +173,7 @@ describe('every cross-stack-read writer in the engine is accounted for (#2057)',
       writers.map((w) => `${familyLocation(w.line)}  ${w.text}`),
       'these write imports/outputReads directly. Every save EXCEPT the success ' +
         'path must spread `crossStackReadsForPartialSave(currentState, ' +
-        'this.recordedImports, this.recordedOutputReads)` instead — see that ' +
+        'engine.recordedImports, engine.recordedOutputReads)` instead — see that ' +
         "helper's doc for why a wholesale write erases a producer region the " +
         'previous record carried. The only other entitled writer is ' +
         '`redactCrossStackReads` (#3289), which rewrites names INSIDE existing ' +
@@ -213,10 +213,13 @@ describe('every cross-stack-read writer in the engine is accounted for (#2057)',
       walk(sf);
     }
     expect(calls.length, 'the engine save sites moved or vanished — re-derive').toBe(8);
+    // `this.` in the class file, `engine.` in the split modules that take the
+    // engine as their first parameter.
     for (const { where, stateArg } of calls) {
-      expect(stateArg?.startsWith('this.withParentInfo('), `${where} saves without withParentInfo`).toBe(
-        true
-      );
+      expect(
+        /^(this|engine)\.withParentInfo\(/.test(stateArg ?? ''),
+        `${where} saves without withParentInfo`
+      ).toBe(true);
     }
   });
 
