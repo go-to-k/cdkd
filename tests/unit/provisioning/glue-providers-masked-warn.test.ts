@@ -94,6 +94,7 @@ import {
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   hasRedactedCause,
   isRetryableTransientError,
@@ -156,11 +157,35 @@ function expectTranscriptMasked(): void {
   expect(lines).toContain(SECRET_MASK);
 }
 
-function expectMessageMasked(error: unknown): void {
+/**
+ * No plaintext in the thrown message, and the mask wherever the quoted text
+ * went. A cdkd-authored or transport failure keeps its text in the message, so
+ * the mask is THERE. An AWS-authored one is named by its class only
+ * (go-to-k/cdkd#2319) and its own text goes to `debug`, so the mask must be on
+ * that debug line -- the one carrying the same wrap prefix as the throw.
+ */
+function expectMessageMasked(error: unknown, extraPlaintexts: readonly string[] = []): void {
+  const plaintexts = [...PLAINTEXTS, ...extraPlaintexts];
   expect(error).toBeInstanceOf(Error);
   const message = (error as Error).message;
-  for (const plaintext of PLAINTEXTS) expect(message).not.toContain(plaintext);
-  expect(message).toContain(SECRET_MASK);
+  for (const plaintext of plaintexts) expect(message).not.toContain(plaintext);
+  const pointer = message.indexOf(VERBOSE_POINTER);
+  if (pointer === -1) {
+    expect(message).toContain(SECRET_MASK);
+    return;
+  }
+  const prefix = message.slice(0, message.lastIndexOf(': ', pointer) + 2);
+  expect(prefix.length).toBeGreaterThan(2);
+  const quoted = debugLines().filter((line) => line.includes(prefix));
+  expect(quoted.length).toBeGreaterThan(0);
+  for (const line of quoted) {
+    for (const plaintext of plaintexts) expect(line).not.toContain(plaintext);
+  }
+  expect(quoted.join('\n')).toContain(SECRET_MASK);
+}
+
+function debugLines(): string[] {
+  return debugSpy.mock.calls.map((c) => String(c[0]));
 }
 
 async function caught(promise: Promise<unknown>): Promise<unknown> {
@@ -300,7 +325,7 @@ describe('GlueProvider AWS::Glue::Database (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expect((wrapped as Error).message).not.toContain('oldplaindb');
+    expectMessageMasked(wrapped, ['oldplaindb']);
     answerGlue({ GetDatabaseCommand: awsEcho('no access to oldplaindb') });
     const read = await caught(
       provider.update(
@@ -312,7 +337,7 @@ describe('GlueProvider AWS::Glue::Database (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expect((read as Error).message).not.toContain('oldplaindb');
+    expectMessageMasked(read, ['oldplaindb']);
   });
 
   it('treats a previous value persisted as the whole mask (***) as secret-derived', async () => {
@@ -584,8 +609,12 @@ describe('GlueProvider AWS::Glue::Database (issue #2177)', () => {
         maskSecrets: createSecretMasker(bagOf(SHORT, longer)),
       })
     );
-    expect((error as Error).message).toContain(`Description '${SECRET_MASK}' is invalid.`);
-    expect((error as Error).message).not.toContain('owner hunter2x');
+    // AWS's text reaches debug only (go-to-k/cdkd#2319), masked whole there.
+    expect((error as Error).message).toBe(
+      `Failed to create Glue Database Db: InvalidInputException. ${VERBOSE_POINTER}`
+    );
+    expect(debugLines().join('\n')).toContain(`Description '${SECRET_MASK}' is invalid.`);
+    expect(allLines()).not.toContain('owner hunter2x');
   });
 });
 
@@ -624,6 +653,9 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
     );
     expectMessageMasked(error);
     expect((error as Error).message).toBe(
+      `Failed to create Glue Table Tbl: AlreadyExistsException. ${VERBOSE_POINTER}`
+    );
+    expect(debugLines()).toContain(
       `Failed to create Glue Table Tbl: Table ${SECRET_MASK} already exists in ${SECRET_MASK} ` +
         `of catalog ${SECRET_MASK}.`
     );
@@ -780,8 +812,7 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expect((half as Error).message).not.toContain('oldplaintbl');
-    expect((half as Error).message).toContain(SECRET_MASK);
+    expectMessageMasked(half, ['oldplaintbl']);
     answerGlue({ GetTableCommand: awsEcho('no access to oldplaindb|a|b') });
     const whole = await caught(
       provider.update(
@@ -796,8 +827,8 @@ describe('GlueProvider AWS::Glue::Table (issue #2177)', () => {
     // `oldplaindb` anchors the id, so it DECODES to (`oldplaindb`, `a|b`): the
     // database half is the rotated needle here. (An id that cannot decode is
     // refused before any AWS call, so it has no echo to test.)
-    expect((whole as Error).message).not.toContain('oldplaindb');
-    expect((whole as Error).message).toContain(`no access to ${SECRET_MASK}|a|b`);
+    expectMessageMasked(whole, ['oldplaindb']);
+    expect(debugLines().join('\n')).toContain(`no access to ${SECRET_MASK}|a|b`);
   });
 
   it('masks a table name recorded from a ROTATED top-level Name', async () => {
@@ -1059,9 +1090,7 @@ describe.each(SIBLINGS)('Glue $label (issue #2177)', (row) => {
             maskSecrets,
           })
       );
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).not.toContain('oldplainname');
-      expect((error as Error).message).toContain(SECRET_MASK);
+      expectMessageMasked(error, ['oldplainname']);
     }
   });
 
@@ -1435,13 +1464,46 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
     expectStampedRetryable(await caught(run(retryMasker)));
   });
 
+  // The #4244 arm itself, now that an AWS-authored failure is stamped by the
+  // redaction whatever the mask does: a NON-AWS failure keeps its text, so only
+  // the mask cutting the retry wording can stamp it.
+  it.each(SITES)(
+    '$site: a non-AWS failure whose wording the mask cuts is stamped and stays retryable',
+    async ({ arm, run }) => {
+      arm(new Error(TRANSIENT));
+      const failure = (await caught(run(retryMasker))) as Error;
+      expect(failure.message).not.toContain(VERBOSE_POINTER);
+      expectStampedRetryable(failure);
+    }
+  );
+
   it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ arm, run }) => {
-    arm(awsEcho('Bad request parameter'));
+    // Not AWS-authored (no `$fault` / numeric status), so it keeps its text
+    // and only the mask decides the stamp.
+    arm(new Error('Bad request parameter'));
     const failure = (await caught(run(retryMasker))) as Error;
     expect(failure.message).toContain('Bad request parameter');
     expect(hasRedactedCause(failure)).toBe(false);
     expect(retryable(failure)).toBe(false);
   });
+
+  // go-to-k/cdkd#2319: an AWS-authored failure is named by its class whatever
+  // the mask did, and stamped so classification reads the cause -- which
+  // recovers the withheld text without making a terminal failure retryable.
+  it.each(SITES)(
+    '$site: an AWS-authored failure is redacted and stamped, and still classifies by its cause',
+    async ({ arm, run }) => {
+      const aws = awsEcho('Bad request parameter');
+      arm(aws);
+      const failure = (await caught(run(retryMasker))) as Error;
+      expect(failure.message).toContain(`InvalidInputException. ${VERBOSE_POINTER}`);
+      expect(failure.message).not.toContain('Bad request parameter');
+      expect(failure.cause).toBe(aws);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryable(failure)).toBe(false);
+      expect(debugLines().join('\n')).toContain('Bad request parameter');
+    }
+  );
 
   it('does not stamp cdkd own create-path refusal: it names the shape, never the value', async () => {
     // `buildDatabaseInput` runs INSIDE create()'s wrapped try, so its refusal
@@ -1475,7 +1537,7 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
         { maskSecrets: createSecretMasker(bagOf('sum')) }
       )
     );
-    expect((failure as Error).message).toContain('unable to as***e provided');
+    expect(debugLines().join('\n')).toContain('unable to as***e provided');
     expectStampedRetryable(failure);
   });
 });

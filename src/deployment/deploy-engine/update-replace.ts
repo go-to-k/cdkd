@@ -657,6 +657,10 @@ export async function updateByReplacement(
           updateSecrets
         )
       );
+      // For the refusals that close it with their own `. `: a provider's
+      // redacted summary ends in a period (go-to-k/cdkd#2319), and so does
+      // most AWS text.
+      const createSentence = createMsg.endsWith('.') ? createMsg.slice(0, -1) : createMsg;
       // A custom-named resource cannot be safely replaced: the
       // create-first attempt collides with the old resource still
       // holding the name. CloudFormation refuses this same shape
@@ -710,7 +714,7 @@ export async function updateByReplacement(
         throw markNonRetryable(
           new CdkdError(
             safeMsg`${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-              safeMsg`attempt collided: ${createMsg}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+              safeMsg`attempt collided: ${createSentence}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
               (engine.options.replace === true
                 ? ` — so --replace was NOT applied and nothing was deleted.`
                 : updateReplacePolicy === 'Retain'
@@ -809,7 +813,7 @@ export async function updateByReplacement(
       if (engine.options.replace !== true) {
         throw new CdkdError(
           safeMsg`${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-            safeMsg`attempt collided with the existing resource: ${createMsg}. ` +
+            safeMsg`attempt collided with the existing resource: ${createSentence}. ` +
             safeMsg`${nameOrigin.descriptor}, so the CloudFormation-style safe replacement ` +
             `order (create the new resource before deleting the old) cannot reuse the ` +
             `occupied name — CloudFormation refuses this shape with "cannot update a ` +
