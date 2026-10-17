@@ -742,12 +742,12 @@
       "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "AnomalyDetectorId"
+        "Id"
       ],
       "enrichedKeys": [],
       "attributes": [
         {
-          "name": "AnomalyDetectorId",
+          "name": "Id",
           "status": "allow-listed",
           "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
