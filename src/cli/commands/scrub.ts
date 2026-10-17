@@ -2411,7 +2411,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
  * Built here rather than kept as each pass's input everywhere — `outputSecrets`
  * and `perResourceSecrets` are deliberately SEPARATE bags so one resource's
  * secret value cannot rewrite another's coinciding literal (the collision the
- * deploy engine's `perResourceSecrets` doc describes), and widening the bag the
+ * `SecretsRunState.perResourceSecrets` doc describes), and widening the bag the
  * RESOURCE walk uses would re-open exactly that.
  *
  * On a value collision the outputs' expression wins: it is written last, and an
@@ -6742,7 +6742,7 @@ export async function scrubStack(
   }
   // PER-RESOURCE secrets (keyed by logicalId) + a separate outputs map, so a
   // whole-secret value from one resource cannot rewrite another's literal —
-  // the cross-resource collision the deploy engine's `perResourceSecrets` doc
+  // the cross-resource collision the `SecretsRunState.perResourceSecrets` doc (`deploy-engine/masking.ts`)
   // describes.
   //
   // Declared OUTSIDE the try so the catch below can mask against whatever was

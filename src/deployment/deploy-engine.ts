@@ -1007,7 +1007,7 @@ export class DeployEngine {
     const resources: Record<string, ResourceState> = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
       // Redact each record ONLY with the secrets substituted during that
-      // resource's own resolution — see the `perResourceSecrets` field doc.
+      // resource's own resolution — see the `SecretsRunState.perResourceSecrets` doc.
       const secrets = this.secretsRun.perResourceSecrets.get(logicalId);
       // The template bag is the POSITION source (#1904); when this resource was
       // not resolved this deploy there is none, and `scrubResourceRecord` falls
