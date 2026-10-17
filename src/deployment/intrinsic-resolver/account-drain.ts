@@ -135,8 +135,8 @@ export const MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES = 4;
 
 /**
  * How many producer output KEYS an `Fn::GetStackOutput` not-found error may
- * enumerate (issue #2133 review). See {@link
- * IntrinsicFunctionResolver.describeAvailableOutputs} for why the list is
+ * enumerate (issue #2133 review). See `describeAvailableOutputs`
+ * (`cfn-fallback.ts`) for why the list is
  * bounded at all; the value is "enough to fix a typo, few enough that one error
  * cannot dump a producer's whole key space".
  */

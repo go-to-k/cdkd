@@ -236,9 +236,9 @@ export async function constructAttributeForAppTypes(
         try {
           const { GetNamespaceCommand } = await import('@aws-sdk/client-servicediscovery');
           // Region-sensitive: a namespace id only resolves in its own region
-          // (issue #1994). See {@link serviceDiscoveryClient} for why this
+          // (issue #1994). See `ResolverClients.serviceDiscoveryClient` for why this
           // one service is built here instead of read off the bag.
-          const sd = await this.serviceDiscoveryClient();
+          const sd = await this.clients.serviceDiscoveryClient();
           const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
           hostedZoneId = resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
         } catch (err) {

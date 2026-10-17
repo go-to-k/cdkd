@@ -1,4 +1,10 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import {
+  displayMasked,
+  logRender,
+  maskValueLeaves,
+  splitDelimiterRender,
+} from './masking-display.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
   type LogTwin,
@@ -265,7 +271,7 @@ export async function resolveJoin(
   });
   this.rememberLogTwin(context, result, twin);
   this.logger.debug(
-    `Resolved Fn::Join: ${this.logRender(this.logTwinText(result, twin, context), context)}`
+    `Resolved Fn::Join: ${logRender(this, this.logTwinText(result, twin, context), context)}`
   );
   return result;
 }
@@ -306,7 +312,7 @@ export async function resolveSelect(
   const position = selectIndexPosition(resolvedIndex);
   if (position === undefined) {
     const source = this.describeSplitValueSource(index);
-    const sourceClause = source ? ` (from ${this.displayMasked(source.label, context)})` : '';
+    const sourceClause = source ? ` (from ${displayMasked(this, source.label, context)})` : '';
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
@@ -332,7 +338,7 @@ export async function resolveSelect(
   // The position through the builder: a resolved index can come from a
   // parameter carrying a SECRET (a nested-stack child's inherited one), and
   // `displayMasked` masks it where the bare integer would not be.
-  const loggedPosition = this.displayMasked(String(position), context);
+  const loggedPosition = displayMasked(this, String(position), context);
   if (position >= resolvedList.length) {
     if (loggedPosition !== String(position)) {
       // The placeholder is a PROPERTY VALUE sent to AWS and persisted, so a
@@ -360,7 +366,7 @@ export async function resolveSelect(
     // matches literally — so a mask over the ENCODED text misses exactly the
     // secrets that carry those bytes. Leaf-masking also reaches the
     // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-    `Resolved Fn::Select: index ${loggedPosition} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(result, context)), context, { structured: true })}`
+    `Resolved Fn::Select: index ${loggedPosition} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, result, context)), context, { structured: true })}`
   );
   return result;
 }
@@ -394,9 +400,9 @@ export function describeOperandShape(
   if (value === null) return 'null';
   if (Array.isArray(value)) return `an array of ${value.length}`;
   if (typeof value === 'string')
-    return `string ${quotedRender(this.displayMasked(value, context), '"')}`;
+    return `string ${quotedRender(displayMasked(this, value, context), '"')}`;
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return `${typeof value} ${this.displayMasked(String(value), context)}`;
+    return `${typeof value} ${displayMasked(this, String(value), context)}`;
   }
   return typeof value;
 }
@@ -573,7 +579,7 @@ export async function resolveSplit(
     // contradicted by `describeSplitValueSource`'s own doc comment one method
     // up ("interpolates template-controlled text"). Wrapped once here rather
     // than at each throw, so a THIRD consumer of the clause inherits it.
-    const sourceClause = source ? ` (from ${this.displayMasked(source.label, context)})` : '';
+    const sourceClause = source ? ` (from ${displayMasked(this, source.label, context)})` : '';
     if (Array.isArray(resolvedValue)) {
       // The remedy is per-source, and the DEFAULT is the neutral one. Only a
       // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
@@ -725,7 +731,7 @@ export async function resolveSplit(
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
     // delimiter through the builder (issue #3479): it is raw template text,
     // and a structural operand is still arbitrary JSON.
-    `Resolved Fn::Split: split by ${this.splitDelimiterRender(String(delimiter), lineContext)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(pieceTwins, lineContext)), lineContext, { structured: true })}`
+    `Resolved Fn::Split: split by ${splitDelimiterRender(this, String(delimiter), lineContext)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, pieceTwins, lineContext)), lineContext, { structured: true })}`
   );
   return result;
 }

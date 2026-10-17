@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
@@ -118,7 +119,7 @@ export async function resolveIf(
     // round 3, measured). Coercing keeps the pre-existing behaviour and
     // sanitizes what it produces.
     this.logger.warn(
-      `Condition ${this.displayMasked(String(conditionName), context)} not found in context, assuming false`
+      `Condition ${displayMasked(this, String(conditionName), context)} not found in context, assuming false`
     );
     recordTakenIfBranchIn(context, source, false);
     return await resolveBranch(valueIfFalse);
@@ -129,7 +130,7 @@ export async function resolveIf(
 
   // `conditionValue` carries nothing: a boolean, or a list of booleans.
   this.logger.debug(
-    `Resolved Fn::If: condition ${this.logRender(String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
+    `Resolved Fn::If: condition ${logRender(this, String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
   );
 
   // Issue #4954: the branch taken, for the persist walk of a leaf whose
@@ -168,7 +169,7 @@ export async function resolveEquals(
   this.logger.debug(
     // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-    `Resolved Fn::Equals: ${this.logRender(JSON.stringify(this.maskValueLeaves(resolved1, context)), context, { structured: true })} === ${this.logRender(JSON.stringify(this.maskValueLeaves(resolved2, context)), context, { structured: true })} resolved to ${result}`
+    `Resolved Fn::Equals: ${logRender(this, JSON.stringify(maskValueLeaves(this, resolved1, context)), context, { structured: true })} === ${logRender(this, JSON.stringify(maskValueLeaves(this, resolved2, context)), context, { structured: true })} resolved to ${result}`
   );
 
   return result;
@@ -210,7 +211,7 @@ export async function resolveConditionReference(
   // The sibling of the `Fn::If` warn above, on the CONDITION-REFERENCE path,
   // and default-verbosity for the same reason.
   this.logger.warn(
-    `Condition ${this.displayMasked(conditionName, context)} not found in context, assuming false`
+    `Condition ${displayMasked(this, conditionName, context)} not found in context, assuming false`
   );
   return false;
 }
@@ -387,7 +388,7 @@ export async function resolveFindInMap(
     // value, which is what reaches the floorless whole-value arm.
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: mapping ${quotedRender(this.displayMasked(mapName, context), "'")} not found in Mappings section`
+        `Fn::FindInMap: mapping ${quotedRender(displayMasked(this, mapName, context), "'")} not found in Mappings section`
       )
     );
   }
@@ -399,8 +400,8 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")}`
+        `Fn::FindInMap: top-level key ${quotedRender(displayMasked(this, topLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(displayMasked(this, mapName, context), "'")}`
       )
     );
   }
@@ -411,12 +412,12 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: second-level key ${quotedRender(this.displayMasked(secondLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(this.displayMasked(mapName, context), "'")} under ` +
+        `Fn::FindInMap: second-level key ${quotedRender(displayMasked(this, secondLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(displayMasked(this, mapName, context), "'")} under ` +
           // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
           // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
           // (`../x`, go-to-k/cdkd#4100 review M1).
-          `top-level key ${quotedRender(this.displayMasked(topLevelKey, context), "'")}`
+          `top-level key ${quotedRender(displayMasked(this, topLevelKey, context), "'")}`
       )
     );
   }
@@ -429,10 +430,10 @@ export async function resolveFindInMap(
     // common one — so leaving it bare printed at `--verbose` exactly the
     // values the neighbouring refusals mask. The mapped VALUE is leaf-masked
     // too: a mapping may legitimately hold a value assembled from a secret.
-    `Resolved Fn::FindInMap: ${this.logRender(mapName, context)}.` +
-      `${this.logRender(topLevelKey, context)}.` +
-      `${this.logRender(secondLevelKey, context)} resolved to ` +
-      `${this.logRender(JSON.stringify(this.maskValueLeaves(result, context)), context, { structured: true })}`
+    `Resolved Fn::FindInMap: ${logRender(this, mapName, context)}.` +
+      `${logRender(this, topLevelKey, context)}.` +
+      `${logRender(this, secondLevelKey, context)} resolved to ` +
+      `${logRender(this, JSON.stringify(maskValueLeaves(this, result, context)), context, { structured: true })}`
   );
   return result;
 }
@@ -498,7 +499,7 @@ export async function resolveBase64(
     )
   ) {
     this.logger.debug(
-      safeMsg`Resolved Fn::Base64: ${this.logRender(this.logTextOfLeaf(resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
+      safeMsg`Resolved Fn::Base64: ${logRender(this, this.logTextOfLeaf(resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
     );
     return SECRET_MASK;
   }
@@ -617,7 +618,7 @@ export async function resolveBase64(
   }
 
   this.logger.debug(
-    `Resolved Fn::Base64: ${this.logRender(inputLogText, context)} resolved to ${this.logRender(inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
+    `Resolved Fn::Base64: ${logRender(this, inputLogText, context)} resolved to ${logRender(this, inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
   );
   return result;
 }
@@ -696,7 +697,7 @@ export async function resolveGetAZs(
           // `the value` LEADS the clause: after `: ` a quoted value would be
           // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
           // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
-          `Fn::GetAZs: the value ${quotedRender(this.displayMasked(this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
+          `Fn::GetAZs: the value ${quotedRender(displayMasked(this, this.logTextOfLeaf(resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         )
@@ -723,15 +724,15 @@ export async function resolveGetAZs(
     // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
     // review).
     this.logger.debug(
-      `Resolved Fn::GetAZs from cache: ${this.logRender(loggedRegionText ?? region, context)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(cached, context)), context, { structured: true })}`
+      `Resolved Fn::GetAZs from cache: ${logRender(this, loggedRegionText ?? region, context)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, cached, context)), context, { structured: true })}`
     );
     return cached;
   }
 
   // Call EC2 DescribeAvailabilityZones
-  const ec2Client = this.clientsForRegion(
+  const ec2Client = this.clients.clientsForRegion(
     clientRegion,
-    loggedRegionText === undefined ? undefined : this.displayMasked(loggedRegionText, context)
+    loggedRegionText === undefined ? undefined : displayMasked(this, loggedRegionText, context)
   ).ec2;
 
   // The try wraps ONLY the call. The empty-list refusal below deliberately
@@ -771,7 +772,7 @@ export async function resolveGetAZs(
     // assembled into the region, and the SDK quotes the region as SENT —
     // canonicalized, which is why the pair keys on `region` rather than on
     // the raw value `loggedRegionText` was derived from.
-    const loggedRegion = this.displayMasked(loggedRegionText ?? region, context);
+    const loggedRegion = displayMasked(this, loggedRegionText ?? region, context);
     const masks = this.namedRequestMasks([[region, loggedRegion]], context);
     throw new Error(
       `Fn::GetAZs: failed to describe availability zones for region ` +
@@ -793,7 +794,7 @@ export async function resolveGetAZs(
     throw markNonRetryable(
       new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
-          `${quotedRender(this.displayMasked(loggedRegionText ?? region, context), "'")}. Either the region ` +
+          `${quotedRender(displayMasked(this, loggedRegionText ?? region, context), "'")}. Either the region ` +
           `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
           `request was answered by a different region's endpoint.`
       )
@@ -802,7 +803,7 @@ export async function resolveGetAZs(
 
   cachedAvailabilityZones.set(azCacheKey, azNames);
   this.logger.debug(
-    `Resolved Fn::GetAZs: ${this.logRender(loggedRegionText ?? region, context)} resolved to ${this.logRender(JSON.stringify(this.maskValueLeaves(azNames, context)), context, { structured: true })}`
+    `Resolved Fn::GetAZs: ${logRender(this, loggedRegionText ?? region, context)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, azNames, context)), context, { structured: true })}`
   );
   return azNames;
 }
@@ -920,7 +921,7 @@ export async function resolveCidr(
   if (!ipBlock || typeof ipBlock !== 'string') {
     throw markNonRetryable(
       new Error(
-        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(this.maskValueLeaves(ipBlock, context))}`
+        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(maskValueLeaves(this, ipBlock, context))}`
       )
     );
   }
@@ -933,7 +934,7 @@ export async function resolveCidr(
   this.logger.debug(
     // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
     // comes back from `resolveValue`.
-    `Resolving Fn::Cidr: ipBlock=${this.displayMasked(JSON.stringify(this.maskValueLeaves(ipBlock, context)), context)}, count=${this.displayMasked(String(count), context)}, cidrBits=${this.displayMasked(String(cidrBits), context)}`
+    `Resolving Fn::Cidr: ipBlock=${displayMasked(this, JSON.stringify(maskValueLeaves(this, ipBlock, context)), context)}, count=${displayMasked(this, String(count), context)}, cidrBits=${displayMasked(this, String(cidrBits), context)}`
   );
 
   const isIpv6 = ipBlock.includes(':');
@@ -1012,7 +1013,7 @@ export async function resolveCidr(
   // TODAY rather than of the site: the day this pushes something it did not
   // compute, the leaf walk is the mask that still works.
   this.logger.debug(
-    `Fn::Cidr result: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(results, context)), context)}`
+    `Fn::Cidr result: ${displayMasked(this, JSON.stringify(maskValueLeaves(this, results, context)), context)}`
   );
   return results;
 }

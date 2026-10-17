@@ -4,24 +4,13 @@ import { UNSHOWABLE_VALUE } from '../../utils/pasteable-command.js';
 import { stripControlChars } from '../../utils/regexp.js';
 import { type ResolverContext, boundAltered, isLogInert, isLogInertJson } from './support.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    maskValueLeaves: OmitThisParameter<typeof maskValueLeaves>;
-    /** @internal */
-    maskThenStripThenMask: OmitThisParameter<typeof maskThenStripThenMask>;
-    /** @internal */
-    displayMasked: OmitThisParameter<typeof displayMasked>;
-    /** @internal */
-    logRender: OmitThisParameter<typeof logRender>;
-    /** @internal */
-    splitDelimiterRender: OmitThisParameter<typeof splitDelimiterRender>;
-    /** @internal */
-    displayMaskedIdent: OmitThisParameter<typeof displayMaskedIdent>;
-    /** @internal */
-    displayLeaf: OmitThisParameter<typeof displayLeaf>;
-  }
-}
+/**
+ * The one resolver member the display builders read: its raw masker. Callers
+ * pass the resolver itself, so the masking answer stays the resolver's own
+ * (bags, twins, log-only needles) and only the strip and the `displaySafe`
+ * pass are added here.
+ */
+export type ResolverMasker = Pick<IntrinsicFunctionResolver, 'maskSecretsRaw'>;
 
 /**
  * A copy of `value` with every string LEAF (and every object KEY) masked, for
@@ -54,7 +43,7 @@ declare module '../intrinsic-function-resolver.js' {
  */
 /** @internal */
 export function maskValueLeaves(
-  this: IntrinsicFunctionResolver,
+  masker: ResolverMasker,
   value: unknown,
   context?: ResolverContext
 ): unknown {
@@ -69,7 +58,7 @@ export function maskValueLeaves(
   const done = new Map<object, unknown>();
   const walk = (node: unknown): unknown => {
     if (typeof node === 'string') {
-      return this.displayMasked(node, context);
+      return displayMasked(masker, node, context);
     }
     if (node === null || typeof node !== 'object') return node;
     const memo = done.get(node);
@@ -121,7 +110,7 @@ export function maskValueLeaves(
       // reason the receiver was changed from `{}`. The critic's own
       // `Object.create(null)` arm does not fire here because the bag is
       // declared inside this arrow rather than an enclosing scope.
-      out[this.displayMasked(key, context)] = walk(child);
+      out[displayMasked(masker, key, context)] = walk(child);
     }
     return out;
   };
@@ -164,7 +153,7 @@ export function maskValueLeaves(
  * the answer and reads like all of it — it omits `displaySafe`, and
  * therefore `U+2028` / `U+2029` and the bidi overrides — so a site reaching
  * for it directly is the near-miss back onto the treadmill. A DIRECT
- * `${this.maskThenStripThenMask(...)}` interpolation is refused by
+ * `${maskThenStripThenMask(...)}` interpolation is refused by
  * `resolver-display-masked-population.test.ts`'s line rule; a BINDING of it
  * rendered later is not seen by anything since go-to-k/cdkd#3435 deleted the
  * AST checker, which is why the one-caller containment above is the control
@@ -176,12 +165,12 @@ export function maskValueLeaves(
  * `outputs-export-alias/secret-scan.ts`'s `canonicalForSecretScan` problem and is not
  * solved here.
  */
-export function maskThenStripThenMask(
-  this: IntrinsicFunctionResolver,
+function maskThenStripThenMask(
+  masker: ResolverMasker,
   value: string,
   context?: ResolverContext
 ): string {
-  return this.maskSecretsRaw(stripControlChars(this.maskSecretsRaw(value, context)), context);
+  return masker.maskSecretsRaw(stripControlChars(masker.maskSecretsRaw(value, context)), context);
 }
 
 /**
@@ -265,11 +254,11 @@ export function maskThenStripThenMask(
  */
 /** @internal */
 export function displayMasked(
-  this: IntrinsicFunctionResolver,
+  masker: ResolverMasker,
   value: string,
   context?: ResolverContext
 ): string {
-  return displaySafe(this.maskThenStripThenMask(value, context));
+  return displaySafe(maskThenStripThenMask(masker, value, context));
 }
 
 /**
@@ -302,12 +291,12 @@ export function displayMasked(
  */
 /** @internal */
 export function logRender(
-  this: IntrinsicFunctionResolver,
+  masker: ResolverMasker,
   value: string,
   context: ResolverContext | undefined,
   opts: { readonly structured?: boolean; readonly redacted?: boolean } = {}
 ): string {
-  const shown = this.displayMasked(value, context);
+  const shown = displayMasked(masker, value, context);
   if (opts.redacted === true && shown === '<redacted>') return shown;
   const inert = opts.structured === true ? isLogInertJson(shown) : isLogInert(shown);
   return inert ? shown : UNSHOWABLE_VALUE;
@@ -321,11 +310,11 @@ export function logRender(
  * delimiter bare, where `>` redirects (go-to-k/cdkd#4229's `"` flip).
  */
 export function splitDelimiterRender(
-  this: IntrinsicFunctionResolver,
+  masker: ResolverMasker,
   delimiter: string,
   context: ResolverContext | undefined
 ): string {
-  const shown = this.displayMasked(delimiter, context);
+  const shown = displayMasked(masker, delimiter, context);
   return isLogInert(shown) ? `"${shown}"` : 'a delimiter (not shown: it is not a plain identifier)';
 }
 
@@ -338,7 +327,7 @@ export function splitDelimiterRender(
  */
 /** @internal */
 export function displayMaskedIdent(
-  this: IntrinsicFunctionResolver,
+  masker: ResolverMasker,
   value: string,
   context?: ResolverContext,
   maxCodePoints?: number
@@ -347,8 +336,9 @@ export function displayMaskedIdent(
   // non-ASCII character to a space after the mask, and a recorded secret
   // spelled with that space (`correct horse` beside `correct<NBSP>horse`)
   // would then print byte for byte.
-  const asciiMasked = this.displayMasked(
-    displaySafe(this.displayMasked(value, context), { asciiOnly: true }),
+  const asciiMasked = displayMasked(
+    masker,
+    displaySafe(displayMasked(masker, value, context), { asciiOnly: true }),
     context
   );
   return boundAltered(value, asciiMasked, maxCodePoints);
@@ -377,9 +367,9 @@ export function displayMaskedIdent(
  */
 /** @internal */
 export function displayLeaf(
-  this: IntrinsicFunctionResolver,
+  resolver: ResolverMasker & Pick<IntrinsicFunctionResolver, 'logTextOfLeaf'>,
   value: string,
   context?: ResolverContext
 ): string {
-  return this.displayMasked(this.logTextOfLeaf(value, context), context);
+  return displayMasked(resolver, resolver.logTextOfLeaf(value, context), context);
 }

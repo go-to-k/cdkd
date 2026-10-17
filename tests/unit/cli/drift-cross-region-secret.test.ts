@@ -26,7 +26,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * whole question is WHICH REGION WAS ASKED, and the plain-object
  * `getAwsClients()` double the other drift suites use has no region, so it
  * cannot be asked it. The real `AwsClients` is used — which is also what makes
- * `IntrinsicFunctionResolver.clientsForRegion` derive a region-pinned sibling
+ * `ResolverClients.clientsForRegion` derive a region-pinned sibling
  * at all — and only the leaf `SecretsManagerClient` / `SSMClient` are faked,
  * with the CONSTRUCTOR region as the discriminator.
  *

@@ -12,6 +12,7 @@
  * unchanged: the caller asks {@link recordedTokenRoutes} first.
  */
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import type { ReferenceProvenance } from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
@@ -204,13 +205,13 @@ export async function reresolveByRecordedRoutes(
       // Once per resolver, token and pin: a record read by many readers
       // makes one failing lookup and one line (the failure is memoized).
       resolver.logger.warn(
-        safeMsg`Could not read the secret version ${resolver.displayMasked(logicalId, context)} was deployed with for ${resolver.displayMasked(origin, context)} (it may have been deprecated or deleted); ${defaults.proofs === undefined ? 'serving its current value instead' : 'checking its current value against the physical id instead'}.`
+        safeMsg`Could not read the secret version ${displayMasked(resolver, logicalId, context)} was deployed with for ${displayMasked(resolver, origin, context)} (it may have been deprecated or deleted); ${defaults.proofs === undefined ? 'serving its current value instead' : 'checking its current value against the physical id instead'}.`
       );
     }
     if (read === 'short' && defaults.proofs === undefined && context.provenanceCapture !== true) {
       // No proof here to refuse it: the current value is served, as before.
       resolver.logger.warn(
-        safeMsg`Not serving ${resolver.displayMasked(origin, context)} at the secret version ${resolver.displayMasked(logicalId, context)} was deployed with: that value is shorter than four characters, so cdkd could not keep it out of state; serving its current value instead.`
+        safeMsg`Not serving ${displayMasked(resolver, origin, context)} at the secret version ${displayMasked(resolver, logicalId, context)} was deployed with: that value is shorter than four characters, so cdkd could not keep it out of state; serving its current value instead.`
       );
     }
     // `short`: a pinned plaintext under the needle floor is NOT served. The
@@ -314,7 +315,7 @@ async function readsPinnedVersion(
   } catch (err) {
     if (isDeliberateResolutionRefusal(err)) throw err;
     resolver.logger.debug(
-      safeMsg`Pinned read of ${resolver.displayMasked(token, context)} failed: ${resolver.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+      safeMsg`Pinned read of ${displayMasked(resolver, token, context)} failed: ${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}`
     );
     // Memoized only when DEFINITIVE: a throttle that outlived the retries may
     // answer on the next read.

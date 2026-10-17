@@ -40,17 +40,10 @@ import {
   quotedRender,
 } from './support.js';
 import { declaresNoEcho } from '../noecho-declared.js';
+import { type ResolverMasker, displayMasked } from './masking-display.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    recordInheritedParameterSecrets: OmitThisParameter<typeof recordInheritedParameterSecrets>;
-    /** @internal */
-    recordNoEchoParameterValue: OmitThisParameter<typeof recordNoEchoParameterValue>;
-    /** @internal */
-    refuseCoercedInheritedSecret: OmitThisParameter<typeof refuseCoercedInheritedSecret>;
-  }
-}
+/** The resolver member the `NoEcho` recorders read: its public tokens. */
+type NoEchoTokenSource = Pick<IntrinsicFunctionResolver, 'publicNoEchoTokens'>;
 
 /**
  * Copy any {@link ResolverContext.inheritedSecrets} pair whose PLAINTEXT is
@@ -150,7 +143,7 @@ declare module '../intrinsic-function-resolver.js' {
  * value or the condition flips.
  */
 export function recordInheritedParameterSecrets(
-  this: IntrinsicFunctionResolver,
+  resolver: NoEchoTokenSource,
   parameterName: string,
   value: unknown,
   context: ResolverContext
@@ -167,7 +160,7 @@ export function recordInheritedParameterSecrets(
   // plaintext in this child resource's record, as it does in the parent's.
   if (recorded) carryPhysicalNameCopiesCarriedBy(context, recorded, value);
   if (inherited && recorded)
-    recordInheritedNoEchoListElements(this, inherited, recorded, value, context);
+    recordInheritedNoEchoListElements(resolver, inherited, recorded, value, context);
   if (!inherited || inherited.size === 0 || !recorded) return;
   // go-to-k/cdkd#4913: the bag that PERSISTS this pass's leaves, when it is
   // another one (the outputs pass's `outputSecrets`), takes every reads-table
@@ -792,7 +785,7 @@ function refNamesIn(node: unknown, names: ReadonlySet<string>): Set<string> {
  * mask-only needle of the parameter class in the child resource's bag.
  */
 function recordInheritedNoEchoListElements(
-  resolver: IntrinsicFunctionResolver,
+  resolver: NoEchoTokenSource,
   inherited: RecordedSecretValues,
   recorded: RecordedSecretValues,
   value: unknown,
@@ -840,7 +833,7 @@ function recordInheritedNoEchoListElements(
  * feed.
  */
 export function recordNoEchoParameterValue(
-  this: IntrinsicFunctionResolver,
+  resolver: NoEchoTokenSource,
   paramDef: ParameterDefinition | undefined,
   value: unknown,
   context: ResolverContext
@@ -861,7 +854,7 @@ export function recordNoEchoParameterValue(
   // plaintext beside leaves already marked, which the migration witness
   // reconciles for a MARKED record since #4836, so an unchanged value is
   // masked without being read as a create-only change.
-  recordNoEchoParameterFreshValue(value, bag, this.publicNoEchoTokens(context));
+  recordNoEchoParameterFreshValue(value, bag, resolver.publicNoEchoTokens(context));
 }
 
 /**
@@ -902,7 +895,7 @@ export function recordNoEchoParameterValue(
  * The message never quotes the value.
  */
 export function refuseCoercedInheritedSecret(
-  this: IntrinsicFunctionResolver,
+  resolver: ResolverMasker & Pick<IntrinsicFunctionResolver, 'coerceParameterValue'>,
   name: string,
   paramDef: ParameterDefinition,
   userValue: string,
@@ -942,7 +935,7 @@ export function refuseCoercedInheritedSecret(
   const carriedBefore = inheritedSecretsCarriedBy(userValue, secretPairs).length;
   if (carriedBefore === 0) return;
   const carriedAfter = inheritedSecretsCarriedBy(
-    this.coerceParameterValue(userValue, paramDef.Type),
+    resolver.coerceParameterValue(userValue, paramDef.Type),
     secretPairs
   ).length;
   if (carriedAfter >= carriedBefore) return;
@@ -959,8 +952,8 @@ export function refuseCoercedInheritedSecret(
   // arm is reached by any type the coercion SPLITS, and
   // `isListParameterType` accepts every `List<...>` spelling, so the inner
   // text is arbitrary template JSON.
-  const loggedName = this.displayMasked(name);
-  const loggedType = this.displayMasked(paramDef.Type);
+  const loggedName = displayMasked(resolver, name);
+  const loggedType = displayMasked(resolver, paramDef.Type);
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
       `Nested-stack parameter ${quotedRender(loggedName, "'")} is declared ${QUOTABLE_RENDER.test(loggedType) ? `'Type: ${loggedType}'` : 'with a Type that is not a plain identifier'}, but the ` +

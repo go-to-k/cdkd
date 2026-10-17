@@ -58,6 +58,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 const SECRET_ID = 'cdkd-throw-mask-probe';
 
@@ -254,6 +255,9 @@ const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
 const { redactSecretsForState } = await import('../../../src/deployment/secret-redaction.js');
+const { maskValueLeaves } = await import(
+  '../../../src/deployment/intrinsic-resolver/masking-display.js'
+);
 
 type Resolver = InstanceType<typeof IntrinsicFunctionResolver>;
 
@@ -1142,18 +1146,17 @@ describe('#2827 review — guardedPhysicalIdFallback arm 1, the shape refusal', 
  * visited-`Set` left this file 52/52 green, and replacing the memo HIT with a
  * `throw` left all 21,171 unit tests green.
  *
- * A TypeScript `private` is a compile-time annotation, so the walk is callable
- * from here. Nothing else in this file needs it — the caller-driven cases below
+ * The walk is a plain function of `masking-display.ts` taking the resolver as
+ * its masker, so it is callable from here with this harness's resolver and
+ * context. Nothing else in this file needs it — the caller-driven cases below
  * are the right instrument for what a caller can produce; this is the only
  * instrument for what it cannot.
  */
-type MaskLeaves = (value: unknown, context?: unknown) => unknown;
 function maskValueLeavesDirectly(h: Harness, value: unknown): unknown {
-  const walk = (h.resolver as unknown as { maskValueLeaves: MaskLeaves }).maskValueLeaves;
-  expect(typeof walk, 'the premise: the private walk is reachable under this name').toBe(
+  expect(typeof maskValueLeaves, 'the premise: the walk is reachable under this name').toBe(
     'function'
   );
-  return walk.call(h.resolver, value, h.context);
+  return maskValueLeaves(h.resolver, value, h.context as unknown as ResolverContext);
 }
 
 describe('#2827 review — maskValueLeaves, directly', () => {

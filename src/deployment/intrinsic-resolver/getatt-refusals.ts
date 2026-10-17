@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { type ResolverContext, quotedRender } from './support.js';
@@ -101,9 +102,9 @@ export function refuseUnservedAttribute(
   // nothing itself, so leaving it raw would make its safety a property of
   // every future caller.
   throw new IntrinsicResolutionRefusalError(
-    `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
-      `${observed}. The physical id ${quotedRender(this.displayMasked(physicalId, context), '"')} is not a usable ` +
-      `${this.displayMasked(attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
+    `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${displayMasked(this, resourceType, context)}: ` +
+      `${observed}. The physical id ${quotedRender(displayMasked(this, physicalId, context), '"')} is not a usable ` +
+      `${displayMasked(this, attributeName, context)}, so cdkd refuses to substitute it. ${remedy}`
   );
 }
 
@@ -158,7 +159,7 @@ export function refuseUnconstructibleAttribute(
   // not-in-class(remedy): a cdkd-authored literal, or `staleRecordRemedy`'s cdkd-authored sentence.
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${displayMasked(this, resourceType, context)}: ` +
         `the state record holds no value for it and ${why}, so cdkd refuses to substitute ` +
         `one. ${remedy}`
     )
@@ -186,7 +187,7 @@ export function refuseUndefinedAttribute(
   // not-in-class(defined): a cdkd-authored list of the type's schema attributes, a literal at every call site.
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resourceType, context)}: ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${displayMasked(this, resourceType, context)}: ` +
         `CloudFormation defines no such attribute for this type (its attributes: ${defined}), ` +
         `and rejects the template. Reference one of those attributes instead.`
     )
@@ -227,7 +228,7 @@ export function describeFailureObserved(
   // not-in-class(read): the AWS API name the calling arm issued, a literal at every call site.
   // not-in-class(errorClass): the thrown error's CLASS name plus its numeric HTTP status, bounded and display-safe; the message is masked beside it.
   this.logger.debug(
-    `${read} failed (${errorClass}): ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+    `${read} failed (${errorClass}): ${displayMasked(this, err instanceof Error ? err.message : String(err), context)}`
   );
   return `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`;
 }
@@ -291,7 +292,7 @@ export function guardedPhysicalIdFallback(
   // routing table matched lands (the final `default` of
   // `constructAttribute`), so it is arbitrary template text: through the
   // builder once, for all four renders (issue #3441).
-  const loggedType = this.displayMasked(resourceType, context);
+  const loggedType = displayMasked(this, resourceType, context);
   const expectsArnShape = attributeName.endsWith('Arn') && !physicalId.startsWith('arn:');
   const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
   if (expectsArnShape || expectsUrlShape) {
@@ -303,11 +304,11 @@ export function guardedPhysicalIdFallback(
     // `rejectPlaceholderArnAttribute` for the full reasoning.
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${loggedType}: ` +
+        `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${loggedType}: ` +
           (recordMayBeStale
             ? `the state record holds no value for it, and the physical ID `
             : `attributes are not enriched for this resource type, and the physical ID `) +
-          `fallback ${quotedRender(this.displayMasked(physicalId, context), '"')} is not ${expectedShape}. CloudFormation would return ` +
+          `fallback ${quotedRender(displayMasked(this, physicalId, context), '"')} is not ${expectedShape}. CloudFormation would return ` +
           `a different value here, so falling back to the physical ID would silently ` +
           `produce a wrong value (e.g. in stack Outputs). ` +
           (recordMayBeStale
@@ -322,11 +323,11 @@ export function guardedPhysicalIdFallback(
     // retry of this resolution can ever take a different branch.
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${loggedType}: ` +
+        `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${loggedType}: ` +
           (recordMayBeStale
             ? `the state record holds no value for it, and --strict-getatt `
             : `attributes are not enriched for this resource type, and --strict-getatt `) +
-          `rejects the physical ID fallback ${quotedRender(this.displayMasked(physicalId, context), '"')} (which may not be the value ` +
+          `rejects the physical ID fallback ${quotedRender(displayMasked(this, physicalId, context), '"')} (which may not be the value ` +
           `CloudFormation would return). Drop --strict-getatt to fall back with a warning. ` +
           (recordMayBeStale
             ? this.staleRecordRemedy(healOutcome, context)
@@ -340,8 +341,8 @@ export function guardedPhysicalIdFallback(
     // would be a guess: the record may simply be stale and the re-read that
     // would have said so did not complete. Say what was observed instead.
     this.logger.warn(
-      `The state record for ${this.displayMasked(logicalId, context)} (${loggedType}) holds no ` +
-        `${this.displayMasked(attributeName, context)}, returning physical ID. ` +
+      `The state record for ${displayMasked(this, logicalId, context)} (${loggedType}) holds no ` +
+        `${displayMasked(this, attributeName, context)}, returning physical ID. ` +
         this.staleRecordRemedy(healOutcome, context)
     );
     return physicalId;
@@ -356,7 +357,7 @@ export function guardedPhysicalIdFallback(
       ? `. ${this.withheldRemedy(context)}`
       : '';
   this.logger.warn(
-    `Unknown attribute ${this.displayMasked(attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
+    `Unknown attribute ${displayMasked(this, attributeName, context)} for resource type ${loggedType}, returning physical ID${withheld}`
   );
   return physicalId;
 }

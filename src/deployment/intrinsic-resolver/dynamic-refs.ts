@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   ambientCredentialConfig,
@@ -51,7 +52,7 @@ declare module '../intrinsic-function-resolver.js' {
  * is a different parameter in another region or account, so a verdict read in
  * one says nothing about the other.
  *
- * The region is {@link explicitRegion}, the one {@link clientsForRegion} binds
+ * The region is {@link explicitRegion}, the one `ResolverClients.clientsForRegion` binds
  * the lookup to, and `''` when none was named — the AMBIENT clients answer
  * then, in whatever region they point at, which a per-stack region switch can
  * change. Such resolvers share the one `''` scope, exactly as every resolver
@@ -72,7 +73,7 @@ function secretVerdictScope(resolver: IntrinsicFunctionResolver): string {
  * Record one SECRET resolution's provenance (state schema v12,
  * go-to-k/cdkd#4847 / #4852) into the context's bag and its provenance sink:
  * the region of the resolver that answered ({@link explicitRegion}, the one
- * {@link clientsForRegion} bound the lookup to; unknown when none was named),
+ * `ResolverClients.clientsForRegion` bound the lookup to; unknown when none was named),
  * the version id the response carried, and the context's route. A
  * region-pinned sibling records its own region, since it is the resolver
  * that answered. Metadata only: no value reaches either bag through here.
@@ -354,9 +355,9 @@ export async function resolveDynamicReferencesWithLogTwin(
             // so `resolveSub` re-entering with an assembled body puts a
             // plaintext here — the same plaintext the sibling throws mask after
             // parsing it out of this very token (issue #2827 review round 2).
-            `Refusing to resolve the secret reference ${this.displayMasked(tokenLogText, context)}: it names ` +
-              `${quotedRender(this.displayMasked(nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
-              `${this.displayMasked(regionVerdict.foreignProducerRegions.map((r) => this.displayMasked(r, context)).join(', '), context)} as well as its own ` +
+            `Refusing to resolve the secret reference ${displayMasked(this, tokenLogText, context)}: it names ` +
+              `${quotedRender(displayMasked(this, nameLogText(regionVerdict.secretName), context), "'", 'a secret whose name is not a plain identifier')} without a region, and this stack reads from ` +
+              `${displayMasked(this, regionVerdict.foreignProducerRegions.map((r) => displayMasked(this, r, context)).join(', '), context)} as well as its own ` +
               `region. cdkd cannot tell which one must answer, and resolving against ` +
               `the wrong one yields a different secret. Spell the reference as a full ARN ` +
               `to say which region owns it.`
@@ -695,7 +696,7 @@ export async function resolveDynamicReferencesWithLogTwin(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               // Masked for the reason the `ssm-secure` refusal above states.
-              `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: the parameter is a ${param.type} ` +
+              `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: the parameter is a ${param.type} ` +
                 `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
                 `Reference it as {{resolve:ssm:...}} if it is public configuration.`
             )
@@ -746,7 +747,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         if (!persistedText && this.tokenAssembledFromSecret(fullMatch, tokenLogText, context)) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: its service is not one cdkd ` +
+              `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: its service is not one cdkd ` +
                 `resolves (secretsmanager, ssm, ssm-secure), and the reference was assembled from a ` +
                 `secret value, so leaving it as written would send that value to AWS and record it ` +
                 `in state in the clear.`
@@ -754,8 +755,9 @@ export async function resolveDynamicReferencesWithLogTwin(
           );
         }
         this.logger.warn(
-          this.displayMasked(
-            `Unsupported dynamic reference service: ${this.displayMasked(nameLogText(String(service)), context)}`,
+          displayMasked(
+            this,
+            `Unsupported dynamic reference service: ${displayMasked(this, nameLogText(String(service)), context)}`,
             context
           )
         );

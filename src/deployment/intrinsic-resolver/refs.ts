@@ -1,4 +1,9 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
+import {
+  recordInheritedParameterSecrets,
+  recordNoEchoParameterValue,
+} from './parameter-secrets.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
@@ -99,7 +104,7 @@ export function lookupResourceRecord(
   if (this.nameIsNeverAResource(logicalId, context)) {
     if (Object.hasOwn(context.resources, logicalId)) {
       this.logger.debug(
-        safeMsg`Ignoring the state record named ${this.displayMasked(logicalId, context)}: that name is a parameter, not a resource`
+        safeMsg`Ignoring the state record named ${displayMasked(this, logicalId, context)}: that name is a parameter, not a resource`
       );
     }
     return undefined;
@@ -113,7 +118,7 @@ export function lookupResourceRecord(
     ? (resource as { physicalId?: unknown }).physicalId
     : undefined;
   if (typeof physicalId !== 'string') {
-    const loggedId = this.displayMasked(logicalId, context);
+    const loggedId = displayMasked(this, logicalId, context);
     const got = physicalId === null ? 'null' : typeof physicalId;
     const what = isObject
       ? `the state record's physical id is ${got}, not a string`
@@ -190,7 +195,7 @@ export async function resolveRef(
     // follows, so a template value would choose a file to truncate
     // (go-to-k/cdkd#4161).
     this.logger.debug(
-      `Resolved Ref to resource: ${this.logRender(logicalId, context)} resolved to ${this.logRender(String(refValue), context)}`
+      `Resolved Ref to resource: ${logRender(this, logicalId, context)} resolved to ${logRender(this, String(refValue), context)}`
     );
     // A `Ref` served out of the record's `properties` / `attributes` (an
     // AppSync data source's `DataSourceArn`) can be a leaf persisted as its
@@ -235,7 +240,7 @@ export async function resolveRef(
     // pass that consumes it, so the provider's masker, the engine's error and
     // event masking and this resolver's own lines mask it, and (go-to-k/cdkd#4043)
     // also a fresh MASK-ONLY entry of the map, so persistence stores `***`.
-    this.recordNoEchoParameterValue(paramDef, value, context);
+    recordNoEchoParameterValue(this, paramDef, value, context);
     // Issue #1903 / #2087: a nested-stack child records the parent's
     // already-resolved secret HERE, at the point a resource actually
     // consumes the parameter, so the pair lands in that resource's own bag.
@@ -244,15 +249,16 @@ export async function resolveRef(
     // Recorded BEFORE the debug line below (go-to-k/cdkd#4049): a list
     // parameter split out of a parent's `NoEcho` string is masked only by
     // the element fragments this carries, which the inherited bag lacks.
-    this.recordInheritedParameterSecrets(logicalId, value, context);
+    recordInheritedParameterSecrets(this, logicalId, value, context);
     // Through `displayMasked`, which consults `context.inheritedSecrets`
     // too: a pass that records nothing (no `recordedSecretValues`) still
     // masks the parent's plaintext. `stringifyParameterForLog` only covers
     // the author's own `NoEcho` declaration, and a CDK-synthesized
     // nested-stack parameter never carries one.
     this.logger.debug(
-      `Resolved Ref to parameter: ${this.logRender(logicalId, context)} resolved to ${this.logRender(
-        stringifyParameterForLog(paramDef, this.maskValueLeaves(value, context)),
+      `Resolved Ref to parameter: ${logRender(this, logicalId, context)} resolved to ${logRender(
+        this,
+        stringifyParameterForLog(paramDef, maskValueLeaves(this, value, context)),
         context,
         { structured: isStructured(value), redacted: declaresNoEcho(paramDef) }
       )}`
@@ -292,7 +298,7 @@ export async function resolveRef(
     // VALUE is not constrained the way its name is -- `AWS::StackName` is the
     // manifest-derived stack name.
     this.logger.debug(
-      `Resolved Ref to pseudo parameter: ${logicalId} resolved to ${this.logRender(valueStr, context)}`
+      `Resolved Ref to pseudo parameter: ${logicalId} resolved to ${logRender(this, valueStr, context)}`
     );
     return pseudoValue;
   }
@@ -332,7 +338,7 @@ export async function resolveRef(
   //    legitimate id carrying a space and breaks two things that read these
   //    messages: `scrub.ts`'s shape patterns and the whole-tuple de-dup
   //    fixture. The builder is the identity on every legitimate id.
-  const loggedLogicalId = this.displayMasked(logicalId, context);
+  const loggedLogicalId = displayMasked(this, logicalId, context);
   const notFoundMsg = `Ref ${loggedLogicalId} not found (not a resource, parameter, or pseudo parameter)`;
   if (context.bestEffort) {
     this.logger.debug(notFoundMsg);
@@ -496,6 +502,6 @@ export function noteRefStateMask(
     kind: 'ref-state-key',
     logicalId,
     key,
-    display: `Ref ${this.displayMasked(logicalId, context)} (state key ${key})`,
+    display: `Ref ${displayMasked(this, logicalId, context)} (state key ${key})`,
   });
 }

@@ -253,9 +253,9 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     expect(code.length, 'the subject read back too small to be the real file').toBeGreaterThan(
       150_000
     );
-    // A method or a split-out mixin function (#4337), whose first parameter
-    // is `this`.
-    const SELF = '\\s*(?:this: IntrinsicFunctionResolver,\\s*)?';
+    // A method, a split-out mixin function (#4337) whose first parameter is
+    // `this`, or a plain function taking the resolver as its masker.
+    const SELF = '\\s*(?:(?:this: IntrinsicFunctionResolver|masker: ResolverMasker),\\s*)?';
     const ARGS = (first: string): string =>
       `${SELF}${first}: string,\\s*context\\?: ResolverContext,?\\s*\\): string`;
     expect(code, 'the display builder is gone or renamed').toMatch(
@@ -310,7 +310,9 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     // A FLOOR rather than an equality: adding a render is ordinary work and
     // must not red. What must red is the population EMPTYING, which is what a
     // revert to per-site spellings looks like from here.
-    const rendered = code.match(/this\.displayMasked\(/g) ?? [];
+    // `displayMasked(this, ...)`: the builder is a plain function taking the
+    // resolver as its masker.
+    const rendered = code.match(/\bdisplayMasked\(\s*[\w.]+,/g) ?? [];
     expect(rendered.length, 'display-builder call sites').toBeGreaterThanOrEqual(107);
   });
 
@@ -330,7 +332,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
         .map((r) => `${familyLocation(r.line)} in ${r.method}`),
       'a call to the bare masker escaped `maskThenStripThenMask`. Its result is masked but NOT ' +
         'control-stripped, so rendering it anywhere lets a template-supplied name carry ESC / CR / ' +
-        'U+2028 to a terminal (go-to-k/cdkd#3426). Use `this.displayMasked(value, context)`.'
+        'U+2028 to a terminal (go-to-k/cdkd#3426). Use `displayMasked(this, value, context)`.'
     ).toEqual([]);
     // ...and the helper really does call it, twice — mask, strip, mask. A
     // containment rule is satisfied by a name nobody calls at all, which is
@@ -351,7 +353,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
         .map((r) => `${familyLocation(r.line)} in ${r.method}`),
       'a call to `maskThenStripThenMask` escaped `displayMasked`. It strips control characters but ' +
         'does NOT run `displaySafe`, so U+2028 / U+2029 and the bidi overrides survive. Use ' +
-        '`this.displayMasked(value, context)`, which is that composition plus the sanitizer.'
+        '`displayMasked(this, value, context)`, which is that composition plus the sanitizer.'
     ).toEqual([]);
     expect(refs.length, 'the builder no longer composes the strip-and-mask helper').toBe(1);
   });
@@ -379,7 +381,12 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     const offenders = code
       .split('\n')
       .map((line, i) => ({ line: i + 1, text: line }))
-      .filter(({ text }) => new RegExp(`\\$\\{\\s*this\\.(${[...RAW_MASKERS].join('|')})\\(`).test(text))
+      // Any receiver, or none: `maskThenStripThenMask` is a plain function
+      // since the display builders stopped being resolver methods, and a
+      // masker can be reached through a `resolver` parameter as well as `this`.
+      .filter(({ text }) =>
+        new RegExp(`\\$\\{\\s*(?:\\w+\\.)?(${[...RAW_MASKERS].join('|')})\\(`).test(text)
+      )
       .map(({ line, text }) => `${familyLocation(line)}  ${text.trim()}`);
 
     expect(
@@ -391,8 +398,8 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
       'This interpolates a masking ANSWER straight into a message. Those helpers answer "does this ' +
         'text contain a recorded secret" and make NO claim about CONTROL CHARACTERS, so the ' +
         'rendered line can carry ESC / CR / U+2028 from a template-supplied name and redraw an ' +
-        "operator's terminal. Render through `this.displayMasked(value, context)` -- or " +
-        '`this.displayLeaf(value, context)` for a log-twin leaf.'
+        "operator's terminal. Render through `displayMasked(this, value, context)` -- or " +
+        '`displayLeaf(this, value, context)` for a log-twin leaf.'
     ).toEqual([]);
   });
 
@@ -406,7 +413,7 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
       code,
       'the available-outputs list builder stopped rendering through `displayMasked`, so its ' +
         'callers interpolate producer-supplied output names that are masked but not stripped'
-    ).toMatch(/shown\.map\(\(k\) => this\.displayMasked\(k, context\)\)/);
+    ).toMatch(/shown\.map\(\(k\) => displayMasked\(masker, k, context\)\)/);
   });
 
   it('keeps the builders DELEGATING, so listing them in MASKERS stays true', () => {
@@ -417,14 +424,14 @@ describe('the resolver has ONE exit from the masking machinery (go-to-k/cdkd#342
     // `displaySafe` alone would silently downgrade every site from masked to
     // merely sanitized, and both scanners would stay green.
     expect(code).toMatch(
-      /displayMasked\([^)]*\): string \{\s*return displaySafe\(this\.maskThenStripThenMask\(value, context\)\);\s*\}/
+      /displayMasked\([^)]*\): string \{\s*return displaySafe\(maskThenStripThenMask\(masker, value, context\)\);\s*\}/
     );
     // ...and its log-twin sibling, which is in `MASKERS` on the strength of
     // DELEGATING to it. Re-pointing this one at `logTextOfLeaf` alone would
     // drop the strip and the `displaySafe` pass from all nine `origin` sites
     // while both scanners stayed green.
     expect(code).toMatch(
-      /displayLeaf\([^)]*\): string \{\s*return this\.displayMasked\(this\.logTextOfLeaf\(value, context\), context\);\s*\}/
+      /displayLeaf\([^)]*\): string \{\s*return displayMasked\(resolver, resolver\.logTextOfLeaf\(value, context\), context\);\s*\}/
     );
     // The THIRD `MASKERS` entry with a body in this file, and the one a sweep
     // would forget: `maskInherited` masks against the inherited bag alone and

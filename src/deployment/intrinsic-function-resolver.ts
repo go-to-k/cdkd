@@ -1,8 +1,5 @@
-import type { CloudFormationClient, Export as CfnExport } from '@aws-sdk/client-cloudformation';
-import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
-import { type AwsClients } from '../utils/aws-clients.js';
 import { canonicalizeRegion, sameRegion } from '../utils/aws-partition.js';
 import { withSharedDrainBudget } from './drain-budget.js';
 import { SECRET_MASK } from './secret-redaction.js';
@@ -22,20 +19,19 @@ import * as getAttMixin from './intrinsic-resolver/getatt.js';
 import * as getAttRefusalsMixin from './intrinsic-resolver/getatt-refusals.js';
 import * as getAttHealMixin from './intrinsic-resolver/getatt-heal.js';
 import * as crossStackMixin from './intrinsic-resolver/cross-stack.js';
-import * as cfnFallbackMixin from './intrinsic-resolver/cfn-fallback.js';
+import { CfnFallbackCache } from './intrinsic-resolver/cfn-fallback.js';
 import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
-import * as stackStateMixin from './intrinsic-resolver/stack-state.js';
 import * as dynamicRefsMixin from './intrinsic-resolver/dynamic-refs.js';
 import * as dynamicRefLookupsMixin from './intrinsic-resolver/dynamic-ref-lookups.js';
 import * as stringFnMixin from './intrinsic-resolver/string-functions.js';
 import * as subMixin from './intrinsic-resolver/sub.js';
 import * as fnMixin from './intrinsic-resolver/functions.js';
 import * as maskingMixin from './intrinsic-resolver/masking.js';
-import * as maskingDisplayMixin from './intrinsic-resolver/masking-display.js';
+import { displayMasked, logRender } from './intrinsic-resolver/masking-display.js';
 import * as paramsConditionsMixin from './intrinsic-resolver/params-conditions.js';
-import * as parameterSecretsMixin from './intrinsic-resolver/parameter-secrets.js';
+import { recordDroppedArrayElementsIn } from './intrinsic-resolver/parameter-secrets.js';
 import * as refsMixin from './intrinsic-resolver/refs.js';
-import * as clientsMixin from './intrinsic-resolver/clients.js';
+import { ResolverClients } from './intrinsic-resolver/clients.js';
 import type {
   CdkCrossAccountRefVerdict,
   ProducerLookup,
@@ -149,8 +145,8 @@ export class IntrinsicFunctionResolver {
    * without one — unlike {@link resolverRegion}, which substitutes
    * `AWS_REGION` / `us-east-1` so every consumer has a string to work with.
    *
-   * The distinction is load-bearing for {@link clientsForRegion} and for
-   * nothing else: re-pointing an AWS lookup away from the ambient clients is
+   * The distinction is load-bearing for `ResolverClients.clientsForRegion`
+   * and for nothing else: re-pointing an AWS lookup away from the ambient clients is
    * only safe when a caller SAID which region this resolver stands for.
    *
    * IN PRODUCTION THIS IS ALWAYS SET, and saying so matters more than the
@@ -177,47 +173,21 @@ export class IntrinsicFunctionResolver {
   /** @internal */
   readonly explicitRegion: string | undefined;
   /**
-   * AWS clients pinned to a region OTHER than the ambient singleton's, built
-   * lazily on first mismatch and keyed by region (issue #1957).
-   *
-   * Lifetime is deliberately the resolver's own, matching {@link cfnClients}
-   * two fields down: both are per-region SDK clients this instance builds for
-   * itself, and neither is destroyed, because `IntrinsicFunctionResolver` has
-   * no teardown hook and every construction site (`DeployEngine`, `scrub`,
-   * `drift`, `import`, `diff-recursive`, `export`, `rollback-executor`) would
-   * have to grow one. The bound on what that costs is small and worth stating:
-   * an entry exists only when a resolver's region DIFFERS from the ambient
-   * one — i.e. only on a genuinely cross-region run — and at most one per
-   * foreign region per resolver, versus the ambient clients which are already
-   * created and destroyed per stack by `deploy.ts`.
-   *
-   * KEYED BY REGION AND CREDENTIAL FINGERPRINT ({@link clientCacheKey}, issue
-   * [#3588](https://github.com/go-to-k/cdkd/issues/3588)). An entry pins the
-   * credential configuration of the ambient instance it was derived from, and
-   * that half is process-wide only for the CLI (one `--profile`, one
-   * `--role-arn`): a LIBRARY caller can drive one resolver across two
-   * `setAwsClients` installs (or cdkd's per-stack scopes) with different
-   * explicit credentials, and keyed by region alone the second's lookups ran under the first's
-   * identity. {@link cfnClients} and {@link serviceDiscoveryClients} share the
-   * key for the same reason, and the two CloudFormation fallback memos
-   * ({@link cfnExportsPromises}, {@link cfnStackOutputsCache}) carry the
-   * fingerprint too.
-   *
-   * The VALUE caches carry the fingerprint as well (issue
-   * [#3660](https://github.com/go-to-k/cdkd/issues/3660)):
-   * {@link cachedDynamicReferences}, and the process-global account identity
-   * behind `getAccountInfo` and `cachedAvailabilityZones`.
+   * The AWS clients this resolver builds for itself and their caches
+   * (`regionScopedClients`, `serviceDiscoveryClients`, `cfnClients`; issues
+   * #1957, #1994, #1697). Created once in the constructor and never replaced,
+   * so every cache lives exactly as long as this resolver, as the fields it
+   * replaces did.
    * @internal
    */
-  readonly regionScopedClients = new Map<string, AwsClients>();
+  readonly clients: ResolverClients;
   /**
-   * ServiceDiscovery clients keyed by the region {@link clientsForRegion}
-   * selected (`''` when it selected none). See {@link serviceDiscoveryClient}
-   * for why this one service is not read off an `AwsClients` bag, and why the
-   * PROMISE rather than the client is what is stored.
+   * The CloudFormation fallback for cross-stack references (issue #1697) and
+   * its two memos (`cfnExportsPromises`, `cfnStackOutputsCache`). Created once
+   * in the constructor and never replaced, like {@link clients}.
    * @internal
    */
-  readonly serviceDiscoveryClients = new Map<string, Promise<ServiceDiscoveryClient>>();
+  readonly cfnFallbackCache: CfnFallbackCache;
   /**
    * Resolvers pinned to a PRODUCER stack's region, for re-resolving a
    * cross-stack imported value that was persisted REDACTED (issue
@@ -242,7 +212,7 @@ export class IntrinsicFunctionResolver {
    * see {@link pinSecretVerdict} and {@link producerRegionGuest}, which also
    * record why re-keying that store is not available from this lane.
    *
-   * Bounded like {@link regionScopedClients}: an entry exists only for a
+   * Bounded like `ResolverClients.regionScopedClients`: an entry exists only for a
    * producer region that DIFFERS from this resolver's own, and at most one per
    * such region. Same lifetime too — the resolver's own, with no teardown.
    */
@@ -288,41 +258,6 @@ export class IntrinsicFunctionResolver {
    */
   /** @internal */
   readonly cdkCrossAccountRefVerdicts = new Map<string, CdkCrossAccountRefVerdict>();
-  /**
-   * Per-region CloudFormation clients for the cross-stack fallback
-   * lookups (issue #1697). Keyed by region because `Fn::GetStackOutput`
-   * may target a region different from the consumer's deploy region, and by
-   * the credential fingerprint for {@link regionScopedClients}' reason.
-   */
-  /** @internal */
-  readonly cfnClients = new Map<string, CloudFormationClient>();
-  /**
-   * Memoized full `ListExports` listing for the `Fn::ImportValue`
-   * fallback (issue #1697 review). Without it, EVERY cdkd-miss import
-   * re-paginates the whole region's export list — a deploy consuming N
-   * values from CFn producers pays N full walks and exposes itself to
-   * ListExports throttling. Resolver instances are per-deploy (the
-   * engine constructs one per stack), so the cache lifetime matches the
-   * exports-index philosophy: stable within a deploy, fresh across
-   * deploys. FAILED fetches are not cached (the rejection handler
-   * clears the slot) so a transient throttle does not poison the rest
-   * of the deploy's lookups.
-   *
-   * Keyed by the credential fingerprint (issue #3588): a listing is an answer
-   * one identity was allowed to read, so it is never handed to another.
-   */
-  /** @internal */
-  readonly cfnExportsPromises = new Map<string, Promise<CfnExport[]>>();
-  /**
-   * Memoized per-(region, stack) `DescribeStacks` outputs for the
-   * `Fn::GetStackOutput` fallback (issue #1697 review) — a stack
-   * referencing the same CFn producer N times pays one call. Successful
-   * lookups (including the definitive "stack does not exist" miss) are
-   * cached; lookup FAILURES are evicted so they are retried. Keyed by the
-   * credential fingerprint as well, for {@link cfnExportsPromises}' reason.
-   */
-  /** @internal */
-  readonly cfnStackOutputsCache = new Map<string, Promise<Record<string, string> | undefined>>();
   /**
    * Number of unknown-attribute resolutions that fell back to the physical
    * ID (the warn path) since construction / the last
@@ -394,7 +329,7 @@ export class IntrinsicFunctionResolver {
    * process-ambient `getAwsClients()` singleton, whose region is whichever the
    * process installed last — was issue
    * [#1957](https://github.com/go-to-k/cdkd/issues/1957) and is now closed by
-   * {@link clientsForRegion}: a resolver whose region differs from the ambient
+   * `ResolverClients.clientsForRegion`: a resolver whose region differs from the ambient
    * one builds its own region-pinned clients (carrying the ambient profile /
    * credentials) instead of reading whatever the singleton currently holds.
    * The two halves remain SEPARATE mechanisms and both are needed — this field
@@ -435,6 +370,22 @@ export class IntrinsicFunctionResolver {
     this.cfnFallback = options?.cfnFallback ?? true;
     this.producerLookup = options?.producerLookup;
     this.consumerAccount = options?.consumerAccount;
+    // `explicitRegion` and `resolverRegion` are assigned above and nowhere
+    // else, so they pass by value. `explicitRegionLogText` is set on a
+    // producer-region guest AFTER construction (and can turn into `***`), and
+    // `logger` is a writable field, so both are read live. The masker is this
+    // resolver itself, whose methods read its bags at call time.
+    this.clients = new ResolverClients({
+      explicitRegion: this.explicitRegion,
+      explicitRegionLogText: () => this.explicitRegionLogText,
+      logger: () => this.logger,
+    });
+    this.cfnFallbackCache = new CfnFallbackCache({
+      clients: this.clients,
+      resolverRegion: this.resolverRegion,
+      logger: () => this.logger,
+      resolver: this,
+    });
   }
 
   /** Unknown-attribute physicalId fallbacks recorded since the last reset. */
@@ -455,7 +406,7 @@ export class IntrinsicFunctionResolver {
   async resolveSSMParameter(parameterName: string): Promise<string> {
     // Region-sensitive: SSM parameters are regional and independent, so the
     // same path in two regions is two different values (issue #1957).
-    const client = this.clientsForRegion(this.explicitRegion).ssm;
+    const client = this.clients.clientsForRegion(this.explicitRegion).ssm;
     const response = await client.send(new GetParameterCommand({ Name: parameterName }));
     return response.Parameter?.Value ?? '';
   }
@@ -561,7 +512,7 @@ export class IntrinsicFunctionResolver {
         resolved.forEach((v, i) => {
           if (v === AWS_NO_VALUE) dropped.push(i);
         });
-        parameterSecretsMixin.recordDroppedArrayElementsIn(context, value, dropped);
+        recordDroppedArrayElementsIn(context, value, dropped);
       }
       return kept;
     }
@@ -771,7 +722,7 @@ export class IntrinsicFunctionResolver {
         // `key` is a template object key -- arbitrary JSON, same class as a
         // `Resources` key (go-to-k/cdkd#3435 review round 2).
         this.logger.debug(
-          `Property ${this.logRender(key, context)} resolved to AWS::NoValue, omitting from object`
+          `Property ${logRender(this, key, context)} resolved to AWS::NoValue, omitting from object`
         );
       }
     }
@@ -820,7 +771,7 @@ export class IntrinsicFunctionResolver {
     // owes `displaySafe` as well as the strip. The equality test below compares
     // two texts built the same way, so routing both through the builder leaves
     // the "two spellings mask differently" verdict unchanged.
-    const guestRegionText = this.displayMasked(regionText, context);
+    const guestRegionText = displayMasked(this, regionText, context);
 
     const cached = this.producerRegionResolvers.get(target);
     if (cached) {
@@ -880,14 +831,6 @@ IntrinsicFunctionResolver.prototype.logTwinOfProduct = maskingMixin.logTwinOfPro
 IntrinsicFunctionResolver.prototype.recordLeafResolution = maskingMixin.recordLeafResolution;
 IntrinsicFunctionResolver.prototype.nestedPartResolution = maskingMixin.nestedPartResolution;
 IntrinsicFunctionResolver.prototype.rememberLogTwin = maskingMixin.rememberLogTwin;
-IntrinsicFunctionResolver.prototype.maskValueLeaves = maskingDisplayMixin.maskValueLeaves;
-IntrinsicFunctionResolver.prototype.maskThenStripThenMask =
-  maskingDisplayMixin.maskThenStripThenMask;
-IntrinsicFunctionResolver.prototype.displayMasked = maskingDisplayMixin.displayMasked;
-IntrinsicFunctionResolver.prototype.logRender = maskingDisplayMixin.logRender;
-IntrinsicFunctionResolver.prototype.splitDelimiterRender = maskingDisplayMixin.splitDelimiterRender;
-IntrinsicFunctionResolver.prototype.displayMaskedIdent = maskingDisplayMixin.displayMaskedIdent;
-IntrinsicFunctionResolver.prototype.displayLeaf = maskingDisplayMixin.displayLeaf;
 
 IntrinsicFunctionResolver.prototype.resolveIf = fnMixin.resolveIf;
 IntrinsicFunctionResolver.prototype.resolveEquals = fnMixin.resolveEquals;
@@ -936,13 +879,6 @@ IntrinsicFunctionResolver.prototype.reresolveCrossStackValue =
   crossStackMixin.reresolveCrossStackValue;
 IntrinsicFunctionResolver.prototype.pinSecretVerdict = crossStackMixin.pinSecretVerdict;
 IntrinsicFunctionResolver.prototype.resolveImportValue = crossStackMixin.resolveImportValue;
-IntrinsicFunctionResolver.prototype.lookupCfnExport = cfnFallbackMixin.lookupCfnExport;
-IntrinsicFunctionResolver.prototype.describeAvailableOutputs =
-  cfnFallbackMixin.describeAvailableOutputs;
-IntrinsicFunctionResolver.prototype.fetchAllCfnExports = cfnFallbackMixin.fetchAllCfnExports;
-IntrinsicFunctionResolver.prototype.lookupCfnStackOutputs = cfnFallbackMixin.lookupCfnStackOutputs;
-IntrinsicFunctionResolver.prototype.fetchCfnStackOutputs = cfnFallbackMixin.fetchCfnStackOutputs;
-IntrinsicFunctionResolver.prototype.getCfnClient = cfnFallbackMixin.getCfnClient;
 IntrinsicFunctionResolver.prototype.recordImport = crossStackMixin.recordImport;
 IntrinsicFunctionResolver.prototype.resolveGetStackOutput = stackOutputMixin.resolveGetStackOutput;
 IntrinsicFunctionResolver.prototype.recordOutputRead = stackOutputMixin.recordOutputRead;
@@ -950,10 +886,6 @@ IntrinsicFunctionResolver.prototype.positionalNameMask = stackOutputMixin.positi
 IntrinsicFunctionResolver.prototype.maskStateReadError = stackOutputMixin.maskStateReadError;
 IntrinsicFunctionResolver.prototype.maskNamedError = stackOutputMixin.maskNamedError;
 IntrinsicFunctionResolver.prototype.namedRequestMasks = stackOutputMixin.namedRequestMasks;
-IntrinsicFunctionResolver.prototype.getSameAccountStackState =
-  stackStateMixin.getSameAccountStackState;
-IntrinsicFunctionResolver.prototype.getCrossAccountStackState =
-  stackStateMixin.getCrossAccountStackState;
 
 IntrinsicFunctionResolver.prototype.pushRedactedAttributeRead =
   getAttMixin.pushRedactedAttributeRead;
@@ -994,16 +926,8 @@ IntrinsicFunctionResolver.prototype.guardedPhysicalIdFallback =
 IntrinsicFunctionResolver.prototype.resolveParameters = paramsConditionsMixin.resolveParameters;
 IntrinsicFunctionResolver.prototype.evaluateConditions = paramsConditionsMixin.evaluateConditions;
 IntrinsicFunctionResolver.prototype.resolveKeyUnit = paramsConditionsMixin.resolveKeyUnit;
-IntrinsicFunctionResolver.prototype.recordInheritedParameterSecrets =
-  parameterSecretsMixin.recordInheritedParameterSecrets;
-IntrinsicFunctionResolver.prototype.recordNoEchoParameterValue =
-  parameterSecretsMixin.recordNoEchoParameterValue;
-IntrinsicFunctionResolver.prototype.refuseCoercedInheritedSecret =
-  parameterSecretsMixin.refuseCoercedInheritedSecret;
 IntrinsicFunctionResolver.prototype.nameIsNeverAResource = refsMixin.nameIsNeverAResource;
 IntrinsicFunctionResolver.prototype.lookupResourceRecord = refsMixin.lookupResourceRecord;
 IntrinsicFunctionResolver.prototype.resolveRef = refsMixin.resolveRef;
 IntrinsicFunctionResolver.prototype.resolveRefValue = refsMixin.resolveRefValue;
 IntrinsicFunctionResolver.prototype.noteRefStateMask = refsMixin.noteRefStateMask;
-IntrinsicFunctionResolver.prototype.clientsForRegion = clientsMixin.clientsForRegion;
-IntrinsicFunctionResolver.prototype.serviceDiscoveryClient = clientsMixin.serviceDiscoveryClient;

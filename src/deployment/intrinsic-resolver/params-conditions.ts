@@ -11,7 +11,11 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
-import { recordInheritedPseudoParameterValues } from './parameter-secrets.js';
+import {
+  recordInheritedPseudoParameterValues,
+  refuseCoercedInheritedSecret,
+} from './parameter-secrets.js';
+import { displayMasked, maskValueLeaves } from './masking-display.js';
 import {
   type AbandonedResolution,
   type ResolverContext,
@@ -192,11 +196,14 @@ export async function resolveParameters(
     if (userParameters && Object.hasOwn(userParameters, name)) {
       const userValue = userParameters[name];
       if (userValue !== undefined) {
-        this.refuseCoercedInheritedSecret(name, paramDef, userValue, inheritedSecrets);
+        refuseCoercedInheritedSecret(this, name, paramDef, userValue, inheritedSecrets);
         parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
         this.logger.debug(
           `Parameter ${maskInherited(name)}: using user-provided value ${maskInherited(
-            stringifyParameterForLog(paramDef, this.maskValueLeaves(userValue, inheritedLogContext))
+            stringifyParameterForLog(
+              paramDef,
+              maskValueLeaves(this, userValue, inheritedLogContext)
+            )
           )}`
         );
         continue;
@@ -405,7 +412,7 @@ export async function evaluateConditions(
     }
     if (inProgress.has(name)) {
       throw new Error(
-        `Circular condition reference detected involving condition ${quotedRender(this.displayMasked(name, maskingContext), '"')}`
+        `Circular condition reference detected involving condition ${quotedRender(displayMasked(this, name, maskingContext), '"')}`
       );
     }
     // The TEMPLATE's own `Conditions` object comes from `JSON.parse`, so this
@@ -419,7 +426,7 @@ export async function evaluateConditions(
       // A `{Condition: X}` reference to an undeclared condition. Match the
       // Fn::If not-found behavior: warn and treat as false.
       this.logger.warn(
-        `Condition ${this.displayMasked(name, maskingContext)} not found in template, assuming false`
+        `Condition ${displayMasked(this, name, maskingContext)} not found in template, assuming false`
       );
       conditions[name] = false;
       assumed.add(name);
@@ -439,7 +446,7 @@ export async function evaluateConditions(
       conditions[name] = value;
       // `value` carries nothing: it is `Boolean(result)`.
       this.logger.debug(
-        `Evaluated condition ${this.displayMasked(name, maskingContext)} = ${value}`
+        `Evaluated condition ${displayMasked(this, name, maskingContext)} = ${value}`
       );
       return value;
     } finally {
@@ -524,7 +531,8 @@ export async function evaluateConditions(
       // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
       // sentence. Do not restore a count.
       this.logger.warn(
-        this.displayMasked(
+        displayMasked(
+          this,
           `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
           maskingContext
         )
