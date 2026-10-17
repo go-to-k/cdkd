@@ -296,7 +296,7 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       const expression = '{{resolve:ssm:/shared/config}}';
       const lookup = (credentials: typeof A): Promise<unknown> =>
         runWithStackAwsClients(clientsFor(credentials), () =>
-          resolveDynamicReferences(resolver,expression, emptyContext)
+          resolveDynamicReferences(resolver, expression, emptyContext)
         );
 
       const results = [await lookup(A), await lookup(B), await lookup(A)];
@@ -316,7 +316,7 @@ describe('resolver value caches are keyed by credential identity (#3660)', () =>
       const expression = '{{resolve:secretsmanager:shared/db:SecretString}}';
       const lookup = (credentials: typeof A): Promise<unknown> =>
         runWithStackAwsClients(clientsFor(credentials), () =>
-          resolveDynamicReferences(resolver,expression, emptyContext)
+          resolveDynamicReferences(resolver, expression, emptyContext)
         );
 
       const results = [await lookup(A), await lookup(B), await lookup(A)];

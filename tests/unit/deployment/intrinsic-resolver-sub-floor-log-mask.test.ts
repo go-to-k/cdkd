@@ -411,7 +411,7 @@ describe('issue #3100: Resolved Fn::Join / Fn::Sub lines mask a sub-floor secret
     const ctx = freshContext();
     // The public method is what `reresolveCrossStackValue`, `cdkd scrub` and
     // `drift` call; none of them goes through `resolveValue`.
-    const imported = await resolveDynamicReferences(resolver,`port:${PIN_REF}`, ctx as never);
+    const imported = await resolveDynamicReferences(resolver, `port:${PIN_REF}`, ctx as never);
     expect(imported).toBe(`port:${PIN}`);
 
     // A product equal to that string, reached with no reference of its own.

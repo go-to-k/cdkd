@@ -376,10 +376,10 @@ describe('issue #4266: a secret-by-spelling token assembled from a secret is ref
   it('CONTROL: persisted text (cdkd drift, the rollback replay) still looks it up and resolves', async () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const context = contextFor(new Map(), true) as never;
-    expect(await resolveDynamicReferences(resolver,`port:{{resolve:secretsmanager:app-${NAME}:SecretString:k}}`, context)).toBe(
+    expect(await resolveDynamicReferences(resolver, `port:{{resolve:secretsmanager:app-${NAME}:SecretString:k}}`, context)).toBe(
       'port:sm-secret-value'
     );
-    expect(await resolveDynamicReferences(resolver,`port:{{resolve:ssm-secure:/sec/${NAME}}}`, context)).toBe(
+    expect(await resolveDynamicReferences(resolver, `port:{{resolve:ssm-secure:/sec/${NAME}}}`, context)).toBe(
       'port:secure-value'
     );
     expect([smCalls.count, ssmCalls.count]).toEqual([1, 1]);
@@ -525,7 +525,7 @@ describe('issue #4166: what the refusal leaves alone', () => {
     // exemption is propagated to it, fresh and from its cache.
     const arn = `port:{{resolve:ssm:arn:aws:ssm:us-west-2:123456789012:parameter/app/${NAME}}}`;
     for (const read of ['a sibling lookup', 'a sibling cache hit']) {
-      const resolved = await resolveDynamicReferences(resolver,arn, contextFor(new Map(), true) as never);
+      const resolved = await resolveDynamicReferences(resolver, arn, contextFor(new Map(), true) as never);
       expect(resolved, read).toBe('port:q7');
     }
     expect(ssmCalls.count, 'premise: the sibling looked up once').toBe(2);

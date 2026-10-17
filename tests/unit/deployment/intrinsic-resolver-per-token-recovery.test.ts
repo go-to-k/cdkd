@@ -77,7 +77,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    const out = await resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver, `${DELETED}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -334,7 +334,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     // still aborts, so no existing consumer changed behaviour silently.
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     await expect(
-      resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
+      resolveDynamicReferences(resolver, `${DELETED}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
       } as never)
     ).rejects.toThrow(/not found/);
@@ -355,7 +355,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await expect(
-      resolveDynamicReferences(resolver,`{{resolve:ssm-secure:/public/p}}/${LIVE}`, {
+      resolveDynamicReferences(resolver, `{{resolve:ssm-secure:/public/p}}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never)
@@ -376,7 +376,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const abandonedResolutions: AbandonedResolution[] = [];
 
     await expect(
-      resolveDynamicReferences(resolver,`{{resolve:secretsmanager:}}/${LIVE}`, {
+      resolveDynamicReferences(resolver, `{{resolve:secretsmanager:}}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never)
@@ -499,7 +499,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     return (async (): Promise<void> => {
       const resolver = new IntrinsicFunctionResolver('us-east-1');
       const abandonedResolutions: AbandonedResolution[] = [];
-      await resolveDynamicReferences(resolver,`${DELETED}/${LIVE}`, {
+      await resolveDynamicReferences(resolver, `${DELETED}/${LIVE}`, {
         recordedSecretValues: new Map<string, string>(),
         abandonedResolutions,
       } as never);
@@ -554,7 +554,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    await resolveDynamicReferences(resolver,`${FIRST}/${DELETED}/${LIVE}`, {
+    await resolveDynamicReferences(resolver, `${FIRST}/${DELETED}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -619,7 +619,7 @@ describe('per-token recovery in resolveDynamicReferences (go-to-k/cdkd#3181)', (
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: AbandonedResolution[] = [];
 
-    await resolveDynamicReferences(resolver,`${ARN}/${LIVE}`, {
+    await resolveDynamicReferences(resolver, `${ARN}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);

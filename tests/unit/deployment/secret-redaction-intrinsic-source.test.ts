@@ -712,7 +712,7 @@ describe('IntrinsicFunctionResolver - records every secret expression (issue #19
 
     const recordedSecretValues: RecordedSecretValues = new Map();
     const expression = '{{resolve:ssm:/app/unknown-type}}';
-    await resolveDynamicReferences(resolver,expression, {
+    await resolveDynamicReferences(resolver, expression, {
       template,
       resources: {},
       recordedSecretValues,

@@ -97,7 +97,7 @@ describe('recovery keeps secrets out of logs and keeps the twin pairing (go-to-k
     const recordedSecretValues = new Map<string, string>();
     const abandonedResolutions: unknown[] = [];
 
-    const out = await resolveDynamicReferences(resolver,`${DEAD}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver, `${DEAD}/${LIVE}`, {
       recordedSecretValues,
       abandonedResolutions,
     } as never);
@@ -152,7 +152,7 @@ describe('recovery keeps secrets out of logs and keeps the twin pairing (go-to-k
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const abandonedResolutions: Array<{ subject: string }> = [];
 
-    const out = await resolveDynamicReferences(resolver,`${FIRST}/${DEAD}/${LIVE}`, {
+    const out = await resolveDynamicReferences(resolver, `${FIRST}/${DEAD}/${LIVE}`, {
       recordedSecretValues: new Map<string, string>(),
       abandonedResolutions,
     } as never);

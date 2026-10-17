@@ -1134,7 +1134,7 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
 
       // 2. The consumer's OWN pass, on the comparison path, must still ask AWS
       //    and resolve ITS region's public value.
-      const diffResult = await resolveDynamicReferences(resolver,ssmExpression, {
+      const diffResult = await resolveDynamicReferences(resolver, ssmExpression, {
         ...context,
         skipDynamicReferences: true,
       });

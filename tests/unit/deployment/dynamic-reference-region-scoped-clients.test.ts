@@ -297,7 +297,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
       const recordedSecretValues = new Map<string, string>();
       const expression = '{{resolve:ssm-secure:/shared/db/password}}';
-      const result = await resolveDynamicReferences(resolver,expression, {
+      const result = await resolveDynamicReferences(resolver, expression, {
         ...emptyContext,
         recordedSecretValues,
       });
@@ -335,7 +335,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       const recordedSecretValues = new Map<string, string>();
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
       const expression = '{{resolve:ssm:/shared/db/password}}';
-      const result = await resolveDynamicReferences(resolver,expression, {
+      const result = await resolveDynamicReferences(resolver, expression, {
         ...emptyContext,
         recordedSecretValues,
       });
@@ -840,8 +840,8 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
       // Two DIFFERENT expressions, so the instance value cache cannot be what
       // collapses the second lookup — the client cache has to be.
-      await resolveDynamicReferences(resolver,'{{resolve:ssm:/one}}', emptyContext);
-      await resolveDynamicReferences(resolver,'{{resolve:ssm:/two}}', emptyContext);
+      await resolveDynamicReferences(resolver, '{{resolve:ssm:/one}}', emptyContext);
+      await resolveDynamicReferences(resolver, '{{resolve:ssm:/two}}', emptyContext);
 
       expect(ssmSends).toHaveLength(2);
       expect(ssmInstances).toHaveLength(1);
@@ -895,7 +895,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       });
 
       const resolver = new IntrinsicFunctionResolver('AP-NORTHEAST-1');
-      const result = await resolveDynamicReferences(resolver,'{{resolve:ssm:/p}}', emptyContext);
+      const result = await resolveDynamicReferences(resolver, '{{resolve:ssm:/p}}', emptyContext);
 
       expect(result).toBe('tokyo-value');
       expect(ssmInstances).toHaveLength(1);
@@ -921,7 +921,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
       await Promise.all(
         Array.from({ length: 10 }, (_unused, i) =>
-          resolveDynamicReferences(resolver,`{{resolve:ssm:/p${i}}}`, emptyContext)
+          resolveDynamicReferences(resolver, `{{resolve:ssm:/p${i}}}`, emptyContext)
         )
       );
 
@@ -964,7 +964,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       });
 
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
-      const result = await resolveDynamicReferences(resolver,'{{resolve:ssm:/p}}', emptyContext);
+      const result = await resolveDynamicReferences(resolver, '{{resolve:ssm:/p}}', emptyContext);
 
       expect(result).toBe('tokyo-value');
       // A DERIVED bag answered: the sending client was CONSTRUCTED with an
@@ -992,7 +992,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       });
 
       const resolver = new IntrinsicFunctionResolver();
-      const result = await resolveDynamicReferences(resolver,'{{resolve:ssm:/p}}', emptyContext);
+      const result = await resolveDynamicReferences(resolver, '{{resolve:ssm:/p}}', emptyContext);
 
       expect(result).toBe('ireland-value');
       expect(ambient.ssm as unknown).toBe(ssmInstances[0]);
@@ -1023,7 +1023,7 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       const recordedSecretValues = new Map<string, string>();
       const resolver = new IntrinsicFunctionResolver(STACK_REGION);
       const expression = '{{resolve:ssm:/shared/db/password}}';
-      const result = await resolveDynamicReferences(resolver,expression, {
+      const result = await resolveDynamicReferences(resolver, expression, {
         ...emptyContext,
         recordedSecretValues,
       });

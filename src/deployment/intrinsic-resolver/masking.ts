@@ -49,7 +49,7 @@ import {
  * checker, and what holds the containment now is
  * `tests/unit/deployment/resolver-display-masked-population.test.ts`, which
  * asserts the exact reference COUNTS from the AST (one caller each) and
- * refuses a direct `${this.<raw masker>(...)}` interpolation by line rule.
+ * refuses a direct `${<raw masker>(...)}` interpolation by line rule.
  * Do not call this from a new site: a binding of it interpolated LATER is
  * the shape neither survivor can see.
  *

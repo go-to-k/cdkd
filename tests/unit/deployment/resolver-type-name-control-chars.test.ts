@@ -370,7 +370,7 @@ describe('a hostile SSM-reported Type cannot reach the unrecognized-Type WARN (#
     });
     const resolver = new IntrinsicFunctionResolver();
     const got = await capture(() =>
-      resolveDynamicReferences(resolver,'{{resolve:ssm-secure:/prod/db/password}}', {
+      resolveDynamicReferences(resolver, '{{resolve:ssm-secure:/prod/db/password}}', {
         template: { Resources: {} },
         resources: {},
       } as ResolverContext)

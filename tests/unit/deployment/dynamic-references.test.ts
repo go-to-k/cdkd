@@ -177,8 +177,8 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       const ref = '{{resolve:secretsmanager:my-secret:SecretString:key::}}';
 
-      const result1 = await resolveDynamicReferences(resolver,ref);
-      const result2 = await resolveDynamicReferences(resolver,ref);
+      const result1 = await resolveDynamicReferences(resolver, ref);
+      const result2 = await resolveDynamicReferences(resolver, ref);
 
       expect(result1).toBe('cached-value');
       expect(result2).toBe('cached-value');
@@ -187,7 +187,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     });
 
     it('should return string as-is when no dynamic references present', async () => {
-      const result = await resolveDynamicReferences(resolver,'just a normal string');
+      const result = await resolveDynamicReferences(resolver, 'just a normal string');
       expect(result).toBe('just a normal string');
       expect(mockSecretsManagerSend).not.toHaveBeenCalled();
       expect(mockSSMSend).not.toHaveBeenCalled();
@@ -237,7 +237,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
 
       await expect(
-        resolveDynamicReferences(resolver,'{{resolve:ssm:missing-param}}')
+        resolveDynamicReferences(resolver, '{{resolve:ssm:missing-param}}')
       ).rejects.toThrow("SSM parameter 'missing-param' not found or has no value");
     });
 
@@ -522,7 +522,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       const recordedSecretValues = new Map<string, string>();
       const expr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
 
-      const result = await resolveDynamicReferences(resolver,expr, {
+      const result = await resolveDynamicReferences(resolver, expr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -535,7 +535,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config', Type: 'String' } });
       const recordedSecretValues = new Map<string, string>();
 
-      await resolveDynamicReferences(resolver,'{{resolve:ssm:/db/host}}', {
+      await resolveDynamicReferences(resolver, '{{resolve:ssm:/db/host}}', {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -616,7 +616,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       const recordedSecretValues = new Map<string, string>();
 
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -632,7 +632,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config', Type: 'String' } });
       const recordedSecretValues = new Map<string, string>();
 
-      const result = await resolveDynamicReferences(resolver,'{{resolve:ssm:/db/host}}', {
+      const result = await resolveDynamicReferences(resolver, '{{resolve:ssm:/db/host}}', {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -645,7 +645,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'a,b,c', Type: 'StringList' } });
       const recordedSecretValues = new Map<string, string>();
 
-      await resolveDynamicReferences(resolver,'{{resolve:ssm:/db/hosts}}', {
+      await resolveDynamicReferences(resolver, '{{resolve:ssm:/db/hosts}}', {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -702,14 +702,14 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
           Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
         });
 
-      const diffed = await resolveDynamicReferences(resolver,secureExpr, {
+      const diffed = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         skipDynamicReferences: true,
       });
       expect(diffed).toBe(secureExpr);
 
       const recordedSecretValues = new Map<string, string>();
-      const deployed = await resolveDynamicReferences(resolver,secureExpr, {
+      const deployed = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -727,8 +727,8 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
 
       const skipContext = { ...defaultContext, skipDynamicReferences: true };
-      const first = await resolveDynamicReferences(resolver,secureExpr, skipContext);
-      const second = await resolveDynamicReferences(resolver,secureExpr, skipContext);
+      const first = await resolveDynamicReferences(resolver, secureExpr, skipContext);
+      const second = await resolveDynamicReferences(resolver, secureExpr, skipContext);
 
       // Only the FIRST pass had to ask AWS for the parameter's type...
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
@@ -747,13 +747,13 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
 
       const first = new Map<string, string>();
-      await resolveDynamicReferences(resolver,secureExpr, {
+      await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues: first,
       });
 
       const second = new Map<string, string>();
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues: second,
       });
@@ -792,7 +792,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       const recordedSecretValues = new Map<string, string>();
 
-      await resolveDynamicReferences(resolver,secureExpr, {
+      await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -819,10 +819,10 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         Parameter: { Value: plaintext, Type: 'SecureString' },
       });
 
-      const fresh = await resolveDynamicReferences(resolver,`pw=${secureExpr}`, defaultContext);
+      const fresh = await resolveDynamicReferences(resolver, `pw=${secureExpr}`, defaultContext);
       expect(fresh).toBe(`pw=${plaintext}`);
 
-      const cached = await resolveDynamicReferences(resolver,`pw=${secureExpr}`, defaultContext);
+      const cached = await resolveDynamicReferences(resolver, `pw=${secureExpr}`, defaultContext);
       expect(cached).toBe(`pw=${plaintext}`);
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
     });
@@ -837,7 +837,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       // warning meaningless noise on every ordinary deploy.
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'v-known', Type: type } });
 
-      await resolveDynamicReferences(resolver,secureExpr, defaultContext);
+      await resolveDynamicReferences(resolver, secureExpr, defaultContext);
 
       const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warned).not.toContain('unrecognized Type');
@@ -852,7 +852,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         .mockResolvedValueOnce({ Parameter: { Value: 'prod', Type: 'String' } });
 
       const first = new Map<string, string>();
-      await resolveDynamicReferences(resolver,secureExpr, {
+      await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues: first,
       });
@@ -863,7 +863,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       // (issue #1933), which is what lets a definitive public answer arrive and
       // clear the verdict.
       const second = new Map<string, string>();
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues: second,
       });
@@ -881,8 +881,8 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'AQICAHh-blob' } });
       const skipContext = { ...defaultContext, skipDynamicReferences: true };
 
-      await resolveDynamicReferences(resolver,secureExpr, skipContext);
-      await resolveDynamicReferences(resolver,secureExpr, skipContext);
+      await resolveDynamicReferences(resolver, secureExpr, skipContext);
+      await resolveDynamicReferences(resolver, secureExpr, skipContext);
 
       // Contrast with the definitive-SecureString case, which short-circuits
       // to a single call.
@@ -899,15 +899,15 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       const skipContext = { ...defaultContext, skipDynamicReferences: true };
 
-      await resolveDynamicReferences(resolver,secureExpr, skipContext);
+      await resolveDynamicReferences(resolver, secureExpr, skipContext);
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
       // Without the reset this second pass short-circuits with no AWS call.
-      await resolveDynamicReferences(resolver,secureExpr, skipContext);
+      await resolveDynamicReferences(resolver, secureExpr, skipContext);
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
 
       resetAccountInfoCache();
 
-      await resolveDynamicReferences(resolver,secureExpr, skipContext);
+      await resolveDynamicReferences(resolver, secureExpr, skipContext);
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
@@ -954,7 +954,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
     it('an untainted token warns and stays in the value, exactly as written', async () => {
       const recordedSecretValues = new Map<string, string>();
-      const result = await resolveDynamicReferences(resolver,'a-{{resolve:notaservice:/x}}-b', {
+      const result = await resolveDynamicReferences(resolver, 'a-{{resolve:notaservice:/x}}-b', {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -1077,7 +1077,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       const leaf = `x-{{resolve:${SENTINEL}}}-y`;
 
       expect(
-        await resolveDynamicReferences(resolver,leaf, { ...defaultContext, recordedSecretValues: recorded })
+        await resolveDynamicReferences(resolver, leaf, { ...defaultContext, recordedSecretValues: recorded })
       ).toBe(leaf);
       // Masked, at default verbosity, exactly as before issue #2743.
       expect(mockLoggerWarn.mock.calls.map((c) => String(c[0]))).toEqual([
@@ -1130,7 +1130,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       const recordedSecretValues = new Map<string, string>();
 
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -1164,7 +1164,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     it('is left UNRESOLVED on the comparison path with NO GetParameter, like secretsmanager', async () => {
       // A secret by spelling: the diff compares expression against expression,
       // so no lookup is needed to learn what the `ssm` arm has to ask for.
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         skipDynamicReferences: true,
       });
@@ -1180,7 +1180,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     it('leaves an EMBEDDED ssm-secure token in place on the comparison path', async () => {
       const leaf = `jdbc:postgresql://db/app?password=${secureExpr}`;
 
-      const result = await resolveDynamicReferences(resolver,leaf, {
+      const result = await resolveDynamicReferences(resolver, leaf, {
         ...defaultContext,
         skipDynamicReferences: true,
       });
@@ -1235,7 +1235,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       let error: unknown;
       try {
-        await resolveDynamicReferences(resolver,secureExpr, {
+        await resolveDynamicReferences(resolver, secureExpr, {
           ...defaultContext,
           recordedSecretValues,
         });
@@ -1253,11 +1253,39 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(recordedSecretValues.size).toBe(0);
     });
 
+    it('masks a secret embedded in the PARAMETER NAME when refusing a String type', async () => {
+      // The refusal names the token via `displayMasked`, which needle-masks
+      // against `recordedSecretValues` -- never the raw token. A parameter
+      // NAME built from an already-recorded secret must not leak that secret
+      // into the refusal text just because the refusal is about the TYPE.
+      const secretNamePart = 's3cr3tNamePart9';
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config', Type: 'String' } });
+      const recordedSecretValues = new Map<string, string>([
+        [secretNamePart, '{{resolve:secretsmanager:other-secret}}'],
+      ]);
+
+      let error: unknown;
+      try {
+        await resolveDynamicReferences(resolver,
+          `{{resolve:ssm-secure:/app/${secretNamePart}/pw}}`,
+          { ...defaultContext, recordedSecretValues }
+        );
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      const message = (error as Error).message;
+      // Premise: the case reached the ssm-secure / String-type refusal arm.
+      expect(message).toContain('ssm-secure spelling is defined for SecureString parameters only');
+      expect(message).not.toContain(secretNamePart);
+    });
+
     it('REFUSES a definitive StringList parameter the same way', async () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'a,b,c', Type: 'StringList' } });
 
       await expect(
-        resolveDynamicReferences(resolver,secureExpr, {
+        resolveDynamicReferences(resolver, secureExpr, {
           ...defaultContext,
           recordedSecretValues: new Map<string, string>(),
         })
@@ -1278,7 +1306,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(isRecordedSecretExpression(secureExpr)).toBe(false);
 
       try {
-        await resolveDynamicReferences(resolver,secureExpr, {
+        await resolveDynamicReferences(resolver, secureExpr, {
           ...defaultContext,
           recordedSecretValues: new Map<string, string>(),
         });
@@ -1308,7 +1336,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'odd-password' } });
       const recordedSecretValues = new Map<string, string>();
 
-      const result = await resolveDynamicReferences(resolver,secureExpr, {
+      const result = await resolveDynamicReferences(resolver, secureExpr, {
         ...defaultContext,
         recordedSecretValues,
       });
@@ -1811,7 +1839,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         .mockRejectedValueOnce(throttle)
         .mockResolvedValueOnce({ Parameter: { Value: 'v-after-throttle', Type: 'String' } });
 
-      const resolved = await resolveDynamicReferences(resolver,expr, defaultContext);
+      const resolved = await resolveDynamicReferences(resolver, expr, defaultContext);
 
       expect(resolved).toBe('v-after-throttle');
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
@@ -1829,7 +1857,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         .mockRejectedValueOnce(throttle)
         .mockResolvedValueOnce({ SecretString: JSON.stringify({ password: 'pw-after-throttle' }) });
 
-      const resolved = await resolveDynamicReferences(resolver,secretExpr, defaultContext);
+      const resolved = await resolveDynamicReferences(resolver, secretExpr, defaultContext);
 
       // Value AND attempt count: without the count a wrapper-less
       // implementation that happened to succeed first time would pass.
@@ -1846,7 +1874,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       mockSSMSend.mockRejectedValue(notFound);
 
-      await expect(resolveDynamicReferences(resolver,expr, defaultContext)).rejects.toThrow(
+      await expect(resolveDynamicReferences(resolver, expr, defaultContext)).rejects.toThrow(
         /not found/i
       );
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
@@ -1858,9 +1886,9 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       // the line on exactly the template that needs it read.
       mockSSMSend.mockResolvedValue({ Parameter: { Value: 'unclassified-secret' } });
 
-      await resolveDynamicReferences(resolver,expr, defaultContext);
-      await resolveDynamicReferences(resolver,expr, defaultContext);
-      await resolveDynamicReferences(resolver,expr, defaultContext);
+      await resolveDynamicReferences(resolver, expr, defaultContext);
+      await resolveDynamicReferences(resolver, expr, defaultContext);
+      await resolveDynamicReferences(resolver, expr, defaultContext);
 
       const warns = mockLoggerWarn.mock.calls
         .map((c) => String(c[0]))

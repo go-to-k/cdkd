@@ -423,7 +423,7 @@ async function persistedOutcome(writes: unknown[], token: string): Promise<unkno
   const resolver = new IntrinsicFunctionResolver('us-east-1');
   const context = makeContext();
   for (const write of writes) await resolver.resolve(write, context as never);
-  return resolveDynamicReferences(resolver,token, context as never).then(
+  return resolveDynamicReferences(resolver, token, context as never).then(
     (resolved) => ({ resolvedInstead: resolved }),
     (reason: unknown) => reason
   );
