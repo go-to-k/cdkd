@@ -356,7 +356,7 @@ export async function reresolveCrossStackValue(
   // paths -- named separately because they are different code and an earlier
   // draft of this comment fused them: `loadIndex` parses the stored file with
   // an unchecked `JSON.parse`, so any `producerRegion` the file happens to
-  // hold arrives verbatim; and `rebuild` writes `ref.region ?? resolver.region`,
+  // hold arrives verbatim; and `rebuild` writes `ref.region ?? this.region`,
   // where `??` passes an empty string through rather than replacing it. The
   // index-HIT arm hands that value straight to this method.
   // State schema v12 (go-to-k/cdkd#4847 / #4852): whatever resolves here is a
@@ -845,13 +845,13 @@ export async function resolveImportValue(
  * `await` between `some()` and `push()`), so the JS event loop
  * cannot interleave a competing `recordImport` call between the
  * dedup check and the append. The bag's lifetime is per-deploy
- * (DeployEngine resets `resolver.recordedImports = []` at the top of
+ * (DeployEngine resets `this.recordedImports = []` at the top of
  * each `deploy()` call), so the bag identity already serves as
  * the dedup scope.
  *
  * Cross-context dedup: when callers share the same bag instance
  * across multiple ResolverContext objects (the typical pattern —
- * DeployEngine passes `resolver.recordedImports` into every resolver
+ * DeployEngine passes `this.recordedImports` into every resolver
  * context it constructs), the dedup naturally extends across
  * contexts because the `some()` reads the shared bag. Stashing
  * the dedup Set on `context.recordedImports` directly via a

@@ -4,7 +4,7 @@
  * [#2847](https://github.com/go-to-k/cdkd/issues/2847), independent round-2
  * review, T2; re-aimed by the round-4 review).
  *
- * `IntrinsicFunctionResolver.noteRefStateMask` PRODUCES an entry into
+ * `noteRefStateMask (intrinsic-resolver/refs.ts)` PRODUCES an entry into
  * `ResolverContext.redactedAttributeReads`; `DeployEngine.maskedRecordRemedyFor`
  * CONSUMES it to decide the entry is LOCAL and to name the record the
  * `cdkd import --resource` command must repair.

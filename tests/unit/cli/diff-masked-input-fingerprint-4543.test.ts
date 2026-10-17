@@ -241,11 +241,13 @@ describe('cdkd diff keeps an input its resolution recorded a secret for as writt
         lastModified: 0,
       };
       expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
+      // The replacement ran for EACH preview: a resolution that never reached
+      // it would leave a preview NO_CHANGE for a reason this case does not test.
+      const callsAfterFirst = spy.mock.calls.length;
+      expect(callsAfterFirst).toBeGreaterThan(0);
       plaintext = 'recovered-output-two';
       expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
-      // The replacement ran: a resolution that never reached it would leave
-      // both previews NO_CHANGE for a reason this case does not test.
-      expect(spy).toHaveBeenCalled();
+      expect(spy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
     } finally {
       spy.mockImplementation(actualResolveImportValue);
     }

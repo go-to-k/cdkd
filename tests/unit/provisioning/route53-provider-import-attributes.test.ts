@@ -5,7 +5,7 @@
  * Before the fix `importHostedZone` returned `attributes: {}` from BOTH of its
  * branches, so a zone that entered state through `cdkd import` (or
  * `cdkd import --migrate-from-cloudformation`) had no `NameServers`. Nothing
- * downstream rescued that: `IntrinsicFunctionResolver.resolveGetAtt`'s
+ * downstream rescued that: `resolveGetAtt (intrinsic-resolver/getatt.ts)`'s
  * flat-attribute branch missed (taking PR #1868's legacy comma-string
  * normalization with it, since that lives in the same branch),
  * `constructAttribute` has no `AWS::Route53::HostedZone` case, and resolution

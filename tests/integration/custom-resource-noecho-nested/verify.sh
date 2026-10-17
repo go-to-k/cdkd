@@ -10,7 +10,7 @@
 # `stack + region + output key -> plaintext`, read back by
 # `NestedStackProvider.readChildOutputsAsAttributes` (a nested stack's
 # `Outputs.<Key>`, reported PER ATTRIBUTE via `noEchoAttributeNames`) and by
-# `IntrinsicFunctionResolver.reresolveCrossStackValue` (`Fn::ImportValue`).
+# `reresolveCrossStackValue (intrinsic-resolver/cross-stack.ts)` (`Fn::ImportValue`).
 # Unit tests fence it with mocks that encode cdkd's own belief about the
 # ordering; this is the measurement.
 #

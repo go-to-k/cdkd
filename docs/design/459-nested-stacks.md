@@ -354,7 +354,7 @@ For `Ref <NestedStackLogicalId>`:
 - cdkd-side: returns the synthesized ARN
   `arn:cdkd-local:<region>:<account>:nested-stack/<parent>/<logicalId>`
   (from `state.resources[<logicalId>].physicalId`).
-- The `IntrinsicFunctionResolver.constructAttribute` switch table gains
+- The `constructAttribute` (`intrinsic-resolver/getatt.ts`) switch table gains
   no entry — `Ref` already falls through to `physicalId` correctly.
 
 For `Fn::GetAtt: [<NestedStackLogicalId>, 'Outputs.<Key>']`:
@@ -363,7 +363,7 @@ For `Fn::GetAtt: [<NestedStackLogicalId>, 'Outputs.<Key>']`:
   carries a flat-key map (e.g. `'Outputs.BucketName': 'my-bucket-123'`),
   populated by `NestedStackProvider.create()` after the child's deploy
   finishes. The existing flat-dot-key lookup in
-  `IntrinsicFunctionResolver.resolveGetAtt` resolves it without code
+  `resolveGetAtt` (`intrinsic-resolver/getatt.ts`) resolves it without code
   change.
 - The fallback nested-path walk (added in PR #381) covers the
   defense-in-depth case where the attributes are stored as a nested

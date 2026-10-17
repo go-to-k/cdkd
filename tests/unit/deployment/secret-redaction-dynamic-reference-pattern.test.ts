@@ -21,7 +21,7 @@ import {
  * the `{{resolve:...}}` token pattern disagreed, and the strictest one persisted
  * PLAINTEXT.
  *
- * The authority is `IntrinsicFunctionResolver.resolveDynamicReferences`'s own
+ * The authority is `resolveDynamicReferences (intrinsic-resolver/dynamic-refs.ts)`'s own
  * scan, `/\{\{resolve:([^}]+)\}\}/g` — what cdkd will actually try to resolve.
  * `secret-redaction.ts`'s `isSingleDynamicReferenceToken` and `drift.ts`'s
  * `isWholeDynamicReference` both spelled the inner class `[^{}]*`, so a
