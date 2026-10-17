@@ -4,6 +4,14 @@ import {
   seedPersistedNoEchoAttributes,
 } from './noecho.js';
 import { stampReasonlessParameterRefusals } from './observed-capture.js';
+import {
+  captureStoredNoEchoNamingValues,
+  diffLogMasker,
+  freshNoEchoParameters,
+  redactOutputs,
+  redactParametersForDiff,
+  stateNamingSecrets,
+} from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
@@ -540,7 +548,7 @@ export async function doDeployWithPrefetch(
     // parameter carrying its parent's `NoEcho` value as a `NoEcho` one, from
     // here on (every save, the journal, the outputs pass).
     this.noEchoRun.inheritedNoEchoParameters = new Set([
-      ...(this.freshNoEchoParameters(parameterValues) ?? []),
+      ...(freshNoEchoParameters(this.maskingDeps(), parameterValues) ?? []),
       ...(this.options.passedNoEchoParameters ?? []),
     ]);
     // go-to-k/cdkd#4451: a masked property with no fingerprint (every one an
@@ -557,11 +565,11 @@ export async function doDeployWithPrefetch(
       this.options.parameters
     );
     // The save reads the same corpus for a record it stamps or carries.
-    this.fingerprintNoEchoValues = backfillNoEchoValues;
+    this.secretsRun.fingerprintNoEchoValues = backfillNoEchoValues;
     // go-to-k/cdkd#4543: how each parameter enters a masked property's INPUT
     // fingerprint, decided once from the REAL values so the diff pass (which
     // binds a nested child's redacted bag) and the provisioning arms agree.
-    this.fingerprintParameters = parameterInputsFor({
+    this.secretsRun.fingerprintParameters = parameterInputsFor({
       template,
       values: parameterValues,
       nestedChild: this.options.parentStackInfo !== undefined,
@@ -574,7 +582,7 @@ export async function doDeployWithPrefetch(
     // index for a child). The loader is built once here, never from inside a
     // fingerprint walk; each file is read on first use and cached for the
     // rest of this deploy.
-    this.fingerprintChildTemplates = childTemplateLoader(
+    this.secretsRun.fingerprintChildTemplates = childTemplateLoader(
       getCurrentNestedStackContext()?.nestedTemplates
     );
     let maskedFingerprintsBackfilled =
@@ -673,10 +681,16 @@ export async function doDeployWithPrefetch(
     // only (a nested stack row's registry, provision.ts). Each record is also
     // judged with what it stored where a `NoEcho` parameter served it, for a
     // name taken from a value since changed (no AWS call).
-    this.captureStoredNoEchoNamingValues(currentState.resources, effectiveTemplate, conditions);
-    this.preDeploySecretNamedRecords = secretNamedRecordNeedles(
+    captureStoredNoEchoNamingValues(
+      this.secretsRun,
+      this.maskingDeps(),
       currentState.resources,
-      this.stateNamingSecrets()
+      effectiveTemplate,
+      conditions
+    );
+    this.secretsRun.preDeploySecretNamedRecords = secretNamedRecordNeedles(
+      currentState.resources,
+      stateNamingSecrets(this.secretsRun)
     );
     // Issue #3468: an adopted record entered `resources` AFTER the deploy-start
     // stamp. No writer produces a marked orphan record today; re-reading here
@@ -772,7 +786,7 @@ export async function doDeployWithPrefetch(
         // so does the condition evaluation above, where substituting an
         // expression would flip an `Fn::Equals` over a parameter. See
         // `redactParametersForDiff`.
-        parameters: this.redactParametersForDiff(parameterValues),
+        parameters: redactParametersForDiff(this.maskingDeps(), parameterValues),
         conditions,
       },
       stackName
@@ -866,7 +880,9 @@ export async function doDeployWithPrefetch(
       // changes it returns are unmasked.
       // go-to-k/cdkd#3869: and the name spellings of each record named from
       // a secret, for an OLD side no read of the diff pass names.
-      this.diffLogMasker(
+      diffLogMasker(
+        this.secretsRun,
+        this.maskingDeps(),
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
         parameterValues,
@@ -985,7 +1001,9 @@ export async function doDeployWithPrefetch(
       recreateTargetIds: recreateTargetIdsFor(this.options.recreateTargets, stackName),
     }).refused;
     if (serviceTokenRefusals.length > 0) {
-      const mask = this.diffLogMasker(
+      const mask = diffLogMasker(
+        this.secretsRun,
+        this.maskingDeps(),
         diffResolverContext.recordedSecretValues,
         effectiveTemplate,
         parameterValues,
@@ -1089,7 +1107,8 @@ export async function doDeployWithPrefetch(
         // resources, which come from `currentState.resources` (the arg), and
         // condition pruning only touches `Resources`, so resolving against
         // `effectiveTemplate` vs the raw `template` is equivalent here.
-        const resolvedOutputs = this.redactOutputs(
+        const resolvedOutputs = redactOutputs(
+          this.maskingDeps(),
           // One budget for the whole pass, as on the deploy path above.
           await withSharedDrainBudget(() =>
             resolveOutputs(
@@ -1160,7 +1179,7 @@ export async function doDeployWithPrefetch(
           if (
             merge.carriedKeys.length > 0 &&
             !bagHoldsSecretExpression(persistedOutputs) &&
-            bagHoldsSecretExpression(this.redactOutputs(merge.outputs))
+            bagHoldsSecretExpression(redactOutputs(this.maskingDeps(), merge.outputs))
           ) {
             merge = { kind: 'kept', reason: 'mixed-generation' };
           }
@@ -1295,7 +1314,7 @@ export async function doDeployWithPrefetch(
           this.provenanceBaseline?.tokenFree === false &&
           this.outputReferenceProvenanceFor(
             persistedOutputs,
-            this.redactOutputs(persistedOutputs)
+            redactOutputs(this.maskingDeps(), persistedOutputs)
           ) !== undefined;
 
         if (
@@ -1400,7 +1419,7 @@ export async function doDeployWithPrefetch(
                   // than state, never less.
                   importableOutputs({
                     ...refreshedState,
-                    outputs: this.redactOutputs(refreshedState.outputs),
+                    outputs: redactOutputs(this.maskingDeps(), refreshedState.outputs),
                   })
                 );
               }
@@ -1457,7 +1476,7 @@ export async function doDeployWithPrefetch(
         // #2814): a part the drain cap stopped waiting for can record after
         // the outputs pass, and the bag kept here may be the PREVIOUS
         // deploy's, holding a literal nothing resolved then.
-        outputs: buildDisplayOutputs(template, this.redactOutputs(persistedOutputs)),
+        outputs: buildDisplayOutputs(template, redactOutputs(this.maskingDeps(), persistedOutputs)),
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     }
@@ -1566,7 +1585,9 @@ export async function doDeployWithPrefetch(
       // go-to-k/cdkd#4601: the `broadening` table prints resolved values;
       // built only if that level asks.
       secretMask: () =>
-        this.diffLogMasker(
+        diffLogMasker(
+          this.secretsRun,
+          this.maskingDeps(),
           diffResolverContext.recordedSecretValues,
           effectiveTemplate,
           parameterValues,
@@ -1743,7 +1764,7 @@ export async function doDeployWithPrefetch(
             // stack could shadow a real export.
             importableOutputs({
               ...newState,
-              outputs: this.redactOutputs(newState.outputs),
+              outputs: redactOutputs(this.maskingDeps(), newState.outputs),
             })
           )
         : Promise.resolve(),
@@ -1767,7 +1788,10 @@ export async function doDeployWithPrefetch(
       }),
       unchanged: unchangedCount,
       durationMs,
-      outputs: buildDisplayOutputs(template, this.redactOutputs(newState.outputs ?? {})),
+      outputs: buildDisplayOutputs(
+        template,
+        redactOutputs(this.maskingDeps(), newState.outputs ?? {})
+      ),
       attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
     };
   } catch (error) {

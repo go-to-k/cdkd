@@ -34,8 +34,10 @@ import {
 } from '../../../src/deployment/secret-redaction/positions.js';
 import { inheritedRenderedSpan } from '../../../src/deployment/secret-redaction/nested-stack.js';
 import { crossStackSourceKey } from '../../../src/deployment/secret-redaction/cross-stack.js';
-import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  redactParametersForDiff,
+  type MaskingDeps,
+} from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -104,8 +106,8 @@ function makeContext(
 
 /** The real diff-side binding, on an engine that holds only what it reads. */
 function diffBinding(inherited: RecordedSecretValues): Record<string, unknown> {
-  const engine = { options: { inheritedSecrets: inherited } } as unknown as DeployEngine;
-  return redactParametersForDiff.call(engine, PARAMETERS);
+  const engine = { options: { inheritedSecrets: inherited } } as unknown as MaskingDeps;
+  return redactParametersForDiff(engine, PARAMETERS);
 }
 
 describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#2349)', () => {
@@ -180,8 +182,8 @@ describe('nested-stack {Ref} leaf fall-through reads ONE bag on both sides (#234
       string,
       unknown
     >;
-    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
-    const desired = redactParametersForDiff.call(engine, params);
+    const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
+    const desired = redactParametersForDiff(engine, params);
     expect(persisted['Description']).toBe(desired[PARAM_A]);
     expect(persisted['Value']).toBe(desired[PARAM_B]);
     expect(persisted['Description']).toBe(`postgres://${USER_EXPR}:${EXPR_A}@host`);
@@ -523,8 +525,8 @@ describe('a two-token literal parameter persists its own spelling in either pare
         string,
         unknown
       >;
-      const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
-      const desired = redactParametersForDiff.call(engine, ctx.parameters);
+      const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
+      const desired = redactParametersForDiff(engine, ctx.parameters);
 
       expect(desired[PARAM_A]).toBe(spelling);
       expect(persisted['Env']).toBe(`x-${spelling}`);
@@ -645,8 +647,8 @@ describe('a two-token literal parameter persists its own spelling in either pare
   });
 
   function diffBinding4644(parent: RecordedSecretValues): Record<string, unknown> {
-    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
-    return redactParametersForDiff.call(engine, { [PARAM_A]: CONN, [PARAM_B]: SHARED });
+    const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
+    return redactParametersForDiff(engine, { [PARAM_A]: CONN, [PARAM_B]: SHARED });
   }
 
   it('REFUSES a value the spelling does not render to: the recorder writes nothing and the diff side keeps the scan', () => {
@@ -924,8 +926,8 @@ describe('every child read shape of a literal-spelled parameter persists what th
           const resolved = await resolver.resolve(source, ctx);
           const persisted = redactSecretsForState(resolved, ctx.recordedSecretValues, source);
 
-          const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
-          const bindings = redactParametersForDiff.call(engine, ctx.parameters);
+          const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
+          const bindings = redactParametersForDiff(engine, ctx.parameters);
           expect(bindings[PARAM_A]).toBe(spelling);
           const desired = await resolver.resolve(source, {
             template: shapeTemplate,

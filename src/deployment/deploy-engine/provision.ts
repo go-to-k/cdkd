@@ -6,6 +6,13 @@ import {
 } from '../deploy-engine.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import {
+  maskForResource,
+  noteSecretNamedReads,
+  noteSecretNamedRecord,
+  printingSecretsFor,
+  secretNameBagFor,
+} from './masking.js';
+import {
   type DeploymentResourceOperation,
   extractDeploymentEventError,
 } from '../../types/deployment-events.js';
@@ -207,7 +214,7 @@ export async function provisionResource(
   // its id when its name came from a secret. Judged from the persisted
   // record here; the new name is judged right after it resolves, in
   // `create.ts` / `update.ts`, and a replacement's new id before `was replaced`.
-  this.noteSecretNamedRecord(logicalId, stateResources[logicalId]);
+  noteSecretNamedRecord(this.secretsRun, logicalId, stateResources[logicalId]);
   // What the record READ from a secret-named resource, carried for every row
   // with a record: a DELETE resolves nothing, and an UPDATE resolves only
   // what it reads NOW, while a replacement's `Deleting old <id> (<old id>)`
@@ -220,17 +227,17 @@ export async function provisionResource(
   // deploy (a leaf scan of this record alone, not a per-row walk of every
   // record): the records as the deploy FOUND them, so a name a record
   // replaced earlier in this run no longer spells still counts.
-  const readsRegistry = this.secretNameBagFor(logicalId);
+  const readsRegistry = secretNameBagFor(this.secretsRun, logicalId);
   for (const needle of secretNamesStoredIn(
     stateResources[logicalId],
-    printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()
+    printingCorpusOf(this.secretsRun.preDeploySecretNamedRecords ?? new Map()).keys()
   )) {
     recordLogOnlyValue(readsRegistry, needle);
   }
   // A DELETE also judges the records as they stand now, with what each
   // resolved this deploy.
   if (change.changeType === 'DELETE') {
-    this.noteSecretNamedReads(logicalId, stateResources[logicalId], stateResources);
+    noteSecretNamedReads(this.secretsRun, logicalId, stateResources[logicalId], stateResources);
   }
   // A nested stack's child judges only its OWN records, and its stored values
   // can hold a name this stack's row used to pass, one no read of this deploy
@@ -242,15 +249,17 @@ export async function provisionResource(
   // no longer spells the old name. A name the row passes down THIS run is the
   // row's own read (`printNestedStackReadsOnly`). Printing only.
   if (resourceType === NESTED_STACK_ROW_TYPE) {
-    const registry = this.secretNameBagFor(logicalId);
-    for (const needle of printingCorpusOf(this.preDeploySecretNamedRecords ?? new Map()).keys()) {
+    const registry = secretNameBagFor(this.secretsRun, logicalId);
+    for (const needle of printingCorpusOf(
+      this.secretsRun.preDeploySecretNamedRecords ?? new Map()
+    ).keys()) {
       recordLogOnlyValue(registry, needle);
     }
   }
   // Bound around the whole body as a PRINTING bag, by reference: every line
   // logged for this resource (the engine's own `Deleting old ... (<id>)`, a
   // provider's) masks the registry's needles, one registered mid-body too.
-  const printingRegistry = this.secretNameBagFor(logicalId);
+  const printingRegistry = secretNameBagFor(this.secretsRun, logicalId);
   // Issue #1989: what a nested child's deploy left unaddressed, when this row
   // is an `AWS::CloudFormation::Stack`. Added to `counts` only once the row
   // has succeeded, beside the row's own outcome, never in place of it.
@@ -336,7 +345,7 @@ export async function provisionResource(
                 ...(guard.physicalId && {
                   physicalId: maskSecretsInText(
                     guard.physicalId,
-                    this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
+                    this.secretsRun.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS
                   ),
                 }),
                 guard: guard.guard,
@@ -477,10 +486,11 @@ export async function provisionResource(
     // flattened), and a provider's message is that site's to sanitize.
     // An UNTAGGED template on purpose: `scripts/check-docs-error-strings.ts`
     // reads only untagged ones, and docs quote lines of this shape.
-    const shownMessage = this.maskForResource(logicalId, message);
+    const shownMessage = maskForResource(this.secretsRun, logicalId, message);
     const shownId = safeMsg`${logicalId}`;
     this.logger.error(
-      this.maskForResource(
+      maskForResource(
+        this.secretsRun,
         logicalId,
         `Failed to ${change.changeType.toLowerCase()} ${shownId}: ${shownMessage}`
       )
@@ -498,7 +508,7 @@ export async function provisionResource(
       error
     );
     if (orphanAdvice) {
-      this.logger.error(this.maskForResource(logicalId, orphanAdvice));
+      this.logger.error(maskForResource(this.secretsRun, logicalId, orphanAdvice));
     }
 
     // #808 best-effort event: per-resource op failed. Error metadata
@@ -534,7 +544,7 @@ export async function provisionResource(
       logicalId,
       stateResources[logicalId]?.physicalId,
       error instanceof Error
-        ? maskSecretsInError(error, this.printingSecretsFor(logicalId) ?? EMPTY_SECRETS)
+        ? maskSecretsInError(error, printingSecretsFor(this.secretsRun, logicalId) ?? EMPTY_SECRETS)
         : undefined
     );
   } finally {

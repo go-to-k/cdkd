@@ -1,4 +1,5 @@
 import { createUnionSecretMasker } from '../secret-redaction.js';
+import { secretNameBagFor } from './masking.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
@@ -205,7 +206,7 @@ Drop the record with: ${dropCommand}`
             // go-to-k/cdkd#2007: the record is the persisted, redacted one,
             // so this deploy resolved nothing for it; the masker is its
             // derived-name registry, the printing bag this delete runs under.
-            maskSecrets: createUnionSecretMasker([this.secretNameBagFor(logicalId)]),
+            maskSecrets: createUnionSecretMasker([secretNameBagFor(this.secretsRun, logicalId)]),
           }
         ),
       logicalId,

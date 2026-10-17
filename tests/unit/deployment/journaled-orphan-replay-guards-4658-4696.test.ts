@@ -307,7 +307,7 @@ describe('the automatic rollback asks neither check (go-to-k/cdkd#4658 / #4696)'
       logger: { child: () => ({}) },
       recordEvent: vi.fn(),
       options: {},
-      perResourceSecrets: new Map(),
+      secretsRun: { perResourceSecrets: new Map() },
     } as unknown as DeployEngine;
     const state = { version: 10, stackName: 'A', region: REGION, resources: {}, outputs: {} };
     const ctx = rollbackExecutorContext.call(engine, state as unknown as StackState, 'A');

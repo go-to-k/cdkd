@@ -255,8 +255,8 @@ describe('DeployEngine - the side set crosses its copies (go-to-k/cdkd#1998)', (
     const { engine } = harness();
     const bag: RecordedSecretValues = new Map();
     recordLogOnlyValue(bag, NOECHO);
-    (engine as unknown as { perResourceSecrets: Map<string, RecordedSecretValues> })
-      .perResourceSecrets.set('R', bag);
+    (engine as unknown as { secretsRun: { perResourceSecrets: Map<string, RecordedSecretValues> } })
+      .secretsRun.perResourceSecrets.set('R', bag);
     const ctx = (
       engine as unknown as {
         rollbackExecutorContext: (

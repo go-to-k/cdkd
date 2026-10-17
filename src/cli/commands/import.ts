@@ -2965,7 +2965,7 @@ export async function resolveImportedProperties(
     // Fresh PER-RESOURCE secrets map so the imported state persists the
     // `{{resolve:...}}` expression, not the plaintext (GHSA fix), while a
     // whole-secret value from one resource cannot rewrite another's literal
-    // (see the deploy engine's `perResourceSecrets` doc for the rationale).
+    // (see the `SecretsRunState.perResourceSecrets` doc (`deploy-engine/masking.ts`) for the rationale).
     //
     // HOISTED above the `try` (issue #2803), and that is load-bearing rather
     // than style: the resolver records `plaintext -> expression` into this map

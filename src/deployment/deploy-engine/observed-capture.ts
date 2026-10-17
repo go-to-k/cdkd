@@ -53,9 +53,9 @@ export interface ObservedCaptureDeps {
   options: Pick<DeployEngineOptions, 'captureObservedState' | 'dryRun'>;
   resolver: Pick<IntrinsicFunctionResolver, 'resolveDynamicReferences'>;
   providerRegistry: ProviderRegistry;
-  /** Bound `DeployEngine.printingSecretsFor`. */
+  /** `masking.ts`'s `printingSecretsFor` with the engine's live `secretsRun` bound. */
   printingSecretsFor: (logicalId: string) => RecordedSecretValues | undefined;
-  /** Live read of `DeployEngine.fingerprintNoEchoValues` — reassigned per deploy. */
+  /** Live read of `SecretsRunState.fingerprintNoEchoValues` — reassigned per deploy. */
   fingerprintNoEchoValues: () => RecordedSecretValues | undefined;
   /** Live read of `DeployEngine.provenanceCapture` — reassigned per deploy. */
   provenanceCapture: () => ProvenanceCapture;

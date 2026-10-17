@@ -1,4 +1,5 @@
 import type { DeployEngine } from '../deploy-engine.js';
+import type { SecretsRunState } from './masking.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceState } from '../../types/state.js';
 import type { NoEchoCompareFn } from '../../analyzer/diff-calculator.js';
@@ -125,12 +126,18 @@ export interface NoEchoDeps {
   stackRegion: DeployEngine['stackRegion'];
   logger: Pick<DeployEngine['logger'], 'warn'>;
   providerRegistry: Pick<DeployEngine['providerRegistry'], 'getProviderFor'>;
-  perResourceSecrets: () => DeployEngine['perResourceSecrets'];
-  perResourceTemplateProps: () => DeployEngine['perResourceTemplateProps'];
-  perResourceResolvedType: () => DeployEngine['perResourceResolvedType'];
+  perResourceSecrets: () => SecretsRunState['perResourceSecrets'];
+  perResourceTemplateProps: () => SecretsRunState['perResourceTemplateProps'];
+  perResourceResolvedType: () => SecretsRunState['perResourceResolvedType'];
   outputsRun: () => DeployEngine['outputsRun'];
-  readReaderForFreshNoEchoCeiling: DeployEngine['readReaderForFreshNoEchoCeiling'];
-  maskForResource: DeployEngine['maskForResource'];
+  /** `masking.ts`'s `readReaderForFreshNoEchoCeiling` with its deps bound. */
+  readReaderForFreshNoEchoCeiling: (
+    logicalId: string,
+    currentResource: ResourceState,
+    secrets: RecordedSecretValues
+  ) => Promise<FreshNoEchoReadback>;
+  /** `masking.ts`'s `maskForResource` with its {@link SecretsRunState} bound. */
+  maskForResource: (logicalId: string, text: string) => string;
 }
 
 /** {@link noEchoPositionSources} with its {@link NoEchoRunState} bound. */

@@ -1,6 +1,7 @@
 import { updatePartialMessage } from '../update-outcome.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
+import { printingSecretsFor, registerNoEchoAttributes, secretNameBagFor } from './masking.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
 import {
@@ -467,7 +468,7 @@ export async function updateByReplacement(
               // error below is masked with.
               maskSecrets: createUnionSecretMasker([
                 updateSecrets,
-                this.secretNameBagFor(logicalId),
+                secretNameBagFor(this.secretsRun, logicalId),
               ]),
             }
           )
@@ -488,7 +489,10 @@ export async function updateByReplacement(
         // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
         // value): a later mask sees only the flattened text and misses a needle
         // that holds a newline.
-        const shownSecrets = unionOfSecretBags([updateSecrets, this.printingSecretsFor(logicalId)]);
+        const shownSecrets = unionOfSecretBags([
+          updateSecrets,
+          printingSecretsFor(this.secretsRun, logicalId),
+        ]);
         throw new Error(
           // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
           safeMsg`Failed to destroy old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
@@ -986,7 +990,14 @@ export async function updateByReplacement(
   // result carries its own `NoEcho` declaration and must register it —
   // the create arm's registration is in a different `case` and does not
   // run here.
-  this.registerNoEchoAttributes(logicalId, createResult, updateSecrets, resolvedProps);
+  registerNoEchoAttributes(
+    this.secretsRun,
+    this.maskingDeps(),
+    logicalId,
+    createResult,
+    updateSecrets,
+    resolvedProps
+  );
 
   // go-to-k/cdkd#4411: the new resource holds the old one's physical id, so
   // the old one was destroyed first (every arm above refuses an equal id

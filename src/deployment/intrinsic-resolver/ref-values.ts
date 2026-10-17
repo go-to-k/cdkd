@@ -409,7 +409,7 @@ export interface RefStateLookupOptions {
  *    construction, so there is no per-caller audit to keep current.
  * 2. **Pass one and act on it** — skip the mask and refuse. `resolveRefValue`
  *    → `noteRefStateMask` → `ResolverContext.redactedAttributeReads`, read by
- *    `DeployEngine.refuseRedactedAttributeReads` on the CREATE / UPDATE arms
+ *    the engine's `refuseRedactedAttributeReads` on the CREATE / UPDATE arms
  *    and by `resolveOutputs`' own per-output check;
  *    `src/analyzer/orphan-rewriter.ts` has no resolver context and reports the
  *    site as `unresolvable` instead (under `--force` it warns and substitutes

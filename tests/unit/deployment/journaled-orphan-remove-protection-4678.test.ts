@@ -409,7 +409,7 @@ describe("no context but an explicit --remove-protection's strips protection (go
       logger,
       recordEvent: vi.fn(),
       options: { skipFinalSnapshot: true },
-      perResourceSecrets: new Map(),
+      secretsRun: { perResourceSecrets: new Map() },
     } as unknown as DeployEngine;
     const state = {
       version: 10,

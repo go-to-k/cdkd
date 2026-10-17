@@ -11,6 +11,7 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getStackRecords } from '../../../src/deployment/stack-records-scope.js';
 import { withIndeterminateGuard } from '../../../src/deployment/delete-outcome.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction/log-only.js';
+import { secretNameBagFor } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -297,10 +298,8 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
 
   it("masks the row's derived-name registry in every line naming the old resource", async () => {
     // The old revision's id spells a name that came from a secret.
-    const engine = makeEngine() as unknown as InstanceType<typeof DeployEngine> & {
-      secretNameBagFor: (id: string) => Map<string, string>;
-    };
-    recordLogOnlyValue(engine.secretNameBagFor('Revision'), 'rev-old');
+    const engine = makeEngine();
+    recordLogOnlyValue(secretNameBagFor(engine.secretsRun, 'Revision'), 'rev-old');
 
     await deploy(engine);
 
@@ -313,10 +312,8 @@ describe('a replaced resource whose delete a dependent refuses is retried after 
     endpointUpdate = async () => {
       throw new Error('ValidationException: endpoint update rejected');
     };
-    const engine = makeEngine() as unknown as InstanceType<typeof DeployEngine> & {
-      secretNameBagFor: (id: string) => Map<string, string>;
-    };
-    recordLogOnlyValue(engine.secretNameBagFor('Revision'), 'rev-old');
+    const engine = makeEngine();
+    recordLogOnlyValue(secretNameBagFor(engine.secretsRun, 'Revision'), 'rev-old');
 
     await expect(deploy(engine)).rejects.toThrow();
 

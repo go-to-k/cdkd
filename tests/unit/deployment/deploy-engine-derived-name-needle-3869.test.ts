@@ -17,6 +17,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { resolveOutputs } from '../../../src/deployment/deploy-engine/outputs.js';
+import {
+  maskForResource,
+  noteSecretNamedReads,
+  printingSecretsFor,
+} from '../../../src/deployment/deploy-engine/masking.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { hasMaskableValues, recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
@@ -356,11 +361,11 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     // A name resolved this deploy is plaintext in memory: only the target's
     // OWN bag says it is a secret.
     expect(context.secretNameNeedles?.('Raw')).toBeUndefined();
-    engine.perResourceSecrets.set('Raw', new Map([['resolved-secret-name', REF]]));
+    engine.secretsRun.perResourceSecrets.set('Raw', new Map([['resolved-secret-name', REF]]));
     expect([...(context.secretNameNeedles?.('Raw') ?? [])]).toContain('resolved-secret-name');
     expect(context.secretNameNeedles?.('Missing')).toBeUndefined();
     // Judging a record registers it for the resource's own lines.
-    expect(engine.maskForResource('Role', `Deleting old Role (${ROLE_ID})...`)).toBe(
+    expect(maskForResource(engine.secretsRun, 'Role', `Deleting old Role (${ROLE_ID})...`)).toBe(
       'Deleting old Role (***)...'
     );
   });
@@ -532,7 +537,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     } as ResourceState;
     // A reader resolving it (noteSecretNamedRecord's embedded bag).
     const engine = makeEngine();
-    (engine as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
+    engine.secretsRun.fingerprintNoEchoValues = noEcho;
     const context = engine.buildResolverContext(
       { template: { Resources: {} }, resources: { Field: resolverRecord } },
       stackName
@@ -540,32 +545,33 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
     expect(context.secretNameNeedles?.('Field')).toBeUndefined();
     // A deleted reader holding it (noteSecretNamedReads' embedded bag).
     const deleting = makeEngine();
-    (deleting as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
-    deleting.noteSecretNamedReads(
+    deleting.secretsRun.fingerprintNoEchoValues = noEcho;
+    noteSecretNamedReads(
+      deleting.secretsRun,
       'Reader',
       { properties: { Target: 'api1|prod|field' } },
       { Field: resolverRecord }
     );
-    expect(deleting.printingSecretsFor('Reader')).toBeUndefined();
+    expect(printingSecretsFor(deleting.secretsRun, 'Reader')).toBeUndefined();
   });
 
   it('the derived-name registry is reset per deploy', async () => {
     const engine = makeEngine();
     const stale = new Map<string, string>();
     recordLogOnlyValue(stale, 'last-deploys-name');
-    engine.secretNameNeedles.set('Gone', stale);
+    engine.secretsRun.secretNameNeedles.set('Gone', stale);
     const template = primeRoleUpdate('plain-role-name');
 
     await engine.deploy(stackName, template);
 
-    expect(engine.secretNameNeedles.has('Gone')).toBe(false);
+    expect(engine.secretsRun.secretNameNeedles.has('Gone')).toBe(false);
   });
 
   it('a name taken from a NoEcho parameter is judged secret-derived too', () => {
     const engine = makeEngine();
     const noEcho = new Map<string, string>();
     recordLogOnlyValue(noEcho, 'noecho-bucket-name');
-    (engine as unknown as { fingerprintNoEchoValues: unknown }).fingerprintNoEchoValues = noEcho;
+    engine.secretsRun.fingerprintNoEchoValues = noEcho;
     const resources = {
       Bucket: {
         physicalId: 'noecho-bucket-name',
@@ -643,7 +649,7 @@ describe('DeployEngine — a resource named from a secret (go-to-k/cdkd#3869)', 
       Resources: {},
       Outputs: { Out: { Value: 'v' } },
     };
-    (engine as unknown as { fingerprintParameters: unknown }).fingerprintParameters = {
+    (engine.secretsRun as unknown as { fingerprintParameters: unknown }).fingerprintParameters = {
       parameterInput: () => ({ kind: 'clean' }),
       bound: {},
     };

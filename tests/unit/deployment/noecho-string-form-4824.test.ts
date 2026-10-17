@@ -49,6 +49,7 @@ const { divergentParameterNames } = await import(
 );
 const { maskSecretsInText } = await import('../../../src/deployment/secret-redaction.js');
 const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+const { diffLogMasker } = await import('../../../src/deployment/deploy-engine/masking.js');
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
@@ -84,7 +85,7 @@ describe('each NoEcho reader honours the string form (go-to-k/cdkd#4824)', () =>
   });
 
   it("the deploy's diff log masker (deploy-engine/masking.ts)", () => {
-    const engine = new DeployEngine(
+    const real = new DeployEngine(
       {} as never,
       {} as never,
       {} as never,
@@ -92,13 +93,14 @@ describe('each NoEcho reader honours the string form (go-to-k/cdkd#4824)', () =>
       {} as never,
       { dryRun: false },
       'us-east-1'
-    ) as unknown as {
+    );
+    const engine = {
       diffLogMasker: (
         d: RecordedSecretValues | undefined,
         t: CloudFormationTemplate,
         p: Record<string, unknown>,
-        r: Record<string, unknown>
-      ) => (text: string) => string;
+        r: Parameters<typeof diffLogMasker>[5]
+      ) => diffLogMasker(real.secretsRun, real.maskingDeps(), d, t, p, r),
     };
     for (const v of DECLARED) {
       const masker = engine.diffLogMasker(new Map(), template(v), { P: VALUE }, {});

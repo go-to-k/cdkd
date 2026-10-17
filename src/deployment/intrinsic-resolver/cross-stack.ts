@@ -235,7 +235,7 @@ export async function reresolveCrossStackValue(
       // from `attributeName` / `exportName` / `outputName` / `stackName` /
       // `region`, and this PR masks every one of those elsewhere. The comment
       // above used to assert `origin` "carries no resolved value"; that was
-      // false, and the value travels — `DeployEngine.refuseRedactedAttributeReads`
+      // false, and the value travels — `refuseRedactedAttributeReads` (deploy-engine/masking.ts)
       // joins this array into a throw at DEFAULT verbosity.
       //
       // Masked BEFORE the dedup, not after: the dedup compares `display`, so

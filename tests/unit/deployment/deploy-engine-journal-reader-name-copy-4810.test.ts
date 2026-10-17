@@ -176,7 +176,7 @@ describe('the rollback journal keeps a reader copy of a read physical id (#4810)
       { dryRun: false },
       'us-east-1'
     ) as unknown as {
-      perResourceSecrets: Map<string, Map<string, string>>;
+      secretsRun: { perResourceSecrets: Map<string, Map<string, string>> };
       redactStateForPersist: (state: StackState) => StackState;
     };
     const restored = {
@@ -197,12 +197,12 @@ describe('the rollback journal keeps a reader copy of a read physical id (#4810)
     } as StackState;
     const withCopy = new Map([['sdin-q-1', REF]]);
     recordPhysicalNameCopy(withCopy, URL);
-    engine.perResourceSecrets.set('Reader', withCopy);
+    engine.secretsRun.perResourceSecrets.set('Reader', withCopy);
     expect(engine.redactStateForPersist(restored).resources['Reader']!.properties['Queues']).toEqual([
       URL,
     ]);
     // Control: the same bag without the copies is the pre-fix rewrite.
-    engine.perResourceSecrets.set('Reader', new Map([['sdin-q-1', REF]]));
+    engine.secretsRun.perResourceSecrets.set('Reader', new Map([['sdin-q-1', REF]]));
     expect(engine.redactStateForPersist(restored).resources['Reader']!.properties['Queues']).toEqual([
       `https://sqs.us-east-1.amazonaws.com/123456789012/${REF}`,
     ]);

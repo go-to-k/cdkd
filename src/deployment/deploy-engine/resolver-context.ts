@@ -8,6 +8,7 @@ import {
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { MaskedInputSources } from '../masked-property-fingerprints.js';
+import { noteSecretNamedRecord } from './masking.js';
 
 declare module '../deploy-engine.js' {
   interface DeployEngine {
@@ -185,13 +186,14 @@ export function buildResolverContext(
     // a print-only `printingSecrets` instead: `maskedInputSources` below,
     // `resolveOutputs`, and a nested-stack row (`printNestedStackReadsOnly`).
     secretNameNeedles: (logicalId: string) =>
-      this.noteSecretNamedRecord(
+      noteSecretNamedRecord(
+        this.secretsRun,
         logicalId,
         Object.hasOwn(base.resources, logicalId) ? base.resources[logicalId] : undefined
       ),
     // go-to-k/cdkd#4802: the producer's own bag, for a reader of an attribute
     // this run's provider returned (see `ResolverContext.producerSecrets`).
-    producerSecrets: (logicalId: string) => this.perResourceSecrets.get(logicalId),
+    producerSecrets: (logicalId: string) => this.secretsRun.perResourceSecrets.get(logicalId),
     // go-to-k/cdkd#4805: read by the recorded-reference re-resolution only.
     secretRegionEvidence: () => this.runProducerRegionEvidence?.(),
     producerPreRunPhysicalId: (logicalId: string) =>
@@ -240,7 +242,7 @@ function getAttTargetOf(node: unknown): string | undefined {
 /**
  * The sources a masked property's INPUT fingerprint is computed from
  * (go-to-k/cdkd#4543), for the deploy's diff pass and its provisioning arms
- * alike: the parameter classes {@link DeployEngine.fingerprintParameters}
+ * alike: the parameter classes `SecretsRunState.fingerprintParameters`
  * recorded, the evaluated `conditions`, a resolver over `resources`, and the
  * assembly's nested-stack templates (go-to-k/cdkd#4565).
  *
@@ -261,13 +263,13 @@ export function maskedInputSources(
   conditions: Record<string, boolean> | undefined,
   stackName: string
 ): MaskedInputSources | undefined {
-  const parameters = this.fingerprintParameters;
+  const parameters = this.secretsRun.fingerprintParameters;
   if (parameters === undefined) return undefined;
   return {
     template,
     parameterInput: parameters.parameterInput,
     conditions,
-    childTemplate: this.fingerprintChildTemplates,
+    childTemplate: this.secretsRun.fingerprintChildTemplates,
     resolve: async (node: unknown) => {
       // No healer, and the stale-attribute PROBE phase: an `Fn::GetAtt` the
       // resolver would answer with the physical-id FALLBACK (a guess, counted
@@ -309,7 +311,8 @@ export function maskedInputSources(
       // state shows anyway, so it is no oracle (security review of
       // go-to-k/cdkd#4543).
       const target = getAttTargetOf(node);
-      const targetSecrets = target === undefined ? undefined : this.perResourceSecrets.get(target);
+      const targetSecrets =
+        target === undefined ? undefined : this.secretsRun.perResourceSecrets.get(target);
       if (targetSecrets !== undefined && hasMaskableValues(targetSecrets)) {
         const probe = { value };
         const redacted = redactSecretsForState(probe, targetSecrets);

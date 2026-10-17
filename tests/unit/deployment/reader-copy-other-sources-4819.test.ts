@@ -24,8 +24,10 @@ import {
   redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
-import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  redactParametersForDiff,
+  type MaskingDeps,
+} from '../../../src/deployment/deploy-engine/masking.js';
 
 const NAME = 'sdin-q-1';
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
@@ -324,8 +326,8 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
       expect(persisted['Resource']).toBe(`arn:aws:sqs:us-east-1:123456789012:${REF}`);
     }
     // The diff side's binding of the parameter agrees, so no perpetual UPDATE.
-    const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
-    expect(redactParametersForDiff.call(engine, { [PARAM]: URL })[PARAM]).toBe(URL);
+    const deps = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
+    expect(redactParametersForDiff(deps, { [PARAM]: URL })[PARAM]).toBe(URL);
   });
 
   it("keeps the copy when the parent row holds no secret, beside the child's own literal reference", async () => {

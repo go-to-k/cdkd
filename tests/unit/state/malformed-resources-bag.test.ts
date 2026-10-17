@@ -4176,7 +4176,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
     // which is what the guard is about.
     //
     // The engine host (`deploy-engine.ts`) has `redactStateForPersist`'s
-    // `this.redactOutputs(state.outputs)` textually EARLIER, and it is
+    // `redactOutputs(this.maskingDeps(), state.outputs)` textually EARLIER, and it is
     // deliberately not the anchor: that is a helper reading whatever bag it is
     // HANDED, the same relationship `orphan.ts`'s `rewriteResourceReferences`
     // has, and every state it is handed is derived from `currentState` after

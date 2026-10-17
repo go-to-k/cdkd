@@ -32,8 +32,10 @@ import {
   redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
-import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  redactParametersForDiff,
+  type MaskingDeps,
+} from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -105,8 +107,8 @@ async function bothHalves(
   } as unknown as ResolverContext);
   const persisted = redactSecretsForState(resolved, childBag, source) as Record<string, unknown>;
 
-  const diffParameters = redactParametersForDiff.call(
-    { options: { inheritedSecrets: parent } } as unknown as DeployEngine,
+  const diffParameters = redactParametersForDiff(
+    { options: { inheritedSecrets: parent } } as unknown as MaskingDeps,
     PARAMETERS
   );
   const desired = (await resolver.resolve(source, {

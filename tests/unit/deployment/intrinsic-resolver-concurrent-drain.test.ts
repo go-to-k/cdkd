@@ -126,6 +126,12 @@ vi.mock('@aws-sdk/client-cloudformation', async (importOriginal) => {
   }
   return { ...actual, CloudFormationClient: FakeCloudFormationClient };
 });
+// Counted by the engine cases: every engine call site imports it.
+vi.mock('../../../src/deployment/deploy-engine/masking.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/masking.js')>();
+  return { ...actual, redactOutputs: vi.fn(actual.redactOutputs) };
+});
 
 import {
   IntrinsicFunctionResolver,
@@ -134,6 +140,7 @@ import {
 import { withSharedDrainBudget } from '../../../src/deployment/drain-budget.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { redactOutputs as redactOutputsFn } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { RESOLVER_FAMILY } from '../_resolver-family.js';
@@ -2864,10 +2871,8 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     const { engine, provider, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
       capture.promise.then(() => undefined)
     );
-    const redactOutputs = vi.spyOn(
-      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
-      'redactOutputs'
-    );
+    const redactOutputs = vi.mocked(redactOutputsFn);
+    redactOutputs.mockClear();
 
     const literal = `lit-${valueOf(SLOW_ID)}-tail`;
     const template: CloudFormationTemplate = {
@@ -2939,10 +2944,8 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     const { engine, provider, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
       capture.promise.then(() => undefined)
     );
-    const redactOutputs = vi.spyOn(
-      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
-      'redactOutputs'
-    );
+    const redactOutputs = vi.mocked(redactOutputsFn);
+    redactOutputs.mockClear();
     const needleBag = (): Map<string, string> => engine.outputsRun.outputSecrets;
 
     const literal = `lit-${valueOf(SLOW_ID)}-tail`;
@@ -3005,10 +3008,8 @@ describe('a record the drain cap stopped waiting for still reaches the engine re
     const { engine, stateBackend, exportIndex, warn, engineWarn } = buildEngine(() =>
       Promise.resolve(undefined)
     );
-    const redactOutputs = vi.spyOn(
-      engine as unknown as { redactOutputs: (o: Record<string, unknown>) => Record<string, unknown> },
-      'redactOutputs'
-    );
+    const redactOutputs = vi.mocked(redactOutputsFn);
+    redactOutputs.mockClear();
     // Only a save AFTER the outputs pass is held: the per-resource saves
     // during provisioning run before it.
     let finalSaveEntered = false;

@@ -39,8 +39,10 @@ import {
   rereadParameterExpression,
 } from '../../../src/deployment/secret-redaction/nested-stack.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-resolver/account-drain.js';
-import { redactParametersForDiff } from '../../../src/deployment/deploy-engine/masking.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  redactParametersForDiff,
+  type MaskingDeps,
+} from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -143,11 +145,11 @@ async function persistAndDesired(
     string,
     unknown
   >;
-  const engine = { options: { inheritedSecrets: parent } } as unknown as DeployEngine;
+  const engine = { options: { inheritedSecrets: parent } } as unknown as MaskingDeps;
   const desired = (await resolver.resolve(properties, {
     template,
     resources: {},
-    parameters: redactParametersForDiff.call(engine, PARAMETERS),
+    parameters: redactParametersForDiff(engine, PARAMETERS),
     inheritedSecrets: parent,
     skipDynamicReferences: true,
     conditions: {},

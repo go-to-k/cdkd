@@ -437,7 +437,9 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
       const engine = await engineRecording(events);
       const own = new Map<string, string>();
       recordLogOnlyValue(own, ENGINE);
-      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+      (
+        engine as unknown as { secretsRun: { perResourceSecrets: Map<string, unknown> } }
+      ).secretsRun.perResourceSecrets.set(
         'ChildParam',
         own
       );
@@ -493,7 +495,9 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
       const engine = await engineRecording(events);
       const own = new Map<string, string>();
       recordLogOnlyValue(own, 'cdefgh-tail');
-      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+      (
+        engine as unknown as { secretsRun: { perResourceSecrets: Map<string, unknown> } }
+      ).secretsRun.perResourceSecrets.set(
         'ChildParam',
         own
       );
@@ -516,7 +520,9 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
       const engine = await engineRecording(events);
       const own = new Map<string, string>();
       recordLogOnlyValue(own, pem);
-      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+      (
+        engine as unknown as { secretsRun: { perResourceSecrets: Map<string, unknown> } }
+      ).secretsRun.perResourceSecrets.set(
         'ChildParam',
         own
       );
@@ -542,7 +548,9 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
       const engine = await engineRecording(events);
       const own = new Map<string, string>();
       recordLogOnlyValue(own, 'abc');
-      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+      (
+        engine as unknown as { secretsRun: { perResourceSecrets: Map<string, unknown> } }
+      ).secretsRun.perResourceSecrets.set(
         'ChildParam',
         own
       );
@@ -568,7 +576,9 @@ describe('DeployEngine.recordEvent under a bound printing bag (go-to-k/cdkd#3869
       const own = new Map<string, string>();
       recordLogOnlyValue(own, multi);
       recordLogOnlyValue(own, 'key-body');
-      (engine as unknown as { perResourceSecrets: Map<string, unknown> }).perResourceSecrets.set(
+      (
+        engine as unknown as { secretsRun: { perResourceSecrets: Map<string, unknown> } }
+      ).secretsRun.perResourceSecrets.set(
         'ChildParam',
         own
       );
