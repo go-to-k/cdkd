@@ -1012,6 +1012,57 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
     });
 
+    // go-to-k/cdkd#3252 x secrets: the comparison at create.ts must be made
+    // against the REDACTED bag (what the journal actually holds), not the
+    // resolver's raw plaintext -- else a resource whose create carried a
+    // secret never matches its own journal entry and is wrongly re-created.
+    //
+    // The settle-time uniqueness check (`ccIdentifierIsUnique`,
+    // `cc-pending-requests.ts`) is a SEPARATE, deliberately conservative gate:
+    // ANY secret-bearing bag answers "not unique" there and is orphaned
+    // before create.ts's own redacted-bag comparison is ever reached, so
+    // `resumedCreates` is seeded directly here (bypassing `settlePending`) to
+    // isolate the ONE thing this case targets. `loadRollbackJournal`
+    // returning no pending request means `settlePending` finds nothing to
+    // settle and leaves the seeded entry alone.
+    it('resumes a take over whose resolved properties carry a secret the journal holds redacted', async () => {
+      const secretValue = 'super-secret-value';
+      const secretExpr = '{{resolve:secretsmanager:s:SecretString:n::}}';
+      const { engine, provider } = resumingEngine({ p: secretExpr });
+      journal.loadRollbackJournal.mockImplementation(async () => {
+        (
+          engine as unknown as {
+            resumedCreates: Map<
+              string,
+              {
+                requestToken: string;
+                identifier: string;
+                resourceType: string;
+                attemptedProperties: Record<string, unknown>;
+              }
+            >;
+          }
+        ).resumedCreates.set('B', {
+          requestToken: 'tok-secret',
+          identifier: 'bucket-made',
+          resourceType: 'AWS::S3::Bucket',
+          attemptedProperties: { p: secretExpr },
+        });
+        return null;
+      });
+      const resolver = (engine as unknown as { resolver: { resolve: ReturnType<typeof vi.fn> } })
+        .resolver;
+      resolver.resolve.mockImplementation(
+        (value: unknown, ctx?: { recordedSecretValues?: Map<string, string> }) => {
+          ctx?.recordedSecretValues?.set(secretValue, secretExpr);
+          return Promise.resolve({ ...(value as object), p: secretValue });
+        }
+      );
+      await engine.deploy(stackName, template);
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(provider.resumeCreatedResource).toHaveBeenCalled();
+    });
+
     it("a failed settle of the deploy's resumes is warned about, and the deploy still succeeds", async () => {
       const { engine } = resumingEngine({ p: 'changed' });
       journal.rewriteRollbackJournalFailedOperations.mockRejectedValue(new Error('S3 down'));

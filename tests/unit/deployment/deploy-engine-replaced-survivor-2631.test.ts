@@ -81,6 +81,10 @@ vi.mock('../../../src/deployment/deploy-engine/replacement.js', async (importOri
 
 // Each journal segment the engine writes is tapped with its completed ops (a
 // clone, before the write), then written by the real function.
+// This tap sees only calls from OTHER modules (execute.ts): a call made from
+// INSIDE rollback.ts itself binds its own local function, not this mocked
+// export, so a segment rollback.ts writes directly (nested-pending-parent, a
+// kept segment) bypasses the tap entirely.
 const journalTap = vi.hoisted(() => ({ push: (_ops: unknown): void => {} }));
 vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
   const actual =

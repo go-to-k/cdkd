@@ -273,7 +273,7 @@ export async function adoptRollbackOrphans(
   // `displayIdent`: `planOrphanAdoption` sanitizes each state-chosen field
   // where it builds the string, because `cdkd diff` consumes the same lines
   // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
-  // is the one this method sanitizes.
+  // is the one this function sanitizes.
   // go-to-k/cdkd#3869: the same bag masks these lines, a record named from a
   // secret (its name still a `{{resolve:` reference) by its id spellings. One
   // log-only bag over every record: a line names one record, and a sibling's
@@ -390,7 +390,7 @@ export async function performRollback(
    * The PRE-deploy state record, threaded in for issue #2057's
    * `importedProducerRegions`. Taken as a parameter rather than read off a
    * field because `currentState` is a local of `executeDeployment`, whose
-   * automatic-rollback arm is this method's only caller.
+   * automatic-rollback arm is this function's only caller.
    */
   previousState: StackState,
   /**
@@ -532,7 +532,7 @@ export async function performRollback(
   const pendingOrphans = new Set(failed?.remainingFailedOps ?? []);
   const handled = new Set(orphanIndexes.filter((_, k) => !pendingOrphans.has(orphanOps[k]!)));
 
-  // `orphaned` is relayed rather than persisted here: this method holds no
+  // `orphaned` is relayed rather than persisted here: this function holds no
   // state save. Its caller merges it into the post-rollback record (issue
   // #2934), which is the ONLY save on this path — dropping it there makes a
   // live, billing AWS resource untrackable and re-opens the deploy loop the
@@ -655,7 +655,7 @@ export async function settleJournalAfterSuccess(
       }
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
       // left: what the saved record holds. The deploy flow guarded it before
-      // either of this method's call sites.
+      // either of this function's call sites.
       const own = await settleJournaledOrphansOnSuccess({
         stateBackend: deps.stateBackend,
         stackName,
