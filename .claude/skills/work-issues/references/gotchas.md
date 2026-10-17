@@ -75,5 +75,6 @@
   `AskUserQuestion`, never prose**, which ends the turn as STOPPED. It is CHAT,
   so in the USER's language, and it states the problem and each option's fix in
   plain words plus what CloudFormation / the AWS CDK CLI does for the same
-  shape, where one applies; without those the maintainer asks back instead of choosing (#2868).
+  shape, where one applies, and which option you recommend as the ideal tool
+  behavior and why; without those the maintainer asks back instead of choosing (#2868).
   Everything else you decide.

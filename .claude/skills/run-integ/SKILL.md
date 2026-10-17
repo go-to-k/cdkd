@@ -352,12 +352,10 @@ Which fixture to run is a coverage judgement, not a marker lookup.
   export
   ```
 
-  **Only five carry a `verify.sh`; from an agent session the other four cannot
-  be run at all** (step 5's dispatch note). Runnable from a session: **`lambda`**
-  (the cheap default), `drift-revert`, `drift-revert-vpc`, `remove-protection`,
-  `export`. Re-derive the split with `ls tests/integration/<name>/verify.sh`;
-  nothing compares the copies of this list, which `/pick-integ` and `/verify-pr`
-  also carry.
+  **`lambda` is the cheap default.** A name without `verify.sh` runs step 5's
+  standard flow from an agent session like any other (deploy + destroy, no
+  mid-run assertion). Nothing compares the copies of this list, which
+  `/verify-pr`'s `references/leftover-and-integ-gates.md` also carries.
 
   **A narrow feature fixture is NOT a substitute**: a 2-stack feature fixture
   destroys cleanly without ever reaching the broad VPC / Lambda / multi-resource
