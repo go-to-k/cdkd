@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import type { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import type { FailedOperation } from '../rollback-executor.js';
+import { redactOperationsForJournal } from './rollback.js';
 import { displacedPhysicalIdShown } from '../nested-child-journal.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import type { DeployEngine } from '../deploy-engine.js';
@@ -758,7 +759,7 @@ async function resumeAbandonedCreate(
     resourceType,
     attemptedProperties: args.resolvedProps,
   };
-  const [redacted] = this.redactOperationsForJournal([probe]) as FailedOperation[];
+  const [redacted] = redactOperationsForJournal(this.rollbackDeps(), [probe]) as FailedOperation[];
   const sentNow = redacted?.attemptedProperties;
   // As JSON, which is what the journal holds: prototypes and undefined
   // members do not survive the write, so they do not count here either.

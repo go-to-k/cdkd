@@ -3151,9 +3151,9 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
       // rather than loading one, so its read is dominated by that file's guard.
       if (file === 'src/cli/commands/diff.ts') return false;
-      // The `DeployEngine` rollback mixin (#4200) reads the container only inside
-      // `adoptRollbackOrphans`, reachable only through the engine's
-      // `this.adoptRollbackOrphans(` — the ROW anchor below, pinned under the
+      // `deploy-engine/rollback.ts` (#4200) reads the container only inside
+      // `adoptRollbackOrphans`, reachable only through the deploy flow's
+      // `await adoptRollbackOrphans(` — the ROW anchor below, pinned under the
       // engine's guard — and `settleJournalAfterSuccess` (#4600), reached only
       // from the deploy flow below its guard. Pinned in the next case.
       if (file === 'src/deployment/deploy-engine/rollback.ts') return false;
@@ -3235,8 +3235,8 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
         'persistStateAfterOutputFailure: give that path its own ANCHORS entry.'
     ).toBe(reads(executeFnBody('executeDeployment')) + reads(executeFnBody('persistStateAfterOutputFailure')));
     // `deploy-engine/rollback.ts` is excluded because every container read it
-    // holds is inside `adoptRollbackOrphans`, whose only caller is the engine's
-    // ROW-anchored `this.adoptRollbackOrphans(`. A read anywhere else in that
+    // holds is inside `adoptRollbackOrphans`, whose only caller is the deploy
+    // flow's ROW-anchored `await adoptRollbackOrphans(`. A read anywhere else in that
     // module is reachable some other way and owes its own anchor.
     const rollback = code('src/deployment/deploy-engine/rollback.ts');
     const fnAt = rollback.indexOf('export async function adoptRollbackOrphans(');
@@ -3256,7 +3256,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     expect(settleBody.indexOf('hasReadableOrphans(childRecord)')).toBeLessThan(childRead);
     // The SAME pattern the population derivation matches (`reads` above), so
     // every shape the exclusion hides is counted.
-    expect(reads(rollback), 'the rollback mixin no longer reads the container').toBeGreaterThan(0);
+    expect(reads(rollback), 'deploy-engine/rollback.ts no longer reads the container').toBeGreaterThan(0);
     expect(
       reads(rollback),
       'deploy-engine/rollback.ts reads the orphans container outside adoptRollbackOrphans / ' +
@@ -3273,10 +3273,11 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       'src/deployment/deploy-engine/deploy-flow.ts',
       'src/deployment/deploy-engine/rollback.ts',
     ]);
-    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('this.settleJournalAfterSuccess('));
+    expect(flow.indexOf('settleJournalAfterSuccess('), 'the deploy flow lost its success settle').toBeGreaterThan(-1);
+    expect(flow.indexOf('refuseMalformedOrphans(')).toBeLessThan(flow.indexOf('settleJournalAfterSuccess('));
     // ...and the premise that its ONLY caller is the engine's ROW-anchored call:
-    // `private` enforced that before the move, and an `@internal` prototype
-    // member does not, so a caller elsewhere would reach it unguarded.
+    // `private` enforced that before the move, and an exported function does
+    // not, so a caller elsewhere would reach it unguarded.
     const callers = spawnSync('git', ['grep', '-l', 'adoptRollbackOrphans(', '--', 'src'], {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -3290,10 +3291,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     ]);
     expect(
       rollback.split('adoptRollbackOrphans(').length - 1,
-      'the rollback mixin calls adoptRollbackOrphans itself, outside the engine guard'
+      'deploy-engine/rollback.ts calls adoptRollbackOrphans itself, outside the engine guard'
     ).toBe(1);
     expect(
-      code('src/deployment/deploy-engine/deploy-flow.ts').split('this.adoptRollbackOrphans(').length - 1,
+      code('src/deployment/deploy-engine/deploy-flow.ts').split('adoptRollbackOrphans(').length - 1,
       'the engine calls adoptRollbackOrphans more than once; each call owes the ROW anchor'
     ).toBe(1);
   });
@@ -3318,7 +3319,7 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     // `redactStateForPersist` row walk sits textually higher and is the SAME
     // measured exception the container fence pins: reachable only from the save
     // path below the guard.
-    'src/deployment/deploy-engine/deploy-flow.ts': 'this.adoptRollbackOrphans(',
+    'src/deployment/deploy-engine/deploy-flow.ts': 'await adoptRollbackOrphans(',
     // The pre-confirmation listing, the one thing a destroy does with the rows.
     'src/cli/commands/destroy-runner.ts': 'displaySafe(entry.logicalId)',
     // The merge that keys on each row's `logicalId`.

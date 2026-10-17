@@ -183,7 +183,7 @@ export { refuseUnprovenReplaySecret } from './rollback-executor/replay-secrets.j
  * - `afterOp` is invoked after each op that MUTATED state (so the command can
  *   persist state incrementally, mirroring `saveStateAfterResource`).
  *   Standalone `cdkd rollback` and a nested child's journal replay
- *   (`nested-child-journal.ts`) pass one; `DeployEngine.performRollback`
+ *   (`nested-child-journal.ts`) pass one; `performRollback` (`deploy-engine/rollback.ts`)
  *   passes none, and its caller saves state once at the end.
  * - `isInterrupted` is polled between ops; when it flips true, replay stops
  *   (the pending op is left for a re-run).

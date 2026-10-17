@@ -16,6 +16,11 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard } from '../generated-name-guard.js';
 import { flushKeptForReadoption } from './delete.js';
+import {
+  adoptRollbackOrphans,
+  producerRegionEvidence,
+  settleJournalAfterSuccess,
+} from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
@@ -212,7 +217,8 @@ export async function doDeployWithPrefetch(
     };
     const currentEtag = currentStateData?.etag;
     this.rebaseline(currentState.resources ?? {});
-    this.runProducerRegionEvidence = () => this.producerRegionEvidence(currentState);
+    this.runProducerRegionEvidence = () =>
+      producerRegionEvidence(this.rollbackDeps(), currentState);
     // AT THE LOAD, and REFUSE rather than repair (issue #3207). `deploy` is
     // the most write-capable consumer of this bag there is: the no-change
     // merge path below carries `currentState.outputs ?? {}` into
@@ -677,7 +683,11 @@ export async function doDeployWithPrefetch(
     // `currentState.orphans` is mutated to the surviving set so every save
     // below persists it; the carried-forward spreads read this same object.
     const orphanCountBeforeAdoption = (currentState.orphans ?? []).length;
-    const orphanPlan = await this.adoptRollbackOrphans(currentState, effectiveTemplate);
+    const orphanPlan = await adoptRollbackOrphans(
+      this.rollbackDeps(),
+      currentState,
+      effectiveTemplate
+    );
     // go-to-k/cdkd#3869: the secret-named records as this deploy found them,
     // adopted ones included, before any replacement re-points one. Printing
     // only (a nested stack row's registry, provision.ts). Each record is also
@@ -1459,7 +1469,8 @@ export async function doDeployWithPrefetch(
       // a resource left in AWS, counted with the skipped deletes (exit 2).
       const journaledOrphansLeft = this.options.dryRun
         ? 0
-        : await this.settleJournalAfterSuccess(
+        : await settleJournalAfterSuccess(
+            this.rollbackDeps(),
             stackName,
             [],
             currentState,
@@ -1630,7 +1641,7 @@ export async function doDeployWithPrefetch(
       completedOperations,
     } = await withProducerRegions(
       // go-to-k/cdkd#4174: for the child engine a nested-stack row builds.
-      () => this.producerRegionEvidence(currentState),
+      () => producerRegionEvidence(this.rollbackDeps(), currentState),
       () =>
         this.executeDeployment(
           effectiveTemplate,
@@ -1751,7 +1762,8 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#4600: a journaled proven orphan the settle could not
     // delete is a resource left in AWS, counted with the skipped deletes.
     const [journaledOrphansLeft] = await Promise.all([
-      this.settleJournalAfterSuccess(
+      settleJournalAfterSuccess(
+        this.rollbackDeps(),
         stackName,
         completedOperations,
         currentState,

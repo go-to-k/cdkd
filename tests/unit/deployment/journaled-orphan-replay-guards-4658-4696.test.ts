@@ -19,8 +19,10 @@ import {
   makeForeignHolderScan,
   settleJournaledOrphansOnSuccess,
 } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
-import { rollbackExecutorContext } from '../../../src/deployment/deploy-engine/rollback.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  type RollbackDeps,
+  rollbackExecutorContext,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
@@ -300,17 +302,19 @@ describe('the automatic rollback asks neither check (go-to-k/cdkd#4658 / #4696)'
   });
 
   it('its context supplies no foreignHolder', () => {
-    const engine = {
-      producerRegionEvidence: () => ({ regions: [], complete: true }),
+    const deps = {
+      recordedImports: () => [],
+      recordedOutputReads: () => [],
+      crossStackReadKeyNormalizer: () => (name: string) => name,
       providerRegistry: {},
       stackRegion: REGION,
       logger: { child: () => ({}) },
       recordEvent: vi.fn(),
       options: {},
-      secretsRun: { perResourceSecrets: new Map() },
-    } as unknown as DeployEngine;
+      secretsRun: () => ({ perResourceSecrets: new Map() }),
+    } as unknown as RollbackDeps;
     const state = { version: 10, stackName: 'A', region: REGION, resources: {}, outputs: {} };
-    const ctx = rollbackExecutorContext.call(engine, state as unknown as StackState, 'A');
+    const ctx = rollbackExecutorContext(deps, state as unknown as StackState, 'A');
     expect(ctx.region).toBe(REGION);
     expect(ctx).not.toHaveProperty('foreignHolder');
   });

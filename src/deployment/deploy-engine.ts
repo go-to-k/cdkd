@@ -73,7 +73,7 @@ import {
   type DeployResult,
 } from './deploy-engine/options.js';
 import { OutputsRunState, type OutputsDeps } from './deploy-engine/outputs.js';
-import * as rollbackMixin from './deploy-engine/rollback.js';
+import type { RollbackDeps } from './deploy-engine/rollback.js';
 import { ObservedCapture } from './deploy-engine/observed-capture.js';
 import {
   SecretsRunState,
@@ -895,6 +895,45 @@ export class DeployEngine {
   }
 
   /**
+   * This engine's current deps for `deploy-engine/rollback.ts`'s plain
+   * functions, built fresh at each call site like {@link deleteDeps}.
+   * `options` / `stateBackend` / `lockManager` / `stackRegion` / `logger` /
+   * `providerRegistry` are set only in the constructor, so they are passed by
+   * value; `secretsRun` / `noEchoRun` / `outputsRun` / `recordedImports` /
+   * `recordedOutputReads` / `resumedCreates` (replaced per `deploy()`, the last
+   * also by the success settle) and `absentJournalVersionPurge` /
+   * `interrupted` (set mid-deploy) are live getters, `owner` is this engine's
+   * identity (the adopted-orphan records' key), and the forwarded methods stay
+   * bound to THIS engine.
+   * @internal
+   */
+  rollbackDeps(): RollbackDeps {
+    return {
+      owner: this,
+      logger: this.logger,
+      options: this.options,
+      stackRegion: this.stackRegion,
+      stateBackend: this.stateBackend,
+      lockManager: this.lockManager,
+      providerRegistry: this.providerRegistry,
+      secretsRun: () => this.secretsRun,
+      noEchoRun: () => this.noEchoRun,
+      outputsRun: () => this.outputsRun,
+      recordedImports: () => this.recordedImports,
+      recordedOutputReads: () => this.recordedOutputReads,
+      resumedCreates: () => this.resumedCreates,
+      resetResumedCreates: () => {
+        this.resumedCreates = new Map();
+      },
+      absentJournalVersionPurge: () => this.absentJournalVersionPurge,
+      interrupted: () => this.interrupted,
+      noEchoDeps: () => this.noEchoDeps(),
+      recordEvent: (...args) => this.recordEvent(...args),
+      crossStackReadKeyNormalizer: (...args) => this.crossStackReadKeyNormalizer(...args),
+    };
+  }
+
+  /**
    * Deploy a CloudFormation template
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
@@ -1650,18 +1689,3 @@ DeployEngine.prototype.updateByReplacement = updateReplaceMixin.updateByReplacem
 DeployEngine.prototype.updateInPlace = updateInPlaceMixin.updateInPlace;
 
 DeployEngine.prototype.provisionCreate = createMixin.provisionCreate;
-
-DeployEngine.prototype.adoptRollbackOrphans = rollbackMixin.adoptRollbackOrphans;
-DeployEngine.prototype.performRollback = rollbackMixin.performRollback;
-DeployEngine.prototype.settleJournalAfterSuccess = rollbackMixin.settleJournalAfterSuccess;
-DeployEngine.prototype.deleteRollbackJournalBestEffort =
-  rollbackMixin.deleteRollbackJournalBestEffort;
-DeployEngine.prototype.settleJournalAfterCleanRollback =
-  rollbackMixin.settleJournalAfterCleanRollback;
-DeployEngine.prototype.settleNestedChildrenAfterCleanRollback =
-  rollbackMixin.settleNestedChildrenAfterCleanRollback;
-DeployEngine.prototype.recoveryHint = rollbackMixin.recoveryHint;
-DeployEngine.prototype.rollbackExecutorContext = rollbackMixin.rollbackExecutorContext;
-DeployEngine.prototype.producerRegionEvidence = rollbackMixin.producerRegionEvidence;
-DeployEngine.prototype.writeRollbackJournalSegment = rollbackMixin.writeRollbackJournalSegment;
-DeployEngine.prototype.redactOperationsForJournal = rollbackMixin.redactOperationsForJournal;

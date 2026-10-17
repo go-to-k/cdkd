@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  performRollback,
+  settleJournalAfterCleanRollback,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
@@ -367,18 +371,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
   it('clean auto-rollback with NO failed ops pops only THIS segment, preserving older ones (issue #1215)', async () => {
     const changes = new Map([['A', makeChange('A')]]);
     const engine = buildEngine({ changes, deps: { A: [] }, currentEtag: 'e0' });
-    // Reach the private settle helper directly: a deploy that fails WITHOUT a
+    // Reach the settle helper directly: a deploy that fails WITHOUT a
     // journaled failed op (e.g. a non-resource error mid-DAG) is hard to
     // simulate through the public API deterministically.
-    await (
-      engine as unknown as {
-        settleJournalAfterCleanRollback: (
-          stackName: string,
-          failedOps: unknown[],
-          initialDeploy: boolean
-        ) => Promise<void>;
-      }
-    ).settleJournalAfterCleanRollback(stackName, [], false);
+    await settleJournalAfterCleanRollback(engine.rollbackDeps(), stackName, [], false);
     // The clean rollback reverted only THIS attempt's ops — older segments
     // from prior un-reverted attempts keep their revert records. Pop deletes
     // the object itself when the last segment goes, so the common
@@ -2096,15 +2092,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         logicalId === 'F' ? Promise.reject(new Error('AccessDenied')) : Promise.resolve(undefined)
       );
       const prev: StackState = { version: 8, stackName, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 1 };
-      const run = (engine as unknown as {
-        performRollback: (...a: unknown[]) => Promise<{
-          warnings: number;
-          skipped: number;
-          failures: number;
-          remainingFailedOps: unknown[];
-        }>;
-      }).performRollback.bind(engine);
-      const out = await run([], {}, stackName, prev, [ordinary, proven, superseded, failing], [
+      const out = await performRollback(engine.rollbackDeps(), [], {}, stackName, prev, [ordinary, proven, superseded, failing], [
         { logicalId: 'Other', orphanedAt: 1, state: { physicalId: 's-1', resourceType: 'AWS::S3::Bucket', properties: {} } },
       ]);
       expect(provider.delete.mock.calls.map((c: unknown[]) => c[1]).sort()).toEqual(['f-1', 'p-1']);

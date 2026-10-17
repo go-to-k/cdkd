@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { buildResolverContext } from '../../../src/deployment/deploy-engine/resolver-context.js';
+import { rollbackExecutorContext } from '../../../src/deployment/deploy-engine/rollback.js';
 import {
   SECRET_MASK,
   hasMaskableValues,
@@ -258,14 +259,8 @@ describe('DeployEngine - the side set crosses its copies (go-to-k/cdkd#1998)', (
     recordLogOnlyValue(bag, NOECHO);
     (engine as unknown as { secretsRun: { perResourceSecrets: Map<string, RecordedSecretValues> } })
       .secretsRun.perResourceSecrets.set('R', bag);
-    const ctx = (
-      engine as unknown as {
-        rollbackExecutorContext: (
-          s: StackState,
-          n: string
-        ) => { logOnlyNeedlesFor?: (id: string) => RecordedSecretValues | undefined };
-      }
-    ).rollbackExecutorContext(
+    const ctx = rollbackExecutorContext(
+      engine.rollbackDeps(),
       { version: 8, stackName: 's', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 },
       's'
     );

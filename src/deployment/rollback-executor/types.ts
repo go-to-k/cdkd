@@ -369,7 +369,7 @@ export interface RollbackExecutorContext {
    *  - `cdkd rollback` (`src/cli/commands/rollback.ts`) passes
    *    `producerRegionsFromState(baseState)` — whatever the last save
    *    persisted.
-   *  - `DeployEngine.rollbackExecutorContext(previousState, stackName)` passes the UNION
+   *  - `rollbackExecutorContext(deps, previousState, stackName)` (`deploy-engine/rollback.ts`) passes the UNION
    *    of the pre-deploy snapshot and THIS session's `recordedImports` /
    *    `recordedOutputReads` (`crossStackReadsForPartialSave`). That union is
    *    not belt-and-braces: a rollback journal exists only after a FAILED

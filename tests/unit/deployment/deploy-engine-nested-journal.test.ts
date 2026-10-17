@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getNestedRevertRun } from '../../../src/deployment/nested-child-journal.js';
+import { performRollback } from '../../../src/deployment/deploy-engine/rollback.js';
 import { settleJournaledOrphansOnSuccess } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
@@ -497,15 +498,12 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       lastModified: 0,
     } as StackState;
     const perform = (
-      engine as unknown as {
-        performRollback: (
-          ops: unknown[],
-          resources: Record<string, ResourceState>,
-          stack: string,
-          prev: StackState
-        ) => Promise<{ settledNested: Map<string, unknown>; warnings: number }>;
-      }
-    ).performRollback.bind(engine);
+      ops: unknown[],
+      resources: Record<string, ResourceState>,
+      stack: string,
+      prev: StackState
+    ): ReturnType<typeof performRollback> =>
+      performRollback(engine.rollbackDeps(), ops as never, resources, stack, prev);
 
     // The row is absent from state, so the executor SKIPS its revert.
     const skipped = await perform([op], {}, STACK, previous);
@@ -536,15 +534,12 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       });
     });
     const perform = (
-      engine as unknown as {
-        performRollback: (
-          ops: unknown[],
-          resources: Record<string, ResourceState>,
-          stack: string,
-          prev: StackState
-        ) => Promise<{ settledNested: Map<string, unknown>; warnings: number }>;
-      }
-    ).performRollback.bind(engine);
+      ops: unknown[],
+      resources: Record<string, ResourceState>,
+      stack: string,
+      prev: StackState
+    ): ReturnType<typeof performRollback> =>
+      performRollback(engine.rollbackDeps(), ops as never, resources, stack, prev);
 
     const result = await perform(
       [

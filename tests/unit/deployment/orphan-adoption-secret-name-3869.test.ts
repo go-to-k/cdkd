@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', async (importOriginal) => {
 });
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { adoptRollbackOrphans } from '../../../src/deployment/deploy-engine/rollback.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 
 sink.masker = currentLogLineMasker;
@@ -102,11 +103,7 @@ describe('the orphan-adoption line masks a name derived from a secret (go-to-k/c
       ],
       lastModified: 1,
     } as StackState;
-    await (
-      engine as unknown as {
-        adoptRollbackOrphans: (s: StackState, t: CloudFormationTemplate) => Promise<unknown>;
-      }
-    ).adoptRollbackOrphans(state, {
+    await adoptRollbackOrphans(engine.rollbackDeps(), state, {
       Resources: {
         Kept: {
           Type: opts.type,

@@ -1,7 +1,7 @@
 /**
  * Pins that every `DeployEngine` per-call deps helper
  * (`resolverContextDeps`, `deleteDeps`, `noEchoDeps`, `maskingDeps`,
- * `replacementDeps`, `outputsDeps`) reads the engine's per-deploy state
+ * `replacementDeps`, `outputsDeps`, `rollbackDeps`) reads the engine's per-deploy state
  * LIVE, not a snapshot taken when the deps object was built. Each is
  * documented as "built fresh at each call site" / "a live getter" for
  * exactly this reason: a collaborator holds the deps object across more
@@ -130,6 +130,48 @@ describe('DeployEngine per-call deps helpers read per-deploy state LIVE', () => 
 
     engine.interruptCause = 'sibling-failure';
     expect(deps.interruptCause()).toBe('sibling-failure');
+  });
+
+  it('rollbackDeps reads secretsRun, noEchoRun, outputsRun, recordedImports, recordedOutputReads, resumedCreates, absentJournalVersionPurge and interrupted live, and resets resumedCreates on the engine', () => {
+    const engine = makeEngine();
+    const deps = engine.rollbackDeps();
+    expect(deps.owner).toBe(engine);
+
+    const newSecretsRun = new SecretsRunState();
+    engine.secretsRun = newSecretsRun;
+    expect(deps.secretsRun()).toBe(newSecretsRun);
+
+    const newNoEchoRun = new NoEchoRunState();
+    engine.noEchoRun = newNoEchoRun;
+    expect(deps.noEchoRun()).toBe(newNoEchoRun);
+
+    const newOutputsRun = new OutputsRunState();
+    engine.outputsRun = newOutputsRun;
+    expect(deps.outputsRun()).toBe(newOutputsRun);
+
+    const newImports: StateImportEntry[] = [];
+    engine.recordedImports = newImports;
+    expect(deps.recordedImports()).toBe(newImports);
+
+    const newOutputReads: StateOutputReadEntry[] = [];
+    engine.recordedOutputReads = newOutputReads;
+    expect(deps.recordedOutputReads()).toBe(newOutputReads);
+
+    const newResumed: DeployEngine['resumedCreates'] = new Map();
+    engine.resumedCreates = newResumed;
+    expect(deps.resumedCreates()).toBe(newResumed);
+    // The success settle REPLACES the engine's map (never clears in place).
+    deps.resetResumedCreates();
+    expect(engine.resumedCreates).not.toBe(newResumed);
+    expect(engine.resumedCreates.size).toBe(0);
+    expect(deps.resumedCreates()).toBe(engine.resumedCreates);
+
+    const purge = Promise.resolve();
+    engine.absentJournalVersionPurge = purge;
+    expect(deps.absentJournalVersionPurge()).toBe(purge);
+
+    engine.interrupted = true;
+    expect(deps.interrupted()).toBe(true);
   });
 
   it('outputsDeps forwards buildResolverContext and noEchoPositionSources bound to the CURRENT engine, not a snapshot', () => {

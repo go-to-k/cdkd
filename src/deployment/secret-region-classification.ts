@@ -158,7 +158,7 @@ function arnRegion(secretId: string): string | undefined {
  *
  * Exported so the two `RollbackExecutorContext` construction sites derive the
  * list identically — `cdkd rollback` from the state it loaded, and
- * `DeployEngine.rollbackExecutorContext` from `crossStackReadsForPartialSave`,
+ * `rollbackExecutorContext` (`deploy-engine/rollback.ts`) from `crossStackReadsForPartialSave`,
  * which unions that snapshot with the reads the failing deploy itself made.
  */
 export function producerRegionsFromState(

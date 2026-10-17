@@ -79,6 +79,23 @@ vi.mock('../../../src/deployment/deploy-engine/replacement.js', async (importOri
   };
 });
 
+// Each journal segment the engine writes is tapped with its completed ops (a
+// clone, before the write), then written by the real function.
+const journalTap = vi.hoisted(() => ({ push: (_ops: unknown): void => {} }));
+vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/rollback.js')>();
+  return {
+    ...actual,
+    writeRollbackJournalSegment: vi.fn(
+      async (...args: Parameters<typeof actual.writeRollbackJournalSegment>) => {
+        journalTap.push(structuredClone(args[2]));
+        return actual.writeRollbackJournalSegment(...args);
+      }
+    ),
+  };
+});
+
 const REVISION = 'AWS::Lambda::WebFunctionRevision';
 
 /** An AWS SDK-shaped error: its `name` is the service's error code. */
@@ -166,15 +183,10 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
       { concurrency: 4, noRollback } as never,
       'us-east-1'
     );
-    const write = (
-      engine as unknown as { writeRollbackJournalSegment: (...args: unknown[]) => Promise<unknown> }
-    ).writeRollbackJournalSegment.bind(engine);
-    (
-      engine as unknown as { writeRollbackJournalSegment: (...args: unknown[]) => Promise<unknown> }
-    ).writeRollbackJournalSegment = async (...args: unknown[]) => {
-      journaled.push(structuredClone(args[1] as CompletedOperation[]));
-      return write(...args);
-    };
+    // The engine's journal writes go through the wrapped
+    // `writeRollbackJournalSegment` (see the `vi.mock` above); each case's
+    // `journaled` length check proves the tap ran.
+    journalTap.push = (ops) => journaled.push(ops as CompletedOperation[]);
     return engine;
   }
 
