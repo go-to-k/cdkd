@@ -63,6 +63,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
   fi
 }
 # ---------------------------------------------------------------------------
+# SSM can serve a parameter for a moment after a successful DeleteParameter.
+# Retry the gone-probe on a bounded schedule; one that never disappears still
+# FAILs.
+assert_gone_eventually() { # usage: assert_gone_eventually "<desc>" aws ssm get-parameter ...
+  local desc="$1"; shift
+  for _ in $(seq 1 12); do
+    if gone_probe "$@"; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: ${desc} (still present after 12 probes over ~60s)" >&2
+  exit 1
+}
 
 cd "$(dirname "$0")"
 
@@ -228,9 +242,9 @@ node "${LOCAL_DIST}" destroy "${CONSUMER_STACK}" \
   --region "${REGION}" \
   --force
 
-assert_gone "consumer SSM parameter ${IMPORTVALUE_PARAM_NAME} leaked after destroy" \
+assert_gone_eventually "consumer SSM parameter ${IMPORTVALUE_PARAM_NAME} leaked after destroy" \
   aws ssm get-parameter --name "${IMPORTVALUE_PARAM_NAME}" --region "${REGION}"
-assert_gone "consumer SSM parameter ${GETSTACKOUTPUT_PARAM_NAME} leaked after destroy" \
+assert_gone_eventually "consumer SSM parameter ${GETSTACKOUTPUT_PARAM_NAME} leaked after destroy" \
   aws ssm get-parameter --name "${GETSTACKOUTPUT_PARAM_NAME}" --region "${REGION}"
 assert_gone "consumer state file leaked after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}" --region "${REGION}"
