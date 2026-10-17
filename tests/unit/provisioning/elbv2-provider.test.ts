@@ -663,10 +663,9 @@ describe('ELBv2Provider', () => {
         ]);
       });
 
-      it('should reset a removed BOOLEAN ListenerAttribute to its documented default', async () => {
+      it('leaves a removed ListenerAttribute at its live value: ModifyListener only (#1160, CFn parity)', async () => {
         const listenerArn =
           'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/1234567890abcdef/abcdef1234567890';
-        mockSend.mockResolvedValueOnce({});
         mockSend.mockResolvedValueOnce({});
 
         await provider.update(
@@ -682,16 +681,10 @@ describe('ELBv2Provider', () => {
           }
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(2);
-        const modifyAttrsCall = mockSend.mock.calls[1][0];
-        // Was `Value: ''` until the issue #1609 item 1 live A/B: dropping
-        // this exact key against real AWS failed the removal deploy with
-        // "The value of 'routing.http.response.server.enabled' must be
-        // 'true' or 'false', but was ''" — and took the automatic rollback
-        // down with it. The reset is the documented default.
-        expect(modifyAttrsCall.input.Attributes).toEqual([
-          { Key: 'routing.http.response.server.enabled', Value: 'true' },
-        ]);
+        // A CloudFormation update leaves a removed listener attribute key in
+        // place (CFn A/B 2026-10-17), so only ModifyListener is sent.
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('ModifyListenerCommand');
       });
 
       it('should NOT issue ModifyListenerAttributes when ListenerAttributes is unchanged', async () => {

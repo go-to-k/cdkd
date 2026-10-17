@@ -3,9 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // go-to-k/cdkd#4679: a listener first deployed while tagged was routed through
 // Cloud Control and recorded `provisionedBy: 'cc-api'`. #4673 moved NEW tagged
 // listeners to the SDK provider, but the sticky rule kept the existing record on
-// Cloud Control, whose update leaves a removed ListenerAttributes key live. The
-// listener is now an 'sdk-coverage' sticky exemption: the deploy that drops the
-// key returns the record to the SDK provider, which resets it.
+// Cloud Control. The listener is now an 'sdk-coverage' sticky exemption, for the
+// SDK path's speed: the next deploy that changes it returns the record to the
+// SDK provider. Both routes keep a removed ListenerAttributes key, as
+// CloudFormation does (#1160).
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
 
@@ -76,7 +77,7 @@ describe('a cc-api ALB listener returns to the SDK provider (go-to-k/cdkd#4679)'
     });
   });
 
-  it('the deploy that drops ListenerAttributes routes the cc-api record to the SDK provider, which resets the key', async () => {
+  it('the deploy that drops ListenerAttributes routes the cc-api record to the SDK provider, which keeps the key', async () => {
     const { registry, sdk } = registryWithListener();
     const decision = registry.getProviderFor({
       resourceType: LISTENER,
@@ -88,8 +89,9 @@ describe('a cc-api ALB listener returns to the SDK provider (go-to-k/cdkd#4679)'
     expect(decision.provisionedBy).toBe('sdk');
     expect(decision.sdkMigration).toBe(true);
 
-    // The routed provider, on the record's own ARN, sends the reset Cloud
-    // Control never sent.
+    // The routed provider, on the record's own ARN, leaves the removed key in
+    // place, as Cloud Control and CloudFormation do (#1160, CFn A/B
+    // 2026-10-17): no ModifyListenerAttributes.
     await decision.provider.update(
       'Listener',
       LISTENER_ARN,
@@ -97,12 +99,7 @@ describe('a cc-api ALB listener returns to the SDK provider (go-to-k/cdkd#4679)'
       taggedListener(),
       taggedListener(SERVER_HEADER_OFF)
     );
-    expect(sentOf(ModifyListenerAttributesCommand).map((c) => c.input)).toEqual([
-      {
-        ListenerArn: LISTENER_ARN,
-        Attributes: [{ Key: 'routing.http.response.server.enabled', Value: 'true' }],
-      },
-    ]);
+    expect(sentOf(ModifyListenerAttributesCommand)).toEqual([]);
   });
 
   it('--pin-cc-api keeps the record on Cloud Control', () => {

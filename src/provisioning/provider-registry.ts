@@ -176,9 +176,9 @@ export interface AutoRouteHit {
  *   the SDK provider has since been backfilled (issue #609) to cover the
  *   properties this resource actually uses. The fall-through is CONDITIONAL on
  *   that being true of the resource in hand, and suppressible with
- *   `forceCcApi`. A CC defect that only a mutating deploy reaches fits here
- *   too, since that deploy is the one that flips the record (the listener's
- *   removed `ListenerAttributes` key, issue #4679).
+ *   `forceCcApi`. A type admitted only for the SDK path's speed fits here
+ *   too, since the next mutating deploy flips the record (the listener,
+ *   issue #4679).
  */
 export type StickyExemptMode = 'cc-broken' | 'sdk-coverage';
 
@@ -361,14 +361,14 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     'AWS::ElasticLoadBalancingV2::Listener',
     {
       // Pinned to cc-api: every listener first deployed while tagged, before
-      // the provider declared `Tags` handled. Cloud Control creates, reads,
-      // updates and deletes it, but a deploy dropping a `ListenerAttributes`
-      // key sends no `ModifyListenerAttributes` there, so the old value stays
-      // live (issue #4679, measured on the `alb` integ); the SDK provider
-      // resets it. Not 'cc-broken': that mode would also move an unflipped
-      // record's drift read to the SDK provider against its Cloud Control
-      // baseline. This one flips on the next deploy that changes the
-      // listener, which is the deploy that drops the key.
+      // the provider declared `Tags` handled. Cloud Control manages it
+      // correctly, and both routes leave a removed `ListenerAttributes` key at
+      // its live value, as CloudFormation does (issue #1160, CFn A/B
+      // 2026-10-17). It is admitted for the SDK path's speed: Cloud Control
+      // polls every operation, while the ELBv2 calls return synchronously.
+      // Not 'cc-broken': that mode would also move an unflipped record's drift
+      // read to the SDK provider against its Cloud Control baseline. This one
+      // flips on the next deploy that changes the listener.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the listener ARN: the schema primaryIdentifier is ' +

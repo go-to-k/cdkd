@@ -247,9 +247,7 @@ mean destroy-and-recreate churn on each release.
 
 Types carrying an `'sdk-coverage'` exemption are the exception: Cloud Control
 manages the type but is slower, and cdkd covers every property the resource
-uses, so the next mutating deploy moves it back in place. For
-`AWS::ElasticLoadBalancingV2::Listener`, Cloud Control also leaves a removed
-`ListenerAttributes` key at its old value.
+uses, so the next mutating deploy moves it back in place.
 
 `cdkd diff` annotates routing with `[via CC API: <property>]`,
 `[via CC API: sticky]` and `[returning to SDK provider]`. The last one does

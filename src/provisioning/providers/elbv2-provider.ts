@@ -359,14 +359,16 @@ const TARGETS_WHAT =
   'targets, each with a string Id and, where given, an integer Port and a string AvailabilityZone';
 
 /**
- * The removal resolver of the LoadBalancer and TargetGroup attribute bags: a
- * key REMOVED from `LoadBalancerAttributes` / `TargetGroupAttributes` is never
- * sent, so it keeps its live value. That is CloudFormation parity, not a gap
- * (issue #1160, CFn A/B us-east-1 2026-10-17): a CloudFormation update that
- * dropped `deregistration_delay.timeout_seconds` from a target group's list,
- * dropped the whole list, dropped `routing.http.drop_invalid_header_fields.enabled`
- * from a load balancer's list, or dropped the whole list, left every value
- * as it was. No Elastic Load Balancing call removes an attribute key either.
+ * The removal resolver of all three attribute bags: a key REMOVED from
+ * `LoadBalancerAttributes` / `TargetGroupAttributes` / `ListenerAttributes` is
+ * never sent, so it keeps its live value. That is CloudFormation parity, not a
+ * gap (issue #1160, CFn A/B us-east-1 2026-10-17): a CloudFormation update
+ * that dropped one key or the whole list left every value as it was, for a
+ * target group (`deregistration_delay.timeout_seconds`), a load balancer
+ * (`routing.http.drop_invalid_header_fields.enabled`, `access_logs.s3.*`) and
+ * a listener (`routing.http.response.x_frame_options.header_value`,
+ * `routing.http.response.server.enabled`). No Elastic Load Balancing call
+ * removes an attribute key either.
  */
 const RETAIN_REMOVED_ATTRIBUTE = (): undefined => undefined;
 
@@ -379,19 +381,18 @@ const RETAIN_REMOVED_ATTRIBUTE = (): undefined => undefined;
 const LOG_DELIVERY_ATTRIBUTE = /^[a-z_]+_logs\.s3\./;
 
 /**
- * Documented AWS defaults for the BOOLEAN / ENUM-valued Listener attributes,
- * used to reset a removed `ListenerAttributes` entry. ModifyListenerAttributes
- * accepts `Value: ''` ("clear the override") for numeric and free-form keys
- * but REJECTS it for a key validated against a fixed set, failing the whole
- * call (live A/B 2026-08-11, issue #1609 item 1), so those take their
- * documented default and every other key keeps `''`. A key is listed only
- * when ONE unconditional default is established for it;
- * `routing.http.response.server.enabled`'s is proven by the `alb` integ's
- * removal readback.
+ * The Listener attribute keys whose kept value can silently mislead a client
+ * or a backend: a CORS response header (`routing.http.response.access_control_*`,
+ * a cross-origin grant) and a request-header rename
+ * (`routing.http.request.<header>.header_name`, the mTLS client-certificate and
+ * TLS headers): once the rename is dropped from the template the app reads the
+ * default name again, while the ALB keeps writing the renamed one, so a
+ * client-supplied header under the default name may be trusted. A removed one
+ * is kept like any other key, but warned about: see `updateListener`. Security
+ * response headers (HSTS, CSP, frame options) fail safe when kept: no warning.
  */
-const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
-  'routing.http.response.server.enabled': 'true',
-};
+const MISLEADING_IF_KEPT_ATTRIBUTE =
+  /^routing\.http\.(response\.access_control_|request\.[a-z0-9_]+\.header_name$)/;
 
 /**
  * The attribute map a load balancer records, shared by `create()` and
@@ -665,8 +666,8 @@ export class ELBv2Provider implements ResourceProvider {
         'ListenerAttributes',
         // Sent by CreateListener, diffed by update's applyTagDiff and read back
         // by readListener. Undeclared, a tagged listener (any CDK app with
-        // stack tags) routed via Cloud Control, whose update leaves a removed
-        // ListenerAttributes key live (go-to-k/cdkd#2085).
+        // stack tags) routed via the slower Cloud Control path
+        // (go-to-k/cdkd#2085).
         'Tags',
       ]),
     ],
@@ -741,7 +742,8 @@ export class ELBv2Provider implements ResourceProvider {
         // Create-only (a removal replaces), or required.
         'LoadBalancerArn',
         'DefaultActions',
-        // Diffed, removal included: ModifyListenerAttributes / RemoveTags.
+        // Diffed: RemoveTags for a removed tag; a removed attribute key is
+        // left in place, as CloudFormation leaves it (CFn A/B 2026-10-17).
         'ListenerAttributes',
         'Tags',
         // Cleared by AWS on an HTTPS -> HTTP / TLS -> TCP change, otherwise
@@ -1622,7 +1624,7 @@ export class ELBv2Provider implements ResourceProvider {
       const keys = exposedLogKeys.map((key) => mask(key)).join(', ');
       const one = exposedLogKeys.length === 1;
       this.logger.warn(
-        safeMsg`${logicalId}: LoadBalancerAttributes ${one ? 'key' : 'keys'} ${keys} ${one ? 'is' : 'are'} no longer declared and ${one ? 'keeps its' : 'keep their'} live value, as CloudFormation leaves it, so the load balancer may keep delivering logs to the bucket it names. To stop it, declare the matching '<kind>_logs.s3.enabled' key as 'false' and deploy.`
+        safeMsg`${logicalId}: LoadBalancerAttributes ${one ? 'key' : 'keys'} ${keys} ${one ? 'is' : 'are'} no longer declared and ${one ? 'keeps its live value' : 'keep their live values'}, as CloudFormation leaves ${one ? 'it' : 'them'}, so the load balancer may keep delivering logs to the bucket it names. To stop it, declare the matching '<kind>_logs.s3.enabled' key as 'false' and deploy.`
       );
     }
 
@@ -2806,16 +2808,18 @@ export class ELBv2Provider implements ResourceProvider {
       );
 
       // ─── ListenerAttributes ──────────────────────────────────────────
+      const removedMisleadingKeys: string[] = [];
       // ModifyListenerAttributes replaces ONLY the listed attrs — keys not
-      // in the request are left untouched. Build the diff: changed values
-      // from newAttrs win; keys present only in oldAttrs are reset. A removed
-      // BOOLEAN / ENUM key takes its documented default from
-      // LISTENER_ATTRIBUTE_DEFAULTS because this API rejects an empty Value
-      // for those — dropping `routing.http.response.server.enabled` failed
-      // the whole deploy pre-fix (live-verified 2026-08-11, issue #1609
-      // item 1); every other key keeps the empty string, which the API
-      // accepts as "clear the override". Skip the call entirely when nothing
-      // changed so the no-drift round-trip is a clean no-op. A failure here
+      // in the request are left untouched. Only added / changed keys are
+      // sent; a removed key keeps its live value, as CloudFormation leaves it
+      // (RETAIN_REMOVED_ATTRIBUTE). No listener attribute names an external
+      // destination (they are response-header, request-header-name and
+      // timeout settings), but a kept CORS key or request-header rename can
+      // mislead a client or the backend (MISLEADING_IF_KEPT_ATTRIBUTE).
+      // CloudFormation keeps those too (CFn A/B us-east-1 2026-10-18 on the
+      // CORS keys), so they are kept and warned about, naming the keys (never
+      // values). Skip the call entirely when nothing changed so
+      // the no-drift round-trip is a clean no-op. A failure here
       // THROWS (caught by the outer try/catch and re-wrapped as a
       // ProvisioningError) so cdkd state is not written as-if-applied — the
       // next deploy retries. `drift --revert` sends no removal at all
@@ -2825,7 +2829,10 @@ export class ELBv2Provider implements ResourceProvider {
         logicalId,
         properties['ListenerAttributes'],
         previousProperties['ListenerAttributes'],
-        this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS),
+        (key) => {
+          if (MISLEADING_IF_KEPT_ATTRIBUTE.test(key)) removedMisleadingKeys.push(key);
+          return RETAIN_REMOVED_ATTRIBUTE();
+        },
         fromReadback,
         maskSecrets
       );
@@ -2870,6 +2877,14 @@ export class ELBv2Provider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated Listener ${logicalId}`);
+      if (removedMisleadingKeys.length > 0) {
+        const mask = maskerOrIdentity(maskSecrets);
+        const keys = removedMisleadingKeys.map((key) => mask(key)).join(', ');
+        const one = removedMisleadingKeys.length === 1;
+        this.logger.warn(
+          safeMsg`${logicalId}: ListenerAttributes ${one ? 'key' : 'keys'} ${keys} ${one ? 'is' : 'are'} no longer declared and ${one ? 'keeps its live value' : 'keep their live values'}, as CloudFormation leaves ${one ? 'it' : 'them'}, so the listener may keep sending a CORS response header, or keep writing a request header under its renamed name. To change ${one ? 'it' : 'them'}, declare the value you want and deploy, or set ${one ? 'it' : 'them'} with 'aws elbv2 modify-listener-attributes'.`
+        );
+      }
       if (leftInPlaceNames.length > 0 && !fromReadback) {
         this.logger.warn(
           listenerLeftInPlaceWarning(
@@ -2995,10 +3010,10 @@ export class ELBv2Provider implements ResourceProvider {
    * A resolver returning `undefined` SKIPS the entry (the resolver owns any
    * warn). An empty return means nothing changed and the call should be
    * skipped. Shared by the LoadBalancer / TargetGroup / Listener update
-   * paths, each passing its OWN resolver: LoadBalancer and TargetGroup send
-   * no removal ({@link RETAIN_REMOVED_ATTRIBUTE}), the Listener resets
-   * (`LISTENER_ATTRIBUTE_DEFAULTS`). `removalValue` is REQUIRED rather than
-   * defaulted, so a new caller has to decide.
+   * paths; none sends a removal ({@link RETAIN_REMOVED_ATTRIBUTE}), and the
+   * LoadBalancer's resolver also collects the log-delivery keys it warns about.
+   * `removalValue` is REQUIRED rather than defaulted, so a new caller has to
+   * decide.
    */
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,
@@ -3030,11 +3045,9 @@ export class ELBv2Provider implements ResourceProvider {
    * hold. With an observed baseline that means AWS was not returning the key at
    * capture (an attribute rolled out later, or `ddos_protection.syn_cookie.mode`,
    * which AWS returns intermittently), so cdkd has no recorded value to restore.
-   * No Elastic Load Balancing call removes an attribute key, and the removal
-   * value is a guess: `''` or a documented default. A rejected `''` (an enum or
-   * boolean key) fails the WHOLE Modify call, taking every other reverted
-   * attribute of the bag with it. (Without an observed baseline, `runRevert`
-   * merges the untemplated keys into the desired side, so none arrives here.)
+   * No Elastic Load Balancing call removes an attribute key. (Without an
+   * observed baseline, `runRevert` merges the untemplated keys into the desired
+   * side, so none arrives here.)
    *
    * The key keeps its live value, and a warning names it and the remedy, since
    * `cdkd drift` keeps reporting a key only the readback holds: it cannot tell
@@ -3077,40 +3090,6 @@ export class ELBv2Provider implements ResourceProvider {
       );
     }
     return submitted;
-  }
-
-  /**
-   * Build the `removalValue` resolver for the Listener attribute arm: reset a
-   * removed key to its documented default, or to `''` (which that API accepts
-   * as "clear the override") when no default is known.
-   *
-   * **A key already AT its default is SKIPPED, and that is a safety property,
-   * not an optimization.** It was written for a previous side that is not a
-   * template: `cdkd drift --revert` calls `update(..., newProperties,
-   * outcome.awsProperties)` (`src/cli/commands/drift.ts`), so `oldAttrs` can be
-   * the FULL `readCurrentState` snapshot, where every untemplated key looks
-   * REMOVED, and writing a documented default there would silently overwrite
-   * a live setting the template never declared. That caller no longer reaches this
-   * resolver at all ({@link diffAttributeBag}, go-to-k/cdkd#4147); the skip
-   * stays for any other caller handing a readback as the previous side.
-   *
-   * The skip is exact rather than heuristic: a key the user never templated is
-   * BY DEFINITION sitting at its default, so it is skipped; a key the template
-   * really did set is set to a NON-default value (otherwise templating it
-   * would be a no-op), so its reset still fires. A template that set a key to
-   * exactly its default and then dropped it is skipped too — correctly, since
-   * there is nothing to change.
-   */
-  private attributeRemovalResolver(
-    defaults: Record<string, string>
-  ): (key: string, currentValue: string) => string | undefined {
-    return (key, currentValue) => {
-      // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
-      // `toString` would otherwise resolve up the prototype chain to a
-      // non-string and emit a garbage Value.
-      const fallback = Object.hasOwn(defaults, key) ? defaults[key] : '';
-      return currentValue === fallback ? undefined : fallback;
-    };
   }
 
   /**
