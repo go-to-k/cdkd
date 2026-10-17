@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import {
   prepareFinalSnapshotForDelete,
   retryDeferredReplacedDeletes,
@@ -259,17 +260,16 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
         } as unknown as ResourceChange,
       ],
     ]);
-    return (await (
-      engine as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }
-    ).executeDeployment(
+    return (await executeDeployment(
+      engine,
       template,
       currentState,
       changes,
-      {},
+      {} as never,
       [['Revision'], ['Endpoint']],
       'MyStack',
       template
-    )) as { completedOperations: CompletedOperation[]; state: StackState };
+    )) as unknown as { completedOperations: CompletedOperation[]; state: StackState };
   }
 
   const revisionOp = (ops: CompletedOperation[]): CompletedOperation =>

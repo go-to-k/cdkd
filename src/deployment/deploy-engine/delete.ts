@@ -65,7 +65,7 @@ export async function flushKeptForReadoption(engine: DeployEngine): Promise<void
   await keptByEngine.get(engine)?.flush();
 }
 
-/** The `DELETE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
+/** The `DELETE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionDelete(
   deps: DeleteDeps,
   logicalId: string,

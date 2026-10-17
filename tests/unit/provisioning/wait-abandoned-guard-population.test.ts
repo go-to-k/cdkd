@@ -323,7 +323,7 @@ describe('every already-deleted classifier refuses an abandoned wait (#3236)', (
       'provisioning/cloud-control-provider.ts',
     ]);
     // FIVE governed sites: the engine's DELETE and UPDATE arms (one each, in
-    // their #4200 mixin modules), plus one each in `destroy-runner.ts`,
+    // their #4200 split-out modules), plus one each in `destroy-runner.ts`,
     // `cloud-control-provider.ts` and `cc-protection-properties.ts` (the
     // `--remove-protection` compensation's not-found arm, issue #2204, whose
     // input can be an abandoned re-enable wait). Another guard exists

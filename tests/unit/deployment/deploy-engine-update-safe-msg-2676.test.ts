@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionUpdate } from '../../../src/deployment/deploy-engine/update.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -61,8 +62,7 @@ describe('provisionUpdate — interpolated ids are flattened (#2676)', () => {
       resourceType: TYPE,
       desiredProperties: PROPS,
     };
-    const err = await provisionUpdate
-      .call({} as never, EVIL, change, {}, 'S')
+    const err = await provisionUpdate({} as never, EVIL, change, {}, 'S')
       .then(
         () => null,
         (e: unknown) => e as Error
@@ -127,17 +127,7 @@ describe('provisionUpdate — interpolated ids are flattened (#2676)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [EVIL]: { Type: TYPE, Properties: PROPS } },
     };
-    await (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource(EVIL, change, stateResources, 'S', template);
+    await provisionResource(engine, EVIL, change, stateResources as never, 'S', template);
 
     expect(provider.update).not.toHaveBeenCalled();
     const skips = logged.debug.mock.calls

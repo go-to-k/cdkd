@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState as StateRecord } from '../../../src/types/state.js';
@@ -125,16 +126,20 @@ describe('recreate targets apply only to the stack they were validated against (
 
   function provisionOf(engine: InstanceType<typeof DeployEngine>) {
     return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.bind(engine);
+      logicalId: string,
+      change: ResourceChange,
+      stateResources: Record<string, unknown>,
+      stackName: string,
+      template: CloudFormationTemplate
+    ) =>
+      provisionResource(
+        engine,
+        logicalId,
+        change,
+        stateResources as unknown as Record<string, StateRecord>,
+        stackName,
+        template
+      );
   }
 
   /**

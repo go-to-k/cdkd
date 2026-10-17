@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   checkedReplacementNameChange,
   deleteReplacedAfterCreate,
@@ -271,18 +272,14 @@ async function provision(
       },
     },
   };
-  const run = (
-    engine as unknown as {
-      provisionResource: (
-        logicalId: string,
-        change: ResourceChange,
-        stateResources: Record<string, unknown>,
-        stackName: string,
-        template: CloudFormationTemplate
-      ) => Promise<void>;
-    }
-  ).provisionResource.bind(engine);
-  return run('Fn', change, stateResources, 'MyStack', template).then(
+  return provisionResource(
+    engine,
+    'Fn',
+    change,
+    stateResources as unknown as Record<string, never>,
+    'MyStack',
+    template
+  ).then(
     () => null,
     (e) => (e as { cause?: unknown }).cause as Inner
   );

@@ -16,6 +16,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   type NestedChildUnaddressed,
   type NestedStackProviderContext,
@@ -23,7 +24,7 @@ import {
   withNestedStackContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange } from '../../../src/types/state.js';
+import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -160,26 +161,13 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
     engine: InstanceType<typeof DeployEngine>,
     logicalId: string,
     change: ResourceChange,
-    stateResources: Record<string, unknown>,
+    stateResources: Record<string, ResourceState>,
     counts: Counts
   ): Promise<unknown> {
     const template: CloudFormationTemplate = {
       Resources: { [logicalId]: { Type: change.resourceType, Properties: {} } },
     };
-    return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>,
-          conditions?: Record<string, boolean>,
-          counts?: Counts
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.call(
+    return provisionResource(
       engine,
       logicalId,
       change,
@@ -246,7 +234,7 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
         properties: { Parameters: { A: '1' } },
         attributes: {},
         dependencies: [],
-        provisionedBy: 'sdk',
+        provisionedBy: 'sdk' as const,
       },
     };
 
@@ -383,7 +371,7 @@ describe('DeployEngine — a nested child left resources unaddressed (#1989)', (
         properties: { Parameters: { A: '1' } },
         attributes: {},
         dependencies: [],
-        provisionedBy: 'sdk',
+        provisionedBy: 'sdk' as const,
       },
     };
 

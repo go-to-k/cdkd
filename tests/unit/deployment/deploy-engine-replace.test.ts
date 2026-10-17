@@ -27,6 +27,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 import {
@@ -257,18 +258,14 @@ describe('DeployEngine — --replace wire-through', () => {
         },
       },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    await provisionResource('MyResource', change, stateResources, 'MyStack', template);
+    await provisionResourceFn(
+      engine,
+      'MyResource',
+      change,
+      stateResources as unknown as Record<string, never>,
+      'MyStack',
+      template
+    );
     return stateResources;
   }
 

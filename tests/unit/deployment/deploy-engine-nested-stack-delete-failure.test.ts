@@ -34,12 +34,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 // Leaf module, deliberately NOT `providers/nested-stack-provider.js`: that path
 // drags destroy-runner -> register-providers -> every provider into this
 // deploy-engine unit test and closes an import cycle.
 import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
-import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange } from '../../../src/types/state.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
+import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -129,7 +130,7 @@ describe('DeployEngine DELETE branch — nested stack whose child failed (#1777)
   /** Drive the DELETE branch for a nested-stack row removed from the template. */
   async function invokeNestedDelete(
     engine: InstanceType<typeof DeployEngine>
-  ): Promise<{ run: Promise<void>; stateResources: Record<string, unknown> }> {
+  ): Promise<{ run: Promise<unknown>; stateResources: Record<string, unknown> }> {
     const change: ResourceChange = {
       logicalId: 'Child',
       changeType: 'DELETE',
@@ -145,18 +146,15 @@ describe('DeployEngine DELETE branch — nested stack whose child failed (#1777)
         dependencies: [],
       },
     };
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
     // The template no longer declares the nested stack — that IS the removal.
-    const run = provisionResource('Child', change, stateResources, 'MyStack', { Resources: {} });
+    const run = provisionResource(
+      engine,
+      'Child',
+      change,
+      stateResources as Record<string, ResourceState>,
+      'MyStack',
+      { Resources: {} }
+    );
     return { run, stateResources };
   }
 

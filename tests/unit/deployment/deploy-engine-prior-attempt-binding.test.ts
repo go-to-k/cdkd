@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   getPriorAttempts,
   isRefusedBeforeApplying,
@@ -125,17 +126,7 @@ describe('the deploy engine binds prior-attempt evidence per resource (#4355)', 
     change: ResourceChange,
     stateResources: Record<string, ResourceState>
   ): Promise<void> {
-    await (
-      engine as unknown as {
-        provisionResource: (
-          id: string,
-          c: ResourceChange,
-          s: Record<string, ResourceState>,
-          stack: string,
-          t: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource('Rule', change, stateResources, 'MyStack', TEMPLATE);
+    await provisionResource(engine, 'Rule', change, stateResources, 'MyStack', TEMPLATE);
   }
 
   const createChange = {
@@ -190,17 +181,7 @@ describe('the deploy engine binds prior-attempt evidence per resource (#4355)', 
     const engine = engineWith(p);
     const change = (id: string) => ({ ...createChange, logicalId: id }) as unknown as ResourceChange;
     const run = (id: string) =>
-      (
-        engine as unknown as {
-          provisionResource: (
-            i: string,
-            c: ResourceChange,
-            s: Record<string, ResourceState>,
-            stack: string,
-            t: CloudFormationTemplate
-          ) => Promise<void>;
-        }
-      ).provisionResource(id, change(id), {}, 'MyStack', {
+      provisionResource(engine, id, change(id), {}, 'MyStack', {
         Resources: { Rule: TEMPLATE.Resources!['Rule']!, Other: TEMPLATE.Resources!['Rule']! },
       } as unknown as CloudFormationTemplate);
 

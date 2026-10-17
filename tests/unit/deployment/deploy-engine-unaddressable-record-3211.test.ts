@@ -16,6 +16,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { prepareFinalSnapshotForDelete } from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -200,29 +201,16 @@ describe('DeployEngine — a record with no usable physicalId (go-to-k/cdkd#3211
     template: CloudFormationTemplate,
     counts: Counts
   ): Promise<unknown> {
-    return (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate,
-          parameterValues?: Record<string, unknown>,
-          conditions?: Record<string, boolean>,
-          counts?: Counts
-        ) => Promise<unknown>;
-      }
-    ).provisionResource.call(
+    return provisionResourceFn(
       engine,
       'Res',
       change,
-      stateResources,
+      stateResources as unknown as Record<string, never>,
       'MyStack',
       template,
       undefined,
       undefined,
-      counts
+      counts as never
     );
   }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { unwrittenCreateOnlyRefusal } from '../../../src/deployment/deploy-engine/update.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
@@ -170,18 +171,14 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     const template: CloudFormationTemplate = {
       Resources: { MySubnet: { Type: TYPE, Properties: desired } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    await provisionResource('MySubnet', change, stateResources, 'MyStack', template);
+    await provisionResource(
+      engine,
+      'MySubnet',
+      change,
+      stateResources as unknown as Record<string, never>,
+      'MyStack',
+      template
+    );
     return stateResources;
   }
 
@@ -330,32 +327,27 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
       true
     );
     const engine = makeEngine();
-    const err = await (
-      engine as unknown as {
-        provisionResource: (...args: unknown[]) => Promise<void>;
-      }
-    )
-      .provisionResource(
-        'MyCluster',
-        change,
-        {
-          MyCluster: {
-            physicalId: 'cluster-1',
-            resourceType: 'AWS::RDS::DBCluster',
-            properties: recorded,
-            attributes: {},
-            dependencies: [],
-            provisionedBy: 'sdk',
-            acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
-          },
+    const err = await provisionResource(
+      engine,
+      'MyCluster',
+      change,
+      {
+        MyCluster: {
+          physicalId: 'cluster-1',
+          resourceType: 'AWS::RDS::DBCluster',
+          properties: recorded,
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'sdk',
+          acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
         },
-        'MyStack',
-        { Resources: { MyCluster: { Type: 'AWS::RDS::DBCluster', Properties: recorded } } }
-      )
-      .then(
-        () => null,
-        (e: unknown) => e as Error & { cause?: Error & { code?: string } }
-      );
+      } as unknown as Record<string, never>,
+      'MyStack',
+      { Resources: { MyCluster: { Type: 'AWS::RDS::DBCluster', Properties: recorded } } }
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: Error & { code?: string } }
+    );
     expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
     expect(err!.cause?.message).toContain('AWS refuses to delete the resource while that protection is on');
     expect(callOrder).toEqual([]);
@@ -381,9 +373,8 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
         engine as unknown as { providerRegistry: { getProviderFor: ReturnType<typeof vi.fn> } }
       ).providerRegistry.getProviderFor.mockReturnValue({ provider, provisionedBy });
       const stateResources: Record<string, Record<string, unknown>> = {};
-      await (
-        engine as unknown as { provisionResource: (...args: unknown[]) => Promise<void> }
-      ).provisionResource(
+      await provisionResource(
+        engine,
         'MySubnet',
         {
           logicalId: 'MySubnet',
@@ -391,7 +382,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
           resourceType: TYPE,
           desiredProperties: DECLARED,
         } as ResourceChange,
-        stateResources,
+        stateResources as unknown as Record<string, never>,
         'MyStack',
         { Resources: { MySubnet: { Type: TYPE, Properties: DECLARED } } }
       );

@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
@@ -260,9 +261,16 @@ describe("a provider's in-update replacement whose old delete failed (#4911)", (
         } as unknown as ResourceChange,
       ],
     ]);
-    return (
-      engine as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }
-    ).executeDeployment(template, currentState, changes, {}, [['Cert'], ['Topic']], 'MyStack', template);
+    return executeDeployment(
+      engine,
+      template,
+      currentState,
+      changes,
+      {} as never,
+      [['Cert'], ['Topic']],
+      'MyStack',
+      template
+    );
   }
 
   const certOp = (): CompletedOperation => {

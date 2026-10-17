@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { printingSecretsFor } from '../../../src/deployment/deploy-engine/masking.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -222,18 +223,14 @@ describe('replacement delete wraps chain a masked cause (go-to-k/cdkd#1889)', ()
     const template: CloudFormationTemplate = {
       Resources: { Pipe: { Type: TYPE, Properties: { Name: 'my-pipe', Source: 'arn:b' } } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-    const outer = await provisionResource('Pipe', change, stateResources, STACK_NAME, template).then(
+    const outer = await provisionResourceFn(
+      engine,
+      'Pipe',
+      change,
+      stateResources as unknown as Record<string, never>,
+      STACK_NAME,
+      template
+    ).then(
       () => null,
       (e: unknown) => e as Chained
     );

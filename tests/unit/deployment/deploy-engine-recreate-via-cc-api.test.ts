@@ -30,6 +30,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -198,17 +199,14 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
     stateResources: Record<string, { physicalId: string; resourceType: string; properties: Record<string, unknown>; attributes: Record<string, unknown>; dependencies: string[]; provisionedBy?: 'sdk' | 'cc-api' }>,
     template: CloudFormationTemplate
   ): Promise<void> {
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('MyLambda', change, stateResources, STACK_NAME, template);
+    await provisionResourceFn(
+      engine,
+      'MyLambda',
+      change,
+      stateResources as unknown as Record<string, never>,
+      STACK_NAME,
+      template
+    );
   }
 
   function makeUpdateChange(): ResourceChange {

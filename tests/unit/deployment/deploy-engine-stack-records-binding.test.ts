@@ -8,6 +8,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { awaitInFlightSibling, getStackRecords } from '../../../src/deployment/stack-records-scope.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
@@ -167,11 +169,16 @@ describe('the deploy engine binds the stack records around each provider call (#
     ]);
     const engine = makeEngine();
 
-    await (
-      engine as unknown as {
-        executeDeployment: (...args: unknown[]) => Promise<unknown>;
-      }
-    ).executeDeployment(template, currentState, changes, {}, [['Kept', 'Created']], 'MyStack', template);
+    await executeDeployment(
+      engine,
+      template,
+      currentState,
+      changes,
+      {} as never,
+      [['Kept', 'Created']],
+      'MyStack',
+      template
+    );
 
     expect(seen['Created']).toEqual({
       live: ['AlsoGone', 'Gone', 'Kept', 'Retained'],
@@ -232,9 +239,16 @@ describe('the deploy engine binds the stack records around each provider call (#
       ['Gone', { logicalId: 'Gone', changeType: 'DELETE', resourceType: TYPE } as ResourceChange],
     ]);
 
-    await (
-      makeEngine() as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }
-    ).executeDeployment(template, currentState, changes, {}, [['Updating', 'Created']], 'MyStack', template);
+    await executeDeployment(
+      makeEngine(),
+      template,
+      currentState,
+      changes,
+      {} as never,
+      [['Updating', 'Created']],
+      'MyStack',
+      template
+    );
 
     expect(provider.update).toHaveBeenCalledTimes(1);
     expect(seen['Created']).toEqual({ live: ['Gone'], survivors: [] });
@@ -284,11 +298,12 @@ describe('the deploy engine binds the stack records around each provider call (#
       getDirectDependencies: (_d: unknown, id: string) => (id === 'Pending' ? ['Created'] : []),
     };
 
-    await (engine as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }).executeDeployment(
+    await executeDeployment(
+      engine,
       template,
       currentState,
       changes,
-      {},
+      {} as never,
       [['Created'], ['Pending']],
       'MyStack',
       template
@@ -348,11 +363,12 @@ describe('the deploy engine binds the stack records around each provider call (#
     const changes = new Map<string, ResourceChange>([create('A', 'a'), create('B', 'b')]);
     changes.get('A')!.desiredProperties!['FromPort'] = { 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] };
 
-    await (makeEngine() as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }).executeDeployment(
+    await executeDeployment(
+      makeEngine(),
       template,
       currentState,
       changes,
-      {},
+      {} as never,
       [['A', 'B']],
       'MyStack',
       template
@@ -407,11 +423,12 @@ describe('the deploy engine binds the stack records around each provider call (#
       ['B', { logicalId: 'B', changeType: 'CREATE', resourceType: TYPE, desiredProperties: { ...RULE } } as unknown as ResourceChange],
     ]);
 
-    await (makeEngine() as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> }).executeDeployment(
+    await executeDeployment(
+      makeEngine(),
       template,
-      { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: { A: record() }, outputs: {}, lastModified: 0 },
+      { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: { A: record() }, outputs: {}, lastModified: 0 } as unknown as StackState,
       changes,
-      {},
+      {} as never,
       [['A', 'B']],
       'MyStack',
       template
@@ -448,34 +465,24 @@ describe('the deploy engine binds the stack records around each provider call (#
       ])
     );
 
-    await (makeEngine() as unknown as { executeDeployment: (...args: unknown[]) => Promise<unknown> })
-      .executeDeployment(
-        template,
-        { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 },
-        changes,
-        {},
-        [['A', 'B']],
-        'MyStack',
-        template
-      )
-      .catch(() => undefined);
+    await executeDeployment(
+      makeEngine(),
+      template,
+      { version: 10, stackName: 'MyStack', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 } as unknown as StackState,
+      changes,
+      {} as never,
+      [['A', 'B']],
+      'MyStack',
+      template
+    ).catch(() => undefined);
 
     expect(settledTo).toBe(false);
   });
 
   it('nothing is bound for a provider call outside a deploy', async () => {
     const engine = makeEngine();
-    await (
-      engine as unknown as {
-        provisionResource: (
-          id: string,
-          c: ResourceChange,
-          s: Record<string, ResourceState>,
-          stack: string,
-          t: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource(
+    await provisionResource(
+      engine,
       'Created',
       { logicalId: 'Created', changeType: 'CREATE', resourceType: TYPE, desiredProperties: { ...RULE } } as unknown as ResourceChange,
       {},

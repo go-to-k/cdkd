@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceChange } from '../../../src/types/state.js';
+import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -132,7 +133,7 @@ describe('DeployEngine and the create-token ledger (go-to-k/cdkd#4438)', () => {
       resourceType,
       currentProperties: {},
     };
-    const stateResources: Record<string, unknown> = {
+    const stateResources: Record<string, ResourceState> = {
       Target: {
         physicalId: 'phys-target',
         resourceType,
@@ -142,19 +143,11 @@ describe('DeployEngine and the create-token ledger (go-to-k/cdkd#4438)', () => {
         deletionPolicy: 'Retain',
       },
     };
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await deployRunning(engine, () =>
-      provisionResource('Target', change, stateResources, 'MyStack', { Resources: {} })
-    );
+    await deployRunning(engine, async () => {
+      await provisionResource(engine, 'Target', change, stateResources, 'MyStack', {
+        Resources: {},
+      });
+    });
     expect(deleteProvider.delete).not.toHaveBeenCalled();
     expect(stateResources['Target']).toBeUndefined();
   }

@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -173,17 +174,14 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
     >,
     template: CloudFormationTemplate
   ): Promise<void> {
-    type ProvisionResourceFn = (
-      logicalId: string,
-      change: ResourceChange,
-      stateResources: Record<string, unknown>,
-      stackName: string,
-      template: CloudFormationTemplate
-    ) => Promise<void>;
-    const provisionResource = (
-      engine as unknown as { provisionResource: ProvisionResourceFn }
-    ).provisionResource.bind(engine);
-    await provisionResource('MyLambda', change, stateResources, STACK_NAME, template);
+    await provisionResourceFn(
+      engine,
+      'MyLambda',
+      change,
+      stateResources as unknown as Record<string, never>,
+      STACK_NAME,
+      template
+    );
   }
 
   function makeUpdateChange(): ResourceChange {

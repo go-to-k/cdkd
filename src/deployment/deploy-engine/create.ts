@@ -68,16 +68,9 @@ import {
   noEchoPositionSources,
 } from './noecho.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    provisionCreate: OmitThisParameter<typeof provisionCreate>;
-  }
-}
-
-/** The `CREATE` arm of `DeployEngine.provisionResourceBody` (#4200 phase 3a). */
+/** The `CREATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionCreate(
-  this: DeployEngine,
+  engine: DeployEngine,
   logicalId: string,
   change: ResourceChange,
   stateResources: Record<string, ResourceState>,
@@ -94,7 +87,7 @@ export async function provisionCreate(
 
   // Resolve intrinsic functions in properties
   const context = buildResolverContext(
-    this.resolverContextDeps(),
+    engine.resolverContextDeps(),
     {
       template: template!,
       resources: stateResources,
@@ -128,51 +121,57 @@ export async function provisionCreate(
   // this resource's own map, empty, which every masking site treats
   // identically to an absent entry.
   if (context.recordedSecretValues) {
-    this.secretsRun.perResourceSecrets.set(logicalId, context.recordedSecretValues);
+    engine.secretsRun.perResourceSecrets.set(logicalId, context.recordedSecretValues);
   }
   // go-to-k/cdkd#4043 §3.3: what a HELD producer's declared `NoEcho`
   // attributes serve this resolution, read back from AWS (never persisted).
   const noEchoOverrides = await noEchoAttributeOverridesFor(
-    this.noEchoRun,
-    this.noEchoDeps(),
+    engine.noEchoRun,
+    engine.noEchoDeps(),
     desiredProps,
     stateResources,
     stackName
   );
   if (noEchoOverrides !== undefined) context.noEchoAttributeOverrides = noEchoOverrides;
-  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(this.secretsRun, logicalId));
-  const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
+  printNestedStackReadsOnly(context, resourceType, secretNameBagFor(engine.secretsRun, logicalId));
+  const resolvedProps = (await engine.resolver.resolve(desiredProps, context)) as Record<
     string,
     unknown
   >;
   // go-to-k/cdkd#3869: the name this deploy resolved, registered before the
   // provider creates (and prints) it; there is no physical id yet.
-  noteSecretNamedRecord(this.secretsRun, logicalId, { resourceType, properties: resolvedProps });
+  noteSecretNamedRecord(engine.secretsRun, logicalId, { resourceType, properties: resolvedProps });
   // Issue #2274: before ANY of the resolved bag reaches a provider, refuse
   // if the resolution had to serve an attribute a previous deploy
   // redacted. See the helper — the value would be the literal `***`.
   refuseRedactedAttributeReads(logicalId, resourceType, context);
   // Capture the UNRESOLVED bag as the redaction position source (#1904).
-  this.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
+  engine.secretsRun.perResourceTemplateProps.set(logicalId, desiredProps);
   // go-to-k/cdkd#4543: the input fingerprint of each property the save may
   // record as the mask, resolved against this deploy's state.
   const fingerprintSources =
     template &&
-    maskedInputSources(this.resolverContextDeps(), template, stateResources, conditions, stackName);
+    maskedInputSources(
+      engine.resolverContextDeps(),
+      template,
+      stateResources,
+      conditions,
+      stackName
+    );
   if (fingerprintSources !== undefined) {
-    this.secretsRun.perResourceInputFingerprints.set(
+    engine.secretsRun.perResourceInputFingerprints.set(
       logicalId,
       await maskedInputFingerprintsFor(
         possiblyMaskedKeys(resolvedProps, [
           context.recordedSecretValues,
-          this.secretsRun.fingerprintNoEchoValues,
-          this.options.inheritedSecrets,
+          engine.secretsRun.fingerprintNoEchoValues,
+          engine.options.inheritedSecrets,
         ]),
         inputFingerprinter(desiredProps, fingerprintSources)
       )
     );
   }
-  this.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
+  engine.secretsRun.perResourceResolvedType.set(logicalId, resourceType);
   // Named so the provider call below can bind the SAME bag into its
   // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
   // path. `?? new Map()` rather than a conditional: `buildResolverContext`
@@ -190,7 +189,7 @@ export async function provisionCreate(
     recordPassedNoEchoParameters(
       createSecrets,
       desiredProps['Parameters'],
-      noEchoPositionSources(this.noEchoRun, stateResources)
+      noEchoPositionSources(engine.noEchoRun, stateResources)
     );
   }
   if (fingerprintSources !== undefined && resourceType === 'AWS::CloudFormation::Stack') {
@@ -210,11 +209,11 @@ export async function provisionCreate(
   // associations off the same object. No-op for every other type.
   recordNestedStackParameterExpressions(createSecrets, resourceType, resolvedProps, desiredProps);
 
-  auditResolvedAssetReferences(this.options, logicalId, resourceType, resolvedProps);
+  auditResolvedAssetReferences(engine.options, logicalId, resourceType, resolvedProps);
 
   // #1198: snapshot the attempted (resolved) properties so a failed
   // CREATE can be journaled with what it tried to apply.
-  this.attemptedResolvedProps.set(logicalId, resolvedProps);
+  engine.attemptedResolvedProps.set(logicalId, resolvedProps);
 
   // #614 routing: consult the registry with the resolved properties.
   // If the SDK provider would silent-drop a top-level key (and the
@@ -222,21 +221,21 @@ export async function provisionCreate(
   // we auto-route via Cloud Control API. The chosen `provisionedBy`
   // is persisted on state so the next update / delete uses the
   // same layer.
-  const createDecision = this.providerRegistry.getProviderFor({
+  const createDecision = engine.providerRegistry.getProviderFor({
     resourceType,
     properties: resolvedProps,
   });
   const createProvider = createDecision.provider;
   const createProps =
     createDecision.provisionedBy === 'cc-api'
-      ? preparePropertiesForCcApi(this.providerRegistry, resourceType, resolvedProps, logicalId)
+      ? preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
       : resolvedProps;
 
   // go-to-k/cdkd#3252: an earlier run's CREATE of this logical id that cdkd
   // stopped waiting for, and that completed in AWS, is TAKEN OVER instead of
   // creating another. Before the name refusals below, which would refuse the
   // very resource that create made.
-  const resumed = await resumeAbandonedCreate.call(this, {
+  const resumed = await resumeAbandonedCreate(engine, {
     logicalId,
     resourceType,
     stackName,
@@ -248,12 +247,12 @@ export async function provisionCreate(
   });
   let result: Awaited<ReturnType<typeof createProvider.create>>;
   if (resumed !== undefined) {
-    this.generatedNameGuard?.noteSent(logicalId);
+    engine.generatedNameGuard?.noteSent(logicalId);
     result = resumed;
   } else {
     // go-to-k/cdkd#4705: likewise a resource already holding the name cdkd
     // GENERATES for it, unless this stack's own evidence names that resource.
-    await refuseUnlicensedGeneratedName.call(this, {
+    await refuseUnlicensedGeneratedName(engine, {
       logicalId,
       resourceType,
       stackName,
@@ -263,7 +262,7 @@ export async function provisionCreate(
 
     // go-to-k/cdkd#4180: a create that hands back or overwrites a resource
     // already holding its explicit name must not run onto one.
-    await refuseTakenCreateName.call(this, {
+    await refuseTakenCreateName(engine, {
       logicalId,
       resourceType,
       stackName,
@@ -276,9 +275,9 @@ export async function provisionCreate(
 
     // go-to-k/cdkd#4705: which intents the deploy's end keeps (a create sent
     // whose outcome is unknown) and drops (not sent, returned, or rejected).
-    this.generatedNameGuard?.noteSent(logicalId);
+    engine.generatedNameGuard?.noteSent(logicalId);
     try {
-      result = await this.withRetry(
+      result = await engine.withRetry(
         () =>
           // Issue #1903: the SAME bag, bound to this call's async chain so
           // `NestedStackProvider` can seed it into the child engine it
@@ -302,19 +301,19 @@ export async function provisionCreate(
     } catch (error) {
       // go-to-k/cdkd#4705: a create rejected outright made nothing, so its
       // intent is dropped at the deploy's end; an unknown outcome keeps it.
-      this.generatedNameGuard?.noteFailed(logicalId, error);
+      engine.generatedNameGuard?.noteFailed(logicalId, error);
       throw error;
     }
   }
 
-  this.generatedNameGuard?.noteReturned(logicalId);
+  engine.generatedNameGuard?.noteReturned(logicalId);
 
   // Issue #2274: BEFORE the record is built, so the needles exist by the
   // time anything is persisted, and before any dependent resolves against
   // this resource's fresh attributes.
   registerNoEchoAttributes(
-    this.secretsRun,
-    this.maskingDeps(),
+    engine.secretsRun,
+    engine.maskingDeps(),
     logicalId,
     result,
     createSecrets,
@@ -356,12 +355,12 @@ export async function provisionCreate(
     ...templateAttrs,
     provisionedBy: createDecision.provisionedBy,
   };
-  this.recordInlinePolicyWrite(logicalId, 'create');
+  engine.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: does the provider echo a create-only value a `NoEcho`
   // parameter fed exactly? Read once, against the masked record.
   await establishNoEchoEchoFidelity(
-    this.noEchoRun,
-    this.noEchoDeps(),
+    engine.noEchoRun,
+    engine.noEchoDeps(),
     logicalId,
     stateResources[logicalId]!,
     resolvedProps,
@@ -371,9 +370,10 @@ export async function provisionCreate(
 
   const createCaptureSiblings = await buildObservedCaptureSiblings(
     {
-      options: this.options,
-      buildResolverContext: (...args) => buildResolverContext(this.resolverContextDeps(), ...args),
-      resolver: this.resolver,
+      options: engine.options,
+      buildResolverContext: (...args) =>
+        buildResolverContext(engine.resolverContextDeps(), ...args),
+      resolver: engine.resolver,
     },
     resourceType,
     logicalId,
@@ -384,7 +384,7 @@ export async function provisionCreate(
     parameterValues,
     conditions
   );
-  this.observedCapture.kickOffObservedCapture(
+  engine.observedCapture.kickOffObservedCapture(
     createProvider,
     logicalId,
     result.physicalId,
@@ -398,7 +398,7 @@ export async function provisionCreate(
   if (progress) progress.current++;
   const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
   renderer.removeTask(logicalId);
-  this.logger.info(
+  engine.logger.info(
     safeMsg`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`
   );
   return;
@@ -415,7 +415,7 @@ export async function provisionCreate(
  * take the resource over and record it as this stack's.
  */
 async function refuseUnlicensedGeneratedName(
-  this: DeployEngine,
+  engine: DeployEngine,
   input: {
     logicalId: string;
     resourceType: string;
@@ -425,11 +425,11 @@ async function refuseUnlicensedGeneratedName(
   }
 ): Promise<void> {
   const { logicalId, resourceType } = input;
-  const asked = this.generatedNameGuard?.candidate(logicalId);
+  const asked = engine.generatedNameGuard?.candidate(logicalId);
   // Routed to Cloud Control at create time after all: its handlers refuse an
   // existing name themselves.
   if (asked === undefined || input.createdVia === 'cc-api') return;
-  const verdict = await this.generatedNameGuard!.admit(logicalId, input.resolvedProps);
+  const verdict = await engine.generatedNameGuard!.admit(logicalId, input.resolvedProps);
   if (verdict === undefined) return;
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
   const named = `the cdkd-generated ${asked.property ?? 'name'} ${displaySafe(asked.name)}`;
@@ -446,7 +446,7 @@ async function refuseUnlicensedGeneratedName(
     case 'licensed':
       return;
     case 'unchecked':
-      this.logger.warn(
+      engine.logger.warn(
         safeMsg`${subject} is created with ${named} without checking whether another resource already ` +
           safeMsg`holds it: the lookup was refused (${describeAwsFailure(verdict.error).summary}). ` +
           `Grant this identity the type's Describe / List permission to have cdkd refuse ` +
@@ -478,7 +478,7 @@ async function refuseUnlicensedGeneratedName(
                   hole: 'logicalId=physicalId',
                 },
               ],
-              recoveryCommandFlags(this.options.refusalRecovery).flags
+              recoveryCommandFlags(engine.options.refusalRecovery).flags
             ).command
           }\``;
       if (verdict.ownIntent !== undefined) {
@@ -534,7 +534,7 @@ async function refuseUnlicensedGeneratedName(
  * between them is not seen.
  */
 async function refuseTakenCreateName(
-  this: DeployEngine,
+  engine: DeployEngine,
   input: {
     logicalId: string;
     resourceType: string;
@@ -590,7 +590,7 @@ async function refuseTakenCreateName(
   // Step Functions and SNS are looked up by the ARN the name would take.
   let knownPhysicalId: string | undefined;
   const byArn = ['AWS::SNS::Topic', 'AWS::StepFunctions::StateMachine'].includes(resourceType)
-    ? createLookupArn(resourceType, question.desiredName, await getAccountInfo(this.stackRegion))
+    ? createLookupArn(resourceType, question.desiredName, await getAccountInfo(engine.stackRegion))
     : undefined;
   if (byArn !== undefined && 'unbuildable' in byArn) {
     return refuse(
@@ -607,13 +607,13 @@ async function refuseTakenCreateName(
 
   let found: Awaited<ReturnType<NonNullable<ResourceProvider['import']>>>;
   try {
-    found = await this.withRetry(
+    found = await engine.withRetry(
       () =>
         lookup({
           logicalId,
           resourceType,
           stackName: input.stackName,
-          region: this.stackRegion,
+          region: engine.stackRegion,
           // The name as a STRING: a provider's lookup reads only a string
           // name, so a numeric one (which the create sends as its decimal
           // spelling) would otherwise look up nothing and read as free.
@@ -729,7 +729,7 @@ async function refuseTakenCreateName(
  * success (`orphanUntakenResumes`). `undefined` means "create as usual".
  */
 async function resumeAbandonedCreate(
-  this: DeployEngine,
+  engine: DeployEngine,
   args: {
     logicalId: string;
     resourceType: string;
@@ -742,7 +742,7 @@ async function resumeAbandonedCreate(
   }
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>> | undefined> {
   const { logicalId, resourceType } = args;
-  const resumed = this.resumedCreates.get(logicalId);
+  const resumed = engine.resumedCreates.get(logicalId);
   if (resumed === undefined || resumed.taken || resumed.resourceType !== resourceType) {
     return undefined;
   }
@@ -759,14 +759,16 @@ async function resumeAbandonedCreate(
     resourceType,
     attemptedProperties: args.resolvedProps,
   };
-  const [redacted] = redactOperationsForJournal(this.rollbackDeps(), [probe]) as FailedOperation[];
+  const [redacted] = redactOperationsForJournal(engine.rollbackDeps(), [
+    probe,
+  ]) as FailedOperation[];
   const sentNow = redacted?.attemptedProperties;
   // As JSON, which is what the journal holds: prototypes and undefined
   // members do not survive the write, so they do not count here either.
   const asJson = (value: unknown): unknown =>
     value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as unknown);
   if (!isDeepStrictEqual(asJson(sentNow), asJson(resumed.attemptedProperties))) {
-    this.logger.warn(
+    engine.logger.warn(
       safeMsg`${logicalId}: the template changed since the CREATE cdkd stopped waiting for, so ` +
         'this deploy creates the resource again; the one that CREATE made is kept in the rollback ' +
         'journal as a resource the failed deploy created.'
@@ -777,7 +779,7 @@ async function resumeAbandonedCreate(
   try {
     // Through the engine's retry, like the create it stands in for: a
     // throttled read retries rather than failing the deploy.
-    result = await this.withRetry(
+    result = await engine.withRetry(
       () =>
         reader.resumeCreatedResource!(
           logicalId,
@@ -799,7 +801,7 @@ async function resumeAbandonedCreate(
     if ((error as { resumedResourceGone?: unknown }).resumedResourceGone !== true) throw error;
     // Nothing is left to orphan: the success settle drops the request.
     resumed.gone = true;
-    this.logger.warn(
+    engine.logger.warn(
       safeMsg`${logicalId}: the resource the earlier CREATE made no longer exists; creating it as usual.`
     );
     return undefined;
@@ -817,10 +819,10 @@ async function resumeAbandonedCreate(
         physicalId: resumed.identifier,
         attemptedProperties: resumed.attemptedProperties,
       },
-      this.logger,
+      engine.logger,
       resumed.identifier
     ) ?? 'the resource';
-  this.logger.info(
+  engine.logger.info(
     safeMsg`${logicalId}: took over ${shown}, the resource the earlier CREATE made, instead of ` +
       'creating another.'
   );

@@ -1,12 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
-import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 /**
- * `DeployEngine` (issue #4200) and `IntrinsicFunctionResolver` (issue #4337)
- * method groups live in mixin modules: a `declare module '../<host>.js'`
+ * `IntrinsicFunctionResolver` (issue #4337) method groups live in mixin
+ * modules: a `declare module '../<host>.js'`
  * augmentation tells the type checker the method exists, and the host module
  * assigns the mixin's function onto the class prototype. A MISSING assignment therefore typechecks clean and
  * fails only when the method is first called at runtime, which for a rare
@@ -16,6 +15,10 @@ import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-fun
  * the implementations' signatures: a member declared there is exactly what the
  * checker will accept a call to. The modules are found by that header anywhere
  * under `src/deployment/`, so a later phase is checked without editing this file.
+ *
+ * `DeployEngine` (issue #4200) no longer has mixins: its split-out groups are
+ * plain functions taking `engine` (or their deps) explicitly, so a missing
+ * wiring is a type error and needs no row here.
  */
 const DEPLOYMENT_DIR = fileURLToPath(new URL('../../../src/deployment/', import.meta.url));
 
@@ -25,28 +28,6 @@ const DEPLOYMENT_DIR = fileURLToPath(new URL('../../../src/deployment/', import.
  * members so a parser that silently matches nothing cannot pass.
  */
 const HOSTS = [
-  {
-    module: 'deploy-engine',
-    cls: DeployEngine,
-    files: [
-      'deploy-engine/create.ts',
-      'deploy-engine/deploy-flow.ts',
-      'deploy-engine/execute.ts',
-      'deploy-engine/provision.ts',
-      'deploy-engine/update-in-place.ts',
-      'deploy-engine/update-replace.ts',
-      'deploy-engine/update.ts',
-    ],
-    members: [
-      'provisionCreate',
-      'provisionUpdate',
-      'updateByReplacement',
-      'updateInPlace',
-      'provisionResource',
-      'executeDeployment',
-      'doDeployWithPrefetch',
-    ],
-  },
   {
     module: 'intrinsic-function-resolver',
     cls: IntrinsicFunctionResolver,
@@ -111,7 +92,7 @@ function mixinModules(host: (typeof HOSTS)[number]): Array<{ file: string; names
     });
 }
 
-describe.each(HOSTS)('$module mixin modules are wired onto the prototype (#4200, #4337)', (host) => {
+describe.each(HOSTS)('$module mixin modules are wired onto the prototype (#4337)', (host) => {
   it('finds the mixin modules, and every augmentation declares at least one member', () => {
     const modules = mixinModules(host);
     expect(modules.map((m) => m.file)).toEqual(expect.arrayContaining([...host.files]));

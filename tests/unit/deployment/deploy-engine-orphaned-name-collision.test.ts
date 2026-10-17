@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import { withStackName } from '../../../src/provisioning/resource-name.js';
 import { markAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
@@ -161,20 +162,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [id]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-
     await withStackName(stackName, () =>
-      provisionResource(id, change, {}, stackName, template).then(
+      provisionResource(engine, id, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
         },
@@ -344,20 +333,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [LOGICAL]: { Type: REPLACED_TYPE, Properties: { Source: 'arn:b' } } },
     };
-    const provisionResource = (
-      engine as unknown as {
-        provisionResource: (
-          logicalId: string,
-          change: ResourceChange,
-          stateResources: Record<string, unknown>,
-          stackName: string,
-          template: CloudFormationTemplate
-        ) => Promise<void>;
-      }
-    ).provisionResource.bind(engine);
-
     await withStackName(STACK, () =>
-      provisionResource(LOGICAL, change, stateResources, STACK, template).then(
+      provisionResource(engine, LOGICAL, change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the replacement collision refusal');
         },
