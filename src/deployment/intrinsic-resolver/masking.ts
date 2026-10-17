@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
@@ -201,8 +202,8 @@ export function abandonedUnit(
   const raw = error instanceof Error ? error.message : String(error);
   return {
     unit,
-    subject: this.displayMasked(subject, context),
-    message: this.displayMasked(preRedact === undefined ? raw : preRedact(raw), context),
+    subject: displayMasked(this, subject, context),
+    message: displayMasked(this, preRedact === undefined ? raw : preRedact(raw), context),
     error,
     carriedDynamicReference: carriesDynamicReference(rawInput),
     carriedFetchableReference: carriesFetchableDynamicReference(rawInput),
@@ -575,7 +576,7 @@ export function refuseSecretAssembledReference(
   if (!this.tokenAssembledForRecording(fullMatch, tokenLogText, context)) return;
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Refusing to resolve ${this.displayMasked(tokenLogText, context)}: the reference was ` +
+      `Refusing to resolve ${displayMasked(this, tokenLogText, context)}: the reference was ` +
         `assembled from a secret value and resolves to a secret, so recording it would write ` +
         `that value into state inside the reference. Build the reference name from non-secret values.`
     )

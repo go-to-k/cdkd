@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import { isSettledInstanceState } from '../../provisioning/ec2-instance-state.js';
 import type { ResourceState } from '../../types/state.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -179,8 +180,8 @@ export async function constructAttributeForComputeTypes(
         if (!/^sg-[0-9a-f]+$/.test(physicalId)) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, VpcId] for AWS::EC2::SecurityGroup: the ` +
-                `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
+              `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, VpcId] for AWS::EC2::SecurityGroup: the ` +
+                `state record's physical id ${quotedRender(displayMasked(this, physicalId, context).slice(0, 64), '"')} ` +
                 `is not a security group id (sg-<hex>), so cdkd will not look it up. Repair the ` +
                 `record (cdkd import, or re-create the security group) and deploy again.`
             )
@@ -190,7 +191,7 @@ export async function constructAttributeForComputeTypes(
         if (cachedVpcId !== undefined) return cachedVpcId;
         let vpcId: string | undefined;
         try {
-          const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
+          const ec2 = this.clients.clientsForRegion(this.explicitRegion).ec2;
           const resp = await ec2.send(
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
           );
@@ -284,7 +285,7 @@ export async function constructAttributeForComputeTypes(
           // Region-sensitive: an instance id only resolves in its own region,
           // and a foreign-region client answers `InvalidInstanceID.NotFound`,
           // which lands in the catch below (issue #1957).
-          const clients = this.clientsForRegion(this.explicitRegion);
+          const clients = this.clients.clientsForRegion(this.explicitRegion);
           const response = await clients.ec2.send(
             new DescribeInstancesCommand({ InstanceIds: [physicalId] })
           );
@@ -357,7 +358,7 @@ export async function constructAttributeForComputeTypes(
           resourceType,
           physicalId,
           context,
-          observed: `DescribeInstances reports no ${this.displayMasked(attributeName, context)} yet (${observedState})`,
+          observed: `DescribeInstances reports no ${displayMasked(this, attributeName, context)} yet (${observedState})`,
           remedy: settled
             ? 'Check the instance in the console; a terminated or stopped instance has no such attribute to serve.'
             : 'Deploy without --no-wait so the instance is running before its attributes are read, or reference the attribute from a later deploy once it is.',
@@ -387,7 +388,7 @@ export async function constructAttributeForComputeTypes(
       try {
         // Region-sensitive for the same reason as `DescribeInstances` above:
         // a launch-template id is regional (issue #1957).
-        const clients = this.clientsForRegion(this.explicitRegion);
+        const clients = this.clients.clientsForRegion(this.explicitRegion);
         const response = await clients.ec2.send(
           new DescribeLaunchTemplatesCommand({ LaunchTemplateIds: [physicalId] })
         );
@@ -404,7 +405,7 @@ export async function constructAttributeForComputeTypes(
         // beside it already was: a state-record id is not always
         // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
         this.logger.warn(
-          `DescribeLaunchTemplates(${this.displayMasked(physicalId, context)}) failed for ${this.displayMasked(attributeName, context)}: ${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+          `DescribeLaunchTemplates(${displayMasked(this, physicalId, context)}) failed for ${displayMasked(this, attributeName, context)}: ${displayMasked(this, err instanceof Error ? err.message : String(err), context)}`
         );
       }
       // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -445,8 +446,8 @@ export async function constructAttributeForComputeTypes(
         if (!/^[A-Z0-9]+$/.test(physicalId)) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DomainName] for AWS::CloudFront::Distribution: the ` +
-                `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
+              `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, DomainName] for AWS::CloudFront::Distribution: the ` +
+                `state record's physical id ${quotedRender(displayMasked(this, physicalId, context).slice(0, 64), '"')} ` +
                 `is not a distribution id (upper-case alphanumerics), so cdkd will not look it up. Repair the ` +
                 `record (cdkd import, or re-create the distribution) and deploy again.`
             )
@@ -458,7 +459,7 @@ export async function constructAttributeForComputeTypes(
         try {
           // CloudFront is a global service; `AwsClients.cloudFront` answers
           // for any region, so the ambient / `--region` bag is the right one.
-          const cloudFront = this.clientsForRegion(this.explicitRegion).cloudFront;
+          const cloudFront = this.clients.clientsForRegion(this.explicitRegion).cloudFront;
           const resp = await cloudFront.send(new GetDistributionCommand({ Id: physicalId }));
           domainName = resp.Distribution?.DomainName;
         } catch (err) {
@@ -523,9 +524,9 @@ export async function constructAttributeForComputeTypes(
       // with two literals, so it carries no control character (issue #3441).
       throw markNonRetryable(
         new IntrinsicResolutionRefusalError(
-          `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${resourceType}: ` +
+          `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${resourceType}: ` +
             `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
-            `and the physical id ${quotedRender(this.displayMasked(physicalId, context), '"')} is a name, not a VPC id, so cdkd ` +
+            `and the physical id ${quotedRender(displayMasked(this, physicalId, context), '"')} is a name, not a VPC id, so cdkd ` +
             `refuses to substitute it. ` +
             `${this.staleRecordRemedy(vpcIdHealOutcome, context)} Referencing the VPC directly also works.`
         )

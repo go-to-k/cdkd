@@ -31,8 +31,10 @@ const HOSTS = [
   {
     module: 'intrinsic-function-resolver',
     cls: IntrinsicFunctionResolver,
+    // `clients.ts` / `cfn-fallback.ts` (collaborator classes) and
+    // `stack-state.ts` / `masking-display.ts` / `parameter-secrets.ts` (plain
+    // functions) no longer augment the class, so they are not listed.
     files: [
-      'intrinsic-resolver/cfn-fallback.ts',
       'intrinsic-resolver/cross-stack.ts',
       'intrinsic-resolver/dynamic-refs.ts',
       'intrinsic-resolver/dynamic-ref-lookups.ts',
@@ -41,13 +43,9 @@ const HOSTS = [
       'intrinsic-resolver/getatt-heal.ts',
       'intrinsic-resolver/getatt-refusals.ts',
       'intrinsic-resolver/masking.ts',
-      'intrinsic-resolver/masking-display.ts',
       'intrinsic-resolver/params-conditions.ts',
-      'intrinsic-resolver/parameter-secrets.ts',
       'intrinsic-resolver/refs.ts',
-      'intrinsic-resolver/clients.ts',
       'intrinsic-resolver/stack-output.ts',
-      'intrinsic-resolver/stack-state.ts',
       'intrinsic-resolver/string-functions.ts',
       'intrinsic-resolver/sub.ts',
     ],
@@ -59,17 +57,15 @@ const HOSTS = [
       'resolveSecretsManagerReference',
       'resolveImportValue',
       'resolveGetStackOutput',
-      'lookupCfnExport',
-      'getCrossAccountStackState',
+      'positionalNameMask',
       'evaluateConditions',
-      'refuseCoercedInheritedSecret',
+      'resolveKeyUnit',
       'resolveRef',
-      'clientsForRegion',
       'resolveDynamicReferencesWithLogTwin',
       'sendWithThrottleRetry',
       'resolveSub',
       'resolveIf',
-      'displayMasked',
+      'maskSecretsRaw',
     ],
   },
 ] as const;

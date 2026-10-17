@@ -740,10 +740,7 @@ describe('per-resolver client and lookup caches are keyed by identity too (#3588
 
   it('region-scoped client bags are derived per identity', () => {
     const resolver = new IntrinsicFunctionResolver('eu-west-1');
-    const scoped = (): AwsClients =>
-      (resolver as unknown as { clientsForRegion(r: string): AwsClients }).clientsForRegion(
-        'eu-west-1'
-      );
+    const scoped = (): AwsClients => resolver.clients.clientsForRegion('eu-west-1');
 
     const underA = runWithStackAwsClients(clientsFor(A), scoped);
     const underB = runWithStackAwsClients(clientsFor(B), scoped);

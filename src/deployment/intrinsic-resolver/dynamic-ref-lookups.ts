@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked } from './masking-display.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import {
@@ -143,19 +144,19 @@ export async function resolveSecretsManagerReference(
   // message reaches only the substring arm, where a sub-floor plaintext
   // prints in full. Same rule `masked-retry-logger.ts` states for a
   // provider's wrapped `error.message`.
-  const loggedSecretId = this.displayMasked(nameLogText(secretId), context);
-  const loggedJsonKey = this.displayMasked(nameLogText(jsonKey), context);
+  const loggedSecretId = displayMasked(this, nameLogText(secretId), context);
+  const loggedJsonKey = displayMasked(this, nameLogText(jsonKey), context);
 
   this.logger.debug(
     `Resolving dynamic reference: secretsmanager:${loggedSecretId}:SecretString:${loggedJsonKey}:` +
-      `${this.displayMasked(nameLogText(versionStage), context)}:` +
-      `${this.displayMasked(nameLogText(versionId), context)}`
+      `${displayMasked(this, nameLogText(versionStage), context)}:` +
+      `${displayMasked(this, nameLogText(versionId), context)}`
   );
 
   // Region-sensitive, and the reason issue #1957 is a security defect rather
   // than only a correctness one: the same secret NAME in two regions is two
   // different credentials.
-  const client = this.clientsForRegion(this.explicitRegion).secretsManager;
+  const client = this.clients.clientsForRegion(this.explicitRegion).secretsManager;
 
   const command = new GetSecretValueCommand({
     SecretId: secretId,
@@ -171,8 +172,8 @@ export async function resolveSecretsManagerReference(
     this.namedRequestMasks(
       [
         [secretId, loggedSecretId],
-        [versionStage, this.displayMasked(nameLogText(versionStage), context)],
-        [versionId, this.displayMasked(nameLogText(versionId), context)],
+        [versionStage, displayMasked(this, nameLogText(versionStage), context)],
+        [versionId, displayMasked(this, nameLogText(versionId), context)],
       ],
       context
     )
@@ -256,7 +257,7 @@ export async function resolveSecretsManagerReference(
  *   failure on the next attempt, and the retry does not make that safe. Issue
  *   [#1957](https://github.com/go-to-k/cdkd/issues/1957) NARROWED this rather
  *   than removing it: a lookup whose region differs from the ambient one now
- *   runs on {@link clientsForRegion}'s own clients, which no sibling stack can
+ *   runs on `ResolverClients.clientsForRegion`'s own clients, which no sibling stack can
  *   destroy because nothing else in the process holds a reference to them. A
  *   sibling in the SAME region still shares the ambient instance, so the
  *   window survives exactly where the two stacks agree on the region.
@@ -340,7 +341,7 @@ export async function resolveSSMReference(
   // The name as the TOKEN spells it, also for a pinned read: version ids
   // reach debug lines only (go-to-k/cdkd#4847), and the request's own name
   // is masked to this spelling in any error.
-  const loggedParameterName = this.displayMasked(nameLogText(namedParameter), context);
+  const loggedParameterName = displayMasked(this, nameLogText(namedParameter), context);
 
   // not-in-class(service): the typed `service: 'ssm' | 'ssm-secure'` PARAMETER of resolveSSMReference, not the text parsed off an assembled reference.
   this.logger.debug(
@@ -350,7 +351,7 @@ export async function resolveSSMReference(
   // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
   // method reports back. A region-B `SecureString` classified against a
   // region-A `String` namesake is persisted in PLAINTEXT (issue #1957).
-  const client = this.clientsForRegion(this.explicitRegion).ssm;
+  const client = this.clients.clientsForRegion(this.explicitRegion).ssm;
 
   const command = new GetParameterCommand({
     Name: parameterName,
@@ -420,7 +421,7 @@ export async function resolveSSMReference(
     const reported =
       paramType === undefined
         ? '(absent)'
-        : quotedRender(this.displayMasked(String(paramType), context), "'");
+        : quotedRender(displayMasked(this, String(paramType), context), "'");
     // Masked like the debug echo above (issue #2728), and per RAW VALUE
     // since issue #2827: the name may have been assembled from a value this
     // pass resolved out of a secret.

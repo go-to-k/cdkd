@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
@@ -160,14 +161,14 @@ export async function constructAttributeForCoreTypes(
           // lookup and read `resolverRegion`, whose `AWS_REGION` /
           // `us-east-1` substitution is the FAIL-OPEN shape issue #1957
           // removed from the dynamic-reference lookups.
-          const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
+          const ec2 = this.clients.clientsForRegion(this.explicitRegion).ec2;
           const maxAttempts = 15;
           // Through the builder (issue #3479): the id is read off the STATE
           // RECORD, which is not always AWS-assigned (`cdkd import --resource
           // <id>=<physicalId>`, a record another binary or a hand edit
           // wrote), so being an id answers the secret question, not the
           // control-character one. Bound once for the five renders below.
-          const loggedId = this.displayMasked(physicalId, context);
+          const loggedId = displayMasked(this, physicalId, context);
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
             const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -176,7 +177,7 @@ export async function constructAttributeForCoreTypes(
               .map((a) => a.Ipv6CidrBlock);
             if (blocks.length > 0) {
               this.logger.debug(
-                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${this.displayMasked(JSON.stringify(this.maskValueLeaves(blocks, context)), context)}`
+                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${displayMasked(this, JSON.stringify(maskValueLeaves(this, blocks, context)), context)}`
               );
               return blocks;
             }
@@ -206,7 +207,7 @@ export async function constructAttributeForCoreTypes(
           // Rebuilt here rather than reusing `loggedId`, which the `try`
           // scopes away.
           this.logger.warn(
-            `Failed to fetch VPC Ipv6CidrBlocks for ${this.displayMasked(physicalId, context)}: ${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(this, physicalId, context)}: ${displayMasked(this, error instanceof Error ? error.message : String(error), context)}`
           );
           return [];
         }
@@ -232,8 +233,8 @@ export async function constructAttributeForCoreTypes(
         if (!/^vpc-[0-9a-f]+$/.test(physicalId)) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(this.displayMasked(physicalId, context).slice(0, 64), '"')} ` +
+              `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
+                `state record's physical id ${quotedRender(displayMasked(this, physicalId, context).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )
@@ -243,7 +244,7 @@ export async function constructAttributeForCoreTypes(
         if (cachedGroupId !== undefined) return cachedGroupId;
         let groupId: string | undefined;
         try {
-          const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
+          const ec2 = this.clients.clientsForRegion(this.explicitRegion).ec2;
           const resp = await ec2.send(
             new DescribeSecurityGroupsCommand({
               Filters: [

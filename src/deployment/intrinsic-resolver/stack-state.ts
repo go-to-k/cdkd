@@ -1,4 +1,3 @@
-import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -9,15 +8,6 @@ import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../../utils
 import { type ResolverContext } from './support.js';
 import { S3Client } from '@aws-sdk/client-s3';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    getSameAccountStackState: OmitThisParameter<typeof getSameAccountStackState>;
-    /** @internal */
-    getCrossAccountStackState: OmitThisParameter<typeof getCrossAccountStackState>;
-  }
-}
-
 /**
  * Read the producer's state from the SAME AWS account (no RoleArn).
  *
@@ -27,7 +17,6 @@ declare module '../intrinsic-function-resolver.js' {
  * account-scoped (not region-scoped).
  */
 export async function getSameAccountStackState(
-  this: IntrinsicFunctionResolver,
   stackName: string,
   region: string,
   context: ResolverContext
@@ -64,7 +53,6 @@ export async function getSameAccountStackState(
  * consumer's normal credentials).
  */
 export async function getCrossAccountStackState(
-  this: IntrinsicFunctionResolver,
   roleArn: string,
   stackName: string,
   region: string,

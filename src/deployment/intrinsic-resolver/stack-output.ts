@@ -1,4 +1,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { describeAvailableOutputs } from './cfn-fallback.js';
+import { displayLeaf, displayMasked, displayMaskedIdent } from './masking-display.js';
+import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
 import { hasReadableOutputs } from '../../state/malformed-resources-bag.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
@@ -178,7 +181,7 @@ export async function resolveGetStackOutput(
       throw markNonRetryable(
         new Error(
           // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
-          `Fn::GetStackOutput: ${this.displayMaskedIdent(this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
+          `Fn::GetStackOutput: ${displayMaskedIdent(this, this.logTextOfLeaf(resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         )
@@ -215,7 +218,7 @@ export async function resolveGetStackOutput(
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
             `Got ${
               raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-            }${typeof raw === 'object' ? ` (intrinsic shape: ${this.displayMasked(JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${displayMasked(this, JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
         )
       );
     // S1: a literal role ARN, or EXACTLY aws-cdk-lib's `Fn::Join` over
@@ -289,8 +292,8 @@ export async function resolveGetStackOutput(
     throw markNonRetryable(
       new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
-          `${this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
-          `${this.displayMaskedIdent(loggedRegionText, context)}`
+          `${displayMaskedIdent(this, stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
+          `${displayMaskedIdent(this, loggedRegionText, context)}`
       )
     );
   }
@@ -329,15 +332,15 @@ export async function resolveGetStackOutput(
   // plaintext split by an invisible would be reconstituted contiguous by a
   // strip applied after a single mask. Masking on both sides of it closes
   // that, and it is a no-op on any ordinary name.
-  const loggedStackName = this.displayMaskedIdent(stackName, context, STACK_REF_MAX_CODE_POINTS);
-  const loggedOutputName = this.displayMaskedIdent(outputName, context);
+  const loggedStackName = displayMaskedIdent(this, stackName, context, STACK_REF_MAX_CODE_POINTS);
+  const loggedOutputName = displayMaskedIdent(this, outputName, context);
   // The THIRD resolved value of this trio (issue
   // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): a `Region`
   // argument also comes back from `resolveValue`, and the shape gate above
   // only proves it is `[a-z0-9-]{1,31}` — a real plaintext can be. Bound
   // here so the log lines and the three throws below share ONE masked
   // spelling instead of each deciding.
-  const loggedRegion = this.displayMasked(loggedRegionText, context);
+  const loggedRegion = displayMasked(this, loggedRegionText, context);
   // The FOURTH value of this group, and the one that needed a different
   // helper (issue
   // [#3397](https://github.com/go-to-k/cdkd/issues/3397)). `roleArn` is NOT a
@@ -385,7 +388,7 @@ export async function resolveGetStackOutput(
         new Error(
           cdkCrossAccountRefRefusal({
             consumer: context.stackName
-              ? this.displayMaskedIdent(context.stackName, context, STACK_REF_MAX_CODE_POINTS)
+              ? displayMaskedIdent(this, context.stackName, context, STACK_REF_MAX_CODE_POINTS)
               : undefined,
             output: loggedOutputName,
             producer: loggedStackName,
@@ -451,8 +454,8 @@ export async function resolveGetStackOutput(
   let stateData: Awaited<ReturnType<S3StateBackend['getState']>>;
   try {
     stateData = readRoleArn
-      ? await this.getCrossAccountStackState(readRoleArn, stackName, region, context)
-      : await this.getSameAccountStackState(stackName, region, context);
+      ? await getCrossAccountStackState(readRoleArn, stackName, region, context)
+      : await getSameAccountStackState(stackName, region, context);
   } catch (error) {
     this.maskStateReadError(
       // Any other failure (a malformed record, a missing bucket, throttling, a
@@ -462,7 +465,7 @@ export async function resolveGetStackOutput(
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already
         // rendered, where a second boundary would only nest quotes.
-        [stackName, this.displayMasked(stackName, context)],
+        [stackName, displayMasked(this, stackName, context)],
         [region, loggedRegion],
       ],
       context
@@ -476,7 +479,7 @@ export async function resolveGetStackOutput(
     // exclusively (a cross-account CFn read would need a different
     // permission model; see the issue's out-of-scope note).
     if (!roleArn && this.cfnFallback) {
-      const cfnOutputs = await this.lookupCfnStackOutputs(
+      const cfnOutputs = await this.cfnFallbackCache.lookupCfnStackOutputs(
         stackName,
         region,
         context,
@@ -487,7 +490,7 @@ export async function resolveGetStackOutput(
         // `cfnOutputs` is built from an AWS response, so a bare `in` let
         // `OutputName: "constructor"` past this refusal and returned the function.
         if (!Object.hasOwn(cfnOutputs, outputName)) {
-          const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
+          const available = describeAvailableOutputs(this, Object.keys(cfnOutputs), context);
           // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
           throw markNonRetryable(
             new Error(
@@ -584,7 +587,7 @@ export async function resolveGetStackOutput(
   // above (issue #2767); the sibling `Fn::ImportValue` path was already safe
   // because it tests membership through `importableOutputKeys`.
   if (!Object.hasOwn(outputs, outputName)) {
-    const available = this.describeAvailableOutputs(Object.keys(outputs), context);
+    const available = describeAvailableOutputs(this, Object.keys(outputs), context);
     // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
     throw markNonRetryable(
       new Error(
@@ -702,7 +705,7 @@ export async function resolveGetStackOutput(
     // not write a glob in a comment in this file; the fence in
     // `tests/unit/deployment/resolver-display-masked-population.test.ts`
     // will refuse it, and its message will say so.)
-    `Fn::GetStackOutput ${quotedRender(this.displayLeaf(outputName, context), "'")} (producer ${this.displayLeaf(stackName, context)} / ${this.displayLeaf(loggedRegionText, context)})`,
+    `Fn::GetStackOutput ${quotedRender(displayLeaf(this, outputName, context), "'")} (producer ${displayLeaf(this, stackName, context)} / ${displayLeaf(this, loggedRegionText, context)})`,
     sourceKey,
     // Issue #2274: this read is `outputs[outputName]` of that producer's
     // state, so the coordinate is exact — see the ImportValue arms. A
@@ -1026,7 +1029,7 @@ export function namedRequestMasks(
       : pairs
   );
   const text = (message: string): string =>
-    this.displayMasked(positional ? positional(message) : message, context);
+    displayMasked(this, positional ? positional(message) : message, context);
   // `displaySafe` TRIMS, so a line `retry.ts` indents would lose its indent;
   // the leading SPACES are carried across (spaces only: nothing a terminal
   // interprets).

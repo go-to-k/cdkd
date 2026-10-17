@@ -107,7 +107,7 @@ describe('scrub abandoned-scan origin (go-to-k/cdkd#3160)', () => {
         // lines in the source, so the needle is the EXPRESSION rather than the
         // whole `throw`: a whitespace-exact match on a multi-line statement is
         // a needle that reds on a reformat and says nothing about behaviour.
-        '`Resource ${this.displayMasked(logicalId, context)} not found for Fn::GetAtt`',
+        '`Resource ${displayMasked(this, logicalId, context)} not found for Fn::GetAtt`',
       ],
       [
         'a parameter with no Default and no supplied value',

@@ -67,10 +67,6 @@ const ESC = String.fromCharCode(0x1b);
 /** U+2028: a JSON log viewer reads it as a line terminator. */
 const LS = ' ';
 
-type PrivateResolver = {
-  clientsForRegion: (targetRegion: string | undefined, targetLogText?: string) => unknown;
-};
-
 async function captureDebug(body: () => void): Promise<string> {
   const calls = vi.fn();
   const logger = await import('../../../src/utils/logger.js');
@@ -92,7 +88,7 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     // the fix rests on: `isClientSafeRegion` gated one and not the other.
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     const logged = await captureDebug(() => {
-      (resolver as unknown as PrivateResolver).clientsForRegion(
+      resolver.clients.clientsForRegion(
         'eu-west-1',
         `eu-west-1${LS}Evil`
       );
@@ -113,7 +109,7 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
   it('the debug line carries no raw ESC or CR either', async () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     const logged = await captureDebug(() => {
-      (resolver as unknown as PrivateResolver).clientsForRegion(
+      resolver.clients.clientsForRegion(
         'eu-west-1',
         `eu-west-1${ESC}[2K\rEvil`
       );
@@ -131,7 +127,7 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     let message = '';
     try {
-      (resolver as unknown as PrivateResolver).clientsForRegion(`not a region${LS}Evil`);
+      resolver.clients.clientsForRegion(`not a region${LS}Evil`);
       throw new Error('the refusal did not fire');
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
@@ -156,7 +152,7 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     let message = '';
     try {
-      (resolver as unknown as PrivateResolver).clientsForRegion('us-east-1_bogus');
+      resolver.clients.clientsForRegion('us-east-1_bogus');
       throw new Error('the refusal did not fire');
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
@@ -168,7 +164,7 @@ describe('the region-scoped clients renders sanitize (go-to-k/cdkd#3426 sweep)',
     const refusal = (region: string): string => {
       const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
       try {
-        (resolver as unknown as PrivateResolver).clientsForRegion(region);
+        resolver.clients.clientsForRegion(region);
       } catch (err) {
         return err instanceof Error ? err.message : String(err);
       }

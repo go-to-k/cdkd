@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayLeaf, displayMasked } from './masking-display.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
@@ -247,7 +248,7 @@ export async function reresolveCrossStackValue(
       // record no `cdkd import` in this stack can reach. `maskedRecordRemedyFor`
       // reads the absence directly instead of inferring it from a spelling
       // that carries no dot.
-      const loggedOrigin = this.displayMasked(origin, context);
+      const loggedOrigin = displayMasked(this, origin, context);
       this.pushRedactedAttributeRead(context, {
         kind: 'cross-stack',
         display: loggedOrigin,
@@ -281,7 +282,7 @@ export async function reresolveCrossStackValue(
       const ids = physicalIdsOf(
         await producerStateOnce(this.resolverRegion, context, producerOutput, () =>
           this.logger.debug(
-            safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
+            safeMsg`Could not read the state of producer ${displayMasked(this, producerOutput.stackName, context)} for its physical ids; no cross-stack copy of one is kept (go-to-k/cdkd#4819)`
           )
         )
       );
@@ -313,7 +314,7 @@ export async function reresolveCrossStackValue(
   ) {
     const state = await producerStateOnce(this.resolverRegion, context, producerOutput, () =>
       this.logger.debug(
-        safeMsg`Could not read the state of producer ${this.displayMasked(producerOutput.stackName, context)} for its recorded secret versions; its output is resolved at the current version`
+        safeMsg`Could not read the state of producer ${displayMasked(this, producerOutput.stackName, context)} for its recorded secret versions; its output is resolved at the current version`
       )
     );
     const routes = provenanceTokenRoutes(
@@ -408,7 +409,7 @@ export async function reresolveCrossStackValue(
   // (an export name built by an `Fn::Sub` over a `{{resolve:...}}` string).
   // Every other line naming those identifiers masks them; this one is the
   // sibling that did not.
-  this.logger.debug(`Re-resolving dynamic reference(s) in ${this.displayMasked(origin, context)}`);
+  this.logger.debug(`Re-resolving dynamic reference(s) in ${displayMasked(this, origin, context)}`);
   const reresolved = await walk(value);
 
   // THE RECORDING SEAM for issue
@@ -489,7 +490,7 @@ export async function reresolveCrossStackValue(
  * strength of a guess and resolve the producer's expression against whatever
  * the ambient clients happen to point at. When no region was named, a producer
  * region that IS named still binds — "unknown means SCOPE, not skip", the same
- * rule {@link clientsForRegion} applies, and the same one `Fn::GetAZs` already
+ * rule `ResolverClients.clientsForRegion` applies, and the same one `Fn::GetAZs` already
  * follows for its template-named region.
  */
 /**
@@ -574,7 +575,7 @@ export async function resolveImportValue(
   // export name assembled from a secret is a resolved secret in every line
   // that names it. Same treatment as `Fn::Join` / `Fn::Sub` already give
   // their results.
-  const loggedExportName = this.displayMasked(exportName, context);
+  const loggedExportName = displayMasked(this, exportName, context);
   this.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
   // Hot path: consult the persistent exports index for O(1) lookup.
@@ -606,7 +607,7 @@ export async function resolveImportValue(
         // What IS a closed leak is `loggedExportName` beside it (issue
         // #2133), and that is what the test for this site pins.
         `Exports index lookup failed for ${quotedRender(loggedExportName, "'", 'an export whose name is not a plain identifier')}: ` +
-          `${this.displayMasked(err instanceof Error ? err.message : String(err), context)}` +
+          `${displayMasked(this, err instanceof Error ? err.message : String(err), context)}` +
           `; falling back to state.json scan`
       );
       entry = undefined;
@@ -628,14 +629,14 @@ export async function resolveImportValue(
       // logging (redacted vs literal) and discloses nothing.
       this.logger.info(
         `Resolved Fn::ImportValue: ${loggedExportName} (from index: ` +
-          `${this.displayMasked(entry.producerStack, context)} / ${this.displayMasked(entry.producerRegion, context)}; ` +
+          `${displayMasked(this, entry.producerStack, context)} / ${displayMasked(this, entry.producerRegion, context)}; ` +
           `${carriesDynamicReference(entry.value) ? 'redacted dynamic reference' : 'literal value'})`
       );
       return await this.reresolveCrossStackValue(
         entry.value,
         entry.producerRegion,
         context,
-        `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(entry.producerStack, context)} / ${this.displayLeaf(entry.producerRegion, context)})`,
+        `Fn::ImportValue ${quotedRender(displayLeaf(this, exportName, context), "'")} (producer ${displayLeaf(this, entry.producerStack, context)} / ${displayLeaf(this, entry.producerRegion, context)})`,
         sourceKey,
         // Issue #2274: the coordinate the value was READ from, so an in-run
         // producer's masked output can be recovered rather than refused. The
@@ -670,7 +671,7 @@ export async function resolveImportValue(
   for (const ref of allStacks) {
     const { stackName: refStack, region: refRegion } = ref;
     if (context.stackName && refStack === context.stackName) {
-      this.logger.debug(`Skipping current stack: ${this.displayMasked(refStack, context)}`);
+      this.logger.debug(`Skipping current stack: ${displayMasked(this, refStack, context)}`);
       continue;
     }
 
@@ -678,14 +679,14 @@ export async function resolveImportValue(
       const lookupRegion = refRegion ?? this.resolverRegion ?? '';
       if (!lookupRegion) {
         this.logger.debug(
-          `No region available for stack ${quotedRender(this.displayMasked(refStack, context), "'")} — skipping (cdkd cannot read state without a region)`
+          `No region available for stack ${quotedRender(displayMasked(this, refStack, context), "'")} — skipping (cdkd cannot read state without a region)`
         );
         continue;
       }
       const stateData = await context.stateBackend.getState(refStack, lookupRegion);
       if (!stateData) {
         this.logger.debug(
-          `No state found for stack: ${this.displayMasked(refStack, context)} (${this.displayMasked(lookupRegion, context)})`
+          `No state found for stack: ${displayMasked(this, refStack, context)} (${displayMasked(this, lookupRegion, context)})`
         );
         continue;
       }
@@ -710,7 +711,7 @@ export async function resolveImportValue(
           // whenever a producer stack is NAMED after a value this pass
           // resolved. Masking a non-needle is a no-op, so this costs
           // nothing on an ordinary stack.
-          `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${this.displayMasked(refStack, context)} / ${this.displayMasked(lookupRegion, context)}; ` +
+          `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${displayMasked(this, refStack, context)} / ${displayMasked(this, lookupRegion, context)}; ` +
             `${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
         );
         // Patch the index with the just-discovered entry so subsequent
@@ -732,8 +733,8 @@ export async function resolveImportValue(
                 // quieter. An index write failure quotes the KEY it could
                 // not write, which is built from the export name.
                 `Failed to patch exports index for ` +
-                  `${quotedRender(this.displayMasked(exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
-                  `${this.displayMasked(err instanceof Error ? err.message : String(err), context)}`
+                  `${quotedRender(displayMasked(this, exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
+                  `${displayMasked(this, err instanceof Error ? err.message : String(err), context)}`
               );
             });
         }
@@ -748,8 +749,8 @@ export async function resolveImportValue(
         // of the index line above, and the one warn of the four that masked
         // NEITHER operand. `refStack` is a state-derived stack name and the
         // caught message quotes the state key it failed on.
-        `Failed to read state for stack ${this.displayMasked(refStack, context)}: ` +
-          `${this.displayMasked(error instanceof Error ? error.message : String(error), context)}`
+        `Failed to read state for stack ${displayMasked(this, refStack, context)}: ` +
+          `${displayMasked(this, error instanceof Error ? error.message : String(error), context)}`
       );
       continue;
     }
@@ -764,7 +765,7 @@ export async function resolveImportValue(
       found.value,
       found.lookupRegion,
       context,
-      `Fn::ImportValue ${quotedRender(this.displayLeaf(exportName, context), "'")} (producer ${this.displayLeaf(found.refStack, context)} / ${this.displayLeaf(found.lookupRegion, context)})`,
+      `Fn::ImportValue ${quotedRender(displayLeaf(this, exportName, context), "'")} (producer ${displayLeaf(this, found.refStack, context)} / ${displayLeaf(this, found.lookupRegion, context)})`,
       sourceKey,
       // Issue #2274 — see the index arm above. Same bag, reached by scanning
       // state instead of the index, so the same coordinate applies.
@@ -788,7 +789,7 @@ export async function resolveImportValue(
   // export-in-use protection cannot see cdkd consumers), so a CFn-sourced
   // import is a WEAK reference by design.
   if (this.cfnFallback) {
-    const cfnExport = await this.lookupCfnExport(exportName, context);
+    const cfnExport = await this.cfnFallbackCache.lookupCfnExport(exportName, context);
     if (cfnExport) {
       // No VALUE (issue #2133). A CloudFormation export never passed through
       // cdkd's redaction, so what it holds is whatever the producer

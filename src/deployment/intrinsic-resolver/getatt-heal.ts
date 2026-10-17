@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
 import {
   AccountIdUnavailableError,
@@ -147,7 +148,7 @@ export function unenrichedRemedy(
   // template text here.
   const fileIssue =
     `Avoid this Fn::GetAtt, or file an issue at https://github.com/go-to-k/cdkd/issues ` +
-    `so cdkd can enrich ${this.displayMasked(resourceType, context)}.${this.displayMasked(attributeName, context)}.`;
+    `so cdkd can enrich ${displayMasked(this, resourceType, context)}.${displayMasked(this, attributeName, context)}.`;
   if (outcome === undefined) {
     // The hint goes FIRST: the sentence ends on the attribute name, which
     // `intrinsic-resolver-name-argument-log-twin.test.ts` anchors on.
@@ -258,7 +259,7 @@ export function serveHealedAttribute(
   // log line (go-to-k/cdkd#3659), as every serving branch is.
   const noted = this.noteAttributeSecrecy(logicalId, attributeName, value, context);
   this.logger.debug(
-    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return noted;
 }
@@ -400,7 +401,7 @@ export async function constructGuardedAttribute(
     // `markNonRetryable`: a failed lookup is never cached, so a later attempt
     // can heal.
     throw new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ${this.displayMasked(resource.resourceType, context)}: ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${displayMasked(this, resource.resourceType, context)}: ` +
         `the value embeds this deploy's account id. ${error.message}`
     );
   }

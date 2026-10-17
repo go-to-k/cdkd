@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayMasked, logRender } from './masking-display.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
 import {
   type ResolverContext,
@@ -245,7 +246,7 @@ export function subListRefusal(
   const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
   return markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Fn::Sub: ${this.displayMasked(subject, context)} resolves to a list (an array of ${count}), ` +
+      `Fn::Sub: ${displayMasked(this, subject, context)} resolves to a list (an array of ${count}), ` +
         `not a string. CloudFormation rejects this template too, because every Fn::Sub ` +
         `variable must resolve to a string. Render the list with Fn::Join in the variable ` +
         `map instead, for example ["ids=\${Ids}", {"Ids": {"Fn::Join": [",", {"Ref": "SubnetIds"}]}}].`
@@ -576,7 +577,7 @@ export async function resolveSub(
               // value because the reason IS a caught message; the sub-floor
               // bound that implies is the one `evaluateConditions` states.
               this.logger.warn(
-                this.displayMasked(this.subPlaceholderWarning(varNameStr, getAttError), context)
+                displayMasked(this, this.subPlaceholderWarning(varNameStr, getAttError), context)
               );
               replacement = match[0]; // Keep original placeholder
               noteKeptSubPlaceholder(varNameStr, match[0], getAttError, context);
@@ -592,7 +593,7 @@ export async function resolveSub(
             this.rethrowStructuralSubFailure(varNameStr, refError, context);
             // Masked for the reason its `Fn::GetAtt` twin above is.
             this.logger.warn(
-              this.displayMasked(this.subPlaceholderWarning(varNameStr, refError), context)
+              displayMasked(this, this.subPlaceholderWarning(varNameStr, refError), context)
             );
             replacement = match[0]; // Keep original placeholder
             noteKeptSubPlaceholder(varNameStr, match[0], refError, context);
@@ -683,7 +684,7 @@ export async function resolveSub(
   });
   this.rememberLogTwin(context, result, twin);
   this.logger.debug(
-    `Resolved Fn::Sub: ${this.logRender(this.logTwinText(result, twin, context), context)}`
+    `Resolved Fn::Sub: ${logRender(this, this.logTwinText(result, twin, context), context)}`
   );
   return result;
 }

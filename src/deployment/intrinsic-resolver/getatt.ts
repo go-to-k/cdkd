@@ -1,4 +1,5 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
+import { displayLeaf, displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { IntrinsicResolutionRefusalError } from '../../utils/error-handler.js';
@@ -138,7 +139,7 @@ export async function resolveGetAtt(
     if (typeof resolvedAttributeName !== 'string') {
       throw markNonRetryable(
         new Error(
-          `Fn::GetAtt attribute name for ${this.displayMasked(logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(this.maskValueLeaves(resolvedAttributeName, context))}`
+          `Fn::GetAtt attribute name for ${displayMasked(this, logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(maskValueLeaves(this, resolvedAttributeName, context))}`
         )
       );
     }
@@ -181,7 +182,7 @@ export async function resolveGetAtt(
       // so being pre-resolution answers the secret question but not the
       // control-character one.
       throw markNonRetryable(
-        new Error(`Invalid Fn::GetAtt format: ${this.displayMasked(getAtt, context)}`)
+        new Error(`Invalid Fn::GetAtt format: ${displayMasked(this, getAtt, context)}`)
       );
     }
     logicalId = split.logicalId;
@@ -218,7 +219,7 @@ export async function resolveGetAtt(
     // invisible bytes in a logical id. Pinned in `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`
     // beside its sibling, and the note in `scrub.ts` names both patterns.
     throw markNonRetryable(
-      new Error(`Resource ${this.displayMasked(logicalId, context)} not found for Fn::GetAtt`)
+      new Error(`Resource ${displayMasked(this, logicalId, context)} not found for Fn::GetAtt`)
     );
   }
 
@@ -317,7 +318,7 @@ export async function resolveGetAtt(
           context
         );
         this.logger.debug(
-          `Normalized legacy Fn::GetAtt attribute: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} normalized to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
+          `Normalized legacy Fn::GetAtt attribute: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} normalized to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         return notedNameServers;
       }
@@ -334,7 +335,7 @@ export async function resolveGetAtt(
         ? flatValue
         : this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
       this.logger.debug(
-        `Resolved Fn::GetAtt from attributes: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
+        `Resolved Fn::GetAtt from attributes: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
       );
       // A nested-stack child's outputs are read out of the child's PERSISTED
       // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -382,7 +383,7 @@ export async function resolveGetAtt(
       // still inherits today's behaviour.
       if (reresolvesNestedReference) {
         const childRegion = nestedStackChildRegionFromLocalArn(resource.physicalId);
-        const nestedOrigin = `nested stack ${logicalId} ${this.displayLeaf(attributeName, context)}`;
+        const nestedOrigin = `nested stack ${logicalId} ${displayLeaf(this, attributeName, context)}`;
         const nestedSourceKey = crossStackSourceKey({ 'Fn::GetAtt': getAtt });
         // go-to-k/cdkd#4847: the row's provenance (copied from the child's
         // outputs) names each token's region and version; the child's region
@@ -415,7 +416,7 @@ export async function resolveGetAtt(
         notedFlatValue,
         logicalId,
         context,
-        `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+        `${logicalId}.${displayLeaf(this, attributeName, context)}`,
         crossStackSourceKey({ 'Fn::GetAtt': getAtt })
       );
     }
@@ -454,7 +455,7 @@ export async function resolveGetAtt(
         // Noted BEFORE the log line (go-to-k/cdkd#3659); see the flat read.
         const notedCursor = this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
         this.logger.debug(
-          `Resolved Fn::GetAtt from nested attributes: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
+          `Resolved Fn::GetAtt from nested attributes: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         // NO nested-stack re-resolution arm here, unlike the flat-key lookup
         // above, and that is a REACHABILITY claim rather than a decision:
@@ -476,7 +477,7 @@ export async function resolveGetAtt(
           notedCursor,
           logicalId,
           context,
-          `${logicalId}.${this.displayLeaf(attributeName, context)}`,
+          `${logicalId}.${displayLeaf(this, attributeName, context)}`,
           crossStackSourceKey({ 'Fn::GetAtt': getAtt })
         );
       }
@@ -519,13 +520,13 @@ export async function resolveGetAtt(
     const declared = Object.keys(resource.attributes ?? {})
       .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
       .sort()
-      .map((k) => this.displayMasked(this.outputNameLogText(k, context), context));
+      .map((k) => displayMasked(this, this.outputNameLogText(k, context), context));
     const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
     // Bound once because the message renders it TWICE (go-to-k/cdkd#3432). Two independent
-    // `this.displayMasked(logicalId, context)` calls would also be correct, but a single binding is what
+    // `displayMasked(this,logicalId, context)` calls would also be correct, but a single binding is what
     // keeps the two spellings from drifting apart -- the shape the mask-coverage checker's identifier
     // resolution reads at both interpolations.
-    const loggedLogicalId = this.displayMasked(logicalId, context);
+    const loggedLogicalId = displayMasked(this, logicalId, context);
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         // MASKED (issue #2827 review). `attributeName` here is
@@ -534,10 +535,10 @@ export async function resolveGetAtt(
         // this fix stopped at `throw new Error(` and missed both this
         // `markNonRetryable(new IntrinsicResolutionRefusalError(...))` and
         // the unknown-account refusal in `constructGuardedAttribute`.
-        `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${this.displayMasked(attributeName, context)}]: the nested stack ` +
+        `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${displayMasked(this, attributeName, context)}]: the nested stack ` +
           `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
-          `${quotedRender(this.displayMasked(this.outputNameLogText(attributeName, context), context), "'")}. ` +
-          `Its outputs are ${this.displayMasked(declaredText, context)}. ` +
+          `${quotedRender(displayMasked(this, this.outputNameLogText(attributeName, context), context), "'")}. ` +
+          `Its outputs are ${displayMasked(this, declaredText, context)}. ` +
           `Check the output name in the nested stack's template, and deploy the child ` +
           `stack again if you have just added it.`
       )
@@ -555,7 +556,7 @@ export async function resolveGetAtt(
   // that note.
   recordSecretNamedRead(logicalId, value, context);
   this.logger.debug(
-    `Resolved Fn::GetAtt: ${this.logRender(logicalId, context)}.${this.logRender(attributeName, context)} resolved to ${this.logRender(stringifyAttributeForLog(attributeName, this.maskValueLeaves(value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+    `Resolved Fn::GetAtt: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return value;
 }
@@ -721,7 +722,7 @@ export function noteAttributeSecrecy(
     //    `display` in `src` are this file's whole-tuple de-dup comparison and
     //    two `.join(', ')` message builders in `deploy-engine.ts`. Nothing
     //    re-parses it.
-    const maskedAttributeName = this.displayMasked(attributeName, context);
+    const maskedAttributeName = displayMasked(this, attributeName, context);
     // go-to-k/cdkd#2449: the record says whether its producer DECLARED this
     // attribute `NoEcho`, which makes the refusal exact. Still refused: cdkd
     // never re-runs the producer to recover the value.
@@ -735,7 +736,7 @@ export function noteAttributeSecrecy(
       logicalId,
       key: maskedAttributeName,
       ...(declaredNoEcho && { declaredNoEcho: true as const }),
-      display: `${this.displayMasked(logicalId, context)}.${maskedAttributeName}`,
+      display: `${displayMasked(this, logicalId, context)}.${maskedAttributeName}`,
     });
   }
   return value;
@@ -889,11 +890,11 @@ export async function reresolveRecordedReferences(
   if (context.recordedSecretValues === undefined) return value;
   const notReresolvingLine = (): void =>
     this.logger.debug(
-      safeMsg`Not re-resolving the reference(s) in ${this.displayMasked(origin, context)}: the template of ${this.displayMasked(logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
+      safeMsg`Not re-resolving the reference(s) in ${displayMasked(this, origin, context)}: the template of ${displayMasked(this, logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
     );
   const servingAsRecordedLine = (): void =>
     this.logger.warn(
-      safeMsg`Serving ${this.displayMasked(origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${this.displayMasked(logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${this.displayMasked(logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
+      safeMsg`Serving ${displayMasked(this, origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${displayMasked(this, logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${displayMasked(this, logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
     );
   // go-to-k/cdkd#4847: a record carrying v12 provenance names each token's
   // region and version; each arm falls back to today's proof independently.
@@ -1160,8 +1161,8 @@ export function rejectPlaceholderArnAttribute(
   // that map's literals and carries no control character (issue #3441).
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${this.displayMasked(logicalId, context)}, ${this.displayMasked(attributeName, context)}] for ` +
-        `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(this.maskValueLeaves(value, context)), '"')} is a placeholder ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ` +
+        `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(maskValueLeaves(this, value, context)), '"')} is a placeholder ` +
         `written by an older cdkd version — its region and account ` +
         `fields are literal wildcards, so it is not a usable ARN. ` +
         this.staleRecordRemedy(healOutcome, context)

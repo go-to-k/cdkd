@@ -317,7 +317,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // note promises is now also safe to render. The rename being visible HERE
     // is the fence doing its job -- an anchor that had not moved would mean it
     // had stopped matching its subject.
-    const MASKED_HOLE = /^this\.displayMasked\(attributeName, context\)$/;
+    const MASKED_HOLE = /^displayMasked\(this, attributeName, context\)$/;
     for (const arg of observedArgs) {
       if (LITERAL.test(arg) || DESCRIBE_FAILURE.test(arg)) continue;
       const holes = [...arg.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]!.trim());
