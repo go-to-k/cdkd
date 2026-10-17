@@ -469,7 +469,7 @@ export async function replaceDeleteFirstAndRecreate(
         // Issue #2038: `replaceProps` is RESOLVED, so mask the AWS message
         // this retry echoes. Bound to the CALLER's bag (the `secrets`
         // parameter above), not looked up by logical id -- see
-        // {@link maskingRetryLoggerFor}.
+        // `DeployEngine.maskingRetryLoggerFor`.
         logger: deps.maskingRetryLoggerFor(secrets),
         isInterrupted: () => deps.interrupted(),
         onInterrupted: () => new InterruptedError(deps.interruptCause() ?? 'user'),

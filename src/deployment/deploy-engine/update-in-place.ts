@@ -865,7 +865,7 @@ export async function updateInPlace(
           // destroyed the old resource and then failed" — which is
           // exactly what decides whether a re-run is safe and whether
           // anything downstream is now dangling. `--replace`'s
-          // delete-first fallback ({@link replaceDeleteFirstAndRecreate})
+          // delete-first fallback (`replaceDeleteFirstAndRecreate` (`replacement.ts`))
           // wraps the identical situation, so this is the same
           // contract, not a new one -- but NOT the same sentence, and
           // the difference is deliberate: that sibling still says
