@@ -75,7 +75,7 @@ without index trust).
 
 | Caller | Trust the index? | Why |
 |---|---|---|
-| `IntrinsicFunctionResolver.resolveImportValue` | **Yes**, with state.json fallback on miss | Deploy hot path; stale index just degrades to scan-once-and-patch |
+| The resolver's `resolveImportValue` | **Yes**, with state.json fallback on miss | Deploy hot path; stale index just degrades to scan-once-and-patch |
 | `runDestroyForStack` strong-ref check | **No**, always scan state.json | Safety boundary; a stale index could let a destructive destroy through |
 
 The index is therefore **not load-bearing for correctness** — it can

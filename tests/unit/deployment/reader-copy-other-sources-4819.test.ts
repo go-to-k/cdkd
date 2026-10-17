@@ -56,6 +56,17 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { reresolveCrossStackValue } = await import(
+  '../../../src/deployment/intrinsic-resolver/cross-stack.js'
+);
+
+/** `reresolveCrossStackValue` bound to `resolver`, taking the rest untyped. */
+const reresolverFor = (
+  resolver: InstanceType<typeof IntrinsicFunctionResolver>
+): { reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown> } => ({
+  reresolveCrossStackValue: (...args: unknown[]) =>
+    (reresolveCrossStackValue as (...a: unknown[]) => Promise<unknown>)(resolver, ...args),
+});
 
 beforeEach(() => {
   resetAccountInfoCache();
@@ -161,9 +172,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     ],
   ])('a cross-stack plaintext is a copy only for %s', async (_l, ids, output, want) => {
     const bag: RecordedSecretValues = new Map([[NAME, REF]]);
-    const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
-      reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
-    };
+    const resolver = reresolverFor(new IntrinsicFunctionResolver('us-east-1'));
     const producerOutput =
       output === undefined
         ? undefined
@@ -186,9 +195,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
 
   it('a producer whose state cannot be read keeps nothing (fail closed)', async () => {
     const bag: RecordedSecretValues = new Map([[NAME, REF]]);
-    const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
-      reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
-    };
+    const resolver = reresolverFor(new IntrinsicFunctionResolver('us-east-1'));
     await resolver.reresolveCrossStackValue(
       URL,
       'us-east-1',
@@ -210,9 +217,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
   it("reads the PRODUCER's state, once per engine run, and not in a pass that persists nothing", async () => {
     const backend = producerBackend();
     const recordedImports: unknown[] = [];
-    const resolver = new IntrinsicFunctionResolver('us-east-1') as unknown as {
-      reresolveCrossStackValue: (...args: unknown[]) => Promise<unknown>;
-    };
+    const resolver = reresolverFor(new IntrinsicFunctionResolver('us-east-1'));
     const read = (bag: RecordedSecretValues, region: string) =>
       resolver.reresolveCrossStackValue(
         URL,

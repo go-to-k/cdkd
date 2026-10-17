@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // `typescript-v6`, the alias the repo's other AST fences use: TS7 ships the
 // stable compiler API only under `typescript/unstable/*`.
@@ -1434,8 +1434,13 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     // `this.resolveValue(...)` passes. What it catches is the realistic
     // shape -- a new way in that opens no budget at all.
     //
-    // Reachability follows exactly ONE edge shape: a `this.<identifier>(...)`
-    // call, from methods and callable fields, transitively to a fixed point.
+    // Reachability follows exactly TWO edge shapes, transitively to a fixed
+    // point: a `this.<identifier>(...)` call (`resolver.<identifier>(...)` in a
+    // split-out function), and a call to a split-out function whose FIRST
+    // argument is that same receiver (`f(this, ...)` / `f(resolver, ...)`).
+    // A split-out function is one taking `IntrinsicFunctionResolver` first
+    // (#4337); a call passing ANOTHER resolver (a producer-region guest) is not
+    // an edge, as `guest.resolveValue(...)` was not.
     // That is the weak half of this case and it is stated as such -- a first
     // cut that looked one level deep at methods alone stayed green under
     // three real shapes (measured), and the current walk is still green under
@@ -1469,6 +1474,18 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     // equality assertion below is what makes a third call site announce
     // itself rather than silently widening the seed set.
     const HELPER = 'allSettledKeepingFirstRejection';
+    // A split-out function's key, so `evaluateConditions` the class method and
+    // `evaluateConditions` the function it delegates to stay two units.
+    const fnKey = (name: string): string => `fn:${name}`;
+    // The name of a function declaration's resolver parameter: its FIRST
+    // parameter, typed `IntrinsicFunctionResolver`.
+    const resolverParam = (node: ts.FunctionDeclaration): string | undefined => {
+      const first = node.parameters[0];
+      if (node.name === undefined || node.body === undefined || first === undefined) return undefined;
+      return first.type?.getText() === 'IntrinsicFunctionResolver' && ts.isIdentifier(first.name)
+        ? first.name.text
+        : undefined;
+    };
     const drainSeeds = new Set<string>();
     const unowned: string[] = [];
     const seedWalk = (node: ts.Node): void => {
@@ -1488,13 +1505,10 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
             owner = n.name.text;
             break;
           }
-          // A mixin method split out of the class (#4337).
-          if (
-            ts.isFunctionDeclaration(n) &&
-            n.name !== undefined &&
-            n.parameters[0]?.name.getText() === 'this'
-          ) {
-            owner = n.name.text;
+          // A function split out of the class (#4337), keyed apart from the
+          // class's members: two of them share a member's name.
+          if (ts.isFunctionDeclaration(n) && resolverParam(n) !== undefined) {
+            owner = fnKey(n.name!.text);
             break;
           }
           if (ts.isPropertyDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
@@ -1527,7 +1541,7 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
     // finds DIRECT calls only, so `const alias = allSettledKeepingFirstRejection;
     // alias(...)` is a call site it does not see.
     expect(
-      [...drainSeeds].sort(),
+      [...drainSeeds].map((s) => s.replace(/^fn:/, '')).sort(),
       `a new DIRECT call site of ${HELPER} — fence it, then add it here ` +
         '(an aliased call is not seen; see the comment above)',
     ).toEqual(['resolveJoin', 'resolveValue']);
@@ -1537,12 +1551,38 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       readonly isPublic: boolean;
       readonly calls: Set<string>;
       readonly opensBudget: boolean;
+      /** A host method whose whole body is `return f(this, ...)`: `f`'s key. */
+      readonly delegatesTo?: string;
     }
     const members = new Map<string, Member>();
 
-    const bodyFacts = (node: ts.Node): { calls: Set<string>; opensBudget: boolean } => {
+    /** Local name -> imported name, for one file's named imports (`a as b`). */
+    const importAliases = (file: ts.SourceFile): Map<string, string> => {
+      const aliases = new Map<string, string>();
+      for (const stmt of file.statements) {
+        const bindings = ts.isImportDeclaration(stmt) ? stmt.importClause?.namedBindings : undefined;
+        if (bindings !== undefined && ts.isNamedImports(bindings)) {
+          for (const el of bindings.elements) {
+            aliases.set(el.name.text, (el.propertyName ?? el.name).getText());
+          }
+        }
+      }
+      return aliases;
+    };
+
+    // `receiver` is `this` in a class member and the resolver parameter's name
+    // in a split-out function.
+    const bodyFacts = (
+      node: ts.Node,
+      receiver: string,
+      aliases: Map<string, string>
+    ): { calls: Set<string>; opensBudget: boolean } => {
       const calls = new Set<string>();
       let opensBudget = false;
+      const isReceiver = (e: ts.Node): boolean =>
+        receiver === 'this'
+          ? e.kind === ts.SyntaxKind.ThisKeyword
+          : ts.isIdentifier(e) && e.text === receiver;
       const visit = (n: ts.Node): void => {
         // A bare call to the opener imported from `drain-budget.ts` counts,
         // which is how `resolve` opens its budget.
@@ -1552,9 +1592,16 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
         if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
           const target = n.expression.expression;
           const name = n.expression.name.getText();
-          if (target.kind === ts.SyntaxKind.ThisKeyword) calls.add(name);
+          if (isReceiver(target)) calls.add(name);
           if (target.getText() === 'drainDeadlines' && name === 'run') opensBudget = true;
-
+        }
+        if (
+          ts.isCallExpression(n) &&
+          ts.isIdentifier(n.expression) &&
+          n.arguments[0] !== undefined &&
+          isReceiver(n.arguments[0])
+        ) {
+          calls.add(fnKey(aliases.get(n.expression.text) ?? n.expression.text));
         }
         ts.forEachChild(n, visit);
       };
@@ -1562,65 +1609,74 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
       return { calls, opensBudget };
     };
 
-    // Each mixin's augmentation member, and whether it is tagged `@internal`.
-    const augmentationInternal = new Map<string, boolean>();
-    for (const rel of RESOLVER_FAMILY.slice(1)) {
-      const abs = join(import.meta.dirname, '../../..', rel);
-      const msf = ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true);
-      const visitAug = (n: ts.Node): void => {
+    // A split-out function is a way IN exactly when a module outside the
+    // resolver family imports it; inside the family it is the class's own code.
+    const familyFiles = new Set(RESOLVER_FAMILY.map((rel) => join(import.meta.dirname, '../../..', rel)));
+    const importedOutside = new Set<string>();
+    const srcDir = join(import.meta.dirname, '../../../src');
+    for (const rel of readdirSync(srcDir, { recursive: true, encoding: 'utf8' })) {
+      const abs = join(srcDir, rel);
+      if (!abs.endsWith('.ts') || familyFiles.has(abs)) continue;
+      const text = readFileSync(abs, 'utf8');
+      if (!text.includes('intrinsic-resolver/')) continue;
+      const osf = ts.createSourceFile(abs, text, ts.ScriptTarget.Latest, true);
+      for (const stmt of osf.statements) {
+        const bindings = ts.isImportDeclaration(stmt) ? stmt.importClause?.namedBindings : undefined;
         if (
-          ts.isInterfaceDeclaration(n) &&
-          n.name.text === 'IntrinsicFunctionResolver' &&
-          ts.isModuleBlock(n.parent)
+          bindings !== undefined &&
+          ts.isNamedImports(bindings) &&
+          ts.isStringLiteral((stmt as ts.ImportDeclaration).moduleSpecifier) &&
+          ((stmt as ts.ImportDeclaration).moduleSpecifier as ts.StringLiteral).text.includes(
+            'intrinsic-resolver/'
+          )
         ) {
-          for (const m of n.members) {
-            if (m.name !== undefined && ts.isIdentifier(m.name)) {
-              augmentationInternal.set(
-                m.name.text,
-                ts.getJSDocTags(m).some((t) => t.tagName.text === 'internal')
-              );
-            }
-          }
+          for (const el of bindings.elements) importedOutside.add((el.propertyName ?? el.name).getText());
         }
-        ts.forEachChild(n, visitAug);
-      };
-      visitAug(msf);
+      }
     }
-    expect(augmentationInternal.size, 'no mixin augmentation parsed').toBeGreaterThan(0);
+    expect(importedOutside.size, 'no import of a split-out module parsed outside the family').toBeGreaterThan(0);
 
-    const collect = (node: ts.Node): void => {
-      // `@internal` is the split resolver's spelling of `private` (#4337):
-      // the member is public to the type checker only so a mixin can reach it.
+    const collect = (node: ts.Node, aliases: Map<string, string>): void => {
+      // `@internal` is the split resolver's spelling of `private` (#4337).
       const isHidden = (decl: ts.Node, mods: ts.NodeArray<ts.ModifierLike> | undefined): boolean =>
         mods?.some(
           (m) => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword
         ) === true || ts.getJSDocTags(decl).some((t) => t.tagName.text === 'internal');
       if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
-        const { calls, opensBudget } = bodyFacts(node);
+        const { calls, opensBudget } = bodyFacts(node, 'this', aliases);
+        // A PURE delegate (`resolveParameters` / `evaluateConditions` keep the
+        // class API over their split-out functions) is that function as a way
+        // in: one hop, and the only path its body has.
+        const only = node.body?.statements.length === 1 ? node.body.statements[0] : undefined;
+        const call = only !== undefined && ts.isReturnStatement(only) ? only.expression : undefined;
+        const delegatesTo =
+          call !== undefined &&
+          ts.isCallExpression(call) &&
+          ts.isIdentifier(call.expression) &&
+          call.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword
+            ? fnKey(aliases.get(call.expression.text) ?? call.expression.text)
+            : undefined;
         members.set(node.name.text, {
           name: node.name.text,
           isPublic: !isHidden(node, node.modifiers),
           calls,
           opensBudget,
+          ...(delegatesTo !== undefined && { delegatesTo }),
         });
       }
-      // A mixin method split out of the class (#4337): `export function
-      // name(this: IntrinsicFunctionResolver, ...)`, augmented `@internal`.
-      if (
-        ts.isFunctionDeclaration(node) &&
-        node.name !== undefined &&
-        node.body !== undefined &&
-        node.parameters[0]?.name.getText() === 'this'
-      ) {
-        const { calls, opensBudget } = bodyFacts(node);
-        // Public exactly when its augmentation member carries no `@internal`.
-        const augmented = augmentationInternal.get(node.name.text);
-        members.set(node.name.text, {
-          name: node.name.text,
-          isPublic: augmented === false,
-          calls,
-          opensBudget,
-        });
+      // A function split out of the class (#4337): `export function
+      // name(resolver: IntrinsicFunctionResolver, ...)`.
+      if (ts.isFunctionDeclaration(node)) {
+        const receiver = resolverParam(node);
+        if (receiver !== undefined) {
+          const { calls, opensBudget } = bodyFacts(node, receiver, aliases);
+          members.set(fnKey(node.name!.text), {
+            name: fnKey(node.name!.text),
+            isPublic: importedOutside.has(node.name!.text),
+            calls,
+            opensBudget,
+          });
+        }
       }
       // A callable FIELD is an entry point too: `readonly foo = async () => ...`
       if (
@@ -1629,7 +1685,7 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
         node.initializer !== undefined &&
         (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
       ) {
-        const { calls, opensBudget } = bodyFacts(node.initializer);
+        const { calls, opensBudget } = bodyFacts(node.initializer, 'this', aliases);
         members.set(node.name.text, {
           name: node.name.text,
           isPublic: !isHidden(node, node.modifiers),
@@ -1637,12 +1693,31 @@ describe('the drain covers every concurrent site the resolver has (issue #2563)'
           opensBudget,
         });
       }
-      ts.forEachChild(node, collect);
+      ts.forEachChild(node, (child) => collect(child, aliases));
     };
-    collect(sf);
+    collect(sf, importAliases(sf));
     for (const rel of RESOLVER_FAMILY.slice(1)) {
       const abs = join(import.meta.dirname, '../../..', rel);
-      collect(ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true));
+      const msf = ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true);
+      collect(msf, importAliases(msf));
+    }
+    // A floor per unit SHAPE the walk claims: host members and split-out
+    // functions. A parser that silently stopped seeing either would leave the
+    // closure below short and the case green.
+    expect(
+      [...members.keys()].filter((k) => k.startsWith('fn:')).length,
+      'no split-out resolver function parsed'
+    ).toBeGreaterThanOrEqual(60);
+    expect(
+      [...members.values()].filter((m) => m.delegatesTo !== undefined).map((m) => m.name).sort(),
+      'the pure delegates the walk credits'
+    ).toEqual(['evaluateConditions', 'resolveParameters']);
+    // A delegate stands for its target: it opens a budget iff the target does.
+    for (const m of [...members.values()]) {
+      if (m.delegatesTo === undefined) continue;
+      const target = members.get(m.delegatesTo);
+      expect(target, `${m.name} delegates to ${m.delegatesTo}, which the walk did not parse`).toBeDefined();
+      members.set(m.name, { ...m, opensBudget: target!.opensBudget });
     }
 
     expect(

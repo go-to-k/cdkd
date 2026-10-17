@@ -103,8 +103,8 @@ export const LOG_TWINS_BY_PASS = new WeakMap<RecordedSecretValues, Map<string, s
 /**
  * Does `value` carry a CloudFormation dynamic reference anywhere inside it?
  *
- * Used as the identity fast path of {@link
- * IntrinsicFunctionResolver.reresolveCrossStackValue}: a cross-stack value that
+ * Used as the identity fast path of `reresolveCrossStackValue`
+ * (`cross-stack.ts`): a cross-stack value that
  * carries none is returned untouched, so every ordinary import keeps its
  * pre-#1934 behaviour with no walk, no AWS call and no allocation.
  *
@@ -523,7 +523,7 @@ export function isDeliberateResolutionRefusal(err: unknown): boolean {
  * the message would repeat.
  *
  * ONE CONSEQUENCE, stated because the dedup test at
- * {@link IntrinsicFunctionResolver.pushRedactedAttributeRead} keys its fourth
+ * `pushRedactedAttributeRead` (`getatt.ts`) keys its fourth
  * conjunct on this field: two reads whose names differ ONLY by control
  * characters or padding now produce the same `display` and COLLAPSE, so
  * `refuseRedactedAttributeReads` shows one row where it used to show two. Same
@@ -1139,7 +1139,7 @@ export interface CachedDynamicReference {
   version?: string;
 }
 
-/** What {@link IntrinsicFunctionResolver.namedRequestMasks} returns (go-to-k/cdkd#3171). */
+/** What `namedRequestMasks` (`stack-output.ts`) returns (go-to-k/cdkd#3171). */
 export interface NamedRequestMasks {
   /** A masked clone of `error` and its whole cause chain; classification survives. */
   error: (error: unknown) => unknown;

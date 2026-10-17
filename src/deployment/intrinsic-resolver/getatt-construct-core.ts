@@ -12,6 +12,15 @@ import {
 import { type ResolverContext, cachedVpcDefaultSecurityGroups, quotedRender } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { DescribeSecurityGroupsCommand, DescribeVpcsCommand } from '@aws-sdk/client-ec2';
+import {
+  describeFailureObserved,
+  guardedPhysicalIdFallback,
+  refuseUnconstructibleAttribute,
+  refuseUndefinedAttribute,
+  refuseUnservedAttribute,
+} from './getatt-refusals.js';
+import { healBeforeConstructing } from './getatt-heal.js';
+import { noteAttributeSecrecy } from './getatt.js';
 
 /**
  * What a `constructAttribute` helper returns when none of its types matched,
@@ -26,7 +35,7 @@ export const NOT_CONSTRUCTED: unique symbol = Symbol('NOT_CONSTRUCTED');
  * file name: `scripts/gen-sdk-attr-coverage.ts` finds handled types by both.
  */
 export async function constructAttributeForCoreTypes(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   context: ResolverContext,
@@ -46,8 +55,8 @@ export async function constructAttributeForCoreTypes(
         // Not buildable from the table name. Heal first (issue #3627): a
         // record imported before `import()` read it back lacks it, and
         // answering here never reached the #1852 re-read.
-        this.healBeforeConstructing(context);
-        this.refuseUnconstructibleAttribute({
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
@@ -62,7 +71,8 @@ export async function constructAttributeForCoreTypes(
             're-records the attributes.',
         });
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -86,7 +96,8 @@ export async function constructAttributeForCoreTypes(
       case 'WebsiteURL':
         return s3BucketWebsiteUrl(physicalId, region);
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -103,12 +114,12 @@ export async function constructAttributeForCoreTypes(
         // The built ARN drops a non-`/` `Path`, so a record lacking `Arn` (one
         // imported before `import()` read it back) is re-read first; the
         // construction stays the answer when there is no heal (issue #3627).
-        this.healBeforeConstructing(context);
+        healBeforeConstructing(resolver, context);
         return `arn:${partition}:iam::${accountId}:role/${physicalId}`;
       case 'RoleId':
         // Not buildable from the role name: heal first (issue #3627).
-        this.healBeforeConstructing(context);
-        this.refuseUnconstructibleAttribute({
+        healBeforeConstructing(resolver, context);
+        refuseUnconstructibleAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
@@ -116,7 +127,8 @@ export async function constructAttributeForCoreTypes(
           why: 'cdkd cannot build it from the role name',
         });
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -139,7 +151,8 @@ export async function constructAttributeForCoreTypes(
         // mask-only needle can still put `***` in `properties`, and served
         // unnoted it reaches the consumer's property with nothing recorded
         // for `refuseRedactedAttributeReads` to refuse.
-        return this.noteAttributeSecrecy(
+        return noteAttributeSecrecy(
+          resolver,
           logicalId,
           attributeName,
           resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'],
@@ -161,14 +174,14 @@ export async function constructAttributeForCoreTypes(
           // lookup and read `resolverRegion`, whose `AWS_REGION` /
           // `us-east-1` substitution is the FAIL-OPEN shape issue #1957
           // removed from the dynamic-reference lookups.
-          const ec2 = this.clients.clientsForRegion(this.explicitRegion).ec2;
+          const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
           const maxAttempts = 15;
           // Through the builder (issue #3479): the id is read off the STATE
           // RECORD, which is not always AWS-assigned (`cdkd import --resource
           // <id>=<physicalId>`, a record another binary or a hand edit
           // wrote), so being an id answers the secret question, not the
           // control-character one. Bound once for the five renders below.
-          const loggedId = displayMasked(this, physicalId, context);
+          const loggedId = displayMasked(resolver, physicalId, context);
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
             const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -176,8 +189,8 @@ export async function constructAttributeForCoreTypes(
               .filter((a) => a.Ipv6CidrBlockState?.State === 'associated')
               .map((a) => a.Ipv6CidrBlock);
             if (blocks.length > 0) {
-              this.logger.debug(
-                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${displayMasked(this, JSON.stringify(maskValueLeaves(this, blocks, context)), context)}`
+              resolver.logger.debug(
+                `Resolved VPC Ipv6CidrBlocks for ${loggedId}: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, blocks, context)), context)}`
               );
               return blocks;
             }
@@ -187,16 +200,16 @@ export async function constructAttributeForCoreTypes(
             );
             if (associating.length === 0) {
               // No IPv6 CIDRs at all
-              this.logger.debug(`No IPv6 CIDR associations found for VPC ${loggedId}`);
+              resolver.logger.debug(`No IPv6 CIDR associations found for VPC ${loggedId}`);
               return [];
             }
             // not-in-class(attempt): this loop's own counter, incremented by the `for` header — no template value can reach it.
-            this.logger.debug(
+            resolver.logger.debug(
               `VPC ${loggedId} IPv6 CIDR still associating (attempt ${attempt}/${maxAttempts}), waiting...`
             );
             await new Promise((resolve) => setTimeout(resolve, 2000));
           }
-          this.logger.warn(
+          resolver.logger.warn(
             `VPC ${loggedId} IPv6 CIDR did not reach 'associated' state after ${maxAttempts} attempts`
           );
           return [];
@@ -206,8 +219,8 @@ export async function constructAttributeForCoreTypes(
           // only the id above would leave its copy in the message raw.
           // Rebuilt here rather than reusing `loggedId`, which the `try`
           // scopes away.
-          this.logger.warn(
-            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(this, physicalId, context)}: ${displayMasked(this, error instanceof Error ? error.message : String(error), context)}`
+          resolver.logger.warn(
+            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, physicalId, context)}: ${displayMasked(resolver, error instanceof Error ? error.message : String(error), context)}`
           );
           return [];
         }
@@ -233,8 +246,8 @@ export async function constructAttributeForCoreTypes(
         if (!/^vpc-[0-9a-f]+$/.test(physicalId)) {
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
-              `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(displayMasked(this, physicalId, context).slice(0, 64), '"')} ` +
+              `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )
@@ -244,7 +257,7 @@ export async function constructAttributeForCoreTypes(
         if (cachedGroupId !== undefined) return cachedGroupId;
         let groupId: string | undefined;
         try {
-          const ec2 = this.clients.clientsForRegion(this.explicitRegion).ec2;
+          const ec2 = resolver.clients.clientsForRegion(resolver.explicitRegion).ec2;
           const resp = await ec2.send(
             new DescribeSecurityGroupsCommand({
               Filters: [
@@ -255,13 +268,13 @@ export async function constructAttributeForCoreTypes(
           );
           groupId = resp.SecurityGroups?.[0]?.GroupId;
         } catch (err) {
-          this.refuseUnservedAttribute({
+          refuseUnservedAttribute(resolver, {
             logicalId,
             attributeName,
             resourceType,
             physicalId,
             context,
-            observed: this.describeFailureObserved('DescribeSecurityGroups', err, context),
+            observed: describeFailureObserved(resolver, 'DescribeSecurityGroups', err, context),
             remedy:
               'Fix the read (the vpc-id / group-name filtered DescribeSecurityGroups permission, or the region) and deploy again.',
           });
@@ -270,7 +283,7 @@ export async function constructAttributeForCoreTypes(
           cachedVpcDefaultSecurityGroups[physicalId] = groupId;
           return groupId;
         }
-        this.refuseUnservedAttribute({
+        refuseUnservedAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
@@ -281,7 +294,8 @@ export async function constructAttributeForCoreTypes(
         });
       }
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -300,7 +314,7 @@ export async function constructAttributeForCoreTypes(
         // Not an attribute of this type: the CloudFormation schema's only
         // read-only property is `Id`, so CloudFormation rejects this
         // Fn::GetAtt at template validation.
-        this.refuseUndefinedAttribute({
+        refuseUndefinedAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
@@ -308,7 +322,8 @@ export async function constructAttributeForCoreTypes(
           defined: 'Id',
         });
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -323,10 +338,11 @@ export async function constructAttributeForCoreTypes(
     switch (attributeName) {
       case 'Arn':
         // Path-less construction; heal first (issue #3627), as for the Role.
-        this.healBeforeConstructing(context);
+        healBeforeConstructing(resolver, context);
         return `arn:${partition}:iam::${accountId}:user/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -341,10 +357,11 @@ export async function constructAttributeForCoreTypes(
     switch (attributeName) {
       case 'Arn':
         // Path-less construction; heal first (issue #3627), as for the Role.
-        this.healBeforeConstructing(context);
+        healBeforeConstructing(resolver, context);
         return `arn:${partition}:iam::${accountId}:group/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -359,10 +376,11 @@ export async function constructAttributeForCoreTypes(
     switch (attributeName) {
       case 'Arn':
         // Path-less construction; heal first (issue #3627), as for the Role.
-        this.healBeforeConstructing(context);
+        healBeforeConstructing(resolver, context);
         return `arn:${partition}:iam::${accountId}:instance-profile/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -380,7 +398,8 @@ export async function constructAttributeForCoreTypes(
       case 'KeyId':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -400,7 +419,8 @@ export async function constructAttributeForCoreTypes(
         // so it must not route through the unknown-attribute guard.
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -416,7 +436,8 @@ export async function constructAttributeForCoreTypes(
       case 'Arn':
         return `arn:${partition}:kinesis:${region}:${accountId}:stream/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,

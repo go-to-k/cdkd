@@ -62,7 +62,7 @@ export interface ParameterDefinition {
  *    all (`deploy-engine`'s step 2.5, `diff-recursive`, `scrub`, `import`), so
  *    a plain `cdkd deploy` never reaches the resolver with this population at
  *    all -- it has already failed.
- *  - {@link IntrinsicFunctionResolver.subPlaceholderNamesADeclaredTemplateEntity}
+ *  - `subPlaceholderNamesADeclaredTemplateEntity` (`sub.ts`)
  *    answers for the callers that CATCH that error and resolve anyway.
  *    `cdkd import` is the live one -- EVERY mode of it, not only
  *    `--migrate-from-cloudformation`: `resolveImportedProperties` sits on
@@ -121,7 +121,7 @@ export interface ParameterDefinition {
  * What removing the clause would DO downstream is deliberately not asserted
  * here -- it was not probed, and the residual note below is what carries the
  * observable consequence. It is also what
- * {@link IntrinsicFunctionResolver.subPlaceholderNamesADeclaredTemplateEntity}
+ * `subPlaceholderNamesADeclaredTemplateEntity` (`sub.ts`)
  * cross-references.
  *
  * The cost of that fallback is that the #2321 defect persists on it -- the

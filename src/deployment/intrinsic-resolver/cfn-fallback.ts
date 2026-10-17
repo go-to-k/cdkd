@@ -9,6 +9,7 @@ import { STACK_REF_MAX_CODE_POINTS, displayAwsMessage } from '../../utils/displa
 import { MAX_LISTED_AVAILABLE_OUTPUTS, type ResolverContext, quotedRender } from './support.js';
 import type { ResolverClients } from './clients.js';
 import { type ResolverMasker, displayMasked, displayMaskedIdent } from './masking-display.js';
+import { positionalNameMask } from './stack-output.js';
 import { DescribeStacksCommand, ListExportsCommand } from '@aws-sdk/client-cloudformation';
 import type { Export as CfnExport } from '@aws-sdk/client-cloudformation';
 
@@ -24,7 +25,7 @@ export interface CfnFallbackCacheDeps {
   /** The resolver's logger, read live (a writable field). */
   readonly logger: () => Pick<IntrinsicFunctionResolver['logger'], 'warn'>;
   /** The resolver itself, for its masker and its positional name mask. */
-  readonly resolver: ResolverMasker & Pick<IntrinsicFunctionResolver, 'positionalNameMask'>;
+  readonly resolver: ResolverMasker;
 }
 
 /**
@@ -215,7 +216,7 @@ export class CfnFallbackCache {
       // rewrites text another module rendered, where a second boundary would
       // only nest quotes.
       const resolver = this.deps.resolver;
-      const cfnNameMask = resolver.positionalNameMask([
+      const cfnNameMask = positionalNameMask(resolver, [
         [stackName, displayMasked(resolver, stackName, context)],
         [region, displayMasked(resolver, loggedRegionText, context)],
       ]);

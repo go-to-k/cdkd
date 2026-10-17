@@ -13,6 +13,7 @@ import {
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { maskNamedError } from '../../../src/deployment/intrinsic-resolver/stack-output.js';
 
 // go-to-k/cdkd#1998, the RESOLVER half: a `Ref` (or `Fn::Sub` variable) serving
 // a `NoEcho: true` parameter records the value as a LOG-ONLY needle of the
@@ -367,11 +368,12 @@ describe('the resolver masks its two bags in ONE pass (go-to-k/cdkd#4049)', () =
     ['recorded needles', false],
     ['log-only needles', true],
   ])('masks a longer value whole in a thrown error: %s', (_label, logOnly) => {
-    const masked = (
-      resolver as unknown as {
-        maskNamedError: (e: unknown, x: undefined, c: ResolverContext) => unknown;
-      }
-    ).maskNamedError(new Error(`could not read ${LONG} here`), undefined, ctx(logOnly));
+    const masked = maskNamedError(
+      resolver,
+      new Error(`could not read ${LONG} here`),
+      undefined,
+      ctx(logOnly)
+    );
     expect((masked as Error).message).toBe(`could not read ${SECRET_MASK} here`);
   });
 });

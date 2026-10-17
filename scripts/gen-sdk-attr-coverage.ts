@@ -5,7 +5,7 @@
  * -------------------
  * Output / cross-resource `Fn::GetAtt` resolution reads the cached
  * `resource.attributes[<CFnAttrName>]` in
- * `IntrinsicFunctionResolver.constructAttribute` — and `constructAttribute`
+ * the resolver's `constructAttribute` (`intrinsic-resolver/getatt.ts`) — and `constructAttribute`
  * NEVER calls a provider's `getAttribute()`. So an SDK provider whose
  * `create()` / `update()` records a read-only value under a convenient alias
  * instead of its exact CFn `readOnlyProperties` name produces a silent wrong
@@ -325,7 +325,7 @@ export function collectStoredAttributeKeys(source: string, fileName = 'provider.
 
 /**
  * Collect the set of `AWS::X::Y` resource types referenced anywhere inside the
- * `constructAttribute` method / mixin function (`intrinsic-resolver/getatt.ts`)
+ * `constructAttribute` function (`intrinsic-resolver/getatt.ts`)
  * or a `constructAttributeFor*` helper it delegates to (#4337). A type with a
  * per-type handler there can build its own ARN, so it is not a gap even when
  * the provider does not cache it.

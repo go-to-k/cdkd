@@ -41,9 +41,8 @@ import {
 } from './support.js';
 import { declaresNoEcho } from '../noecho-declared.js';
 import { type ResolverMasker, displayMasked } from './masking-display.js';
-
-/** The resolver member the `NoEcho` recorders read: its public tokens. */
-type NoEchoTokenSource = Pick<IntrinsicFunctionResolver, 'publicNoEchoTokens'>;
+import { publicNoEchoTokens } from './getatt.js';
+import { resolvePseudoParameter } from './functions.js';
 
 /**
  * Copy any {@link ResolverContext.inheritedSecrets} pair whose PLAINTEXT is
@@ -143,7 +142,7 @@ type NoEchoTokenSource = Pick<IntrinsicFunctionResolver, 'publicNoEchoTokens'>;
  * value or the condition flips.
  */
 export function recordInheritedParameterSecrets(
-  resolver: NoEchoTokenSource,
+  resolver: IntrinsicFunctionResolver,
   parameterName: string,
   value: unknown,
   context: ResolverContext
@@ -249,7 +248,7 @@ export async function recordInheritedPseudoParameterValues(
   if (inherited.size === 0) return;
   const values = new Map<string, unknown>();
   for (const name of ['AWS::Region', 'AWS::Partition', 'AWS::URLSuffix']) {
-    values.set(name, await resolver.resolvePseudoParameter(name));
+    values.set(name, await resolvePseudoParameter(resolver, name));
   }
   if (templateRereadsAccountId(template)) {
     const accountId = await accountIdForReread(resolver.resolverRegion);
@@ -785,7 +784,7 @@ function refNamesIn(node: unknown, names: ReadonlySet<string>): Set<string> {
  * mask-only needle of the parameter class in the child resource's bag.
  */
 function recordInheritedNoEchoListElements(
-  resolver: NoEchoTokenSource,
+  resolver: IntrinsicFunctionResolver,
   inherited: RecordedSecretValues,
   recorded: RecordedSecretValues,
   value: unknown,
@@ -813,7 +812,7 @@ function recordInheritedNoEchoListElements(
   }
   for (const element of value) {
     if (typeof element !== 'string' || element.length < MIN_NEEDLE_LENGTH) continue;
-    recordNoEchoParameterFreshValue(element, recorded, resolver.publicNoEchoTokens(context));
+    recordNoEchoParameterFreshValue(element, recorded, publicNoEchoTokens(resolver, context));
   }
 }
 
@@ -833,7 +832,7 @@ function recordInheritedNoEchoListElements(
  * feed.
  */
 export function recordNoEchoParameterValue(
-  resolver: NoEchoTokenSource,
+  resolver: IntrinsicFunctionResolver,
   paramDef: ParameterDefinition | undefined,
   value: unknown,
   context: ResolverContext
@@ -854,7 +853,7 @@ export function recordNoEchoParameterValue(
   // plaintext beside leaves already marked, which the migration witness
   // reconciles for a MARKED record since #4836, so an unchanged value is
   // masked without being read as a create-only change.
-  recordNoEchoParameterFreshValue(value, bag, resolver.publicNoEchoTokens(context));
+  recordNoEchoParameterFreshValue(value, bag, publicNoEchoTokens(resolver, context));
 }
 
 /**

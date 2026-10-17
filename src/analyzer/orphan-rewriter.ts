@@ -178,7 +178,7 @@ function carriesSensitiveNamedLeaf(value: unknown): boolean {
  * read returned a defined value for the same attribute, so it never widens
  * what the live-read-only path could substitute and print; see the call site.
  *
- * WHY RECORDED OVER LIVE. `IntrinsicFunctionResolver.resolveGetAtt` serves a
+ * WHY RECORDED OVER LIVE. The resolver's `resolveGetAtt` serves a
  * `Fn::GetAtt` from this same `attributes` map whenever it holds the key, so
  * this chooses the same value the resolver would — not necessarily the value
  * a rewritten sibling was deployed with (a row still holding its intrinsic

@@ -3,6 +3,7 @@ import { describeAvailableOutputs } from './cfn-fallback.js';
 import { displayLeaf, displayMasked, displayMaskedIdent } from './masking-display.js';
 import { logTextOfLeaf, regionLogText } from './masking.js';
 import { getCrossAccountStackState, getSameAccountStackState } from './stack-state.js';
+import { reresolveCrossStackValue } from './cross-stack.js';
 import { hasReadableOutputs } from '../../state/malformed-resources-bag.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
@@ -45,23 +46,6 @@ import {
   unionOfSecretBags,
 } from '../secret-redaction.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    resolveGetStackOutput: OmitThisParameter<typeof resolveGetStackOutput>;
-    /** @internal */
-    recordOutputRead: OmitThisParameter<typeof recordOutputRead>;
-    /** @internal */
-    positionalNameMask: OmitThisParameter<typeof positionalNameMask>;
-    /** @internal */
-    maskStateReadError(...args: Parameters<OmitThisParameter<typeof maskStateReadError>>): never;
-    /** @internal */
-    maskNamedError: OmitThisParameter<typeof maskNamedError>;
-    /** @internal */
-    namedRequestMasks: OmitThisParameter<typeof namedRequestMasks>;
-  }
-}
-
 /**
  * Resolve Fn::GetStackOutput (cross-stack / cross-region / cross-account
  * output reference).
@@ -91,7 +75,7 @@ declare module '../intrinsic-function-resolver.js' {
  * shared-state-backend path.
  */
 export async function resolveGetStackOutput(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   arg: unknown,
   context: ResolverContext
 ): Promise<unknown> {
@@ -120,7 +104,7 @@ export async function resolveGetStackOutput(
   // behaviour rather than guessing.
   const sourceKey = crossStackSourceKey({ 'Fn::GetStackOutput': args });
 
-  const stackName = await this.resolveValue(args['StackName'], context);
+  const stackName = await resolver.resolveValue(args['StackName'], context);
   if (typeof stackName !== 'string' || stackName === '') {
     throw markNonRetryable(
       new Error(
@@ -129,7 +113,7 @@ export async function resolveGetStackOutput(
     );
   }
 
-  const outputName = await this.resolveValue(args['OutputName'], context);
+  const outputName = await resolver.resolveValue(args['OutputName'], context);
   if (typeof outputName !== 'string' || outputName === '') {
     throw markNonRetryable(
       new Error(
@@ -138,14 +122,14 @@ export async function resolveGetStackOutput(
     );
   }
 
-  let region = this.resolverRegion;
+  let region = resolver.resolverRegion;
   // The spelling every line below prints `region` with (issue #3150): the
   // log text of the resolver's own region, which a string this pass
   // assembled can equal, or of a template-supplied region's RAW value, since
   // `canonicalizeRegion` lowercases it past any twin lookup.
-  let loggedRegionText = logTextOfLeaf(this, region, context);
+  let loggedRegionText = logTextOfLeaf(resolver, region, context);
   if ('Region' in args && args['Region'] !== undefined && args['Region'] !== null) {
-    const resolvedRegion = await this.resolveValue(args['Region'], context);
+    const resolvedRegion = await resolver.resolveValue(args['Region'], context);
     if (typeof resolvedRegion !== 'string' || resolvedRegion === '') {
       throw markNonRetryable(
         new Error(
@@ -182,14 +166,14 @@ export async function resolveGetStackOutput(
       throw markNonRetryable(
         new Error(
           // allow-raw-region-compare: a mask test (did the log text alter this value?), not a region equality.
-          `Fn::GetStackOutput: ${displayMaskedIdent(this, logTextOfLeaf(this, resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
+          `Fn::GetStackOutput: ${displayMaskedIdent(resolver, logTextOfLeaf(resolver, resolvedRegion, context) !== resolvedRegion ? SECRET_MASK : resolvedRegion, context, 64)} is not a ` +
             `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
             `key, so cdkd will not use it.`
         )
       );
     }
     region = requestedRegion;
-    loggedRegionText = regionLogText(this, resolvedRegion, context);
+    loggedRegionText = regionLogText(resolver, resolvedRegion, context);
   }
 
   // RoleArn must be a LITERAL string in the template — we check the raw
@@ -219,7 +203,7 @@ export async function resolveGetStackOutput(
             `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
             `Got ${
               raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-            }${typeof raw === 'object' ? ` (intrinsic shape: ${displayMasked(this, JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${displayMasked(resolver, JSON.stringify(raw).slice(0, 80), context)})` : ''}.`
         )
       );
     // S1: a literal role ARN, or EXACTLY aws-cdk-lib's `Fn::Join` over
@@ -235,10 +219,10 @@ export async function resolveGetStackOutput(
         canonicalizeRegion(region),
         shape.roleName,
       ]);
-      let verdict = this.cdkCrossAccountRefVerdicts.get(key);
+      let verdict = resolver.cdkCrossAccountRefVerdicts.get(key);
       if (verdict === undefined) {
-        verdict = classifyCdkCrossAccountRef(shape, stackName, region, this.producerLookup);
-        this.cdkCrossAccountRefVerdicts.set(key, verdict);
+        verdict = classifyCdkCrossAccountRef(shape, stackName, region, resolver.producerLookup);
+        resolver.cdkCrossAccountRefVerdicts.set(key, verdict);
       }
       // A user-written `Fn::Join` of this shape keeps today's refusal; a
       // literal `RoleArn` that is not the generated one is used as written.
@@ -262,7 +246,7 @@ export async function resolveGetStackOutput(
     // `region` enters this method by two paths with different spellings:
     // folded when the template names a `Region` (`canonicalizeRegion`, issue
     // #1957), RAW when it does not, since it then defaults to
-    // `this.resolverRegion`. On the no-`Region` path both sides were the same
+    // `resolver.resolverRegion`. On the no-`Region` path both sides were the same
     // raw string before issue #1882 folded `AWS::Region`, so it compared a
     // value to itself and always fired; on the named-`Region` path they have
     // been folded-against-raw since issue #1957, which is the pre-existing
@@ -275,10 +259,10 @@ export async function resolveGetStackOutput(
     // Do not fold either operand at its DEFINITION. `region` is passed on to
     // `getSameAccountStackState` / `getCrossAccountStackState` /
     // `lookupCfnStackOutputs`, where it is a state-key segment, and
-    // `this.resolverRegion` keys this stack's own `getState` / `saveState`.
+    // `resolver.resolverRegion` keys this stack's own `getState` / `saveState`.
     // Normalizing only for the duration of the comparison leaves both, which
     // is what `sameRegion` does (issue #2209).
-    sameRegion(region, this.resolverRegion)
+    sameRegion(region, resolver.resolverRegion)
   ) {
     // MASKED at the throw (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827)). This refusal
@@ -293,8 +277,8 @@ export async function resolveGetStackOutput(
     throw markNonRetryable(
       new Error(
         `Fn::GetStackOutput: cannot reference own stack ` +
-          `${displayMaskedIdent(this, stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
-          `${displayMaskedIdent(this, loggedRegionText, context)}`
+          `${displayMaskedIdent(resolver, stackName, context, STACK_REF_MAX_CODE_POINTS)} in the same region ` +
+          `${displayMaskedIdent(resolver, loggedRegionText, context)}`
       )
     );
   }
@@ -333,15 +317,20 @@ export async function resolveGetStackOutput(
   // plaintext split by an invisible would be reconstituted contiguous by a
   // strip applied after a single mask. Masking on both sides of it closes
   // that, and it is a no-op on any ordinary name.
-  const loggedStackName = displayMaskedIdent(this, stackName, context, STACK_REF_MAX_CODE_POINTS);
-  const loggedOutputName = displayMaskedIdent(this, outputName, context);
+  const loggedStackName = displayMaskedIdent(
+    resolver,
+    stackName,
+    context,
+    STACK_REF_MAX_CODE_POINTS
+  );
+  const loggedOutputName = displayMaskedIdent(resolver, outputName, context);
   // The THIRD resolved value of this trio (issue
   // [#2827](https://github.com/go-to-k/cdkd/issues/2827)): a `Region`
   // argument also comes back from `resolveValue`, and the shape gate above
   // only proves it is `[a-z0-9-]{1,31}` — a real plaintext can be. Bound
   // here so the log lines and the three throws below share ONE masked
   // spelling instead of each deciding.
-  const loggedRegion = displayMasked(this, loggedRegionText, context);
+  const loggedRegion = displayMasked(resolver, loggedRegionText, context);
   // The FOURTH value of this group, and the one that needed a different
   // helper (issue
   // [#3397](https://github.com/go-to-k/cdkd/issues/3397)). `roleArn` is NOT a
@@ -369,7 +358,7 @@ export async function resolveGetStackOutput(
     ? displayIdent(roleArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
     : '';
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
-  this.logger.debug(
+  resolver.logger.debug(
     `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
       `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
@@ -389,14 +378,14 @@ export async function resolveGetStackOutput(
         new Error(
           cdkCrossAccountRefRefusal({
             consumer: context.stackName
-              ? displayMaskedIdent(this, context.stackName, context, STACK_REF_MAX_CODE_POINTS)
+              ? displayMaskedIdent(resolver, context.stackName, context, STACK_REF_MAX_CODE_POINTS)
               : undefined,
             output: loggedOutputName,
             producer: loggedStackName,
             region: displayIdent(loggedRegion),
             producerAccount,
             roleName: displayIdent(ref.shape.roleName),
-            consumerAccount: this.consumerAccount,
+            consumerAccount: resolver.consumerAccount,
             reason,
             noLookupRole,
           }),
@@ -423,7 +412,7 @@ export async function resolveGetStackOutput(
           `with it was denied: ${describeInnermostAwsError(error)}`,
         error
       );
-    this.logger.debug(
+    resolver.logger.debug(
       safeMsg`Fn::GetStackOutput: ${shownRoleArn} is the AWS CDK-generated cross-account reader role; reading through the producer account's lookup role ${shownLookupRoleArn}`
     );
   }
@@ -458,7 +447,8 @@ export async function resolveGetStackOutput(
       ? await getCrossAccountStackState(readRoleArn, stackName, region, context)
       : await getSameAccountStackState(stackName, region, context);
   } catch (error) {
-    this.maskStateReadError(
+    maskStateReadError(
+      resolver,
       // Any other failure (a malformed record, a missing bucket, throttling, a
       // network or 5xx error) takes the ordinary path, as for any `RoleArn`.
       refuseCdkRead && isLookupRoleDenial(error) ? refuseCdkRead(error) : error,
@@ -466,7 +456,7 @@ export async function resolveGetStackOutput(
         // The pair's replacement is the MASKED spelling, not the bounded
         // one: it rewrites the name inside text another module already
         // rendered, where a second boundary would only nest quotes.
-        [stackName, displayMasked(this, stackName, context)],
+        [stackName, displayMasked(resolver, stackName, context)],
         [region, loggedRegion],
       ],
       context
@@ -479,8 +469,8 @@ export async function resolveGetStackOutput(
     // only — the RoleArn (cross-account) path keeps reading cdkd state
     // exclusively (a cross-account CFn read would need a different
     // permission model; see the issue's out-of-scope note).
-    if (!roleArn && this.cfnFallback) {
-      const cfnOutputs = await this.cfnFallbackCache.lookupCfnStackOutputs(
+    if (!roleArn && resolver.cfnFallback) {
+      const cfnOutputs = await resolver.cfnFallbackCache.lookupCfnStackOutputs(
         stackName,
         region,
         context,
@@ -491,7 +481,7 @@ export async function resolveGetStackOutput(
         // `cfnOutputs` is built from an AWS response, so a bare `in` let
         // `OutputName: "constructor"` past this refusal and returned the function.
         if (!Object.hasOwn(cfnOutputs, outputName)) {
-          const available = describeAvailableOutputs(this, Object.keys(cfnOutputs), context);
+          const available = describeAvailableOutputs(resolver, Object.keys(cfnOutputs), context);
           // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
           throw markNonRetryable(
             new Error(
@@ -504,7 +494,7 @@ export async function resolveGetStackOutput(
         // No VALUE (issue #2133), same reason as the `Fn::ImportValue`
         // CloudFormation fallback: a CFn stack output never passed through
         // cdkd's redaction, so it is whatever the producer resolved.
-        this.logger.info(
+        resolver.logger.info(
           `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
             `OutputName=${loggedOutputName} ` +
             `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
@@ -521,7 +511,7 @@ export async function resolveGetStackOutput(
     // `roleArn`, which this method refuses unless it is a literal template
     // string, so it carries no resolved value.
     // cdkd-arn-display: the SECOND substitution of this statement
-    // (`!roleArn && this.cfnFallback ? … : …`) mentions `roleArn` as a
+    // (`!roleArn && resolver.cfnFallback ? … : …`) mentions `roleArn` as a
     // TRUTHINESS TEST and renders neither arm from it -- both arms are
     // constant sentences. The value that IS rendered here is `shownRoleArn`,
     // one substitution up. Annotated rather than restructured because the
@@ -536,7 +526,7 @@ export async function resolveGetStackOutput(
       `Fn::GetStackOutput: stack ${loggedStackName} not found in region ${displayIdent(loggedRegion)}${
         roleArn ? ` (cross-account via ${shownReadRoleArn})` : ''
       }. ${
-        !roleArn && this.cfnFallback
+        !roleArn && resolver.cfnFallback
           ? `Searched cdkd state and CloudFormation stacks. Make sure the producer stack ` +
             `has been deployed (via cdkd or CloudFormation).`
           : `Make sure the producer stack has been deployed via cdkd.`
@@ -588,7 +578,7 @@ export async function resolveGetStackOutput(
   // above (issue #2767); the sibling `Fn::ImportValue` path was already safe
   // because it tests membership through `importableOutputKeys`.
   if (!Object.hasOwn(outputs, outputName)) {
-    const available = describeAvailableOutputs(this, Object.keys(outputs), context);
+    const available = describeAvailableOutputs(resolver, Object.keys(outputs), context);
     // not-in-class(available): already rendered through describeAvailableOutputs, which masks each key.
     throw markNonRetryable(
       new Error(
@@ -605,7 +595,7 @@ export async function resolveGetStackOutput(
   // POST-#1934 state, and `cdkd scrub`'s whole population is state written
   // before that, holding the plaintext.
   // not-in-class(roleArn ? `, RoleArn=${shownRoleArn}` : ''): the RoleArn argument, refused unless it is a literal template string.
-  this.logger.info(
+  resolver.logger.info(
     `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${loggedRegion}, ` +
       `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''} ` +
       `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
@@ -618,7 +608,7 @@ export async function resolveGetStackOutput(
   // consumer set is rarely large in practice, and the resolver
   // already pays an STS hop on the read side).
   if (!roleArn) {
-    this.recordOutputRead(context, stackName, region, outputName);
+    recordOutputRead(resolver, context, stackName, region, outputName);
   }
 
   // The SIBLING read path of `Fn::ImportValue`, reading the same persisted
@@ -682,7 +672,8 @@ export async function resolveGetStackOutput(
     );
   }
 
-  return await this.reresolveCrossStackValue(
+  return await reresolveCrossStackValue(
+    resolver,
     value,
     region,
     context,
@@ -692,7 +683,7 @@ export async function resolveGetStackOutput(
     // added to. It is not an exposure on the template-supplied path
     // (`isClientSafeRegion(canonicalizeRegion(...))` gates it, and no control
     // character lower-cases into `[a-z0-9-]`), but the DEFAULT path binds
-    // `logTextOfLeaf(this.resolverRegion)`, which has no such gate. Sanitized
+    // `logTextOfLeaf(resolver.resolverRegion)`, which has no such gate. Sanitized
     // here rather than annotated, because this string flows into
     // `redactedAttributeReads[].display` and out through a
     // `ProvisioningError` message, and this whole tree is outside
@@ -706,7 +697,7 @@ export async function resolveGetStackOutput(
     // not write a glob in a comment in this file; the fence in
     // `tests/unit/deployment/resolver-display-masked-population.test.ts`
     // will refuse it, and its message will say so.)
-    `Fn::GetStackOutput ${quotedRender(displayLeaf(this, outputName, context), "'")} (producer ${displayLeaf(this, stackName, context)} / ${displayLeaf(this, loggedRegionText, context)})`,
+    `Fn::GetStackOutput ${quotedRender(displayLeaf(resolver, outputName, context), "'")} (producer ${displayLeaf(resolver, stackName, context)} / ${displayLeaf(resolver, loggedRegionText, context)})`,
     sourceKey,
     // Issue #2274: this read is `outputs[outputName]` of that producer's
     // state, so the coordinate is exact — see the ImportValue arms. A
@@ -733,7 +724,7 @@ export async function resolveGetStackOutput(
  * when it fell back to `resolverRegion` (issue #2209).
  */
 export function recordOutputRead(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   producerStack: string,
   producerRegion: string,
@@ -807,7 +798,7 @@ export function recordOutputRead(
  * claimed fenced.
  */
 export function positionalNameMask(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   pairs: readonly (readonly [string, string])[]
 ): ((text: string) => string) | undefined {
   const substitutions = pairs
@@ -913,12 +904,12 @@ export function positionalNameMask(
  * {@link positionalNameMask} turns them into the transform and owns why.
  */
 export function maskStateReadError(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   error: unknown,
   pairs: readonly (readonly [string, string])[],
   context?: ResolverContext
 ): never {
-  throw this.maskNamedError(error, this.positionalNameMask(pairs), context);
+  throw maskNamedError(resolver, error, positionalNameMask(resolver, pairs), context);
 }
 
 /**
@@ -928,7 +919,7 @@ export function maskStateReadError(
  * {@link positionalNameMask} transform, or `undefined` for none.
  */
 export function maskNamedError(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   error: unknown,
   extraMask: ((text: string) => string) | undefined,
   context?: ResolverContext
@@ -1013,7 +1004,7 @@ export function maskNamedError(
  * {@link positionalNameMask} documents).
  */
 export function namedRequestMasks(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   pairs: readonly (readonly [string, string])[],
   context?: ResolverContext
 ): NamedRequestMasks {
@@ -1024,13 +1015,14 @@ export function namedRequestMasks(
   // ARN's region, which an `Fn::Sub` can assemble around a short secret
   // (go-to-k/cdkd#3171 review). An ordinary resolver's region has no log
   // text and adds nothing.
-  const positional = this.positionalNameMask(
-    this.explicitRegion !== undefined && this.explicitRegionLogText !== undefined
-      ? [...pairs, [this.explicitRegion, this.explicitRegionLogText]]
+  const positional = positionalNameMask(
+    resolver,
+    resolver.explicitRegion !== undefined && resolver.explicitRegionLogText !== undefined
+      ? [...pairs, [resolver.explicitRegion, resolver.explicitRegionLogText]]
       : pairs
   );
   const text = (message: string): string =>
-    displayMasked(this, positional ? positional(message) : message, context);
+    displayMasked(resolver, positional ? positional(message) : message, context);
   // `displaySafe` TRIMS, so a line `retry.ts` indents would lose its indent;
   // the leading SPACES are carried across (spaces only: nothing a terminal
   // interprets).
@@ -1039,15 +1031,15 @@ export function namedRequestMasks(
     return indent + text(message.slice(indent.length));
   };
   return {
-    error: (error) => this.maskNamedError(error, positional, context),
+    error: (error) => maskNamedError(resolver, error, positional, context),
     text,
     retryLogger: {
-      debug: (message) => this.logger.debug(line(message)),
+      debug: (message) => resolver.logger.debug(line(message)),
       // UNREACHABLE from `sendWithThrottleRetry` today: `withRetry` warns only
       // after a propagation / cooldown / server-error retry, and a caller
       // passing its own `isRetryable` counts none. Masked anyway, since the
       // interface makes it optional rather than absent.
-      warn: (message) => this.logger.warn(line(message)),
+      warn: (message) => resolver.logger.warn(line(message)),
     },
   };
 }

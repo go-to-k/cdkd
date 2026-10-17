@@ -51,27 +51,17 @@ import {
 } from './recorded-reference-routes.js';
 import { constructAttributeForAppTypes } from './getatt-construct-app.js';
 import { constructAttributeForComputeTypes } from './getatt-construct-compute.js';
-
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    pushRedactedAttributeRead: OmitThisParameter<typeof pushRedactedAttributeRead>;
-    /** @internal */
-    resolveGetAtt: OmitThisParameter<typeof resolveGetAtt>;
-    /** @internal */
-    publicNoEchoTokens: OmitThisParameter<typeof publicNoEchoTokens>;
-    /** @internal */
-    noteAttributeSecrecy: OmitThisParameter<typeof noteAttributeSecrecy>;
-    /** @internal */
-    reresolveRecordedReferences: OmitThisParameter<typeof reresolveRecordedReferences>;
-    /** @internal */
-    referencesMatchPhysicalId: OmitThisParameter<typeof referencesMatchPhysicalId>;
-    /** @internal */
-    rejectPlaceholderArnAttribute: OmitThisParameter<typeof rejectPlaceholderArnAttribute>;
-    /** @internal */
-    constructAttribute: OmitThisParameter<typeof constructAttribute>;
-  }
-}
+import {
+  constructWithStaleRecordHeal,
+  healMaskedOwnIdAttribute,
+  healStaleAttributes,
+  serveHealedAttribute,
+  staleRecordRemedy,
+  usableHealedAttribute,
+} from './getatt-heal.js';
+import { guardedPhysicalIdFallback } from './getatt-refusals.js';
+import { reresolveCrossStackValue } from './cross-stack.js';
+import { lookupResourceRecord } from './refs.js';
 
 /**
  * The ONE writer of {@link ResolverContext.redactedAttributeReads}, so the
@@ -97,7 +87,7 @@ declare module '../intrinsic-function-resolver.js' {
  * what keeps it from being a field written by two producers and read by none.
  */
 export function pushRedactedAttributeRead(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   read: RedactedAttributeRead
 ): void {
@@ -118,7 +108,7 @@ export function pushRedactedAttributeRead(
  * Resolve Fn::GetAtt intrinsic function
  */
 export async function resolveGetAtt(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   getAtt: [string, unknown] | string,
   context: ResolverContext
 ): Promise<unknown> {
@@ -137,11 +127,11 @@ export async function resolveGetAtt(
     // resolved.
     const [rawLogicalId, rawAttributeName] = getAtt;
     logicalId = rawLogicalId;
-    const resolvedAttributeName = await this.resolveValue(rawAttributeName, context);
+    const resolvedAttributeName = await resolver.resolveValue(rawAttributeName, context);
     if (typeof resolvedAttributeName !== 'string') {
       throw markNonRetryable(
         new Error(
-          `Fn::GetAtt attribute name for ${displayMasked(this, logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(maskValueLeaves(this, resolvedAttributeName, context))}`
+          `Fn::GetAtt attribute name for ${displayMasked(resolver, logicalId, context)} must resolve to a string, got ${typeof resolvedAttributeName}: ${stringifyValue(maskValueLeaves(resolver, resolvedAttributeName, context))}`
         )
       );
     }
@@ -184,7 +174,7 @@ export async function resolveGetAtt(
       // so being pre-resolution answers the secret question but not the
       // control-character one.
       throw markNonRetryable(
-        new Error(`Invalid Fn::GetAtt format: ${displayMasked(this, getAtt, context)}`)
+        new Error(`Invalid Fn::GetAtt format: ${displayMasked(resolver, getAtt, context)}`)
       );
     }
     logicalId = split.logicalId;
@@ -199,7 +189,7 @@ export async function resolveGetAtt(
   // `undefined` and the failure surfaces further from its cause than this
   // throw (measured: it reaches a live AWS call). Swept with the two
   // `resolveRef` arms because a template reaches all three by the same name.
-  const resource = this.lookupResourceRecord(logicalId, 'Fn::GetAtt', context);
+  const resource = lookupResourceRecord(resolver, logicalId, 'Fn::GetAtt', context);
   if (!resource) {
     // `markNonRetryable` for the reason given at the `Invalid Fn::GetAtt
     // format` throw above: `logicalId` is template-controlled and the retry
@@ -221,7 +211,7 @@ export async function resolveGetAtt(
     // invisible bytes in a logical id. Pinned in `tests/unit/cli/scrub-abandoned-scan-origin.test.ts`
     // beside its sibling, and the note in `scrub.ts` names both patterns.
     throw markNonRetryable(
-      new Error(`Resource ${displayMasked(this, logicalId, context)} not found for Fn::GetAtt`)
+      new Error(`Resource ${displayMasked(resolver, logicalId, context)} not found for Fn::GetAtt`)
     );
   }
 
@@ -267,15 +257,16 @@ export async function resolveGetAtt(
         // the resource's own properties did not change. Heal first; refuse —
         // with a remedy worded from what the heal observed — only when the
         // re-read cannot supply a usable ARN either.
-        const outcome = await this.healStaleAttributes(logicalId, resource, context);
-        const healed = this.usableHealedAttribute(outcome, attributeName);
+        const outcome = await healStaleAttributes(resolver, logicalId, resource, context);
+        const healed = usableHealedAttribute(resolver, outcome, attributeName);
         if (
           healed !== undefined &&
           !isStalePlaceholderArnAttribute(resource.resourceType, attributeName, healed)
         ) {
-          return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+          return serveHealedAttribute(resolver, logicalId, attributeName, healed, context);
         }
-        this.rejectPlaceholderArnAttribute(
+        rejectPlaceholderArnAttribute(
+          resolver,
           resource,
           attributeName,
           flatValue,
@@ -290,7 +281,8 @@ export async function resolveGetAtt(
       // boundary so Fn::Join works without requiring users to recreate or
       // manually edit an existing state file.
       // go-to-k/cdkd#4849: a masked copy of the record's own physical id.
-      const ownIdRead = this.healMaskedOwnIdAttribute(
+      const ownIdRead = healMaskedOwnIdAttribute(
+        resolver,
         logicalId,
         resource,
         attributeName,
@@ -313,14 +305,15 @@ export async function resolveGetAtt(
         // longer claims the pass-through shape makes a skip impossible.
         // Noted BEFORE the log line, as every serving branch here is
         // (go-to-k/cdkd#3659): see `noteAttributeSecrecy`'s ORDERING note.
-        const notedNameServers = this.noteAttributeSecrecy(
+        const notedNameServers = noteAttributeSecrecy(
+          resolver,
           logicalId,
           attributeName,
           nameServers,
           context
         );
-        this.logger.debug(
-          `Normalized legacy Fn::GetAtt attribute: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} normalized to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
+        resolver.logger.debug(
+          `Normalized legacy Fn::GetAtt attribute: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} normalized to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, nameServers, context)), context, { structured: isStructured(nameServers), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         return notedNameServers;
       }
@@ -335,9 +328,9 @@ export async function resolveGetAtt(
       // that bag, so logging first printed the plaintext at `--verbose`.
       const notedFlatValue = reresolvesNestedReference
         ? flatValue
-        : this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
-      this.logger.debug(
-        `Resolved Fn::GetAtt from attributes: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
+        : noteAttributeSecrecy(resolver, logicalId, attributeName, flatValue, context);
+      resolver.logger.debug(
+        `Resolved Fn::GetAtt from attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, flatValue, context)), context, { structured: isStructured(flatValue), redacted: isSensitiveAttributeName(attributeName) })}`
       );
       // A nested-stack child's outputs are read out of the child's PERSISTED
       // state by `NestedStackProvider`, which since PR #1899 holds a
@@ -385,7 +378,7 @@ export async function resolveGetAtt(
       // still inherits today's behaviour.
       if (reresolvesNestedReference) {
         const childRegion = nestedStackChildRegionFromLocalArn(resource.physicalId);
-        const nestedOrigin = `nested stack ${logicalId} ${displayLeaf(this, attributeName, context)}`;
+        const nestedOrigin = `nested stack ${logicalId} ${displayLeaf(resolver, attributeName, context)}`;
         const nestedSourceKey = crossStackSourceKey({ 'Fn::GetAtt': getAtt });
         // go-to-k/cdkd#4847: the row's provenance (copied from the child's
         // outputs) names each token's region and version; the child's region
@@ -396,7 +389,7 @@ export async function resolveGetAtt(
             : recordedTokenRoutes(flatValue, resource);
         if (routes !== undefined) {
           return await reresolveByRecordedRoutes(
-            this,
+            resolver,
             flatValue,
             logicalId,
             context,
@@ -406,7 +399,8 @@ export async function resolveGetAtt(
             { region: childRegion }
           );
         }
-        return await this.reresolveCrossStackValue(
+        return await reresolveCrossStackValue(
+          resolver,
           flatValue,
           childRegion,
           context,
@@ -414,11 +408,12 @@ export async function resolveGetAtt(
           nestedSourceKey
         );
       }
-      return await this.reresolveRecordedReferences(
+      return await reresolveRecordedReferences(
+        resolver,
         notedFlatValue,
         logicalId,
         context,
-        `${logicalId}.${displayLeaf(this, attributeName, context)}`,
+        `${logicalId}.${displayLeaf(resolver, attributeName, context)}`,
         crossStackSourceKey({ 'Fn::GetAtt': getAtt })
       );
     }
@@ -455,9 +450,15 @@ export async function resolveGetAtt(
       }
       if (cursor !== undefined) {
         // Noted BEFORE the log line (go-to-k/cdkd#3659); see the flat read.
-        const notedCursor = this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
-        this.logger.debug(
-          `Resolved Fn::GetAtt from nested attributes: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
+        const notedCursor = noteAttributeSecrecy(
+          resolver,
+          logicalId,
+          attributeName,
+          cursor,
+          context
+        );
+        resolver.logger.debug(
+          `Resolved Fn::GetAtt from nested attributes: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, cursor, context)), context, { structured: isStructured(cursor), redacted: isSensitiveAttributeName(attributeName) })}`
         );
         // NO nested-stack re-resolution arm here, unlike the flat-key lookup
         // above, and that is a REACHABILITY claim rather than a decision:
@@ -475,11 +476,12 @@ export async function resolveGetAtt(
         // lands a sensitive leaf on exactly this walk. Serving one branch and
         // not the other is how a redaction ships half-applied. The same holds
         // for a leaf redacted to its `{{resolve:` spelling (go-to-k/cdkd#4800).
-        return await this.reresolveRecordedReferences(
+        return await reresolveRecordedReferences(
+          resolver,
           notedCursor,
           logicalId,
           context,
-          `${logicalId}.${displayLeaf(this, attributeName, context)}`,
+          `${logicalId}.${displayLeaf(resolver, attributeName, context)}`,
           crossStackSourceKey({ 'Fn::GetAtt': getAtt })
         );
       }
@@ -522,13 +524,13 @@ export async function resolveGetAtt(
     const declared = Object.keys(resource.attributes ?? {})
       .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
       .sort()
-      .map((k) => displayMasked(this, outputNameLogText(this, k, context), context));
+      .map((k) => displayMasked(resolver, outputNameLogText(resolver, k, context), context));
     const declaredText = declared.length > 0 ? declared.join(', ') : '(none)';
     // Bound once because the message renders it TWICE (go-to-k/cdkd#3432). Two independent
-    // `displayMasked(this,logicalId, context)` calls would also be correct, but a single binding is what
+    // `displayMasked(resolver,logicalId, context)` calls would also be correct, but a single binding is what
     // keeps the two spellings from drifting apart -- the shape the mask-coverage checker's identifier
     // resolution reads at both interpolations.
-    const loggedLogicalId = displayMasked(this, logicalId, context);
+    const loggedLogicalId = displayMasked(resolver, logicalId, context);
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         // MASKED (issue #2827 review). `attributeName` here is
@@ -537,17 +539,18 @@ export async function resolveGetAtt(
         // this fix stopped at `throw new Error(` and missed both this
         // `markNonRetryable(new IntrinsicResolutionRefusalError(...))` and
         // the unknown-account refusal in `constructGuardedAttribute`.
-        `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${displayMasked(this, attributeName, context)}]: the nested stack ` +
+        `Cannot resolve Fn::GetAtt [${loggedLogicalId}, ${displayMasked(resolver, attributeName, context)}]: the nested stack ` +
           `${quotedRender(loggedLogicalId, "'")} declares no output named ` +
-          `${quotedRender(displayMasked(this, outputNameLogText(this, attributeName, context), context), "'")}. ` +
-          `Its outputs are ${displayMasked(this, declaredText, context)}. ` +
+          `${quotedRender(displayMasked(resolver, outputNameLogText(resolver, attributeName, context), context), "'")}. ` +
+          `Its outputs are ${displayMasked(resolver, declaredText, context)}. ` +
           `Check the output name in the nested stack's template, and deploy the child ` +
           `stack again if you have just added it.`
       )
     );
   }
 
-  const value = await this.constructWithStaleRecordHeal(
+  const value = await constructWithStaleRecordHeal(
+    resolver,
     resource,
     attributeName,
     context,
@@ -557,8 +560,8 @@ export async function resolveGetAtt(
   // CONSTRUCTED value (an ARN built from the physical id) is served outside
   // that note.
   recordSecretNamedRead(logicalId, value, context);
-  this.logger.debug(
-    `Resolved Fn::GetAtt: ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+  resolver.logger.debug(
+    `Resolved Fn::GetAtt: ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return value;
 }
@@ -573,11 +576,11 @@ export async function resolveGetAtt(
  * or account id does not flatten every ARN of the reading resource.
  */
 export function publicNoEchoTokens(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   context: ResolverContext,
   producer?: string
 ): ReadonlySet<string> {
-  const tokens = new Set<string>([this.resolverRegion]);
+  const tokens = new Set<string>([resolver.resolverRegion]);
   if (context.stackName !== undefined) tokens.add(context.stackName);
   const serviceToken =
     producer === undefined || !Object.hasOwn(context.resources, producer)
@@ -631,7 +634,7 @@ export function publicNoEchoTokens(
  *
  * IT RETURNS THE VALUE, and passing through rather than mutating in place is
  * the point: a new attribute-serving branch is written as `return
- * this.noteAttributeSecrecy(...)` by imitation of the two that have it.
+ * noteAttributeSecrecy(resolver,...)` by imitation of the two that have it.
  * `Fn::GetAtt` must keep delivering the REAL value (CloudFormation does,
  * measured), so this can never rewrite what it is handed.
  *
@@ -661,7 +664,7 @@ export function publicNoEchoTokens(
  * at `--verbose`.
  */
 export function noteAttributeSecrecy(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   logicalId: string,
   attributeName: string,
   value: unknown,
@@ -685,7 +688,7 @@ export function noteAttributeSecrecy(
       value,
       context.recordedSecretValues,
       undefined,
-      this.publicNoEchoTokens(context, logicalId)
+      publicNoEchoTokens(resolver, context, logicalId)
     );
   }
   // The bag test stays HERE as well as inside `pushRedactedAttributeRead`:
@@ -724,7 +727,7 @@ export function noteAttributeSecrecy(
     //    `display` in `src` are this file's whole-tuple de-dup comparison and
     //    two `.join(', ')` message builders in `deploy-engine.ts`. Nothing
     //    re-parses it.
-    const maskedAttributeName = displayMasked(this, attributeName, context);
+    const maskedAttributeName = displayMasked(resolver, attributeName, context);
     // go-to-k/cdkd#2449: the record says whether its producer DECLARED this
     // attribute `NoEcho`, which makes the refusal exact. Still refused: cdkd
     // never re-runs the producer to recover the value.
@@ -733,12 +736,12 @@ export function noteAttributeSecrecy(
       : undefined;
     const names = record?.noEchoAttributeNames as unknown;
     const declaredNoEcho = Array.isArray(names) && names.includes(attributeName);
-    this.pushRedactedAttributeRead(context, {
+    pushRedactedAttributeRead(resolver, context, {
       kind: 'attribute',
       logicalId,
       key: maskedAttributeName,
       ...(declaredNoEcho && { declaredNoEcho: true as const }),
-      display: `${displayMasked(this, logicalId, context)}.${maskedAttributeName}`,
+      display: `${displayMasked(resolver, logicalId, context)}.${maskedAttributeName}`,
     });
   }
   return value;
@@ -881,7 +884,7 @@ export function recordSecretNamedRead(
  * caller could persist the plaintext unredacted.
  */
 export async function reresolveRecordedReferences(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   logicalId: string,
   context: ResolverContext,
@@ -891,12 +894,12 @@ export async function reresolveRecordedReferences(
   if (!carriesDynamicReference(value) || carriesSecretMask(value)) return value;
   if (context.recordedSecretValues === undefined) return value;
   const notReresolvingLine = (): void =>
-    this.logger.debug(
-      safeMsg`Not re-resolving the reference(s) in ${displayMasked(this, origin, context)}: the template of ${displayMasked(this, logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
+    resolver.logger.debug(
+      safeMsg`Not re-resolving the reference(s) in ${displayMasked(resolver, origin, context)}: the template of ${displayMasked(resolver, logicalId, context)} does not spell them, and this stack may read a stack in another region, so the region that resolved them is unknown`
     );
   const servingAsRecordedLine = (): void =>
-    this.logger.warn(
-      safeMsg`Serving ${displayMasked(this, origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${displayMasked(this, logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${displayMasked(this, logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
+    resolver.logger.warn(
+      safeMsg`Serving ${displayMasked(resolver, origin, context)} as recorded, with its {{resolve:...}} reference(s) unresolved: cdkd cannot confirm the secret still holds the value ${displayMasked(resolver, logicalId, context)} was deployed with, because its physical id does not contain it. Either the secret changed since then (update ${displayMasked(resolver, logicalId, context)} so cdkd deploys it with the new value), or the value is not part of its name (a custom resource's Data, a name shorter than four characters), and cdkd sends the recorded reference as before.`
     );
   // go-to-k/cdkd#4847: a record carrying v12 provenance names each token's
   // region and version; each arm falls back to today's proof independently.
@@ -906,7 +909,7 @@ export async function reresolveRecordedReferences(
   const routes = recordedTokenRoutes(value, record);
   if (routes !== undefined) {
     return await reresolveByRecordedRoutes(
-      this,
+      resolver,
       value,
       logicalId,
       context,
@@ -918,10 +921,10 @@ export async function reresolveRecordedReferences(
         proofs: {
           regionProven: (tokens) =>
             referencesProvenLocal(tokens, logicalId, context) ||
-            referencesRegionProven(tokens, context, this.resolverRegion),
+            referencesRegionProven(tokens, context, resolver.resolverRegion),
           onRegionUnproven: notReresolvingLine,
           generationProven: (tokens, routeOf) =>
-            this.referencesMatchPhysicalId(tokens, logicalId, context, routeOf),
+            referencesMatchPhysicalId(resolver, tokens, logicalId, context, routeOf),
           onGenerationUnproven: () => {
             if (context.provenanceCapture !== true) servingAsRecordedLine();
           },
@@ -931,7 +934,7 @@ export async function reresolveRecordedReferences(
   }
   if (
     !referencesProvenLocal(value, logicalId, context) &&
-    !referencesRegionProven(value, context, this.resolverRegion)
+    !referencesRegionProven(value, context, resolver.resolverRegion)
   ) {
     notReresolvingLine();
     return value;
@@ -940,7 +943,7 @@ export async function reresolveRecordedReferences(
   // producer's physical id holds. A secret rotated since the producer was
   // deployed leaves it NO_CHANGE (the diff compares references), still under
   // the old name, and today's value would name a resource that does not exist.
-  if (!(await this.referencesMatchPhysicalId(value, logicalId, context))) {
+  if (!(await referencesMatchPhysicalId(resolver, value, logicalId, context))) {
     // The v12 migration capture resolves records the deploy itself resolves
     // too; the line is the deploy's to print.
     if (context.provenanceCapture) return value;
@@ -951,7 +954,8 @@ export async function reresolveRecordedReferences(
   // and no single version (two generations of a create-only token) still names
   // the versions it holds, which the read route records.
   const readVersions = recordedTokenVersions(value, record);
-  return await this.reresolveCrossStackValue(
+  return await reresolveCrossStackValue(
+    resolver,
     value,
     undefined,
     readVersions === undefined ? context : { ...context, recordedReadVersions: readVersions },
@@ -971,7 +975,7 @@ export async function reresolveRecordedReferences(
  * re-resolution that follows makes no second lookup.
  */
 export async function referencesMatchPhysicalId(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   logicalId: string,
   context: ResolverContext,
@@ -988,7 +992,7 @@ export async function referencesMatchPhysicalId(
       const route = routeOf?.(token);
       const plaintext =
         route === undefined
-          ? await resolveDynamicReferences(this, token, context)
+          ? await resolveDynamicReferences(resolver, token, context)
           : // The ROUTE's resolver (its recorded region's), never this one.
             await resolveDynamicReferences(route.resolver, token, route.context);
       if (plaintext.includes('{{resolve:')) continue;
@@ -1135,7 +1139,7 @@ function referencesProvenLocal(
  * resource's next in-place update (#1727).
  */
 export function rejectPlaceholderArnAttribute(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   value: unknown,
@@ -1164,11 +1168,11 @@ export function rejectPlaceholderArnAttribute(
   // that map's literals and carries no control character (issue #3441).
   throw markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ` +
-        `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(maskValueLeaves(this, value, context)), '"')} is a placeholder ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ` +
+        `${resource.resourceType}: the recorded value ${quotedRender(stringifyValue(maskValueLeaves(resolver, value, context)), '"')} is a placeholder ` +
         `written by an older cdkd version — its region and account ` +
         `fields are literal wildcards, so it is not a usable ARN. ` +
-        this.staleRecordRemedy(healOutcome, context)
+        staleRecordRemedy(resolver, healOutcome, context)
     )
   );
 }
@@ -1184,7 +1188,7 @@ export function rejectPlaceholderArnAttribute(
  * the resource types it and its `constructAttributeFor*` helpers reference.
  */
 export async function constructAttribute(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   // No longer unused (issue #2827 review): the three EC2 fallback warns in
@@ -1250,8 +1254,8 @@ export async function constructAttribute(
   const { accountId, partition } = accountInfo;
   const region = canonicalizeRegion(accountInfo.region);
   // The per-type handlers, in their original order (issue #4337).
-  const constructAttributeForCoreTypesResult = await constructAttributeForCoreTypes.call(
-    this,
+  const constructAttributeForCoreTypesResult = await constructAttributeForCoreTypes(
+    resolver,
     resource,
     attributeName,
     context,
@@ -1264,8 +1268,8 @@ export async function constructAttribute(
   );
   if (constructAttributeForCoreTypesResult !== NOT_CONSTRUCTED)
     return constructAttributeForCoreTypesResult;
-  const constructAttributeForAppTypesResult = await constructAttributeForAppTypes.call(
-    this,
+  const constructAttributeForAppTypesResult = await constructAttributeForAppTypes(
+    resolver,
     resource,
     attributeName,
     context,
@@ -1278,8 +1282,8 @@ export async function constructAttribute(
   );
   if (constructAttributeForAppTypesResult !== NOT_CONSTRUCTED)
     return constructAttributeForAppTypesResult;
-  const constructAttributeForComputeTypesResult = await constructAttributeForComputeTypes.call(
-    this,
+  const constructAttributeForComputeTypesResult = await constructAttributeForComputeTypes(
+    resolver,
     attributeName,
     context,
     logicalId,
@@ -1295,7 +1299,8 @@ export async function constructAttribute(
   // Default: fall back to the physical ID via the shared shape guard
   // (issue #1106 / #1111 — the same rules apply to every per-type
   // `default:` branch above).
-  return this.guardedPhysicalIdFallback(
+  return guardedPhysicalIdFallback(
+    resolver,
     logicalId,
     attributeName,
     resourceType,

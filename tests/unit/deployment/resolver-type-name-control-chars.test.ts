@@ -34,6 +34,7 @@ import {
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
+import { refuseUnservedAttribute } from '../../../src/deployment/intrinsic-resolver/getatt-refusals.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -245,11 +246,7 @@ describe('a hostile resource TYPE is sanitized where an arbitrary type reaches t
     const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
     const call = (resourceType: string): Promise<Captured> =>
       capture(() =>
-        (
-          resolver as unknown as {
-            refuseUnservedAttribute: (site: Record<string, unknown>) => never;
-          }
-        ).refuseUnservedAttribute({
+        refuseUnservedAttribute(resolver, {
           logicalId: 'Thing',
           attributeName: 'PrivateIp',
           resourceType,

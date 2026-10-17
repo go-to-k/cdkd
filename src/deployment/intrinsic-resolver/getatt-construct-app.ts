@@ -2,6 +2,13 @@ import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.j
 import type { ResourceState } from '../../types/state.js';
 import { type ResolverContext } from './support.js';
 import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
+import {
+  describeFailureObserved,
+  guardedPhysicalIdFallback,
+  refuseUndefinedAttribute,
+  refuseUnservedAttribute,
+} from './getatt-refusals.js';
+import { noteAttributeSecrecy } from './getatt.js';
 
 /**
  * `constructAttribute`'s per-type handlers for AWS::Events::Rule through AWS::SNS::Topic, moved
@@ -10,7 +17,7 @@ import { NOT_CONSTRUCTED } from './getatt-construct-core.js';
  * file name: `scripts/gen-sdk-attr-coverage.ts` finds handled types by both.
  */
 export async function constructAttributeForAppTypes(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   context: ResolverContext,
@@ -40,7 +47,8 @@ export async function constructAttributeForAppTypes(
         // resource's value becoming a mask-only needle) would therefore
         // register the bus name, not the built ARN; inert, since nothing
         // declares an Events rule NoEcho.
-        const busRaw = this.noteAttributeSecrecy(
+        const busRaw = noteAttributeSecrecy(
+          resolver,
           logicalId,
           attributeName,
           resource.properties?.['EventBusName'],
@@ -54,7 +62,8 @@ export async function constructAttributeForAppTypes(
           : `arn:${partition}:events:${region}:${accountId}:rule/${physicalId}`;
       }
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -72,7 +81,8 @@ export async function constructAttributeForAppTypes(
       case 'Name':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -90,7 +100,8 @@ export async function constructAttributeForAppTypes(
       case 'FileSystemId':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -106,7 +117,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:firehose:${region}:${accountId}:deliverystream/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -122,7 +134,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:codebuild:${region}:${accountId}:project/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -143,7 +156,8 @@ export async function constructAttributeForAppTypes(
         }
         return `arn:${partition}:cloudtrail:${region}:${accountId}:trail/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -161,7 +175,8 @@ export async function constructAttributeForAppTypes(
       case 'ApiId':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -194,7 +209,8 @@ export async function constructAttributeForAppTypes(
       case 'ApiId':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -224,7 +240,7 @@ export async function constructAttributeForAppTypes(
         return physicalId;
       case 'HostedZoneId': {
         if (resourceType === 'AWS::ServiceDiscovery::HttpNamespace') {
-          this.refuseUndefinedAttribute({
+          refuseUndefinedAttribute(resolver, {
             logicalId,
             attributeName,
             resourceType,
@@ -238,7 +254,7 @@ export async function constructAttributeForAppTypes(
           // Region-sensitive: a namespace id only resolves in its own region
           // (issue #1994). See `ResolverClients.serviceDiscoveryClient` for why this
           // one service is built here instead of read off the bag.
-          const sd = await this.clients.serviceDiscoveryClient();
+          const sd = await resolver.clients.serviceDiscoveryClient();
           const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
           hostedZoneId = resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
         } catch (err) {
@@ -246,19 +262,19 @@ export async function constructAttributeForAppTypes(
           // succeed on a later attempt. AWS's text stays behind --verbose
           // (`describeFailureObserved`), since `NamespaceNotFound` can echo
           // a state-record id (issue #3479).
-          this.refuseUnservedAttribute({
+          refuseUnservedAttribute(resolver, {
             logicalId,
             attributeName,
             resourceType,
             physicalId,
             context,
-            observed: this.describeFailureObserved('GetNamespace', err, context),
+            observed: describeFailureObserved(resolver, 'GetNamespace', err, context),
             remedy:
               'Fix the read (the servicediscovery:GetNamespace permission, or the region) and deploy again.',
           });
         }
         if (hostedZoneId) return hostedZoneId;
-        this.refuseUnservedAttribute({
+        refuseUnservedAttribute(resolver, {
           logicalId,
           attributeName,
           resourceType,
@@ -269,7 +285,8 @@ export async function constructAttributeForAppTypes(
         });
       }
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -287,7 +304,8 @@ export async function constructAttributeForAppTypes(
       case 'Id':
         return physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -303,7 +321,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -323,7 +342,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -344,7 +364,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -365,7 +386,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:rds:${region}:${accountId}:cluster:${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -381,7 +403,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:s3express:${region}:${accountId}:bucket/${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -397,7 +420,8 @@ export async function constructAttributeForAppTypes(
       case 'Arn':
         return `arn:${partition}:lambda:${region}:${accountId}:function:${physicalId}`;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -425,7 +449,8 @@ export async function constructAttributeForAppTypes(
       case 'QueueName':
         return queueName;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,
@@ -449,7 +474,8 @@ export async function constructAttributeForAppTypes(
       case 'TopicName':
         return physicalId.startsWith('arn:') ? physicalId.split(':').pop() : physicalId;
       default:
-        return this.guardedPhysicalIdFallback(
+        return guardedPhysicalIdFallback(
+          resolver,
           logicalId,
           attributeName,
           resourceType,

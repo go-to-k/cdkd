@@ -135,7 +135,7 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * THE ONE ANSWER TO "what arity does the string form accept", shared by the two
  * sites that must agree about it (issue
  * [#2270](https://github.com/go-to-k/cdkd/issues/2270)):
- * `IntrinsicFunctionResolver.resolveGetAtt`, which RESOLVES the reference, and
+ * `resolveGetAtt` (`deployment/intrinsic-resolver/getatt.ts`), which RESOLVES the reference, and
  * {@link crossStackSourceKey} below, which keys the same leaf for the persist
  * path. They were two spellings of one question and they disagreed -- the
  * resolver split on every dot and rejected anything but two segments, so the
@@ -474,7 +474,7 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
   // requires `Parameters` and `Resources` logical ids to be unique across one
   // template, so the two populations could not overlap. cdkd never submits a
   // template to CloudFormation, so it inherits no such validation, and
-  // `IntrinsicFunctionResolver.resolveRef` gives a RESOURCE precedence over a
+  // `resolveRef` (`deployment/intrinsic-resolver/refs.ts`) gives a RESOURCE precedence over a
   // same-named PARAMETER -- so a colliding template resolves the RESOURCE while
   // this key still spells the parameter name, and the association IS reached
   // (measured in review).

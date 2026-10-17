@@ -288,7 +288,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // this claim anyway — the clause is assembled at the CALL site, outside
     // the population it walked. This pins it at the source: each `observed:` argument is
     // either a string literal, a `describeFailureObserved(...)` call, or a
-    // template literal whose only holes are `this.displayMasked(...)` and
+    // template literal whose only holes are `displayMasked(resolver, ...)` and
     // `observedState` (the EC2 state enum). A fourth shape fails here.
     const source = readResolverFamily();
     const observedArgs = [...source.matchAll(/^\s*observed:\s*(.+?),?\n/gm)]
@@ -304,7 +304,7 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // leading quote admitted `'literal ' + physicalId`, and a leading masker
     // call admitted `${this.maskSecretsForLog(x, context) + physicalId}`.
     const LITERAL = /^'[^'+`]*'$/;
-    const DESCRIBE_FAILURE = /^this\.describeFailureObserved\('[A-Za-z]+', err, context\)$/;
+    const DESCRIBE_FAILURE = /^describeFailureObserved\(resolver, '[A-Za-z]+', err, context\)$/;
     // `attributeName` by NAME, not any identifier: a masked resolved value
     // (`displayMasked(physicalId, context)`) would satisfy "masked" while
     // contradicting the `not-in-class(observed)` note, which promises a state
@@ -316,8 +316,9 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     // new helper masks exactly as before AND control-strips, so the clause this
     // note promises is now also safe to render. The rename being visible HERE
     // is the fence doing its job -- an anchor that had not moved would mean it
-    // had stopped matching its subject.
-    const MASKED_HOLE = /^displayMasked\(this, attributeName, context\)$/;
+    // had stopped matching its subject. The receiver moved from `this` to the
+    // `resolver` parameter when the mixins became plain functions.
+    const MASKED_HOLE = /^displayMasked\(resolver, attributeName, context\)$/;
     for (const arg of observedArgs) {
       if (LITERAL.test(arg) || DESCRIBE_FAILURE.test(arg)) continue;
       const holes = [...arg.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]!.trim());

@@ -29,15 +29,6 @@ import {
   quotedRender,
 } from './support.js';
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    resolveParameters: OmitThisParameter<typeof resolveParameters>;
-    evaluateConditions: OmitThisParameter<typeof evaluateConditions>;
-    /** @internal */
-    resolveKeyUnit: OmitThisParameter<typeof resolveKeyUnit>;
-  }
-}
-
 /**
  * Resolve parameter values from template Parameters section
  *
@@ -49,7 +40,7 @@ declare module '../intrinsic-function-resolver.js' {
  * @returns Record of parameter names to resolved values
  */
 export async function resolveParameters(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   template: CloudFormationTemplate,
   userParameters?: Record<string, string>,
   options?: {
@@ -83,7 +74,7 @@ export async function resolveParameters(
   // the collision walk right after this call reads (`AWS::AccountId` only for
   // a template that may re-read it, issue #4975).
   if (inheritedSecrets && options?.recordPseudoParameters !== false) {
-    await recordInheritedPseudoParameterValues(this, inheritedSecrets, template);
+    await recordInheritedPseudoParameterValues(resolver, inheritedSecrets, template);
   }
   // SANITIZED as well as masked (go-to-k/cdkd#3426). The three lines below
   // print a template-supplied PARAMETER VALUE, so the control-character class
@@ -197,13 +188,13 @@ export async function resolveParameters(
     if (userParameters && Object.hasOwn(userParameters, name)) {
       const userValue = userParameters[name];
       if (userValue !== undefined) {
-        refuseCoercedInheritedSecret(this, name, paramDef, userValue, inheritedSecrets);
-        parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
-        this.logger.debug(
+        refuseCoercedInheritedSecret(resolver, name, paramDef, userValue, inheritedSecrets);
+        parameters[name] = resolver.coerceParameterValue(userValue, paramDef.Type);
+        resolver.logger.debug(
           `Parameter ${maskInherited(name)}: using user-provided value ${maskInherited(
             stringifyParameterForLog(
               paramDef,
-              maskValueLeaves(this, userValue, inheritedLogContext)
+              maskValueLeaves(resolver, userValue, inheritedLogContext)
             )
           )}`
         );
@@ -225,7 +216,7 @@ export async function resolveParameters(
         // otherwise), defeating cdkd-owned asset storage (issue #1002).
         referencedNames ??= collectReferencedParameterNames(template);
         if (!referencedNames.has(name)) {
-          this.logger.debug(
+          resolver.logger.debug(
             `Parameter ${maskInherited(name)}: skipping SSM resolution (not referenced by Resources/Outputs/Conditions)`
           );
           continue;
@@ -234,10 +225,10 @@ export async function resolveParameters(
         // `ssmPath` is an SSM path from the parameter DEFINITION in the
         // template -- the same untrusted JSON the NAME comes from, so it takes
         // the same pass.
-        this.logger.debug(
+        resolver.logger.debug(
           `Parameter ${maskInherited(name)}: resolving SSM parameter path ${maskInherited(ssmPath)}`
         );
-        const resolved = await this.resolveSSMParameter(ssmPath);
+        const resolved = await resolver.resolveSSMParameter(ssmPath);
         // Coerced against the INNER type peeled out of `Value<...>`, never
         // the declared outer one -- see {@link ssmResolvedValueType} for why
         // the outer type is a silent no-op here, and for the two
@@ -259,8 +250,10 @@ export async function resolveParameters(
         // non-numeric Parameter Store value -- rather than the raw string.
         const resolvedType = ssmResolvedValueType(paramDef.Type);
         parameters[name] =
-          resolvedType === undefined ? resolved : this.coerceParameterValue(resolved, resolvedType);
-        this.logger.debug(
+          resolvedType === undefined
+            ? resolved
+            : resolver.coerceParameterValue(resolved, resolvedType);
+        resolver.logger.debug(
           `Parameter ${maskInherited(name)}: resolved SSM value ${maskInherited(
             stringifyParameterForLog(paramDef, resolved)
           )}`
@@ -273,7 +266,7 @@ export async function resolveParameters(
       // (issue #2367). Only a STRING default is coerced -- see
       // {@link coerceParameterDefault} for the measured parsed shapes.
       parameters[name] = coerceParameterDefault(paramDef.Default, paramDef.Type);
-      this.logger.debug(
+      resolver.logger.debug(
         `Parameter ${maskInherited(name)}: using default value ${maskInherited(
           stringifyParameterForLog(paramDef, paramDef.Default)
         )}`
@@ -292,7 +285,7 @@ export async function resolveParameters(
  * and can reference parameters and pseudo parameters
  */
 export async function evaluateConditions(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   context: ResolverContext
 ): Promise<Record<string, boolean>> {
   // `Object.create(null)` (issue #2767). This is the PRODUCER of the bag
@@ -413,7 +406,7 @@ export async function evaluateConditions(
     }
     if (inProgress.has(name)) {
       throw new Error(
-        `Circular condition reference detected involving condition ${quotedRender(displayMasked(this, name, maskingContext), '"')}`
+        `Circular condition reference detected involving condition ${quotedRender(displayMasked(resolver, name, maskingContext), '"')}`
       );
     }
     // The TEMPLATE's own `Conditions` object comes from `JSON.parse`, so this
@@ -426,8 +419,8 @@ export async function evaluateConditions(
     if (definition === undefined) {
       // A `{Condition: X}` reference to an undeclared condition. Match the
       // Fn::If not-found behavior: warn and treat as false.
-      this.logger.warn(
-        `Condition ${displayMasked(this, name, maskingContext)} not found in template, assuming false`
+      resolver.logger.warn(
+        `Condition ${displayMasked(resolver, name, maskingContext)} not found in template, assuming false`
       );
       conditions[name] = false;
       assumed.add(name);
@@ -439,15 +432,15 @@ export async function evaluateConditions(
     try {
       // Resolve the definition with the condition-reference hook active so
       // nested `{Condition: Y}` references recurse through evaluateByName.
-      const result = await this.resolveValue(definition, {
+      const result = await resolver.resolveValue(definition, {
         ...maskingContext,
         conditionResolver: evaluateByName,
       });
       const value = Boolean(result);
       conditions[name] = value;
       // `value` carries nothing: it is `Boolean(result)`.
-      this.logger.debug(
-        `Evaluated condition ${displayMasked(this, name, maskingContext)} = ${value}`
+      resolver.logger.debug(
+        `Evaluated condition ${displayMasked(resolver, name, maskingContext)} = ${value}`
       );
       return value;
     } finally {
@@ -531,9 +524,9 @@ export async function evaluateConditions(
       // a tally here had missed, and `.claude/rules/layout-deployment-secrets.md`
       // records five rounds on go-to-k/cdkd#2803 refuting the same shape of
       // sentence. Do not restore a count.
-      this.logger.warn(
+      resolver.logger.warn(
         displayMasked(
-          this,
+          resolver,
           `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
           maskingContext
         )
@@ -588,18 +581,18 @@ export async function evaluateConditions(
  */
 /** @internal */
 export async function resolveKeyUnit(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   key: string,
   val: unknown,
   context: ResolverContext,
   abandoned: AbandonedResolution[]
 ): Promise<unknown> {
   try {
-    return await this.resolveValue(val, context);
+    return await resolver.resolveValue(val, context);
   } catch (err) {
     // The refusal gate, in the same order as the token loop's catch.
     if (isDeliberateResolutionRefusal(err)) throw err;
-    abandoned.push(abandonedUnit(this, 'key', key, err, context, val));
+    abandoned.push(abandonedUnit(resolver, 'key', key, err, context, val));
     return val;
   }
 }

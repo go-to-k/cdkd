@@ -14,25 +14,44 @@ import {
   allSettledKeepingFirstRejection,
   coerceParameterTypedValue,
 } from './intrinsic-resolver/support.js';
-import * as getAttMixin from './intrinsic-resolver/getatt.js';
-import * as getAttRefusalsMixin from './intrinsic-resolver/getatt-refusals.js';
-import * as getAttHealMixin from './intrinsic-resolver/getatt-heal.js';
-import * as crossStackMixin from './intrinsic-resolver/cross-stack.js';
+import { resolveGetAtt } from './intrinsic-resolver/getatt.js';
+import { resolveImportValue } from './intrinsic-resolver/cross-stack.js';
 import { CfnFallbackCache } from './intrinsic-resolver/cfn-fallback.js';
-import * as stackOutputMixin from './intrinsic-resolver/stack-output.js';
+import { resolveGetStackOutput } from './intrinsic-resolver/stack-output.js';
 import {
   DynamicReferenceCache,
   resolveTemplateLeafReferences,
 } from './intrinsic-resolver/dynamic-refs.js';
-import * as stringFnMixin from './intrinsic-resolver/string-functions.js';
-import * as subMixin from './intrinsic-resolver/sub.js';
-import * as fnMixin from './intrinsic-resolver/functions.js';
+import {
+  resolveJoin,
+  resolveSelect,
+  resolveSplit,
+  wholeReferenceSpans,
+} from './intrinsic-resolver/string-functions.js';
+import { resolveSub } from './intrinsic-resolver/sub.js';
+import {
+  resolveAnd,
+  resolveBase64,
+  resolveCidr,
+  resolveConditionReference,
+  resolveEquals,
+  resolveFindInMap,
+  resolveGetAZs,
+  resolveIf,
+  resolveNot,
+  resolveOr,
+} from './intrinsic-resolver/functions.js';
 import { recordLeafResolution, regionLogText } from './intrinsic-resolver/masking.js';
 import { displayMasked, logRender } from './intrinsic-resolver/masking-display.js';
-import * as paramsConditionsMixin from './intrinsic-resolver/params-conditions.js';
+import {
+  evaluateConditions as evaluateTemplateConditions,
+  resolveKeyUnit,
+  resolveParameters as resolveTemplateParameters,
+} from './intrinsic-resolver/params-conditions.js';
 import { recordDroppedArrayElementsIn } from './intrinsic-resolver/parameter-secrets.js';
-import * as refsMixin from './intrinsic-resolver/refs.js';
+import { resolveRef } from './intrinsic-resolver/refs.js';
 import { ResolverClients } from './intrinsic-resolver/clients.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
 import type {
   CdkCrossAccountRefVerdict,
   ProducerLookup,
@@ -399,7 +418,7 @@ export class IntrinsicFunctionResolver {
         output: value,
         substitutions: [],
         complete: true,
-        parameterSpans: stringFnMixin.wholeReferenceSpans(source, value),
+        parameterSpans: wholeReferenceSpans(source, value),
       });
     }
     return value;
@@ -457,7 +476,7 @@ export class IntrinsicFunctionResolver {
       // embedding intrinsic and positioned by nothing.
       const logicalId = obj['Ref'] as string;
       let fromParameter = false;
-      const value = await this.resolveRef(logicalId, context, () => {
+      const value = await resolveRef(this, logicalId, context, () => {
         fromParameter = true;
       });
       if (fromParameter && typeof value === 'string') {
@@ -466,7 +485,7 @@ export class IntrinsicFunctionResolver {
           output: value,
           substitutions: [],
           complete: true,
-          parameterSpans: stringFnMixin.wholeReferenceSpans({ Ref: logicalId }, value),
+          parameterSpans: wholeReferenceSpans({ Ref: logicalId }, value),
         });
       }
       return value;
@@ -476,18 +495,19 @@ export class IntrinsicFunctionResolver {
       return this.recordCrossStackReadSpan(
         context,
         obj,
-        await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, unknown] | string, context)
+        await resolveGetAtt(this, obj['Fn::GetAtt'] as [string, unknown] | string, context)
       );
     }
 
     // Both pass the intrinsic OBJECT itself, the key its resolution record is
     // stored under for this pass (issue #3156).
     if ('Fn::Join' in obj) {
-      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown], context, obj);
+      return await resolveJoin(this, obj['Fn::Join'] as [string, unknown], context, obj);
     }
 
     if ('Fn::Sub' in obj) {
-      return await this.resolveSub(
+      return await resolveSub(
+        this,
         obj['Fn::Sub'] as string | [string, Record<string, unknown>],
         context,
         obj
@@ -495,19 +515,19 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::Select' in obj) {
-      return await this.resolveSelect(obj['Fn::Select'], context);
+      return await resolveSelect(this, obj['Fn::Select'], context);
     }
 
     if ('Fn::Split' in obj) {
-      return await this.resolveSplit(obj['Fn::Split'] as [string, unknown], context);
+      return await resolveSplit(this, obj['Fn::Split'] as [string, unknown], context);
     }
 
     if ('Fn::If' in obj) {
-      return await this.resolveIf(obj['Fn::If'] as [string, unknown, unknown], context, obj);
+      return await resolveIf(this, obj['Fn::If'] as [string, unknown, unknown], context, obj);
     }
 
     if ('Fn::Equals' in obj) {
-      return await this.resolveEquals(obj['Fn::Equals'] as [unknown, unknown], context);
+      return await resolveEquals(this, obj['Fn::Equals'] as [unknown, unknown], context);
     }
 
     // `{Condition: <name>}` — a named-condition reference. Valid only inside
@@ -531,26 +551,26 @@ export class IntrinsicFunctionResolver {
       Object.keys(obj).length === 1 &&
       typeof obj['Condition'] === 'string'
     ) {
-      return await this.resolveConditionReference(obj['Condition'], context);
+      return await resolveConditionReference(this, obj['Condition'], context);
     }
 
     if ('Fn::And' in obj) {
-      return await this.resolveAnd(obj['Fn::And'] as unknown[], context);
+      return await resolveAnd(this, obj['Fn::And'] as unknown[], context);
     }
 
     if ('Fn::Or' in obj) {
-      return await this.resolveOr(obj['Fn::Or'] as unknown[], context);
+      return await resolveOr(this, obj['Fn::Or'] as unknown[], context);
     }
 
     if ('Fn::Not' in obj) {
-      return await this.resolveNot(obj['Fn::Not'] as [unknown], context);
+      return await resolveNot(this, obj['Fn::Not'] as [unknown], context);
     }
 
     if ('Fn::ImportValue' in obj) {
       return this.recordCrossStackReadSpan(
         context,
         obj,
-        await this.resolveImportValue(obj['Fn::ImportValue'], context)
+        await resolveImportValue(this, obj['Fn::ImportValue'], context)
       );
     }
 
@@ -558,27 +578,28 @@ export class IntrinsicFunctionResolver {
       return this.recordCrossStackReadSpan(
         context,
         obj,
-        await this.resolveGetStackOutput(obj['Fn::GetStackOutput'], context)
+        await resolveGetStackOutput(this, obj['Fn::GetStackOutput'], context)
       );
     }
 
     if ('Fn::FindInMap' in obj) {
-      return await this.resolveFindInMap(
+      return await resolveFindInMap(
+        this,
         obj['Fn::FindInMap'] as [unknown, unknown, unknown] | [unknown, unknown, unknown, unknown],
         context
       );
     }
 
     if ('Fn::Base64' in obj) {
-      return await this.resolveBase64(obj['Fn::Base64'], context);
+      return await resolveBase64(this, obj['Fn::Base64'], context);
     }
 
     if ('Fn::GetAZs' in obj) {
-      return await this.resolveGetAZs(obj['Fn::GetAZs'], context);
+      return await resolveGetAZs(this, obj['Fn::GetAZs'], context);
     }
 
     if ('Fn::Cidr' in obj) {
-      return await this.resolveCidr(obj['Fn::Cidr'] as [unknown, unknown, unknown], context);
+      return await resolveCidr(this, obj['Fn::Cidr'] as [unknown, unknown, unknown], context);
     }
 
     // Unknown intrinsic: a lone `{ "Ref": ... }` / `{ "Fn::X": ... }` whose key
@@ -633,7 +654,7 @@ export class IntrinsicFunctionResolver {
       const resolvedVal =
         context.abandonedResolutions === undefined
           ? await this.resolveValue(val, context)
-          : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
+          : await resolveKeyUnit(this, key, val, context, context.abandonedResolutions);
       // Skip properties that resolve to AWS::NoValue
       if (resolvedVal !== AWS_NO_VALUE) {
         if (key === '__proto__') {
@@ -726,91 +747,24 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(`Using a producer-region resolver for ${guestRegionText}`);
     return scoped;
   }
+
+  /**
+   * The template's parameter values: user-provided first, then each `Default`
+   * (`resolveParameters` in `intrinsic-resolver/params-conditions.ts`).
+   */
+  resolveParameters(
+    template: CloudFormationTemplate,
+    userParameters?: Record<string, string>,
+    options?: Parameters<typeof resolveTemplateParameters>[3]
+  ): Promise<Record<string, unknown>> {
+    return resolveTemplateParameters(this, template, userParameters, options);
+  }
+
+  /**
+   * Every template `Conditions` entry, evaluated (`evaluateConditions` in
+   * `intrinsic-resolver/params-conditions.ts`).
+   */
+  evaluateConditions(context: ResolverContext): Promise<Record<string, boolean>> {
+    return evaluateTemplateConditions(this, context);
+  }
 }
-
-IntrinsicFunctionResolver.prototype.resolveIf = fnMixin.resolveIf;
-IntrinsicFunctionResolver.prototype.resolveEquals = fnMixin.resolveEquals;
-IntrinsicFunctionResolver.prototype.resolveConditionReference = fnMixin.resolveConditionReference;
-IntrinsicFunctionResolver.prototype.resolveAnd = fnMixin.resolveAnd;
-IntrinsicFunctionResolver.prototype.resolveOr = fnMixin.resolveOr;
-IntrinsicFunctionResolver.prototype.resolveNot = fnMixin.resolveNot;
-IntrinsicFunctionResolver.prototype.resolveFindInMap = fnMixin.resolveFindInMap;
-IntrinsicFunctionResolver.prototype.resolveBase64 = fnMixin.resolveBase64;
-IntrinsicFunctionResolver.prototype.resolveGetAZs = fnMixin.resolveGetAZs;
-IntrinsicFunctionResolver.prototype.resolvePseudoParameter = fnMixin.resolvePseudoParameter;
-IntrinsicFunctionResolver.prototype.resolveCidr = fnMixin.resolveCidr;
-IntrinsicFunctionResolver.prototype.expandIPv6 = fnMixin.expandIPv6;
-IntrinsicFunctionResolver.prototype.ipv6ToBigInt = fnMixin.ipv6ToBigInt;
-IntrinsicFunctionResolver.prototype.bigIntToIPv6 = fnMixin.bigIntToIPv6;
-
-IntrinsicFunctionResolver.prototype.resolveJoin = stringFnMixin.resolveJoin;
-IntrinsicFunctionResolver.prototype.subPlaceholderWarning = subMixin.subPlaceholderWarning;
-IntrinsicFunctionResolver.prototype.subPlaceholderNamesADeclaredTemplateEntity =
-  subMixin.subPlaceholderNamesADeclaredTemplateEntity;
-IntrinsicFunctionResolver.prototype.rethrowStructuralSubFailure =
-  subMixin.rethrowStructuralSubFailure;
-IntrinsicFunctionResolver.prototype.subListRefusal = subMixin.subListRefusal;
-IntrinsicFunctionResolver.prototype.resolveSub = subMixin.resolveSub;
-IntrinsicFunctionResolver.prototype.resolveSelect = stringFnMixin.resolveSelect;
-IntrinsicFunctionResolver.prototype.renderGetAttArg = stringFnMixin.renderGetAttArg;
-IntrinsicFunctionResolver.prototype.describeOperandShape = stringFnMixin.describeOperandShape;
-IntrinsicFunctionResolver.prototype.describeSplitValueSource =
-  stringFnMixin.describeSplitValueSource;
-IntrinsicFunctionResolver.prototype.resolveSplit = stringFnMixin.resolveSplit;
-
-IntrinsicFunctionResolver.prototype.reresolveCrossStackValue =
-  crossStackMixin.reresolveCrossStackValue;
-IntrinsicFunctionResolver.prototype.pinSecretVerdict = crossStackMixin.pinSecretVerdict;
-IntrinsicFunctionResolver.prototype.resolveImportValue = crossStackMixin.resolveImportValue;
-IntrinsicFunctionResolver.prototype.recordImport = crossStackMixin.recordImport;
-IntrinsicFunctionResolver.prototype.resolveGetStackOutput = stackOutputMixin.resolveGetStackOutput;
-IntrinsicFunctionResolver.prototype.recordOutputRead = stackOutputMixin.recordOutputRead;
-IntrinsicFunctionResolver.prototype.positionalNameMask = stackOutputMixin.positionalNameMask;
-IntrinsicFunctionResolver.prototype.maskStateReadError = stackOutputMixin.maskStateReadError;
-IntrinsicFunctionResolver.prototype.maskNamedError = stackOutputMixin.maskNamedError;
-IntrinsicFunctionResolver.prototype.namedRequestMasks = stackOutputMixin.namedRequestMasks;
-
-IntrinsicFunctionResolver.prototype.pushRedactedAttributeRead =
-  getAttMixin.pushRedactedAttributeRead;
-IntrinsicFunctionResolver.prototype.resolveGetAtt = getAttMixin.resolveGetAtt;
-IntrinsicFunctionResolver.prototype.publicNoEchoTokens = getAttMixin.publicNoEchoTokens;
-IntrinsicFunctionResolver.prototype.noteAttributeSecrecy = getAttMixin.noteAttributeSecrecy;
-IntrinsicFunctionResolver.prototype.reresolveRecordedReferences =
-  getAttMixin.reresolveRecordedReferences;
-IntrinsicFunctionResolver.prototype.referencesMatchPhysicalId =
-  getAttMixin.referencesMatchPhysicalId;
-IntrinsicFunctionResolver.prototype.rejectPlaceholderArnAttribute =
-  getAttMixin.rejectPlaceholderArnAttribute;
-IntrinsicFunctionResolver.prototype.staleRecordRemedy = getAttHealMixin.staleRecordRemedy;
-IntrinsicFunctionResolver.prototype.unenrichedRemedy = getAttHealMixin.unenrichedRemedy;
-IntrinsicFunctionResolver.prototype.healWithheld = getAttHealMixin.healWithheld;
-IntrinsicFunctionResolver.prototype.withheldRemedy = getAttHealMixin.withheldRemedy;
-IntrinsicFunctionResolver.prototype.healStaleAttributes = getAttHealMixin.healStaleAttributes;
-IntrinsicFunctionResolver.prototype.usableHealedAttribute = getAttHealMixin.usableHealedAttribute;
-IntrinsicFunctionResolver.prototype.serveHealedAttribute = getAttHealMixin.serveHealedAttribute;
-IntrinsicFunctionResolver.prototype.constructWithStaleRecordHeal =
-  getAttHealMixin.constructWithStaleRecordHeal;
-IntrinsicFunctionResolver.prototype.constructGuardedAttribute =
-  getAttHealMixin.constructGuardedAttribute;
-IntrinsicFunctionResolver.prototype.healBeforeConstructing = getAttHealMixin.healBeforeConstructing;
-IntrinsicFunctionResolver.prototype.healMaskedOwnIdAttribute =
-  getAttHealMixin.healMaskedOwnIdAttribute;
-IntrinsicFunctionResolver.prototype.constructAttribute = getAttMixin.constructAttribute;
-IntrinsicFunctionResolver.prototype.refuseUnservedAttribute =
-  getAttRefusalsMixin.refuseUnservedAttribute;
-IntrinsicFunctionResolver.prototype.refuseUnconstructibleAttribute =
-  getAttRefusalsMixin.refuseUnconstructibleAttribute;
-IntrinsicFunctionResolver.prototype.refuseUndefinedAttribute =
-  getAttRefusalsMixin.refuseUndefinedAttribute;
-IntrinsicFunctionResolver.prototype.describeFailureObserved =
-  getAttRefusalsMixin.describeFailureObserved;
-IntrinsicFunctionResolver.prototype.guardedPhysicalIdFallback =
-  getAttRefusalsMixin.guardedPhysicalIdFallback;
-IntrinsicFunctionResolver.prototype.resolveParameters = paramsConditionsMixin.resolveParameters;
-IntrinsicFunctionResolver.prototype.evaluateConditions = paramsConditionsMixin.evaluateConditions;
-IntrinsicFunctionResolver.prototype.resolveKeyUnit = paramsConditionsMixin.resolveKeyUnit;
-IntrinsicFunctionResolver.prototype.nameIsNeverAResource = refsMixin.nameIsNeverAResource;
-IntrinsicFunctionResolver.prototype.lookupResourceRecord = refsMixin.lookupResourceRecord;
-IntrinsicFunctionResolver.prototype.resolveRef = refsMixin.resolveRef;
-IntrinsicFunctionResolver.prototype.resolveRefValue = refsMixin.resolveRefValue;
-IntrinsicFunctionResolver.prototype.noteRefStateMask = refsMixin.noteRefStateMask;

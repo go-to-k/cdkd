@@ -44,6 +44,13 @@ vi.mock('../../../src/deployment/intrinsic-resolver/dynamic-ref-lookups.js', asy
     resolveSecretsManagerReference: vi.fn(actual.resolveSecretsManagerReference),
   };
 });
+// `resolveImportValue` is a plain function too, so the G2 case replaces it
+// through the module; it forwards to the real one otherwise.
+vi.mock('../../../src/deployment/intrinsic-resolver/cross-stack.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/intrinsic-resolver/cross-stack.js')>();
+  return { ...actual, resolveImportValue: vi.fn(actual.resolveImportValue) };
+});
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -179,22 +186,26 @@ describe('buildDiffTree compares the inputs for the root only (go-to-k/cdkd#4543
 
 describe('cdkd diff keeps an input its resolution recorded a secret for as written (go-to-k/cdkd#4543 G2)', () => {
   it('a recovered secret cross-stack value neither moves the preview nor reaches the hash', async () => {
-    const { IntrinsicFunctionResolver } = await import(
-      '../../../src/deployment/intrinsic-function-resolver.js'
-    );
+    const crossStack = await import('../../../src/deployment/intrinsic-resolver/cross-stack.js');
+    const actualResolveImportValue = (
+      await vi.importActual<typeof import('../../../src/deployment/intrinsic-resolver/cross-stack.js')>(
+        '../../../src/deployment/intrinsic-resolver/cross-stack.js'
+      )
+    ).resolveImportValue;
     const { recordMaskOnlyValue } = await import('../../../src/deployment/secret-redaction.js');
     const IMPORT = { 'Fn::ImportValue': 'shared' };
     let plaintext = 'recovered-output-one';
     // A cross-stack read recovered in-process re-registers the plaintext into
     // the bag of the context resolving it (`recoverMaskedOutput`).
     const spy = vi
-      .spyOn(IntrinsicFunctionResolver.prototype, 'resolveImportValue')
-      .mockImplementation((_arg: unknown, context: unknown) => {
+      .mocked(crossStack.resolveImportValue)
+      .mockImplementation((_resolver: unknown, _arg: unknown, context: unknown) => {
         const bag = (context as { recordedSecretValues?: Map<string, string> })
           .recordedSecretValues;
         if (bag) recordMaskOnlyValue(bag, plaintext);
         return Promise.resolve(plaintext);
       });
+    spy.mockClear();
     try {
       const value = {
         'Fn::Base64': {
@@ -232,8 +243,11 @@ describe('cdkd diff keeps an input its resolution recorded a secret for as writt
       expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
       plaintext = 'recovered-output-two';
       expect((await changeOf(state, template, true)).changeType).toBe('NO_CHANGE');
+      // The replacement ran: a resolution that never reached it would leave
+      // both previews NO_CHANGE for a reason this case does not test.
+      expect(spy).toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      spy.mockImplementation(actualResolveImportValue);
     }
   });
 });

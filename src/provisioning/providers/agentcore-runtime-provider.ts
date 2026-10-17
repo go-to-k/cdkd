@@ -331,7 +331,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
    * `WorkloadIdentityDetails` (the type's registry-schema
    * `readOnlyProperties`). The stored `attributes` map is looked up BY CFn
    * attribute name during output / cross-resource `Fn::GetAtt` resolution
-   * (`IntrinsicFunctionResolver.constructAttribute` never calls
+   * (`constructAttribute` in `deployment/intrinsic-resolver/getatt.ts` never calls
    * `getAttribute`), so the keys MUST match those CFn names. The previous
    * `Arn` key meant `Fn::GetAtt [Runtime, AgentRuntimeArn]` missed the
    * cached attribute, fell through to the unknown-attribute guard, and hard

@@ -116,14 +116,13 @@ describe('the resolver masks a thrown error with the print-only corpus (go-to-k/
     const { IntrinsicFunctionResolver } = await import(
       '../../../src/deployment/intrinsic-function-resolver.js'
     );
+    const { maskNamedError } = await import(
+      '../../../src/deployment/intrinsic-resolver/stack-output.js'
+    );
     const printing: RecordedSecretValues = new Map();
     recordLogOnlyValue(printing, NOECHO);
     const resolver = new IntrinsicFunctionResolver('us-east-1');
-    const masked = (
-      resolver as unknown as {
-        maskNamedError: (e: unknown, x: undefined, c: unknown) => unknown;
-      }
-    ).maskNamedError(new Error(`could not read ${NOECHO} here`), undefined, {
+    const masked = maskNamedError(resolver, new Error(`could not read ${NOECHO} here`), undefined, {
       template: { Resources: {} },
       resources: {},
       recordedSecretValues: new Map(),

@@ -35,6 +35,7 @@ import { classifyReplaySecretRegion } from '../secret-region-classification.js';
 import { recordReferenceResolution } from '../secret-redaction/reference-provenance.js';
 
 import { resolveSSMReference, resolveSecretsManagerReference } from './dynamic-ref-lookups.js';
+import { pinSecretVerdict } from './cross-stack.js';
 import {
   abandonedUnit,
   dynamicReferenceNameLogText,
@@ -719,10 +720,10 @@ export async function resolveDynamicReferencesWithLogTwin(
             (persistedText ||
               !tokenAssembledForRecording(resolver, fullMatch, tokenLogText, context))
           ) {
-            resolver.pinSecretVerdict(fullMatch, true, verdictScope);
+            pinSecretVerdict(resolver, fullMatch, true, verdictScope);
           }
         } else if (!param.secure) {
-          if (writesVerdict) resolver.pinSecretVerdict(fullMatch, false, verdictScope);
+          if (writesVerdict) pinSecretVerdict(resolver, fullMatch, false, verdictScope);
           // ...and a PER-BAG proof (issue #2036), read by the empty-map arm of
           // `mixedLeafMayCarryPublicReference`. Filed under THIS pass's bag, not
           // under the bare expression: the bag is one record's pass in this
@@ -875,7 +876,7 @@ export async function resolveDynamicReferencesWithLogTwin(
       if (isSecret && resolved && !persistedText) {
         refuseSecretAssembledReference(resolver, fullMatch, tokenLogText, context);
       }
-      if (pinSecureVerdict) resolver.pinSecretVerdict(fullMatch, true, verdictScope);
+      if (pinSecureVerdict) pinSecretVerdict(resolver, fullMatch, true, verdictScope);
 
       // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
       // re-record it into a later pass's bag on its own, without depending on a
@@ -933,7 +934,7 @@ export async function resolveDynamicReferencesWithLogTwin(
         // two intrinsic-shaped `ssm-secure` references sharing a value would
         // persist the winner's expression at the loser's position.
         if (service === 'secretsmanager' || service === 'ssm-secure') {
-          resolver.pinSecretVerdict(fullMatch, true, verdictScope);
+          pinSecretVerdict(resolver, fullMatch, true, verdictScope);
         }
       }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
