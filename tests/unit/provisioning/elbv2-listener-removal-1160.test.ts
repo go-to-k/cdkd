@@ -266,13 +266,4 @@ describe('ELBv2Provider removalHandledInUpdate (#1160)', () => {
     expect(prepared.unhandled).toEqual([]);
     expect(prepared.injected).toEqual([]);
   });
-
-  it('does not audit LoadBalancer or TargetGroup yet', () => {
-    expect(provider.removalHandledInUpdate.has('AWS::ElasticLoadBalancingV2::LoadBalancer')).toBe(
-      false
-    );
-    expect(provider.removalHandledInUpdate.has('AWS::ElasticLoadBalancingV2::TargetGroup')).toBe(
-      false
-    );
-  });
 });

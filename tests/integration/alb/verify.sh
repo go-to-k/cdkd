@@ -8,22 +8,19 @@
 # silent-drop batch baseline (TG IpAddressType, TargetGroupAttributes,
 # Targets registration), re-deploys with CDKD_TEST_UPDATE=true (attribute
 # diff + target swap via RegisterTargets+DeregisterTargets), re-deploys with
-# CDKD_TEST_REMOVAL=true (drops the TargetGroup's custom HealthCheckPort —
-# issue #1160 elbv2 batch — plus the TargetGroupAttributes list) and asserts
-# the live TG resets to the CFn-parity default `traffic-port` and the
-# attribute resets to 300, then destroys and verifies clean.
+# CDKD_TEST_REMOVAL=true (issue #1160) and asserts what a CloudFormation
+# update does with each removal (CFn A/B us-east-1 2026-10-17): the custom
+# HealthCheckPort of the HTTP and the GENEVE target group resets to
+# `traffic-port`, the ALB's dropped `IpAddressType: dualstack` resets to
+# `ipv4`, and a key dropped from TargetGroupAttributes (deregistration_delay
+# 60) or LoadBalancerAttributes (idle_timeout 180) keeps its live value.
+# Then destroys and verifies clean.
 #
-# Issue #1609 item 1 extends the removal phase to the two attribute arms it
-# never covered: the fixture now also templates a LoadBalancerAttributes entry
-# (idle_timeout 120 -> 180 -> dropped) and drops the Listener's
-# ListenerAttributes. Both arms USED to push a removed key back as `Value: ''`;
-# the live A/B those assertions performed proved AWS REJECTS that for a
-# BOOLEAN key on both APIs, so the provider now sends the documented default
-# for those and keeps '' only for numeric / free-form keys. The removal
-# readbacks assert the resulting defaults (idle_timeout 60,
-# routing.http.response.server.enabled true) plus the RETENTION of
-# routing.http2.enabled, which is what distinguishes a per-key reset from a
-# list-wide wipe.
+# Issue #1609 item 1: the removal phase also drops the Listener's
+# ListenerAttributes, whose removed boolean key the provider resets to its
+# documented default (routing.http.response.server.enabled true), and keeps
+# routing.http2.enabled templated as 'false' so the readback shows the LB
+# update did not reset the whole list.
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
@@ -181,8 +178,9 @@ echo "==> Assert TargetGroup baseline HealthCheckPort (issue #1160 elbv2 batch)"
 TG_ARN=$(echo "${STATE_BODY}" | python3 -c '
 import sys, json
 s = json.load(sys.stdin)
-for v in s["resources"].values():
-    if v["resourceType"] == "AWS::ElasticLoadBalancingV2::TargetGroup":
+# GeneveTargetGroup is a TargetGroup too: select the HTTP one by logical id.
+for k, v in s["resources"].items():
+    if v["resourceType"] == "AWS::ElasticLoadBalancingV2::TargetGroup" and k.startswith("TargetGroup"):
         print(v["physicalId"]); break
 ')
 if [[ -z "${TG_ARN}" ]]; then
@@ -196,6 +194,18 @@ if [[ "${HC_PORT_P1}" != "8080" ]]; then
   exit 1
 fi
 echo "    baseline HealthCheckPort=8080 reached AWS (✓)"
+GENEVE_TG_ARN=$(echo "${STATE_BODY}" | jq -r '.resources.GeneveTargetGroup.physicalId // empty')
+if [[ -z "${GENEVE_TG_ARN}" ]]; then
+  echo "FAIL: could not find GeneveTargetGroup ARN in cdkd state"
+  exit 1
+fi
+GENEVE_HC_PORT_P1=$(aws elbv2 describe-target-groups --target-group-arns "${GENEVE_TG_ARN}" --region "${AWS_REGION}" \
+  --query 'TargetGroups[0].HealthCheckPort' --output text)
+if [[ "${GENEVE_HC_PORT_P1}" != "8080" ]]; then
+  echo "FAIL: baseline GENEVE HealthCheckPort is '${GENEVE_HC_PORT_P1}', expected '8080'"
+  exit 1
+fi
+echo "    baseline GENEVE HealthCheckPort=8080 reached AWS (✓)"
 
 echo ""
 echo "==> Assert #609 LB+TG batch baseline (IpAddressType / TargetGroupAttributes / Targets)"
@@ -250,6 +260,13 @@ if [[ "${HTTP2_P1}" != "false" ]]; then
   exit 1
 fi
 echo "    idle_timeout.timeout_seconds=120, routing.http2.enabled=false reached AWS (✓)"
+LB_IP_TYPE_P1=$(aws elbv2 describe-load-balancers --load-balancer-arns "${LB_ARN}" --region "${AWS_REGION}" \
+  --query 'LoadBalancers[0].IpAddressType' --output text)
+if [[ "${LB_IP_TYPE_P1}" != "dualstack" ]]; then
+  echo "FAIL: ALB IpAddressType is '${LB_IP_TYPE_P1}', expected the templated 'dualstack'"
+  exit 1
+fi
+echo "    ALB IpAddressType=dualstack reached AWS (✓)"
 
 echo ""
 echo "==> Update redeploy: attribute diff + target swap (#609)"
@@ -422,44 +439,58 @@ if [[ "${HC_PORT_P2}" != "traffic-port" ]]; then
 fi
 echo "    HealthCheckPort reset to traffic-port on removal (✓)"
 
+# Issue #1160: the GENEVE group resets to `traffic-port` too, not to its
+# protocol's create default 80. Before #1160 the provider sent nothing for a
+# GENEVE group and the port stayed 8080.
+GENEVE_HC_PORT_P2=$(aws elbv2 describe-target-groups --target-group-arns "${GENEVE_TG_ARN}" --region "${AWS_REGION}" \
+  --query 'TargetGroups[0].HealthCheckPort' --output text)
+if [[ "${GENEVE_HC_PORT_P2}" != "traffic-port" ]]; then
+  echo "FAIL: GENEVE HealthCheckPort is '${GENEVE_HC_PORT_P2}' after the removal redeploy, expected the CFn-parity reset 'traffic-port'"
+  exit 1
+fi
+echo "    GENEVE HealthCheckPort reset to traffic-port on removal (✓)"
+
+# Issue #1160: the dropped `IpAddressType: dualstack` resets to `ipv4`.
+# Before #1160 SetIpAddressType was never called and it stayed dualstack.
+LB_IP_TYPE_P3=$(aws elbv2 describe-load-balancers --load-balancer-arns "${LB_ARN}" --region "${AWS_REGION}" \
+  --query 'LoadBalancers[0].IpAddressType' --output text)
+if [[ "${LB_IP_TYPE_P3}" != "ipv4" ]]; then
+  echo "FAIL: ALB IpAddressType is '${LB_IP_TYPE_P3}' after the removal redeploy, expected the CFn-parity reset 'ipv4'"
+  exit 1
+fi
+echo "    ALB IpAddressType reset to ipv4 on removal (✓)"
+
 echo ""
-echo "==> Assert #609 removal semantics (attribute reset)"
-# Dropping the TargetGroupAttributes list resets the removed key to AWS's
-# documented default. ModifyTargetGroupAttributes REJECTS an empty Value
-# ("A target group attribute value must be specified", live-verified
-# 2026-08-11), so the provider sends the default from
-# TARGET_GROUP_ATTRIBUTE_DEFAULTS explicitly — deregistration_delay -> 300.
+echo "==> Assert TargetGroupAttributes removal keeps the live value (issue #1160)"
+# The removal phase drops deregistration_delay (the L2's own stickiness entry
+# is all the list holds then). A CloudFormation update leaves a removed key at
+# its live value, so it stays 60. Before #1160 the provider reset it to 300.
 DEREG_P3=$(aws elbv2 describe-target-group-attributes --target-group-arn "${TG_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='deregistration_delay.timeout_seconds'].Value | [0]" --output text)
-if [[ "${DEREG_P3}" != "300" ]]; then
-  echo "FAIL: deregistration_delay is '${DEREG_P3}' after removal, expected the AWS default '300' (documented-default reset)"
+if [[ "${DEREG_P3}" != "60" ]]; then
+  echo "FAIL: deregistration_delay is '${DEREG_P3}' after removal, expected the live '60' kept (CloudFormation leaves a removed key)"
   exit 1
 fi
-echo "    deregistration_delay reset to 300 (✓)"
+echo "    deregistration_delay kept at 60 (✓)"
 
 echo ""
-echo "==> Assert LB + Listener attribute removal arms (issue #1609 item 1)"
-# THE A/B THIS FIXTURE EXTENSION EXISTS FOR. Both arms originally pushed a
-# removed key back as `Value: ''` and neither had ever run against real AWS.
-# The first run of these assertions is what proved the empty string is
-# REJECTED for a boolean key on both APIs (it failed the removal deploy AND
-# its rollback), which is why the provider now sends documented defaults for
-# those keys. A non-default readback here would mean the reset never
-# reached AWS.
+echo "==> Assert LB + Listener attribute removal arms (issues #1160, #1609 item 1)"
+# A key dropped from LoadBalancerAttributes keeps its live value, as a
+# CloudFormation update leaves it (#1160). Before #1160 the provider reset
+# idle_timeout to 60.
 IDLE_P3=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='idle_timeout.timeout_seconds'].Value | [0]" --output text)
-if [[ "${IDLE_P3}" != "60" ]]; then
-  echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P3}' after removal, expected the AWS default '60'"
-  echo "    (ModifyLoadBalancerAttributes removal arm — Value:'' did not clear the override)"
+if [[ "${IDLE_P3}" != "180" ]]; then
+  echo "FAIL: idle_timeout.timeout_seconds is '${IDLE_P3}' after removal, expected the live '180' kept (CloudFormation leaves a removed key)"
   exit 1
 fi
-echo "    idle_timeout.timeout_seconds reset to 60 (✓)"
+echo "    idle_timeout.timeout_seconds kept at 180 (✓)"
 
 # The RETAINED SIBLING. routing.http2.enabled is templated 'false' in every
-# phase while AWS's default is 'true', so this assertion is what distinguishes
-# "reset the removed key" from "wiped the whole attribute list" — a check the
-# earlier deletion_protection.enabled sibling could not perform, because its
-# templated value equalled its default and an over-broad reset read identically.
+# phase while AWS's default is 'true', so this assertion shows the update did
+# not reset the whole attribute list — a check the earlier
+# deletion_protection.enabled sibling could not perform, because its templated
+# value equalled its default and an over-broad reset read identically.
 HTTP2_P3=$(aws elbv2 describe-load-balancer-attributes --load-balancer-arn "${LB_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='routing.http2.enabled'].Value | [0]" --output text)
 if [[ "${HTTP2_P3}" != "false" ]]; then

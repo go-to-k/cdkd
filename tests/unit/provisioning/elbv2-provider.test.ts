@@ -223,12 +223,7 @@ describe('ELBv2Provider', () => {
         });
       });
 
-      it('resets a removed BOOLEAN LoadBalancerAttribute to its documented default', async () => {
-        const { ModifyLoadBalancerAttributesCommand } = await import(
-          '@aws-sdk/client-elastic-load-balancing-v2'
-        );
-        mockSend.mockResolvedValueOnce({});
-
+      it('leaves a removed LoadBalancerAttribute at its live value: no Modify call (#1160, CFn parity)', async () => {
         await provider.update(
           'MyALB',
           'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
@@ -246,25 +241,9 @@ describe('ELBv2Provider', () => {
           }
         );
 
-        const cmd = mockSend.mock.calls[0]?.[0] as InstanceType<
-          typeof ModifyLoadBalancerAttributesCommand
-        >;
-        // Only the changed/removed key is submitted: idle_timeout was
-        // 60 on both sides (no change → not resubmitted);
-        // access_logs.s3.enabled was removed.
-        //
-        // This assertion used to expect `Value: ''` and was named "AWS-
-        // documented clear" — the live A/B for issue #1609 item 1 disproved
-        // that for BOOLEAN keys: AWS answers "The value of
-        // 'deletion_protection.enabled' must be 'true' or 'false', but was
-        // ''" and fails the WHOLE Modify* call. access_logs.s3.enabled is
-        // boolean-validated the same way, so the reset is its documented
-        // default. The empty-string arm still applies to numeric / free-form
-        // keys and is pinned by its own test in
-        // elbv2-lb-targetgroup-props.test.ts.
-        expect(cmd.input.Attributes).toEqual([
-          { Key: 'access_logs.s3.enabled', Value: 'false' },
-        ]);
+        // idle_timeout is unchanged and access_logs.s3.enabled was removed,
+        // which CloudFormation leaves at its live value too: nothing to send.
+        expect(mockSend).not.toHaveBeenCalled();
       });
     });
   });

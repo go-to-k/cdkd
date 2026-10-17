@@ -14,10 +14,12 @@ export class AlbStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // VPC with 1 AZ to minimize resources
+    // Two AZs, public subnets only. Dual-stack so the ALB can hold
+    // `IpAddressType: dualstack` until the removal phase drops it (issue #1160).
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
       natGateways: 0,
+      ipProtocol: ec2.IpProtocol.DUAL_STACK,
       subnetConfiguration: [
         {
           cidrMask: 24,
@@ -41,29 +43,30 @@ export class AlbStack extends cdk.Stack {
     const update = process.env.CDKD_TEST_UPDATE === 'true';
 
     // Application Load Balancer
+    //
+    // CDKD_TEST_REMOVAL (issue #1160): the removal phase drops `dualstack`.
+    // SetIpAddressType is never called for an absent value, so the provider
+    // resets it to `ipv4`, which is what a CloudFormation update does (CFn
+    // A/B us-east-1 2026-10-17).
     const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
       vpc,
       internetFacing: true,
       securityGroup: sg,
+      ...(removal ? {} : { ipAddressType: elbv2.IpAddressType.DUAL_STACK }),
     });
 
-    // LoadBalancerAttributes (issue #1609 item 1). The LB and Listener
-    // attribute arms pushed every removed key back as `Value: ''` since they
-    // were written, and NO integ had ever exercised either removal. This
-    // fixture is the A/B that settled it, PER VALUE KIND: the empty string is
-    // accepted for the NUMERIC idle_timeout but REJECTED for a BOOLEAN key
-    // ("must be 'true' or 'false', but was ''") on this API and on
-    // ModifyListenerAttributes alike — and a rejection fails the whole call,
-    // so the removal deploy AND its rollback both died. The provider now
-    // sends documented defaults for the validated keys.
+    // LoadBalancerAttributes (issue #1609 item 1, #1160). The removal phase
+    // drops idle_timeout, and the provider leaves it at its live value (180),
+    // as a CloudFormation update leaves a removed attribute key (CFn A/B
+    // us-east-1 2026-10-17).
     //
     // The two keys restated in EVERY phase each do a different job:
     //
     // - `routing.http2.enabled: 'false'` is the ASSERTABLE retained sibling.
     //   AWS defaults it to 'true', so asserting it is still 'false' after the
-    //   removal deploy distinguishes "reset the removed key" from "wiped the
-    //   whole list". A sibling whose templated value EQUALS its default
-    //   cannot do that — the readback is identical either way.
+    //   removal deploy shows the update did not reset the whole list. A
+    //   sibling whose templated value EQUALS its default cannot do that —
+    //   the readback is identical either way.
     // - `deletion_protection.enabled: 'false'` pins the CDK-L2 trap this
     //   fixture hit on its first run. The L2 ApplicationLoadBalancer emits
     //   its own entry for this key and a property override replaces the whole
@@ -107,10 +110,8 @@ export class AlbStack extends cdk.Stack {
     // IpAddressType is createOnly — exercises the CreateTargetGroup wiring.
     cfnTargetGroup.addPropertyOverride('IpAddressType', 'ipv4');
     // TargetGroupAttributes: baseline 45s -> update 60s (ModifyTargetGroupAttributes
-    // diff); the removal phase drops the whole list, which must reset the
-    // attribute to AWS's default 300. That API rejects an empty Value for
-    // EVERY key, so the reset is the documented default from
-    // TARGET_GROUP_ATTRIBUTE_DEFAULTS.
+    // diff); the removal phase drops the whole list, which leaves the
+    // attribute at 60, as a CloudFormation update does (issue #1160).
     if (!removal) {
       cfnTargetGroup.addPropertyOverride('TargetGroupAttributes', [
         { Key: 'deregistration_delay.timeout_seconds', Value: update ? '60' : '45' },
@@ -124,11 +125,25 @@ export class AlbStack extends cdk.Stack {
     // false there and the registered target flips BACK to 10.0.0.100 — a
     // second, deliberate Register+Deregister round, not a leftover from the
     // update phase. That churn is incidental to what the removal phase is
-    // testing (attribute reset); it is called out because the reverse swap
+    // testing (removal semantics); it is called out because the reverse swap
     // otherwise reads as an accident worth chasing (issue #1609 item 5).
     cfnTargetGroup.addPropertyOverride('Targets', [
       { Id: update ? '10.0.0.101' : '10.0.0.100', Port: 80 },
     ]);
+
+    // GENEVE target group (issue #1160): CloudFormation resets a removed
+    // HealthCheckPort to `traffic-port` on a GENEVE group too, although that
+    // protocol's create default is port 80 (CFn A/B us-east-1 2026-10-17).
+    // No Gateway Load Balancer is needed for the group to exist.
+    new elbv2.CfnTargetGroup(this, 'GeneveTargetGroup', {
+      protocol: 'GENEVE',
+      port: 6081,
+      vpcId: vpc.vpcId,
+      targetType: 'ip',
+      healthCheckProtocol: 'HTTP',
+      healthCheckPath: '/',
+      ...(removal ? {} : { healthCheckPort: '8080' }),
+    });
 
     // MinimumLoadBalancerCapacity is deliberately NOT exercised here: the
     // integ account lacks the LCU capacity-reservation entitlement —

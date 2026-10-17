@@ -359,102 +359,36 @@ const TARGETS_WHAT =
   'targets, each with a string Id and, where given, an integer Port and a string AvailabilityZone';
 
 /**
- * Documented AWS defaults for TargetGroup attributes, used to reset a
- * removed `TargetGroupAttributes` entry. Unlike ModifyLoadBalancerAttributes
- * / ModifyListenerAttributes, ModifyTargetGroupAttributes REJECTS an empty
- * `Value` ("A target group attribute value must be specified" — live-verified
- * 2026-08-11), so clearing an override requires sending the documented
- * default explicitly. Keys whose default is target-type-dependent or
- * undocumented are deliberately absent — a removal of those warns and
- * retains the live value instead of guessing.
- * Source: ELBv2 API reference, TargetGroupAttribute key table.
+ * The removal resolver of the LoadBalancer and TargetGroup attribute bags: a
+ * key REMOVED from `LoadBalancerAttributes` / `TargetGroupAttributes` is never
+ * sent, so it keeps its live value. That is CloudFormation parity, not a gap
+ * (issue #1160, CFn A/B us-east-1 2026-10-17): a CloudFormation update that
+ * dropped `deregistration_delay.timeout_seconds` from a target group's list,
+ * dropped the whole list, dropped `routing.http.drop_invalid_header_fields.enabled`
+ * from a load balancer's list, or dropped the whole list, left every value
+ * as it was. No Elastic Load Balancing call removes an attribute key either.
  */
-const TARGET_GROUP_ATTRIBUTE_DEFAULTS: Record<string, string> = {
-  'deregistration_delay.timeout_seconds': '300',
-  'deregistration_delay.connection_termination.enabled': 'false',
-  'stickiness.enabled': 'false',
-  'stickiness.lb_cookie.duration_seconds': '86400',
-  'stickiness.app_cookie.duration_seconds': '86400',
-  'load_balancing.algorithm.type': 'round_robin',
-  'load_balancing.algorithm.anomaly_mitigation': 'off',
-  'load_balancing.cross_zone.enabled': 'use_load_balancer_configuration',
-  'slow_start.duration_seconds': '0',
-  'lambda.multi_value_headers.enabled': 'false',
-  'proxy_protocol_v2.enabled': 'false',
-};
+const RETAIN_REMOVED_ATTRIBUTE = (): undefined => undefined;
 
 /**
- * Documented AWS defaults for the BOOLEAN / ENUM-valued LoadBalancer and
- * Listener attributes, used to reset a removed `LoadBalancerAttributes` /
- * `ListenerAttributes` entry.
- *
- * Unlike ModifyTargetGroupAttributes — which rejects an empty `Value` for
- * EVERY key — these two APIs accept `Value: ''` for the numeric and
- * free-form string attributes and REJECT it only where the value is
- * validated against a fixed set. Live A/B 2026-08-11 (issue #1609 item 1),
- * via the `alb` integ's removal phase:
- *
- *   idle_timeout.timeout_seconds  -> `Value: ''` ACCEPTED (numeric)
- *   deletion_protection.enabled   -> "The value of 'deletion_protection.enabled'
- *                                     must be 'true' or 'false', but was ''"
- *   routing.http.response.server.enabled (Listener)
- *                                 -> same rejection, same shape
- *
- * A rejection fails the whole Modify* call, so ONE removed boolean took the
- * entire deploy down (and then the rollback with it). Hence: send the
- * documented default for the validated keys, and keep the empty string for
- * everything else — which is both these APIs' own "clear the override"
- * signal and the behaviour every non-boolean key already relied on.
- *
- * That fallback is the deliberate DIVERGENCE from
- * TARGET_GROUP_ATTRIBUTE_DEFAULTS, whose unknown-key arm warns and retains:
- * there the empty string is never valid, here it is valid for the majority
- * of keys, so falling back to it preserves working behaviour instead of
- * silently retaining a value the template asked to drop.
- *
- * A key is listed ONLY when ONE unconditional default is established for it —
- * documented in the SDK model, or (for
- * `routing.http.response.server.enabled`, which the model leaves unstated)
- * proven by the `alb` integ's live removal readback. Two exclusion classes
- * matter, and both are the difference between failing loudly and writing a
- * wrong value silently:
- *
- * - **Default depends on the LOAD BALANCER** — `load_balancing.cross_zone.enabled`
- *   is always-on and unconfigurable for an ALB but defaults to false on an
- *   NLB / GWLB, and `ipv6.deny_all_igw_traffic` is "false for internet-facing
- *   load balancers and true for internal load balancers". cdkd knows neither
- *   the type nor the scheme at diff time, so a hardcoded entry would send the
- *   WRONG value for half of all load balancers — and since it is a valid
- *   boolean, AWS accepts it. For `ipv6.deny_all_igw_traffic` that means
- *   silently un-blocking internet-gateway access on an INTERNAL load balancer.
- * - **No documented default at all** — `dns_record.client_routing_policy`
- *   enumerates its possible values but states no default.
- *
- * Both classes keep the empty-string behaviour they have always had, so a
- * removal there fails loudly (for a validated key) instead of guessing.
- *
- * Source: the `@aws-sdk/client-elastic-load-balancing-v2` model docs for
- * `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes`, checked per key;
- * `routing.http.response.server.enabled`'s default is additionally LIVE-proven
- * by the `alb` integ's removal readback rather than taken from the docs.
+ * The LoadBalancer attribute keys that point log delivery at an S3 bucket
+ * (`access_logs.s3.*`, `connection_logs.s3.*`, `health_check_logs.s3.*`). A
+ * removed one is kept like any other key, but warned about: see
+ * `updateLoadBalancer`.
  */
-const LOAD_BALANCER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
-  'deletion_protection.enabled': 'false',
-  'access_logs.s3.enabled': 'false',
-  'connection_logs.s3.enabled': 'false',
-  'health_check_logs.s3.enabled': 'false',
-  'routing.http.desync_mitigation_mode': 'defensive',
-  'routing.http.drop_invalid_header_fields.enabled': 'false',
-  'routing.http.preserve_host_header.enabled': 'false',
-  'routing.http.x_amzn_tls_version_and_cipher_suite.enabled': 'false',
-  'routing.http.xff_client_port.enabled': 'false',
-  'routing.http.xff_header_processing.mode': 'append',
-  'routing.http2.enabled': 'true',
-  'waf.fail_open.enabled': 'false',
-  'zonal_shift.config.enabled': 'false',
-};
+const LOG_DELIVERY_ATTRIBUTE = /^[a-z_]+_logs\.s3\./;
 
-/** @see LOAD_BALANCER_ATTRIBUTE_DEFAULTS — same rule, Listener key table. */
+/**
+ * Documented AWS defaults for the BOOLEAN / ENUM-valued Listener attributes,
+ * used to reset a removed `ListenerAttributes` entry. ModifyListenerAttributes
+ * accepts `Value: ''` ("clear the override") for numeric and free-form keys
+ * but REJECTS it for a key validated against a fixed set, failing the whole
+ * call (live A/B 2026-08-11, issue #1609 item 1), so those take their
+ * documented default and every other key keeps `''`. A key is listed only
+ * when ONE unconditional default is established for it;
+ * `routing.http.response.server.enabled`'s is proven by the `alb` integ's
+ * removal readback.
+ */
 const LISTENER_ATTRIBUTE_DEFAULTS: Record<string, string> = {
   'routing.http.response.server.enabled': 'true',
 };
@@ -739,11 +673,68 @@ export class ELBv2Provider implements ResourceProvider {
   ]);
 
   /**
-   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every Listener
-   * property, each removal handled by `update()`, so the shared caller warns
-   * about none of them. LoadBalancer and TargetGroup are not audited yet.
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property of
+   * the three types, each removal handled by `update()`, so the shared caller
+   * warns about none of them. A removal `update()` leaves in place is listed
+   * only where a CloudFormation A/B showed CloudFormation leaves it too.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      new Set([
+        // Create-only: a removal replaces.
+        'Name',
+        'Scheme',
+        'Type',
+        // Full-replace calls (SetSubnets / SetSecurityGroups), a diff
+        // (AddTags / RemoveTags), a reset (IpAddressType -> ipv4), or a
+        // dedicated removal (RemoveIpamPools / ResetCapacityReservation).
+        'Subnets',
+        'SubnetMappings',
+        'SecurityGroups',
+        'Tags',
+        'IpAddressType',
+        'Ipv4IpamPoolId',
+        'MinimumLoadBalancerCapacity',
+        // A wait flag with no live value.
+        'EnableCapacityReservationProvisionStabilize',
+        // Left in place, as CloudFormation leaves them (CFn A/B 2026-10-17).
+        'LoadBalancerAttributes',
+        'EnablePrefixForIpv6SourceNat',
+        'EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic',
+      ]),
+    ],
+    [
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      new Set([
+        // Create-only (a removal replaces), or replaced by update() itself
+        // (TargetControlPort has no modify API).
+        'Protocol',
+        'Port',
+        'VpcId',
+        'TargetType',
+        'ProtocolVersion',
+        'Name',
+        'IpAddressType',
+        'TargetControlPort',
+        // Reset (HealthCheckPort -> traffic-port) or diffed (Register /
+        // DeregisterTargets, AddTags / RemoveTags).
+        'HealthCheckPort',
+        'Targets',
+        'Tags',
+        // Left in place, as CloudFormation leaves them (CFn A/B 2026-08-10
+        // and 2026-10-17).
+        'HealthCheckProtocol',
+        'HealthCheckPath',
+        'HealthCheckEnabled',
+        'HealthCheckIntervalSeconds',
+        'HealthCheckTimeoutSeconds',
+        'HealthyThresholdCount',
+        'UnhealthyThresholdCount',
+        'Matcher',
+        'TargetGroupAttributes',
+      ]),
+    ],
     [
       'AWS::ElasticLoadBalancingV2::Listener',
       new Set([
@@ -1582,21 +1573,28 @@ export class ELBv2Provider implements ResourceProvider {
 
     // ─── LoadBalancerAttributes ──────────────────────────────────────
     // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
-    // not in the request are left untouched. Build the diff: changed
-    // values from newAttrs win; keys present only in oldAttrs are reset.
-    // A removed BOOLEAN / ENUM key takes its documented default from
-    // LOAD_BALANCER_ATTRIBUTE_DEFAULTS because this API rejects an empty
-    // Value for those (live-verified 2026-08-11 — see that table); every
-    // other key keeps the empty string, which the API accepts as "clear the
-    // override". Skip the call entirely when nothing changed so the
-    // no-drift round-trip is a clean no-op. `drift --revert` sends no
-    // removal at all (go-to-k/cdkd#4147, see diffAttributeBag).
+    // not in the request are left untouched. Only added / changed keys are
+    // sent; a removed key keeps its live value, as CloudFormation leaves it
+    // (RETAIN_REMOVED_ATTRIBUTE). Skip the call entirely when nothing changed
+    // so the no-drift round-trip is a clean no-op.
+    //
+    // A kept LOG-DELIVERY key is the one exposure in that parity: a template
+    // that drops `access_logs.s3.*` together with the bucket it named leaves
+    // the load balancer writing to a bucket name a third party could claim.
+    // CloudFormation keeps these keys too (CFn A/B us-east-1 2026-10-17: a
+    // dropped `access_logs.s3.enabled` / `bucket` / `prefix` and
+    // `connection_logs.s3.*`, as single keys and as a whole list, all stayed),
+    // so cdkd keeps them as well and warns, naming the keys (never values).
+    const removedLogKeys: string[] = [];
     const submittedAttrs = this.diffAttributeBag(
       'LoadBalancerAttributes',
       logicalId,
       properties['LoadBalancerAttributes'],
       previousProperties['LoadBalancerAttributes'],
-      this.attributeRemovalResolver(LOAD_BALANCER_ATTRIBUTE_DEFAULTS),
+      (key) => {
+        if (LOG_DELIVERY_ATTRIBUTE.test(key)) removedLogKeys.push(key);
+        return RETAIN_REMOVED_ATTRIBUTE();
+      },
       fromReadback,
       maskSecrets
     );
@@ -1609,6 +1607,22 @@ export class ELBv2Provider implements ResourceProvider {
       );
       this.logger.debug(
         `Applied ${submittedAttrs.length} LoadBalancerAttributes change(s) for ${logicalId}`
+      );
+    }
+    // A kind the desired bag already turns off (`<kind>_logs.s3.enabled:
+    // 'false'`) delivers nothing, so its dropped bucket / prefix is not named.
+    const desiredAttrs = new Map(
+      this.normalizeAttributes(properties['LoadBalancerAttributes']).map((a) => [a.Key, a.Value])
+    );
+    const exposedLogKeys = removedLogKeys.filter(
+      (key) => desiredAttrs.get(`${key.split('.')[0]}.s3.enabled`) !== 'false'
+    );
+    if (exposedLogKeys.length > 0) {
+      const mask = maskerOrIdentity(maskSecrets);
+      const keys = exposedLogKeys.map((key) => mask(key)).join(', ');
+      const one = exposedLogKeys.length === 1;
+      this.logger.warn(
+        safeMsg`${logicalId}: LoadBalancerAttributes ${one ? 'key' : 'keys'} ${keys} ${one ? 'is' : 'are'} no longer declared and ${one ? 'keeps its' : 'keep their'} live value, as CloudFormation leaves it, so the load balancer may keep delivering logs to the bucket it names. To stop it, declare the matching '<kind>_logs.s3.enabled' key as 'false' and deploy.`
       );
     }
 
@@ -1702,7 +1716,23 @@ export class ELBv2Provider implements ResourceProvider {
     }
 
     // ─── IpAddressType ───────────────────────────────────────────────
-    const newIpType = properties['IpAddressType'] as IpAddressType | undefined;
+    // A REMOVED IpAddressType is reset to the create default `ipv4`: a
+    // CloudFormation update dropping `dualstack` from an ALB set it back to
+    // `ipv4` in place (issue #1160, CFn A/B us-east-1 2026-10-17; only
+    // `dualstack` was measured, `dualstack-without-public-ipv4` is assumed
+    // to reset the same way), while
+    // SetIpAddressType is never called for an absent value. `drift --revert`
+    // writes no reset for a value its recorded baseline lacks (the
+    // go-to-k/cdkd#4147 rule).
+    const newIpType = (
+      fromReadback
+        ? properties['IpAddressType']
+        : clearOnUpdateRemoval(
+            properties['IpAddressType'],
+            previousProperties['IpAddressType'],
+            'ipv4'
+          )
+    ) as IpAddressType | undefined;
     const oldIpType = previousProperties['IpAddressType'] as IpAddressType | undefined;
     if (newIpType !== undefined && newIpType !== oldIpType) {
       await this.getClient().send(
@@ -2281,31 +2311,23 @@ export class ELBv2Provider implements ResourceProvider {
           ? rawMatcher
           : undefined;
 
-      // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on an HTTP
-      // target group): CloudFormation itself RETAINS every health-check
-      // field EXCEPT `HealthCheckPort` when the property is removed from
-      // the template — HealthCheckProtocol / HealthCheckPath /
-      // HealthCheckEnabled / HealthCheckIntervalSeconds /
-      // HealthCheckTimeoutSeconds / HealthyThresholdCount /
-      // UnhealthyThresholdCount and the listener's SslPolicy all kept their
-      // customized values through a CFn removal update, so cdkd's
+      // Removal semantics (issue #1160, CFn A/B us-east-1 2026-08-10, re-run
+      // 2026-10-17 on HTTP, TCP, GENEVE, gRPC and lambda target groups):
+      // CloudFormation RETAINS every health-check field EXCEPT
+      // `HealthCheckPort` when it is removed from the template —
+      // HealthCheckProtocol / HealthCheckPath / HealthCheckEnabled /
+      // HealthCheckIntervalSeconds / HealthCheckTimeoutSeconds /
+      // HealthyThresholdCount / UnhealthyThresholdCount and `Matcher`
+      // (HttpCode and GrpcCode) all kept their customized values, so the
       // pass-through (absent -> undefined -> ModifyTargetGroup merge) is
-      // already CFn parity for those. `HealthCheckPort` is the one field
-      // CFn resets, to its create default `traffic-port`; mirror that.
-      // GENEVE target groups are deferred (retain, no reset): their create
-      // default is port 80, not `traffic-port`, and CFn's removal behavior
-      // for a Gateway Load Balancer TG has not been A/B-verified.
-      const targetGroupProtocol = String(
-        properties['Protocol'] ?? previousProperties['Protocol'] ?? ''
-      ).toUpperCase();
-      const healthCheckPort =
-        targetGroupProtocol === 'GENEVE'
-          ? (properties['HealthCheckPort'] as string | undefined)
-          : clearOnUpdateRemoval(
-              properties['HealthCheckPort'] as string | undefined,
-              previousProperties['HealthCheckPort'] as string | undefined,
-              'traffic-port'
-            );
+      // CFn parity for those. `HealthCheckPort` is the one field CFn resets,
+      // to `traffic-port` — on a GENEVE target group too, although that
+      // protocol's create default is port 80.
+      const healthCheckPort = clearOnUpdateRemoval(
+        properties['HealthCheckPort'] as string | undefined,
+        previousProperties['HealthCheckPort'] as string | undefined,
+        'traffic-port'
+      );
 
       await this.getClient().send(
         new ModifyTargetGroupCommand({
@@ -2339,45 +2361,15 @@ export class ELBv2Provider implements ResourceProvider {
 
       // ─── TargetGroupAttributes ───────────────────────────────────────
       // ModifyTargetGroupAttributes replaces ONLY the listed attrs — same
-      // key-diff semantics as LoadBalancerAttributes, EXCEPT the removal
-      // arm: this API rejects an empty Value ("A target group attribute
-      // value must be specified", live-verified 2026-08-11), so a removed
-      // key is reset by sending its documented default from
-      // TARGET_GROUP_ATTRIBUTE_DEFAULTS; a key with no known default warns
-      // and retains the live value. Skip the call when nothing changed.
-      // `drift --revert` sends no removal at all (go-to-k/cdkd#4147).
+      // key-diff semantics as LoadBalancerAttributes: a removed key keeps
+      // its live value, as CloudFormation leaves it (RETAIN_REMOVED_ATTRIBUTE).
+      // Skip the call when nothing changed.
       const tgAttrDiff = this.diffAttributeBag(
         'TargetGroupAttributes',
         logicalId,
         properties['TargetGroupAttributes'],
         previousProperties['TargetGroupAttributes'],
-        (key, currentValue) => {
-          // Object.hasOwn, not a bare index: `__proto__` / `constructor` /
-          // `toString` would otherwise resolve up the prototype chain to a
-          // non-string and be submitted as a garbage Value.
-          const fallback = Object.hasOwn(TARGET_GROUP_ATTRIBUTE_DEFAULTS, key)
-            ? TARGET_GROUP_ATTRIBUTE_DEFAULTS[key]
-            : undefined;
-          if (fallback === undefined) {
-            // `key` comes out of the RESOLVED `TargetGroupAttributes` bag, so a
-            // KEY can itself be a resolved secret — the same question
-            // `servicediscovery-provider.ts` answers for
-            // `DeleteServiceAttributes`, and the two files must not disagree
-            // about it. Masked as the raw value (not the finished sentence) so
-            // it reaches `maskSecretsInText`'s whole-value arm at any length.
-            this.logger.warn(
-              `TargetGroup attribute ${maskerOrIdentity(maskSecrets)(key)} was removed from the ` +
-                `template but has no documented default cdkd can reset it to — the live value is ` +
-                `retained. Set the attribute explicitly to change it.`
-            );
-            return undefined;
-          }
-          // Already at the default — nothing to reset. Same safety property as
-          // the LB / Listener arms, kept as a guard for any caller whose
-          // previous side is not a template (`drift --revert` no longer
-          // reaches this resolver; see attributeRemovalResolver's docstring).
-          return currentValue === fallback ? undefined : fallback;
-        },
+        RETAIN_REMOVED_ATTRIBUTE,
         fromReadback,
         maskSecrets
       );
@@ -3003,22 +2995,10 @@ export class ELBv2Provider implements ResourceProvider {
    * A resolver returning `undefined` SKIPS the entry (the resolver owns any
    * warn). An empty return means nothing changed and the call should be
    * skipped. Shared by the LoadBalancer / TargetGroup / Listener update
-   * paths — and all three pass their OWN resolver, because the three APIs
-   * disagree about what resets an attribute:
-   *
-   * - LoadBalancer / Listener: the empty string clears a numeric or
-   *   free-form-string override, but a BOOLEAN / ENUM key rejects it and
-   *   fails the whole call, so those take a documented default
-   *   (`LOAD_BALANCER_ATTRIBUTE_DEFAULTS` / `LISTENER_ATTRIBUTE_DEFAULTS`).
-   * - TargetGroup: the empty string is rejected for EVERY key, so the
-   *   documented default is the only reset and an unknown key warns and
-   *   retains (`TARGET_GROUP_ATTRIBUTE_DEFAULTS`).
-   *
-   * All three behaviours were live-verified 2026-08-11. `removalValue` is
-   * REQUIRED rather than defaulted: there is no reset value that is correct
-   * for all three APIs, so a caller that forgets to pass one should fail to
-   * compile instead of silently inheriting the empty string that two of the
-   * three reject.
+   * paths, each passing its OWN resolver: LoadBalancer and TargetGroup send
+   * no removal ({@link RETAIN_REMOVED_ATTRIBUTE}), the Listener resets
+   * (`LISTENER_ATTRIBUTE_DEFAULTS`). `removalValue` is REQUIRED rather than
+   * defaulted, so a new caller has to decide.
    */
   private diffAttributes(
     newAttrs: Array<{ Key: string; Value: string }>,
@@ -3082,7 +3062,8 @@ export class ELBv2Provider implements ResourceProvider {
     );
     if (leftInPlace.length > 0) {
       // A KEY comes out of the resolved bag, so it is masked as the raw value
-      // (the TargetGroup removal warning's rule), then made display-safe.
+      // (not the finished sentence, so it reaches `maskSecretsInText`'s
+      // whole-value arm at any length), then made display-safe.
       const mask = maskerOrIdentity(maskSecrets);
       const keys = leftInPlace.map((key) => mask(key)).join(', ');
       const one = leftInPlace.length === 1;
@@ -3099,18 +3080,17 @@ export class ELBv2Provider implements ResourceProvider {
   }
 
   /**
-   * Build the `removalValue` resolver for the LoadBalancer / Listener attribute
-   * arms: reset a removed key to its documented default, or to `''` (which
-   * those two APIs accept as "clear the override") when no default is known.
+   * Build the `removalValue` resolver for the Listener attribute arm: reset a
+   * removed key to its documented default, or to `''` (which that API accepts
+   * as "clear the override") when no default is known.
    *
    * **A key already AT its default is SKIPPED, and that is a safety property,
    * not an optimization.** It was written for a previous side that is not a
    * template: `cdkd drift --revert` calls `update(..., newProperties,
    * outcome.awsProperties)` (`src/cli/commands/drift.ts`), so `oldAttrs` can be
    * the FULL `readCurrentState` snapshot, where every untemplated key looks
-   * REMOVED, and writing a documented default there would silently disable
-   * deletion protection, access / connection logs, HTTP/2, WAF fail-open and
-   * zonal shift on a live load balancer. That caller no longer reaches this
+   * REMOVED, and writing a documented default there would silently overwrite
+   * a live setting the template never declared. That caller no longer reaches this
    * resolver at all ({@link diffAttributeBag}, go-to-k/cdkd#4147); the skip
    * stays for any other caller handing a readback as the previous side.
    *

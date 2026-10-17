@@ -3985,6 +3985,7 @@
       ],
       "signals": {
         "alb": [
+          "l1",
           "literal"
         ],
         "deletion-ordering-complex": [
