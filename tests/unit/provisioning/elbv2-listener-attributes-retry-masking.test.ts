@@ -537,48 +537,25 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
     });
   });
 
-  describe('TargetGroup attribute-removal warn masks the KEY (#2050 round 3)', () => {
-    // A removed attribute whose key has no documented default warns at DEFAULT
-    // verbosity naming the key — and the key comes out of the RESOLVED
-    // `TargetGroupAttributes` bag, so it can itself be a secret. The
-    // ServiceDiscovery provider already answers this question for
-    // `DeleteServiceAttributes`; the two files must not disagree.
-    function removeSecretKeyedAttribute(context?: {
-      maskSecrets: typeof maskSecrets;
-    }): Promise<unknown> {
-      return provider.update(
+  describe('a removed TargetGroup attribute whose KEY is a secret (#2050 round 3, #1160)', () => {
+    // The key comes out of the RESOLVED `TargetGroupAttributes` bag, so it can
+    // itself be a secret. Since #1160 a removed key is left at its live value
+    // and named nowhere: no Modify call carries it and no warning prints it.
+    it('is neither sent nor printed', async () => {
+      mockSend.mockImplementation(() => Promise.resolve({}));
+
+      await provider.update(
         'TG',
         TG_ARN,
         TARGET_GROUP_TYPE,
         { Name: 'my-tg', TargetGroupAttributes: [] },
-        {
-          Name: 'my-tg',
-          TargetGroupAttributes: [{ Key: SECRET_PLAINTEXT, Value: 'v' }],
-        },
-        context
+        { Name: 'my-tg', TargetGroupAttributes: [{ Key: SECRET_PLAINTEXT, Value: 'v' }] }
       );
-    }
 
-    it('masks the key', async () => {
-      mockSend.mockImplementation(() => Promise.resolve({}));
-
-      await removeSecretKeyedAttribute({ maskSecrets });
-
-      const warned = warnLines();
-      // Non-vacuity: the no-documented-default branch really did fire.
-      expect(warned).toContain('was removed from the template but has no documented default');
-      expect(warned).toContain(SECRET_MASK);
-      expect(warned).not.toContain(SECRET_PLAINTEXT);
-    });
-
-    it('leaves the key untouched when the caller threads no masker', async () => {
-      mockSend.mockImplementation(() => Promise.resolve({}));
-
-      await removeSecretKeyedAttribute();
-
-      const warned = warnLines();
-      expect(warned).toContain('was removed from the template but has no documented default');
-      expect(warned).toContain(SECRET_PLAINTEXT);
+      expect(JSON.stringify(mockSend.mock.calls.map((c) => c[0].input))).not.toContain(
+        SECRET_PLAINTEXT
+      );
+      expect(warnLines()).not.toContain(SECRET_PLAINTEXT);
     });
   });
 

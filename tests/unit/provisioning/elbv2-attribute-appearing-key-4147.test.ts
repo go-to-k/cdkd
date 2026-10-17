@@ -68,18 +68,23 @@ const MODIFY: Record<string, new (...args: never[]) => { input: { Attributes?: u
   [LISTENER]: ModifyListenerAttributesCommand,
 };
 
-// A key with no documented default in any table: the LB / Listener resolver
-// sends `''` for it, the TargetGroup one warns and retains.
+// A key with no documented default: the Listener's template-path resolver
+// sends `''` for it.
 const APPEARING = { Key: 'ddos_protection.syn_cookie.mode', Value: 'reactive' };
-// A key WITH a documented default, held at a NON-default value, so every
-// deploy-path resolver sends a reset for it.
+// A key WITH a documented default, held at a NON-default value.
 const DEFAULTED: Record<string, Attr> = {
   [LB]: { Key: 'deletion_protection.enabled', Value: 'true' },
   [TG]: { Key: 'stickiness.enabled', Value: 'true' },
   [LISTENER]: { Key: 'routing.http.response.server.enabled', Value: 'false' },
 };
-// The documented default each resolver resets DEFAULTED to.
-const RESET: Record<string, string> = { [LB]: 'false', [TG]: 'false', [LISTENER]: 'true' };
+// What a TEMPLATE-path update sends for a removed DEFAULTED key: the Listener
+// resets it to its documented default; a LoadBalancer or TargetGroup leaves it
+// at its live value, as CloudFormation does (#1160).
+const TEMPLATE_REMOVAL: Record<string, Attr[]> = {
+  [LB]: [],
+  [TG]: [],
+  [LISTENER]: [{ Key: 'routing.http.response.server.enabled', Value: 'true' }],
+};
 const OTHER = { Key: 'idle_timeout.timeout_seconds', Value: '60' };
 
 type Attr = { Key: string; Value: string };
@@ -188,7 +193,7 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
       expect(payloads).toEqual([[OTHER]]);
     });
 
-    it('the same pair on a TEMPLATE-path update still sends the removal (non-vacuity)', async () => {
+    it('the same pair on a TEMPLATE-path update sends what that path sends for a removal', async () => {
       const { payloads } = await revert(
         type,
         bag,
@@ -197,13 +202,13 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         [OTHER],
         {} // a template-path update: no context flag
       );
-      expect(payloads).toEqual([[OTHER, { Key: DEFAULTED[type]!.Key, Value: RESET[type] }]]);
+      expect(payloads).toEqual([[OTHER, ...TEMPLATE_REMOVAL[type]!]]);
       expect(warnings().some((w) => w.includes('which the recorded baseline holds no value'))).toBe(
         false
       );
     });
 
-    it('a rollback replay (replayingState) still sends the removal: the flag is revert-only', async () => {
+    it('a rollback replay (replayingState) takes the template path: the flag is revert-only', async () => {
       const { payloads } = await revert(
         type,
         bag,
@@ -212,7 +217,8 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         [OTHER],
         { replayingState: true }
       );
-      expect(payloads).toEqual([[{ Key: DEFAULTED[type]!.Key, Value: RESET[type] }]]);
+      const removal = TEMPLATE_REMOVAL[type]!;
+      expect(payloads).toEqual(removal.length > 0 ? [removal] : []);
     });
 
     it('#4144 still holds on revert: an absent undeclared key is not written, a declared one is', async () => {
@@ -233,12 +239,12 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
     });
   });
 
-  it("the LoadBalancer template-path removal of a key with no default is ''", async () => {
+  it("the Listener template-path removal of a key with no default is ''", async () => {
     // Pins what the revert used to send for the #4147 key, so the revert arm
     // above is measured against the real alternative.
     const { payloads } = await revert(
-      LB,
-      'LoadBalancerAttributes',
+      LISTENER,
+      'ListenerAttributes',
       [OTHER],
       [APPEARING, OTHER],
       [OTHER],

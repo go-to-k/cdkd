@@ -579,93 +579,46 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       expect(callsOf('DescribeCapacityReservationCommand').length).toBeGreaterThan(0);
     });
 
-    // Issue #1609 item 1. Both of these fail against the pre-fix provider,
-    // which pushed EVERY removed key back as `Value: ''`. The live A/B
-    // (2026-08-11) proved AWS rejects that for a boolean-validated key —
-    // "The value of 'deletion_protection.enabled' must be 'true' or 'false',
-    // but was ''" — and a rejection fails the WHOLE Modify* call, so one
-    // removed boolean took the entire deploy (and its rollback) down.
-
-    it('resets a removed BOOLEAN LoadBalancerAttribute to its documented default, not the empty string', async () => {
+    // Issue #1160: a key REMOVED from LoadBalancerAttributes keeps its live
+    // value, because a CloudFormation update leaves it in place too (CFn A/B
+    // us-east-1 2026-10-17). cdkd used to reset it (a documented default for a
+    // boolean / enum key, '' for any other, issue #1609 item 1), so each row
+    // below sent a ModifyLoadBalancerAttributes call before this change.
+    it.each([
+      ['a BOOLEAN key', 'deletion_protection.enabled', 'true'],
+      ['a TRUE-defaulted key', 'routing.http2.enabled', 'false'],
+      ['an ENUM key', 'routing.http.desync_mitigation_mode', 'strictest'],
+      ['a NUMERIC key', 'idle_timeout.timeout_seconds', '180'],
+      ['a load-balancer-dependent key', 'ipv6.deny_all_igw_traffic', 'true'],
+      ['a key named __proto__', '__proto__', 'x'],
+    ])('leaves a removed LoadBalancerAttribute (%s) at its live value', async (_l, key, value) => {
       await provider.update(
         'MyLb',
         LB_ARN,
         LB_TYPE,
         {},
-        { LoadBalancerAttributes: [{ Key: 'deletion_protection.enabled', Value: 'true' }] }
+        { LoadBalancerAttributes: [{ Key: key, Value: value }] }
       );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([
-        { Key: 'deletion_protection.enabled', Value: 'false' },
-      ]);
+      expect(callsOf('ModifyLoadBalancerAttributesCommand')).toHaveLength(0);
     });
 
-    it('resets a removed TRUE-defaulted LoadBalancerAttribute to true, not false', async () => {
-      // Every other assertion in this file uses a key whose default is
-      // 'false', so a table lookup replaced by `key.endsWith('.enabled') ?
-      // 'false' : ''` would keep them all green. routing.http2.enabled
-      // defaults to TRUE, so this is what forces a real table read — and the
-      // wrong answer here silently disables HTTP/2 on the live LB.
+    it('sends a changed LoadBalancerAttribute and none of the keys removed beside it', async () => {
       await provider.update(
         'MyLb',
         LB_ARN,
         LB_TYPE,
-        {},
-        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
-      );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
-    });
-
-    it('resets a removed ENUM LoadBalancerAttribute to its documented default', async () => {
-      // The ENUM entries are the other shape a boolean-only heuristic misses.
-      await provider.update(
-        'MyLb',
-        LB_ARN,
-        LB_TYPE,
-        {},
+        { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }] },
         {
           LoadBalancerAttributes: [
-            { Key: 'routing.http.desync_mitigation_mode', Value: 'strictest' },
-            { Key: 'routing.http.xff_header_processing.mode', Value: 'preserve' },
+            { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+            { Key: 'routing.http.drop_invalid_header_fields.enabled', Value: 'true' },
           ],
         }
       );
 
       const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
       expect(call[0].input.Attributes).toEqual([
-        { Key: 'routing.http.desync_mitigation_mode', Value: 'defensive' },
-        { Key: 'routing.http.xff_header_processing.mode', Value: 'append' },
-      ]);
-    });
-
-    it('leaves a load-balancer-DEPENDENT default out of the table so it fails loudly', async () => {
-      // ipv6.deny_all_igw_traffic defaults to false for an internet-facing LB
-      // and TRUE for an internal one, and cdkd knows neither the type nor the
-      // scheme at diff time. A hardcoded entry would send the wrong value for
-      // half of all load balancers — and AWS ACCEPTS a valid boolean, so on an
-      // internal LB that silently un-blocks internet-gateway access. It must
-      // therefore fall through to '' (which AWS rejects) rather than guess.
-      // Same rationale as load_balancing.cross_zone.enabled.
-      await provider.update(
-        'MyLb',
-        LB_ARN,
-        LB_TYPE,
-        {},
-        {
-          LoadBalancerAttributes: [
-            { Key: 'ipv6.deny_all_igw_traffic', Value: 'true' },
-            { Key: 'load_balancing.cross_zone.enabled', Value: 'true' },
-          ],
-        }
-      );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([
-        { Key: 'ipv6.deny_all_igw_traffic', Value: '' },
-        { Key: 'load_balancing.cross_zone.enabled', Value: '' },
+        { Key: 'idle_timeout.timeout_seconds', Value: '120' },
       ]);
     });
 
@@ -674,11 +627,8 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       // outcome.awsProperties) — the previous side is the FULL AWS snapshot,
       // not a template. Against a state record with no observedProperties the
       // desired side is the template's one key, so every untemplated key looks
-      // REMOVED. Writing documented defaults there would silently disable
-      // deletion protection / logs / HTTP/2 / WAF fail-open on a live LB.
-      // Before the defaults table existed this was accidentally safe ('' fails
-      // validation, so the whole revert aborted), so the table MUST NOT turn
-      // that loud refusal into a silent destructive write.
+      // REMOVED. Writing any reset there would silently change deletion
+      // protection / logs / HTTP/2 / WAF fail-open on a live LB.
       await provider.update('MyLb', LB_ARN, LB_TYPE, {
         LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }],
       }, {
@@ -705,44 +655,6 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       ]);
     });
 
-    it('still resets an untemplated key that AWS reports at a NON-default value', async () => {
-      // The skip is exact, not blanket: a key sitting away from its default
-      // was genuinely changed, so the reset must still fire.
-      await provider.update(
-        'MyLb',
-        LB_ARN,
-        LB_TYPE,
-        {},
-        { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
-      );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([{ Key: 'routing.http2.enabled', Value: 'true' }]);
-    });
-
-    it('does not walk the prototype chain for a key named __proto__ / constructor', async () => {
-      await provider.update(
-        'MyLb',
-        LB_ARN,
-        LB_TYPE,
-        {},
-        {
-          LoadBalancerAttributes: [
-            { Key: '__proto__', Value: 'x' },
-            { Key: 'constructor', Value: 'y' },
-            { Key: 'toString', Value: 'z' },
-          ],
-        }
-      );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([
-        { Key: '__proto__', Value: '' },
-        { Key: 'constructor', Value: '' },
-        { Key: 'toString', Value: '' },
-      ]);
-    });
-
     it('skips ModifyLoadBalancerAttributes when the attribute set is unchanged', async () => {
       await provider.update(
         'MyLb',
@@ -752,25 +664,6 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
         { LoadBalancerAttributes: [{ Key: 'routing.http2.enabled', Value: 'false' }] }
       );
       expect(callsOf('ModifyLoadBalancerAttributesCommand')).toHaveLength(0);
-    });
-
-    it('keeps the empty-string reset for a removed NUMERIC LoadBalancerAttribute', async () => {
-      // The empty string IS accepted for these (live-verified on
-      // idle_timeout.timeout_seconds), so the fix must not regress them into
-      // the defaults table — a key with no documented boolean/enum default
-      // still clears via ''.
-      await provider.update(
-        'MyLb',
-        LB_ARN,
-        LB_TYPE,
-        {},
-        { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '180' }] }
-      );
-
-      const [call] = callsOf('ModifyLoadBalancerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([
-        { Key: 'idle_timeout.timeout_seconds', Value: '' },
-      ]);
     });
 
     it('retains a REMOVED flag: no SetSubnets / SetSecurityGroups call fires', async () => {
@@ -930,10 +823,10 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       expect(callsOf('ModifyTargetGroupCommand')).toHaveLength(1);
     });
 
-    it('diffs TargetGroupAttributes: changed values win, removed keys reset to their documented default', async () => {
-      // ModifyTargetGroupAttributes REJECTS Value:'' (unlike the LB /
-      // Listener attribute APIs — live-verified 2026-08-11), so the removal
-      // arm must send the documented default explicitly.
+    // Issue #1160: a removed TargetGroupAttributes key keeps its live value,
+    // as a CloudFormation update leaves it (CFn A/B us-east-1 2026-10-17).
+    // cdkd used to send its documented default.
+    it('diffs TargetGroupAttributes: a changed value is sent, a removed key keeps its live value', async () => {
       await provider.update(
         'MyTg',
         TG_ARN,
@@ -950,34 +843,21 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       const [attrCall] = callsOf('ModifyTargetGroupAttributesCommand');
       expect(attrCall[0].input.Attributes).toEqual([
         { Key: 'deregistration_delay.timeout_seconds', Value: '60' },
-        { Key: 'stickiness.enabled', Value: 'false' },
       ]);
-      // Never the empty-string spelling — the API rejects it.
-      for (const attr of attrCall[0].input.Attributes) {
-        expect(attr.Value).not.toBe('');
-      }
     });
 
-    it('retains (and does not submit) a removed attribute with no documented default', async () => {
-      await provider.update(
-        'MyTg',
-        TG_ARN,
-        TG_TYPE,
-        { TargetGroupAttributes: [] },
-        {
-          TargetGroupAttributes: [
-            // Target-type-dependent default — deliberately not in the table.
-            { Key: 'preserve_client_ip.enabled', Value: 'false' },
-            { Key: 'deregistration_delay.timeout_seconds', Value: '45' },
-          ],
-        }
-      );
+    it.each([
+      ['an emptied list', { TargetGroupAttributes: [] }],
+      ['a removed list', {}],
+    ])('sends no ModifyTargetGroupAttributes for %s', async (_l, desired) => {
+      await provider.update('MyTg', TG_ARN, TG_TYPE, desired, {
+        TargetGroupAttributes: [
+          { Key: 'preserve_client_ip.enabled', Value: 'false' },
+          { Key: 'deregistration_delay.timeout_seconds', Value: '45' },
+        ],
+      });
 
-      const [attrCall] = callsOf('ModifyTargetGroupAttributesCommand');
-      // Only the known-default key is reset; the unknown one is retained.
-      expect(attrCall[0].input.Attributes).toEqual([
-        { Key: 'deregistration_delay.timeout_seconds', Value: '300' },
-      ]);
+      expect(callsOf('ModifyTargetGroupAttributesCommand')).toHaveLength(0);
     });
 
     it('skips ModifyTargetGroupAttributes when nothing changed', async () => {

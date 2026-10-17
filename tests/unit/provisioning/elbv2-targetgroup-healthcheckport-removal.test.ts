@@ -85,36 +85,27 @@ describe('ELBv2Provider TargetGroup HealthCheckPort removal reset (issue #1160)'
     expect(modifyTargetGroupInput()).toMatchObject({ HealthCheckPort: '9000' });
   });
 
-  // ─── GENEVE deferral ─────────────────────────────────────────────────
+  // ─── GENEVE: the same reset (CFn A/B us-east-1 2026-10-17) ──────────
 
-  it('GENEVE target group: removal is deferred (pass-through, no traffic-port reset)', async () => {
-    // GLB TGs default the health-check port to 80, not `traffic-port`, and
-    // CFn's removal behavior there is not A/B-verified — the provider
-    // retains (sends undefined) instead of guessing.
+  it('GENEVE target group: removal resets to "traffic-port" too, not the protocol default 80', async () => {
+    // A CloudFormation update dropping HealthCheckPort 8080 from a GENEVE
+    // target group left it at `traffic-port`, although a GENEVE group is
+    // created with port 80 when none is given.
     const previous = { Protocol: 'GENEVE', HealthCheckPort: '8443' };
     const desired = { Protocol: 'GENEVE' };
 
     await provider.update('TG', TG_ARN, TG_TYPE, desired, previous);
 
-    expect(modifyTargetGroupInput()?.['HealthCheckPort']).toBeUndefined();
+    expect(modifyTargetGroupInput()).toMatchObject({ HealthCheckPort: 'traffic-port' });
   });
 
-  it('GENEVE protocol resolved from the PREVIOUS side when the desired side omits it', async () => {
-    const previous = { Protocol: 'GENEVE', HealthCheckPort: '8443' };
-    const desired = {};
-
-    await provider.update('TG', TG_ARN, TG_TYPE, desired, previous);
-
-    expect(modifyTargetGroupInput()?.['HealthCheckPort']).toBeUndefined();
-  });
-
-  // ─── CFn-parity retention pins (live A/B 2026-08-10) ────────────────
+  // ─── CFn-parity retention pins (live A/B 2026-08-10, 2026-10-17) ────
   //
   // CloudFormation RETAINS every other health-check field on removal —
   // HealthCheckProtocol / HealthCheckPath / HealthCheckEnabled /
   // HealthCheckIntervalSeconds / HealthCheckTimeoutSeconds /
-  // HealthyThresholdCount / UnhealthyThresholdCount all kept their
-  // customized values through a real CFn removal update. cdkd's
+  // HealthyThresholdCount / UnhealthyThresholdCount and Matcher all kept
+  // their customized values through a real CFn removal update. cdkd's
   // pass-through (absent -> undefined -> ModifyTargetGroup merge) is
   // therefore PARITY, not a bug. These pins make a future "reset them
   // too" change a conscious decision requiring a fresh CFn A/B.
@@ -128,6 +119,7 @@ describe('ELBv2Provider TargetGroup HealthCheckPort removal reset (issue #1160)'
       HealthCheckTimeoutSeconds: 30,
       HealthyThresholdCount: 7,
       UnhealthyThresholdCount: 7,
+      Matcher: { HttpCode: '200-299' },
     };
     const desired = { Protocol: 'HTTP' };
 
@@ -141,5 +133,6 @@ describe('ELBv2Provider TargetGroup HealthCheckPort removal reset (issue #1160)'
     expect(input?.['HealthCheckTimeoutSeconds']).toBeUndefined();
     expect(input?.['HealthyThresholdCount']).toBeUndefined();
     expect(input?.['UnhealthyThresholdCount']).toBeUndefined();
+    expect(input?.['Matcher']).toBeUndefined();
   });
 });
