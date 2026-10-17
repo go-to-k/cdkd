@@ -162,7 +162,7 @@ export class SecretsRunState {
 
 /**
  * What this module's plain functions read from the engine beyond
- * {@link SecretsRunState}, built at each call site as `this.maskingDeps()`.
+ * {@link SecretsRunState}, built at each call site as `DeployEngine.maskingDeps()`.
  * `outputsRun` / `noEchoRun` are REASSIGNED by every `deploy()` and
  * `noEchoCeilingReadbackTimeoutMs` is a field a test shortens, so they are
  * live getters; `noEchoDeps` stays bound to the calling engine.

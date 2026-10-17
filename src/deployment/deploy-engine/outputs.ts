@@ -39,7 +39,7 @@ type RedactedAttributeRead = import('../intrinsic-function-resolver.js').Redacte
 /**
  * What {@link resolveOutputs} / {@link handleOutputResolutionFailure} read
  * from the engine beyond {@link OutputsRunState} — the live engine members,
- * built at each call site as `this.outputsDeps()` so a forwarded METHOD
+ * built at each call site as `DeployEngine.outputsDeps()` so a forwarded METHOD
  * (`buildResolverContext`, `noEchoPositionSources`) stays bound to the
  * calling engine rather than a snapshot taken at `deps` construction time.
  */

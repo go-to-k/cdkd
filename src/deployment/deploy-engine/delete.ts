@@ -30,7 +30,7 @@ import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js'
 
 /**
  * What {@link provisionDelete} reads from the engine, built at each call site
- * as `this.deleteDeps()`. `options` / `stateBackend` / `stackRegion` /
+ * as `DeployEngine.deleteDeps()`. `options` / `stateBackend` / `stackRegion` /
  * `logger` / `providerRegistry` are set only in the constructor, so they are
  * passed by value; `secretsRun` (replaced per `deploy()`) is a live getter,
  * and the engine methods it calls are forwarded bound to THIS engine.

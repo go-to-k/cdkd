@@ -116,7 +116,7 @@ export class NoEchoRunState {
 
 /**
  * What this module's plain functions read from the engine beyond
- * {@link NoEchoRunState}, built at each call site as `this.noEchoDeps()`.
+ * {@link NoEchoRunState}, built at each call site as `DeployEngine.noEchoDeps()`.
  * `perResourceSecrets` / `perResourceTemplateProps` /
  * `perResourceResolvedType` / `outputsRun` are REASSIGNED by every `deploy()`,
  * so they are live getters; a forwarded METHOD stays bound to the calling
