@@ -5,9 +5,11 @@ import {
   type FailedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
-import { rollbackExecutorContext } from '../../../src/deployment/deploy-engine/rollback.js';
+import {
+  type RollbackDeps,
+  rollbackExecutorContext,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import { isTerminalDeleteFailure } from '../../../src/provisioning/providers/deletion-protection-compensation.js';
-import type { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { StackState } from '../../../src/types/state.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { readFileSync } from 'node:fs';
@@ -402,15 +404,17 @@ describe("no context but an explicit --remove-protection's strips protection (go
   // A deploy's automatic rollback and its success settle (its own and a nested
   // child's) take their context from `rollbackExecutorContext`.
   it('rollbackExecutorContext carries no removeProtection', () => {
-    const engine = {
-      producerRegionEvidence: () => ({ regions: [], complete: true }),
+    const deps = {
+      recordedImports: () => [],
+      recordedOutputReads: () => [],
+      crossStackReadKeyNormalizer: () => (name: string) => name,
       providerRegistry: {},
       stackRegion: 'us-east-1',
       logger,
       recordEvent: vi.fn(),
       options: { skipFinalSnapshot: true },
-      secretsRun: { perResourceSecrets: new Map() },
-    } as unknown as DeployEngine;
+      secretsRun: () => ({ perResourceSecrets: new Map() }),
+    } as unknown as RollbackDeps;
     const state = {
       version: 10,
       stackName: 'Stack',
@@ -419,7 +423,7 @@ describe("no context but an explicit --remove-protection's strips protection (go
       outputs: {},
       lastModified: 1,
     } as unknown as StackState;
-    const ctx = rollbackExecutorContext.call(engine, state, 'Stack');
+    const ctx = rollbackExecutorContext(deps, state, 'Stack');
     expect(ctx.region).toBe('us-east-1');
     expect(ctx).not.toHaveProperty('removeProtection');
   });

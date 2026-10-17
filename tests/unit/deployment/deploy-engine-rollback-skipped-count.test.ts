@@ -8,7 +8,10 @@
 
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { getNestedRevertRun } from '../../../src/deployment/nested-child-journal.js';
-import { performRollback } from '../../../src/deployment/deploy-engine/rollback.js';
+import {
+  type RollbackDeps,
+  performRollback,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import type { StackState } from '../../../src/types/state.js';
 
 const replayRollback = vi.hoisted(() => vi.fn());
@@ -26,11 +29,17 @@ const previousState: StackState = {
   lastModified: 0,
 };
 
-function engine() {
+/**
+ * Only what `performRollback` and the executor context it builds read; the
+ * context reaches the mocked `replayRollback` alone.
+ */
+function engine(): RollbackDeps {
   return {
     options: { eventRecorder: { runId: 'run-1' } },
-    rollbackExecutorContext: () => ({}),
-  } as unknown as ThisParameterType<typeof performRollback>;
+    recordedImports: () => [],
+    recordedOutputReads: () => [],
+    crossStackReadKeyNormalizer: () => (name: string) => name,
+  } as unknown as RollbackDeps;
 }
 
 describe('performRollback counts only its own skips (go-to-k/cdkd#3338)', () => {
@@ -40,7 +49,8 @@ describe('performRollback counts only its own skips (go-to-k/cdkd#3338)', () => 
       getNestedRevertRun()!.warnings += 2;
       return { failures: 0, warnings: 0, skipped: 0, interrupted: false, orphaned: [] };
     });
-    const result = await performRollback.call(engine(), [], {}, 'S', previousState);
+    const result = await performRollback(engine(), [], {}, 'S', previousState);
+    expect(replayRollback).toHaveBeenCalled();
     expect(result).toMatchObject({ failures: 0, warnings: 2, skipped: 0 });
   });
 
@@ -52,7 +62,7 @@ describe('performRollback counts only its own skips (go-to-k/cdkd#3338)', () => 
       interrupted: false,
       orphaned: [],
     });
-    const result = await performRollback.call(engine(), [], {}, 'S', previousState);
+    const result = await performRollback(engine(), [], {}, 'S', previousState);
     expect(result).toMatchObject({ warnings: 1, skipped: 1 });
   });
 });

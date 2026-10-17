@@ -1,11 +1,11 @@
 /**
  * DeployEngine -> rollback-executor context threading (issue #1363).
  *
- * `DeployEngine.rollbackExecutorContext()` hands the executor two fields the
+ * `rollbackExecutorContext()` (`deploy-engine/rollback.ts`) hands the executor two fields the
  * `DeletionPolicy: Snapshot` rollback path (issue #1358) depends on:
  *
- *   finalSnapshotClients: this.options.finalSnapshotClients,
- *   skipFinalSnapshot: this.options.skipFinalSnapshot,
+ *   finalSnapshotClients: deps.options.finalSnapshotClients,
+ *   skipFinalSnapshot: deps.options.skipFinalSnapshot,
  *
  * Nothing pinned that wiring: deleting BOTH lines left the whole unit suite
  * green, and the real-AWS integ cannot catch it either — dropping
@@ -24,6 +24,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import {
+  performRollback,
+  rollbackExecutorContext,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -98,8 +102,8 @@ describe('DeployEngine rollback context threading (#1363)', () => {
 
   /**
    * Roll back one completed CREATE of `resourceType` carrying
-   * `DeletionPolicy: Snapshot`, through the engine's own private
-   * `performRollback` (the caller of `rollbackExecutorContext()`).
+   * `DeletionPolicy: Snapshot`, through `performRollback` over the engine's
+   * own `rollbackDeps()` (the caller of `rollbackExecutorContext()`).
    */
   async function rollbackSnapshotCreate(
     engine: InstanceType<typeof DeployEngine>,
@@ -121,19 +125,11 @@ describe('DeployEngine rollback context threading (#1363)', () => {
         deletionPolicy: 'Snapshot',
       },
     };
-    type PerformRollbackFn = (
-      completedOperations: CompletedOperation[],
-      stateResources: Record<string, ResourceState>,
-      stackName: string,
-      // Issue #2057: the PRE-deploy record, threaded so the executor context
-      // can derive `importedProducerRegions`. This fixture has no cross-stack
-      // read, so the derived list is empty and nothing here changes.
-      previousState: StackState
-    ) => Promise<{ failures: number; warnings: number }>;
-    const performRollback = (
-      engine as unknown as { performRollback: PerformRollbackFn }
-    ).performRollback.bind(engine);
-    const result = await performRollback([op], stateResources, 'MyStack', {
+    // Issue #2057: the PRE-deploy record (the last argument) is threaded so
+    // the executor context can derive `importedProducerRegions`. This fixture
+    // has no cross-stack read, so the derived list is empty and nothing here
+    // changes.
+    const result = await performRollback(engine.rollbackDeps(), [op], stateResources, 'MyStack', {
       version: 8,
       stackName: 'MyStack',
       region: 'us-east-1',
@@ -208,15 +204,11 @@ describe('DeployEngine rollback context: a nested child names itself for the rem
   // executor's `--orphan` command must name the child stack.
   function contextOf(options: Record<string, unknown>, stackName: string): Record<string, unknown> {
     const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, options, 'us-east-1');
-    const build = (
-      engine as unknown as {
-        rollbackExecutorContext: (s: StackState, name: string) => Record<string, unknown>;
-      }
-    ).rollbackExecutorContext.bind(engine);
-    return build(
+    return rollbackExecutorContext(
+      engine.rollbackDeps(),
       { version: 8, stackName, region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 } as StackState,
       stackName
-    );
+    ) as unknown as Record<string, unknown>;
   }
 
   it('a nested child engine passes its own stack name', () => {
@@ -246,11 +238,10 @@ describe("DeployEngine rollback context: a nested child inherits its parent's pr
 
   function contextFor(options: Record<string, unknown>): Record<string, unknown> {
     const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, options, 'us-east-1');
-    return (
-      engine as unknown as {
-        rollbackExecutorContext: (s: StackState, name: string) => Record<string, unknown>;
-      }
-    ).rollbackExecutorContext.call(engine, withRead, 'Top~Child');
+    return rollbackExecutorContext(engine.rollbackDeps(), withRead, 'Top~Child') as unknown as Record<
+      string,
+      unknown
+    >;
   }
 
   it("a child unions its own regions with the parent engine's, complete when the parent's are", () => {

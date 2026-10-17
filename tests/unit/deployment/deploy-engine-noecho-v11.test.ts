@@ -16,6 +16,10 @@ import {
   withNoEchoExactEchoes,
 } from '../../../src/deployment/deploy-engine/noecho.js';
 import { GeneratedNameGuard } from '../../../src/deployment/generated-name-guard.js';
+import {
+  settleJournalAfterSuccess,
+  writeRollbackJournalSegment,
+} from '../../../src/deployment/deploy-engine/rollback.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -1338,18 +1342,14 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     });
 
     it('(3) a nested segment\'s previousOutputs are masked by position in the journal', async () => {
-      const engine = makeEngine() as unknown as Record<string, unknown> & {
-        writeRollbackJournalSegment: (...args: unknown[]) => Promise<boolean>;
-        outputsRun: { outputsTemplateSource: Record<string, unknown>; outputsSourceUsable: boolean };
-        noEchoRun: DeployEngine['noEchoRun'];
-      };
+      const engine = makeEngine();
       engine.noEchoRun.constructPathTemplate = template();
       engine.outputsRun.outputsTemplateSource = Object.assign(Object.create(null), {
         Out: { Ref: 'Token' },
         Plain: { Ref: 'Plain' },
       });
       engine.outputsRun.outputsSourceUsable = true;
-      await engine.writeRollbackJournalSegment(STACK, [], [], 'nested-pending-parent', false, {
+      await writeRollbackJournalSegment(engine.rollbackDeps(), STACK, [], [], 'nested-pending-parent', false, {
         previousOutputs: { outputs: { Out: TOKEN, Plain: 'plain-value' } },
       });
       const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
@@ -1390,15 +1390,12 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
     it('(Phase C) a nested pending snapshot with NO verdict refuses every previous export name, with a warning', async () => {
       const engine = makeEngine({
         parentStackInfo: { parentStack: 'Root', parentLogicalId: 'Child', parentRegion: REGION },
-      }) as unknown as Record<string, unknown> & {
-        settleJournalAfterSuccess: (...args: unknown[]) => Promise<number>;
-        outputsRun: { carriedExportAliasRefusal: unknown };
-      };
+      });
       engine.outputsRun.carriedExportAliasRefusal = undefined;
       const state = v11State();
       state.outputs = { Kept: 'v' };
       state.exportNames = ['Kept'];
-      await engine.settleJournalAfterSuccess(STACK, [], state, state.resources, false);
+      await settleJournalAfterSuccess(engine.rollbackDeps(), STACK, [], state, state.resources, false);
       const segment = stateBackend.appendRollbackJournalSegment.mock.calls.at(-1)![2] as {
         previousOutputs: { outputs: object; exportNames?: string[] };
       };

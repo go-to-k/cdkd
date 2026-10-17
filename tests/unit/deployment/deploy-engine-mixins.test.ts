@@ -33,13 +33,11 @@ const HOSTS = [
       'deploy-engine/deploy-flow.ts',
       'deploy-engine/execute.ts',
       'deploy-engine/provision.ts',
-      'deploy-engine/rollback.ts',
       'deploy-engine/update-in-place.ts',
       'deploy-engine/update-replace.ts',
       'deploy-engine/update.ts',
     ],
     members: [
-      'performRollback',
       'provisionCreate',
       'provisionUpdate',
       'updateByReplacement',

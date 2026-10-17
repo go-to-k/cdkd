@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { redactOperationsForJournal } from '../../../src/deployment/deploy-engine/rollback.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
@@ -582,11 +583,8 @@ describe('the deploy journal previousState is a REPLAYED baseline, not a fresh o
     // whenever `previousState` exists. Without the explicit readback constant
     // at that call site, the derivation fails closed and this masks.
     const engine = makeBareEngine();
-    const redact = (
-      engine as unknown as {
-        redactOperationsForJournal: <T>(ops: T[]) => T[];
-      }
-    ).redactOperationsForJournal.bind(engine);
+    const redact = <T>(ops: T[]): T[] =>
+      redactOperationsForJournal(engine.rollbackDeps(), ops as never) as unknown as T[];
 
     const [redacted] = redact([
       {
@@ -646,11 +644,8 @@ describe('the deploy journal previousState is a REPLAYED baseline, not a fresh o
     (
       engine as unknown as { secretsRun: { perResourceSecrets: Map<string, Map<string, string>> } }
     ).secretsRun.perResourceSecrets.set('Db', new Map([[NOECHO_PLAINTEXT, SECRET_MASK]]));
-    const redact = (
-      engine as unknown as {
-        redactOperationsForJournal: <T>(ops: T[]) => T[];
-      }
-    ).redactOperationsForJournal.bind(engine);
+    const redact = <T>(ops: T[]): T[] =>
+      redactOperationsForJournal(engine.rollbackDeps(), ops as never) as unknown as T[];
 
     const [redacted] = redact([
       {

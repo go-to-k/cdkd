@@ -56,6 +56,7 @@ vi.mock('../../../src/provisioning/resource-name.js', async (importOriginal) => 
 });
 
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { adoptRollbackOrphans } from '../../../src/deployment/deploy-engine/rollback.js';
 import {
   makeSiblingClaimReader,
   planOrphanAdoption,
@@ -453,11 +454,7 @@ describe('DeployEngine adoption path renders display-safe (#3642)', () => {
       {},
       'us-east-1'
     );
-    return (
-      engine as unknown as {
-        adoptRollbackOrphans: (s: StackState, t: CloudFormationTemplate) => Promise<unknown>;
-      }
-    ).adoptRollbackOrphans(state, template);
+    return adoptRollbackOrphans(engine.rollbackDeps(), state, template);
   }
 
   function stackState(): StackState {

@@ -7,6 +7,13 @@ import {
 } from '../child-of-recreated-parent.js';
 import { shownType } from '../recreate-target-readers.js';
 import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
+import {
+  performRollback,
+  recoveryHint,
+  settleJournalAfterCleanRollback,
+  settleNestedChildrenAfterCleanRollback,
+  writeRollbackJournalSegment,
+} from './rollback.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import {
   type DeployEngine,
@@ -987,7 +994,8 @@ export async function executeDeployment(
       isInterruptedWaitError(error) ||
       this.interruptCause === 'user'
     ) {
-      await this.writeRollbackJournalSegment(
+      await writeRollbackJournalSegment(
+        this.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
@@ -1005,7 +1013,8 @@ export async function executeDeployment(
     if (this.options.noRollback) {
       // Record a journal segment so `cdkd rollback` can revert the failed
       // deploy later instead of only fixing forward / destroying.
-      await this.writeRollbackJournalSegment(
+      await writeRollbackJournalSegment(
+        this.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
@@ -1014,7 +1023,8 @@ export async function executeDeployment(
       );
       this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
       this.logger.warn(
-        safeMsg`Partial state has been saved. ${this.recoveryHint(
+        safeMsg`Partial state has been saved. ${recoveryHint(
+          this.rollbackDeps(),
           "Run 'cdkd deploy' to resume, 'cdkd rollback' to revert, or destroy to clean up."
         )}`
       );
@@ -1023,14 +1033,16 @@ export async function executeDeployment(
       // rollback that dies partway (crash / network / per-op failure)
       // leaves the segment behind and becomes resumable via `cdkd
       // rollback`; the segment is deleted after a clean replay + save.
-      autoRollbackJournaled = await this.writeRollbackJournalSegment(
+      autoRollbackJournaled = await writeRollbackJournalSegment(
+        this.rollbackDeps(),
         stackName,
         completedOperations,
         failedOperations,
         'auto-rollback-started',
         initialDeploy
       );
-      const rollbackResult = await this.performRollback(
+      const rollbackResult = await performRollback(
+        this.rollbackDeps(),
         completedOperations,
         newResources,
         stackName,
@@ -1127,10 +1139,12 @@ export async function executeDeployment(
       // partial / failed rollback keeps the full segment so `cdkd
       // rollback` can resume.
       if (autoRollbackClean) {
-        await this.settleNestedChildrenAfterCleanRollback(
+        await settleNestedChildrenAfterCleanRollback(
+          this.rollbackDeps(),
           stackName,
           rollbackSettledNested,
-          await this.settleJournalAfterCleanRollback(
+          await settleJournalAfterCleanRollback(
+            this.rollbackDeps(),
             stackName,
             rollbackRemainingFailedOps,
             initialDeploy
@@ -1176,10 +1190,12 @@ export async function executeDeployment(
         );
         this.logger.debug('State saved after deployment failure (retry succeeded)');
         if (autoRollbackClean) {
-          await this.settleNestedChildrenAfterCleanRollback(
+          await settleNestedChildrenAfterCleanRollback(
+            this.rollbackDeps(),
             stackName,
             rollbackSettledNested,
-            await this.settleJournalAfterCleanRollback(
+            await settleJournalAfterCleanRollback(
+              this.rollbackDeps(),
               stackName,
               rollbackRemainingFailedOps,
               initialDeploy
@@ -1272,7 +1288,8 @@ export async function executeDeployment(
     // Every resource op succeeded here — provisioning was clean, only
     // output resolution failed — so rolling back is a legitimate use case
     // (issue #1183). Record a journal segment so `cdkd rollback` can revert.
-    await this.writeRollbackJournalSegment(
+    await writeRollbackJournalSegment(
+      this.rollbackDeps(),
       stackName,
       completedOperations,
       failedOperations,

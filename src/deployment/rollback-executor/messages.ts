@@ -199,7 +199,7 @@ export function replayingStateCreateContext(secrets: RecordedSecretValues): Crea
  * replay's re-resolved secrets, so without this the plaintext the terminal
  * line masks is persisted one statement later.
  *
- * The in-process caller (`DeployEngine.rollbackExecutorContext`) routes through
+ * The in-process caller (`deploy-engine/rollback.ts`'s `rollbackExecutorContext`) routes through
  * `maskSecretsInEvent`, but that masks with the DEPLOY's `perResourceSecrets`
  * for the resource — a different bag from the one this replay re-resolved from
  * the JOURNAL, which can name a different secret version or a reference the

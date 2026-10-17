@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { performRollback as performRollbackFn } from '../../../src/deployment/deploy-engine/rollback.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -83,6 +84,13 @@ vi.mock('../../../src/utils/live-renderer.js', async (orig) => {
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
+
+// `performRollback` stays REAL; wrapped so a case can count the engine's calls.
+vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/rollback.js')>();
+  return { ...actual, performRollback: vi.fn(actual.performRollback) };
+});
 
 const STACK_NAME = 'MyStack';
 const LOGICAL_ID = 'Thing';
@@ -588,10 +596,8 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       });
       const appendRollbackJournalSegment = vi.fn().mockResolvedValue(undefined);
       Object.assign(mockStateBackend, { appendRollbackJournalSegment });
-      const performRollback = vi.spyOn(
-        engine as unknown as { performRollback: (...a: unknown[]) => Promise<unknown> },
-        'performRollback'
-      );
+      const performRollback = vi.mocked(performRollbackFn);
+      performRollback.mockClear();
 
       const err = await deployAndCatch(engine, template);
 
@@ -601,6 +607,11 @@ describe('DeployEngine routes each half of a Type-change replacement on its own 
       );
       expect(reasons).toContain(reason);
       expect(performRollback).toHaveBeenCalledTimes(rollsBack ? 1 : 0);
+      // The wrapper is the binding the engine calls: a rolling-back row's
+      // call carries THIS engine's deps.
+      if (rollsBack) {
+        expect((performRollback.mock.calls[0]![0] as { owner: unknown }).owner).toBe(engine);
+      }
     }
   );
 

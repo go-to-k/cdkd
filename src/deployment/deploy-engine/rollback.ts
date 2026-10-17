@@ -56,7 +56,12 @@ import {
   settleJournaledOrphansOnSuccess,
 } from '../rollback-executor/journaled-orphans.js';
 import { keepPersistedPlainRecordLeaves } from '../rollback-executor/replay-secrets.js';
-import { applyNoEchoPersist, maskOutputsByPosition, noEchoPositionSources } from './noecho.js';
+import {
+  type NoEchoDeps,
+  applyNoEchoPersist,
+  maskOutputsByPosition,
+  noEchoPositionSources,
+} from './noecho.js';
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
@@ -71,49 +76,54 @@ import {
   unionOfSecretBags,
 } from '../secret-redaction.js';
 
-declare module '../deploy-engine.js' {
-  interface DeployEngine {
-    /** @internal */
-    adoptRollbackOrphans: OmitThisParameter<typeof adoptRollbackOrphans>;
-    /** @internal */
-    performRollback: OmitThisParameter<typeof performRollback>;
-    /** @internal */
-    settleJournalAfterSuccess: OmitThisParameter<typeof settleJournalAfterSuccess>;
-    /** @internal */
-    deleteRollbackJournalBestEffort: OmitThisParameter<typeof deleteRollbackJournalBestEffort>;
-    /** @internal */
-    settleJournalAfterCleanRollback: OmitThisParameter<typeof settleJournalAfterCleanRollback>;
-    /** @internal */
-    settleNestedChildrenAfterCleanRollback: OmitThisParameter<
-      typeof settleNestedChildrenAfterCleanRollback
-    >;
-    /** @internal */
-    recoveryHint: OmitThisParameter<typeof recoveryHint>;
-    /** @internal */
-    rollbackExecutorContext: OmitThisParameter<typeof rollbackExecutorContext>;
-    /** @internal */
-    producerRegionEvidence: OmitThisParameter<typeof producerRegionEvidence>;
-    /** @internal */
-    writeRollbackJournalSegment: OmitThisParameter<typeof writeRollbackJournalSegment>;
-    /** @internal */
-    redactOperationsForJournal: OmitThisParameter<typeof redactOperationsForJournal>;
-  }
+/**
+ * The engine members this module's functions read, built per call by
+ * `DeployEngine.rollbackDeps()`. Constructor-only members are passed by value;
+ * per-deploy state `deploy()` replaces (`secretsRun`, `noEchoRun`,
+ * `outputsRun`, `recordedImports`, `recordedOutputReads`, `resumedCreates`)
+ * or the deploy flow sets mid-deploy (`absentJournalVersionPurge`,
+ * `interrupted`) is read through live getters, and the engine methods stay
+ * bound to THIS engine.
+ */
+export interface RollbackDeps {
+  /** The engine's identity, the key of {@link adoptedOrphanRecords} only — never read. */
+  owner: object;
+  logger: DeployEngine['logger'];
+  options: DeployEngine['options'];
+  stackRegion: DeployEngine['stackRegion'];
+  stateBackend: DeployEngine['stateBackend'];
+  lockManager: DeployEngine['lockManager'];
+  providerRegistry: DeployEngine['providerRegistry'];
+  secretsRun: () => DeployEngine['secretsRun'];
+  noEchoRun: () => DeployEngine['noEchoRun'];
+  outputsRun: () => DeployEngine['outputsRun'];
+  recordedImports: () => DeployEngine['recordedImports'];
+  recordedOutputReads: () => DeployEngine['recordedOutputReads'];
+  resumedCreates: () => DeployEngine['resumedCreates'];
+  /** Replaces the engine's `resumedCreates` with an empty map (never cleared in place). */
+  resetResumedCreates: () => void;
+  absentJournalVersionPurge: () => DeployEngine['absentJournalVersionPurge'];
+  interrupted: () => DeployEngine['interrupted'];
+  noEchoDeps: () => NoEchoDeps;
+  recordEvent: DeployEngine['recordEvent'];
+  crossStackReadKeyNormalizer: DeployEngine['crossStackReadKeyNormalizer'];
 }
 
 export function redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
-  this: DeployEngine,
+  deps: RollbackDeps,
   operations: T[]
 ): T[] {
   return operations.map((op) => {
-    const secrets = this.secretsRun.perResourceSecrets.get(op.logicalId);
-    const templateProps = this.secretsRun.perResourceTemplateProps.get(op.logicalId);
+    const secrets = deps.secretsRun().perResourceSecrets.get(op.logicalId);
+    const templateProps = deps.secretsRun().perResourceTemplateProps.get(op.logicalId);
     // `previousState` is redactable with NO secrets map at all (#1900), so the
     // early return has to let that case through or the whole state-sourced
     // half is dead code.
     // go-to-k/cdkd#4043 (review B3): the positional `NoEcho` arm needs no
     // secrets, so a bag positioned by this deploy's template is masked even
     // when the resource recorded none.
-    const sources = templateProps === undefined ? undefined : noEchoPositionSources(this.noEchoRun);
+    const sources =
+      templateProps === undefined ? undefined : noEchoPositionSources(deps.noEchoRun());
     const byPosition = <B>(bag: B): B =>
       sources === undefined || templateProps === undefined
         ? bag
@@ -171,15 +181,15 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
       // journal's `previousState` keeps no plaintext state did not hold, and
       // the restore's own keep (`redactRollbackRecord`) leans on exactly that.
       const previous = next.previousState;
-      const adopted = adoptedOrphanRecords.get(this);
+      const adopted = adoptedOrphanRecords.get(deps.owner);
       const loaded = adopted?.has(op.logicalId) ? adopted.get(op.logicalId) : previous;
       // The `NoEcho` arms over the PREVIOUS record (review B3): its own
       // `noEchoLeaves` when it has them, else today's template positions for
       // the same logical id and type, so a pre-v11 record's plaintext does not
       // reach this journal on a failed migration deploy.
       next.previousState = applyNoEchoPersist(
-        this.noEchoRun,
-        this.noEchoDeps(),
+        deps.noEchoRun(),
+        deps.noEchoDeps(),
         op.logicalId,
         previous,
         keepPersistedPlainRecordLeaves(
@@ -203,7 +213,7 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
  * attributes are merged in (go-to-k/cdkd#4801). Read by
  * {@link redactOperationsForJournal}; an id absent here was not adopted.
  */
-const adoptedOrphanRecords = new WeakMap<DeployEngine, Map<string, ResourceState | undefined>>();
+const adoptedOrphanRecords = new WeakMap<object, Map<string, ResourceState | undefined>>();
 
 /**
  * Re-adopt what a previous rollback left in AWS, before the diff runs
@@ -221,7 +231,7 @@ const adoptedOrphanRecords = new WeakMap<DeployEngine, Map<string, ResourceState
  * on the way.
  */
 export async function adoptRollbackOrphans(
-  this: DeployEngine,
+  deps: RollbackDeps,
   currentState: StackState,
   effectiveTemplate: CloudFormationTemplate
 ): Promise<OrphanAdoptionOutcome> {
@@ -239,9 +249,9 @@ export async function adoptRollbackOrphans(
       managedLogicalIds: new Set(Object.keys(currentState.resources)),
       template: effectiveTemplate,
       stackName: currentState.stackName,
-      region: this.stackRegion,
+      region: deps.stackRegion,
       getProvider: (type, provisionedBy) =>
-        this.providerRegistry.getProviderFor({
+        deps.providerRegistry.getProviderFor({
           resourceType: type,
           ...(provisionedBy !== undefined && { provisionedBy }),
         }).provider,
@@ -250,12 +260,12 @@ export async function adoptRollbackOrphans(
         return property === undefined ? [] : [property];
       },
       readSiblingClaims: makeSiblingClaimReader({
-        stateBackend: this.stateBackend,
+        stateBackend: deps.stateBackend,
         selfStackName: currentState.stackName,
-        selfRegion: this.stackRegion,
-        logger: this.logger,
+        selfRegion: deps.stackRegion,
+        logger: deps.logger,
       }),
-      logger: { debug: (m) => this.logger.debug(m) },
+      logger: { debug: (m) => deps.logger.debug(m) },
     })
   );
 
@@ -263,19 +273,19 @@ export async function adoptRollbackOrphans(
   // `displayIdent`: `planOrphanAdoption` sanitizes each state-chosen field
   // where it builds the string, because `cdkd diff` consumes the same lines
   // (go-to-k/cdkd#3642). Only the `Adopting` line below is built HERE, so it
-  // is the one this method sanitizes.
+  // is the one this function sanitizes.
   // go-to-k/cdkd#3869: the same bag masks these lines, a record named from a
   // secret (its name still a `{{resolve:` reference) by its id spellings. One
   // log-only bag over every record: a line names one record, and a sibling's
   // needle only over-masks. The thrown refusal too: it names the id and
   // carries no command, and the logical id beside it is what the user acts on.
-  for (const notice of plan.notices) this.logger.info(maskSecretsInText(notice, named));
+  for (const notice of plan.notices) deps.logger.info(maskSecretsInText(notice, named));
 
   // go-to-k/cdkd#4801: for the journal's keep, what state held for each
   // adopted id. Installed BEFORE the refusal below, so a refused run never
   // leaves an earlier run's map behind.
   const adoptedFrom = new Map<string, ResourceState | undefined>();
-  adoptedOrphanRecords.set(this, adoptedFrom);
+  adoptedOrphanRecords.set(deps.owner, adoptedFrom);
 
   if (plan.refusals.length > 0) {
     throw new Error(
@@ -290,7 +300,7 @@ export async function adoptRollbackOrphans(
     // `orphans` is replaced below.
     adoptedFrom.set(logicalId, records.findLast((r) => r.logicalId === logicalId)?.state);
     currentState.resources[logicalId] = record;
-    this.logger.info(
+    deps.logger.info(
       safeMsg`Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
         safeMsg`by an earlier rollback as ${displaySafe(maskSecretsInText(record.physicalId, named))}`
     );
@@ -319,7 +329,7 @@ export async function adoptRollbackOrphans(
  * Log-only: bound with `withPrintingSecrets`, read by nothing that decides.
  */
 function replayPrintingBag(
-  engine: DeployEngine,
+  deps: RollbackDeps,
   entries: readonly {
     logicalId: string;
     resourceType: string;
@@ -335,8 +345,8 @@ function replayPrintingBag(
       { properties: entry.properties },
       stateResources,
       (otherId) => ({
-        secrets: namingSecretsFor(engine.secretsRun, otherId),
-        embedded: engine.secretsRun.perResourceSecrets.get(otherId),
+        secrets: namingSecretsFor(deps.secretsRun(), otherId),
+        embedded: deps.secretsRun().perResourceSecrets.get(otherId),
       })
     );
     for (const needle of names) recordLogOnlyValue(read, needle);
@@ -353,13 +363,13 @@ function replayPrintingBag(
         physicalId: entry.physicalId,
         properties: entry.properties,
       },
-      namingSecretsFor(engine.secretsRun, entry.logicalId),
-      { embedded: engine.secretsRun.perResourceSecrets.get(entry.logicalId) }
+      namingSecretsFor(deps.secretsRun(), entry.logicalId),
+      { embedded: deps.secretsRun().perResourceSecrets.get(entry.logicalId) }
     );
     for (const needle of needles ?? []) recordLogOnlyValue(own, needle);
   }
   return unionOfSecretBags([
-    ...entries.map((entry) => printingSecretsFor(engine.secretsRun, entry.logicalId)),
+    ...entries.map((entry) => printingSecretsFor(deps.secretsRun(), entry.logicalId)),
     own,
     read,
   ]);
@@ -372,7 +382,7 @@ function replayPrintingBag(
  * executor context from the engine's collaborators and delegates.
  */
 export async function performRollback(
-  this: DeployEngine,
+  deps: RollbackDeps,
   completedOperations: CompletedOperation[],
   stateResources: Record<string, ResourceState>,
   stackName: string,
@@ -380,7 +390,7 @@ export async function performRollback(
    * The PRE-deploy state record, threaded in for issue #2057's
    * `importedProducerRegions`. Taken as a parameter rather than read off a
    * field because `currentState` is a local of `executeDeployment`, whose
-   * automatic-rollback arm is this method's only caller.
+   * automatic-rollback arm is this function's only caller.
    */
   previousState: StackState,
   /**
@@ -452,21 +462,21 @@ export async function performRollback(
   // same-prefix scan the settle runs: another stack there has other generated
   // names, and that scan fails closed on any unreadable record, which would
   // turn every rollback in the prefix into keep-everything.
-  const crossPrefixHolder = this.options.crossPrefixHolder;
+  const crossPrefixHolder = deps.options.crossPrefixHolder;
   let crossPrefixAnswer: Promise<ForeignHolding> | undefined;
   const ctx = {
-    ...this.rollbackExecutorContext(previousState, stackName),
+    ...rollbackExecutorContext(deps, previousState, stackName),
     // A `cdkd rollback` replays the journal the keep leaves, from the
     // top-level stack (a nested child's journal included).
     createdResourceRetryCommand: pasteableCommand(
       'cdkd rollback',
       [
         {
-          value: (this.options.parentStackInfo?.parentStack ?? stackName).split('~')[0]!,
+          value: (deps.options.parentStackInfo?.parentStack ?? stackName).split('~')[0]!,
           hole: 'stack',
         },
       ],
-      recoveryCommandFlags(this.options.refusalRecovery).flags
+      recoveryCommandFlags(deps.options.refusalRecovery).flags
     ).command,
     createdResourceHolder:
       crossPrefixHolder === undefined
@@ -478,7 +488,7 @@ export async function performRollback(
   // Issue #3754: a nested-stack row reverted here replays its child's
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
-  const runId = this.options.eventRecorder?.runId;
+  const runId = deps.options.eventRecorder?.runId;
   const { result, failed, run } = await withNestedRevertRun(runId, async (scope) => {
     // The failed op is the newest work of the failed deploy, so it goes first
     // — as in `cdkd rollback`: it may depend on what the completed CREATEs
@@ -490,7 +500,7 @@ export async function performRollback(
           // and the context's events mask a name an orphan READ from a record.
           await withPrintingSecrets(
             replayPrintingBag(
-              this,
+              deps,
               orphanOps.map((op) => ({ ...op, properties: op.attemptedProperties })),
               stateResources
             ),
@@ -509,7 +519,7 @@ export async function performRollback(
       // bag, judged from each op's record and the one it replaced, so a
       // provider's delete of a CREATE this deploy made masks its name.
       result: await withPrintingSecrets(
-        replayPrintingBag(this, completedReplayEntries(completedOperations), stateResources),
+        replayPrintingBag(deps, completedReplayEntries(completedOperations), stateResources),
         () =>
           replayRollback(completedOperations, stateResources, stackName, ctx, {
             inlinePolicyWriters,
@@ -522,7 +532,7 @@ export async function performRollback(
   const pendingOrphans = new Set(failed?.remainingFailedOps ?? []);
   const handled = new Set(orphanIndexes.filter((_, k) => !pendingOrphans.has(orphanOps[k]!)));
 
-  // `orphaned` is relayed rather than persisted here: this method holds no
+  // `orphaned` is relayed rather than persisted here: this function holds no
   // state save. Its caller merges it into the post-rollback record (issue
   // #2934), which is the ONLY save on this path — dropping it there makes a
   // live, billing AWS resource untrackable and re-opens the deploy loop the
@@ -546,13 +556,13 @@ export async function performRollback(
  * (`options.crossPrefixHolder`, go-to-k/cdkd#4705), asked once per stack.
  */
 function foreignHolderResolver(
-  engine: DeployEngine
+  deps: RollbackDeps
 ): (self: {
   stackName: string;
   region: string;
 }) => (resourceType: string, physicalId: string) => Promise<ForeignHolding> {
-  const sameBucketHolderFor = makeForeignHolderScan(engine.stateBackend);
-  const crossPrefixHolder = engine.options.crossPrefixHolder;
+  const sameBucketHolderFor = makeForeignHolderScan(deps.stateBackend);
+  const crossPrefixHolder = deps.options.crossPrefixHolder;
   const crossPrefixAnswers = new Map<string, Promise<ForeignHolding>>();
   return (self) => async (resourceType, physicalId) => {
     const held = await sameBucketHolderFor(self)(resourceType, physicalId);
@@ -587,15 +597,16 @@ function foreignHolderResolver(
  * unaddressed (the deploy exits 2).
  */
 export async function settleJournalAfterSuccess(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   completedOperations: CompletedOperation[],
   previousState: StackState,
   finalResources: Record<string, ResourceState>,
   initialDeploy: boolean
 ): Promise<number> {
-  if (this.options.parentStackInfo) {
-    await this.writeRollbackJournalSegment(
+  if (deps.options.parentStackInfo) {
+    await writeRollbackJournalSegment(
+      deps,
       stackName,
       completedOperations,
       [],
@@ -605,14 +616,14 @@ export async function settleJournalAfterSuccess(
       // snapshotted only while this deploy's export-name verdict still
       // publishes it; with no verdict (no outputs pass ran), none is.
       nestedPendingSnapshot(previousState, (name) => {
-        const verdict = this.outputsRun.carriedExportAliasRefusal;
+        const verdict = deps.outputsRun().carriedExportAliasRefusal;
         const dropped = verdict === undefined || verdict(name, name) !== undefined;
         // Said once per dropped name: the revert of this child will not
         // restore it. The name is never printed: the verdict refuses it
         // because it spells a NoEcho value, and the deploy's own export
         // warning (a publish-time sentence) does not fit a revert snapshot.
         if (dropped) {
-          this.logger.warn(
+          deps.logger.warn(
             verdict === undefined
               ? 'An export alias the previous record published was not kept for a revert of ' +
                   'this nested stack: no export-name verdict is available.'
@@ -626,44 +637,45 @@ export async function settleJournalAfterSuccess(
     return 0;
   }
   let nestedLeft = 0;
-  const foreignHolderFor = foreignHolderResolver(this);
-  const deployRunId = this.options.eventRecorder?.runId;
+  const foreignHolderFor = foreignHolderResolver(deps);
+  const deployRunId = deps.options.eventRecorder?.runId;
   const stripOnFailure = new Map<string, () => Promise<void>>();
   const [ownLeft] = await Promise.all([
     (async (): Promise<number> => {
-      await orphanUntakenResumes.call(this, stackName, finalResources);
+      await orphanUntakenResumes(deps, stackName, finalResources);
       // The deploy read no journal under this lock, and nothing wrote one
       // since: no orphan to act on and nothing to delete. The key's leftover
       // versions were purged from the start of the deploy (step 1b).
       if (
-        this.absentJournalVersionPurge !== undefined &&
-        this.stateBackend.rollbackJournalReadAbsent(stackName, this.stackRegion)
+        deps.absentJournalVersionPurge() !== undefined &&
+        deps.stateBackend.rollbackJournalReadAbsent(stackName, deps.stackRegion)
       ) {
-        await this.absentJournalVersionPurge;
+        await deps.absentJournalVersionPurge();
         return 0;
       }
       // `previousState.orphans` is the surviving set `adoptRollbackOrphans`
       // left: what the saved record holds. The deploy flow guarded it before
-      // either of this method's call sites.
+      // either of this function's call sites.
       const own = await settleJournaledOrphansOnSuccess({
-        stateBackend: this.stateBackend,
+        stateBackend: deps.stateBackend,
         stackName,
-        region: this.stackRegion,
+        region: deps.stackRegion,
         stateResources: finalResources,
         rollbackOrphans: previousState.orphans,
         newerOperations: completedOperations,
         ...(deployRunId !== undefined && { deployRunId }),
-        foreignHolder: foreignHolderFor({ stackName, region: this.stackRegion }),
-        ctx: this.rollbackExecutorContext(previousState, stackName),
-        isInterrupted: () => this.interrupted,
-        logger: this.logger,
+        foreignHolder: foreignHolderFor({ stackName, region: deps.stackRegion }),
+        ctx: rollbackExecutorContext(deps, previousState, stackName),
+        isInterrupted: () => deps.interrupted(),
+        logger: deps.logger,
       });
       if (own.keepJournal) return own.unaddressed;
       // go-to-k/cdkd#4402: this run's completed ops supersede every older
       // failed attempt of their ids; if the delete fails they are carried
       // onto the journal instead, so no older attempt counts as evidence
       // again.
-      const deleted = await this.deleteRollbackJournalBestEffort(
+      const deleted = await deleteRollbackJournalBestEffort(
+        deps,
         stackName,
         completedOperations.map((op) => op.logicalId)
       );
@@ -672,36 +684,36 @@ export async function settleJournalAfterSuccess(
       return own.unaddressed;
     })(),
     dropNestedChildJournals({
-      stateBackend: this.stateBackend,
-      lockManager: this.lockManager,
+      stateBackend: deps.stateBackend,
+      lockManager: deps.lockManager,
       parentStackName: stackName,
-      region: this.stackRegion,
+      region: deps.stackRegion,
       resources: finalResources,
-      logger: this.logger,
+      logger: deps.logger,
       beforeDelete: async (child, childRecord) => {
         // An unreadable orphans container is an unreadable record: a rollback-
         // orphan record in it may own the resource, so nothing is deleted.
         const childState =
           childRecord !== undefined && hasReadableOrphans(childRecord) ? childRecord : undefined;
         const settled = await settleJournaledOrphansOnSuccess({
-          stateBackend: this.stateBackend,
+          stateBackend: deps.stateBackend,
           stackName: child,
-          region: this.stackRegion,
+          region: deps.stackRegion,
           stateResources: childState?.resources,
           rollbackOrphans: childState?.orphans,
           // The child's own success appended its completed ops as a
           // `nested-pending-parent` segment of this run (`deployRunId`).
           newerOperations: [],
           ...(deployRunId !== undefined && { deployRunId }),
-          foreignHolder: foreignHolderFor({ stackName: child, region: this.stackRegion }),
-          isInterrupted: () => this.interrupted,
+          foreignHolder: foreignHolderFor({ stackName: child, region: deps.stackRegion }),
+          isInterrupted: () => deps.interrupted(),
           ctx: {
-            ...this.rollbackExecutorContext(childState ?? previousState, child),
+            ...rollbackExecutorContext(deps, childState ?? previousState, child),
             // Its parent's reads are not in the child's record (as destroy).
             producerRegionsIncomplete: true,
             nestedChildStack: child,
           },
-          logger: this.logger,
+          logger: deps.logger,
         });
         nestedLeft += settled.unaddressed;
         if (settled.stripCleared) stripOnFailure.set(child, settled.stripCleared);
@@ -731,7 +743,7 @@ export async function settleJournalAfterSuccess(
  * settled entries in it strips them when it is not).
  */
 export async function deleteRollbackJournalBestEffort(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   supersededLogicalIds: readonly string[] = []
 ): Promise<boolean> {
@@ -739,9 +751,9 @@ export async function deleteRollbackJournalBestEffort(
   try {
     // The backend REPORTS a DeleteObject failure (`false`) rather than
     // throwing; a throw here comes from before the delete (client setup).
-    deleted = await this.stateBackend.deleteRollbackJournal(stackName, this.stackRegion);
+    deleted = await deps.stateBackend.deleteRollbackJournal(stackName, deps.stackRegion);
   } catch (err) {
-    this.logger.debug(
+    deps.logger.debug(
       safeMsg`Failed to delete rollback journal for ${displayStackName(stackName)}: ${err instanceof Error ? err.message : String(err)}`
     );
     deleted = false;
@@ -750,13 +762,13 @@ export async function deleteRollbackJournalBestEffort(
   if (deleted !== false) return true;
   if (supersededLogicalIds.length === 0) return false;
   try {
-    await this.stateBackend.markRollbackJournalSuperseded(
+    await deps.stateBackend.markRollbackJournalSuperseded(
       stackName,
-      this.stackRegion,
+      deps.stackRegion,
       supersededLogicalIds
     );
   } catch (markErr) {
-    this.logger.debug(
+    deps.logger.debug(
       safeMsg`Failed to record superseded logical ids on the rollback journal for ${displayStackName(stackName)}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
     );
   }
@@ -789,16 +801,16 @@ export async function deleteRollbackJournalBestEffort(
  * reverted children's segments on this).
  */
 export async function settleJournalAfterCleanRollback(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   failedOperations: FailedOperation[],
   initialDeploy: boolean
 ): Promise<boolean> {
   if (failedOperations.length === 0) {
     try {
-      await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
+      await deps.stateBackend.popRollbackJournalSegment(stackName, deps.stackRegion);
     } catch (err) {
-      this.logger.debug(
+      deps.logger.debug(
         safeMsg`Failed to pop the rollback journal segment after the clean rollback: ${asIsMessage(err instanceof Error ? err.message : String(err))}`
       );
       return false;
@@ -806,9 +818,9 @@ export async function settleJournalAfterCleanRollback(
     return true;
   }
   try {
-    await this.stateBackend.popRollbackJournalSegment(stackName, this.stackRegion);
+    await deps.stateBackend.popRollbackJournalSegment(stackName, deps.stackRegion);
   } catch (err) {
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
         // No command named: a nested child's stack-less `cdkd rollback` would
         // resolve to the top-level stack (go-to-k/cdkd#3864).
@@ -816,7 +828,8 @@ export async function settleJournalAfterCleanRollback(
     );
     return false;
   }
-  const kept = await this.writeRollbackJournalSegment(
+  const kept = await writeRollbackJournalSegment(
+    deps,
     stackName,
     [],
     failedOperations,
@@ -825,7 +838,7 @@ export async function settleJournalAfterCleanRollback(
   );
   // The write warns on its own failure; claiming a kept record would contradict it.
   if (!kept) return true;
-  this.logger.info(
+  deps.logger.info(
     `The automatic rollback restored the pre-deploy state. The failed resource's pre-failure ` +
       `record was kept — if it was left partially applied, revert it.` +
       safeMsg`\nRevert it with: ${
@@ -846,20 +859,20 @@ export async function settleJournalAfterCleanRollback(
  * same rows and must find them.
  */
 export async function settleNestedChildrenAfterCleanRollback(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   settledNested: SettledNestedRows,
   settled: boolean
 ): Promise<void> {
   if (!settled) return;
   await dropSettledNestedJournals({
-    stateBackend: this.stateBackend,
-    lockManager: this.lockManager,
+    stateBackend: deps.stateBackend,
+    lockManager: deps.lockManager,
     parentStackName: stackName,
-    region: this.stackRegion,
+    region: deps.stackRegion,
     settled: settledNested,
-    runId: this.options.eventRecorder?.runId,
-    logger: this.logger,
+    runId: deps.options.eventRecorder?.runId,
+    logger: deps.logger,
   });
 }
 
@@ -873,8 +886,8 @@ export async function settleNestedChildrenAfterCleanRollback(
  * wrapped and is not recognised as an interrupt there (go-to-k/cdkd#3875),
  * so no message of the parent's can be promised to follow.
  */
-export function recoveryHint(this: DeployEngine, topLevel: string): string {
-  const parent = this.options.parentStackInfo;
+export function recoveryHint(deps: RollbackDeps, topLevel: string): string {
+  const parent = deps.options.parentStackInfo;
   if (parent === undefined) return topLevel;
   return (
     `This is a nested stack: recover it through its top-level stack ` +
@@ -884,31 +897,31 @@ export function recoveryHint(this: DeployEngine, topLevel: string): string {
 
 /** Build the {@link RollbackExecutorContext} from the engine's fields. */
 export function rollbackExecutorContext(
-  this: DeployEngine,
+  deps: RollbackDeps,
   previousState: StackState,
   stackName: string
 ): RollbackExecutorContext {
-  const producerRegions = this.producerRegionEvidence(previousState);
+  const producerRegions = producerRegionEvidence(deps, previousState);
   return {
-    providerRegistry: this.providerRegistry,
-    region: this.stackRegion,
-    logger: this.logger,
+    providerRegistry: deps.providerRegistry,
+    region: deps.stackRegion,
+    logger: deps.logger,
     // go-to-k/cdkd#3869: masked by the printing bags bound where the event
     // is recorded too (a journaled orphan batch's), as its log lines are.
-    recordEvent: (event) => this.recordEvent(maskEventTextWithBoundBags(event)),
+    recordEvent: (event) => deps.recordEvent(maskEventTextWithBoundBags(event)),
     // `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) —
     // the executor needs the same region-pinned clients + data-loss
     // opt-out the engine's own delete sites use.
-    finalSnapshotClients: this.options.finalSnapshotClients,
-    skipFinalSnapshot: this.options.skipFinalSnapshot,
+    finalSnapshotClients: deps.options.finalSnapshotClients,
+    skipFinalSnapshot: deps.options.skipFinalSnapshot,
     // A nested child's own rollback: its segment is replayed only by a
     // rollback of the CHILD, so the refusals' `--orphan` command names it
     // (go-to-k/cdkd#3859).
-    ...(this.options.parentStackInfo && { nestedChildStack: stackName }),
+    ...(deps.options.parentStackInfo && { nestedChildStack: stackName }),
     // go-to-k/cdkd#1998: the LOG-ONLY needles (a `NoEcho` parameter's
     // value) this deploy recorded per resource, which the replay's own
     // re-resolution of the journal cannot re-derive.
-    logOnlyNeedlesFor: (logicalId) => this.secretsRun.perResourceSecrets.get(logicalId),
+    logOnlyNeedlesFor: (logicalId) => deps.secretsRun().perResourceSecrets.get(logicalId),
     // See `producerRegionEvidence`.
     importedProducerRegions: producerRegions.regions,
     producerRegionsIncomplete: !producerRegions.complete,
@@ -929,19 +942,19 @@ export function rollbackExecutorContext(
  * only when those are.
  */
 export function producerRegionEvidence(
-  this: DeployEngine,
+  deps: RollbackDeps,
   previousState: StackState
 ): ProducerRegionEvidence {
   const own = producerRegionsFromState(
     crossStackReadsForPartialSave(
       previousState,
-      this.recordedImports,
-      this.recordedOutputReads,
-      this.crossStackReadKeyNormalizer()
+      deps.recordedImports(),
+      deps.recordedOutputReads(),
+      deps.crossStackReadKeyNormalizer()
     )
   );
-  if (!this.options.parentStackInfo) return { regions: own, complete: true };
-  return inheritProducerRegions(own, this.options.inheritedProducerRegions?.());
+  if (!deps.options.parentStackInfo) return { regions: own, complete: true };
+  return inheritProducerRegions(own, deps.options.inheritedProducerRegions?.());
 }
 
 /**
@@ -957,7 +970,7 @@ export function producerRegionEvidence(
  * journals nothing since go-to-k/cdkd#4356, so its attempt can be empty).
  */
 export async function writeRollbackJournalSegment(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   completedOperations: CompletedOperation[],
   failedOperations: FailedOperation[],
@@ -982,17 +995,17 @@ export async function writeRollbackJournalSegment(
   // carry resolved / attempted properties and previous-state snapshots read
   // from the in-memory working map, which is NOT run through the state save
   // choke point, so plaintext would otherwise land in rollback-journal.json.
-  const redactedCompleted = this.redactOperationsForJournal(completedOperations);
-  const redactedFailed = this.redactOperationsForJournal(failedOperations);
+  const redactedCompleted = redactOperationsForJournal(deps, completedOperations);
+  const redactedFailed = redactOperationsForJournal(deps, failedOperations);
   try {
     const segment: RollbackJournalSegment = {
-      ...(this.options.eventRecorder?.runId !== undefined && {
-        runId: this.options.eventRecorder.runId,
+      ...(deps.options.eventRecorder?.runId !== undefined && {
+        runId: deps.options.eventRecorder.runId,
       }),
       timestamp: Date.now(),
       reason,
       initialDeploy,
-      ...(this.options.roleArn && { roleArn: this.options.roleArn }),
+      ...(deps.options.roleArn && { roleArn: deps.options.roleArn }),
       cdkdVersion: getCdkdVersion(),
       // Issue #4018: the prefix flag this deploy's providers derived names
       // under, so `cdkd rollback` replays the segment in the same scope.
@@ -1005,8 +1018,8 @@ export async function writeRollbackJournalSegment(
         previousOutputs: {
           ...nestedPending.previousOutputs,
           outputs: maskOutputsByPosition(
-            this.noEchoRun,
-            this.noEchoDeps(),
+            deps.noEchoRun(),
+            deps.noEchoDeps(),
             nestedPending.previousOutputs.outputs
           ),
         },
@@ -1015,11 +1028,11 @@ export async function writeRollbackJournalSegment(
         previousCrossStackReads: nestedPending.previousCrossStackReads,
       }),
     };
-    await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
-    this.logger.debug(safeMsg`Rollback journal segment written (${reason})`);
+    await deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment);
+    deps.logger.debug(safeMsg`Rollback journal segment written (${reason})`);
     return true;
   } catch (journalError) {
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`Failed to write rollback journal: ${asIsMessage(journalError instanceof Error ? journalError.message : String(journalError))}. ` +
         `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
     );
@@ -1038,17 +1051,17 @@ export async function writeRollbackJournalSegment(
  * run to settle.
  */
 async function orphanUntakenResumes(
-  this: DeployEngine,
+  deps: RollbackDeps,
   stackName: string,
   finalResources: Record<string, ResourceState>
 ): Promise<void> {
-  if (this.resumedCreates.size === 0) return;
-  const untaken = new Map([...this.resumedCreates.values()].map((r) => [r.requestToken, r]));
-  this.resumedCreates = new Map();
+  if (deps.resumedCreates().size === 0) return;
+  const untaken = new Map([...deps.resumedCreates().values()].map((r) => [r.requestToken, r]));
+  deps.resetResumedCreates();
   try {
-    await this.stateBackend.rewriteRollbackJournalFailedOperations(
+    await deps.stateBackend.rewriteRollbackJournalFailedOperations(
       stackName,
-      this.stackRegion,
+      deps.stackRegion,
       (op) => {
         const resumed =
           op.pendingCloudControlRequest === undefined
@@ -1069,7 +1082,7 @@ async function orphanUntakenResumes(
       }
     );
   } catch (error) {
-    this.logger.warn(
+    deps.logger.warn(
       safeMsg`Could not settle the resumed Cloud Control requests in the rollback journal of ` +
         safeMsg`${displayStackName(stackName)} (${displaySafe(describeAwsFailure(error).summary)}); ` +
         'the next run settles them.'

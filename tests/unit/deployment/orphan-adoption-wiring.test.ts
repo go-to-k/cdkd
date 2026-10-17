@@ -9,8 +9,8 @@
  * a case that re-implements its subject proves the subject's SHAPE, never its
  * WIRING.
  *
- * `adoptRollbackOrphans` is private and is called through a cast. That is
- * deliberate: reaching it through `deploy()` would need the entire synth / DAG
+ * `adoptRollbackOrphans` is called directly over the engine's own
+ * `rollbackDeps()`. That is deliberate: reaching it through `deploy()` would need the entire synth / DAG
  * / diff pipeline stood up, and every normalisation on the way is a chance for
  * the case to pass for a reason that has nothing to do with what it names.
  *
@@ -21,6 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { adoptRollbackOrphans } from '../../../src/deployment/deploy-engine/rollback.js';
 import { explicitNamePropertyFor } from '../../../src/provisioning/resource-name.js';
 import { makeSiblingClaimReader } from '../../../src/deployment/orphan-adoption.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -115,17 +116,13 @@ function makeEngine(): InstanceType<typeof DeployEngine> {
   );
 }
 
-/** The private pre-pass, as the engine's own `executeDeployment` calls it. */
+/** The pre-pass, as the engine's own deploy flow calls it. */
 function adopt(
   engine: InstanceType<typeof DeployEngine>,
   state: StackState,
   template = declaringTemplate
 ): Promise<unknown> {
-  return (
-    engine as unknown as {
-      adoptRollbackOrphans: (s: StackState, t: CloudFormationTemplate) => Promise<unknown>;
-    }
-  ).adoptRollbackOrphans(state, template);
+  return adoptRollbackOrphans(engine.rollbackDeps(), state, template);
 }
 
 /**
