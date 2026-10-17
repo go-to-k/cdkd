@@ -16,11 +16,10 @@
 # 60) or LoadBalancerAttributes (idle_timeout 180) keeps its live value.
 # Then destroys and verifies clean.
 #
-# Issue #1609 item 1: the removal phase also drops the Listener's
-# ListenerAttributes, whose removed boolean key the provider resets to its
-# documented default (routing.http.response.server.enabled true), and keeps
-# routing.http2.enabled templated as 'false' so the readback shows the LB
-# update did not reset the whole list.
+# The removal phase also drops the Listener's ListenerAttributes, whose
+# removed key keeps its live value too (routing.http.response.server.enabled
+# stays false, #1160), and keeps routing.http2.enabled templated as 'false' so
+# the readback shows the LB update did not reset the whole list (#1609 item 1).
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
@@ -31,7 +30,7 @@
 #
 # PLUS issue #4679 (Phase 2.5): the listener record is seeded to
 # provisionedBy=cc-api, and the removal redeploy must return it to the SDK
-# provider on the same ARN, which resets the dropped listener attribute.
+# provider on the same ARN.
 #
 # PLUS issue #4689 (Phase 5): a `--recreate-via-cc-api` of the listener must
 # REPLACE its HealthRule onto the new listener (the rule's create-only
@@ -306,10 +305,9 @@ echo "    deregistration_delay=60, idle_timeout=180, target swapped to 10.0.0.10
 # A listener first deployed while tagged, before go-to-k/cdkd#4673, was created
 # through Cloud Control and its record says provisionedBy=cc-api, which the
 # sticky rule kept on Cloud Control even after its type gained full SDK
-# coverage -- and Cloud Control's update leaves a removed ListenerAttributes key
-# live. The listener is now an 'sdk-coverage' sticky exemption, so the removal
-# redeploy below must move the record back to the SDK provider ON THE SAME ARN
-# and reset the key.
+# coverage. The listener is now an 'sdk-coverage' sticky exemption (the SDK
+# path is faster), so the removal redeploy below must move the record back to
+# the SDK provider ON THE SAME ARN.
 #
 # The record is SEEDED to cc-api (the go-to-k/cdkd#4117 precedent in
 # lambda-event-invoke-config-update), not recreated through Cloud Control: this
@@ -390,7 +388,7 @@ REMOVAL_LOG=""
 printf '%s\n' "${REMOVAL_PLAIN}"
 
 # go-to-k/cdkd#4679: the cc-api listener record returned to the SDK provider
-# in place, and the listener-attribute readback further down reads the reset.
+# in place.
 POST_LAYER=$(listener_record .provisionedBy)
 POST_ARN=$(listener_record .physicalId)
 [ "${POST_LAYER}" = "sdk" ] || {
@@ -415,16 +413,16 @@ if ! grep -qF "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener): retu
   exit 1
 fi
 echo "    ${LISTENER_LOGICAL} returned to the SDK provider on the same ARN (✓)"
-# Issue #1160: the listener now warns when a property ModifyListener keeps is
-# removed. This redeploy drops only ListenerAttributes, whose removal is
-# reset, so neither that warning nor the shared caller's may name it.
+# Issue #1160: the listener warns when a property ModifyListener keeps is
+# removed. This redeploy drops only ListenerAttributes, whose kept key matches
+# CloudFormation, so neither that warning nor the shared caller's may name it.
 if grep -F "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener)" <<<"${REMOVAL_PLAIN}" \
   | grep -E 'removed from the template|absent from the state being restored' >/dev/null; then
-  echo "FAIL: #1160: the removal redeploy warned about a removed listener property it resets:"
+  echo "FAIL: #1160: the removal redeploy warned about a removed listener property:"
   grep -F "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener)" <<<"${REMOVAL_PLAIN}"
   exit 1
 fi
-echo "    no left-in-place warning for ${LISTENER_LOGICAL}'s reset ListenerAttributes (✓)"
+echo "    no left-in-place warning for ${LISTENER_LOGICAL}'s ListenerAttributes (✓)"
 
 # Pre-fix the provider passed the absent field through and ModifyTargetGroup
 # merged (port stayed 8080); post-fix the removal sends the explicit
@@ -502,12 +500,13 @@ echo "    routing.http2.enabled retained as false (✓)"
 
 LISTENER_ATTR_P3=$(aws elbv2 describe-listener-attributes --listener-arn "${LISTENER_ARN}" --region "${AWS_REGION}" \
   --query "Attributes[?Key=='${EXPECTED_ATTR_KEY}'].Value | [0]" --output text)
-if [[ "${LISTENER_ATTR_P3}" != "true" ]]; then
-  echo "FAIL: listener attribute ${EXPECTED_ATTR_KEY} is '${LISTENER_ATTR_P3}' after removal, expected the AWS default 'true'"
-  echo "    (ModifyListenerAttributes removal arm — Value:'' did not clear the override)"
+# Issue #1160: a removed listener attribute key keeps its live value, as a
+# CloudFormation update leaves it. Before #1160 the provider reset it to true.
+if [[ "${LISTENER_ATTR_P3}" != "false" ]]; then
+  echo "FAIL: listener attribute ${EXPECTED_ATTR_KEY} is '${LISTENER_ATTR_P3}' after removal, expected the live 'false' kept (CloudFormation leaves a removed key)"
   exit 1
 fi
-echo "    ${EXPECTED_ATTR_KEY} reset to true (✓)"
+echo "    ${EXPECTED_ATTR_KEY} kept at false (✓)"
 
 # --- Phase 4: the fix-forward of a failed CREATE (go-to-k/cdkd#4606) ---------
 # A `--no-rollback` deploy whose OrphanLb CREATE fails after CreateLoadBalancer,

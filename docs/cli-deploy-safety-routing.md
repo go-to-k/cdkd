@@ -194,9 +194,9 @@ again on the next deploy, or stop passing it and let the move happen.
 
 > [!NOTE]
 > Pinning keeps Cloud Control's behaviour for that deploy, gaps included. For
-> an `AWS::ElasticLoadBalancingV2::Listener`, a deploy that removes a
-> `ListenerAttributes` key under the pin leaves the key at its old value. The
-> SDK provider is the route that resets it.
+> an `AWS::ElasticLoadBalancingV2::Listener` the two routes behave alike: a
+> removed `ListenerAttributes` key keeps its old value on both, as
+> CloudFormation keeps it.
 
 ### Edge cases
 

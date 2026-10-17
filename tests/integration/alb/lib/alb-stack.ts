@@ -175,13 +175,9 @@ export class AlbStack extends cdk.Stack {
     // on an Application listener). cdkd applies it via a post-create
     // ModifyListenerAttributes call.
     //
-    // The REMOVAL phase drops the list entirely (issue #1609 item 1). The
-    // ModifyListenerAttributes removal arm pushed the dropped key back as
-    // `Value: ''` and had never been exercised against real AWS; this A/B is
-    // what proved the API REJECTS that for a boolean key, failing the whole
-    // deploy. The provider now sends the key's default of `true` instead —
-    // established by this fixture's own readback, since the SDK model leaves
-    // it unstated — so the post-removal readback must flip back to true.
+    // The REMOVAL phase drops the list entirely. The provider leaves the key
+    // at its live `false`, as a CloudFormation update does (issue #1160, CFn
+    // A/B us-east-1 2026-10-17).
     const cfnListener = listener.node.defaultChild as elbv2.CfnListener;
     if (!removal) {
       cfnListener.listenerAttributes = [

@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // go-to-k/cdkd#2085: a listener carrying Tags (any CDK app with stack tags)
-// was routed via Cloud Control because the SDK provider did not declare Tags,
-// and that route leaves a removed ListenerAttributes key live in AWS. The SDK
-// provider now owns the tagged listener: it resets the removed key and diffs
-// the tags itself.
+// was routed via Cloud Control because the SDK provider did not declare Tags.
+// The SDK provider now owns the tagged listener and diffs the tags itself; a
+// removed ListenerAttributes key is kept, as CloudFormation keeps it (#1160).
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
 
@@ -85,7 +84,7 @@ describe('a tagged ALB listener stays on the SDK provider (go-to-k/cdkd#2085)', 
     ]);
   });
 
-  it('dropping ListenerAttributes from a tagged listener resets the server header to its default', async () => {
+  it('dropping ListenerAttributes from a tagged listener leaves the server header in place (#1160)', async () => {
     await new ELBv2Provider().update(
       'Listener',
       LISTENER_ARN,
@@ -94,9 +93,9 @@ describe('a tagged ALB listener stays on the SDK provider (go-to-k/cdkd#2085)', 
       taggedListener(SERVER_HEADER_OFF)
     );
     expect(sentOf(ModifyListenerCommand)).toHaveLength(1);
-    expect(sentOf(ModifyListenerAttributesCommand).map((c) => c.input.Attributes)).toEqual([
-      [{ Key: 'routing.http.response.server.enabled', Value: 'true' }],
-    ]);
+    // CloudFormation leaves a removed listener attribute key too (CFn A/B
+    // 2026-10-17), so no ModifyListenerAttributes is sent.
+    expect(sentOf(ModifyListenerAttributesCommand)).toEqual([]);
     // Unchanged tags send no tag call.
     expect(sentOf(AddTagsCommand)).toHaveLength(0);
     expect(sentOf(RemoveTagsCommand)).toHaveLength(0);

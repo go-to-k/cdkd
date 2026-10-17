@@ -68,22 +68,13 @@ const MODIFY: Record<string, new (...args: never[]) => { input: { Attributes?: u
   [LISTENER]: ModifyListenerAttributesCommand,
 };
 
-// A key with no documented default: the Listener's template-path resolver
-// sends `''` for it.
+// A key the recorded baseline lacks.
 const APPEARING = { Key: 'ddos_protection.syn_cookie.mode', Value: 'reactive' };
 // A key WITH a documented default, held at a NON-default value.
 const DEFAULTED: Record<string, Attr> = {
   [LB]: { Key: 'deletion_protection.enabled', Value: 'true' },
   [TG]: { Key: 'stickiness.enabled', Value: 'true' },
   [LISTENER]: { Key: 'routing.http.response.server.enabled', Value: 'false' },
-};
-// What a TEMPLATE-path update sends for a removed DEFAULTED key: the Listener
-// resets it to its documented default; a LoadBalancer or TargetGroup leaves it
-// at its live value, as CloudFormation does (#1160).
-const TEMPLATE_REMOVAL: Record<string, Attr[]> = {
-  [LB]: [],
-  [TG]: [],
-  [LISTENER]: [{ Key: 'routing.http.response.server.enabled', Value: 'true' }],
 };
 const OTHER = { Key: 'idle_timeout.timeout_seconds', Value: '60' };
 
@@ -193,7 +184,7 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
       expect(payloads).toEqual([[OTHER]]);
     });
 
-    it('the same pair on a TEMPLATE-path update sends what that path sends for a removal', async () => {
+    it('the same pair on a TEMPLATE-path update sends no removal either, and does not warn (#1160)', async () => {
       const { payloads } = await revert(
         type,
         bag,
@@ -202,7 +193,9 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         [OTHER],
         {} // a template-path update: no context flag
       );
-      expect(payloads).toEqual([[OTHER, ...TEMPLATE_REMOVAL[type]!]]);
+      // Every bag keeps a removed key on the template path, as CloudFormation
+      // does, so only the changed key is sent.
+      expect(payloads).toEqual([[OTHER]]);
       expect(warnings().some((w) => w.includes('which the recorded baseline holds no value'))).toBe(
         false
       );
@@ -217,8 +210,7 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         [OTHER],
         { replayingState: true }
       );
-      const removal = TEMPLATE_REMOVAL[type]!;
-      expect(payloads).toEqual(removal.length > 0 ? [removal] : []);
+      expect(payloads).toEqual([]);
     });
 
     it('#4144 still holds on revert: an absent undeclared key is not written, a declared one is', async () => {
@@ -237,20 +229,6 @@ describe('ELBv2Provider drift --revert — an attribute key only the readback ho
         false
       );
     });
-  });
-
-  it("the Listener template-path removal of a key with no default is ''", async () => {
-    // Pins what the revert used to send for the #4147 key, so the revert arm
-    // above is measured against the real alternative.
-    const { payloads } = await revert(
-      LISTENER,
-      'ListenerAttributes',
-      [OTHER],
-      [APPEARING, OTHER],
-      [OTHER],
-      {} // a template-path update: no context flag
-    );
-    expect(payloads).toEqual([[{ Key: APPEARING.Key, Value: '' }]]);
   });
 
   it('with no observed baseline the untemplated keys are merged in, so nothing is left in place', async () => {

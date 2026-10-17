@@ -960,15 +960,47 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
     const LISTENER_ARN =
       'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/my-alb/abc/def';
 
-    it('resets a removed BOOLEAN ListenerAttribute to its documented default, not the empty string', async () => {
-      // The exact payload that failed the live removal deploy pre-fix:
-      // "The value of 'routing.http.response.server.enabled' must be 'true'
-      // or 'false', but was ''".
+    // Issue #1160: a removed ListenerAttributes key keeps its live value, as a
+    // CloudFormation update leaves it (CFn A/B us-east-1 2026-10-17). cdkd used
+    // to reset it (a documented default for a boolean key, '' for any other,
+    // issue #1609 item 1), so each row sent ModifyListenerAttributes before.
+    it.each([
+      ['a BOOLEAN key', 'routing.http.response.server.enabled', 'false'],
+      [
+        'a free-form key',
+        'routing.http.response.strict_transport_security.header_value',
+        'max-age=31536000',
+      ],
+    ])('leaves a removed ListenerAttribute (%s) at its live value', async (_l, key, value) => {
       await provider.update(
         'MyListener',
         LISTENER_ARN,
         LISTENER_TYPE,
         { LoadBalancerArn: LB_ARN, DefaultActions: [], Port: 80, Protocol: 'HTTP' },
+        {
+          LoadBalancerArn: LB_ARN,
+          DefaultActions: [],
+          Port: 80,
+          Protocol: 'HTTP',
+          ListenerAttributes: [{ Key: key, Value: value }],
+        }
+      );
+
+      expect(callsOf('ModifyListenerAttributesCommand')).toHaveLength(0);
+    });
+
+    it('sends a changed ListenerAttribute and none of the keys removed beside it', async () => {
+      await provider.update(
+        'MyListener',
+        LISTENER_ARN,
+        LISTENER_TYPE,
+        {
+          LoadBalancerArn: LB_ARN,
+          DefaultActions: [],
+          Port: 80,
+          Protocol: 'HTTP',
+          ListenerAttributes: [{ Key: 'routing.http.response.server.enabled', Value: 'true' }],
+        },
         {
           LoadBalancerArn: LB_ARN,
           DefaultActions: [],
@@ -976,6 +1008,7 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
           Protocol: 'HTTP',
           ListenerAttributes: [
             { Key: 'routing.http.response.server.enabled', Value: 'false' },
+            { Key: 'routing.http.response.x_frame_options.header_value', Value: 'DENY' },
           ],
         }
       );
@@ -983,35 +1016,6 @@ describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
       const [call] = callsOf('ModifyListenerAttributesCommand');
       expect(call[0].input.Attributes).toEqual([
         { Key: 'routing.http.response.server.enabled', Value: 'true' },
-      ]);
-    });
-
-    it('keeps the empty-string reset for a removed free-form ListenerAttribute', async () => {
-      await provider.update(
-        'MyListener',
-        LISTENER_ARN,
-        LISTENER_TYPE,
-        { LoadBalancerArn: LB_ARN, DefaultActions: [], Port: 80, Protocol: 'HTTP' },
-        {
-          LoadBalancerArn: LB_ARN,
-          DefaultActions: [],
-          Port: 80,
-          Protocol: 'HTTP',
-          ListenerAttributes: [
-            {
-              Key: 'routing.http.response.strict_transport_security.header_value',
-              Value: 'max-age=31536000',
-            },
-          ],
-        }
-      );
-
-      const [call] = callsOf('ModifyListenerAttributesCommand');
-      expect(call[0].input.Attributes).toEqual([
-        {
-          Key: 'routing.http.response.strict_transport_security.header_value',
-          Value: '',
-        },
       ]);
     });
   });

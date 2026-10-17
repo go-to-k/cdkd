@@ -267,3 +267,91 @@ describe('ELBv2Provider removalHandledInUpdate (#1160)', () => {
     expect(prepared.injected).toEqual([]);
   });
 });
+
+describe('ELBv2 Listener update: a removed CORS or request-header-rename ListenerAttributes key (#1160)', () => {
+  const ORIGIN = 'routing.http.response.access_control_allow_origin.header_value';
+  const CREDS = 'routing.http.response.access_control_allow_credentials.header_value';
+  const SERVER = 'routing.http.response.server.enabled';
+  const httpListener = (attrs: Array<{ Key: string; Value: string }>) => ({
+    ...tlsListener(),
+    Protocol: 'HTTP',
+    Port: 80,
+    ListenerAttributes: attrs,
+  });
+  const CORS_WARNING = 'may keep sending a CORS response header';
+  const RENAME = 'routing.http.request.x_amzn_mtls_clientcert_subject.header_name';
+  const HSTS = 'routing.http.response.strict_transport_security.header_value';
+  const attributeCalls = (): unknown[] =>
+    mockSend.mock.calls
+      .map((c) => c[0] as { constructor: { name: string }; input: { Attributes?: unknown } })
+      .filter((c) => c.constructor.name === 'ModifyListenerAttributesCommand')
+      .map((c) => c.input.Attributes);
+
+  // CFn A/B us-east-1 2026-10-18: a CloudFormation update dropping
+  // access_control_allow_origin '*' and allow_credentials 'true' kept both.
+  it('keeps the keys and warns once, naming the keys but never their values', async () => {
+    await update(httpListener([{ Key: SERVER, Value: 'false' }]), httpListener([
+      { Key: ORIGIN, Value: 'https://secret-origin.example' },
+      { Key: CREDS, Value: 'true' },
+      { Key: SERVER, Value: 'false' },
+    ]));
+
+    expect(attributeCalls()).toEqual([]);
+    const lines = warnings().filter((w) => w.includes(CORS_WARNING));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(
+      `MyListener: ListenerAttributes keys ${ORIGIN}, ${CREDS} are no longer declared and keep their live values, as CloudFormation leaves them`
+    );
+    expect(lines[0]).not.toContain('secret-origin');
+  });
+
+  it('warns for a removed request-header rename, in the singular', async () => {
+    await update(
+      httpListener([{ Key: SERVER, Value: 'false' }]),
+      httpListener([
+        { Key: RENAME, Value: 'x-client-subject' },
+        { Key: SERVER, Value: 'false' },
+      ])
+    );
+
+    expect(attributeCalls()).toEqual([]);
+    const lines = warnings().filter((w) => w.includes(CORS_WARNING));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(
+      `MyListener: ListenerAttributes key ${RENAME} is no longer declared and keeps its live value, as CloudFormation leaves it`
+    );
+    expect(lines[0]).toContain('keep writing a request header under its renamed name');
+    expect(lines[0]).not.toContain('x-client-subject');
+  });
+
+  it.each([
+    ['the server header switch', SERVER, 'false'],
+    ['a security response header (fails safe when kept)', HSTS, 'max-age=31536000'],
+  ])('does not warn for a removed key that is %s', async (_l, key, value) => {
+    await update(httpListener([]), httpListener([{ Key: key, Value: value }]));
+
+    expect(attributeCalls()).toEqual([]);
+    expect(warnings().some((w) => w.includes(CORS_WARNING))).toBe(false);
+  });
+
+  it('does not warn when a CORS key stays declared, even when it changes', async () => {
+    await update(
+      httpListener([{ Key: ORIGIN, Value: 'https://a.example' }]),
+      httpListener([{ Key: ORIGIN, Value: '*' }])
+    );
+
+    expect(attributeCalls()).toEqual([[{ Key: ORIGIN, Value: 'https://a.example' }]]);
+    expect(warnings().some((w) => w.includes(CORS_WARNING))).toBe(false);
+  });
+
+  it('drift --revert does not print it: the readback-only key takes the #4147 warning', async () => {
+    await update(httpListener([]), httpListener([{ Key: ORIGIN, Value: '*' }]), {
+      desiredFromAwsReadback: true,
+    });
+
+    expect(warnings().some((w) => w.includes(CORS_WARNING))).toBe(false);
+    expect(warnings().some((w) => w.includes('which the recorded baseline holds no value'))).toBe(
+      true
+    );
+  });
+});

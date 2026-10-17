@@ -643,10 +643,7 @@ conditional the escape is:
   waits one deploy. `AWS::SNS::Topic`,
   `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`,
   `AWS::Lambda::WebFunctionEndpoint` and `AWS::Lambda::NetworkConnector` are
-  the members today. The listener
-  has one more reason to leave: Cloud Control leaves a `ListenerAttributes`
-  key removed from the template at its old value, and the SDK provider resets
-  it, on the same deploy that flips the record.
+  the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

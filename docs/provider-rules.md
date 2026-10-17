@@ -1487,8 +1487,11 @@ Checklist when writing or reviewing an `update()`:
   `ModifyLoadBalancerAttributes` / `ModifyListenerAttributes` accept `''` for
   numeric and free-form-string keys but reject it for BOOLEAN / ENUM ones
   ("The value of 'deletion_protection.enabled' must be 'true' or 'false', but
-  was ''"). So a single provider needs a per-key resolver — a documented
-  defaults table with a fallback — not one sentinel.
+  was ''"). So a provider that resets needs a per-key resolver — a documented
+  defaults table with a fallback — not one sentinel. (cdkd's ELBv2 provider
+  no longer resets an attribute key at all: CloudFormation keeps a removed one
+  in all three bags, issue [#1160](https://github.com/go-to-k/cdkd/issues/1160).
+  The sentinel facts above are about the APIs.)
   Three things make this worth its own bullet. **The blast radius is the whole
   call, not the key**: these APIs validate the entire attribute list, so ONE
   removed boolean fails the deploy — and it can fail the automatic ROLLBACK
@@ -2607,7 +2610,7 @@ Consider admitting a type in the same PR that empties its `silentDrop` map, or
 in a small follow-up. It is not mandatory and nothing blocks a release without
 it: an un-admitted type is merely slower, which is the status quo — unless
 Cloud Control also mishandles an update for it, in which case admission is
-the fix (issue [#4679](https://github.com/go-to-k/cdkd/issues/4679)).
+the fix.
 
 **The bar is physicalId parity, and it is EVIDENCE, not an argument.** Cloud
 Control mints its identifier from the schema's `primaryIdentifier`; the SDK
@@ -2649,11 +2652,11 @@ To admit a type:
 
 Use `mode: 'cc-broken'` **only** when Cloud Control genuinely cannot manage the
 type (its escape is unconditional and ignores `--pin-cc-api`). A type that
-works on Cloud Control and is only slower is `'sdk-coverage'`, and so is one
-whose Cloud Control defect only a mutating deploy reaches, since that deploy is
-the one that flips the record (`AWS::ElasticLoadBalancingV2::Listener`: Cloud
-Control leaves a removed `ListenerAttributes` key at its old value, issue
-[#4679](https://github.com/go-to-k/cdkd/issues/4679)).
+works on Cloud Control and is only slower is `'sdk-coverage'`
+(`AWS::ElasticLoadBalancingV2::Listener`, issue
+[#4679](https://github.com/go-to-k/cdkd/issues/4679)), and so is one whose
+Cloud Control defect only a mutating deploy reaches, since that deploy is the
+one that flips the record.
 
 ## Logging
 
