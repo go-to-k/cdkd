@@ -66,6 +66,7 @@ import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
   isSameGenerationBag,
+  redactionClaimOf,
   maskSecretsInText,
   recordLogOnlyValue,
   redactForState,
@@ -143,7 +144,8 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
               provenance: 'template-derived',
               secrets: ownSecrets,
               source: templateProps,
-              generation: isSameGenerationBag(properties) ? 'same-generation' : 'unproven',
+              // Leaf-certified `effectiveProperties` too (go-to-k/cdkd#5063).
+              generation: redactionClaimOf(properties),
             })
       );
     }

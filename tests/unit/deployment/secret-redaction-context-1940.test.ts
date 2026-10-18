@@ -232,6 +232,12 @@ interface Triple {
   /** (iii) A previous generation: a moved reference, other literals, a removed key. */
   previousTemplate: object;
   previousStateRecord: object;
+  /**
+   * A provider's `effectiveProperties` (go-to-k/cdkd#5063): today's
+   * resolution with previous literals, a removed key and the PREVIOUS value
+   * of each moved reference CARRIED in.
+   */
+  providerBag: object;
   plants: Plant[];
 }
 
@@ -358,7 +364,7 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
   const isLeaf = (n: Node): n is Part[] =>
     Array.isArray(n) && n.length > 0 && n.every((p) => typeof p !== 'object');
   interface RenderOptions {
-    part: (p: Plant) => string;
+    part: (p: Plant, leaf: readonly Part[]) => string;
     /** (iii) readback: arrays reversed, a default key added to some objects. */
     readback?: boolean;
     /** (iii) previous generation: literal-only leaves and one key differ. */
@@ -367,9 +373,15 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
   // Decided once per object / leaf, so every rendering agrees on WHICH ones.
   const defaultKeyed = new WeakSet<object>();
   const movedLiteral = new WeakSet<object>();
+  // An EMBEDDING leaf a provider carried WHOLE from a previous generation
+  // (go-to-k/cdkd#5063's provider bag): every secret in it is a previous value.
+  const carriedLeaf = new WeakSet<object>();
   const decide = (n: Node): void => {
     if (isLeaf(n)) {
       if (n.every((p) => typeof p === 'string') && rand() < 0.5) movedLiteral.add(n);
+      else if (n.length > 1 && n.some((p) => typeof p === 'number') && rand() < 0.3) {
+        carriedLeaf.add(n);
+      }
       return;
     }
     if (Array.isArray(n)) {
@@ -381,7 +393,7 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
   };
   const render = (n: Node, o: RenderOptions): unknown => {
     if (isLeaf(n)) {
-      const text = n.map((p) => (typeof p === 'number' ? o.part(plants[p]!) : p)).join('');
+      const text = n.map((p) => (typeof p === 'number' ? o.part(plants[p]!, n) : p)).join('');
       return o.previous && movedLiteral.has(n) ? `old-${text}` : text;
     }
     if (Array.isArray(n)) {
@@ -406,6 +418,13 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
   // A reference this generation MOVED (a rotation pinned to the previous
   // version stage), per secret plant.
   const moved = new Set(plants.filter((p) => p.secret && rand() < 0.5));
+  // The value a provider CARRIED for a moved reference: a previous one the
+  // pass never resolved, from characters no plant, literal or key uses.
+  const rotated = new Map<Plant, string>(
+    plants
+      .filter((p) => p.secret)
+      .map((p, i) => [p, p.subFloor ? '`%`'.slice(0, (i % 3) + 1) : `R${i}`.padEnd(15, 'Z')])
+  );
   const previousSpelling = (p: Plant): string =>
     moved.has(p) ? p.previousExpression : p.expression;
   return {
@@ -414,6 +433,15 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
     resolved: render(root, { part: (p) => p.value }) as object,
     readback: render(root, { part: (p) => p.value, readback: true }) as object,
     previousTemplate: previousOf(render(root, { part: previousSpelling, previous: true })),
+    // Carried WHOLE, and only into an EMBEDDING leaf: a WHOLE-token source
+    // leaf is persisted as the template's reference whatever the bag holds
+    // there, with or without any claim (the whole-token arm), not this mark's.
+    providerBag: previousOf(
+      render(root, {
+        part: (p, leaf) => (carriedLeaf.has(leaf) ? (rotated.get(p) ?? p.value) : p.value),
+        previous: true,
+      })
+    ),
     previousStateRecord: previousOf(
       render(root, { part: (p) => (p.secret ? previousSpelling(p) : p.value), previous: true })
     ),
@@ -602,6 +630,25 @@ const PROPERTY_CASES: PropertyCase[] = [
     // That certification reads the pass's PAIR for the token, which
     // `EXPORT_NAME_SCOPE` withholds by design (a name positions no leaf):
     // under it, the sub-floor span is the value scan's, below its floor.
+    exportNameShapes: { subFloorEmbedded: 'nowhere' },
+    logs: true,
+  },
+  {
+    // A provider bag carrying values this pass never resolved, under the
+    // claim its leaf-certified mark licenses (go-to-k/cdkd#5063): a carried
+    // leaf must never take a reference (oracle (b) reads each leaf back).
+    name: 'template-derived, leaf-certified provider bag',
+    build: (t, route) => ({
+      bag: t.providerBag,
+      context: {
+        provenance: 'template-derived',
+        secrets: passFor(t.plants, route),
+        source: t.template,
+        generation: 'same-generation',
+      },
+      source: t.template,
+    }),
+    shapes: EVERY_SHAPE,
     exportNameShapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
@@ -841,6 +888,7 @@ describe('redactForState: planted-plaintext properties over generated triples', 
       movedReferences: 0,
       movedLiterals: 0,
       subFloorBesidePublic: 0,
+      carriedProviderLeaves: 0,
     };
     for (const seed of SEEDS) {
       const t = generate(seed);
@@ -861,6 +909,16 @@ describe('redactForState: planted-plaintext properties over generated triples', 
         }
         const previous = at(t.previousTemplate, path);
         if (typeof previous === 'string' && previous === `old-${leaf}`) count.movedLiterals!++;
+        // go-to-k/cdkd#5063's: a provider-carried embedding leaf.
+        const carried = at(t.providerBag, path);
+        const resolvedLeaf = at(t.resolved, path);
+        if (
+          typeof carried === 'string' &&
+          carried !== resolvedLeaf &&
+          !carried.startsWith('old-')
+        ) {
+          count.carriedProviderLeaves!++;
+        }
         // go-to-k/cdkd#5056's shape: a sub-floor secret beside a public token.
         const has = (pred: (p: Plant) => boolean): boolean =>
           t.plants.some((p) => pred(p) && leaf.includes(p.expression));

@@ -17,6 +17,7 @@ import { createMaskedRetryLogger, type MaskerFn } from '../../provisioning/maske
 import {
   type RecordedSecretValues,
   isSameGenerationBag,
+  markLeafCertifiedBag,
   markSameGenerationBag,
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
@@ -359,12 +360,13 @@ export function recordedPropertiesAfterReplayCreate(
 /**
  * The top-level copy both record builders take of a provider's
  * `effectiveProperties`, carrying the provider's same-generation mark onto it
- * (go-to-k/cdkd#5056). A provider marks only a bag it built from the
- * resolution it was handed (`NestedStackProvider`); on a replay that is the
- * re-resolved journal, so `redactRollbackRecord` states the claim from the
- * mark, as the deploy engine's persist does. A plain spread would drop it.
+ * (go-to-k/cdkd#5056) and marking it leaf-certified (go-to-k/cdkd#5063): any
+ * provider bag a replay is handed back was built from the journal this replay
+ * re-resolved, as `propertiesToRecord` marks the deploy's.
+ * `redactRollbackRecord` states the redaction claim from either mark. A plain
+ * spread would drop them.
  */
 function copyKeepingGenerationClaim(properties: Record<string, unknown>): Record<string, unknown> {
-  const copy = { ...properties };
+  const copy = markLeafCertifiedBag({ ...properties });
   return isSameGenerationBag(properties) ? markSameGenerationBag(copy) : copy;
 }

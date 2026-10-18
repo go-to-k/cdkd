@@ -3,6 +3,7 @@ import {
   redactForState,
   recordResolvedPair,
   isSameGenerationBag,
+  isLeafCertifiedBag,
   markSameGenerationBag,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -224,7 +225,7 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
     expect(isSameGenerationBag(created)).toBe(true);
   });
 
-  it('the record builders leave an unmarked bag unmarked', () => {
+  it('the record builders mark an unmarked provider bag leaf-certified only (go-to-k/cdkd#5063)', () => {
     const plain = { ...restored };
     const updated = recordAfterRollbackUpdate(record(journaled), {
       physicalId: 'p',
@@ -232,14 +233,19 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
       effectiveProperties: plain,
     });
     expect(isSameGenerationBag(updated.properties)).toBe(false);
-    expect(
-      isSameGenerationBag(
-        recordedPropertiesAfterReplayCreate(record(journaled), {
-          physicalId: 'p',
-          effectiveProperties: plain,
-        })
-      )
-    ).toBe(false);
+    expect(isLeafCertifiedBag(updated.properties)).toBe(true);
+    const created = recordedPropertiesAfterReplayCreate(record(journaled), {
+      physicalId: 'p',
+      effectiveProperties: plain,
+    });
+    expect(isSameGenerationBag(created)).toBe(false);
+    expect(isLeafCertifiedBag(created)).toBe(true);
+    // The journal's own (unresolved) properties are never marked.
+    const restoredOnly = recordAfterRollbackUpdate(record(journaled), {
+      physicalId: 'p',
+      wasReplaced: false,
+    });
+    expect(isLeafCertifiedBag(restoredOnly.properties)).toBe(false);
   });
 
   it('redactRollbackRecord states the claim from the mark, end to end', () => {
@@ -265,7 +271,21 @@ describe('a sub-floor secret in a rollback-restored record (state-derived)', () 
       journaled,
       {}
     );
-    // The residual the deploy engine has for the same bag: not claimed.
-    expect(unmarkedOut.properties).toEqual(restored);
+    // Leaf-certified since go-to-k/cdkd#5063: claimed per leaf, so the span
+    // equal to this replay's rendering takes its token.
+    expect(unmarkedOut.properties).toEqual(journaled);
+    // A provider bag carrying a value this replay did not resolve is not
+    // rewritten into today's reference.
+    const carriedOut = redactRollbackRecord(
+      recordAfterRollbackUpdate(record(journaled), {
+        physicalId: 'p',
+        wasReplaced: false,
+        effectiveProperties: { Url: 'pin=y8;host=prod' },
+      }),
+      secrets,
+      journaled,
+      {}
+    );
+    expect(carriedOut.properties).toEqual({ Url: 'pin=y8;host=prod' });
   });
 });

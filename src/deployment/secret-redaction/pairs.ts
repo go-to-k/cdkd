@@ -475,7 +475,8 @@ const sameGenerationBags = new WeakSet<object>();
  * be written as the token this pass recorded. What never qualifies is a bag of
  * MIXED provenance: a provider's `effectiveProperties` replacement may carry
  * previous-state values IN, so an object-level mark on it would prove nothing
- * for those leaves — it stays unmarked and keeps the residual. Nor does an
+ * for those leaves -- it takes the narrower, redaction-only
+ * {@link markLeafCertifiedBag} instead (go-to-k/cdkd#5063). Nor does an
  * object marked INSIDE the resolver, at resolution time: whether that object,
  * a narrowed copy of it or a provider's replacement is what gets redacted and
  * stored is the CALLER's decision, so the mark is taken by the caller at the
@@ -570,4 +571,40 @@ export function isSameGenerationBag(bag: unknown): boolean {
   // `WeakSet.has` answers `false` for a primitive or `null` without throwing,
   // so no type guard sits in front of it: one that did would be inert.
   return sameGenerationBags.has(bag as object);
+}
+
+/**
+ * A provider's `effectiveProperties` bag, built from THIS pass's resolved
+ * desired bag (go-to-k/cdkd#5063). Unlike {@link markSameGenerationBag} it
+ * vouches for no leaf as a whole -- a provider may carry a previous value into
+ * it (the DynamoDB global-table provider restores previous GSIs), which is why
+ * the deploy engine's reference-provenance rule never reads this mark -- but
+ * it licenses the REDACTION claim: every arm the claim relaxes accepts a leaf
+ * only where it equals the source rendered with this pass's own resolved
+ * values (`positionByEmbeddedSpan`, `certifiesRenderedLiteral`,
+ * `certifiedMixedLiteral`, `positionByIntrinsicFrame`), which is the leaf the
+ * desired bag holds at that path. A leaf the provider carried from elsewhere
+ * fails that equality and keeps the value scan's answer; one that coincides
+ * with today's rendering is persisted as today's reference, value-equal. A
+ * writer states the claim from this mark explicitly, as from the
+ * same-generation one.
+ */
+const leafCertifiedBags = new WeakSet<object>();
+
+export function markLeafCertifiedBag<T extends object>(bag: T): T {
+  leafCertifiedBags.add(bag);
+  return bag;
+}
+
+/** Does `bag` carry {@link markLeafCertifiedBag}'s mark? */
+export function isLeafCertifiedBag(bag: unknown): boolean {
+  return leafCertifiedBags.has(bag as object);
+}
+
+/**
+ * The redaction claim a producer's marks license for `bag`: same-generation
+ * when it is this pass's own resolution, or leaf-certified (go-to-k/cdkd#5063).
+ */
+export function redactionClaimOf(bag: unknown): 'same-generation' | 'unproven' {
+  return isSameGenerationBag(bag) || isLeafCertifiedBag(bag) ? 'same-generation' : 'unproven';
 }

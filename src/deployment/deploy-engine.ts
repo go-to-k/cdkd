@@ -13,6 +13,7 @@ import {
   maskSecretsInText,
   hasMaskableValues,
   isSameGenerationBag,
+  redactionClaimOf,
   type ScrubGenerationClaims,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -1686,7 +1687,8 @@ export class DeployEngine {
  */
 function sameGenerationClaimsOf(record: ResourceState): ScrubGenerationClaims {
   return {
-    properties: isSameGenerationBag(record.properties) ? 'same-generation' : 'unproven',
+    // A provider's leaf-certified `effectiveProperties` too (go-to-k/cdkd#5063).
+    properties: redactionClaimOf(record.properties),
     observed: isSameGenerationBag(record.observedProperties) ? 'same-generation' : 'unproven',
   };
 }

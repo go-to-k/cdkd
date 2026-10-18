@@ -519,9 +519,10 @@ export function singleSpanFrame(
  * bound, which is the scan's answer: the plaintext, unchanged.
  *
  * What stays, stated here rather than papered over. A provider that
- * substituted `effectiveProperties` built a bag of MIXED provenance, so that
- * object is never marked and a sub-floor middle in it keeps the scan's
- * answer. A readback AWS rewrote at that offset to a value that coincides
+ * substituted `effectiveProperties` built a bag of MIXED provenance; it takes
+ * the narrower leaf-certified mark (`markLeafCertifiedBag`, go-to-k/cdkd#5063),
+ * which licenses this claim because the arm accepts only a leaf equal to this
+ * pass's own rendering, and a carried value fails that. A readback AWS rewrote at that offset to a value that coincides
  * with the 1-3 character secret is persisted as the expression: value-equal
  * until the secret rotates, and the same residual the value scan already has
  * for a 4+ character coincidence in a readback. Every refusal of this arm
@@ -547,8 +548,8 @@ export function singleSpanFrame(
  * eligible for — a literal-frame source leaf on a bag the engine marks —
  * because the re-check compares unequal against a record holding the
  * plaintext and the resource is written again from a bag this pass produced.
- * The residuals named above (an `effectiveProperties` substitution, a
- * nonliteral frame) are not repaired by that deploy either.
+ * The residual named above (a nonliteral frame) is not repaired by that
+ * deploy either.
  *
  * One shape reaches this arm that a reader may not expect: a WHOLE-token
  * source that FAILED the whole-token arm's `isKnownSecretExpression` gate (an
