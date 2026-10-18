@@ -506,11 +506,7 @@ function isGeneratedNameOfEitherScheme(
     '00000000-0000-4000-8000-000000000000'
   );
   const base = probe.slice(0, probe.length - STACK_INSTANCE_SUFFIX_LENGTH);
-  return (
-    recorded.length === probe.length &&
-    recorded.startsWith(base) &&
-    /^[0-9a-f]{12}$/.test(recorded.slice(base.length))
-  );
+  return recorded.startsWith(base) && /^[0-9a-f]{12}$/.test(recorded.slice(base.length));
 }
 
 /**
