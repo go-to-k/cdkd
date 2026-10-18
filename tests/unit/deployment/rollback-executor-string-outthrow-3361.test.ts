@@ -8,6 +8,7 @@ import {
   loadJournaledOrphans,
   settleJournaledOrphansOnSuccess,
 } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
+import { backendErrorText } from '../../../src/cli/commands/rollback.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -269,5 +270,14 @@ describe('journaled orphans with an unconvertible rejection (#3361)', () => {
     expect(warnings().join('\n')).toContain(
       `to its undeleted resources: ${PLACEHOLDER}. The whole journal is kept.`
     );
+  });
+});
+
+describe('cdkd rollback backendErrorText with an unconvertible value (#3361)', () => {
+  // Every journal-backend catch of `cdkd rollback` (state persist, journal
+  // strip, lock release, nested child record) renders its error through this.
+  it('renders the placeholder instead of throwing, and an Error as its message', () => {
+    expect(backendErrorText(unconvertible(), 'MyStack', REGION)).toBe(PLACEHOLDER);
+    expect(backendErrorText(new Error('Access Denied'), 'MyStack', REGION)).toBe('Access Denied');
   });
 });
