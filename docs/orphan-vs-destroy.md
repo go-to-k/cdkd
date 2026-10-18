@@ -81,8 +81,9 @@ This removes the stack from state entirely. Every resource stays in AWS.
 
 > [!WARNING]
 > On a stack you still deploy, this drops the record of every resource in it.
-> The next `cdkd deploy` then re-creates each resource or collides with the
-> existing one. To release some resources from a live stack, use `--resource`.
+> The next `cdkd deploy` then re-creates each resource: under a new generated
+> name, or colliding with the existing one where the template declares the
+> name (or the stack predates generated-name suffixes). To release some resources from a live stack, use `--resource`.
 
 ## Related
 

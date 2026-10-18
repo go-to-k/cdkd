@@ -110,7 +110,8 @@ prefix, or cdkd cannot check whether it is. For a nested stack, the check is
 on its `Parent~Child` record.
 
 The reason is that a create can take over a resource that already existed
-under the same generated name. That resource may belong to the other
+under the same name (a declared one, or a generated one in a stack first
+deployed before generated names carried a suffix). That resource may belong to the other
 deployment. cdkd warns, names the other prefix when it found one, and leaves
 the resource in the rollback journal.
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)

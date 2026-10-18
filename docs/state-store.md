@@ -102,9 +102,10 @@ A stack name identifies one deployment in an account and region, as it does
 in CloudFormation. Deploying the same stack name a second time there, under
 another `--state-prefix` or another `--state-bucket`, is unsupported.
 
-The reason is resource names. When your template leaves a resource unnamed,
-cdkd builds the name from the stack name and the logical ID alone. Two
-deployments of one stack name therefore ask AWS for the same names. For some
+The reason is resource names. A name your template declares is the same in
+both deployments, and so is a generated one in a stack first deployed before
+generated names carried a per-stack suffix: cdkd built it from the stack name
+and the logical ID alone. Two such deployments ask AWS for the same names. For some
 resource types, such as an SQS queue or a log group, a create call under a
 taken name hands back the existing resource. Both records then list that one
 resource, and a destroy or a rollback of either deployment deletes it for
