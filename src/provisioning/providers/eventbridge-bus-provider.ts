@@ -35,6 +35,7 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /**
  * Sanitise a CFn-shape `DeadLetterConfig` (object with optional `Arn`) for
@@ -46,11 +47,12 @@ import { definedAttributes } from '../attribute-map.js';
  * `{Arn:''}` vs AWS `{Arn:'real-arn'}`).
  *
  * `cdkd drift --revert` later round-trips that placeholder back through
- * `update()`. AWS rejects `DeadLetterConfig: { Arn: '' }` as an invalid
- * ARN, so this Class 2 sanitiser drops the placeholder before it reaches
- * the API: empty-string / null / undefined `Arn` returns `undefined`
- * (caller treats this as "do not send the DeadLetterConfig field"); a
- * real ARN passes through unchanged.
+ * `update()`. `UpdateEventBus` reads `DeadLetterConfig: { Arn: '' }` as
+ * "remove the DLQ", so this Class 2 sanitiser drops the placeholder before
+ * it reaches the API: empty-string / null / undefined `Arn` returns
+ * `undefined` (caller treats this as "do not send the DeadLetterConfig
+ * field"); a real ARN passes through unchanged. A template REMOVAL sends
+ * that clear on purpose instead (`applyUpdate`, issue #1160).
  */
 function sanitizeDeadLetterConfig(value: unknown): { Arn: string } | undefined {
   if (value === null || value === undefined) return undefined;
@@ -84,6 +86,25 @@ export class EventBridgeBusProvider implements ResourceProvider {
         'Policy',
         'DeadLetterConfig',
         'LogConfig',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160: `UpdateEventBus` keeps any field it is not given, while a
+   * CloudFormation update that removes one of these clears it (real A/B,
+   * us-east-1: the readback afterwards has no Description, the AWS owned key,
+   * and LogConfig `OFF` / `NONE`). Each value is what clears it on the API.
+   * A removed `DeadLetterConfig` is cleared in {@link applyUpdate}, since its
+   * clear value is one the sanitiser otherwise drops.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::Events::EventBus',
+      new Map<string, unknown>([
+        ['Description', ''],
+        ['KmsKeyIdentifier', ''],
+        ['LogConfig', { Level: 'OFF', IncludeDetail: 'NONE' }],
       ]),
     ],
   ]);
@@ -235,13 +256,21 @@ export class EventBridgeBusProvider implements ResourceProvider {
     );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     try {
       return await this.applyUpdate(
         logicalId,
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -264,11 +293,14 @@ export class EventBridgeBusProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating EventBus ${logicalId}: ${physicalId}`);
 
-    // Update mutable properties (Description, KmsKeyIdentifier, DeadLetterConfig, LogConfig)
+    // Update mutable properties (Description, KmsKeyIdentifier, DeadLetterConfig, LogConfig).
+    // A REMOVED Description / KmsKeyIdentifier / LogConfig arrives as its
+    // `removalDefaults` clear value.
     const descChanged = properties['Description'] !== previousProperties['Description'];
     const kmsChanged = properties['KmsKeyIdentifier'] !== previousProperties['KmsKeyIdentifier'];
     const dlcChanged =
@@ -292,6 +324,18 @@ export class EventBridgeBusProvider implements ResourceProvider {
         if (dlcUpdate) {
           updateParams.DeadLetterConfig = dlcUpdate;
         }
+      } else if (
+        // Issue #1160: a DeadLetterConfig the previous template declared and
+        // this one omits is cleared, as CloudFormation does; `{ Arn: '' }` is
+        // the API's "remove the DLQ". The caller's `removedProperties` decides
+        // (EMPTY on `drift --revert`, whose baseline is a readback); a direct
+        // call reads the previous bag. A previous value with no real ARN set
+        // no DLQ, so there is nothing to clear.
+        (context?.removedProperties?.has('DeadLetterConfig') ??
+          previousProperties['DeadLetterConfig'] !== undefined) &&
+        sanitizeDeadLetterConfig(previousProperties['DeadLetterConfig']) !== undefined
+      ) {
+        updateParams.DeadLetterConfig = { Arn: '' };
       }
       if (properties['LogConfig'] !== undefined) {
         updateParams.LogConfig = properties[

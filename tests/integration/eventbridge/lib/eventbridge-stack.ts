@@ -7,13 +7,15 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as pipes from 'aws-cdk-lib/aws-pipes';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * EventBridge example stack
  *
  * Demonstrates:
- * - Custom EventBridge event bus creation
+ * - Custom EventBridge event bus creation, with a customer managed KMS key and
+ *   a DLQ, and the removal of its optional properties (CDKD_TEST_REMOVAL)
  * - EventBridge rule with event pattern on custom bus
  * - Lambda function as rule target (inline code)
  * - IAM permissions for EventBridge to invoke Lambda
@@ -29,6 +31,18 @@ export class EventBridgeStack extends cdk.Stack {
     // UPDATE phase: see the rule below (issue #955) and the bus Description
     // (issue #2613).
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    // REMOVAL phase (issue #1160): the bus template drops Description,
+    // KmsKeyIdentifier, LogConfig and DeadLetterConfig. CloudFormation clears
+    // each one, while UpdateEventBus keeps any field it is not given. The key
+    // and the queue stay in the stack; the key policy loses the EventBridge
+    // grant CDK adds for a bus using the key, as in a user's app.
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+
+    const busKey = new kms.Key(this, 'BusKey', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+    const busDlq = new sqs.Queue(this, 'BusDlq');
 
     // Create custom EventBridge event bus
     // logConfig exercises the #609 LogConfig backfill — rides on
@@ -37,14 +51,20 @@ export class EventBridgeStack extends cdk.Stack {
     // gives unambiguous readback via `aws events describe-event-bus`.
     const bus = new events.EventBus(this, 'CustomBus', {
       eventBusName: `cdkd-test-bus-${cdk.Aws.ACCOUNT_ID}`,
-      logConfig: {
-        level: events.Level.INFO,
-        includeDetail: events.IncludeDetail.FULL,
-      },
-      // Issue #2613: a changed Description is an in-place UpdateEventBus, so
-      // the UPDATE phase reaches the bus provider's update() and its
-      // recorded-region guard, not only the rule delete.
-      description: isUpdate ? 'cdkd test bus (updated)' : 'cdkd test bus',
+      ...(isRemoval
+        ? {}
+        : {
+            logConfig: {
+              level: events.Level.INFO,
+              includeDetail: events.IncludeDetail.FULL,
+            },
+            // Issue #2613: a changed Description is an in-place UpdateEventBus, so
+            // the UPDATE phase reaches the bus provider's update() and its
+            // recorded-region guard, not only the rule delete.
+            description: isUpdate ? 'cdkd test bus (updated)' : 'cdkd test bus',
+            kmsKey: busKey,
+            deadLetterQueue: busDlq,
+          }),
     });
 
     // Create Lambda function with inline code as the rule target

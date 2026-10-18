@@ -4995,6 +4995,7 @@
         "drift-revert",
         "dynamodb-streams",
         "ecr-scanning",
+        "eventbridge",
         "infra-security",
         "kms-encryption",
         "loggroup-kms-associate",
@@ -5020,6 +5021,9 @@
           "l2"
         ],
         "ecr-scanning": [
+          "l2"
+        ],
+        "eventbridge": [
           "l2"
         ],
         "infra-security": [
