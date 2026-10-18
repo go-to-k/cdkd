@@ -45,7 +45,8 @@
 state_physical_id() {
   local stack="$1" bucket="$2" resource_type="$3" logical_prefix="${4:-}"
   local region="${REGION:-${AWS_REGION:-}}"
-  local json rc=0
+  local json rc=0 errfile="" err=""
+  local -a cmd=()
 
   if [ -z "${stack}" ] || [ -z "${bucket}" ] || [ -z "${resource_type}" ]; then
     echo "FAIL: state_physical_id: needs <stack> <state-bucket> <resourceType>" >&2
@@ -53,30 +54,36 @@ state_physical_id() {
   fi
 
   if [ -n "${CDKD:-}" ]; then
-    if [ -n "${region}" ]; then
-      json="$(${CDKD} state show "${stack}" --state-bucket "${bucket}" --stack-region "${region}" --json 2>/dev/null)" || rc=$?
-    else
-      json="$(${CDKD} state show "${stack}" --state-bucket "${bucket}" --json 2>/dev/null)" || rc=$?
-    fi
+    cmd=(${CDKD})
   elif [ -n "${CLI:-}" ]; then
-    if [ -n "${region}" ]; then
-      json="$(${CLI} state show "${stack}" --state-bucket "${bucket}" --stack-region "${region}" --json 2>/dev/null)" || rc=$?
-    else
-      json="$(${CLI} state show "${stack}" --state-bucket "${bucket}" --json 2>/dev/null)" || rc=$?
-    fi
+    cmd=(${CLI})
   elif [ -n "${LOCAL_DIST:-}" ]; then
-    if [ -n "${region}" ]; then
-      json="$(node "${LOCAL_DIST}" state show "${stack}" --state-bucket "${bucket}" --stack-region "${region}" --json 2>/dev/null)" || rc=$?
-    else
-      json="$(node "${LOCAL_DIST}" state show "${stack}" --state-bucket "${bucket}" --json 2>/dev/null)" || rc=$?
-    fi
+    cmd=(node "${LOCAL_DIST}")
   else
     echo "FAIL: state_physical_id: no \${CDKD} / \${CLI} / \${LOCAL_DIST} cdkd invocation in scope" >&2
     return 1
   fi
+  cmd+=(state show "${stack}" --state-bucket "${bucket}")
+  [ -n "${region}" ] && cmd+=(--stack-region "${region}")
+  cmd+=(--json)
+
+  # Captured to a file, not `2>&1`, so a benign stderr line (the deprecated
+  # `--region` warning, a retry notice) never lands IN the JSON this function
+  # parses as stdout -- the lesson `s3-versions.sh`'s `_s3v_rows` already
+  # carries. Still surfaced on failure (below) so a caller sees WHY, instead
+  # of only "failed or returned nothing".
+  errfile="$(mktemp 2>/dev/null)" || errfile=""
+  if [ -n "${errfile}" ]; then
+    json="$("${cmd[@]}" 2>"${errfile}")" || rc=$?
+    err="$(cat "${errfile}" 2>/dev/null)"
+    rm -f "${errfile}"
+  else
+    json="$("${cmd[@]}" 2>/dev/null)" || rc=$?
+    err="<stderr unavailable: mktemp failed>"
+  fi
 
   if [ "${rc}" -ne 0 ] || [ -z "${json}" ]; then
-    echo "FAIL: state_physical_id: 'state show ${stack}' failed or returned nothing" >&2
+    echo "FAIL: state_physical_id: 'state show ${stack}' failed or returned nothing${err:+: ${err}}" >&2
     return 1
   fi
 
