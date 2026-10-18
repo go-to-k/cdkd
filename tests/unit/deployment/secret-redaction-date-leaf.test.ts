@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   scrubResourceRecord,
   clearRecordedSecretExpressions,
-  type PathSourceRules,
 } from '../../../src/deployment/secret-redaction.js';
 import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
+  type PathSourceRules,
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_READBACK_RULES,

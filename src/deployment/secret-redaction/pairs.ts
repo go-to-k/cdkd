@@ -424,10 +424,11 @@ export function substitutedSpellingOf(
  * provider succeeded, and `observedProperties`, an AWS readback installed
  * separately. So the fact is BAG-specific, not caller- or record-level, and it
  * is carried on the object: {@link markSameGenerationBag} at the moment the
- * successful result is installed, and read by the writer that states the
- * walk's claim (`scrubResourceRecord`, the journal's `properties`,
- * `redactOutputs`); the walk itself takes the claim as an argument and never
- * reads the mark (go-to-k/cdkd#5047). A copy of the bag, a derived needle map, a
+ * successful result is installed, and read only at the call sites that state
+ * the walk's claim, outside the family: the deploy engine's persist choke
+ * point, the rollback journal, `redactOutputs` and the replay's record
+ * restore. No family function reads it; the walk and `scrubResourceRecord`
+ * take the claim as an argument (go-to-k/cdkd#5047). A copy of the bag, a derived needle map, a
  * previous generation's record, a scrub / drift walk and a bag nobody marked
  * all answer `false` and keep the fall-through. `cdkd import` claims the one
  * bag its own resolver produced (the sixth site below, issue #2745), and the

@@ -8448,7 +8448,11 @@ export async function scrubStack(
       // bag — because it is what cleans a legacy PLAINTEXT observed leaf.
       const scrubbed =
         secrets || templateProps
-          ? scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation')
+          ? scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation', {
+              // A record read from `state.json`: no bag this run produced.
+              properties: 'unproven',
+              observed: 'unproven',
+            })
           : record;
       // go-to-k/cdkd#4043 Phase C, the migration rule: a plaintext this record
       // still holds at a `NoEcho` position is a needle of a SECOND scrub of
@@ -8461,7 +8465,10 @@ export async function scrubStack(
       const migrated =
         migrationNeedles === undefined
           ? scrubbed
-          : scrubResourceRecord(scrubbed, migrationNeedles, undefined, 'state-cross-generation');
+          : scrubResourceRecord(scrubbed, migrationNeedles, undefined, 'state-cross-generation', {
+              properties: 'unproven',
+              observed: 'unproven',
+            });
       // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
       const written = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
       if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
@@ -8495,7 +8502,10 @@ export async function scrubStack(
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
       const scrubbed = keepHeldTokenProvenance(
-        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation')
+        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation', {
+          properties: 'unproven',
+          observed: 'unproven',
+        })
       );
       if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
       recordsChanged++;

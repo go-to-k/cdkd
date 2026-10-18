@@ -5,6 +5,7 @@ import {
   redactForState,
   scrubResourceRecord,
   type RecordedSecretValues,
+  type RedactionContext,
 } from '../../../src/deployment/secret-redaction.js';
 
 // go-to-k/cdkd#5047: the walk takes the same-generation claim as an argument
@@ -53,34 +54,52 @@ describe('the same-generation claim at each writer that holds a marked bag (#504
     expect(at('unproven')).toEqual({ Out: RESOLVED_LEAF });
   });
 
-  describe('scrubResourceRecord states the mark the deploy engine put on the record', () => {
-    it('`properties` (propertiesToRecord): marked writes the token, unmarked keeps the plaintext', () => {
-      const scrub = (marked: boolean): unknown => {
-        const properties = { Url: RESOLVED_LEAF };
-        return scrubResourceRecord(
-          { properties: marked ? markSameGenerationBag(properties) : properties },
-          pass(),
-          { Url: SOURCE_LEAF }
-        ).properties;
-      };
-      expect(scrub(true)).toEqual({ Url: SOURCE_LEAF });
-      expect(scrub(false)).toEqual({ Url: RESOLVED_LEAF });
+  describe('scrubResourceRecord takes the claim as an argument and reads no mark', () => {
+    type Claim = 'same-generation' | 'unproven' | undefined;
+    const scrubProperties = (claim: Claim, marked = false): unknown => {
+      const properties = { Url: RESOLVED_LEAF };
+      return scrubResourceRecord(
+        { properties: marked ? markSameGenerationBag(properties) : properties },
+        pass(),
+        { Url: SOURCE_LEAF },
+        undefined,
+        { properties: claim }
+      ).properties;
+    };
+    const scrubObserved = (claim: Claim, marked = false): unknown => {
+      const observed = { Url: RESOLVED_LEAF };
+      return scrubResourceRecord(
+        {
+          properties: { Url: RESOLVED_LEAF },
+          observedProperties: marked ? markSameGenerationBag(observed) : observed,
+        },
+        pass(),
+        { Url: SOURCE_LEAF },
+        undefined,
+        { observed: claim }
+      ).observedProperties;
+    };
+
+    it('`properties`: claimed writes the token; unproven or absent keeps the plaintext, marked or not', () => {
+      expect(scrubProperties('same-generation')).toEqual({ Url: SOURCE_LEAF });
+      expect(scrubProperties('unproven')).toEqual({ Url: RESOLVED_LEAF });
+      expect(scrubProperties(undefined, true)).toEqual({ Url: RESOLVED_LEAF });
     });
 
-    it('`observedProperties` (drainObservedCaptures), against the template: marked writes the token, unmarked keeps the plaintext', () => {
-      const scrub = (marked: boolean): unknown => {
-        const observed = { Url: RESOLVED_LEAF };
-        return scrubResourceRecord(
-          {
-            properties: { Url: RESOLVED_LEAF },
-            observedProperties: marked ? markSameGenerationBag(observed) : observed,
-          },
-          pass(),
-          { Url: SOURCE_LEAF }
-        ).observedProperties;
-      };
-      expect(scrub(true)).toEqual({ Url: SOURCE_LEAF });
-      expect(scrub(false)).toEqual({ Url: RESOLVED_LEAF });
+    it('`observedProperties`: claimed writes the token; unproven or absent keeps the plaintext, marked or not', () => {
+      expect(scrubObserved('same-generation')).toEqual({ Url: SOURCE_LEAF });
+      expect(scrubObserved('unproven')).toEqual({ Url: RESOLVED_LEAF });
+      expect(scrubObserved(undefined, true)).toEqual({ Url: RESOLVED_LEAF });
     });
+  });
+
+  it('a state-* context built by spreading cannot smuggle a claim (SEC1)', () => {
+    const smuggled = {
+      provenance: 'state-derived',
+      secrets: pass(),
+      source: { Url: SOURCE_LEAF },
+      generation: 'same-generation',
+    } as unknown as RedactionContext;
+    expect(redactForState({ Url: RESOLVED_LEAF }, smuggled)).toEqual({ Url: RESOLVED_LEAF });
   });
 });

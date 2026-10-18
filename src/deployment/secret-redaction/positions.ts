@@ -499,8 +499,9 @@ export function singleSpanFrame(
  * default and today's secret resolved to `0`) would be persisted as today's
  * expression, which round-trips today and, after a rotation, reports a drift
  * that never happened. So that arm is admitted only for a bag whose
- * generation IS proven: `bagIsSameGeneration`, the object-level mark
- * {@link markSameGenerationBag} puts on the bags the deploy engine hands to
+ * generation IS proven: `bagIsSameGeneration`, the writer's claim, an argument
+ * stated from the object-level mark {@link markSameGenerationBag} puts on the
+ * bags the deploy engine hands to
  * redaction on a success path (the record's `properties`, which are the
  * resolved bag or the subset of it the SDK route writes; EVERY
  * `observedProperties` readback `drainObservedCaptures` drains, an unchanged
@@ -739,7 +740,7 @@ function renderedLiteralSpans(
  * needle (a whole-leaf plaintext, one straddling literal text and a
  * plaintext) makes the scan answer differently and the leaf keeps the scan's
  * answer. Below the scan's floor a plaintext is left by the scan, and that
- * silence is accepted only on a bag {@link markSameGenerationBag} marked,
+ * silence is accepted only on a bag its writer claimed same-generation,
  * exactly as for one span. Strictly narrower than the scan: it never rewrites
  * a leaf the scan would leave, nor a character the scan would not.
  */

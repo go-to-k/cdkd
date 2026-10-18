@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { redactOperationsForJournal } from '../../../src/deployment/deploy-engine/rollback.js';
 import { redactOutputs } from '../../../src/deployment/deploy-engine/masking.js';
+import { redactRollbackRecord } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import {
   markSameGenerationBag,
   recordResolvedPair,
@@ -31,6 +32,12 @@ const EXPR = '{{resolve:secretsmanager:short:SecretString:k}}';
 const PLAINTEXT = 'q7';
 const SOURCE_LEAF = `https://host/${EXPR}/path`;
 const RESOLVED_LEAF = `https://host/${PLAINTEXT}/path`;
+// A record whose own `properties` spell the leaf as an intrinsic frame (what
+// `cdkd import` persists): under the readback rules that is the shape the
+// generation claim decides, through the frame arm.
+const FRAMED_SOURCE = { 'Fn::Join': ['', ['p:', EXPR]] };
+const FRAMED_RESOLVED = `p:${PLAINTEXT}`;
+const FRAMED_PERSISTED = `p:${EXPR}`;
 
 function pass(): RecordedSecretValues {
   const secrets: RecordedSecretValues = new Map([[PLAINTEXT, EXPR]]);
@@ -83,5 +90,47 @@ describe('engine writers state the mark as the claim, in both directions (#5047)
     };
     expect(outputs(true)).toEqual({ Out: SOURCE_LEAF });
     expect(outputs(false)).toEqual({ Out: RESOLVED_LEAF });
+  });
+
+  it("the journal's `previousState` readback: a marked bag holds the token, an unmarked one its plaintext", () => {
+    const journal = (marked: boolean): unknown => {
+      const engine = makeBareEngine();
+      const run = (engine as unknown as { secretsRun: { perResourceSecrets: Map<string, RecordedSecretValues> } }).secretsRun;
+      run.perResourceSecrets.set('Fn', pass());
+      const observed = { Url: FRAMED_RESOLVED };
+      const [op] = redactOperationsForJournal(engine.rollbackDeps(), [
+        {
+          logicalId: 'Fn',
+          resourceType: 'AWS::Lambda::Function',
+          changeType: 'UPDATE',
+          previousState: {
+            physicalId: 'fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: { Url: FRAMED_SOURCE },
+            observedProperties: marked ? markSameGenerationBag(observed) : observed,
+          },
+        } as never,
+      ]) as Array<{ previousState: { observedProperties: unknown } }>;
+      return op!.previousState.observedProperties;
+    };
+    expect(journal(true)).toEqual({ Url: FRAMED_PERSISTED });
+    expect(journal(false)).toEqual({ Url: FRAMED_RESOLVED });
+  });
+
+  it('`redactRollbackRecord` (the replay restore): a marked readback holds the token, an unmarked one its plaintext', () => {
+    const restore = (marked: boolean): unknown => {
+      const observed = { Url: FRAMED_RESOLVED };
+      return redactRollbackRecord(
+        {
+          physicalId: 'fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Url: FRAMED_SOURCE },
+          observedProperties: marked ? markSameGenerationBag(observed) : observed,
+        } as never,
+        pass()
+      ).observedProperties;
+    };
+    expect(restore(true)).toEqual({ Url: FRAMED_PERSISTED });
+    expect(restore(false)).toEqual({ Url: FRAMED_RESOLVED });
   });
 });

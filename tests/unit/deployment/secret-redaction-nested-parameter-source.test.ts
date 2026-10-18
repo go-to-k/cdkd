@@ -11,11 +11,11 @@ import {
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
-  type PathSourceRules,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
+  type PathSourceRules,
   STATE_DERIVED_RULES,
   TEMPLATE_DERIVED_RULES,
 } from '../../../src/deployment/secret-redaction/rules.js';

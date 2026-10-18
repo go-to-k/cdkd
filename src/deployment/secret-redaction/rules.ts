@@ -179,11 +179,11 @@ export function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   persisted bag is same-generation by construction; a TEMPLATE source never
  *   is, however the caller reached it.
  *
- *   The BAG's generation is a separate fact, and it lives on the object rather
- *   than in these rules for the same reason (issue #2516): the engine marks
- *   each bag it installed on a success path with {@link markSameGenerationBag},
- *   and {@link redactSecretsForState} reads the mark for the object it was
- *   handed. That is what lets `positionByEmbeddedSpan` write an embedded
+ *   The BAG's generation is a separate fact, so it is not in these rules either
+ *   (issue #2516): it is the WRITER's claim, an argument to the walk
+ *   (`RedactionContext.generation`, go-to-k/cdkd#5047). The engine marks each
+ *   bag it installs on a success path with {@link markSameGenerationBag}, and
+ *   the writer that persists it states what the mark says. That is what lets `positionByEmbeddedSpan` write an embedded
  *   1-3 character secret as its token on this pass's own bag while every
  *   cross-generation walk — the same population listed above — keeps the value
  *   scan's answer. No rules constant claims it.
@@ -287,8 +287,9 @@ export function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * [#2906](https://github.com/go-to-k/cdkd/issues/2906)).
  * `scrubResourceRecord` redacts `observedProperties` specifically, so the
  * DESTINATION is settled there and the fail-closed refusal MAY apply — but it
- * applies only where BOTH hold: the secrets map is EMPTY, and the observed bag
- * carries {@link markSameGenerationBag}'s mark, i.e. THIS RUN produced it.
+ * applies only where BOTH hold: the secrets map is EMPTY, and the caller claims
+ * the observed bag same-generation (`claims.observed`, stated from
+ * {@link markSameGenerationBag}'s mark), i.e. THIS RUN produced it.
  * `**` is everything else — the populated map, where the value scan had needles
  * and masking a leaf it left alone would buy little; and the UNMARKED bag,
  * which is a previous generation's `observedProperties` being re-written

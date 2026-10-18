@@ -11,7 +11,7 @@ import {
   preferPositionDecisions,
   resolvableReferenceSpans,
 } from './anchors.js';
-import { SECRET_MASK, type RecordedSecretValues, isSameGenerationBag } from './pairs.js';
+import { SECRET_MASK, type RecordedSecretValues } from './pairs.js';
 import { redactForState, redactAtProvenance } from './context.js';
 import { redactByPath, isReadbackProjectedFromState, isOrdinaryDate } from './redact-path.js';
 import {
@@ -40,6 +40,14 @@ import {
  * A leaf that still CONTAINS a containment needle after every pass is
  * replaced WHOLE by {@link SECRET_MASK} (go-to-k/cdkd#2453); see
  * {@link flattenEmbeddedNoEchoLeaves}.
+ *
+ * `bagIsSameGeneration` is the writer's claim that `bag` is THIS pass's own
+ * resolution of `source` (see {@link markSameGenerationBag} for what it
+ * licenses). It defaults to `false`, the safe direction: unclaimed, a sub-floor
+ * embedded secret keeps the value scan's answer. The walk never reads a mark
+ * off the bag (go-to-k/cdkd#5047); `redactForState` and `redactAtProvenance`
+ * pass it from the caller's stated claim. Family-private: the barrel does not
+ * export this function.
  */
 export function redactSecretsForState<T>(
   bag: T,
@@ -652,20 +660,24 @@ function redactOverlappingMatches(
  *
  * That derivation's fail-closed arm asks TWO questions, not one — the secrets
  * map must be EMPTY and the observed bag must be one THIS RUN produced (issue
- * [#2906](https://github.com/go-to-k/cdkd/issues/2906)). A caller re-writing a
- * PRIOR generation's `observedProperties` unchanged therefore keeps it intact
- * rather than masking positions it cannot pair. A caller whose bag IS fresh but
- * which does not route it through {@link markSameGenerationBag} should state
- * `state-baseline` itself (`redactForState`) rather than lean on the
- * derivation.
+ * [#2906](https://github.com/go-to-k/cdkd/issues/2906)), the second being
+ * `claims.observed`. A caller re-writing a PRIOR generation's
+ * `observedProperties` unchanged therefore keeps it intact rather than masking
+ * positions it cannot pair.
  *
- * One of the writers that READ the same-generation mark (go-to-k/cdkd#5047;
- * the journal's `properties` and `redactOutputs` are the others): the deploy
- * engine marks the bags it installs on a
- * record (`propertiesToRecord`, `drainObservedCaptures`) long before this
- * walk, so the mark is the transport, and each walk below passes what it says
- * as its explicit claim.
+ * `claims` is the CALLER's same-generation claim per bag (go-to-k/cdkd#5047):
+ * `properties` (read only when `sourceProperties` is given; without one that
+ * walk is a value scan) and `observed`. Absent means `unproven`. This function
+ * reads no mark: a writer holding a bag the deploy engine marked
+ * (`propertiesToRecord`, `drainObservedCaptures`) states what the mark says at
+ * its call site.
  */
+/** The same-generation claim per bag {@link scrubResourceRecord} walks; absent is `unproven`. */
+export interface ScrubGenerationClaims {
+  readonly properties?: 'same-generation' | 'unproven';
+  readonly observed?: 'same-generation' | 'unproven';
+}
+
 export function scrubResourceRecord<
   T extends {
     properties: Record<string, unknown>;
@@ -676,8 +688,11 @@ export function scrubResourceRecord<
   record: T,
   secrets: RecordedSecretValues,
   sourceProperties?: Record<string, unknown>,
-  observedProvenance?: 'state-readback' | 'state-cross-generation'
+  observedProvenance?: 'state-readback' | 'state-cross-generation',
+  claims: ScrubGenerationClaims = {}
 ): T {
+  const propertiesClaimed = claims.properties === 'same-generation';
+  const observedClaimed = claims.observed === 'same-generation';
   // NOT `sourceProperties === undefined`: an UNCHANGED resource has neither a
   // secrets map nor a template bag, and its observed bag is exactly what needs
   // redacting (issue #1900) — so an early return gated on those two alone made
@@ -694,7 +709,7 @@ export function scrubResourceRecord<
           secrets,
           sourceProperties,
           'template-derived',
-          isSameGenerationBag(record.properties)
+          propertiesClaimed
         );
   if (record.attributes) {
     // go-to-k/cdkd#4849: a copy of the record's OWN physical id among its
@@ -780,14 +795,14 @@ export function scrubResourceRecord<
         // Exactly the two REPLAYED-baseline cases above, one writer over.
         //
         // So the arm asks the question those two answer by construction: is
-        // this bag one THIS RUN PRODUCED? {@link markSameGenerationBag} already
-        // answers it, and the mark is put on precisely the bag the refusal
+        // this bag one THIS RUN PRODUCED? The caller's `claims.observed`
+        // answers it — the deploy engine states {@link markSameGenerationBag}'s
+        // mark there — and the mark is put on precisely the bag the refusal
         // exists for — `DeployEngine.observedCapture.drainObservedCaptures` marks EVERY drained
         // READBACK, and it is the only writer of `observedProperties` on the
         // deploy path, so a bag arriving here UNMARKED is a previous
-        // generation's by elimination. The record spread below and
-        // `redactStateForPersist`'s preserve the object identity the mark is
-        // carried on. The one unmarked bag that drain installs is the
+        // generation's by elimination. `redactStateForPersist` reads the mark
+        // off the very object drain installed, before any copy. The one unmarked bag that drain installs is the
         // masked-baseline re-capture (issue #3595): a previous generation's
         // baseline with some masks replaced by the record's own references, so
         // it holds nothing this run read from AWS and the argument below
@@ -818,12 +833,11 @@ export function scrubResourceRecord<
         // A caller that supplied `observedProvenance` keeps its own choice.
         (sourceProperties !== undefined
           ? 'template-sourced'
-          : secrets.size === 0 && isSameGenerationBag(record.observedProperties)
+          : secrets.size === 0 && observedClaimed
             ? 'state-baseline'
             : 'state-readback'),
-      // The same mark, as the walk's generation claim, whatever the provenance:
-      // what the walk read off the bag before go-to-k/cdkd#5047.
-      isSameGenerationBag(record.observedProperties)
+      // The same claim, as the walk's generation claim, whatever the provenance.
+      observedClaimed
     );
   }
   return next;

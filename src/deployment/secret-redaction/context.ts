@@ -30,8 +30,9 @@ import { redactSecretsForState } from './redact-state.js';
  *
  * The walk reads the claim from this field alone, never from a mark on the
  * bag. `markSameGenerationBag` is a TRANSPORT between a producer and a writer
- * that builds the context later (the deploy engine's persist choke point,
- * `scrubResourceRecord`); such a writer states what the mark says here.
+ * that builds the context later (the deploy engine's persist choke point);
+ * such a writer states what the mark says here, or in
+ * `scrubResourceRecord`'s `claims`.
  *
  * | provenance | rules | who |
  * | --- | --- | --- |
@@ -109,7 +110,12 @@ export function redactForState<T>(bag: T, context: RedactionContext): T {
     return redactSecretsForState(bag, context.secrets);
   }
   const { secrets, source, provenance } = context;
-  const claimed = 'generation' in context && context.generation === 'same-generation';
+  // Narrowed by PROVENANCE, never by the field's presence: a `state-*`
+  // context built by spreading another object could carry a stray
+  // `generation` at runtime, and only the two template variants may claim.
+  const claimed =
+    (context.provenance === 'template-derived' || context.provenance === 'template-sourced') &&
+    context.generation === 'same-generation';
   if (!claimed || !isPlainBag(bag)) {
     return redactAtProvenance(bag, secrets, source, provenance, false);
   }
@@ -123,7 +129,7 @@ export function redactForState<T>(bag: T, context: RedactionContext): T {
  * as an explicit argument (go-to-k/cdkd#5047) and the bag walked as given.
  * Family-internal, for the writers inside `secret-redaction/` whose claim the
  * context type does not offer for their provenance: `scrubResourceRecord`,
- * which receives producer-marked records, and
+ * whose caller states a claim per bag of a record, and
  * `recordNestedStackParameterExpressions`, whose replay arm is a
  * `state-derived` resolution this pass produced. Not re-exported by the
  * barrel.

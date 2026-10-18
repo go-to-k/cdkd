@@ -205,7 +205,13 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
         op.logicalId,
         previous,
         keepPersistedPlainRecordLeaves(
-          scrubResourceRecord(previous, ownSecrets, undefined, 'state-readback'),
+          scrubResourceRecord(previous, ownSecrets, undefined, 'state-readback', {
+            // go-to-k/cdkd#5047: a readback drained this deploy may sit on
+            // the record; its mark is stated as the walk's claim.
+            observed: isSameGenerationBag(previous.observedProperties)
+              ? 'same-generation'
+              : 'unproven',
+          }),
           previous,
           loaded ?? {}
         ),

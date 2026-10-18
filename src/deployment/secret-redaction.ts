@@ -48,7 +48,7 @@
  * This file is a barrel: the implementation lives in `secret-redaction/*.ts`
  * (issue #4415). Import from here, never from a sibling directly. The
  * persistence walk itself, `redactSecretsForState`, and the `PathSourceRules`
- * constants are family-private (go-to-k/cdkd#5047): outside the family a
+ * constants (and their `PathSourceRules` type) are family-private (go-to-k/cdkd#5047): outside the family a
  * writer states a PROVENANCE through {@link redactForState}, and
  * `scrubResourceRecord` / `recordNestedStackParameterExpressions` take one too.
  */
@@ -148,7 +148,6 @@ export {
 } from './secret-redaction/nested-stack.js';
 export {
   MIN_NEEDLE_LENGTH,
-  type PathSourceRules,
   DYNAMIC_REFERENCE_INNER,
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   isSingleDynamicReferenceToken,
@@ -164,7 +163,10 @@ export {
 } from './secret-redaction/redact-path.js';
 export { spanNamesResolvableService } from './secret-redaction/anchors.js';
 export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';
-export { scrubResourceRecord } from './secret-redaction/redact-state.js';
+export {
+  type ScrubGenerationClaims,
+  scrubResourceRecord,
+} from './secret-redaction/redact-state.js';
 export {
   type RedactionContext,
   type RedactionProvenance,

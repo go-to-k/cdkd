@@ -2984,15 +2984,15 @@ export async function resolveImportedProperties(
         ...baseContext,
         recordedSecretValues,
       })) as Record<string, unknown>;
-      // MARKED same-generation (issue #2745): a 1-3 character secret embedded
+      // CLAIMED same-generation (issue #2745): a 1-3 character secret embedded
       // in a leaf sits below the value scan's needle floor, and the span arms
       // write it as its token only on a bag whose provenance is proven. This
       // bag is import's own resolution of `unresolvedProperties` by the
       // resolver that recorded the pairs in `recordedSecretValues` — the same
-      // evidence the deploy engine's create arm has — so the mark's claim
-      // (see `markSameGenerationBag`) holds here. The mark goes on the
-      // redaction INPUT; the record holds the redacted copy, unmarked, and
-      // the observed capture below never sees the marked object.
+      // evidence the deploy engine's create arm has — so the claim (see
+      // `markSameGenerationBag`) holds here. It is stated to the walk through
+      // the context and marks nothing (go-to-k/cdkd#5047); the record holds
+      // the redacted copy.
       resource.properties =
         recordedSecretValues.size > 0
           ? redactForState(resolved, {
