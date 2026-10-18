@@ -4818,8 +4818,8 @@ export class CloudControlProvider implements ResourceProvider {
    * ## Why MASK and not DROP — the load-bearing decision
    *
    * Dropping looks cleaner and is WRONG here, because there is no live
-   * fallback on the read side. `IntrinsicFunctionResolver.resolveGetAtt` looks
-   * the key up in this bag and, on a miss, falls through to
+   * fallback on the read side. `resolveGetAtt`
+   * (`deployment/intrinsic-resolver/getatt.ts`) looks the key up in this bag and, on a miss, falls through to
    * `constructAttribute` — which synthesizes from `physicalId` alone and, for
    * an attribute name that is neither `*Arn` nor `*Url`, WARNS and returns the
    * physical id. That is a silently wrong value shipped to AWS. There is no
@@ -5011,8 +5011,8 @@ export class CloudControlProvider implements ResourceProvider {
    * ## Why the walk is RECURSIVE — this was a measured defect, not caution
    *
    * The first cut replaced the whole VALUE, so an uncertified `Endpoint`
-   * object became the string `'***'`. `IntrinsicFunctionResolver.resolveGetAtt`
-   * resolves `Endpoint.Address` by WALKING the dotted path: it tests
+   * object became the string `'***'`. `resolveGetAtt`
+   * (`deployment/intrinsic-resolver/getatt.ts`) resolves `Endpoint.Address` by WALKING the dotted path: it tests
    * `typeof cursor === 'object'`, which a string fails, so the walk breaks with
    * `cursor === undefined`, `noteAttributeSecrecy` is NEVER called, and control
    * reaches `constructAttribute` — the physical-id fallback. That is precisely

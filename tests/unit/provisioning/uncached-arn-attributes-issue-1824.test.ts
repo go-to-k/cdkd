@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  * MAP. The defect is not "the map lacks a key" in the abstract — it is that an
  * output / cross-resource `Fn::GetAtt` reads the CACHED
  * `resource.attributes[<CFnName>]` in
- * `IntrinsicFunctionResolver.constructAttribute`, which never calls a provider's
+ * `constructAttribute (intrinsic-resolver/getatt.ts)`, which never calls a provider's
  * `getAttribute`, and for an `*Arn` name the resolver's shape guard HARD-FAILS
  * against a name-shaped physicalId instead of degrading. Both physicalIds here
  * ARE names (a subnet-group name, a parameter name), so an uncached ARN fails

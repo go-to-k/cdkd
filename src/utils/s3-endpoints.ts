@@ -5,7 +5,7 @@
  * `RegionalDomainName`, `DualStackDomainName`, `WebsiteURL`) WITHOUT an AWS
  * call, from the bucket name plus the region — and it does so in TWO places:
  * `S3BucketProvider.buildAttributes` (what lands in state) and
- * `IntrinsicFunctionResolver.constructAttribute` (what a cross-resource
+ * `constructAttribute` (`deployment/intrinsic-resolver/getatt.ts`: what a cross-resource
  * `Fn::GetAtt` resolves to when the attribute is not cached). Those two used to
  * carry independent copies of the templates, which is the phantom-drift shape
  * `.claude/rules/providers.md` warns about: fix one and the resolver's answer
@@ -33,7 +33,7 @@
  * a region SEGMENT (issue [#1850](https://github.com/go-to-k/cdkd/issues/1850)).
  * It belongs HERE rather than at either call site for the reason this module
  * exists: `S3BucketProvider.buildAttributes` passes a raw
- * `client.config.region()` while `IntrinsicFunctionResolver.constructAttribute`
+ * `client.config.region()` while the resolver's `constructAttribute`
  * passes `accountInfo.region`, so folding at one caller alone re-creates exactly
  * the divergence described above. `bucketArn` / `bucketDomainName` need no fold:
  * neither embeds the region, and the URL suffix they DO derive goes through

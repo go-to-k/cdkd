@@ -13,6 +13,7 @@ import { withRetry } from '../retry.js';
 import { isThrottlingError, markNonRetryable } from '../retryable-errors.js';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { namedRequestMasks } from './stack-output.js';
 
 /**
  * Resolve a Secrets Manager dynamic reference
@@ -151,7 +152,8 @@ export async function resolveSecretsManagerReference(
     `secretsmanager:${loggedSecretId}`,
     // Every name the REQUEST carries, as sent (go-to-k/cdkd#3171). The JSON
     // key is not sent, so no SDK text can quote it.
-    resolver.namedRequestMasks(
+    namedRequestMasks(
+      resolver,
       [
         [secretId, loggedSecretId],
         [versionStage, displayMasked(resolver, nameLogText(versionStage), context)],
@@ -345,7 +347,7 @@ export async function resolveSSMReference(
     () => client.send(command),
     `${service}:${loggedParameterName}`,
     // The one name the request carries (go-to-k/cdkd#3171).
-    resolver.namedRequestMasks([[parameterName, loggedParameterName]], context)
+    namedRequestMasks(resolver, [[parameterName, loggedParameterName]], context)
   );
   const paramValue = response.Parameter?.Value;
 

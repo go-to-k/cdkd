@@ -40,39 +40,7 @@ import {
 } from '../secret-redaction.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
-
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    resolveIf: OmitThisParameter<typeof resolveIf>;
-    /** @internal */
-    resolveEquals: OmitThisParameter<typeof resolveEquals>;
-    /** @internal */
-    resolveConditionReference: OmitThisParameter<typeof resolveConditionReference>;
-    /** @internal */
-    resolveAnd: OmitThisParameter<typeof resolveAnd>;
-    /** @internal */
-    resolveOr: OmitThisParameter<typeof resolveOr>;
-    /** @internal */
-    resolveNot: OmitThisParameter<typeof resolveNot>;
-    /** @internal */
-    resolveFindInMap: OmitThisParameter<typeof resolveFindInMap>;
-    /** @internal */
-    resolveBase64: OmitThisParameter<typeof resolveBase64>;
-    /** @internal */
-    resolveGetAZs: OmitThisParameter<typeof resolveGetAZs>;
-    /** @internal */
-    resolvePseudoParameter: OmitThisParameter<typeof resolvePseudoParameter>;
-    /** @internal */
-    resolveCidr: OmitThisParameter<typeof resolveCidr>;
-    /** @internal */
-    expandIPv6: OmitThisParameter<typeof expandIPv6>;
-    /** @internal */
-    ipv6ToBigInt: OmitThisParameter<typeof ipv6ToBigInt>;
-    /** @internal */
-    bigIntToIPv6: OmitThisParameter<typeof bigIntToIPv6>;
-  }
-}
+import { namedRequestMasks } from './stack-output.js';
 
 /**
  * Resolve Fn::If intrinsic function
@@ -81,7 +49,7 @@ declare module '../intrinsic-function-resolver.js' {
  * Returns valueIfTrue if condition evaluates to true, otherwise valueIfFalse
  */
 export async function resolveIf(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   ifArgs: [string, unknown, unknown],
   context: ResolverContext,
   source: object
@@ -96,8 +64,8 @@ export async function resolveIf(
   // recorded; an object branch lends its own record, when the pass kept one.
   const resolveBranch = async (branch: unknown): Promise<unknown> => {
     if (typeof branch === 'string') {
-      const pass = await resolveDynamicReferencesWithLogTwin(this, branch, branch, context);
-      recordLeafResolution(this, context, source, {
+      const pass = await resolveDynamicReferencesWithLogTwin(resolver, branch, branch, context);
+      recordLeafResolution(resolver, context, source, {
         input: branch,
         output: pass.result,
         substitutions: pass.substitutions,
@@ -105,7 +73,7 @@ export async function resolveIf(
       });
       return pass.result;
     }
-    const resolved = await this.resolveValue(branch, context);
+    const resolved = await resolver.resolveValue(branch, context);
     if (context.recordedSecretValues !== undefined) {
       recordIntrinsicLeafResolutionAs(context.recordedSecretValues, source, branch);
     }
@@ -128,8 +96,8 @@ export async function resolveIf(
     // warn-and-assume-false into a failed resource (go-to-k/cdkd#3435 review
     // round 3, measured). Coercing keeps the pre-existing behaviour and
     // sanitizes what it produces.
-    this.logger.warn(
-      `Condition ${displayMasked(this, String(conditionName), context)} not found in context, assuming false`
+    resolver.logger.warn(
+      `Condition ${displayMasked(resolver, String(conditionName), context)} not found in context, assuming false`
     );
     recordTakenIfBranchIn(context, source, false);
     return await resolveBranch(valueIfFalse);
@@ -139,8 +107,8 @@ export async function resolveIf(
   const selectedValue = conditionValue ? valueIfTrue : valueIfFalse;
 
   // `conditionValue` carries nothing: a boolean, or a list of booleans.
-  this.logger.debug(
-    `Resolved Fn::If: condition ${logRender(this, String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
+  resolver.logger.debug(
+    `Resolved Fn::If: condition ${logRender(resolver, String(conditionName), context)} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
   );
 
   // Issue #4954: the branch taken, for the persist walk of a leaf whose
@@ -156,15 +124,15 @@ export async function resolveIf(
  * Returns true if both values are equal after resolution
  */
 export async function resolveEquals(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   equalsArgs: [unknown, unknown],
   context: ResolverContext
 ): Promise<boolean> {
   const [value1, value2] = equalsArgs;
 
   // Resolve both values
-  const resolved1 = await this.resolveValue(value1, context);
-  const resolved2 = await this.resolveValue(value2, context);
+  const resolved1 = await resolver.resolveValue(value1, context);
+  const resolved2 = await resolver.resolveValue(value2, context);
 
   // Deep equality check
   const result = JSON.stringify(resolved1) === JSON.stringify(resolved2);
@@ -176,10 +144,10 @@ export async function resolveEquals(
   // the producer's export -- and `reresolveCrossStackValue` hands back the
   // PLAINTEXT -- inside the command whose whole purpose is removing it.
   // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-  this.logger.debug(
+  resolver.logger.debug(
     // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)).
-    `Resolved Fn::Equals: ${logRender(this, JSON.stringify(maskValueLeaves(this, resolved1, context)), context, { structured: true })} === ${logRender(this, JSON.stringify(maskValueLeaves(this, resolved2, context)), context, { structured: true })} resolved to ${result}`
+    `Resolved Fn::Equals: ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, resolved1, context)), context, { structured: true })} === ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, resolved2, context)), context, { structured: true })} resolved to ${result}`
   );
 
   return result;
@@ -197,7 +165,7 @@ export async function resolveEquals(
  * `conditions` map, matching `Fn::If`'s warn-and-assume-false behavior.
  */
 export async function resolveConditionReference(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   conditionName: string,
   context: ResolverContext
 ): Promise<boolean> {
@@ -220,8 +188,8 @@ export async function resolveConditionReference(
 
   // The sibling of the `Fn::If` warn above, on the CONDITION-REFERENCE path,
   // and default-verbosity for the same reason.
-  this.logger.warn(
-    `Condition ${displayMasked(this, conditionName, context)} not found in context, assuming false`
+  resolver.logger.warn(
+    `Condition ${displayMasked(resolver, conditionName, context)} not found in context, assuming false`
   );
   return false;
 }
@@ -233,7 +201,7 @@ export async function resolveConditionReference(
  * Syntax: { "Fn::And": [ condition1, condition2, ... ] }
  */
 export async function resolveAnd(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   conditions: unknown[],
   context: ResolverContext
 ): Promise<boolean> {
@@ -246,7 +214,7 @@ export async function resolveAnd(
   // Resolve all conditions
   const results: boolean[] = [];
   for (const condition of conditions) {
-    const resolved = await this.resolveValue(condition, context);
+    const resolved = await resolver.resolveValue(condition, context);
     results.push(Boolean(resolved));
   }
 
@@ -255,7 +223,7 @@ export async function resolveAnd(
 
   // not-in-class(results.join(', ')): a CONDITION verdict -- a boolean, or a list of booleans.
   // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-  this.logger.debug(`Resolved Fn::And: [${results.join(', ')}] resolved to ${result}`);
+  resolver.logger.debug(`Resolved Fn::And: [${results.join(', ')}] resolved to ${result}`);
 
   return result;
 }
@@ -267,7 +235,7 @@ export async function resolveAnd(
  * Syntax: { "Fn::Or": [ condition1, condition2, ... ] }
  */
 export async function resolveOr(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   conditions: unknown[],
   context: ResolverContext
 ): Promise<boolean> {
@@ -280,7 +248,7 @@ export async function resolveOr(
   // Resolve all conditions
   const results: boolean[] = [];
   for (const condition of conditions) {
-    const resolved = await this.resolveValue(condition, context);
+    const resolved = await resolver.resolveValue(condition, context);
     results.push(Boolean(resolved));
   }
 
@@ -289,7 +257,7 @@ export async function resolveOr(
 
   // not-in-class(results.join(', ')): a CONDITION verdict -- a boolean, or a list of booleans.
   // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-  this.logger.debug(`Resolved Fn::Or: [${results.join(', ')}] resolved to ${result}`);
+  resolver.logger.debug(`Resolved Fn::Or: [${results.join(', ')}] resolved to ${result}`);
 
   return result;
 }
@@ -301,7 +269,7 @@ export async function resolveOr(
  * Syntax: { "Fn::Not": [ condition ] }
  */
 export async function resolveNot(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   notArgs: [unknown],
   context: ResolverContext
 ): Promise<boolean> {
@@ -316,12 +284,12 @@ export async function resolveNot(
   const [condition] = notArgs;
 
   // Resolve the condition
-  const resolved = await this.resolveValue(condition, context);
+  const resolved = await resolver.resolveValue(condition, context);
   const result = !resolved;
 
   // not-in-class(Boolean(resolved)): a CONDITION verdict -- a boolean, or a list of booleans.
   // not-in-class(result): a CONDITION verdict -- a boolean, or a list of booleans.
-  this.logger.debug(`Resolved Fn::Not: ${Boolean(resolved)} resolved to ${result}`);
+  resolver.logger.debug(`Resolved Fn::Not: ${Boolean(resolved)} resolved to ${result}`);
 
   return result;
 }
@@ -338,16 +306,16 @@ export async function resolveNot(
  * cases throw (backward compatible).
  */
 export async function resolveFindInMap(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   findInMapArgs: [unknown, unknown, unknown] | [unknown, unknown, unknown, unknown],
   context: ResolverContext
 ): Promise<unknown> {
   const [rawMapName, rawTopLevelKey, rawSecondLevelKey, rawOptions] = findInMapArgs;
 
   // Recursively resolve each argument (they could be Refs or other intrinsic functions)
-  const mapName = String(await this.resolveValue(rawMapName, context));
-  const topLevelKey = String(await this.resolveValue(rawTopLevelKey, context));
-  const secondLevelKey = String(await this.resolveValue(rawSecondLevelKey, context));
+  const mapName = String(await resolver.resolveValue(rawMapName, context));
+  const topLevelKey = String(await resolver.resolveValue(rawTopLevelKey, context));
+  const secondLevelKey = String(await resolver.resolveValue(rawSecondLevelKey, context));
 
   // Optional 4th argument: { DefaultValue: <value> }. The DefaultValue may
   // itself be an intrinsic, so resolve it lazily only when we need to fall
@@ -359,7 +327,7 @@ export async function resolveFindInMap(
     !Array.isArray(rawOptions) &&
     'DefaultValue' in (rawOptions as Record<string, unknown>);
   const resolveDefault = (): Promise<unknown> =>
-    this.resolveValue((rawOptions as Record<string, unknown>)['DefaultValue'], context);
+    resolver.resolveValue((rawOptions as Record<string, unknown>)['DefaultValue'], context);
 
   // Access the Mappings section of the template
   const mappings = context.template.Mappings;
@@ -398,7 +366,7 @@ export async function resolveFindInMap(
     // value, which is what reaches the floorless whole-value arm.
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: mapping ${quotedRender(displayMasked(this, mapName, context), "'")} not found in Mappings section`
+        `Fn::FindInMap: mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")} not found in Mappings section`
       )
     );
   }
@@ -410,8 +378,8 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: top-level key ${quotedRender(displayMasked(this, topLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(displayMasked(this, mapName, context), "'")}`
+        `Fn::FindInMap: top-level key ${quotedRender(displayMasked(resolver, topLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")}`
       )
     );
   }
@@ -422,28 +390,28 @@ export async function resolveFindInMap(
     }
     throw markNonRetryable(
       new Error(
-        `Fn::FindInMap: second-level key ${quotedRender(displayMasked(this, secondLevelKey, context), "'")} ` +
-          `not found in mapping ${quotedRender(displayMasked(this, mapName, context), "'")} under ` +
+        `Fn::FindInMap: second-level key ${quotedRender(displayMasked(resolver, secondLevelKey, context), "'")} ` +
+          `not found in mapping ${quotedRender(displayMasked(resolver, mapName, context), "'")} under ` +
           // `under`, not `->`: pasted, `->` is `-` plus a `>` redirect onto the
           // quoted top-level key, which `QUOTABLE_RENDER` admits as a path
           // (`../x`, go-to-k/cdkd#4100 review M1).
-          `top-level key ${quotedRender(displayMasked(this, topLevelKey, context), "'")}`
+          `top-level key ${quotedRender(displayMasked(resolver, topLevelKey, context), "'")}`
       )
     );
   }
 
   const result = topLevel[secondLevelKey];
-  this.logger.debug(
+  resolver.logger.debug(
     // MASKED like the three throws above (issue
     // [#2827](https://github.com/go-to-k/cdkd/issues/2827) review): all three
     // keys come back from `resolveValue`, and this is the SUCCESS path — the
     // common one — so leaving it bare printed at `--verbose` exactly the
     // values the neighbouring refusals mask. The mapped VALUE is leaf-masked
     // too: a mapping may legitimately hold a value assembled from a secret.
-    `Resolved Fn::FindInMap: ${logRender(this, mapName, context)}.` +
-      `${logRender(this, topLevelKey, context)}.` +
-      `${logRender(this, secondLevelKey, context)} resolved to ` +
-      `${logRender(this, JSON.stringify(maskValueLeaves(this, result, context)), context, { structured: true })}`
+    `Resolved Fn::FindInMap: ${logRender(resolver, mapName, context)}.` +
+      `${logRender(resolver, topLevelKey, context)}.` +
+      `${logRender(resolver, secondLevelKey, context)} resolved to ` +
+      `${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
   );
   return result;
 }
@@ -455,12 +423,12 @@ export async function resolveFindInMap(
  * Returns the Base64 representation of the input string
  */
 export async function resolveBase64(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   context: ResolverContext
 ): Promise<string> {
   // Recursively resolve the value first (it could be another intrinsic function)
-  const resolvedValue = await this.resolveValue(value, context);
+  const resolvedValue = await resolver.resolveValue(value, context);
 
   if (typeof resolvedValue !== 'string') {
     // Names the TYPE only, never the value — nothing to mask, and nothing to
@@ -508,8 +476,8 @@ export async function resolveBase64(
       embedsFreshNoEchoValue(resolvedValue, context.recordedSecretValues)
     )
   ) {
-    this.logger.debug(
-      safeMsg`Resolved Fn::Base64: ${logRender(this, logTextOfLeaf(this, resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
+    resolver.logger.debug(
+      safeMsg`Resolved Fn::Base64: ${logRender(resolver, logTextOfLeaf(resolver, resolvedValue, context), context)} resolved to ${SECRET_MASK} (an unresolved secret reference, compared as the mask the deploy persists)`
     );
     return SECRET_MASK;
   }
@@ -563,11 +531,11 @@ export async function resolveBase64(
   // mask catch its right half; the line masks the right half whole on a
   // positioned input regardless, since the encoding decodes straight back
   // to the plaintext the input's mask hides.
-  const inputLogText = logTextOfLeaf(this, resolvedValue, context);
+  const inputLogText = logTextOfLeaf(resolver, resolvedValue, context);
   if (
     context.recordedSecretValues &&
     (inputLogText !== resolvedValue ||
-      maskNeedlesForLog(this, resolvedValue, context) !== resolvedValue)
+      maskNeedlesForLog(resolver, resolvedValue, context) !== resolvedValue)
   ) {
     // DERIVED, so a leaf EMBEDDING the encoding is masked whole too
     // (go-to-k/cdkd#2453).
@@ -593,9 +561,9 @@ export async function resolveBase64(
   // above: that guard decides what is PERSISTED and must not see this class.
   if (
     context.recordedSecretValues &&
-    hasLogOnlyNeedles(this, context) &&
-    maskPrintedNeedlesForLog(this, resolvedValue, context) !==
-      maskNeedlesForLog(this, resolvedValue, context)
+    hasLogOnlyNeedles(resolver, context) &&
+    maskPrintedNeedlesForLog(resolver, resolvedValue, context) !==
+      maskNeedlesForLog(resolver, resolvedValue, context)
   ) {
     recordLogOnlyValue(context.recordedSecretValues, result);
   }
@@ -607,11 +575,11 @@ export async function resolveBase64(
   const printing = context.printingSecrets;
   let withPrinting: string | undefined;
   const maskedWithPrinting = (): string =>
-    (withPrinting ??= maskNeedlesOfBags(this, resolvedValue, context, printing));
+    (withPrinting ??= maskNeedlesOfBags(resolver, resolvedValue, context, printing));
   if (
     printing !== undefined &&
     hasMaskableValues(printing) &&
-    maskedWithPrinting() !== maskPrintedNeedlesForLog(this, resolvedValue, context)
+    maskedWithPrinting() !== maskPrintedNeedlesForLog(resolver, resolvedValue, context)
   ) {
     recordLogOnlyValue(printing, result);
   }
@@ -622,13 +590,13 @@ export async function resolveBase64(
   if (
     sink !== undefined &&
     hasMaskableValues(sink) &&
-    maskNeedlesOfBags(this, resolvedValue, context, printing, sink) !== maskedWithPrinting()
+    maskNeedlesOfBags(resolver, resolvedValue, context, printing, sink) !== maskedWithPrinting()
   ) {
     recordLogOnlyValue(sink, result);
   }
 
-  this.logger.debug(
-    `Resolved Fn::Base64: ${logRender(this, inputLogText, context)} resolved to ${logRender(this, inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
+  resolver.logger.debug(
+    `Resolved Fn::Base64: ${logRender(resolver, inputLogText, context)} resolved to ${logRender(resolver, inputLogText !== resolvedValue ? SECRET_MASK : result, context)}`
   );
   return result;
 }
@@ -642,12 +610,12 @@ export async function resolveBase64(
  * Results are cached per region to avoid repeated API calls.
  */
 export async function resolveGetAZs(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   context: ResolverContext
 ): Promise<string[]> {
   // Recursively resolve the value first (it could be a Ref or other intrinsic function)
-  const resolvedValue = await this.resolveValue(value, context);
+  const resolvedValue = await resolver.resolveValue(value, context);
 
   let region: string;
   /**
@@ -707,7 +675,7 @@ export async function resolveGetAZs(
           // `the value` LEADS the clause: after `: ` a quoted value would be
           // the pasted clause's COMMAND, and `QUOTABLE_RENDER` admits a path
           // (`'/usr/bin/touch' is not …` runs touch; go-to-k/cdkd#4100 M2).
-          `Fn::GetAZs: the value ${quotedRender(displayMasked(this, logTextOfLeaf(this, resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
+          `Fn::GetAZs: the value ${quotedRender(displayMasked(resolver, logTextOfLeaf(resolver, resolvedValue, context) !== resolvedValue ? SECRET_MASK : resolvedValue, context).slice(0, 64), "'")} is not a valid AWS ` +
             `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
             `not build a client from it.`
         )
@@ -715,13 +683,13 @@ export async function resolveGetAZs(
     }
     region = requested;
     clientRegion = requested;
-    loggedRegionText = regionLogText(this, resolvedValue, context);
+    loggedRegionText = regionLogText(resolver, resolvedValue, context);
   } else {
     // Empty string or non-string: use current region. The SAME value
     // `AWS::Region` answers, and like it, with no STS hop: an AZ list needs no
     // account, so an STS outage must not refuse it (issue #1730).
-    region = effectiveAccountInfoRegion(this.resolverRegion);
-    clientRegion = this.explicitRegion;
+    region = effectiveAccountInfoRegion(resolver.resolverRegion);
+    clientRegion = resolver.explicitRegion;
   }
 
   // Check cache. The key is read HERE, synchronously beside the
@@ -733,16 +701,16 @@ export async function resolveGetAZs(
     // `region` masked for the reason the two throws below state: it has
     // cleared `isClientSafeRegion`, which a real plaintext can (issue #2827
     // review).
-    this.logger.debug(
-      `Resolved Fn::GetAZs from cache: ${logRender(this, loggedRegionText ?? region, context)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, cached, context)), context, { structured: true })}`
+    resolver.logger.debug(
+      `Resolved Fn::GetAZs from cache: ${logRender(resolver, loggedRegionText ?? region, context)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, cached, context)), context, { structured: true })}`
     );
     return cached;
   }
 
   // Call EC2 DescribeAvailabilityZones
-  const ec2Client = this.clients.clientsForRegion(
+  const ec2Client = resolver.clients.clientsForRegion(
     clientRegion,
-    loggedRegionText === undefined ? undefined : displayMasked(this, loggedRegionText, context)
+    loggedRegionText === undefined ? undefined : displayMasked(resolver, loggedRegionText, context)
   ).ec2;
 
   // The try wraps ONLY the call. The empty-list refusal below deliberately
@@ -782,8 +750,8 @@ export async function resolveGetAZs(
     // assembled into the region, and the SDK quotes the region as SENT —
     // canonicalized, which is why the pair keys on `region` rather than on
     // the raw value `loggedRegionText` was derived from.
-    const loggedRegion = displayMasked(this, loggedRegionText ?? region, context);
-    const masks = this.namedRequestMasks([[region, loggedRegion]], context);
+    const loggedRegion = displayMasked(resolver, loggedRegionText ?? region, context);
+    const masks = namedRequestMasks(resolver, [[region, loggedRegion]], context);
     throw new Error(
       `Fn::GetAZs: failed to describe availability zones for region ` +
         `${quotedRender(loggedRegion, "'")}: ` +
@@ -804,7 +772,7 @@ export async function resolveGetAZs(
     throw markNonRetryable(
       new Error(
         `Fn::GetAZs: no availability zones returned for region ` +
-          `${quotedRender(displayMasked(this, loggedRegionText ?? region, context), "'")}. Either the region ` +
+          `${quotedRender(displayMasked(resolver, loggedRegionText ?? region, context), "'")}. Either the region ` +
           `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
           `request was answered by a different region's endpoint.`
       )
@@ -812,8 +780,8 @@ export async function resolveGetAZs(
   }
 
   cachedAvailabilityZones.set(azCacheKey, azNames);
-  this.logger.debug(
-    `Resolved Fn::GetAZs: ${logRender(this, loggedRegionText ?? region, context)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, azNames, context)), context, { structured: true })}`
+  resolver.logger.debug(
+    `Resolved Fn::GetAZs: ${logRender(resolver, loggedRegionText ?? region, context)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, azNames, context)), context, { structured: true })}`
   );
   return azNames;
 }
@@ -824,7 +792,7 @@ export async function resolveGetAZs(
  * Pseudo parameters are built-in CloudFormation references like AWS::Region
  */
 export async function resolvePseudoParameter(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   name: string,
   context?: ResolverContext
 ): Promise<string | string[] | symbol | undefined> {
@@ -835,19 +803,20 @@ export async function resolvePseudoParameter(
     // that. The values are the ones `getAccountInfo` would have answered —
     // `accountInfoFor` derives both from this same helper.
     case 'AWS::Region':
-      return effectiveAccountInfoRegion(this.resolverRegion);
+      return effectiveAccountInfoRegion(resolver.resolverRegion);
 
     // REFUSES (throws `AccountIdUnavailableError`) when STS cannot name the
     // account and `AWS_ACCOUNT_ID` is unset: there is no placeholder account
     // (issue #1730). Outside any catch in `resolveSub`, so `${AWS::AccountId}`
     // refuses there too rather than staying a literal.
     case 'AWS::AccountId': {
-      const accountInfo = await getAccountInfo(this.resolverRegion);
+      const accountInfo = await getAccountInfo(resolver.resolverRegion);
       return accountInfo.accountId;
     }
 
     case 'AWS::Partition':
-      return derivePartitionAndUrlSuffix(effectiveAccountInfoRegion(this.resolverRegion)).partition;
+      return derivePartitionAndUrlSuffix(effectiveAccountInfoRegion(resolver.resolverRegion))
+        .partition;
 
     case 'AWS::StackName':
       return context?.stackName ?? 'UnknownStack';
@@ -862,7 +831,7 @@ export async function resolvePseudoParameter(
       // so it does NOT inherit that method's destructure-level fold — worth
       // stating, because the fold's own comment calls itself exhaustive and
       // that is true only WITHIN `constructAttribute`.
-      const info = await getAccountInfo(this.resolverRegion);
+      const info = await getAccountInfo(resolver.resolverRegion);
       return `arn:${info.partition}:cloudformation:${canonicalizeRegion(info.region)}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
     }
 
@@ -875,14 +844,14 @@ export async function resolvePseudoParameter(
       // outage, a refusal (issue #1730).
       //
       // An earlier revision justified that by saying `resolverRegion` is what
-      // `getAccountInfo(this.resolverRegion)` "would have set `region` to
+      // `getAccountInfo(resolver.resolverRegion)` "would have set `region` to
       // anyway". That stopped being true when issue #1882 folded
       // `effectiveAccountInfoRegion`: for a mis-cased `resolverRegion` the
       // two now differ in case. The OUTPUT is unaffected, because
       // `derivePartitionAndUrlSuffix` canonicalizes its own input (issue
       // #1795) -- which is the whole reason the skipped hop is still safe --
       // but the stated reason had to change with it.
-      return derivePartitionAndUrlSuffix(this.resolverRegion).urlSuffix;
+      return derivePartitionAndUrlSuffix(resolver.resolverRegion).urlSuffix;
 
     case 'AWS::NotificationARNs':
       // cdkd has no stack-notification-ARN concept — a cdkd deploy never
@@ -919,19 +888,19 @@ export async function resolvePseudoParameter(
  * - cidrBits: The number of subnet bits for the CIDR (e.g., "64" for /64 in IPv6)
  */
 export async function resolveCidr(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   args: [unknown, unknown, unknown],
   context: ResolverContext
 ): Promise<string[]> {
   const [rawIpBlock, rawCount, rawCidrBits] = args;
-  const ipBlock = (await this.resolveValue(rawIpBlock, context)) as string;
-  const count = Number(await this.resolveValue(rawCount, context));
-  const cidrBits = Number(await this.resolveValue(rawCidrBits, context));
+  const ipBlock = (await resolver.resolveValue(rawIpBlock, context)) as string;
+  const count = Number(await resolver.resolveValue(rawCount, context));
+  const cidrBits = Number(await resolver.resolveValue(rawCidrBits, context));
 
   if (!ipBlock || typeof ipBlock !== 'string') {
     throw markNonRetryable(
       new Error(
-        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(maskValueLeaves(this, ipBlock, context))}`
+        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(maskValueLeaves(resolver, ipBlock, context))}`
       )
     );
   }
@@ -941,10 +910,10 @@ export async function resolveCidr(
   // back from `resolveValue`, so a numeric secret whose text survives
   // `Number()` would otherwise print (`"0064"` or `"1e3"` does not survive,
   // and is not masked).
-  this.logger.debug(
+  resolver.logger.debug(
     // Leaf-masked like the refusal above (issue #2827 review): `ipBlock`
     // comes back from `resolveValue`.
-    `Resolving Fn::Cidr: ipBlock=${displayMasked(this, JSON.stringify(maskValueLeaves(this, ipBlock, context)), context)}, count=${displayMasked(this, String(count), context)}, cidrBits=${displayMasked(this, String(cidrBits), context)}`
+    `Resolving Fn::Cidr: ipBlock=${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, ipBlock, context)), context)}, count=${displayMasked(resolver, String(count), context)}, cidrBits=${displayMasked(resolver, String(cidrBits), context)}`
   );
 
   const isIpv6 = ipBlock.includes(':');
@@ -958,8 +927,8 @@ export async function resolveCidr(
     const subnetPrefix = 128 - cidrBits; // cidrBits = host bits, so subnet prefix = 128 - cidrBits
 
     // Expand IPv6 address to full form
-    const expanded = this.expandIPv6(baseAddr!);
-    const addrBigInt = this.ipv6ToBigInt(expanded);
+    const expanded = expandIPv6(resolver, baseAddr!);
+    const addrBigInt = ipv6ToBigInt(resolver, expanded);
 
     // Calculate subnet size
     const subnetSize = BigInt(1) << BigInt(128 - subnetPrefix);
@@ -973,7 +942,7 @@ export async function resolveCidr(
 
     for (let i = 0; i < count; i++) {
       const subnetAddr = networkBase + subnetSize * BigInt(i);
-      results.push(`${this.bigIntToIPv6(subnetAddr)}/${subnetPrefix}`);
+      results.push(`${bigIntToIPv6(resolver, subnetAddr)}/${subnetPrefix}`);
     }
   } else {
     // IPv4 CIDR calculation
@@ -1022,14 +991,14 @@ export async function resolveCidr(
   // BOTH stay, because the redundancy is a property of what `results` holds
   // TODAY rather than of the site: the day this pushes something it did not
   // compute, the leaf walk is the mask that still works.
-  this.logger.debug(
-    `Fn::Cidr result: ${displayMasked(this, JSON.stringify(maskValueLeaves(this, results, context)), context)}`
+  resolver.logger.debug(
+    `Fn::Cidr result: ${displayMasked(resolver, JSON.stringify(maskValueLeaves(resolver, results, context)), context)}`
   );
   return results;
 }
 
 /** Expand IPv6 address to full 8-group form */
-export function expandIPv6(this: IntrinsicFunctionResolver, addr: string): string {
+export function expandIPv6(_resolver: IntrinsicFunctionResolver, addr: string): string {
   // Handle :: expansion
   if (addr.includes('::')) {
     const [left, right] = addr.split('::');
@@ -1047,7 +1016,7 @@ export function expandIPv6(this: IntrinsicFunctionResolver, addr: string): strin
 }
 
 /** Convert expanded IPv6 string to BigInt */
-export function ipv6ToBigInt(this: IntrinsicFunctionResolver, expanded: string): bigint {
+export function ipv6ToBigInt(_resolver: IntrinsicFunctionResolver, expanded: string): bigint {
   const parts = expanded.split(':');
   let result = BigInt(0);
   for (const part of parts) {
@@ -1057,7 +1026,7 @@ export function ipv6ToBigInt(this: IntrinsicFunctionResolver, expanded: string):
 }
 
 /** Convert BigInt to compressed IPv6 string */
-export function bigIntToIPv6(this: IntrinsicFunctionResolver, n: bigint): string {
+export function bigIntToIPv6(_resolver: IntrinsicFunctionResolver, n: bigint): string {
   const parts: string[] = [];
   for (let i = 7; i >= 0; i--) {
     parts.push(((n >> BigInt(i * 16)) & BigInt(0xffff)).toString(16));

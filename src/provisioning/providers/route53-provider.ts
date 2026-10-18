@@ -3122,7 +3122,7 @@ export class Route53Provider implements ResourceProvider {
    * BOTH branches record the same `{ Id, NameServers }` attribute set a
    * `cdkd deploy` CREATE records (issue #1875). Recording `attributes: {}`
    * left an adopted zone with no `NameServers` in state, and nothing else
-   * rescues it: `IntrinsicFunctionResolver.resolveGetAtt`'s flat-attribute
+   * rescues it: `resolveGetAtt`'s (`deployment/intrinsic-resolver/getatt.ts`) flat-attribute
    * branch misses (so PR #1868's legacy comma-string normalization, which
    * lives in that branch, never runs either), `constructAttribute` has no
    * `AWS::Route53::HostedZone` case, and resolution falls through to

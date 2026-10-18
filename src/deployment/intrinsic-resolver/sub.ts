@@ -22,23 +22,10 @@ import {
   partParameterSpans,
   wholeReferenceSpans,
 } from './string-functions.js';
-
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    subPlaceholderWarning: OmitThisParameter<typeof subPlaceholderWarning>;
-    /** @internal */
-    subPlaceholderNamesADeclaredTemplateEntity: OmitThisParameter<
-      typeof subPlaceholderNamesADeclaredTemplateEntity
-    >;
-    /** @internal */
-    rethrowStructuralSubFailure: OmitThisParameter<typeof rethrowStructuralSubFailure>;
-    /** @internal */
-    subListRefusal: OmitThisParameter<typeof subListRefusal>;
-    /** @internal */
-    resolveSub: OmitThisParameter<typeof resolveSub>;
-  }
-}
+import { resolveKeyUnit } from './params-conditions.js';
+import { nameIsNeverAResource, resolveRef } from './refs.js';
+import { resolvePseudoParameter } from './functions.js';
+import { resolveGetAtt } from './getatt.js';
 
 /**
  * The warning emitted when `Fn::Sub` keeps a `${...}` placeholder verbatim.
@@ -49,7 +36,7 @@ declare module '../intrinsic-function-resolver.js' {
  * Deliberate refusals no longer reach this path at all — they re-throw.
  */
 export function subPlaceholderWarning(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   varName: string,
   error: unknown
 ): string {
@@ -128,7 +115,7 @@ export function subPlaceholderWarning(
  * nor be harmed by what this function includes.
  */
 export function subPlaceholderNamesADeclaredTemplateEntity(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   varName: string,
   context: ResolverContext
 ): boolean {
@@ -137,7 +124,7 @@ export function subPlaceholderNamesADeclaredTemplateEntity(
   if (head === '') return false;
   // Not for a parameter or pseudo-parameter name (issue #3916): a record
   // planted under it must not decide refuse-vs-warn either.
-  if (!this.nameIsNeverAResource(head, context) && Object.hasOwn(context.resources, head)) {
+  if (!nameIsNeverAResource(resolver, head, context) && Object.hasOwn(context.resources, head)) {
     return true;
   }
   const declared = context.template?.Resources;
@@ -177,13 +164,13 @@ export function subPlaceholderNamesADeclaredTemplateEntity(
  * would change diff output for no gain.
  */
 export function rethrowStructuralSubFailure(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   varName: string,
   error: unknown,
   context: ResolverContext
 ): void {
   if (context.bestEffort) return;
-  if (!this.subPlaceholderNamesADeclaredTemplateEntity(varName, context)) return;
+  if (!subPlaceholderNamesADeclaredTemplateEntity(resolver, varName, context)) return;
   throw error;
 }
 
@@ -245,7 +232,7 @@ function noteKeptSubPlaceholder(
  * Marked non-retryable: no retry changes a template.
  */
 export function subListRefusal(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   subject: string,
   value: unknown,
   context: ResolverContext
@@ -254,7 +241,7 @@ export function subListRefusal(
   const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
   return markNonRetryable(
     new IntrinsicResolutionRefusalError(
-      `Fn::Sub: ${displayMasked(this, subject, context)} resolves to a list (an array of ${count}), ` +
+      `Fn::Sub: ${displayMasked(resolver, subject, context)} resolves to a list (an array of ${count}), ` +
         `not a string. CloudFormation rejects this template too, because every Fn::Sub ` +
         `variable must resolve to a string. Render the list with Fn::Join in the variable ` +
         `map instead, for example ["ids=\${Ids}", {"Ids": {"Fn::Join": [",", {"Ref": "SubnetIds"}]}}].`
@@ -274,7 +261,7 @@ export function subListRefusal(
  * first, then do them synchronously.
  */
 export async function resolveSub(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   subArgs: string | [string, Record<string, unknown>],
   context: ResolverContext,
   source: object
@@ -381,7 +368,7 @@ export async function resolveSub(
         // directly, which recovers per TOKEN and only throws for a refusal —
         // and a refusal must abort this walk too.
         const resolved = val.includes('{{resolve:')
-          ? await resolveDynamicReferencesWithLogTwin(this, val, val, context)
+          ? await resolveDynamicReferencesWithLogTwin(resolver, val, val, context)
           : { result: val, twin: val, substitutions: [], complete: true };
         variables[key] = resolved.result;
         variableTwins[key] = resolved.twin;
@@ -406,12 +393,13 @@ export async function resolveSub(
         // `resolveKeyUnit`'s doc for why the extra frame is not free.
         variables[key] =
           context.abandonedResolutions === undefined
-            ? await this.resolveValue(val, context)
-            : await this.resolveKeyUnit(key, val, context, context.abandonedResolutions);
+            ? await resolver.resolveValue(val, context)
+            : await resolveKeyUnit(resolver, key, val, context, context.abandonedResolutions);
         variableSources[key] = val;
         // Refused whether or not the template names it: CloudFormation
         // validates every value of the map (issue #3809).
-        listRefusal ??= this.subListRefusal(
+        listRefusal ??= subListRefusal(
+          resolver,
           `the variable-map value ${key}`,
           variables[key],
           context
@@ -496,10 +484,10 @@ export async function resolveSub(
       replacement = String(variables[varNameStr]);
       twinReplacement = Object.hasOwn(variableTwins, varNameStr)
         ? variableTwins[varNameStr]
-        : productLogTwin(this, variables[varNameStr], context);
+        : productLogTwin(resolver, variables[varNameStr], context);
       if (Object.hasOwn(variableRecords, varNameStr)) record = variableRecords[varNameStr];
       else if (Object.hasOwn(variableSources, varNameStr)) {
-        record = nestedPartResolution(this, context, variableSources[varNameStr], replacement);
+        record = nestedPartResolution(resolver, context, variableSources[varNameStr], replacement);
         // A bound intrinsic (`{V: {Ref: A}}`, a nested Sub / Join / If) places
         // its own record's spans (issue #4446).
         parameterSpans = partParameterSpans(context, variableSources[varNameStr], replacement);
@@ -507,8 +495,9 @@ export async function resolveSub(
     } else {
       // Check if it's a pseudo parameter. `AWS::NotificationARNs` is a LIST
       // one, refused like any other list (issue #3809).
-      const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
-      const pseudoRefusal = this.subListRefusal(
+      const pseudoValue = await resolvePseudoParameter(resolver, varNameStr, context);
+      const pseudoRefusal = subListRefusal(
+        resolver,
         `the variable \${${varNameStr}}`,
         pseudoValue,
         context
@@ -522,13 +511,18 @@ export async function resolveSub(
         // Try to resolve as Ref
         try {
           let fromParameter = false;
-          const value = await this.resolveRef(varNameStr, context, () => {
+          const value = await resolveRef(resolver, varNameStr, context, () => {
             fromParameter = true;
           });
-          const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
+          const refusal = subListRefusal(
+            resolver,
+            `the variable \${${varNameStr}}`,
+            value,
+            context
+          );
           listRefusal ??= refusal;
           replacement = refusal ? match[0] : String(value);
-          if (!refusal) twinReplacement = productLogTwin(this, value, context);
+          if (!refusal) twinReplacement = productLogTwin(resolver, value, context);
           // The parameter arm answered: the whole replacement is that
           // parameter's value (issue #4446).
           if (!refusal && fromParameter) {
@@ -543,12 +537,17 @@ export async function resolveSub(
           // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
           if (varNameStr.includes('.')) {
             try {
-              const value = await this.resolveGetAtt(varNameStr, context);
-              const refusal = this.subListRefusal(`the variable \${${varNameStr}}`, value, context);
+              const value = await resolveGetAtt(resolver, varNameStr, context);
+              const refusal = subListRefusal(
+                resolver,
+                `the variable \${${varNameStr}}`,
+                value,
+                context
+              );
               listRefusal ??= refusal;
               replacement = refusal ? match[0] : String(value);
               if (!refusal) {
-                twinReplacement = productLogTwin(this, value, context);
+                twinReplacement = productLogTwin(resolver, value, context);
                 // The whole replacement is this attribute's value, keyed as the
                 // `Fn::GetAtt` the cross-stack writer records a nested-stack
                 // output read under (issue #4527).
@@ -569,7 +568,7 @@ export async function resolveSub(
               // ships `${Child.Outputs.Foo}` into a live property. Issue
               // #2285 adds the head segments that name an UNBOUND template
               // parameter on the same terms.
-              this.rethrowStructuralSubFailure(varNameStr, getAttError, context);
+              rethrowStructuralSubFailure(resolver, varNameStr, getAttError, context);
               // MASKED (issue
               // [#2827](https://github.com/go-to-k/cdkd/issues/2827)'s
               // sweep), and DEFENCE IN DEPTH rather than a closed leak —
@@ -584,8 +583,12 @@ export async function resolveSub(
               // this line is safe. Masked at the MESSAGE rather than per raw
               // value because the reason IS a caught message; the sub-floor
               // bound that implies is the one `evaluateConditions` states.
-              this.logger.warn(
-                displayMasked(this, this.subPlaceholderWarning(varNameStr, getAttError), context)
+              resolver.logger.warn(
+                displayMasked(
+                  resolver,
+                  subPlaceholderWarning(resolver, varNameStr, getAttError),
+                  context
+                )
               );
               replacement = match[0]; // Keep original placeholder
               noteKeptSubPlaceholder(varNameStr, match[0], getAttError, context);
@@ -598,10 +601,14 @@ export async function resolveSub(
             // This is also the arm issue #2285 lives on: `${Stage}` naming a
             // parameter the template DECLARES with no `Default` and no bound
             // value is an implicit `Ref` for the same reason.
-            this.rethrowStructuralSubFailure(varNameStr, refError, context);
+            rethrowStructuralSubFailure(resolver, varNameStr, refError, context);
             // Masked for the reason its `Fn::GetAtt` twin above is.
-            this.logger.warn(
-              displayMasked(this, this.subPlaceholderWarning(varNameStr, refError), context)
+            resolver.logger.warn(
+              displayMasked(
+                resolver,
+                subPlaceholderWarning(resolver, varNameStr, refError),
+                context
+              )
             );
             replacement = match[0]; // Keep original placeholder
             noteKeptSubPlaceholder(varNameStr, match[0], refError, context);
@@ -674,7 +681,7 @@ export async function resolveSub(
   // Resolve any dynamic references in the substituted result (secret refs are
   // left unresolved per-reference when skipDynamicReferences is set).
   if (result.includes('{{resolve:')) {
-    const substituted = await resolveDynamicReferencesWithLogTwin(this, result, twin, context);
+    const substituted = await resolveDynamicReferencesWithLogTwin(resolver, result, twin, context);
     // The spans index the substituted template; a pass that rewrote it moved them.
     if (substituted.result !== result) parameterSpans = undefined;
     ({ result, twin } = substituted);
@@ -683,16 +690,16 @@ export async function resolveSub(
   }
   // After the final pass, so every reference in the template has recorded.
   if (listRefusal) throw listRefusal;
-  recordLeafResolution(this, context, source, {
+  recordLeafResolution(resolver, context, source, {
     input,
     output: result,
     substitutions,
     complete,
     ...(parameterSpans === undefined ? {} : { parameterSpans }),
   });
-  rememberLogTwin(this, context, result, twin);
-  this.logger.debug(
-    `Resolved Fn::Sub: ${logRender(this, logTwinText(this, result, twin, context), context)}`
+  rememberLogTwin(resolver, context, result, twin);
+  resolver.logger.debug(
+    `Resolved Fn::Sub: ${logRender(resolver, logTwinText(resolver, result, twin, context), context)}`
   );
   return result;
 }

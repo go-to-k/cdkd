@@ -82,6 +82,7 @@ stsMockSend.mockImplementation(async () => {
 });
 
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { recordOutputRead } from '../../../src/deployment/intrinsic-resolver/stack-output.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -211,8 +212,8 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
     const recorded: StateOutputReadEntry[] = [];
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const ctx = buildContext({ recordedOutputReads: recorded });
-    resolver.recordOutputRead(ctx, 'Producer', 'us-east-1', 'Out');
-    resolver.recordOutputRead(ctx, 'Producer', 'US-WEST-2', 'Out');
+    recordOutputRead(resolver, ctx, 'Producer', 'us-east-1', 'Out');
+    recordOutputRead(resolver, ctx, 'Producer', 'US-WEST-2', 'Out');
     expect(recorded.map((e) => e.sourceRegion)).toEqual(['us-east-1', 'US-WEST-2']);
   });
 

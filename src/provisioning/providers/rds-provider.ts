@@ -467,7 +467,7 @@ export class RDSProvider implements ResourceProvider {
       // AWS added the attribute to the CFn schema after the 2026-05-16 fixture
       // capture, and an output / cross-resource `Fn::GetAtt` reads the CACHED
       // `resource.attributes[<CFnName>]` in
-      // `IntrinsicFunctionResolver.constructAttribute` — which never calls a
+      // `constructAttribute` (`deployment/intrinsic-resolver/getatt.ts`) — which never calls a
       // provider's `getAttribute` — so an uncached `*Arn` name HARD-FAILS the
       // resolver's shape guard against this type's name-shaped physicalId.
       // `CreateDBSubnetGroup` reports the ARN directly, so this needs no extra

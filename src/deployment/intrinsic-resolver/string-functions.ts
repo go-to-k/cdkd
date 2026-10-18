@@ -105,30 +105,13 @@ export function appendShiftedSpans(
   }
 }
 
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    resolveJoin: OmitThisParameter<typeof resolveJoin>;
-    /** @internal */
-    resolveSelect: OmitThisParameter<typeof resolveSelect>;
-    /** @internal */
-    renderGetAttArg: OmitThisParameter<typeof renderGetAttArg>;
-    /** @internal */
-    describeOperandShape: OmitThisParameter<typeof describeOperandShape>;
-    /** @internal */
-    describeSplitValueSource: OmitThisParameter<typeof describeSplitValueSource>;
-    /** @internal */
-    resolveSplit: OmitThisParameter<typeof resolveSplit>;
-  }
-}
-
 /**
  * Resolve Fn::Join intrinsic function
  *
  * Fn::Join: [delimiter, [value1, value2, ...]]
  */
 export async function resolveJoin(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   joinArgs: [string, unknown],
   context: ResolverContext,
   source: object
@@ -142,7 +125,7 @@ export async function resolveJoin(
   // resolve it first so it becomes an array before we map over it.
   let values: unknown = rawValues;
   if (!Array.isArray(values)) {
-    values = await this.resolveValue(values, context);
+    values = await resolver.resolveValue(values, context);
   }
 
   if (!Array.isArray(values)) {
@@ -199,9 +182,9 @@ export async function resolveJoin(
             // so for a literal the seed can only mask more.
             const part = v.includes('{{resolve:')
               ? await resolveDynamicReferencesWithLogTwin(
-                  this,
+                  resolver,
                   v,
-                  logTwinOfProduct(this, { result: v, twin: v }, context).twin,
+                  logTwinOfProduct(resolver, { result: v, twin: v }, context).twin,
                   context
                 )
               : { result: v, twin: v, substitutions: [], complete: true };
@@ -215,7 +198,7 @@ export async function resolveJoin(
               parameterSpans: [],
             };
           }
-          const raw = await this.resolveValue(v, context);
+          const raw = await resolver.resolveValue(v, context);
           const resolved = String(raw);
           return {
             result: resolved,
@@ -228,11 +211,11 @@ export async function resolveJoin(
             parameterSpans: literalList ? partParameterSpans(context, v, resolved) : [],
             // A nested `Fn::Join` / `Fn::Sub` / `Fn::If` part lends its own
             // record (issue #3306).
-            ...nestedPartResolution(this, context, v, resolved),
+            ...nestedPartResolution(resolver, context, v, resolved),
           };
         }
       ),
-    (pending) => this.warnAbandonedParts(pending)
+    (pending) => resolver.warnAbandonedParts(pending)
   );
   const parts = resolvedParts.map((part) => {
     if (!part.product) return part;
@@ -240,8 +223,8 @@ export async function resolveJoin(
     // elements' twins through the stringification; a string element of a
     // list an intrinsic returned keeps its own twin rule.
     if (part.raw)
-      return { result: part.result, twin: productLogTwin(this, part.raw.value, context) };
-    return logTwinOfProduct(this, part, context);
+      return { result: part.result, twin: productLogTwin(resolver, part.raw.value, context) };
+    return logTwinOfProduct(resolver, part, context);
   });
 
   let result = parts.map((part) => part.result).join(delimiter);
@@ -268,23 +251,23 @@ export async function resolveJoin(
   // CDK `secretValueFromJson` shape completes its token only HERE, so this
   // substitution is the write the twin most needs to see.
   if (result.includes('{{resolve:')) {
-    const joined = await resolveDynamicReferencesWithLogTwin(this, result, twin, context);
+    const joined = await resolveDynamicReferencesWithLogTwin(resolver, result, twin, context);
     // The spans index the joined text; a pass that rewrote it moved them.
     if (joined.result !== result) spansValid = false;
     ({ result, twin } = joined);
     substitutions.push(...joined.substitutions);
     complete &&= joined.complete;
   }
-  recordLeafResolution(this, context, source, {
+  recordLeafResolution(resolver, context, source, {
     input: resolvedParts.map((part) => part.input).join(delimiter),
     output: result,
     substitutions,
     complete,
     ...(spansValid ? { parameterSpans } : {}),
   });
-  rememberLogTwin(this, context, result, twin);
-  this.logger.debug(
-    `Resolved Fn::Join: ${logRender(this, logTwinText(this, result, twin, context), context)}`
+  rememberLogTwin(resolver, context, result, twin);
+  resolver.logger.debug(
+    `Resolved Fn::Join: ${logRender(resolver, logTwinText(resolver, result, twin, context), context)}`
   );
   return result;
 }
@@ -297,7 +280,7 @@ export async function resolveJoin(
  * intrinsic; it is resolved, then must name a position (issue #3574).
  */
 export async function resolveSelect(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   selectArgs: unknown,
   context: ResolverContext
 ): Promise<unknown> {
@@ -307,7 +290,7 @@ export async function resolveSelect(
     // first two characters as the index and the list.
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
-        `Fn::Select takes a two-element list [index, list], got ${this.describeOperandShape(selectArgs, context)}`
+        `Fn::Select takes a two-element list [index, list], got ${describeOperandShape(resolver, selectArgs, context)}`
       )
     );
   }
@@ -321,21 +304,21 @@ export async function resolveSelect(
   // read the `Array` function off the prototype chain. `selectIndexPosition`
   // admits only a non-negative safe integer, so the read below is an own
   // element by construction and the placeholder carries no template text.
-  const resolvedIndex = await this.resolveValue(index, context);
+  const resolvedIndex = await resolver.resolveValue(index, context);
   const position = selectIndexPosition(resolvedIndex);
   if (position === undefined) {
-    const source = this.describeSplitValueSource(index);
-    const sourceClause = source ? ` (from ${displayMasked(this, source.label, context)})` : '';
+    const source = describeSplitValueSource(resolver, index);
+    const sourceClause = source ? ` (from ${displayMasked(resolver, source.label, context)})` : '';
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Fn::Select: the index${sourceClause} must resolve to a non-negative integer ` +
-          `(a number, or its decimal string with no leading zero), got ${this.describeOperandShape(resolvedIndex, context)}. ` +
+          `(a number, or its decimal string with no leading zero), got ${describeOperandShape(resolver, resolvedIndex, context)}. ` +
           `Use a literal, a Ref to a parameter or an Fn::FindInMap that yields one.`
       )
     );
   }
 
-  const resolvedList = await this.resolveValue(list, context);
+  const resolvedList = await resolver.resolveValue(list, context);
 
   if (!Array.isArray(resolvedList)) {
     // A plain `Error`, unlike the two refusals above, and deliberately left
@@ -351,7 +334,7 @@ export async function resolveSelect(
   // The position through the builder: a resolved index can come from a
   // parameter carrying a SECRET (a nested-stack child's inherited one), and
   // `displayMasked` masks it where the bare integer would not be.
-  const loggedPosition = displayMasked(this, String(position), context);
+  const loggedPosition = displayMasked(resolver, String(position), context);
   if (position >= resolvedList.length) {
     if (loggedPosition !== String(position)) {
       // The placeholder is a PROPERTY VALUE sent to AWS and persisted, so a
@@ -365,21 +348,21 @@ export async function resolveSelect(
       );
     }
     // Reached only when the position did not mask, so it renders as is.
-    this.logger.warn(
+    resolver.logger.warn(
       `Fn::Select: index ${position} out of bounds (array length: ${resolvedList.length})`
     );
     return `{{Fn::Select:${position}:OutOfBounds}}`;
   }
 
   const result: unknown = resolvedList[position];
-  this.logger.debug(
+  resolver.logger.debug(
     // LEAF-masked before the encoding, not after (issue
     // [#2759](https://github.com/go-to-k/cdkd/issues/2759)): `JSON.stringify`
     // escapes a leaf holding `"` / `\` / a control character, and a needle
     // matches literally — so a mask over the ENCODED text misses exactly the
     // secrets that carry those bytes. Leaf-masking also reaches the
     // whole-value arm, which has no {@link MIN_NEEDLE_LENGTH} floor.
-    `Resolved Fn::Select: index ${loggedPosition} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, result, context)), context, { structured: true })}`
+    `Resolved Fn::Select: index ${loggedPosition} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, result, context)), context, { structured: true })}`
   );
   return result;
 }
@@ -390,7 +373,7 @@ export async function resolveSelect(
  * intrinsic key (`<Fn::Sub>`) or, failing that, as `<intrinsic>` — never by
  * default stringification, whose answer for an object is `[object Object]`.
  */
-export function renderGetAttArg(this: IntrinsicFunctionResolver, arg: unknown): string {
+export function renderGetAttArg(_resolver: IntrinsicFunctionResolver, arg: unknown): string {
   if (typeof arg === 'string') return arg;
   if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
     const keys = Object.keys(arg as Record<string, unknown>);
@@ -406,16 +389,16 @@ export function renderGetAttArg(this: IntrinsicFunctionResolver, arg: unknown): 
  * it goes through the builder (issue #3479).
  */
 export function describeOperandShape(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown,
   context: ResolverContext
 ): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return `an array of ${value.length}`;
   if (typeof value === 'string')
-    return `string ${quotedRender(displayMasked(this, value, context), '"')}`;
+    return `string ${quotedRender(displayMasked(resolver, value, context), '"')}`;
   if (typeof value === 'number' || typeof value === 'boolean') {
-    return `${typeof value} ${displayMasked(this, String(value), context)}`;
+    return `${typeof value} ${displayMasked(resolver, String(value), context)}`;
   }
   return typeof value;
 }
@@ -447,7 +430,7 @@ export function describeOperandShape(
  * confusing for a parameter reference or a hand-written literal.
  */
 export function describeSplitValueSource(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   value: unknown
 ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
@@ -477,7 +460,7 @@ export function describeSplitValueSource(
     // interpolate an object directly: the default `String(...)` of one is
     // `[object Object]`, which names nothing.
     return {
-      label: `Fn::GetAtt [${args.map((a) => this.renderGetAttArg(a)).join(', ')}]`,
+      label: `Fn::GetAtt [${args.map((a) => renderGetAttArg(resolver, a)).join(', ')}]`,
       kind: 'getatt',
     };
   }
@@ -572,17 +555,17 @@ function splitValueResolvesReferences(value: unknown): boolean {
  * terminal too.
  */
 export async function resolveSplit(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   splitArgs: [string, unknown],
   context: ResolverContext
 ): Promise<string[]> {
   const [delimiter, value] = splitArgs;
 
   // Resolve the value first
-  const resolvedValue = await this.resolveValue(value, context);
+  const resolvedValue = await resolver.resolveValue(value, context);
 
   if (typeof resolvedValue !== 'string') {
-    const source = this.describeSplitValueSource(value);
+    const source = describeSplitValueSource(resolver, value);
     // SANITIZED at the point the clause is BUILT (go-to-k/cdkd#3435 security
     // round 3, which measured it): `source.label` is `Ref <args>` /
     // `Fn::GetAtt [<arg>]` / a raw template key, all template-controlled, and
@@ -592,7 +575,7 @@ export async function resolveSplit(
     // contradicted by `describeSplitValueSource`'s own doc comment one method
     // up ("interpolates template-controlled text"). Wrapped once here rather
     // than at each throw, so a THIRD consumer of the clause inherits it.
-    const sourceClause = source ? ` (from ${displayMasked(this, source.label, context)})` : '';
+    const sourceClause = source ? ` (from ${displayMasked(resolver, source.label, context)})` : '';
     if (Array.isArray(resolvedValue)) {
       // The remedy is per-source, and the DEFAULT is the neutral one. Only a
       // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
@@ -680,7 +663,7 @@ export async function resolveSplit(
   // print-only corpus by this call's line alone: it must not rely on some
   // earlier resolution having recorded them.
   let lineContext = context;
-  if (hasLogOnlyNeedles(this, context)) {
+  if (hasLogOnlyNeedles(resolver, context)) {
     if (context.recordedSecretValues) {
       recordLogOnlySplitFragments(
         [context.inheritedSecrets, context.recordedSecretValues],
@@ -736,15 +719,15 @@ export async function resolveSplit(
   // `Fn::Base64` persist detector, which would move state.)
   const pieceTwins =
     String(delimiter) === '' &&
-    maskRenderedNeedlesForLog(this, resolvedValue, lineContext) !== resolvedValue
+    maskRenderedNeedlesForLog(resolver, resolvedValue, lineContext) !== resolvedValue
       ? result.map(() => SECRET_MASK)
-      : splitLogTwins(this, resolvedValue, delimiter, result, context);
-  this.logger.debug(
+      : splitLogTwins(resolver, resolvedValue, delimiter, result, context);
+  resolver.logger.debug(
     // Leaf-masked before the encoding — see `resolveSelect`'s twin comment
     // (issue [#2759](https://github.com/go-to-k/cdkd/issues/2759)). The
     // delimiter through the builder (issue #3479): it is raw template text,
     // and a structural operand is still arbitrary JSON.
-    `Resolved Fn::Split: split by ${splitDelimiterRender(this, String(delimiter), lineContext)} resolved to ${logRender(this, JSON.stringify(maskValueLeaves(this, pieceTwins, lineContext)), lineContext, { structured: true })}`
+    `Resolved Fn::Split: split by ${splitDelimiterRender(resolver, String(delimiter), lineContext)} resolved to ${logRender(resolver, JSON.stringify(maskValueLeaves(resolver, pieceTwins, lineContext)), lineContext, { structured: true })}`
   );
   return result;
 }

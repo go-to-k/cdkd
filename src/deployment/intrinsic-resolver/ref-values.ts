@@ -66,7 +66,7 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  *   - AWS::AppConfig::Deployment             `<appId>|<envId>|<deployNum>`   -> deployment number
  *
  * The extraction takes the segment after the LAST pipe (see
- * {@link IntrinsicFunctionResolver.resolveRefValue}) so it is correct for both
+ * `resolveRefValue` in `refs.ts`) so it is correct for both
  * 2-segment (`<parent>|<ref>`) and 3-segment AppConfig compounds; for the
  * 2-segment types it is identical to after-first-pipe. AppConfig::Application
  * and ::DeploymentStrategy are NOT here — their Ref is a simple, pipe-free id.
@@ -614,7 +614,7 @@ export function recordSetRefFromPhysicalId(
 /**
  * Resolve the value CloudFormation's `Ref` returns for a resource, given its
  * type and cdkd-stored physical id. Pure function shared by the deploy-time
- * resolver ({@link IntrinsicFunctionResolver.resolveRefValue}) and the
+ * resolver (`resolveRefValue` in `refs.ts`) and the
  * `cdkd orphan` rewriter's `{Ref: <orphan>}` substitution, so both derive
  * identical CFn `Ref` semantics (after-pipe / before-first-pipe compound-id
  * extraction and name-from-ARN extraction included).

@@ -173,7 +173,7 @@ describe('S3 bucket endpoint construction (issue #1745)', () => {
    * Issue #1850. `cdkd deploy --region US-EAST-1` is REACHABLE (DNS is
    * case-insensitive, so the SDK endpoint resolves and the deploy SUCCEEDS),
    * and this module has TWO callers that disagree on the spelling they pass:
-   * `IntrinsicFunctionResolver.constructAttribute` folds before calling, while
+   * `constructAttribute (intrinsic-resolver/getatt.ts)` folds before calling, while
    * `S3BucketProvider.buildAttributes` hands over a raw
    * `client.config.region()`. Folding inside the helpers is what keeps the
    * `Fn::GetAtt` answer equal to what `readCurrentState` reports (#1745).

@@ -63,6 +63,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
+const { reresolveCrossStackValue } = await import(
+  '../../../src/deployment/intrinsic-resolver/cross-stack.js'
+);
 const { passProvenanceFor } = await import(
   '../../../src/deployment/secret-redaction/reference-provenance.js'
 );
@@ -123,7 +126,8 @@ describe('the recording seam (state schema v12)', () => {
   it('a re-resolution of a recorded value is the READ route', async () => {
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const bag = new Map<string, string>();
-    await resolver.reresolveCrossStackValue(
+    await reresolveCrossStackValue(
+      resolver,
       `arn:aws:sqs:us-east-1:123456789012:${SM}`,
       undefined,
       context(bag) as never,

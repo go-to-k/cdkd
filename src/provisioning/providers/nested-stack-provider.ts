@@ -1508,7 +1508,7 @@ export class NestedStackProvider implements ResourceProvider {
    * and every consumer's record redacted.
    *
    * The re-resolution therefore lives at the READ site, in
-   * `IntrinsicFunctionResolver.resolveGetAtt`, where the CONSUMER's resolver
+   * `resolveGetAtt` (`deployment/intrinsic-resolver/getatt.ts`), where the CONSUMER's resolver
    * context is in hand — the same seam and the same reason as the
    * `Fn::ImportValue` / `Fn::GetStackOutput` arms of issue #1934.
    *

@@ -235,7 +235,7 @@ describe('maskedRecordRemedyFor — one arm per reads shape (issue #2847)', () =
   });
 
   // THE REF-STATE-KEY KIND (issue #2847, independent review round), pushed by
-  // `IntrinsicFunctionResolver.noteRefStateMask` when the value
+  // `noteRefStateMask (intrinsic-resolver/refs.ts)` when the value
   // CloudFormation's `Ref` returns is recovered from a state key rather than
   // from the physical id.
   it('routes the Ref state-key kind to the LOCAL arm and names the right resource', () => {

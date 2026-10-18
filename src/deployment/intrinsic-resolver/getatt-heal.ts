@@ -28,33 +28,8 @@ import {
   StaleAttributeMissSignal,
   readHealedAttribute,
 } from '../stale-attribute-heal.js';
-
-declare module '../intrinsic-function-resolver.js' {
-  interface IntrinsicFunctionResolver {
-    /** @internal */
-    staleRecordRemedy: OmitThisParameter<typeof staleRecordRemedy>;
-    /** @internal */
-    unenrichedRemedy: OmitThisParameter<typeof unenrichedRemedy>;
-    /** @internal */
-    healWithheld: OmitThisParameter<typeof healWithheld>;
-    /** @internal */
-    withheldRemedy: OmitThisParameter<typeof withheldRemedy>;
-    /** @internal */
-    healStaleAttributes: OmitThisParameter<typeof healStaleAttributes>;
-    /** @internal */
-    usableHealedAttribute: OmitThisParameter<typeof usableHealedAttribute>;
-    /** @internal */
-    serveHealedAttribute: OmitThisParameter<typeof serveHealedAttribute>;
-    /** @internal */
-    constructWithStaleRecordHeal: OmitThisParameter<typeof constructWithStaleRecordHeal>;
-    /** @internal */
-    constructGuardedAttribute: OmitThisParameter<typeof constructGuardedAttribute>;
-    /** @internal */
-    healBeforeConstructing: OmitThisParameter<typeof healBeforeConstructing>;
-    /** @internal */
-    healMaskedOwnIdAttribute: OmitThisParameter<typeof healMaskedOwnIdAttribute>;
-  }
-}
+import { describeFailureObserved } from './getatt-refusals.js';
+import { constructAttribute, noteAttributeSecrecy } from './getatt.js';
 
 /**
  * The remedy half of a STALE-RECORD refusal (issue
@@ -72,7 +47,7 @@ declare module '../intrinsic-function-resolver.js' {
  * caller's account, role and session.
  */
 export function staleRecordRemedy(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   outcome: StaleAttributeHealOutcome | undefined,
   context?: ResolverContext
 ): string {
@@ -95,7 +70,7 @@ export function staleRecordRemedy(
     case 'failed':
       return (
         `${attempted}, but ` +
-        `${this.describeFailureObserved('the provider read', outcome.error, context)}. ` +
+        `${describeFailureObserved(resolver, 'the provider read', outcome.error, context)}. ` +
         (preview
           ? `A preview writes nothing to state; 'cdkd deploy' issues the same read and records ` +
             `the attribute once the read returns it. Fix the read (a missing read permission is the ` +
@@ -111,7 +86,7 @@ export function staleRecordRemedy(
         `or remove it from state.`
       );
     case 'read':
-      if ((outcome.withheldKeys?.length ?? 0) > 0) return this.withheldRemedy(context);
+      if ((outcome.withheldKeys?.length ?? 0) > 0) return withheldRemedy(resolver, context);
       return preview
         ? `This preview re-read the resource from AWS and the read reports no usable value ` +
             `for this attribute either; ${touch}.`
@@ -137,7 +112,7 @@ export function staleRecordRemedy(
  * `cdkd deploy` is what heals it.
  */
 export function unenrichedRemedy(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resourceType: string,
   attributeName: string,
   outcome: StaleAttributeHealOutcome | undefined,
@@ -148,7 +123,7 @@ export function unenrichedRemedy(
   // template text here.
   const fileIssue =
     `Avoid this Fn::GetAtt, or file an issue at https://github.com/go-to-k/cdkd/issues ` +
-    `so cdkd can enrich ${displayMasked(this, resourceType, context)}.${displayMasked(this, attributeName, context)}.`;
+    `so cdkd can enrich ${displayMasked(resolver, resourceType, context)}.${displayMasked(resolver, attributeName, context)}.`;
   if (outcome === undefined) {
     // The hint goes FIRST: the sentence ends on the attribute name, which
     // `intrinsic-resolver-name-argument-log-twin.test.ts` anchors on.
@@ -158,7 +133,7 @@ export function unenrichedRemedy(
     );
   }
   if (outcome.kind === 'read') {
-    if (this.healWithheld(outcome, attributeName)) return this.withheldRemedy(context);
+    if (healWithheld(resolver, outcome, attributeName)) return withheldRemedy(resolver, context);
     return (
       `cdkd re-read the resource's attributes from AWS and the read reports none by that ` +
       `name. ${fileIssue}`
@@ -169,7 +144,7 @@ export function unenrichedRemedy(
 
 /** Did the heal's read report this attribute (by its top-level key) and cdkd withhold it as masked? */
 export function healWithheld(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   outcome: Extract<StaleAttributeHealOutcome, { kind: 'read' }>,
   attributeName: string
 ): boolean {
@@ -186,7 +161,10 @@ export function healWithheld(
  * A `readOnly` healer's read (`cdkd diff`'s) ran under the preview's own
  * credentials, not the deploy role's, so that remedy names those instead.
  */
-export function withheldRemedy(this: IntrinsicFunctionResolver, context?: ResolverContext): string {
+export function withheldRemedy(
+  _resolver: IntrinsicFunctionResolver,
+  context?: ResolverContext
+): string {
   const confirm =
     `it could not confirm that this is a read-only attribute of the type, and an ` +
     `unconfirmed value is never used.`;
@@ -214,7 +192,7 @@ export function withheldRemedy(this: IntrinsicFunctionResolver, context?: Resolv
  * fail a deploy the pre-#1852 code passed (the warn-and-return fallback).
  */
 export async function healStaleAttributes(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   logicalId: string,
   resource: ResourceState,
   context: ResolverContext
@@ -234,7 +212,7 @@ export async function healStaleAttributes(
  * that would send the literal mask to AWS.
  */
 export function usableHealedAttribute(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   outcome: StaleAttributeHealOutcome | undefined,
   attributeName: string
 ): unknown {
@@ -245,7 +223,7 @@ export function usableHealedAttribute(
 
 /** Serve a value the #1852 heal just read from AWS, logging it like a cached read. */
 export function serveHealedAttribute(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   logicalId: string,
   attributeName: string,
   value: unknown,
@@ -257,9 +235,9 @@ export function serveHealedAttribute(
   // that still got through is RECORDED as a redacted read and the engine
   // refuses the consumer rather than sending `***` to AWS. Noted BEFORE the
   // log line (go-to-k/cdkd#3659), as every serving branch is.
-  const noted = this.noteAttributeSecrecy(logicalId, attributeName, value, context);
-  this.logger.debug(
-    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${logRender(this, logicalId, context)}.${logRender(this, attributeName, context)} resolved to ${logRender(this, stringifyAttributeForLog(attributeName, maskValueLeaves(this, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
+  const noted = noteAttributeSecrecy(resolver, logicalId, attributeName, value, context);
+  resolver.logger.debug(
+    `Resolved Fn::GetAtt from a re-read of AWS (the state record lacked it): ${logRender(resolver, logicalId, context)}.${logRender(resolver, attributeName, context)} resolved to ${logRender(resolver, stringifyAttributeForLog(attributeName, maskValueLeaves(resolver, value, context)), context, { structured: isStructured(value), redacted: isSensitiveAttributeName(attributeName) })}`
   );
   return noted;
 }
@@ -291,17 +269,18 @@ export function serveHealedAttribute(
  * A context with no healer skips all of it.
  */
 export async function constructWithStaleRecordHeal(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   context: ResolverContext,
   logicalId: string
 ): Promise<unknown> {
   if (context.attributeHealer === undefined) {
-    return this.constructGuardedAttribute(resource, attributeName, context, logicalId);
+    return constructGuardedAttribute(resolver, resource, attributeName, context, logicalId);
   }
   try {
-    return await this.constructGuardedAttribute(
+    return await constructGuardedAttribute(
+      resolver,
       resource,
       attributeName,
       { ...context, staleAttributeHeal: { phase: 'probe' } },
@@ -310,14 +289,15 @@ export async function constructWithStaleRecordHeal(
   } catch (error) {
     if (!(error instanceof StaleAttributeMissSignal)) throw error;
   }
-  const outcome = (await this.healStaleAttributes(logicalId, resource, context)) ?? {
+  const outcome = (await healStaleAttributes(resolver, logicalId, resource, context)) ?? {
     kind: 'not-attempted' as const,
   };
-  const healed = this.usableHealedAttribute(outcome, attributeName);
+  const healed = usableHealedAttribute(resolver, outcome, attributeName);
   if (healed !== undefined) {
-    return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+    return serveHealedAttribute(resolver, logicalId, attributeName, healed, context);
   }
-  return this.constructGuardedAttribute(
+  return constructGuardedAttribute(
+    resolver,
     resource,
     attributeName,
     { ...context, staleAttributeHeal: { phase: 'settled', outcome } },
@@ -366,7 +346,7 @@ const UNKNOWN_ACCOUNT_STAND_IN = '\u0000cdkd-unknown-account\u0000';
  * resolver can already answer, so renaming that method emptied its walk.
  */
 export async function constructGuardedAttribute(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   resource: ResourceState,
   attributeName: string,
   context: ResolverContext,
@@ -377,18 +357,25 @@ export async function constructGuardedAttribute(
   // settle) would otherwise spend the SDK's own retry chain on a lookup it
   // does not need. Region and partition are what `getAccountInfo` would
   // derive (`accountInfoFor`).
-  const region = effectiveAccountInfoRegion(this.resolverRegion);
+  const region = effectiveAccountInfoRegion(resolver.resolverRegion);
   const standIn: AwsAccountInfo = {
     accountId: UNKNOWN_ACCOUNT_STAND_IN,
     region,
     partition: derivePartitionAndUrlSuffix(region).partition,
   };
-  const value = await this.constructAttribute(resource, attributeName, context, logicalId, standIn);
+  const value = await constructAttribute(
+    resolver,
+    resource,
+    attributeName,
+    context,
+    logicalId,
+    standIn
+  );
   if (!embedsAccountId(value, UNKNOWN_ACCOUNT_STAND_IN)) return value;
 
   let accountId: string;
   try {
-    accountId = (await getAccountInfo(this.resolverRegion)).accountId;
+    accountId = (await getAccountInfo(resolver.resolverRegion)).accountId;
   } catch (error) {
     if (!(error instanceof AccountIdUnavailableError)) throw error;
     // `attributeName` masked for the reason its nested-stack sibling above
@@ -401,7 +388,7 @@ export async function constructGuardedAttribute(
     // `markNonRetryable`: a failed lookup is never cached, so a later attempt
     // can heal.
     throw new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${displayMasked(this, logicalId, context)}, ${displayMasked(this, attributeName, context)}] for ${displayMasked(this, resource.resourceType, context)}: ` +
+      `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ${displayMasked(resolver, resource.resourceType, context)}: ` +
         `the value embeds this deploy's account id. ${error.message}`
     );
   }
@@ -437,7 +424,7 @@ function withAccountId(value: unknown, accountId: string): unknown {
  * {@link refuseUnconstructibleAttribute}).
  */
 export function healBeforeConstructing(
-  this: IntrinsicFunctionResolver,
+  _resolver: IntrinsicFunctionResolver,
   context: ResolverContext
 ): void {
   if (context.staleAttributeHeal?.phase === 'probe') throw new StaleAttributeMissSignal();
@@ -506,7 +493,7 @@ export function isMaskedOwnIdCopy(
  * as it was.
  */
 export function healMaskedOwnIdAttribute(
-  this: IntrinsicFunctionResolver,
+  resolver: IntrinsicFunctionResolver,
   logicalId: string,
   resource: ResourceState,
   attributeName: string,
@@ -515,10 +502,10 @@ export function healMaskedOwnIdAttribute(
 ): Promise<unknown> | undefined {
   if (stored !== SECRET_MASK || context.attributeHealer === undefined) return undefined;
   return (async () => {
-    const outcome = await this.healStaleAttributes(logicalId, resource, context);
-    const healed = this.usableHealedAttribute(outcome, attributeName);
+    const outcome = await healStaleAttributes(resolver, logicalId, resource, context);
+    const healed = usableHealedAttribute(resolver, outcome, attributeName);
     const producer = context.producerSecrets?.(logicalId);
     if (!isMaskedOwnIdCopy(resource, attributeName, stored, healed, producer)) return undefined;
-    return this.serveHealedAttribute(logicalId, attributeName, healed, context);
+    return serveHealedAttribute(resolver, logicalId, attributeName, healed, context);
   })();
 }

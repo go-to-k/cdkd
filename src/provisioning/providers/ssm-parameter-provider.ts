@@ -184,7 +184,7 @@ export class SSMParameterProvider implements ResourceProvider {
    *
    * WHY THIS EXISTS. An output / cross-resource `Fn::GetAtt` reads the CACHED
    * `resource.attributes[<CFnName>]` in
-   * `IntrinsicFunctionResolver.constructAttribute`, which never calls a
+   * `constructAttribute` (`deployment/intrinsic-resolver/getatt.ts`), which never calls a
    * provider's `getAttribute` — and for an `*Arn` name the resolver's shape
    * guard HARD-FAILS rather than degrading when the cached value is missing and
    * the physicalId is name-shaped (an SSM physicalId IS the parameter name). So

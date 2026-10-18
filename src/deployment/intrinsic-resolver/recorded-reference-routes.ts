@@ -14,6 +14,7 @@
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { resolveDynamicReferences } from './dynamic-refs.js';
+import { reresolveCrossStackValue } from './cross-stack.js';
 import type { ReferenceProvenance } from '../../types/state.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
@@ -248,7 +249,8 @@ export async function reresolveByRecordedRoutes(
   const regions = new Set(tokens.map((token) => regionOf(token) ?? ''));
   if (regions.size <= 1) {
     const [only] = regions;
-    return await resolver.reresolveCrossStackValue(
+    return await reresolveCrossStackValue(
+      resolver,
       value,
       only || undefined,
       walkContext,
@@ -260,7 +262,8 @@ export async function reresolveByRecordedRoutes(
   // own, and spliced back in place (no resolved value is re-scanned).
   return await rebuildByToken(value, async (token) =>
     String(
-      await resolver.reresolveCrossStackValue(
+      await reresolveCrossStackValue(
+        resolver,
         token,
         regionOf(token),
         walkContext,

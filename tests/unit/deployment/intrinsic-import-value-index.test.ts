@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { recordImport } from '../../../src/deployment/intrinsic-resolver/cross-stack.js';
 import type {
   RedactedAttributeRead,
   ResolverContext,
@@ -262,8 +263,8 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
     const recorded: StateImportEntry[] = [];
     const resolver = new IntrinsicFunctionResolver('us-east-1');
     const ctx = buildContext({ recordedImports: recorded });
-    resolver.recordImport(ctx, 'X', 'P', 'us-east-1');
-    resolver.recordImport(ctx, 'X', 'P', 'US-WEST-2');
+    recordImport(resolver, ctx, 'X', 'P', 'us-east-1');
+    recordImport(resolver, ctx, 'X', 'P', 'US-WEST-2');
     expect(recorded.map((e) => e.sourceRegion)).toEqual(['us-east-1', 'US-WEST-2']);
   });
 
