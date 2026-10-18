@@ -76,6 +76,7 @@ import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import {
   hasRedactedCause,
   isNameCollisionErrorFrom,
@@ -136,12 +137,16 @@ const debugged = (): string => debugSpy.mock.calls.map((args) => String(args[0])
 type Site = {
   site: string;
   command: string;
+  /** The IAM action the denial names, the site's own. */
+  action: string;
   prefix: string;
   answers?: Record<string, unknown>;
   run: () => Promise<unknown>;
 };
 
 const TABLE_BUCKET_ARN = 'arn:aws:s3tables:us-east-1:111122223333:bucket/b1';
+const TABLE_ID = `${TABLE_BUCKET_ARN}|ns1|t1`;
+const TABLE_PROPS = { TableBucketARN: TABLE_BUCKET_ARN, Namespace: 'ns1', TableName: 't1' };
 
 function sites(): Site[] {
   const s3t = new S3TablesProvider();
@@ -151,12 +156,14 @@ function sites(): Site[] {
     {
       site: 'S3 Tables create TableBucket',
       command: 'CreateTableBucketCommand',
+      action: 's3tables:CreateTableBucket',
       prefix: 'Failed to create S3 Table Bucket Res: ',
       run: () => s3t.create('Res', 'AWS::S3Tables::TableBucket', { TableBucketName: 'b1' }),
     },
     {
       site: 'S3 Tables delete TableBucket',
       command: 'DeleteTableBucketCommand',
+      action: 's3tables:DeleteTableBucket',
       prefix: 'Failed to delete S3 Table Bucket Res: ',
       answers: { ListNamespacesCommand: { namespaces: [] } },
       run: () => s3t.delete('Res', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket'),
@@ -164,6 +171,7 @@ function sites(): Site[] {
     {
       site: 'S3 Tables update TableBucket tag diff',
       command: 'TagResourceCommand',
+      action: 's3tables:TagResource',
       prefix: `applyTableBucketTagsDiff: TagResource failed for ${TABLE_BUCKET_ARN} (keys: k): `,
       run: () =>
         s3t.update(
@@ -177,18 +185,21 @@ function sites(): Site[] {
     {
       site: 'API Gateway delete Stage',
       command: 'DeleteStageCommand',
+      action: 'apigateway:DELETE',
       prefix: 'Failed to delete API Gateway Stage Res: ',
       run: () => v1.delete('Res', 'prod', 'AWS::ApiGateway::Stage', { RestApiId: 'api-1' }),
     },
     {
       site: 'API Gateway delete Account',
       command: 'UpdateAccountCommand',
+      action: 'apigateway:PATCH',
       prefix: 'Failed to delete API Gateway Account Res: ',
       run: () => v1.delete('Res', 'acct', 'AWS::ApiGateway::Account'),
     },
     {
       site: 'API Gateway create Authorizer',
       command: 'CreateAuthorizerCommand',
+      action: 'apigateway:POST',
       prefix: 'Failed to create API Gateway Authorizer Res: ',
       run: () =>
         v1.create('Res', 'AWS::ApiGateway::Authorizer', {
@@ -201,15 +212,129 @@ function sites(): Site[] {
     {
       site: 'API Gateway v2 delete Api',
       command: 'DeleteApiCommand',
+      action: 'apigateway:DELETE',
       prefix: 'Failed to delete API Gateway V2 Api Res: ',
       run: () => v2.delete('Res', 'api-1', 'AWS::ApiGatewayV2::Api'),
     },
     {
       site: 'API Gateway v2 create Api',
       command: 'CreateApiCommand',
+      action: 'apigateway:POST',
       prefix: 'Failed to create API Gateway V2 Api Res: ',
       run: () =>
         v2.create('Res', 'AWS::ApiGatewayV2::Api', { Name: 'api', ProtocolType: 'HTTP' }),
+    },
+    {
+      site: 'S3 Tables update outer wrap (GetTable fails resolving the tag-diff ARN)',
+      command: 'GetTableCommand',
+      action: 's3tables:GetTable',
+      prefix: 'Failed to update S3 Tables resource Res: ',
+      run: () =>
+        s3t.update(
+          'Res',
+          TABLE_ID,
+          'AWS::S3Tables::Table',
+          { ...TABLE_PROPS, Tags: [{ Key: 'k', Value: 'v2' }] },
+          { ...TABLE_PROPS, Tags: [{ Key: 'k', Value: 'v1' }] }
+        ),
+    },
+    {
+      site: 'S3 Tables create Namespace',
+      command: 'CreateNamespaceCommand',
+      action: 's3tables:CreateNamespace',
+      prefix: 'Failed to create S3 Tables Namespace Res: ',
+      run: () =>
+        s3t.create('Res', 'AWS::S3Tables::Namespace', {
+          TableBucketARN: TABLE_BUCKET_ARN,
+          Namespace: 'ns1',
+        }),
+    },
+    {
+      site: 'S3 Tables delete Namespace',
+      command: 'DeleteNamespaceCommand',
+      action: 's3tables:DeleteNamespace',
+      prefix: 'Failed to delete S3 Tables Namespace Res: ',
+      run: () => s3t.delete('Res', `${TABLE_BUCKET_ARN}|ns1`, 'AWS::S3Tables::Namespace'),
+    },
+    {
+      site: 'S3 Tables create Table',
+      command: 'CreateTableCommand',
+      action: 's3tables:CreateTable',
+      prefix: 'Failed to create S3 Tables Table Res: ',
+      run: () =>
+        s3t.create('Res', 'AWS::S3Tables::Table', { ...TABLE_PROPS, OpenTableFormat: 'ICEBERG' }),
+    },
+    {
+      site: 'S3 Tables resolve Table before delete (GetTable on a bare ARN)',
+      command: 'GetTableCommand',
+      action: 's3tables:GetTable',
+      prefix: `Failed to resolve S3 Tables Table Res (${TABLE_BUCKET_ARN}/table/t1-id): `,
+      run: () => s3t.delete('Res', `${TABLE_BUCKET_ARN}/table/t1-id`, 'AWS::S3Tables::Table'),
+    },
+    {
+      site: 'S3 Tables delete Table',
+      command: 'DeleteTableCommand',
+      action: 's3tables:DeleteTable',
+      prefix: 'Failed to delete S3 Tables Table Res: ',
+      answers: {
+        GetTableCommand: {
+          tableARN: `${TABLE_BUCKET_ARN}/table/t1-id`,
+          namespace: ['ns1'],
+          name: 't1',
+        },
+      },
+      run: () => s3t.delete('Res', `${TABLE_BUCKET_ARN}/table/t1-id`, 'AWS::S3Tables::Table'),
+    },
+    {
+      site: 'API Gateway delete Authorizer',
+      command: 'DeleteAuthorizerCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway Authorizer Res: ',
+      run: () => v1.delete('Res', 'auth-1', 'AWS::ApiGateway::Authorizer', { RestApiId: 'api-1' }),
+    },
+    {
+      site: 'API Gateway delete Deployment',
+      command: 'DeleteDeploymentCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway Deployment Res: ',
+      run: () => v1.delete('Res', 'dep-1', 'AWS::ApiGateway::Deployment', { RestApiId: 'api-1' }),
+    },
+    {
+      site: 'API Gateway delete Method',
+      command: 'DeleteMethodCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway Method Res: ',
+      run: () => v1.delete('Res', 'api-1|res-1|GET', 'AWS::ApiGateway::Method'),
+    },
+    {
+      site: 'API Gateway v2 delete Stage',
+      command: 'DeleteStageCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway V2 Stage Res: ',
+      run: () => v2.delete('Res', 'prod', 'AWS::ApiGatewayV2::Stage', { ApiId: 'api-1' }),
+    },
+    {
+      site: 'API Gateway v2 delete Integration',
+      command: 'DeleteIntegrationCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway V2 Integration Res: ',
+      run: () =>
+        v2.delete('Res', 'int-1', 'AWS::ApiGatewayV2::Integration', { ApiId: 'api-1' }),
+    },
+    {
+      site: 'API Gateway v2 delete Route',
+      command: 'DeleteRouteCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway V2 Route Res: ',
+      run: () => v2.delete('Res', 'route-1', 'AWS::ApiGatewayV2::Route', { ApiId: 'api-1' }),
+    },
+    {
+      site: 'API Gateway v2 delete Authorizer',
+      command: 'DeleteAuthorizerCommand',
+      action: 'apigateway:DELETE',
+      prefix: 'Failed to delete API Gateway V2 Authorizer Res: ',
+      run: () =>
+        v2.delete('Res', 'auth-1', 'AWS::ApiGatewayV2::Authorizer', { ApiId: 'api-1' }),
     },
   ];
 }
@@ -220,9 +345,9 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
     debugSpy.mockReset();
   });
 
-  describe.each(sites())('$site', ({ command, prefix, answers, run }) => {
+  describe.each(sites())('$site', ({ command, action, prefix, answers, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
-      const original = accessDenied('s3tables:CreateTableBucket');
+      const original = accessDenied(action);
       failOn(command, original, answers);
       const failure = await thrown(run());
 
@@ -307,6 +432,90 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
       expect(debugged()).not.toContain(SECRET);
     }
   );
+
+  it.each(
+    TAG_DIFF_TARGETS.flatMap((t) =>
+      ['TagResourceCommand', 'UntagResourceCommand'].map((command) => ({ ...t, command }))
+    )
+  )(
+    'S3 Tables $type $command tag-diff wrap keeps cause and stays retryable',
+    async ({ type, physicalId, props, command }) => {
+      const original = accessDenied(`s3tables:${command.replace(/Command$/, '')}`);
+      failOn(command, original, {
+        GetTableCommand: { tableARN: `${TABLE_BUCKET_ARN}/table/t1-id` },
+      });
+      const failure = await thrown(
+        new S3TablesProvider().update(
+          'Res',
+          physicalId,
+          type,
+          { ...props, Tags: [{ Key: 'k2', Value: 'v' }] },
+          { ...props, Tags: [{ Key: 'k', Value: 'v' }] }
+        )
+      );
+      expect(mockSend.mock.calls.some(([c]) => commandName(c) === command)).toBe(true);
+      expect(failure.message).toContain(`AccessDeniedException. ${VERBOSE_POINTER}`);
+      expect(failure.message).not.toContain(CALLER_ACCOUNT);
+      expect(failure.cause).toBe(original);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+      expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    }
+  );
+
+  it('S3 Tables create Table keeps the created-before-failure mark on the wrap', async () => {
+    // CreateTable succeeded but returned no ARN: the cdkd-authored refusal is
+    // wrapped, and the table it made must still be credited to the failure.
+    failOn('NeverCalled', new Error('unused'), { CreateTableCommand: {} });
+    const failure = await thrown(
+      new S3TablesProvider().create('Res', 'AWS::S3Tables::Table', {
+        ...TABLE_PROPS,
+        OpenTableFormat: 'ICEBERG',
+      })
+    );
+    expect(failure.message).toContain('CreateTable did not return a tableARN');
+    expect(createdBeforeFailure(failure, 'Res', 'AWS::S3Tables::Table')).toBe(TABLE_ID);
+  });
+
+  it('API Gateway Account delete masks a secret AWS echoes back on the debug line', async () => {
+    const SECRET = 'apigw-secret-role-value';
+    failOn(
+      'UpdateAccountCommand',
+      Object.assign(new Error(`Invalid role ARN '${SECRET}'`), {
+        name: 'BadRequestException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    const failure = await thrown(
+      new ApiGatewayProvider().delete('Res', 'acct', 'AWS::ApiGateway::Account', undefined, {
+        maskSecrets: (text: string) => text.split(SECRET).join('***'),
+      })
+    );
+    expect(failure.message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+    expect(debugged()).toContain("Invalid role ARN '***'");
+    expect(debugged()).not.toContain(SECRET);
+  });
+
+  it('S3 Tables masks the redacted summary through the operation masker too', async () => {
+    failOn(
+      'CreateTableBucketCommand',
+      Object.assign(new Error('denied'), {
+        name: 'SecretNamedException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    const failure = await thrown(
+      new S3TablesProvider().create(
+        'Res',
+        'AWS::S3Tables::TableBucket',
+        { TableBucketName: 'b1' },
+        { maskSecrets: (text: string) => text.split('SecretNamed').join('***') }
+      )
+    );
+    expect(failure.message).toContain(`***Exception. ${VERBOSE_POINTER}`);
+  });
 
   it('S3 Tables masks a secret AWS echoes back on the debug line', async () => {
     const SECRET = 's3tables-secret-tag-value';

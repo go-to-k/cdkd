@@ -68,8 +68,8 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import {
-  isNameCollisionError,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -170,17 +170,6 @@ function stageSinks(
  * - Deployment: Needs RestApiId from Ref resolution
  * - Stage: Needs RestApiId, StageName, DeploymentId from properties
  */
-/**
- * What a redacted wrap restates of AWS's withheld text (go-to-k/cdkd#2319):
- * that the name is taken. The engine credits a name collision only when the
- * TOP-level message says "already exists" (`isNameCollisionErrorFrom`), and API
- * Gateway words it under `ConflictException`, a class no collision pattern
- * matches -- so without this a create-first replacement stops recognising one.
- */
-function relayedCollision(detail: string): string {
-  return isNameCollisionError(detail) ? ' AWS reports that it already exists.' : '';
-}
-
 export class ApiGatewayProvider implements ResourceProvider {
   private apiGatewayClient: APIGatewayClient;
   private logger = getLogger().child('ApiGatewayProvider');
@@ -320,13 +309,13 @@ export class ApiGatewayProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `debug` through the
    * masker, and the wrap is stamped `markRedactedCause`, so the retry
    * classifiers read the withheld text on the `cause` chain. An "already
-   * exists" is restated ({@link relayedCollision}).
+   * exists" is restated ({@link relayedNameCollision}).
    *
    * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * masked (issue #2177): AWS quotes a rejected request value back off the
    * RESOLVED `properties` bag, and masking the RAW text reaches the masker's
-   * whole-value arm (`wrapMaskedAwsError`, issue #4259). A delete has no
-   * operation masker and passes the identity.
+   * whole-value arm (`wrapMaskedAwsError`, issue #4259). A delete passes
+   * its `DeleteContext.maskSecrets`, or the identity.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
@@ -341,7 +330,9 @@ export class ApiGatewayProvider implements ResourceProvider {
     if (!(error instanceof Error)) return build(mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    return markRedactedCause(build(`${mask(failure.summary)}${relayedCollision(failure.detail)}`));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   /**
@@ -488,7 +479,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
-        return this.deleteAccount(logicalId, physicalId, resourceType);
+        return this.deleteAccount(logicalId, physicalId, resourceType, context);
       case 'AWS::ApiGateway::Authorizer':
         return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Resource':
@@ -629,7 +620,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async deleteAccount(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Account ${logicalId}`);
 
@@ -650,7 +642,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        (text) => text,
+        context?.maskSecrets ?? ((text) => text),
         error,
         (text) =>
           new ProvisioningError(

@@ -19,7 +19,7 @@ import {
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { isNameCollisionError, markRedactedCause } from '../../deployment/retryable-errors.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -153,18 +153,6 @@ function tableIdentityFromGetTable(
  * S3 Tables API calls are synchronous - the CC API adds unnecessary
  * polling overhead for operations that complete immediately.
  */
-/**
- * What a redacted wrap restates of AWS's withheld text (go-to-k/cdkd#2319):
- * that the name is taken. The engine credits a name collision only when the
- * TOP-level message says "already exists" (`isNameCollisionErrorFrom`), and S3
- * Tables words it under `ConflictException`, a class no collision pattern
- * matches -- so without this a create-first replacement of a named table
- * bucket, namespace or table stops recognising one.
- */
-function relayedCollision(detail: string): string {
-  return isNameCollisionError(detail) ? ' AWS reports that it already exists.' : '';
-}
-
 /** `text` closed as a sentence, for a wrap that continues after it. */
 function sentence(text: string): string {
   return text.endsWith('.') ? text : `${text}.`;
@@ -186,7 +174,7 @@ export class S3TablesProvider implements ResourceProvider {
    * stamped `markRedactedCause`, so the retry classifiers read the withheld
    * text on the `cause` chain. That debug line goes through the operation's
    * `maskSecrets` (`mask`), since AWS can echo a resolved value back. An
-   * "already exists" is restated ({@link relayedCollision}). A cdkd-authored or
+   * "already exists" is restated ({@link relayedNameCollision}). A cdkd-authored or
    * transport error, or a non-`Error` throw, keeps its text, as in the
    * EventBridge bus provider's wrap (go-to-k/cdkd#5053); the thrown message is
    * masked by the deploy engine. Every delete checks `NotFoundException`
@@ -205,7 +193,7 @@ export class S3TablesProvider implements ResourceProvider {
     if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
     const m = mask ?? ((text: string) => text);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${failure.summary}${relayedCollision(failure.detail)}`));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([

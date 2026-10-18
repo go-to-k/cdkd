@@ -61,8 +61,8 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import {
-  isNameCollisionError,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -177,17 +177,6 @@ function stageSinks(
  *
  * Uses local lazy init for ApiGatewayV2Client since it's not in aws-clients.ts.
  */
-/**
- * What a redacted wrap restates of AWS's withheld text (go-to-k/cdkd#2319):
- * that the name is taken. The engine credits a name collision only when the
- * TOP-level message says "already exists" (`isNameCollisionErrorFrom`), and API
- * Gateway words it under `ConflictException`, a class no collision pattern
- * matches -- so without this a create-first replacement stops recognising one.
- */
-function relayedCollision(detail: string): string {
-  return isNameCollisionError(detail) ? ' AWS reports that it already exists.' : '';
-}
-
 export class ApiGatewayV2Provider implements ResourceProvider {
   private client: ApiGatewayV2Client | undefined;
   private createClient: ApiGatewayV2Client | undefined;
@@ -388,15 +377,15 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `log.debug` (masked), and
    * the wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedCollision}).
+   * ({@link relayedNameCollision}).
    *
    * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * masked (issue #2177): AWS quotes a rejected request value back (a stage
    * name, an integration URI, an authorizer URI) off the RESOLVED `properties`
    * bag, and masking the raw text reaches the masker's whole-value arm, which
    * the assembled sentence cannot. A message the mask CHANGED is stamped too
-   * (`wrapMaskedAwsError`, the issue #4244 class). A delete has no operation
-   * masker and passes the identity sinks.
+   * (`wrapMaskedAwsError`, the issue #4244 class). A delete builds its sinks
+   * from `DeleteContext.maskSecrets`.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
@@ -412,7 +401,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
     return markRedactedCause(
-      build(`${log.mask(failure.summary)}${relayedCollision(failure.detail)}`)
+      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
     );
   }
 
