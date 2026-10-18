@@ -3924,8 +3924,7 @@ export class EC2Provider implements ResourceProvider {
       if (declaredDestinations.length > 1) {
         effectiveProperties = narrowedProperties;
         this.logger.warn(
-          `${routeMultipleDestinationsMessage(logicalId, declaredDestinations)} ` +
-            `Continuing with ${usedDestinationKey} and ignoring the rest.`
+          safeMsg`${routeMultipleDestinationsMessage(logicalId, declaredDestinations)} Continuing with ${usedDestinationKey} and ignoring the rest.`
         );
       }
       try {
@@ -3936,7 +3935,7 @@ export class EC2Provider implements ResourceProvider {
             ...routeTargetParams(properties),
           })
         );
-        this.logger.debug(`Successfully replaced the target of Route ${logicalId}`);
+        this.logger.debug(safeMsg`Successfully replaced the target of Route ${logicalId}`);
         return {
           physicalId,
           wasReplaced: false,
