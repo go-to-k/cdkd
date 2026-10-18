@@ -69,7 +69,8 @@ tests passing is necessary but NOT sufficient:
   (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
   fixture sourcing it); dropped AWS text (an id an SDK error echoes) has no
   literal, so grep its error code and API call. Run each fixture named before
-  merge, whatever the tier: no vitest run executes them (#4394, #5046).
+  merge, whatever the change's own tier: no vitest run executes them, so one
+  stays red on `main` (#4394, #5046).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
