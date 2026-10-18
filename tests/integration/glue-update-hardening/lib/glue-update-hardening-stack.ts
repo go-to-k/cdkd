@@ -72,6 +72,12 @@ const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
  * 15. A Glue Connection (issue #4639): `CreateConnection` goes through the
  *     provider's dedicated create client, which refuses the SDK's 5xx replay.
  *     verify.sh asserts it exists after the deploy and is gone after destroy.
+ * 16. Removal of optional Workflow / Trigger properties (issue #1160):
+ *     CDKD_TEST_REMOVAL drops the Workflow's Description, DefaultRunProperties
+ *     and MaxConcurrentRuns, the ON_DEMAND trigger's Description, and the
+ *     EVENT trigger's Description and EventBatchingCondition. A CloudFormation
+ *     A/B showed CloudFormation clears each one, and so do the full-replace
+ *     UpdateWorkflow / UpdateTrigger calls that omit them.
  *
  * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
@@ -83,6 +89,8 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     // CDKD_TEST_UPDATE flips the trigger description + job timeout so a second
     // deploy of this same fixture exercises the update() paths.
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    // 16. CDKD_TEST_REMOVAL drops the optional Workflow / Trigger properties.
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     const scriptBucket = new s3.Bucket(this, 'ScriptBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -171,9 +179,16 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
 
     // Glue Workflow — `tags` is a MAP shape (the shape that exposed the
     // silent-drop bug). MaxConcurrentRuns set as a NUMBER (synths as a string).
-    new glue.CfnWorkflow(this, 'EtlWorkflow', {
+    // 16. CDKD_TEST_REMOVAL drops its three optional properties.
+    const workflow = new glue.CfnWorkflow(this, 'EtlWorkflow', {
       name: `${this.stackName}-workflow`.toLowerCase(),
-      maxConcurrentRuns: 1,
+      ...(isRemoval
+        ? {}
+        : {
+            description: 'cdkd workflow',
+            defaultRunProperties: { stage: 'integ' },
+            maxConcurrentRuns: 1,
+          }),
       tags: isUpdate ? UPDATED_TAG_MAP : BASE_TAG_MAP,
     });
 
@@ -377,16 +392,36 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     const trigger = new glue.CfnTrigger(this, 'EtlTrigger', {
       name: `${this.stackName}-trigger`.toLowerCase(),
       type: 'ON_DEMAND',
-      description: isUpdate ? 'updated trigger description' : 'initial trigger description',
+      ...(!isRemoval && {
+        description: isUpdate ? 'updated trigger description' : 'initial trigger description',
+      }),
       actions: [{ jobName: job.name! }],
     });
     trigger.addDependency(job);
+
+    // 16. An EVENT trigger starting the Workflow (idle: it fires only on an
+    // EventBridge event, which nothing sends). CDKD_TEST_REMOVAL drops its
+    // Description and EventBatchingCondition.
+    const eventTrigger = new glue.CfnTrigger(this, 'EventTrigger', {
+      name: `${this.stackName}-event-trigger`.toLowerCase(),
+      type: 'EVENT',
+      workflowName: workflow.ref,
+      ...(!isRemoval && {
+        description: 'cdkd event trigger',
+        eventBatchingCondition: { batchSize: 5, batchWindow: 300 },
+      }),
+      actions: [{ jobName: job.name! }],
+    });
+    eventTrigger.addDependency(job);
 
     new cdk.CfnOutput(this, 'JobName', { value: job.name! });
     new cdk.CfnOutput(this, 'WorkflowName', { value: `${this.stackName}-workflow`.toLowerCase() });
     new cdk.CfnOutput(this, 'CrawlerName', { value: `${this.stackName}-crawler`.toLowerCase() });
     new cdk.CfnOutput(this, 'CrawlerTableName', { value: crawlerTable.tableName });
     new cdk.CfnOutput(this, 'TriggerName', { value: `${this.stackName}-trigger`.toLowerCase() });
+    new cdk.CfnOutput(this, 'EventTriggerName', {
+      value: `${this.stackName}-event-trigger`.toLowerCase(),
+    });
     new cdk.CfnOutput(this, 'SkewedTableDbName', {
       value: `${this.stackName}-table-db`.toLowerCase(),
     });
