@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { displaySafe } from '../../utils/display-safe.js';
@@ -213,7 +214,7 @@ export function describeFailureObserved(
   // not-in-class(read): the AWS API name the calling arm issued, a literal at every call site.
   // not-in-class(errorClass): the thrown error's CLASS name plus its numeric HTTP status, bounded and display-safe; the message is masked beside it.
   resolver.logger.debug(
-    `${read} failed (${errorClass}): ${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}`
+    `${read} failed (${errorClass}): ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
   );
   return `${read} failed (${errorClass}); re-run with --verbose for the AWS error text`;
 }

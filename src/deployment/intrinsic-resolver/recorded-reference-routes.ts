@@ -11,6 +11,7 @@
  * A record with no field, or no usable arm for any token, takes today's path
  * unchanged: the caller asks {@link recordedTokenRoutes} first.
  */
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { resolveDynamicReferences } from './dynamic-refs.js';
@@ -319,7 +320,7 @@ async function readsPinnedVersion(
   } catch (err) {
     if (isDeliberateResolutionRefusal(err)) throw err;
     resolver.logger.debug(
-      safeMsg`Pinned read of ${displayMasked(resolver, token, context)} failed: ${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}`
+      safeMsg`Pinned read of ${displayMasked(resolver, token, context)} failed: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
     );
     // Memoized only when DEFINITIVE: a throttle that outlived the retries may
     // answer on the next read.
