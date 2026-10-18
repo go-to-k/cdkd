@@ -212,8 +212,15 @@ for v in "${RTB_ID}" "${PL_ID}" "${TGW_ID}" "${IGW_ID}"; do
   fi
 done
 
-PL_ROUTE_TARGET_P1="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
-  --query "RouteTables[0].Routes[?DestinationPrefixListId=='${PL_ID}'].GatewayId | [0]" --output text)"
+# Bounded re-read: DescribeRouteTables is eventually consistent right after
+# CreateRoute, so one read can miss a route the deploy just created.
+PL_ROUTE_TARGET_P1=""
+for _ in 1 2 3 4 5 6; do
+  PL_ROUTE_TARGET_P1="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
+    --query "RouteTables[0].Routes[?DestinationPrefixListId=='${PL_ID}'].GatewayId | [0]" --output text)"
+  [ "${PL_ROUTE_TARGET_P1}" = "${IGW_ID}" ] && break
+  sleep 5
+done
 if [ "${PL_ROUTE_TARGET_P1}" != "${IGW_ID}" ]; then
   echo "FAIL: prefix-list route target expected ${IGW_ID}, got '${PL_ROUTE_TARGET_P1}'" >&2
   exit 1

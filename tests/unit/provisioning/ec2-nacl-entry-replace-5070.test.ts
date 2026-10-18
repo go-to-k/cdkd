@@ -268,6 +268,37 @@ describe('EC2Provider AWS::EC2::NetworkAclEntry rule change uses ReplaceNetworkA
       expect(replaceInputs()[0]?.['IcmpTypeCode']).toEqual({ Type: 8, Code: -1 });
     });
 
+    it.each([
+      {
+        name: 'IPv4 record over an IPv6 AWS entry sends only CidrBlock',
+        aws: { Ipv6CidrBlock: '::/0' },
+        recorded: { CidrBlock: '0.0.0.0/0' },
+        sent: { CidrBlock: '0.0.0.0/0', Ipv6CidrBlock: undefined },
+      },
+      {
+        name: 'IPv6 record over an IPv4 AWS entry sends only Ipv6CidrBlock',
+        aws: { CidrBlock: '0.0.0.0/0' },
+        recorded: { Ipv6CidrBlock: '::/0' },
+        sent: { CidrBlock: undefined, Ipv6CidrBlock: '::/0' },
+      },
+    ])('drift --revert across an address-family swap: $name', async ({ aws, recorded, sent }) => {
+      const readback = {
+        NetworkAclId: 'acl-1',
+        RuleNumber: 100,
+        Egress: false,
+        Protocol: -1,
+        RuleAction: 'allow',
+        ...aws,
+      };
+      await provider.update('Entry', ID, TYPE, { ...readback, ...recorded }, readback, {
+        desiredFromAwsReadback: true,
+      });
+
+      const input = replaceInputs()[0];
+      expect(input?.['CidrBlock']).toBe(sent.CidrBlock);
+      expect(input?.['Ipv6CidrBlock']).toBe(sent.Ipv6CidrBlock);
+    });
+
     it('a template Icmp change wins when only Icmp changed', async () => {
       const both = {
         ...ENTRY,

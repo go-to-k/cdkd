@@ -1458,7 +1458,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
@@ -7374,7 +7375,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // No-op short-circuit: a `cdkd drift --revert` round-trip can call
     // update() with new == old when only sibling resources drifted.
@@ -7433,13 +7435,30 @@ export class EC2Provider implements ResourceProvider {
       JSON.stringify(properties['IcmpTypeCode']) !==
         JSON.stringify(previousProperties['IcmpTypeCode']);
 
+    // The same overlay can leave both CIDR keys set when the entry's address
+    // family changed out-of-band (state recorded `CidrBlock`, AWS now holds
+    // `Ipv6CidrBlock`), and AWS rejects a rule naming both: send the key that
+    // changed and drop the AWS-side one. Only for the readback bag — a
+    // template naming both is the user's to fix, so AWS's refusal stands.
+    const ruleParams = networkAclEntryRuleParams(properties, preferLegacyIcmp);
+    if (
+      context?.desiredFromAwsReadback === true &&
+      ruleParams.CidrBlock !== undefined &&
+      ruleParams.Ipv6CidrBlock !== undefined
+    ) {
+      const v4Changed = properties['CidrBlock'] !== previousProperties['CidrBlock'];
+      const v6Changed = properties['Ipv6CidrBlock'] !== previousProperties['Ipv6CidrBlock'];
+      if (v4Changed && !v6Changed) ruleParams.Ipv6CidrBlock = undefined;
+      else if (v6Changed && !v4Changed) ruleParams.CidrBlock = undefined;
+    }
+
     try {
       await this.ec2Client.send(
         new ReplaceNetworkAclEntryCommand({
           NetworkAclId: networkAclId,
           RuleNumber: parseInt(parts[1]!, 10),
           Egress: parts[2] === 'true',
-          ...networkAclEntryRuleParams(properties, preferLegacyIcmp),
+          ...ruleParams,
         })
       );
       this.logger.debug(safeMsg`Successfully replaced NetworkAclEntry ${logicalId} in place`);
