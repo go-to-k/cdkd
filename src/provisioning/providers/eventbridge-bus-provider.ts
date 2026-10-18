@@ -9,22 +9,28 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
   ListTargetsByRuleCommand,
+  PutPermissionCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
   type Tag,
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markRedactedCause, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -63,6 +69,42 @@ function sanitizeDeadLetterConfig(value: unknown): { Arn: string } | undefined {
 }
 
 /**
+ * The `PutPermission` `Policy` document for a declared EventBus `Policy`
+ * (issue #5044). The template may carry the document as an object or as a JSON
+ * string; the API takes a string. `undefined` when no document is declared.
+ */
+function policyDocument(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+/**
+ * A comparison key for a `Policy` value, so the same document spelled once as
+ * an object and once as a JSON string, or with its keys in another order,
+ * compares equal. Array order is kept: statement order is the template's.
+ */
+function policyKey(value: unknown): string | undefined {
+  const doc = policyDocument(value);
+  if (doc === undefined) return undefined;
+  try {
+    return JSON.stringify(sortKeys(JSON.parse(doc)));
+  } catch {
+    return doc;
+  }
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (typeof value !== 'object' || value === null) return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, sortKeys(record[key])])
+  );
+}
+
+/**
  * SDK Provider for AWS::Events::EventBus
  *
  * Uses direct SDK calls instead of Cloud Control API because:
@@ -96,7 +138,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * us-east-1: the readback afterwards has no Description, the AWS owned key,
    * and LogConfig `OFF` / `NONE`). Each value is what clears it on the API.
    * A removed `DeadLetterConfig` is cleared in {@link applyUpdate}, since its
-   * clear value is one the sanitiser otherwise drops.
+   * clear value is one the sanitiser otherwise drops. `Policy` has no entry:
+   * CloudFormation leaves the live policy in place when it is removed (#5044).
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
     [
@@ -149,10 +192,38 @@ export class EventBridgeBusProvider implements ResourceProvider {
     return this.createClient;
   }
 
+  /**
+   * Wrap what create / update caught into the error it throws, keeping the
+   * caller's identity out of the thrown message (go-to-k/cdkd#2319, the Glue
+   * provider's `wrapGlueError` shape). A thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` from
+   * `PutPermission` or `UpdateEventBus` names the assumed-role ARN. So an
+   * AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer, and AWS's own text goes to `debug` through the masker. A
+   * cdkd-authored or transport error keeps its text (`wrapMaskedAwsError`), and
+   * so does a non-`Error` throw, which AWS did not author: its text is the
+   * conversion `describeAwsFailure` makes, which never throws. `build` must
+   * thread `error` as `cause`, so the retry classifiers still read the withheld
+   * text through the redacted-cause stamp; it runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(failure.detail).message));
+    return markRedactedCause(build(mask(failure.summary)));
+  }
+
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
@@ -167,6 +238,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
 
     this.logger.debug(`Creating EventBus ${logicalId}: ${name}`);
 
+    let busCreated = false;
     try {
       const createParams: import('@aws-sdk/client-eventbridge').CreateEventBusCommandInput = {
         Name: name,
@@ -195,11 +267,15 @@ export class EventBridgeBusProvider implements ResourceProvider {
 
       const createClient = await this.getCreateClient();
       const response = await createClient.send(new CreateEventBusCommand(createParams));
+      busCreated = true;
 
-      // Apply Policy if specified (must be done after creation)
-      if (properties['Policy']) {
-        // EventBridge uses PutPermission for policies, but for simplicity
-        // we note it in handledProperties. The CC API fallback handles complex policies.
+      // Issue #5044: the bus resource policy is a separate call, as
+      // CloudFormation makes it (`PutPermission` with the whole document).
+      const policy = policyDocument(properties['Policy']);
+      if (policy !== undefined) {
+        await this.eventBridgeClient.send(
+          new PutPermissionCommand({ EventBusName: name, Policy: policy })
+        );
       }
 
       return {
@@ -210,14 +286,24 @@ export class EventBridgeBusProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
+      if (busCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create EventBus ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EventBus ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            busCreated ? name : undefined,
+            cause
+          )
       );
+      // go-to-k/cdkd#4583: the bus exists with no state record once
+      // CreateEventBus has returned; name it for the failed-CREATE journal.
+      if (busCreated) markCreatedBeforeFailure(thrown, logicalId, resourceType, name);
+      throw thrown;
     }
   }
 
@@ -278,12 +364,17 @@ export class EventBridgeBusProvider implements ResourceProvider {
       // raised deeper in the body already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EventBus ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EventBus ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -343,6 +434,33 @@ export class EventBridgeBusProvider implements ResourceProvider {
         ] as import('@aws-sdk/client-eventbridge').LogConfig;
       }
       await this.eventBridgeClient.send(new UpdateEventBusCommand(updateParams));
+    }
+
+    // Issue #5044: a CHANGED Policy replaces the bus's whole resource policy,
+    // as CloudFormation does (real A/B: statements a separate
+    // AWS::Events::EventBusPolicy added are wiped too; CFn does not merge). An
+    // UNCHANGED Policy sends nothing, so those statements survive an update
+    // made for another property. The previous side is the RECORDED template,
+    // which keeps a secret-derived leaf as its `{{resolve:...}}` reference
+    // while the desired side is resolved, so such a Policy always reads as
+    // changed and is re-put: the declared document is applied rather than a
+    // re-pointed reference being skipped (`onlySecretReferencesDiffer` cannot
+    // tell the two apart on its own). A Policy REMOVED from the template is
+    // left live, as CloudFormation leaves it, which is why `removalDefaults`
+    // has no entry for it.
+    const policy = policyDocument(properties['Policy']);
+    if (policy !== undefined && policyKey(policy) !== policyKey(previousProperties['Policy'])) {
+      await this.eventBridgeClient.send(
+        new PutPermissionCommand({ EventBusName: physicalId, Policy: policy })
+      );
+    } else if (
+      policy === undefined &&
+      (context?.removedProperties?.has('Policy') ??
+        policyDocument(previousProperties['Policy']) !== undefined)
+    ) {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): Policy was removed from the template; the bus keeps its current resource policy, as CloudFormation leaves it. Remove its statements with 'aws events remove-permission' if they should go.`
+      );
     }
 
     // Update Tags if changed. Both sides are read through `planTagDiff`

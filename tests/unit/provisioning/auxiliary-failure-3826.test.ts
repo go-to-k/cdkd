@@ -75,6 +75,7 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
 import { IAMAccessKeyProvider } from '../../../src/provisioning/providers/iam-access-key-provider.js';
 import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
@@ -491,6 +492,22 @@ const CASES: Case[] = [
       CreateListenerCommand: {
         Listeners: [{ ListenerArn: 'arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/lb/1/2' }],
       },
+    },
+  },
+  {
+    name: 'eventbridge-bus AWS::Events::EventBus',
+    provider: () => new EventBridgeBusProvider(),
+    resourceType: 'AWS::Events::EventBus',
+    properties: { Name: 'bus', Policy: { Version: '2012-10-17', Statement: [] } },
+    clients: [EventBridgeClient],
+    main: 'CreateEventBusCommand',
+    aux: 'PutPermissionCommand',
+    mainAwsError: {
+      name: 'ResourceAlreadyExistsException',
+      message: 'Event bus bus already exists.',
+    },
+    responses: {
+      CreateEventBusCommand: { EventBusArn: 'arn:aws:events:us-east-1:123456789012:event-bus/bus' },
     },
   },
   {

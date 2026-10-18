@@ -17,6 +17,12 @@ import * as events from 'aws-cdk-lib/aws-events';
  * the old side used to print the full statement and read as a removal of
  * everything else).
  *
+ * Phase 3b (CDKD_TEST_UPDATE=true CDKD_TEST_BUS_POLICY_UPDATE=true): a second
+ * bus declares its resource policy through the EventBus's own `Policy`
+ * property (issue #5044: the SDK provider used to drop it). Its statement Sid
+ * changes, and the whole document must be replaced, as CloudFormation
+ * replaces it.
+ *
  * Destroy exercises the policy-before-bus deletion ordering.
  *
  * covers: AWS::Events::EventBus
@@ -51,6 +57,28 @@ export class EventbusPolicyStack extends cdk.Stack {
               },
             }
           : {}),
+      },
+    });
+
+    // Issue #5044: a bus whose policy is the EventBus `Policy` property.
+    const policyBusName = 'cdkd-integ-buspolicy-prop-bus';
+    const policySid =
+      process.env.CDKD_TEST_BUS_POLICY_UPDATE === 'true'
+        ? 'cdkd-integ-buspolicy-prop-v2'
+        : 'cdkd-integ-buspolicy-prop-v1';
+    new events.CfnEventBus(this, 'PolicyPropBus', {
+      name: policyBusName,
+      policy: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: policySid,
+            Effect: 'Allow',
+            Principal: { AWS: `arn:${this.partition}:iam::${this.account}:root` },
+            Action: 'events:PutEvents',
+            Resource: `arn:${this.partition}:events:${this.region}:${this.account}:event-bus/${policyBusName}`,
+          },
+        ],
       },
     });
 
