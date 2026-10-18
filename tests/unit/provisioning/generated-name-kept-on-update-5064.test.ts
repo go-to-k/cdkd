@@ -60,7 +60,7 @@ const v13Scope = { stackName: STACK, stackInstanceId: ID };
 const suffixed = (logicalId: string, maxLength: number): string =>
   withStackScope(v13Scope, () => generateResourceName(logicalId, { maxLength }));
 /** An EARLIER lifetime's id (a `cdkd import` of what that lifetime kept). */
-const OTHER_ID = '00000000-0000-4000-8000-000000000000';
+const OTHER_ID = '7b1e2c3d-9a8f-4e6d-b5c4-a3b2c1d0e9f8';
 /** The name an EARLIER lifetime (a different stack instance id) generated. */
 const suffixedOther = (logicalId: string, maxLength: number): string =>
   withStackScope({ stackName: STACK, stackInstanceId: OTHER_ID }, () =>
