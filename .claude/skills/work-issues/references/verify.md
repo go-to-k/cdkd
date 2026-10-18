@@ -67,9 +67,9 @@ tests passing is necessary but NOT sufficient:
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
   (`.ts` / `.mjs` helpers read output; a top-level helper's hit means every
-  fixture sourcing it) and run each fixture it names before merge, whatever the
-  change's own tier: no vitest run executes them, so a reshaped line leaves a
-  fixture red on `main` until the next lane runs it (#4394).
+  fixture sourcing it); dropped AWS text (an id an SDK error echoes) has no
+  literal, so grep its error code and API call. Run each fixture named before
+  merge, whatever the tier: no vitest run executes them (#4394, #5046).
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills,
   tests, config) → exempt from the tiers above, never from `/verify-pr` step 9;
   never conclude a CI job cannot fail on your diff from its NAME. Both arms
