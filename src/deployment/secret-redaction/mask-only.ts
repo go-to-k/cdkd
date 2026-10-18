@@ -197,6 +197,25 @@ export function recordProvenPublicExpression(
 }
 
 /**
+ * Make `view` record its proofs into `pass`'s table, live (go-to-k/cdkd#5048).
+ * Family-internal (`secret-redaction/recording.ts`).
+ */
+export function sharePublicProofs(view: RecordedSecretValues, pass: RecordedSecretValues): void {
+  provenPublicExpressions.set(view, proofsOf(pass));
+}
+
+/**
+ * Carry every proof and contradiction of `from` into `to`, by the recording
+ * rules above (a second, different value contradicts). Family-internal.
+ */
+export function carryPublicProofs(from: RecordedSecretValues, to: RecordedSecretValues): void {
+  for (const [expression, value] of provenPublicExpressions.get(from) ?? []) {
+    if (value === false) contradictProvenPublicExpression(to, expression);
+    else recordProvenPublicExpression(to, expression, value);
+  }
+}
+
+/**
  * Record that this pass saw `expression` answer anything OTHER than a public
  * type (a `SecureString`, or a type too anomalous to classify), or that it was
  * resolved as a secret elsewhere in this record. Sticky.

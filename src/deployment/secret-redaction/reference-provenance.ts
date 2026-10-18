@@ -49,12 +49,29 @@ const passProvenanceOf = new WeakMap<RecordedSecretValues, Map<string, PassEntry
  */
 export const MAX_REFERENCE_VERSIONS = 8;
 
-function entryFor(secrets: RecordedSecretValues, token: string): PassEntry {
+function provenanceTableFor(secrets: RecordedSecretValues): Map<string, PassEntry> {
   let table = passProvenanceOf.get(secrets);
   if (table === undefined) {
     table = new Map();
     passProvenanceOf.set(secrets, table);
   }
+  return table;
+}
+
+/**
+ * Make `view` record its provenance into `pass`'s table, live
+ * (go-to-k/cdkd#5048). Call it before anything records into `view`.
+ * Family-internal (`secret-redaction/recording.ts`).
+ */
+export function shareReferenceProvenance(
+  view: RecordedSecretValues,
+  pass: RecordedSecretValues
+): void {
+  passProvenanceOf.set(view, provenanceTableFor(pass));
+}
+
+function entryFor(secrets: RecordedSecretValues, token: string): PassEntry {
+  const table = provenanceTableFor(secrets);
   let entry = table.get(token);
   if (entry === undefined) {
     entry = {

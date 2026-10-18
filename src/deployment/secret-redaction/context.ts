@@ -9,6 +9,7 @@ import {
 } from './rules.js';
 import { type RecordedSecretValues } from './pairs.js';
 import { redactSecretsForState } from './redact-state.js';
+import { isRecordingScope } from './recording.js';
 
 /**
  * What a writer KNOWS about the bag it is about to persist, stated once, as one
@@ -46,6 +47,12 @@ import { redactSecretsForState } from './redact-state.js';
  *
  * The rules constants document what each flag means; this type only decides
  * which one a writer gets.
+ *
+ * `secrets` is the PASS map: what the resolver recorded, and every map that
+ * recorded on its behalf through a live scope (go-to-k/cdkd#5048,
+ * `recording.ts`), whose entries and log-only needles land there as they are
+ * recorded, so the bag persisted and every masker reading the pass see one
+ * recording. A scope's own map is refused here.
  */
 export type RedactionContext =
   | { readonly provenance: 'value-scan'; readonly secrets: RecordedSecretValues }
@@ -106,6 +113,7 @@ export function rulesForProvenance(
  * claimed result is never the caller's object.
  */
 export function redactForState<T>(bag: T, context: RedactionContext): T {
+  refuseScopeAsPass(context.secrets);
   if (context.provenance === 'value-scan') {
     return redactSecretsForState(bag, context.secrets);
   }
@@ -141,6 +149,7 @@ export function redactAtProvenance<T>(
   provenance: Exclude<RedactionProvenance, 'value-scan'>,
   sameGeneration: boolean
 ): T {
+  refuseScopeAsPass(secrets);
   return redactSecretsForState(
     bag,
     secrets,
@@ -148,6 +157,20 @@ export function redactAtProvenance<T>(
     RULES_BY_PROVENANCE[provenance],
     sameGeneration
   );
+}
+
+/**
+ * A live recording scope's map holds only what was recorded THROUGH it, a
+ * subset of its pass by design (`secret-redaction/recording.ts`), so
+ * persisting with it would keep in plaintext what the pass recorded elsewhere
+ * (go-to-k/cdkd#5048). A programming error, never a user's input.
+ */
+function refuseScopeAsPass(secrets: RecordedSecretValues): void {
+  if (isRecordingScope(secrets)) {
+    throw new Error(
+      "Internal error: a bag was redacted for persistence with a recording scope; pass the scope's pass map instead."
+    );
+  }
 }
 
 function isPlainBag(bag: unknown): bag is object {
