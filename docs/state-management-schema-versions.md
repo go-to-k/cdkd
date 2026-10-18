@@ -105,11 +105,12 @@ deleted (`cdkd destroy`, `cdkd state destroy`, `cdkd state orphan`,
 `cdkd export`, or `cdkd rollback` of a first deploy), so a stack created
 again gets a new one. A record without the field, which is every record an
 older cdkd wrote, belongs to a stack created before the field existed; it
-keeps no id. cdkd never prints the id.
+keeps no id. cdkd never prints the id: `cdkd state show --json` shows
+`<withheld>` in its place.
 
-A first deploy writes the id to `stack-instance.json` beside `state.json`
-before it creates any resource, and deletes that object once `state.json`
-holds the id. A first deploy interrupted before its record was written
+Once a first deploy is going ahead (past `--require-approval`), it writes
+the id to `stack-instance.json` beside `state.json` before it creates any
+resource, and deletes that object once `state.json` holds the id. A first deploy interrupted before its record was written
 leaves the object, and the next deploy of the stack takes the id from it.
 
 Nothing reads the id yet: resource names are unchanged.

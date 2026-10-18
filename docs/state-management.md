@@ -67,6 +67,7 @@ s3://cdkd-state-{accountId}/
 │   │   ├── lock.json                  while a command holds the lock
 │   │   ├── rollback-journal.json      after a failed or interrupted deploy
 │   │   ├── create-tokens.json         create-token ledger
+│   │   ├── stack-instance.json        a first deploy's stack instance id
 │   │   └── deployments/               deployment event history
 │   └── _index/{region}/exports.json   exports index
 ├── cdkd-bootstrap/{region}.json       asset-storage marker
@@ -83,6 +84,7 @@ one feature each:
 | `lock.json` | Who is working on the stack | The command releases the [lock](state-management-locking.md) |
 | `rollback-journal.json` | What a failed deploy completed | The next successful deploy, a clean rollback, or a destroy |
 | `create-tokens.json` | Tokens for retrying an interrupted create | Deleted with `state.json` |
+| `stack-instance.json` | A first deploy's [stack instance id](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack), written before its first create | Deleted once `state.json` holds the id, or with `state.json` |
 | `deployments/` | [Deployment events](deployment-events.md) | Kept after a destroy unless you pass `--purge-events` |
 | `_index/{region}/exports.json` | Exported values of every stack in the region | Rewritten by each deploy |
 | `cdkd-bootstrap/{region}.json` | The region's asset bucket and ECR repository names | `cdkd bootstrap --destroy` |

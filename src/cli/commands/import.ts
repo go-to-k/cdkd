@@ -2402,13 +2402,7 @@ export function buildStackState(
   templateParser: TemplateParser,
   template: CloudFormationTemplate,
   existingState: StackState | null,
-  selectiveMode: boolean,
-  /**
-   * State schema v13 (go-to-k/cdkd#5064): the id of a record built from
-   * nothing (`existingState` null). An existing record's id, or its absence
-   * (a legacy stack), is carried instead.
-   */
-  newStackInstanceId?: string
+  selectiveMode: boolean
 ): StackState {
   const resources: Record<string, ResourceState> =
     selectiveMode && existingState ? { ...existingState.resources } : {};
@@ -2577,12 +2571,9 @@ export function buildStackState(
     // record that a live, billing `Retain` resource is still standing in AWS.
     ...(existingState ? orphansCarriedFrom(existingState) : {}),
     // State schema v13: the stack's lifetime id travels with its record; a
-    // record built from nothing takes the one its caller resolved.
-    ...(existingState
-      ? stackInstanceIdCarriedFrom(existingState)
-      : newStackInstanceId !== undefined
-        ? { stackInstanceId: newStackInstanceId }
-        : {}),
+    // record built from nothing gets the one its caller resolves before the
+    // save (`stackInstanceIdForFirstWrite`).
+    ...(existingState ? stackInstanceIdCarriedFrom(existingState) : {}),
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every

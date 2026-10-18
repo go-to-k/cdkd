@@ -133,6 +133,7 @@ import {
 } from './state-refresh-observed.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
+import { withStackInstanceIdWithheld } from '../../state/stack-instance-id.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
@@ -1582,7 +1583,7 @@ async function stateShowCommand(
 
     if (options.json) {
       process.stdout.write(
-        `${stringifyJsonPayload({ state: stateResult.state, lock: lockInfo })}\n`
+        `${stringifyJsonPayload({ state: withStackInstanceIdWithheld(stateResult.state), lock: lockInfo })}\n`
       );
       return;
     }
@@ -2253,7 +2254,8 @@ interface StateShowJson {
 
 function treeToShowJson(node: CdkdStateStackTreeWithLock): StateShowJson {
   return {
-    state: node.state,
+    // go-to-k/cdkd#5064: never the id the stack's names derive from.
+    state: withStackInstanceIdWithheld(node.state),
     lock: node.lock,
     children: node.children.map(treeToShowJson),
   };

@@ -1304,13 +1304,16 @@ and carried by every writer after it (`stackInstanceIdCarriedFrom` in
 `tests/unit/state/stack-instance-id-carriers.test.ts`). It is read through
 `stackInstanceIdOf` (`src/state/stack-instance-id.ts`), which refuses a
 present value that is not a well-formed id rather than reading it as absent.
-cdkd never logs it.
+cdkd never logs it, and `cdkd state show --json` prints `<withheld>` in its
+place.
 
 A first deploy writes `state.json` only at its end, so the id is first
-written to the `stack-instance.json` sibling: under the stack lock, after the
-first deploy's state gate and before any resource create, the deploy reads
-the sibling and reuses its id, or mints one and writes it with
-`If-None-Match: *` (a lost race reads the winner back). A re-run after a crash
+written to the `stack-instance.json` sibling: under the stack lock, once the
+deploy is going ahead (past the first deploy's state gate, the destructive-plan
+check and `--require-approval`, so a refused or declined deploy writes
+nothing) and before its first save and first create, the deploy reads the
+sibling and reuses its id, or mints one and writes it with `If-None-Match: *`
+(a 409 is retried once; a lost race reads the winner back). A re-run after a crash
 therefore reuses the id and never mints a fresh one. The sibling is read only
 while `state.json` is absent, so a deploy of a stack with a record makes no
 extra call; `--dry-run` reads and writes nothing. The first state save
@@ -1323,6 +1326,10 @@ nested child it imports keeps the id of a record it already has.
 
 Only a binary that also derives generated names from the id may mint one:
 a record carrying an id says its resources were named with it.
+
+One residual: a pre-v13 binary's `deleteState` does not know the sibling, so
+a first deploy interrupted under v13, then deployed and destroyed by an older
+binary, leaves it, and the stack's next v13 first deploy takes that id.
 
 #### Migration
 

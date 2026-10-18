@@ -162,6 +162,26 @@ interface Builder {
   file: string;
   line: number;
   text: string;
+  /** `text` with every nested `{...}` emptied: the literal's OWN members. */
+  topLevel: string;
+}
+
+/** The literal at `open` with the contents of every nested pair removed. */
+function topLevelOf(text: string, pairs: Map<number, number>, open: number): string {
+  const close = pairs.get(open)!;
+  let out = '';
+  let i = open + 1;
+  while (i < close) {
+    const nested = pairs.get(i);
+    if (nested !== undefined && nested < close) {
+      out += '{}';
+      i = nested + 1;
+      continue;
+    }
+    out += text[i];
+    i++;
+  }
+  return `{${out}}`;
 }
 
 /** The innermost `{...}` around `offset`. */
@@ -194,6 +214,14 @@ function buildersIn(file: string, text: string): Builder[] {
     if (/\bstate:\s*\{$/.test(m[0]) && !/^\{\s*\.\.\./.test(text.slice(open, open + 200))) continue;
     opens.add(open);
   }
+  // A record literal handed straight to a state save, after plain arguments.
+  for (const m of text.matchAll(/\b(?:saveState|saveScrubbedState)\(/g)) {
+    const open = text.indexOf('{', m.index + m[0].length);
+    if (open === -1 || !pairs.has(open)) continue;
+    if (!/^[^(){};]*,\s*$/.test(text.slice(m.index + m[0].length, open))) continue;
+    // The record, not the save's options bag: it names `resources`.
+    if (/\bresources\b/.test(topLevelOf(text, pairs, open))) opens.add(open);
+  }
   // `return {` directly inside a block-bodied function typed `: StackState`.
   for (const m of text.matchAll(/\):\s*StackState\s*(?:=>\s*)?\{/g)) {
     const bodyOpen = m.index + m[0].length - 1;
@@ -208,6 +236,7 @@ function buildersIn(file: string, text: string): Builder[] {
     file,
     line: text.slice(0, open).split('\n').length,
     text: text.slice(open, pairs.get(open)! + 1),
+    topLevel: topLevelOf(text, pairs, open),
   }));
 }
 
@@ -234,7 +263,7 @@ const isEmptyRecord = (literal: string): boolean =>
 
 function violations(builders: readonly Builder[], sources: Map<string, string>): Builder[] {
   return builders.filter((b) => {
-    if (b.text.includes(CARRIER) || isEmptyRecord(b.text)) return false;
+    if (b.topLevel.includes(CARRIER) || isEmptyRecord(b.text)) return false;
     return !EXEMPT.some(
       (e) => e.file === b.file && (sources.get(b.file) ?? '').includes(e.marker + b.text.slice(1))
     );
@@ -265,6 +294,13 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
     expect(scan(fresh)).toHaveLength(0);
     expect(scan(arrow)).toHaveLength(1);
     expect(scan(member)).toHaveLength(1);
+    // A literal handed straight to a save, and a carrier that only a nested
+    // callback holds.
+    const direct = `await saveState(\n  name,\n  region,\n  {\n    ...prev,\n    resources: r,\n  },\n  opts\n);\n`;
+    const nestedOnly = `const s: StackState = {\n  ...prev,\n  extra: list.map((e) => { return { ...${CARRIER}e) }; }),\n};\n`;
+    expect(buildersIn('x.ts', direct)).toHaveLength(1);
+    expect(scan(direct)).toHaveLength(1);
+    expect(scan(nestedOnly)).toHaveLength(1);
     // A callback's `return` inside the builder is not the builder.
     expect(buildersIn('x.ts', nested)).toHaveLength(1);
     expect(scan(nested)).toHaveLength(0);
@@ -276,7 +312,7 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
     expect(missing).toEqual([]);
     // The population at the time of writing: a scanner that finds fewer has
     // stopped reading builders, which must not pass as "none missing".
-    expect(builders.length).toBeGreaterThanOrEqual(25);
+    expect(builders.length).toBeGreaterThanOrEqual(26);
     // And the files that hold one, by name.
     const files = new Set(builders.map((b) => b.file));
     for (const file of [

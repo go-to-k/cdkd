@@ -346,7 +346,10 @@ run_cdkd ok "local migration deploy" "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 fetch_state "local migration deploy"
 assert_version "local migration deploy" "${LOCAL_SCHEMA_VERSION}"
-if [ "$(state_versions)" -le "${VERSIONS_BEFORE_MIGRATION}" ]; then
+# Assigned first: a failed count exits here, where `$(...)` inside the test
+# would only exit its subshell and read as "not greater".
+VERSIONS_AFTER_MIGRATION="$(state_versions)"
+if [ "${VERSIONS_AFTER_MIGRATION}" -le "${VERSIONS_BEFORE_MIGRATION}" ]; then
   fail "local migration deploy: no new state.json version was written"
 fi
 pass "local migration deploy: a new state.json version was written"
