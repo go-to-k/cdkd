@@ -585,7 +585,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       aws.loseNextCreateResponse = transient500();
 
       await expect(createWithRetry('AWS::EC2::Subnet', SUBNET_PROPS)).rejects.toThrow(
-        /conflicts with another subnet/
+        /InvalidSubnet\.Conflict\. Re-run with --verbose/
       );
 
       expect(aws.subnets.map((s) => s.SubnetId)).toEqual(['subnet-001']);
@@ -611,7 +611,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
       aws.loseNextCreateResponse = transient500();
 
       await expect(createWithRetry('AWS::EC2::Subnet', SUBNET_PROPS)).rejects.toThrow(
-        /conflicts with another subnet/
+        /InvalidSubnet\.Conflict\. Re-run with --verbose/
       );
 
       expect(aws.lookupCount('DescribeSubnetsCommand')).toBe(3);
@@ -644,7 +644,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
 
       await expect(
         createWithRetry('AWS::EC2::Subnet', { ...SUBNET_PROPS, CidrBlock: '10.0.3.0/24' })
-      ).rejects.toThrow(/conflicts with another subnet/);
+      ).rejects.toThrow(/InvalidSubnet\.Conflict\. Re-run with --verbose/);
 
       const line = reportFor('CreateSubnet')!;
       expect(line).toContain("1 subnet(s) with no tags or exactly the template's tags match");
@@ -659,7 +659,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
     const createNothingThen = async (): Promise<void> => {
       aws.failNext.set('CreateSubnetCommand', [transient500()]);
       await expect(createWithRetry('AWS::EC2::Subnet', SUBNET_PROPS)).rejects.toThrow(
-        /conflicts with another subnet/
+        /InvalidSubnet\.Conflict\. Re-run with --verbose/
       );
     };
     const debugLines = (): string[] => debugSpy.mock.calls.map((c) => String(c[0]));
@@ -698,7 +698,7 @@ describe('EC2Provider tokenless create retry safety (issue #2080 Plan B)', () =>
 
       await expect(
         createWithRetry('AWS::EC2::Subnet', { ...SUBNET_PROPS, CidrBlock: '10.0.1.7/24' })
-      ).rejects.toThrow(/conflicts with another subnet/);
+      ).rejects.toThrow(/InvalidSubnet\.Conflict\. Re-run with --verbose/);
 
       expect(aws.subnets[0]!.CidrBlock).toBe('10.0.1.0/24');
       expect(reportFor('CreateSubnet')).toContain('subnet-001');
