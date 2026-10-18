@@ -87,6 +87,7 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 
 const PIN = '{{resolve:secretsmanager:pin:SecretString:pin}}';
 const TAG_SOURCE = `pin=${PIN}`;
+const PROVENANCE = { [PIN]: { region: 'us-east-1', versions: ['v0'] } };
 
 function record(
   physicalId: string,
@@ -192,13 +193,16 @@ describe('the lost-attachment rebuild keeps the record bag\'s marks (go-to-k/cdk
       stackName: 's',
       resources: {
         Group: record('fixed-group', 'AWS::IAM::Group', { GroupName: 'fixed-group' }),
-        Child: record(
-          'member',
-          'AWS::IAM::User',
-          { UserName: 'member', Groups: ['fixed-group'], Tags: tags },
-          ['Group'],
-          'cc-api'
-        ),
+        Child: {
+          ...record(
+            'member',
+            'AWS::IAM::User',
+            { UserName: 'member', Groups: ['fixed-group'], Tags: tags },
+            ['Group'],
+            'cc-api'
+          ),
+          referenceProvenance: PROVENANCE,
+        } as ResourceState,
         Sib: record('sib', 'AWS::SSM::Parameter', { Name: 'sib', Type: 'String', Value: 'v1' }),
       },
       outputs: {},
@@ -238,6 +242,10 @@ describe('the lost-attachment rebuild keeps the record bag\'s marks (go-to-k/cdk
     // The fix: the short secret persists as its reference, never `pin=x9`.
     expect((child?.properties['Tags'] as Array<{ Value: string }>)[0]!.Value).toBe(TAG_SOURCE);
     expect(JSON.stringify(stateBackend.saveState.mock.calls)).not.toContain('pin=x9');
+    // The update sent nothing, so the record keeps the provenance it had
+    // before the deploy (the written mark selects that rule; unmarked, the
+    // field was dropped).
+    expect(child?.referenceProvenance).toEqual(PROVENANCE);
   });
 
   it('the trimmed-holders arm: an inline policy still on another holder keeps its embedded short secret as its token', async () => {
