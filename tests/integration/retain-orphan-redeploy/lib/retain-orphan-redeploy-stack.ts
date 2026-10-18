@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -70,6 +71,14 @@ export class RetainOrphanRedeployStack extends cdk.Stack {
  * The role carries RETAIN here (the arm above uses DESTROY) because that is
  * the policy under test: it is what makes the rollback orphan rather than
  * delete. The fixture's teardown deletes it by name, so it does not leak.
+ *
+ * `fixed` also declares `KeptTopic`, an un-named RETAIN topic (go-to-k/cdkd#5064).
+ * A topic is a name-ADOPTING type, so the destroy records it in the stack's
+ * `retained.json` (an IAM role is not recorded there: its create refuses a
+ * taken name instead of adopting it). The redeploy after that destroy is a new
+ * stack lifetime: verify.sh asserts it creates a NEW topic under a new name
+ * rather than taking the kept one back, and warns once naming `cdkd import`.
+ * Absent from `fail`, so the rollback still orphans exactly one resource.
  */
 export class RetainOrphanAdoptStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -91,6 +100,11 @@ export class RetainOrphanAdoptStack extends cdk.Stack {
     // Ordering, not decoration: the role must EXIST before the queue fails, or
     // the rollback has nothing to orphan and the fixture asserts nothing.
     queue.node.addDependency(role);
+
+    if (mode === 'fixed') {
+      const kept = new sns.CfnTopic(this, 'KeptTopic', {});
+      kept.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    }
 
     new cdk.CfnOutput(this, 'AdoptedRoleName', { value: role.roleName });
   }

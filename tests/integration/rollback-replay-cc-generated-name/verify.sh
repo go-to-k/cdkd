@@ -202,10 +202,14 @@ EXPLICIT_NAME="cdkd-replay-ccname-explicit"
 
 # `AWS::IAM::Role`'s FALLBACK_NAME_RULES entry is
 # `{ nameProperty: 'RoleName', options: { maxLength: 64 } }` — NO `lowercase`,
-# unlike the S3/ECR entries — so both routes mint the stack name verbatim:
-# `CdkdReplayCcName-Role`, 21 characters. That is well under IAM's 64-character
-# RoleName cap, so `generateResourceName` never takes its truncate-plus-hash
-# branch and the prefix assertions below compare against the plain `${STACK}-`.
+# unlike the S3/ECR entries — so both routes mint the stack name verbatim plus
+# the 12-hex stack instance suffix (go-to-k/cdkd#5064):
+# `CdkdReplayCcName-Role-<12 hex>`, 34 characters. `CdkdReplayCcName-Role` is
+# under the 64 - 13 = 51 characters the suffix leaves, so it is not cut, and
+# the assertions below pin that exact shape. The suffix is fixed for the
+# stack's lifetime, so the SDK create, the Cloud Control re-create and the
+# rollback's replay-CREATE must all mint the SAME name.
+GENERATED_NAME_PATTERN="^${STACK}-Role-[0-9a-f]{12}\$"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOCAL_DIST="${REPO_ROOT}/dist/cli.js"
@@ -346,7 +350,10 @@ sweep_orphans() {
   #    to be removed first; this fixture attaches none, so a bare `delete-role`
   #    suffices and `|| true` absorbs the NoSuchEntity of the normal case.
   local role_name
-  for role_name in "${STACK}-Role" "${EXPLICIT_NAME}"; do
+  # The generated name carries the stack instance suffix (go-to-k/cdkd#5064),
+  # so it is known only once phase 1 read it; the by-path pass below sees it
+  # either way.
+  for role_name in "${SDK_NAME:-}" "${EXPLICIT_NAME}"; do
     [ -z "${role_name}" ] && continue
     echo "[verify]   deleting role ${role_name} if it exists"
     aws iam delete-role --role-name "${role_name}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -452,10 +459,7 @@ LAYER0=$(record '.provisionedBy')
 # An IAM role's physical id IS its name, on both routes and in state.
 SDK_NAME=$(record '.physicalId')
 [ -n "${SDK_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 1" >&2; exit 1; }
-case "${SDK_NAME}" in
-  "${STACK}-"*) : ;;
-  *) echo "FAIL: the SDK route did not mint a cdkd-generated name (got '${SDK_NAME}', expected the '${STACK}-' prefix)" >&2; exit 1 ;;
-esac
+printf '%s' "${SDK_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the SDK route did not mint a cdkd-generated name (got '${SDK_NAME}', expected ${STACK}-Role-<12 hex>)" >&2; exit 1; }
 
 # Phase 1 deliberately does NOT enumerate by path. `list-roles` is eventually
 # consistent, so every enumeration is a chance for a freshly-created role to be
@@ -504,10 +508,7 @@ RECORDED_PATH=$(record '.properties.Path // empty')
 
 CC_NAME=$(record '.physicalId')
 [ -n "${CC_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 2" >&2; exit 1; }
-case "${CC_NAME}" in
-  "${STACK}-"*) : ;;
-  *) echo "FAIL: the Cloud Control re-create did not carry a cdkd-generated name (got '${CC_NAME}', expected the '${STACK}-' prefix). preparePropertiesForCcApi should have filled it." >&2; exit 1 ;;
-esac
+printf '%s' "${CC_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the Cloud Control re-create did not carry a cdkd-generated name (got '${CC_NAME}', expected ${STACK}-Role-<12 hex>). preparePropertiesForCcApi should have filled it." >&2; exit 1; }
 [ "${CC_NAME}" = "${SDK_NAME}" ] || { echo "FAIL: the Cloud Control route minted '${CC_NAME}' where the SDK route minted '${SDK_NAME}'. Both are supposed to produce the SAME name — that equality is the invariant #3199 extends to the rollback replay." >&2; exit 1; }
 
 CC_ROLES=$(roles_under_path_settled "${CC_NAME}")

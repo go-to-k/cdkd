@@ -38,11 +38,12 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
  *
  * WHY THE TARGET GROUP MUST STAY UNNAMED — AND SO KEEP THE SAME NAME
  *
- * The collision IS the test. cdkd mints `<stackName>-<logicalId>` for a target
- * group the template does not name (`FALLBACK_NAME_RULES` /
+ * The collision IS the test. cdkd mints `<stackName>-<logicalId>-<suffix>` for a
+ * target group the template does not name (`FALLBACK_NAME_RULES` /
  * `generateResourceNameWithFallback`, `nameProperty: 'Name'`, `maxLength: 32`),
  * and it mints the SAME name on every deploy because the inputs are the stack
- * name and the logical id — neither of which changes here. So the replacement's
+ * name, the logical id and the stack instance id (go-to-k/cdkd#5064) — none of
+ * which changes within the stack's lifetime. So the replacement's
  * create asks AWS for a name the OLD target group still holds, and ELBv2
  * refuses with the exception above.
  *

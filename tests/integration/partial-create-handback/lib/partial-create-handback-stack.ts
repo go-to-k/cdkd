@@ -14,8 +14,12 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * covers: AWS::ElasticLoadBalancingV2::TargetGroup, AWS::ElasticLoadBalancingV2::LoadBalancer,
  * AWS::SNS::Topic, AWS::Events::Rule, AWS::EC2::VPC, AWS::EC2::Subnet
  *
- * `MODE` (set per phase by verify.sh) picks ONE resource, each with NO
- * explicit name, so cdkd sends its generated `CdkdPcHandback-<logicalId>`.
+ * Every mode deploys a VPC and one subnet (no internet gateway): `lbvpc`
+ * deploys only those, and verify.sh runs it FIRST, so the stack has a record --
+ * and its stack instance id (go-to-k/cdkd#5064) -- for the whole run, and the
+ * generated names of the other modes are known before their creates. On top of
+ * it `MODE` (set per phase by verify.sh) picks ONE resource, each with NO
+ * explicit name, so cdkd sends its generated `CdkdPcHandback-<logicalId>-<suffix>`.
  * A generated name is never looked up by the deploy's own name probe
  * (#4180 asks only for an explicit name), so an out-of-band resource under it
  * reaches the create. Each declares a wiring step AWS rejects, so the create
@@ -41,6 +45,15 @@ export class PartialCreateHandbackStack extends cdk.Stack {
     super(scope, id, props);
 
     const mode = process.env.MODE;
+    if (!['tg', 'topic', 'rule', 'lbvpc', 'lb'].includes(mode ?? '')) {
+      throw new Error('MODE must be tg, topic, rule, lbvpc or lb (verify.sh sets it per phase)');
+    }
+    const vpc = new ec2.CfnVPC(this, 'Vpc', { cidrBlock: '10.89.0.0/24' });
+    const subnet = new ec2.CfnSubnet(this, 'Subnet', {
+      vpcId: vpc.ref,
+      cidrBlock: '10.89.0.0/26',
+      availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
+    });
     if (mode === 'tg') {
       const tg = new elbv2.CfnTargetGroup(this, 'Tg', {
         targetType: 'lambda',
@@ -64,24 +77,14 @@ export class PartialCreateHandbackStack extends cdk.Stack {
         ],
       });
       rule.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    } else if (mode === 'lbvpc' || mode === 'lb') {
-      const vpc = new ec2.CfnVPC(this, 'Vpc', { cidrBlock: '10.89.0.0/24' });
-      const subnet = new ec2.CfnSubnet(this, 'Subnet', {
-        vpcId: vpc.ref,
-        cidrBlock: '10.89.0.0/26',
-        availabilityZone: cdk.Fn.select(0, cdk.Fn.getAzs()),
+    } else if (mode === 'lb') {
+      const lb = new elbv2.CfnLoadBalancer(this, 'Lb', {
+        type: 'network',
+        scheme: 'internal',
+        subnets: [subnet.ref],
+        loadBalancerAttributes: [{ key: 'cdkd.not.an.attribute', value: 'x' }],
       });
-      if (mode === 'lb') {
-        const lb = new elbv2.CfnLoadBalancer(this, 'Lb', {
-          type: 'network',
-          scheme: 'internal',
-          subnets: [subnet.ref],
-          loadBalancerAttributes: [{ key: 'cdkd.not.an.attribute', value: 'x' }],
-        });
-        lb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-      }
-    } else {
-      throw new Error('MODE must be tg, topic, rule, lbvpc or lb (verify.sh sets it per phase)');
+      lb.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     }
   }
 }

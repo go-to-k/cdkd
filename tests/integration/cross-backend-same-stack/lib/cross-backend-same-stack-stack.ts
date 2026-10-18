@@ -9,8 +9,11 @@ import type { Construct } from 'constructs';
 /**
  * go-to-k/cdkd#4705: the same stack name deployed under two state prefixes in
  * one account and region. No resource carries an explicit physical name, so
- * every name is cdkd's `{stackName}-{logicalId}` and both deployments ask AWS
- * for the same ones:
+ * every name is cdkd's `{stackName}-{logicalId}-{suffix}`. Since
+ * go-to-k/cdkd#5064 the suffix derives from the stack instance id, so two
+ * deployments with their OWN records (the cross-bucket arm) ask for different
+ * names and do not collide; a deployment whose record is a copy of the other's
+ * (a pre-fix pair, the id included) asks AWS for the same ones:
  *
  *  - the Role's CreateRole fails with EntityAlreadyExists;
  *  - the Queue's CreateQueue (identical attributes) hands back the existing

@@ -12,7 +12,8 @@
 # below are shaped the way they are:
 #
 #   * cdkd generates an unnamed function's physical name DETERMINISTICALLY
-#     (`{stackName}-{logicalId}`), so the create-first attempt lands on the name
+#     within a stack's lifetime (`{stackName}-{logicalId}-{suffix}`, the suffix
+#     fixed by the stack instance id, go-to-k/cdkd#5064), so the create-first attempt lands on the name
 #     the OLD function still holds. An unnamed Lambda therefore collides exactly
 #     like a pinned one, and the physical id is IDENTICAL on both sides of the
 #     replacement — so issue #1625's suggested "assert the physical id changed"
@@ -124,10 +125,21 @@ cleanup() {
   # `lambda-config-field-removal` carries: `state destroy` can fail (lock held,
   # throttle, partial destroy) while the state.json delete below runs
   # unconditionally — which would orphan the function with no state record and
-  # no tag to find it by. The name is deterministic, so it is known even when
-  # `FN` was never resolved (a failure before phase 1's state read).
-  aws lambda delete-function --function-name "${STACK}-DurableFn" --region "${REGION}" >/dev/null 2>&1
-  aws lambda delete-function --function-name "${FN:-}" --region "${REGION}" >/dev/null 2>&1
+  # no tag to find it by. The name carries the stack instance suffix
+  # (go-to-k/cdkd#5064), so it is unknown when `FN` was never resolved (a
+  # failure before phase 1's state read): sweep by its `${STACK}-DurableFn`
+  # prefix (the logical id carries CDK's 8-hex path hash). Guarded on a non-empty STACK so the prefix cannot widen.
+  case "${STACK}" in
+    CdkdLambdaDurableReplacement?*)
+      for leftover in $(aws lambda list-functions --region "${REGION}" \
+        --query "Functions[?starts_with(FunctionName, '${STACK}-DurableFn')].FunctionName" \
+        --output text 2>/dev/null); do
+        aws lambda delete-function --function-name "${leftover}" --region "${REGION}" >/dev/null 2>&1
+      done
+      ;;
+    *) echo "[verify] teardown sweep refused: STACK is not this fixture's own name (got: '${STACK}')" >&2 ;;
+  esac
+  [ -n "${FN:-}" ] && aws lambda delete-function --function-name "${FN}" --region "${REGION}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${HOLDER}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${HOLDER_DIR:-}" ]; then rm -rf "${HOLDER_DIR}"; fi
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -198,6 +210,12 @@ if [ -z "${FN}" ] || [ "${FN}" = "null" ]; then
   exit 1
 fi
 echo "    Resolved function name: ${FN}"
+# go-to-k/cdkd#5064: a new stack's generated name carries the 12-hex stack
+# instance suffix; the same name is asked for again by phase 2's replacement.
+if ! printf '%s' "${FN}" | grep -qE "^${STACK}-DurableFn[0-9A-F]{8}-[0-9a-f]{12}\$"; then
+  echo "FAIL: function name '${FN}' is not the generated ${STACK}-DurableFn<8 hex>-<12 hex>" >&2
+  exit 1
+fi
 # The replacement classification only reaches the SDK provider's create/delete
 # path when the row is SDK-routed; a cc-api route would exercise something else
 # entirely (memory rule: type-keyed behavior needs a routing-matrix audit).

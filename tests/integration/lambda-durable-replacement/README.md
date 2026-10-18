@@ -22,8 +22,9 @@ scoping call implies.
 Two things, both of which changed the shape of the assertions:
 
 1. **An unnamed Lambda collides exactly like a pinned one.** cdkd generates the
-   physical name deterministically (`{stackName}-{logicalId}` via
-   `generateResourceName`), so the replacement's create-first attempt lands on
+   physical name deterministically within a stack's lifetime
+   (`{stackName}-{logicalId}-{suffix}` via `generateResourceName`, the suffix
+   fixed by the stack instance id, go-to-k/cdkd#5064), so the replacement's create-first attempt lands on
    the name the OLD function still holds, and the physical id is IDENTICAL on
    both sides. Issue #1625's suggested "assert the physical id changed" is
    therefore not available; the proof used instead is the pair of end states —

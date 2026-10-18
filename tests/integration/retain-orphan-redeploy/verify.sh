@@ -3,16 +3,26 @@
 #
 # The reported loop: a rollback leaves a `DeletionPolicy: Retain` resource in
 # AWS and drops its state record (CloudFormation semantics, deliberate), and
-# cdkd's generated names carry no random component — so the next deploy asks
-# AWS for a name the orphan still holds, fails, rolls back, and repeats. The
-# reporter's only way out was hand-deleting resources through the AWS API.
+# cdkd's generated names are fixed for a stack's lifetime — so the next deploy
+# of the SAME stack asks AWS for a name the orphan still holds, fails, rolls
+# back, and repeats. The reporter's only way out was hand-deleting resources
+# through the AWS API.
+#
+# go-to-k/cdkd#5064 changed what a whole-stack orphan / destroy does: a
+# generated name carries the stack instance suffix, and a stack whose record
+# was deleted gets a NEW id at its next deploy, so it never collides with what
+# its predecessor left behind (CloudFormation parity). The collision this arm
+# needs therefore comes from `state orphan --resource`, which drops ONE record
+# and keeps the stack's lifetime; the new-lifetime behavior is asserted on the
+# adoption arm (phases 11b-11c).
 #
 # PASS CONDITION is not "the deploy succeeds" — a redeploy over an orphan MUST
 # fail. What this asserts is that cdkd NAMES the cause and that the remedy it
 # prints actually WORKS:
 #
 #   1. deploy               — a role under a cdkd-GENERATED name
-#   2. state orphan         — drop the record, leave the role in AWS
+#   2. state orphan --resource — drop the role's record (the stack keeps its
+#                            record and its instance id), leave the role in AWS
 #   3. redeploy             — must FAIL, and must print the diagnosis + command
 #   4. run THAT command     — parsed out of the message, not hand-written
 #   5. redeploy             — must now SUCCEED (the loop is broken)
@@ -101,6 +111,14 @@ REDEPLOY_LOG=""
 ADOPT_STACK="CdkdRetainOrphanAdoptExample"
 ADOPT_STATE_KEY="cdkd/${ADOPT_STACK}/${REGION}/state.json"
 ADOPT_ROLE_NAME=""
+# The role the adoption stack's SECOND lifetime creates (phase 11b), retained
+# too by its destroy (phase 11c); the cleanup deletes it by name.
+ADOPT_ROLE_NAME_2=""
+# The adoption stack's RETAIN topic (`KeptTopic`, fixed mode), per lifetime:
+# the one phase 11 keeps and records in `retained.json`, and the one phase 11b
+# creates under the new lifetime's name. Deleted by ARN in the cleanup.
+KEPT_TOPIC_ARN=""
+KEPT_TOPIC_ARN_2=""
 ADOPT_LOGICAL_ID=""
 ADOPT_LOG=""
 # The single-record orphan arm (go-to-k/cdkd#4602) — a THIRD stack.
@@ -153,6 +171,12 @@ cleanup() {
     done
     aws iam delete-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1
   fi
+  if [ -n "${ADOPT_ROLE_NAME_2}" ]; then
+    aws iam delete-role --role-name "${ADOPT_ROLE_NAME_2}" >/dev/null 2>&1
+  fi
+  for t in "${KEPT_TOPIC_ARN}" "${KEPT_TOPIC_ARN_2}"; do
+    [ -n "${t}" ] && aws sns delete-topic --topic-arn "${t}" >/dev/null 2>&1
+  done
   # The single-record arm's stack, then its queue: `state orphan --resource`
   # drops the queue's record on purpose, so no destroy can reach it and the
   # by-URL delete below is the only thing that stops a leak.
@@ -172,6 +196,15 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # The adoption stack's `retained.json` (and events): phase 11b asserts how
+    # many resources an earlier lifetime kept, so a previous run's record must
+    # not carry over. Guarded so an empty name cannot widen the sweep.
+    case "${ADOPT_STACK}" in
+      CdkdRetainOrphanAdopt?*)
+        aws s3 rm "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/" --recursive >/dev/null 2>&1
+        ;;
+      *) echo "teardown sweep refused: ADOPT_STACK='${ADOPT_STACK}'" >&2 ;;
+    esac
   fi
   rm -f "${REDEPLOY_LOG:-}" "${ADOPT_LOG:-}" "${REFUSE_LOG:-}" "${REDEPLOY_ORPHAN_LOG:-}" "${DESTROY_ORPHAN_LOG:-}"
   set -eu
@@ -220,20 +253,36 @@ fi
 echo "    logicalId=${ROLE_LOGICAL_ID} role=${ROLE_NAME}"
 
 # The diagnosis under test only fires for a name cdkd DERIVED, so a fixture
-# whose role came out template-named would assert nothing. Pin the premise.
-case "${ROLE_NAME}" in
-  "${STACK}-${ROLE_LOGICAL_ID}"*) ;;
-  *)
-    echo "FAIL: '${ROLE_NAME}' is not the cdkd derivation of ${STACK}/${ROLE_LOGICAL_ID} —" >&2
-    echo "      the collision diagnosis under test would not fire for it" >&2
-    exit 1
-    ;;
-esac
+# whose role came out template-named would assert nothing. Pin the premise, in
+# its #5064 shape: `{stack}-{logicalId}` cut to 64 - 13 = 51 characters, then
+# `-` and the 12-hex stack instance suffix. The diagnosis recognizes only the
+# EXACT suffix of the stack's own id, so phase 3 also proves that.
+ROLE_BASE="${STACK}-${ROLE_LOGICAL_ID}"
+ROLE_BASE="${ROLE_BASE:0:51}"
+ROLE_BASE="${ROLE_BASE%%-}"
+if ! printf '%s' "${ROLE_NAME}" | grep -qE "^${ROLE_BASE}-[0-9a-f]{12}\$"; then
+  echo "FAIL: '${ROLE_NAME}' is not the cdkd derivation ${ROLE_BASE}-<12 hex> of ${STACK}/${ROLE_LOGICAL_ID} —" >&2
+  echo "      the collision diagnosis under test would not fire for it" >&2
+  exit 1
+fi
 
 # --- Phase 2: manufacture the orphan -----------------------------------
-echo "==> Phase 2: drop the state record, leave the role in AWS"
-node "${LOCAL_DIST}" state orphan "${STACK}" \
+echo "==> Phase 2: drop the role's state record, leave the role in AWS"
+# `--resource`, not the whole stack (go-to-k/cdkd#5064): the stack keeps its
+# record and so its instance id, and the redeploy below derives the SAME name.
+# A whole-stack orphan deletes the record; the next deploy would then be a new
+# lifetime, under a new name, and create a second role beside this one.
+node "${LOCAL_DIST}" state orphan "${STACK}" --resource "${ROLE_LOGICAL_ID}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+ORPHANED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+if [ "$(printf '%s' "${ORPHANED_STATE}" | jq -r --arg k "${ROLE_LOGICAL_ID}" '.resources | has($k)')" != "false" ]; then
+  echo "FAIL: the role's record survived 'cdkd state orphan --resource ${ROLE_LOGICAL_ID}'" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${ORPHANED_STATE}" | jq -r '.stackInstanceId // "" | length > 0')" != "true" ]; then
+  echo "FAIL: the stack record lost its stackInstanceId — the redeploy would be a new lifetime and could not collide" >&2
+  exit 1
+fi
 
 if ! aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
   echo "FAIL: 'cdkd state orphan' deleted the AWS role — it must only drop state" >&2
@@ -481,15 +530,99 @@ if [ "${AFTER}" != "0 yes" ]; then
   exit 1
 fi
 echo "    OK: record consumed, AdoptedRole is in resources"
+KEPT_TOPIC_ARN="$(printf '%s' "${ADOPT_STATE}" | jq -r '.resources.KeptTopic.physicalId // ""')"
+if [ -z "${KEPT_TOPIC_ARN}" ]; then
+  echo "FAIL: the fixed deploy recorded no KeptTopic — phase 11b's new-lifetime arm would assert nothing"
+  exit 1
+fi
 
 echo "==> Phase 11: destroy the adoption stack"
 node "${LOCAL_DIST}" destroy "${ADOPT_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-# The role carries RETAIN, so destroy leaves it: that is correct behaviour, not
-# a leak to assert against. The cleanup trap deletes it by name.
+# The role and KeptTopic carry RETAIN, so destroy leaves them: that is correct
+# behaviour, not a leak to assert against. The cleanup trap deletes them.
 assert_gone "state file s3://${STATE_BUCKET}/${ADOPT_STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ADOPT_STATE_KEY}"
 echo "    OK: adoption-arm state file is gone"
+
+# --- Phases 11b-11c: a NEW lifetime does not take kept resources back -------
+# go-to-k/cdkd#5064, CloudFormation parity. The destroy above kept the RETAIN
+# role and topic, recorded the topic (a name-ADOPTING type) in the stack's
+# `retained.json`, and deleted the record with its stack instance id. A
+# redeploy is a FIRST deploy of a new lifetime: a new id, so new generated
+# names. Before #5064 it asked for the kept topic's name and took the topic
+# back (#4705's retained license). Now it must create a NEW topic and role
+# beside the kept ones, leave those untouched, and say once that an earlier
+# deployment kept a resource, naming `cdkd import`.
+echo "==> Phase 11b: redeploy the destroyed adoption stack (a new lifetime)"
+ADOPT_KEPT_CREATED="$(aws iam get-role --role-name "${ADOPT_ROLE_NAME}" --query 'Role.CreateDate' --output text)"
+aws sns get-topic-attributes --topic-arn "${KEPT_TOPIC_ARN}" >/dev/null
+CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${ADOPT_LOG}" 2>&1 || {
+  echo "FAIL: the redeploy of a destroyed stack failed — a new lifetime must not collide with the kept role"
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+}
+# Sentinel + marker on the same warning: the marker carries the count, the
+# sentinel is the independent `cdkd import` remedy clause.
+if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
+  echo "FAIL: the first deploy of a new lifetime did not warn about the kept role (no 'cdkd import' remedy line)"
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+if ! grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | grep -qF "kept 1 resource(s) here"; then
+  echo "FAIL: the kept-resources warning is present but does not say exactly 1 resource was kept (wording drifted?):"
+  grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | sed 's/^/  /'
+  exit 1
+fi
+if grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then
+  echo "FAIL: a new lifetime re-adopted the kept role — it must create a new one"
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+ADOPT_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" -)"
+ADOPT_ROLE_NAME_2="$(printf '%s' "${ADOPT_STATE_2}" | jq -r --arg k "${ADOPT_LOGICAL_ID}" '.resources[$k].physicalId // ""')"
+KEPT_TOPIC_ARN_2="$(printf '%s' "${ADOPT_STATE_2}" | jq -r '.resources.KeptTopic.physicalId // ""')"
+for arn in "${KEPT_TOPIC_ARN}" "${KEPT_TOPIC_ARN_2}"; do
+  if ! printf '%s' "${arn##*:}" | grep -qE "^${ADOPT_STACK}-KeptTopic-[0-9a-f]{12}\$"; then
+    echo "FAIL: KeptTopic '${arn}' is not a generated ${ADOPT_STACK}-KeptTopic-<12 hex> topic"
+    exit 1
+  fi
+done
+if [ "${KEPT_TOPIC_ARN_2}" = "${KEPT_TOPIC_ARN}" ]; then
+  echo "FAIL: the new lifetime took the kept topic ${KEPT_TOPIC_ARN} back — it must create a new one under a new name"
+  exit 1
+fi
+aws sns get-topic-attributes --topic-arn "${KEPT_TOPIC_ARN}" >/dev/null || {
+  echo "FAIL: the kept topic ${KEPT_TOPIC_ARN} is gone after the new lifetime's deploy"
+  exit 1
+}
+ADOPT_BASE="${ADOPT_STACK}-${ADOPT_LOGICAL_ID}"
+ADOPT_BASE="${ADOPT_BASE:0:51}"
+ADOPT_BASE="${ADOPT_BASE%%-}"
+for n in "${ADOPT_ROLE_NAME}" "${ADOPT_ROLE_NAME_2}"; do
+  if ! printf '%s' "${n}" | grep -qE "^${ADOPT_BASE}-[0-9a-f]{12}\$"; then
+    echo "FAIL: '${n}' is not a generated ${ADOPT_BASE}-<12 hex> name"
+    exit 1
+  fi
+done
+if [ "${ADOPT_ROLE_NAME_2}" = "${ADOPT_ROLE_NAME}" ]; then
+  echo "FAIL: the new lifetime generated the SAME name ${ADOPT_ROLE_NAME} — its stack instance id was not renewed"
+  exit 1
+fi
+if [ "$(aws iam get-role --role-name "${ADOPT_ROLE_NAME}" --query 'Role.CreateDate' --output text)" != "${ADOPT_KEPT_CREATED}" ]; then
+  echo "FAIL: the kept role ${ADOPT_ROLE_NAME} was replaced or touched by the new lifetime"
+  exit 1
+fi
+aws iam get-role --role-name "${ADOPT_ROLE_NAME_2}" >/dev/null
+echo "    OK: new role and topic beside the untouched kept ${ADOPT_ROLE_NAME} / ${KEPT_TOPIC_ARN}, with the kept-resource warning"
+
+echo "==> Phase 11c: destroy the second lifetime (roles and topics are RETAIN; the cleanup deletes all four)"
+node "${LOCAL_DIST}" destroy "${ADOPT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_gone "state file s3://${STATE_BUCKET}/${ADOPT_STATE_KEY} still exists after the second destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ADOPT_STATE_KEY}"
+echo "    OK: second lifetime destroyed"
 
 # ---------------------------------------------------------------------------
 # The SINGLE-RECORD orphan arm (go-to-k/cdkd#4602).
@@ -645,4 +778,4 @@ cleanup
 trap - EXIT INT TERM
 
 echo ""
-echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically; state orphan --resource drops one record) ==="
+echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically; a new lifetime leaves a kept resource alone; state orphan --resource drops one record) ==="

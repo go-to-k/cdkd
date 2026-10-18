@@ -33,9 +33,10 @@
 # WHY THE NAME MUST STAY THE SAME
 #
 # The collision IS the test. The target group is UNNAMED in the template, so
-# cdkd mints `<stackName>-<logicalId>` from inputs that do not change between
-# phases — the replacement therefore asks AWS for a name the old target group
-# still holds. Declaring a `Name` and CHANGING it would replace the target group
+# cdkd mints `<stackName>-<logicalId>-<suffix>` from inputs that do not change
+# between phases — the suffix derives from the stack instance id, which is the
+# same for the whole lifetime of the stack (go-to-k/cdkd#5064) — so the
+# replacement asks AWS for a name the old target group still holds. Declaring a `Name` and CHANGING it would replace the target group
 # under a DIFFERENT name: nothing collides, the fallback is never reached, and
 # the run passes identically with and without the fix. That is a vacuous test,
 # and the pre-flight below refuses the template that would produce it.
@@ -163,14 +164,14 @@ export AWS_REGION="${REGION}"
 STACK="CdkdElbv2SameName"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
-# The name cdkd mints for the UNNAMED target group:
-# `generateResourceNameWithFallback(undefined, 'Tg', { maxLength: 32 })` ->
-# `${STACK}-Tg`, 20 characters, under the type's 32-character cap — so
-# `generateResourceName` never takes its truncate-plus-hash branch and the
-# prefix assertions below compare against the plain `${STACK}-`. Used by the
-# teardown sweep, which must be able to name the target group before any phase
-# has read one back.
-GENERATED_TG_NAME="${STACK}-Tg"
+# The SHAPE of the name cdkd mints for the UNNAMED target group on a new stack
+# (go-to-k/cdkd#5064): `generateResourceNameWithFallback(undefined, 'Tg',
+# { maxLength: 32 })` cuts `${STACK}-Tg` to 32 - 13 = 19 characters
+# (`CdkdElbv2SameName-T`) and appends `-` plus the 12-hex stack instance
+# suffix. The suffix cannot be predicted, so phase 1 reads the name from AWS
+# and asserts it has this shape; the teardown sweep deletes it by the captured
+# name, and the by-VPC pass sees it whatever its name.
+GENERATED_TG_PATTERN="^${STACK}-T-[0-9a-f]{12}\$"
 
 PORT_1=8080   # the template's default; also asserted live in phase 1
 PORT_2=8081   # what TG_PORT carries into phase 2's replacement
@@ -301,17 +302,20 @@ sweep_orphans() {
       ;;
   esac
 
-  # 1. The target group cdkd names deterministically. Looked up BY NAME, which
-  #    is the only handle available before any phase has read an ARN back.
-  #    `delete-target-group` takes an ARN only, so the name has to be resolved
-  #    first; the read is silenced and its emptiness checked, which is the
-  #    best-effort-cleanup shape rather than a leak assertion.
+  # 1. The target group cdkd named, by the name phase 1 captured (its suffix
+  #    cannot be predicted, go-to-k/cdkd#5064; before phase 1 there is none to
+  #    delete and pass 2 covers the VPC). `delete-target-group` takes an ARN
+  #    only, so the name has to be resolved first; the read is silenced and its
+  #    emptiness checked, which is the best-effort-cleanup shape rather than a
+  #    leak assertion. Skipped on an empty name: `--names ""` can hang.
   local tg_arn
-  tg_arn="$(aws elbv2 describe-target-groups --names "${GENERATED_TG_NAME}" --region "${REGION}" \
-    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
-  if [ -n "${tg_arn}" ] && [ "${tg_arn}" != "None" ]; then
-    echo "[verify]   deleting orphan target group ${GENERATED_TG_NAME}"
-    aws elbv2 delete-target-group --target-group-arn "${tg_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+  if [ -n "${TG_NAME:-}" ]; then
+    tg_arn="$(aws elbv2 describe-target-groups --names "${TG_NAME}" --region "${REGION}" \
+      --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
+    if [ -n "${tg_arn}" ] && [ "${tg_arn}" != "None" ]; then
+      echo "[verify]   deleting orphan target group ${TG_NAME}"
+      aws elbv2 delete-target-group --target-group-arn "${tg_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
   fi
 
   # 2. EVERY target group in the fixture VPC. This is the only pass that can
@@ -438,7 +442,7 @@ case "${TG_NAME}" in
   "${STACK}-"*) : ;;
   *) echo "FAIL: the target group name '${TG_NAME}' does not carry the '${STACK}-' prefix, so cdkd did not generate it. #3208's collision only occurs because both deploys mint the SAME name from the stack name and logical id." >&2; exit 1 ;;
 esac
-[ "${TG_NAME}" = "${GENERATED_TG_NAME}" ] || { echo "FAIL: cdkd minted '${TG_NAME}' but this script's teardown sweep looks for '${GENERATED_TG_NAME}'. A name the sweep cannot predict is a name it cannot clean up." >&2; exit 1; }
+printf '%s' "${TG_NAME}" | grep -qE "${GENERATED_TG_PATTERN}" || { echo "FAIL: cdkd minted '${TG_NAME}', not the generated shape ${GENERATED_TG_PATTERN} (stack name cut to 19 characters, then the 12-hex stack instance suffix, go-to-k/cdkd#5064)." >&2; exit 1; }
 
 ARN_1=$(capture aws elbv2 describe-target-groups --names "${TG_NAME}" --region "${REGION}" \
   --query 'TargetGroups[0].TargetGroupArn' --output text)
