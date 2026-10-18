@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-schema-v12-to-v13-migration",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd state schema v12 -> v13 migration integ probe (per-stack-instance id, issue #5064)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

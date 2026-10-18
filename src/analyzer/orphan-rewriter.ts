@@ -14,7 +14,7 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isSensitiveAttributeName } from '../utils/stringify.js';
 import { isCustomResourceType } from '../provisioning/custom-resource-secure-references.js';
 import { injectiveKey } from '../state/record-keys.js';
-import { isReadableBag } from '../types/state.js';
+import { isReadableBag, stackInstanceIdCarriedFrom } from '../types/state.js';
 import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
 
 /**
@@ -740,6 +740,7 @@ export async function rewriteResourceReferences(
   return {
     state: {
       ...carriedState,
+      ...stackInstanceIdCarriedFrom(state),
       resources: newResources,
       outputs: newOutputs,
       lastModified: Date.now(),

@@ -114,6 +114,9 @@ const backend = vi.hoisted(() => ({
   getState: vi.fn(),
   saveState: vi.fn(),
   stateExistsOwnedBy: vi.fn(),
+  stackInstanceIdForFirstWrite: vi
+    .fn()
+    .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
 }));
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
@@ -122,6 +125,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     getState: backend.getState,
     saveState: backend.saveState,
     stateExistsOwnedBy: backend.stateExistsOwnedBy,
+    stackInstanceIdForFirstWrite: backend.stackInstanceIdForFirstWrite,
     rawObjectExists: vi.fn(async () => false),
     markRollbackJournalImported: vi.fn(async () => []),
   })),

@@ -134,9 +134,11 @@ import {
   hasReasonlessBaselineRefusal,
   hasUnverifiableParameterRefusal,
   orphansCarriedFrom,
+  stackInstanceIdCarriedFrom,
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
@@ -1331,6 +1333,21 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       if (migrationPending) {
         saveOptions.migrateLegacy = true;
       }
+      // State schema v13 (go-to-k/cdkd#5064): an import CREATING the record is
+      // the stack's first state write, so it takes the stack's lifetime id --
+      // the one a first deploy interrupted before its record wrote ahead (the
+      // import adopts what that deploy made), or a fresh one. Under the lock;
+      // an existing record's id (or absence) was carried by `buildStackState`.
+      if (existingState === null) {
+        stackState = {
+          ...stackState,
+          stackInstanceId: await stateBackend.stackInstanceIdForFirstWrite(
+            stackInfo.stackName,
+            targetRegion,
+            { writeAhead: false }
+          ),
+        };
+      }
       await recordImportOnRollbackJournal(
         stateBackend,
         stackInfo.stackName,
@@ -2385,7 +2402,13 @@ export function buildStackState(
   templateParser: TemplateParser,
   template: CloudFormationTemplate,
   existingState: StackState | null,
-  selectiveMode: boolean
+  selectiveMode: boolean,
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the id of a record built from
+   * nothing (`existingState` null). An existing record's id, or its absence
+   * (a legacy stack), is carried instead.
+   */
+  newStackInstanceId?: string
 ): StackState {
   const resources: Record<string, ResourceState> =
     selectiveMode && existingState ? { ...existingState.resources } : {};
@@ -2553,6 +2576,13 @@ export function buildStackState(
     // fields — so without this line the import would silently delete the only
     // record that a live, billing `Retain` resource is still standing in AWS.
     ...(existingState ? orphansCarriedFrom(existingState) : {}),
+    // State schema v13: the stack's lifetime id travels with its record; a
+    // record built from nothing takes the one its caller resolved.
+    ...(existingState
+      ? stackInstanceIdCarriedFrom(existingState)
+      : newStackInstanceId !== undefined
+        ? { stackInstanceId: newStackInstanceId }
+        : {}),
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every
@@ -4665,6 +4695,19 @@ async function importNestedStackChildrenRecursive(args: {
       childStackState.parentStack = parentStackName;
       childStackState.parentLogicalId = childLogicalId;
       childStackState.parentRegion = parentRegion;
+      // State schema v13 (go-to-k/cdkd#5064): the child is built from nothing,
+      // but it may have a record already (a re-import), whose lifetime id --
+      // or legacy absence -- it keeps. Otherwise the child's first state write
+      // takes its own id, as its first deploy would. Under the child's lock.
+      const childPrior = await stateBackend.getState(childStackName, childRegion);
+      const childStackInstanceId = childPrior
+        ? stackInstanceIdOf(childPrior.state, displaySafe(childStackName))
+        : await stateBackend.stackInstanceIdForFirstWrite(childStackName, childRegion, {
+            writeAhead: false,
+          });
+      if (childStackInstanceId !== undefined) {
+        childStackState.stackInstanceId = childStackInstanceId;
+      }
 
       // Resolve intrinsics in child Properties (same reason as root —
       // sub-resource provider deletes read resolved props), populate

@@ -165,6 +165,9 @@ describe('a parent NoEcho parameter into a child list / Number parameter, throug
         states.set(name, structuredClone(state));
         return `etag-${name}`;
       }),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
       purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
       rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),

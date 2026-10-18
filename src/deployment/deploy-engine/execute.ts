@@ -32,6 +32,7 @@ import {
   type StackOrphanRecord,
   type StackState,
   exportNamesCarriedFrom,
+  stackInstanceIdCarriedFrom,
   orphansAfterRollback,
   orphansCarriedFrom,
   skippedOutputsCarriedFrom,
@@ -133,6 +134,7 @@ export async function executeDeployment(
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansCarriedFrom(currentState),
+          ...stackInstanceIdCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -923,6 +925,7 @@ export async function executeDeployment(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansCarriedFrom(currentState),
+        ...stackInstanceIdCarriedFrom(currentState),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -1115,6 +1118,7 @@ export async function executeDeployment(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
+        ...stackInstanceIdCarriedFrom(currentState),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -1173,6 +1177,7 @@ export async function executeDeployment(
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansAfterRollback(currentState, rollbackOrphans),
+          ...stackInstanceIdCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -1312,6 +1317,7 @@ export async function executeDeployment(
       stackName: currentState.stackName,
       resources: newResources,
       ...orphansCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(currentState),
       outputs,
       // Always written, `[]` included: on this path the bag was re-resolved,
       // so the set is KNOWN (issue #2193). Absent would read as "not known".
@@ -1372,6 +1378,7 @@ export async function persistStateAfterOutputFailure(
     ...exportNamesCarriedFrom(currentState),
     ...skippedOutputsCarriedFrom(currentState),
     ...orphansCarriedFrom(currentState),
+    ...stackInstanceIdCarriedFrom(currentState),
     // Issue #2057: the UNION, like every other non-success save. This one
     // used to write `[...engine.recordedImports]` WHOLESALE, copying the
     // SUCCESS path's shape onto a path that is not one — provisioning

@@ -92,6 +92,7 @@ describe('DeployEngine - Resource Replacement', () => {
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
   };
 
   let mockLockManager: {
@@ -168,6 +169,9 @@ describe('DeployEngine - Resource Replacement', () => {
         etag: 'etag-123',
       }),
       saveState: vi.fn().mockResolvedValue('etag-456'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     };
 
     mockLockManager = {

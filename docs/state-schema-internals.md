@@ -163,6 +163,16 @@ when it was first sent, written BEFORE the create is sent. It holds no secret.
   record is: a denied delete stops the command before the record is touched,
   even when no ledger exists, because S3 checks the permission first.
 
+### Stack instance id (`stack-instance.json`)
+
+The write-ahead copy of a first deploy's `stackInstanceId`
+(`{"stackInstanceVersion": 1, "stackInstanceId": "<uuid>"}`), described with
+[schema version 13](#version-13-adds-stackinstanceid-current-writers). It
+exists only between a first deploy's first create and its first state save,
+or after such a deploy was interrupted. `s3:DeleteObject` on its key is
+required wherever deleting the stack record is: `deleteState` deletes it
+first and stops on a denial.
+
 ### Rollback journal (`rollback-journal.json`)
 
 
@@ -400,7 +410,7 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers always emit the current version, `version: 12`. Readers accept every
+Writers always emit the current version, `version: 13`. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
 with an "Upgrade cdkd" error.
@@ -419,6 +429,7 @@ with an "Upgrade cdkd" error.
 | 10 | `observedBaselineRefused` on each resource |
 | 11 | `noEchoLeaves` / `noEchoAttributeNames` on each resource; `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance` on each resource, `outputReferenceProvenance` on the stack |
+| 13 | `stackInstanceId` on the stack |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1126,7 +1137,7 @@ is already `***`.
 `version: 11` alone therefore does not mean a stack's values are masked, and
 only a `cdkd deploy` migrates it.
 
-### `version: 12` records where each reference was resolved (current writers)
+### `version: 12` records where each reference was resolved
 
 Schema `version: 12` records, for each `{{resolve:...}}` token a record holds,
 the region that resolved it and which version of the secret it stood for
@@ -1280,6 +1291,45 @@ one JSON line to the file at exit: its pid, its command line with every flag
 value dropped, the time, and a count of every AWS SDK command it sent, by
 client and command (`src/utils/sdk-call-log.ts`). Nothing of a request,
 response or flag value is kept.
+
+### `version: 13` adds `stackInstanceId` (current writers)
+
+Schema `version: 13` adds `StackState.stackInstanceId` (issue
+[#5064](https://github.com/go-to-k/cdkd/issues/5064)): a `crypto.randomUUID()`
+naming one lifetime of the stack, from its first state write until its record
+is deleted. It is minted ONLY at that first write — a first deploy, the
+partial save of a failed first deploy, or `cdkd import` creating the record —
+and carried by every writer after it (`stackInstanceIdCarriedFrom` in
+`src/types/state.ts`, fenced by
+`tests/unit/state/stack-instance-id-carriers.test.ts`). It is read through
+`stackInstanceIdOf` (`src/state/stack-instance-id.ts`), which refuses a
+present value that is not a well-formed id rather than reading it as absent.
+cdkd never logs it.
+
+A first deploy writes `state.json` only at its end, so the id is first
+written to the `stack-instance.json` sibling: under the stack lock, after the
+first deploy's state gate and before any resource create, the deploy reads
+the sibling and reuses its id, or mints one and writes it with
+`If-None-Match: *` (a lost race reads the winner back). A re-run after a crash
+therefore reuses the id and never mints a fresh one. The sibling is read only
+while `state.json` is absent, so a deploy of a stack with a record makes no
+extra call; `--dry-run` reads and writes nothing. The first state save
+carrying the id deletes the sibling and purges its earlier versions;
+`deleteState` deletes it too, before the record and fail-closed, so a stack
+created again gets a new id. A sibling this binary cannot read refuses the
+deploy, naming the stack. `cdkd import` creating a record reads the sibling
+(the import adopts what an interrupted deploy made) but writes none; a
+nested child it imports keeps the id of a record it already has.
+
+Only a binary that also derives generated names from the id may mint one:
+a record carrying an id says its resources were named with it.
+
+#### Migration
+
+No read-time migration: a v12 document is read unchanged and stays a LEGACY
+stack (no id) forever, through every later write. The bump exists because an
+older binary rebuilds a record field by field and would drop the id; it
+refuses a `version: 13` record with the "Upgrade cdkd" error instead.
 
 ## Fields added without a version bump
 
@@ -1585,6 +1635,7 @@ interface StackState {
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>> // v12+: outputs key → token → where and at which version it was resolved; absent = not known
+  stackInstanceId?: string                 // v13+: the id of this lifetime of the stack, minted at its first state write; absent = a legacy stack, which stays one
   lastModified: number                     // Unix timestamp (milliseconds)
 }
 ```
@@ -2918,7 +2969,7 @@ needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`; the policy that
 grants them is in
 [State backup and bucket security](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket).
 
-**Six kinds of object need those two version actions, not one** — the five in
+**Seven kinds of object need those two version actions, not one** — the six in
 this table and the `deployments/**` event store below it, plus `state.json` and
 the exports index for a principal that runs `cdkd scrub`. The set has grown
 over time, and the ordinary
@@ -2930,6 +2981,7 @@ commands are now in it:
 | custom-resource response object | `cdkd deploy` (the provider's own cleanup) and `cdkd gc` | the handler's FULL cfn-response, `Data` included — where a handler-minted password or API key lands |
 | transient CFn template | `cdkd import --migrate-from-cloudformation`, `cdkd export`, and MACRO EXPANSION during `cdkd deploy` / `cdkd diff` (any template over the 51,200-byte inline ceiling) | the template body, which carries a secret only if the template does (an inline `Code.ZipFile`, a hand-written literal) |
 | `cdkd-bootstrap/{region}.json` | `cdkd bootstrap --destroy` | the asset bucket and container-repo names. No secret; listed for completeness |
+| `stack-instance.json` | the first state save of a stack carrying its id, and every `deleteState` (`cdkd destroy`, `cdkd state destroy`, `cdkd state orphan`, `cdkd export`, a rolled-back first deploy) | the stack's lifetime id. No secret: `state.json` holds the same id |
 | `lock.json` | every command that RELEASES a stack lock, plus the expired-lock takeover and `cdkd force-unlock` | the lock heartbeat: `owner`, `timestamp`, `expiresAt`, `operation`. No secret -- one row per two-minute renewal, which is why it was the fastest-growing key in the bucket. **Reported differently: see below** |
 
 The journal is the one to note if you are deciding whether this matters to you:

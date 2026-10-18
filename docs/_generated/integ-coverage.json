@@ -7351,6 +7351,7 @@
         "s3-tables",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
+        "schema-v12-to-v13-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -7680,6 +7681,9 @@
           "l1"
         ],
         "schema-v11-to-v12-migration": [
+          "l1"
+        ],
+        "schema-v12-to-v13-migration": [
           "l1"
         ],
         "schema-v5-to-v6-migration": [

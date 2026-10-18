@@ -199,6 +199,7 @@ for.
 | `deployments/` event streams | Event text, which cdkd treats as sensitive |
 | `cdkd-bootstrap/{region}.json` | Bucket and repository names; no secret |
 | `lock.json` | The lock holder; no secret |
+| `stack-instance.json` | The stack's lifetime id; no secret |
 | `state.json` | Every resource's recorded properties and attributes |
 
 Each object is purged by the commands that delete it:
@@ -214,6 +215,9 @@ Each object is purged by the commands that delete it:
 - `cdkd-bootstrap/{region}.json`: `cdkd bootstrap --destroy`.
 - `lock.json`: every lock release, a takeover of an expired lock, and
   `cdkd force-unlock`.
+- `stack-instance.json`: the first deploy of a stack, once its record is
+  written, and every command that deletes a record (`cdkd destroy`,
+  `cdkd state destroy`, `cdkd state orphan`, `cdkd export`, `cdkd rollback`).
 - `state.json`: `cdkd state destroy`, the one deleting command that purges
   it (`cdkd scrub` purges it too, after rewriting it). It purges the stack's
   own record and its nested stacks' records, after it deletes them and writes

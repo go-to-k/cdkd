@@ -147,6 +147,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         opts.currentEtag === undefined ? null : { state: currentState, etag: opts.currentEtag }
       ),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       // go-to-k/cdkd#4600: the bucket-wide ownership scan before an orphan delete.
       listStacks: vi.fn().mockResolvedValue([]),
       ...journal,

@@ -184,14 +184,28 @@
  *       it WRITES from this run's resolution, an unchanged one through a
  *       one-time capture that sends nothing and changes no other field.
  *
+ * - 13 — adds `StackState.stackInstanceId` (issue
+ *       [#5064](https://github.com/go-to-k/cdkd/issues/5064)): a random id
+ *       minted at the FIRST state write of a stack (its first deploy, the
+ *       partial save of a failed first deploy, or `cdkd import` creating the
+ *       record), naming one lifetime of the stack between its creation and
+ *       its record's deletion. A first deploy writes it ahead to the
+ *       `stack-instance.json` sibling (`src/state/stack-instance-id.ts`)
+ *       before any resource create, so a re-run after a crash reuses it.
+ *       ABSENT means a LEGACY stack, and it stays legacy: no writer mints one
+ *       for a stack that already has a record.
+ *       A bump, for v10's reason: an older binary rebuilds a record field by
+ *       field and would drop the id, turning the stack legacy behind the
+ *       next reader's back. A v12 document is read unchanged (legacy).
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 12;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 13;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -200,7 +214,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 12;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 ];
 
 /**
@@ -557,6 +571,17 @@ export interface StackState {
    * entry.
    */
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the id of this LIFETIME of the
+   * stack, a `crypto.randomUUID()` minted at the stack's first state write and
+   * kept until its record is deleted. ABSENT = a legacy stack (every record
+   * written before v13), which stays legacy: nothing mints one for a stack that
+   * already has a record. Read through `stackInstanceIdOf`
+   * (`src/state/stack-instance-id.ts`); carried by every field-enumerating
+   * writer through {@link stackInstanceIdCarriedFrom}. Never logged.
+   */
+  stackInstanceId?: string;
 
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
@@ -1410,6 +1435,26 @@ export function exportNamesCarriedFrom(
   previous: Pick<StackState, 'exportNames'>
 ): Pick<StackState, 'exportNames'> {
   return previous.exportNames === undefined ? {} : { exportNames: previous.exportNames };
+}
+
+/**
+ * Carry {@link StackState.stackInstanceId} across a rebuild (state schema v13,
+ * go-to-k/cdkd#5064): absent stays absent, present stays as it was, VERBATIM
+ * (a malformed value is the reader's to refuse, never a writer's to drop).
+ *
+ * **Every** field-enumerating `StackState` literal must spread this, beside
+ * {@link orphansCarriedFrom}. A dropped id is silent and turns the stack into
+ * a legacy one for every later reader. Spread-form writers
+ * (`{ ...previous, ... }`) carry it already; they spread it too, so the rule
+ * has no exception to remember
+ * (`tests/unit/state/stack-instance-id-carriers.test.ts`).
+ */
+export function stackInstanceIdCarriedFrom(
+  previous: Pick<StackState, 'stackInstanceId'> | null | undefined
+): Pick<StackState, 'stackInstanceId'> {
+  return previous?.stackInstanceId === undefined
+    ? {}
+    : { stackInstanceId: previous.stackInstanceId };
 }
 
 /**

@@ -88,6 +88,7 @@ import {
   type ResourceState,
   type StackState,
   orphansAfterRollback,
+  stackInstanceIdCarriedFrom,
   type StackOrphanRecord,
   type LockInfo,
 } from '../../types/state.js';
@@ -1306,6 +1307,7 @@ export async function rollbackCommand(
           const { skippedOutputs: _droppedByRollback, ...carriedState } = baseState;
           const next = (): StackState => ({
             ...carriedState,
+            ...stackInstanceIdCarriedFrom(baseState),
             version: STATE_SCHEMA_VERSION_CURRENT,
             region,
             resources: { ...stateResources },

@@ -131,6 +131,7 @@ import {
   safeMsg,
 } from '../../utils/display-safe.js';
 import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../types/state.js';
+import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -8886,6 +8887,7 @@ export async function scrubStack(
       const { skippedOutputs: _droppedByScrub, ...carriedState } = state;
       const nextState: StackState = {
         ...carriedState,
+        ...stackInstanceIdCarriedFrom(state),
         resources: newResources,
         // WRITTEN BACK, not carried. `orphans` rode the `...carriedState`
         // spread untouched before go-to-k/cdkd#2943, which was correct while

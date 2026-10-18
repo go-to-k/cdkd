@@ -1,11 +1,11 @@
 ---
 title: Schema versions and upgrades
-description: "How cdkd handles state records written by older and newer versions, what each schema version added, and what the provisionedBy, exportNames and skippedOutputs fields do."
+description: "How cdkd handles state records written by older and newer versions, what each schema version added, and what the stackInstanceId, provisionedBy, exportNames and skippedOutputs fields do."
 ---
 
 # Schema versions and upgrades
 
-Every state record carries a schema `version`, and the current one is `12`.
+Every state record carries a schema `version`, and the current one is `13`.
 A newer cdkd reads every older version, so upgrading cdkd needs no migration
 step. An older cdkd cannot read a record that a newer one has written.
 
@@ -31,7 +31,7 @@ An older cdkd refuses a record written in a version it does not know, and
 exits:
 
 ```text
-Unsupported state schema version 12 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Upgrade cdkd to a version that supports schema 12.
+Unsupported state schema version 13 for stack MyStack. This cdkd binary supports versions 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12. Upgrade cdkd to a version that supports schema 13.
 ```
 
 cdkd writes the current version on every record it saves. So once a newer
@@ -54,6 +54,7 @@ Upgrade every machine and CI job that deploys a stack at the same time.
 | 10 | `observedBaselineRefused` |
 | 11 | `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance`, `outputReferenceProvenance`: where each stored secret reference was resolved, and at which secret version |
+| 13 | `stackInstanceId`: the id of the stack's current lifetime, recorded when the stack is first written |
 
 [What a state record contains](state-management.md#what-a-state-record-contains)
 says what each field means. The contributor page
@@ -88,6 +89,30 @@ no other field. If it cannot tell where a reference was resolved, it records
 nothing for that reference and prints one warning naming the resource; the
 next update of that resource records it. A lookup that is throttled is tried
 again on the next deploy. Later deploys make no extra call.
+
+**From before version 13.** Nothing extra. A stack whose record an older
+cdkd wrote keeps no `stackInstanceId`, and it never gets one: only a stack's
+first state write records the id. See
+[`stackInstanceId`](#stackinstanceid-the-lifetime-of-a-stack).
+
+## `stackInstanceId`: the lifetime of a stack
+
+A stack's first state write records `stackInstanceId`, a random id that
+names this lifetime of the stack. The first write is the stack's first
+deploy (or the partial record a failed first deploy saves), or
+`cdkd import` creating the record. The id is kept until the record is
+deleted (`cdkd destroy`, `cdkd state destroy`, `cdkd state orphan`,
+`cdkd export`, or `cdkd rollback` of a first deploy), so a stack created
+again gets a new one. A record without the field, which is every record an
+older cdkd wrote, belongs to a stack created before the field existed; it
+keeps no id. cdkd never prints the id.
+
+A first deploy writes the id to `stack-instance.json` beside `state.json`
+before it creates any resource, and deletes that object once `state.json`
+holds the id. A first deploy interrupted before its record was written
+leaves the object, and the next deploy of the stack takes the id from it.
+
+Nothing reads the id yet: resource names are unchanged.
 
 ## `provisionedBy`: which route owns a resource
 

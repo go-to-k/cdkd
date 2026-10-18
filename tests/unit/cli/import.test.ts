@@ -164,6 +164,10 @@ const mockGetState = vi.fn<
   ) => Promise<{ state: unknown; etag: string; migrationPending?: boolean } | null>
 >();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
+// go-to-k/cdkd#5064: the stack-instance id assigned on an import's first write.
+const mockStackInstanceIdForFirstWrite = vi
+  .fn<(...args: unknown[]) => Promise<string>>()
+  .mockResolvedValue('00000000-0000-4000-8000-000000000000');
 // go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 // go-to-k/cdkd#4705: the stack registry the import claims after writing.
@@ -179,6 +183,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     verifyBucketExists: mockVerifyBucketExists,
     getState: mockGetState,
     saveState: mockSaveState,
+    stackInstanceIdForFirstWrite: mockStackInstanceIdForFirstWrite,
     markRollbackJournalImported: mockMarkRollbackJournalImported,
     getRegistryMarker: registry.getRegistryMarker,
     claimRegistryMarker: registry.claimRegistryMarker,

@@ -14,6 +14,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   STATE_SCHEMA_VERSIONS_READABLE,
   describeRegionValueKind,
+  stackInstanceIdCarriedFrom,
   type StackState,
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -29,6 +30,11 @@ import {
   parseCreateTokenLedger,
   type CreateTokenLedgerDoc,
 } from './create-token-ledger.js';
+import {
+  STACK_INSTANCE_SIBLING_FILE,
+  parseStackInstanceSibling,
+  stackInstanceSiblingBody,
+} from './stack-instance-id.js';
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
@@ -204,6 +210,10 @@ const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
 const ROLLBACK_JOURNAL_OBJECT_DESCRIPTION =
   'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim';
 
+/** `objectDescription` for the write-ahead stack instance id (go-to-k/cdkd#5064). */
+const STACK_INSTANCE_OBJECT_DESCRIPTION =
+  "the write-ahead stack instance id, from which a stack's generated resource names derive";
+
 /** `objectDescription` for a stack's state record (go-to-k/cdkd#2346 sites 1-3). */
 const STATE_RECORD_OBJECT_DESCRIPTION =
   "the stack's state record, which carries every resource's recorded properties and attributes";
@@ -236,6 +246,11 @@ export class S3StateBackend {
   private readonly journalsReadAbsent = new Set<string>();
   /** Per journal key, how many times a non-read access asked for it. */
   private readonly journalTouches = new Map<string, number>();
+  /**
+   * go-to-k/cdkd#5064: by sibling key, the id a `stack-instance.json` this
+   * process read or wrote holds, until a state save carrying it deletes it.
+   */
+  private readonly pendingStackInstanceSiblings = new Map<string, string>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -381,6 +396,10 @@ export class S3StateBackend {
    * Get the create-token ledger S3 key -- a sibling of `state.json`
    * (go-to-k/cdkd#4438, `src/state/create-token-ledger.ts`).
    */
+  private getStackInstanceKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/${STACK_INSTANCE_SIBLING_FILE}`;
+  }
+
   private getCreateTokenLedgerKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/create-tokens.json`;
   }
@@ -723,6 +742,7 @@ export class S3StateBackend {
     // Normalize the body: schema version + region are load-bearing on disk.
     const body: StackState = {
       ...state,
+      ...stackInstanceIdCarriedFrom(state),
       version: STATE_SCHEMA_VERSION_CURRENT,
       stackName,
       region,
@@ -783,6 +803,15 @@ export class S3StateBackend {
       // The create-token ledger records that this lineage has a state record
       // (go-to-k/cdkd#4438). Never throws.
       await notifyStateSaved(stackName, region);
+      // go-to-k/cdkd#5064: the record now carries the write-ahead id, so its
+      // sibling has done its job. Only when the saved body carries THAT id:
+      // a save without it leaves the sibling for the re-run to read.
+      const siblingKey = this.getStackInstanceKey(stackName, region);
+      const pendingId = this.pendingStackInstanceSiblings.get(siblingKey);
+      if (pendingId !== undefined && body.stackInstanceId === pendingId) {
+        this.pendingStackInstanceSiblings.delete(siblingKey);
+        await this.dropStackInstanceSiblingAfterSave(stackName, region);
+      }
       return response.ETag;
     } catch (error) {
       if ((error as { name: string }).name === 'PreconditionFailed') {
@@ -826,6 +855,11 @@ export class S3StateBackend {
     // system back to the next deploy, while a record that outlives its ledger
     // only makes an interrupted create's re-run refuse.
     await this.deleteCreateTokenLedger(stackName, region);
+    // go-to-k/cdkd#5064: the stack's lifetime ends with its record, so a
+    // write-ahead id that outlived it must not be read back by the stack's
+    // next first deploy. Fail-closed, like the ledger above: a surviving id
+    // would make the recreated stack ask for the names its predecessor held.
+    await this.deleteStackInstanceSibling(stackName, region);
     try {
       this.logger.debug(`Deleting state: ${this.stackRef(stackName, region)}`);
 
@@ -904,7 +938,14 @@ export class S3StateBackend {
       // journal — strictly worse than the reverse. `deleteRollbackJournal` is
       // best-effort and never throws, so it cannot replace the in-flight
       // StateError.
-      await this.deleteRollbackJournal(stackName, region);
+      // The sibling's earlier versions go beside it (go-to-k/cdkd#5064);
+      // `purgeNoncurrentVersions` never throws either.
+      await Promise.all([
+        this.deleteRollbackJournal(stackName, region),
+        this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
+          objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
+        }),
+      ]);
     }
   }
 
@@ -2016,6 +2057,160 @@ export class S3StateBackend {
   }
 
   /**
+   * The stack instance id for a stack's FIRST state write (state schema v13,
+   * go-to-k/cdkd#5064). Call it only while the stack has no `state.json`,
+   * under the stack lock: an ordinary deploy, whose record carries the id
+   * (or none, as a legacy stack), never reaches here.
+   *
+   * A `stack-instance.json` sibling an earlier run wrote is READ BACK and its
+   * id returned: a re-run after a crash must never mint a fresh one. Without
+   * one a fresh `crypto.randomUUID()` is minted and, with `writeAhead`
+   * (a deploy, before its first create), written with `If-None-Match: *`; a
+   * lost race (412) reads the winner's back. `cdkd import` passes
+   * `writeAhead: false`: it creates nothing, and its state save is its first
+   * write. The first state save carrying the id deletes the sibling.
+   *
+   * Throws a `StateError` naming the stack (never the id) when the sibling
+   * cannot be read or written, or holds a body this binary cannot read, so
+   * the deploy stops before any create.
+   *
+   * INVARIANT: only a binary that also derives generated names from the id
+   * may mint one. A record carrying an id says its resources were named with
+   * it; an id minted beside the legacy `{stack}-{logicalId}` names would make
+   * the next binary derive different names, and an IAM provider re-deriving
+   * its name inside `update()` would replace the live resource.
+   */
+  async stackInstanceIdForFirstWrite(
+    stackName: string,
+    region: string,
+    options: { writeAhead: boolean }
+  ): Promise<string> {
+    const key = this.getStackInstanceKey(stackName, region);
+    const read = async (): Promise<string | null> => {
+      const body = await this.getRawObject(key);
+      if (body === null) return null;
+      const id = parseStackInstanceSibling(body);
+      if (id === null) {
+        throw new StateError(
+          `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+            `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json) is in a format this cdkd version ` +
+            'cannot read; upgrade cdkd, or delete that object if it is damaged'
+        );
+      }
+      return id;
+    };
+    try {
+      const existing = await read();
+      if (existing !== null) {
+        this.pendingStackInstanceSiblings.set(key, existing);
+        this.logger.debug(
+          safeMsg`Reusing the write-ahead stack instance id of ${displayStackName(stackName)}`
+        );
+        return existing;
+      }
+      const minted = randomUUID();
+      if (!options.writeAhead) return minted;
+      await this.ensureClientForBucket();
+      const body = stackInstanceSiblingBody(minted);
+      try {
+        await this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            Body: body,
+            ContentLength: Buffer.byteLength(body),
+            ContentType: 'application/json',
+            IfNoneMatch: '*',
+          })
+        );
+      } catch (error) {
+        if (isNotImplemented(error)) {
+          // An endpoint without conditional writes: the read above, under the
+          // stack lock, stands in for the condition.
+          await this.putRawObject(key, body);
+          this.pendingStackInstanceSiblings.set(key, minted);
+          return minted;
+        }
+        if (!isConditionFailure(error)) throw error;
+        // Another writer got there first (412), or is writing now (409):
+        // its id is the stack's.
+        const winner = await read();
+        if (winner === null) throw error;
+        this.pendingStackInstanceSiblings.set(key, winner);
+        return winner;
+      }
+      this.pendingStackInstanceSiblings.set(key, minted);
+      return minted;
+    } catch (error) {
+      if (error instanceof StateError) throw error;
+      // The SDK's own text can carry the raw key: name the stack through
+      // `stackRef` instead.
+      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
+      throw new StateError(
+        `Failed to read or write the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
+          'Nothing was created; re-run once the state bucket can be written.',
+        normalized
+      );
+    }
+  }
+
+  /**
+   * Delete the stack's `stack-instance.json`. An absent one is fine; any other
+   * failure throws a `StateError`, so {@link deleteState} stops before the
+   * record goes with the id still readable.
+   */
+  async deleteStackInstanceSibling(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getStackInstanceKey(stackName, region);
+    this.pendingStackInstanceSiblings.delete(key);
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'DeleteObject',
+      });
+      throw new StateError(
+        `Failed to delete the write-ahead stack instance id for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}. ` +
+          'The state record was left in place; re-run once that object can be deleted.',
+        normalized
+      );
+    }
+  }
+
+  /**
+   * After the first state save carrying the id: delete the sibling and purge
+   * its earlier versions. Best-effort and never throws: the record is
+   * authoritative now, and a sibling that survives is read only while the
+   * stack has no record, which {@link deleteState} (deleting it first) ends.
+   */
+  private async dropStackInstanceSiblingAfterSave(
+    stackName: string,
+    region: string
+  ): Promise<void> {
+    try {
+      await this.deleteStackInstanceSibling(stackName, region);
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+      );
+      return;
+    }
+    await this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
+      objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
+    });
+  }
+
+  /**
    * Load the rollback journal for a stack (issue #1183). Returns `null` when
    * no journal exists (the common case — a journal only lives between a
    * failed/interrupted deploy and its `cdkd rollback`). Throws
@@ -2549,7 +2744,9 @@ export class S3StateBackend {
     // folds because it compares two AWS-supplied regions, not a record against
     // its own key.
     if (raw === region) return { state };
-    if (raw === undefined) return { state: { ...state, region } };
+    if (raw === undefined) {
+      return { state: { ...state, ...stackInstanceIdCarriedFrom(state), region } };
+    }
 
     // The VALUE is withheld from this warn, which prints at default verbosity.
     // It is body content, and a region a record supplies is precisely the
@@ -2589,7 +2786,10 @@ export class S3StateBackend {
           ? `${kind}, which renders as nothing — its kind above is the whole of it.`
           : `${displayIdent(raw)}.`)
     );
-    return { state: { ...state, region }, divergentBodyRegion: raw };
+    return {
+      state: { ...state, ...stackInstanceIdCarriedFrom(state), region },
+      divergentBodyRegion: raw,
+    };
   }
 
   private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {

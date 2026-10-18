@@ -252,7 +252,7 @@ resource, keyed by its logical ID from the template.
 
 | Field | Meaning |
 | --- | --- |
-| `version` | The [schema version](state-management-schema-versions.md); currently `12` |
+| `version` | The [schema version](state-management-schema-versions.md); currently `13` |
 | `stackName`, `region` | The stack, and the region its resources are in |
 | `resources` | One entry per resource, keyed by logical ID |
 | `outputs` | Each stack output's name and resolved value |
@@ -262,6 +262,7 @@ resource, keyed by its logical ID from the template.
 | `skippedOutputs` | Outputs the last deploy [could not resolve](state-management-schema-versions.md#an-output-the-deploy-could-not-resolve) |
 | `orphans` | Resources a rollback left in AWS and stopped listing under `resources` |
 | `parentStack`, `parentLogicalId`, `parentRegion` | Present only on a nested stack's record |
+| `stackInstanceId` | The id of the stack's [current lifetime](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack); absent on a stack created before the field existed |
 | `lastModified` | Time of the last write, in Unix milliseconds |
 
 Three of these fields change what a command does:

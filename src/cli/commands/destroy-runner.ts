@@ -72,7 +72,12 @@ import {
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { withStackName } from '../../provisioning/resource-name.js';
-import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
+import {
+  shouldRetainResource,
+  stackInstanceIdCarriedFrom,
+  type ResourceState,
+  type StackState,
+} from '../../types/state.js';
 import {
   accountArgs,
   withheldAccountClause,
@@ -1770,6 +1775,7 @@ async function destroyStackInRegion(
     );
     return {
       ...rest,
+      ...stackInstanceIdCarriedFrom(state),
       ...(keepEvidence && _imports !== undefined && { imports: _imports }),
       ...(keepEvidence && _outputReads !== undefined && { outputReads: _outputReads }),
       resources: { ...remainingResources },

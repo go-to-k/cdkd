@@ -49,6 +49,7 @@ import {
   type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
+  stackInstanceIdCarriedFrom,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -1172,6 +1173,7 @@ export class DeployEngine {
     const outputReferenceProvenance = this.outputReferenceProvenanceFor(state.outputs, outputs);
     return {
       ...rest,
+      ...stackInstanceIdCarriedFrom(state),
       resources,
       outputs,
       ...(orphans === undefined ? {} : { orphans }),
@@ -1417,6 +1419,7 @@ export class DeployEngine {
     const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
     return {
       ...redacted,
+      ...stackInstanceIdCarriedFrom(redacted),
       parentStack,
       parentLogicalId,
       parentRegion,
