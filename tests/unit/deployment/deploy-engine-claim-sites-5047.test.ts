@@ -133,4 +133,57 @@ describe('engine writers state the mark as the claim, in both directions (#5047)
     expect(restore(true)).toEqual({ Url: FRAMED_PERSISTED });
     expect(restore(false)).toEqual({ Url: FRAMED_RESOLVED });
   });
+
+  it('the orphan save (`redactStateForPersist`): marked bags hold the token, unmarked ones their plaintext', () => {
+    const persist = (marked: boolean): { properties: unknown; observedProperties: unknown } => {
+      const engine = makeBareEngine();
+      const run = (
+        engine as unknown as {
+          secretsRun: {
+            perResourceSecrets: Map<string, RecordedSecretValues>;
+            perResourceTemplateProps: Map<string, Record<string, unknown>>;
+            perResourceResolvedType: Map<string, string>;
+          };
+        }
+      ).secretsRun;
+      run.perResourceSecrets.set('Fn', pass());
+      run.perResourceTemplateProps.set('Fn', { Url: SOURCE_LEAF });
+      run.perResourceResolvedType.set('Fn', 'AWS::Lambda::Function');
+      const properties = { Url: RESOLVED_LEAF };
+      const observed = { Url: RESOLVED_LEAF };
+      const persisted = (
+        engine as unknown as {
+          redactStateForPersist(state: unknown): {
+            orphans: Array<{ state: { properties: unknown; observedProperties: unknown } }>;
+          };
+        }
+      ).redactStateForPersist({
+        version: 12,
+        stackName: 'S',
+        resources: {},
+        outputs: {},
+        orphans: [
+          {
+            logicalId: 'Fn',
+            orphanedAt: 0,
+            state: {
+              physicalId: 'fn',
+              resourceType: 'AWS::Lambda::Function',
+              properties: marked ? markSameGenerationBag(properties) : properties,
+              observedProperties: marked ? markSameGenerationBag(observed) : observed,
+            },
+          },
+        ],
+      });
+      return persisted.orphans[0]!.state;
+    };
+    expect(persist(true)).toMatchObject({
+      properties: { Url: SOURCE_LEAF },
+      observedProperties: { Url: SOURCE_LEAF },
+    });
+    expect(persist(false)).toMatchObject({
+      properties: { Url: RESOLVED_LEAF },
+      observedProperties: { Url: RESOLVED_LEAF },
+    });
+  });
 });

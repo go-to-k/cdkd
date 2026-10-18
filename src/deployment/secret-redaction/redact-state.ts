@@ -640,6 +640,12 @@ function redactOverlappingMatches(
   return out + value.slice(cursor);
 }
 
+/** The same-generation claim per bag {@link scrubResourceRecord} walks; absent is `unproven`. */
+export interface ScrubGenerationClaims {
+  readonly properties?: 'same-generation' | 'unproven';
+  readonly observed?: 'same-generation' | 'unproven';
+}
+
 /**
  * Redact resolved secret plaintext out of one resource state record's
  * `properties` / `attributes` / `observedProperties`, replacing each secret
@@ -672,12 +678,6 @@ function redactOverlappingMatches(
  * (`propertiesToRecord`, `drainObservedCaptures`) states what the mark says at
  * its call site.
  */
-/** The same-generation claim per bag {@link scrubResourceRecord} walks; absent is `unproven`. */
-export interface ScrubGenerationClaims {
-  readonly properties?: 'same-generation' | 'unproven';
-  readonly observed?: 'same-generation' | 'unproven';
-}
-
 export function scrubResourceRecord<
   T extends {
     properties: Record<string, unknown>;
