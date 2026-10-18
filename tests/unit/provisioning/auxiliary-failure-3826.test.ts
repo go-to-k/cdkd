@@ -98,7 +98,7 @@ import { codeLines } from '../_code-lines.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);

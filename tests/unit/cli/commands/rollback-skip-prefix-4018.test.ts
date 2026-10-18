@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 /**
  * Issue #4018: `cdkd deploy` derives a user-supplied physical name inside
  * `withSkipPrefix(<resolved flag>)`, but `cdkd rollback` replayed its journal
- * inside `withStackName` alone, so a provider that rewrites even an explicit
+ * inside `withStackScope` alone, so a provider that rewrites even an explicit
  * name (`generateResourceNameWithFallback`: IAM Role / User / Group /
  * InstanceProfile / ManagedPolicy, ELBv2 LB / TG) re-created the old resource
  * under `<stack>-<name>` although the deploy had created `<name>`.

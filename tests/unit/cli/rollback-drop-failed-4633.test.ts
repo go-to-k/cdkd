@@ -635,7 +635,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       if (id === 'Stuck') throw new Error('AccessDeniedException');
     });
     const orphans: JournaledOrphans = { segments: [{ segment: seg([]), ops: [stream('Stuck'), stream('Gone')] as never }], count: 2 };
-    const outcome = await deleteJournaledOrphans(orphans, {}, 'S', ctx);
+    const outcome = await deleteJournaledOrphans(orphans, {}, 'S', undefined, ctx);
     expect(outcome.failures).toBe(1);
     const text = warned(logger);
     expect(text).toContain('Drop with: cdkd rollback S --stack-region us-east-1 --drop-failed Stuck');
@@ -644,7 +644,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
 
   it('says nothing when every delete succeeded, or when the caller prints its own warning', async () => {
     const ok = ctxWith(async () => undefined);
-    await deleteJournaledOrphans({ segments: [{ segment: seg([]), ops: [stream('Gone')] as never }], count: 1 }, {}, 'S', ok.ctx);
+    await deleteJournaledOrphans({ segments: [{ segment: seg([]), ops: [stream('Gone')] as never }], count: 1 }, {}, 'S', undefined, ok.ctx);
     expect(warned(ok.logger)).not.toContain('--drop-failed');
     const failing = ctxWith(async () => {
       throw new Error('AccessDeniedException');
@@ -653,6 +653,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       { segments: [{ segment: seg([]), ops: [stream('Stuck')] as never }], count: 1 },
       {},
       'S',
+      undefined,
       failing.ctx,
       { pointAtDrop: false }
     );
@@ -665,6 +666,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       { segments: [{ segment: seg([]), ops: [stream('Unreached')] as never }], count: 1 },
       {},
       'S',
+      undefined,
       ctx,
       { isInterrupted: () => true }
     );
@@ -687,6 +689,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -723,6 +726,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -763,6 +767,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -793,6 +798,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -826,6 +832,7 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
         dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
       };
       const left = await settleJournaledOrphansOnSuccess({
+        stackInstanceId: undefined,
         stateBackend: stateBackend as never,
         stackName: 'S',
         region: REGION,

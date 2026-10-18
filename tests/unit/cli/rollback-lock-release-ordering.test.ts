@@ -78,7 +78,7 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/resource-name.js', () => ({
-  withStackName: (_name: string, fn: () => unknown) => fn(),
+  withStackScope: (_name: string, fn: () => unknown) => fn(),
   withSkipPrefix: (_skip: boolean, fn: () => unknown) => fn(),
   getCurrentSkipPrefix: () => true,
   // The rollback masker reads the type's name property (issue #4037).

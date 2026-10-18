@@ -14,7 +14,9 @@ import {
 } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
-import { GeneratedNameGuard } from '../generated-name-guard.js';
+import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
+import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import { flushKeptForReadoption } from './delete.js';
 import {
   adoptRollbackOrphans,
@@ -216,6 +218,31 @@ export async function doDeployWithPrefetch(
       lastModified: Date.now(),
     };
     const currentEtag = currentStateData?.etag;
+    // go-to-k/cdkd#5064: the scope every generated name of this deploy is
+    // derived in -- the record's stack instance id (`undefined` for a legacy
+    // record, and for a first deploy until `resolveStackInstanceId` below
+    // sets it; a `--dry-run` first deploy never has one). A malformed
+    // recorded id is refused here, before anything acts.
+    stackInstanceIdOf(currentState, displayStackName(stackName));
+    const nameScope = (): StackScope => ({
+      stackName,
+      stackInstanceId: stackInstanceIdOf(currentState, displayStackName(stackName)),
+    });
+    // A first deploy: its id is resolved once it is going ahead.
+    const idArrivesLater =
+      (currentStateData === null || currentStateData === undefined) &&
+      currentState.stackInstanceId === undefined;
+    // go-to-k/cdkd#5064: what an earlier lifetime of this stack kept here
+    // (`retained.json`). The new lifetime's names differ, so none of it is
+    // taken back; the deploy says so once, below. Read at once, beside the
+    // diff, and shared with the generated-name guard.
+    const retainedAtFirstDeploy =
+      idArrivesLater && !engine.options.dryRun
+        ? engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion)
+        : undefined;
+    // Its failure is the guard's to report (it refuses on unreadable
+    // evidence); the warning below only reads a successful answer.
+    const retainedForWarning = retainedAtFirstDeploy?.catch(() => null);
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
@@ -399,6 +426,9 @@ export async function doDeployWithPrefetch(
         command: 'deploy',
         logger: engine.logger,
         stateResources: currentState.resources,
+        // A first deploy has no id yet: only the legacy name shapes are
+        // recognized there, and the sent bag still names what it sent.
+        stackInstanceId: nameScope().stackInstanceId,
         // A CREATE that completed is RESUMED when the template still declares
         // its logical id with the type and the journal holds the bag it sent
         // (no secret mask: the create path compares that bag with what it
@@ -1588,7 +1618,7 @@ export async function doDeployWithPrefetch(
       engine.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
     ).abandonedRunEndedBy?.(stackName, engine.stackRegion);
     if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
-    engine.generatedNameGuard = GeneratedNameGuard.start({
+    const generatedNameGuardInput: GeneratedNameGuardInput = {
       stackName,
       region: engine.stackRegion,
       changes: changes.values(),
@@ -1596,7 +1626,9 @@ export async function doDeployWithPrefetch(
       records: currentState.resources,
       orphans: currentState.orphans,
       loadJournal: () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
-      loadRetained: () => engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
+      loadRetained: () =>
+        retainedAtFirstDeploy ??
+        engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
       loadKeptInHistory: () => {
         const reader = new DeploymentEventsReader(engine.stateBackend);
         return loadKeptInHistory(
@@ -1613,12 +1645,22 @@ export async function doDeployWithPrefetch(
       warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.
       ...(abandonedRunAt !== undefined && { abandonedRunAt }),
-    });
-    if (engine.generatedNameGuard !== undefined) {
-      engine.logger.debug(
-        safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
+    };
+    // go-to-k/cdkd#5064: the planned names are derived in the stack's naming
+    // scope. A first deploy has no instance id until it is going ahead (past
+    // the prompt below), so its lookups start then, before the first create;
+    // a stack with a record looks up now, overlapping the checks and prompt.
+    const startGeneratedNameGuard = (): void => {
+      engine.generatedNameGuard = withStackScope(nameScope(), () =>
+        GeneratedNameGuard.start(generatedNameGuardInput)
       );
-    }
+      if (engine.generatedNameGuard !== undefined) {
+        engine.logger.debug(
+          safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
+        );
+      }
+    };
+    if (!idArrivesLater) startGeneratedNameGuard();
 
     // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
     // is checked against the bucket's other state prefixes BEFORE the approval
@@ -1657,9 +1699,6 @@ export async function doDeployWithPrefetch(
     // it are read again at each create.
     if (prompted) engine.generatedNameGuard?.noteApprovalPrompted();
     startProvenanceCapture();
-    // The one intent write (review P1): past the prompt and the destructive
-    // check, under the lock, before the first create (each awaits it).
-    engine.generatedNameGuard?.recordPlannedIntents();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path
@@ -1675,6 +1714,21 @@ export async function doDeployWithPrefetch(
     engine.resolver.resetPhysicalIdFallbackCount();
 
     await resolveStackInstanceId();
+    if (idArrivesLater) {
+      startGeneratedNameGuard();
+      const kept = (await retainedForWarning) ?? [];
+      if (kept.length > 0) {
+        engine.logger.warn(
+          safeMsg`An earlier deployment of ${displayStackName(stackName)} kept ${String(kept.length)} ` +
+            'resource(s) here (DeletionPolicy: Retain, or cdkd state orphan). This deploy does not take ' +
+            'them back: it creates new resources under new names, as CloudFormation does. To manage a ' +
+            "kept resource again, adopt it with 'cdkd import'."
+        );
+      }
+    }
+    // The one intent write (review P1): past the prompt and the destructive
+    // check, under the lock, before the first create (each awaits it).
+    engine.generatedNameGuard?.recordPlannedIntents();
 
     // Progress counter for tracking overall deployment progress
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
@@ -1689,20 +1743,22 @@ export async function doDeployWithPrefetch(
       // go-to-k/cdkd#4174: for the child engine a nested-stack row builds.
       () => producerRegionEvidence(engine.rollbackDeps(), currentState),
       () =>
-        executeDeployment(
-          engine,
-          effectiveTemplate,
-          currentState,
-          changes,
-          dag,
-          executionLevels,
-          stackName,
-          outputsDigestSource,
-          parameterValues,
-          conditions,
-          currentEtag,
-          progress,
-          migrationPending
+        withStackScope(nameScope(), () =>
+          executeDeployment(
+            engine,
+            effectiveTemplate,
+            currentState,
+            changes,
+            dag,
+            executionLevels,
+            stackName,
+            outputsDigestSource,
+            parameterValues,
+            conditions,
+            currentEtag,
+            progress,
+            migrationPending
+          )
         )
     );
 

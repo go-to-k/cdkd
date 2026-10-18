@@ -402,8 +402,12 @@ export class SQSQueueProvider implements ResourceProvider {
         })
       );
 
+      // go-to-k/cdkd#5064: an un-named queue's name is the one its URL
+      // carries, never a re-derivation, which a v13 stack's legacy-named
+      // queue (an import) would not reproduce.
       const queueName =
         (properties['QueueName'] as string | undefined) ||
+        physicalId.split('/').pop() ||
         generateResourceName(logicalId, { maxLength: 80 });
 
       return {

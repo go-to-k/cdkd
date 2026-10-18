@@ -240,6 +240,7 @@ describe('settleJournaledOrphansOnSuccess: a replacement orphan (go-to-k/cdkd#46
     };
     const foreignHolder = vi.fn(async () => undefined);
     const outcome = settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'Stack',
       region: 'us-east-1',
@@ -777,6 +778,7 @@ describe("the success settle clears a replacement orphan's failed UPDATE with it
     };
     const drop = vi.fn().mockResolvedValue(2);
     const outcome = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
         reduceRollbackJournalToFailedOperations: vi.fn(),

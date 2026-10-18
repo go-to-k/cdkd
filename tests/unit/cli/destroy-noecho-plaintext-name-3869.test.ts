@@ -68,7 +68,7 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import {
   generateResourceNameWithFallback,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
@@ -258,7 +258,7 @@ describe('cdkd destroy masks a name taken from a NoEcho value since CHANGED (go-
   const ROLE_PADDING = '-padding-past-the-iam-limit-0123456789abcdef0123456789';
   const OLD_ROLE_LEAF = `OldRoleTok1${ROLE_PADDING}`;
   // What the deploy derived, in the stack's naming scope.
-  const OLD_ROLE_ID = withStackName('NoEchoStack', () =>
+  const OLD_ROLE_ID = withStackScope({ stackName: 'NoEchoStack', stackInstanceId: undefined }, () =>
     generateResourceNameWithFallback(OLD_ROLE_LEAF, 'Role', { maxLength: 64 })
   );
   const CHANGED_TEMPLATE = {

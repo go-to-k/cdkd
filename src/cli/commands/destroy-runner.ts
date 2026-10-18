@@ -71,7 +71,8 @@ import {
   readProtection,
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import { withStackScope } from '../../provisioning/resource-name.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   shouldRetainResource,
   stackInstanceIdCarriedFrom,
@@ -917,6 +918,7 @@ async function destroyStackInRegion(
     command: 'destroy',
     logger,
     stateResources: state.resources,
+    stackInstanceId: stackInstanceIdOf(state, displayStackName(stackName)),
     underLock: async (settle) => {
       const held = await acquireStackLock({
         ...stackLockBase,
@@ -1872,6 +1874,7 @@ async function destroyStackInRegion(
         journaledUnderLock,
         { ...state.resources },
         stackName,
+        stackInstanceIdOf(state, displayStackName(stackName)),
         {
           providerRegistry: destroyProviderRegistry,
           region: regionForState,
@@ -2027,9 +2030,14 @@ async function destroyStackInRegion(
     // A name its provider DERIVED from a plaintext one (the stack-name prefix
     // and the truncation `generateResourceNameWithFallback` applies) is
     // spelled in this stack's naming scope, as the deploy that created it
-    // derived it; a destroy binds none of its own.
+    // derived it (go-to-k/cdkd#5064: its lifetime too); a destroy binds none
+    // of its own.
+    const namingScope = {
+      stackName,
+      stackInstanceId: stackInstanceIdOf(state, displayStackName(stackName)),
+    };
     const printingBagOf = (logicalId: string): RecordedSecretValues =>
-      withStackName(stackName, () => judgedBagOf(logicalId));
+      withStackScope(namingScope, () => judgedBagOf(logicalId));
 
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {

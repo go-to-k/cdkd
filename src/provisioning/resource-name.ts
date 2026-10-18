@@ -2,58 +2,81 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
 /**
- * Per-async-context stack name. Resource-name generation reads this so that
- * concurrent deploys (`cdkd deploy --all` runs stacks in parallel up to
- * `--stack-concurrency`) don't fight over a single shared variable.
+ * The stack a resource name is generated for: its name, and the id of its
+ * current lifetime (state schema v13, go-to-k/cdkd#5064).
  *
- * History: this was `let currentStackName: string | undefined` until
- * 2026-05-01. Two parallel `deploy()` calls would each call
- * `setCurrentStackName(...)` and the second would overwrite the first;
- * any IAM Role / SQS Queue / etc. created by the first stack while the
- * second was active would get the second stack's prefix in its physical
- * name, then the second stack's own create attempt for the same logical
- * id would collide ("Role with name X already exists"). Switching to
- * `AsyncLocalStorage` scopes the value to each deploy's async chain.
+ * `stackInstanceId` is `undefined` for a LEGACY stack (a record written before
+ * v13, which keeps the deterministic `{stackName}-{logicalId}` names for all
+ * its resources) and, by an explicit decision at the call site, where only
+ * declared names are derived. A stack WITH an id gets CloudFormation-style
+ * `{stackName}-{logicalId}-{suffix}` names for what it does not name itself
+ * ({@link generateResourceName}), so a recreated stack never asks for the
+ * names its predecessor left behind.
  */
-const stackNameStore = new AsyncLocalStorage<string>();
+export interface StackScope {
+  stackName: string;
+  stackInstanceId: string | undefined;
+}
 
 /**
- * Run `fn` with `stackName` set as the stack name visible to
- * `generateResourceName` for the duration of the callback (and any
- * `await`s inside). Concurrent invocations each get an independent scope
- * — this is the safe API for parallel deploys.
+ * Per-async-context stack scope. Resource-name generation reads this so that
+ * concurrent deploys (`cdkd deploy --all` runs stacks in parallel up to
+ * `--stack-concurrency`) don't fight over a single shared variable: each
+ * deploy's async chain carries its own scope.
  */
-export function withStackName<T>(stackName: string, fn: () => Promise<T>): Promise<T>;
-export function withStackName<T>(stackName: string, fn: () => T): T;
-export function withStackName<T>(stackName: string, fn: () => T | Promise<T>): T | Promise<T> {
-  return stackNameStore.run(stackName, fn);
+const stackScopeStore = new AsyncLocalStorage<StackScope & { beforeStateRead?: true }>();
+
+/**
+ * Run `fn` in a scope that knows the stack's NAME but not yet its instance
+ * id, because the state record carrying it has not been read: the deploy
+ * engine's outer scope, around a deploy that opens the id-bearing
+ * {@link withStackScope} right after its state read. A generated name derived
+ * in it THROWS instead of falling back to the legacy scheme, which on a v13
+ * stack would name (or, in an IAM `update()`, replace) a resource under the
+ * wrong lifetime; declared names, the stack name and the prefix flag work.
+ */
+export function withStackScopeBeforeStateRead<T>(
+  stackName: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  return stackScopeStore.run({ stackName, stackInstanceId: undefined, beforeStateRead: true }, fn);
+}
+
+/**
+ * Run `fn` with `scope` visible to {@link generateResourceName} for the
+ * duration of the callback (and any `await`s inside). Concurrent invocations
+ * each get an independent scope. Both fields are required, so every call site
+ * states which lifetime's names it derives; an inner scope replaces an outer
+ * one for its callback.
+ */
+export function withStackScope<T>(scope: StackScope, fn: () => Promise<T>): Promise<T>;
+export function withStackScope<T>(scope: StackScope, fn: () => T): T;
+export function withStackScope<T>(scope: StackScope, fn: () => T | Promise<T>): T | Promise<T> {
+  // Copied: a caller mutating its object afterwards must not rename anything.
+  return stackScopeStore.run(
+    { stackName: scope.stackName, stackInstanceId: scope.stackInstanceId },
+    fn
+  );
 }
 
 /**
  * Read the current async context's stack name, if any.
  *
- * Returns `undefined` outside any `withStackName` / `setCurrentStackName`
- * scope. Used by the live renderer to scope per-stack in-flight task
- * entries so concurrent deploys don't clobber each other's tasks (same
- * `logicalId` in two stacks would collide on the singleton renderer's
- * task Map without this).
+ * Returns `undefined` outside any {@link withStackScope}. Also used by the
+ * live renderer to scope per-stack in-flight task entries so concurrent
+ * deploys don't clobber each other's tasks.
  */
 export function getCurrentStackName(): string | undefined {
-  return stackNameStore.getStore();
+  return stackScopeStore.getStore()?.stackName;
 }
 
 /**
- * Set the current async context's stack name.
- *
- * @deprecated Use {@link withStackName} for new code — it makes the scope
- *   obvious at the call site. This setter now uses
- *   `AsyncLocalStorage.enterWith` so it remains safe under
- *   `--stack-concurrency > 1` (each `deploy()` call has its own async
- *   resource, so the value does NOT leak across siblings), but
- *   `withStackName` is structurally clearer.
+ * The current scope's stack instance id: `undefined` outside a scope, for a
+ * legacy stack, and where the call site opened a declared-names-only scope.
+ * Never log it: the names derived from it must not be predictable from a log.
  */
-export function setCurrentStackName(stackName: string): void {
-  stackNameStore.enterWith(stackName);
+export function getCurrentStackInstanceId(): string | undefined {
+  return stackScopeStore.getStore()?.stackInstanceId;
 }
 
 /**
@@ -74,12 +97,12 @@ const skipPrefixStore = new AsyncLocalStorage<boolean>();
 
 /**
  * Run `fn` with the "skip prefix on user-supplied names" flag set to
- * `skip`. Mirrors {@link withStackName} — concurrent invocations each
+ * `skip`. Mirrors {@link withStackScope} — concurrent invocations each
  * get an independent scope so parallel deploys do not fight over a
  * single shared variable.
  *
- * Wrap this around `withStackName(...)` (innermost is `fn`) in the
- * deploy CLI: `withSkipPrefix(flag, () => withStackName(name, body))`.
+ * Wrap this around `withStackScope(...)` (innermost is `fn`) in the
+ * deploy CLI: `withSkipPrefix(flag, () => withStackScope(scope, body))`.
  * Order does not matter — the two stores are independent — but
  * consistent ordering keeps the call sites readable.
  */
@@ -190,7 +213,7 @@ export const PATTERN_B_NAME_OPTIONS: Readonly<Record<string, ResourceNameOptions
  * with nothing drifted. Neither the prefix flag nor the stack a deploy ran
  * under is recorded, so both settings are tried, through the same
  * sanitize / truncate pipeline the provider ran. Call it inside the stack's
- * {@link withStackName} scope: with no stack name in scope the prefixed arm
+ * {@link withStackScope}: with no stack name in scope the prefixed arm
  * derives the bare name, and only a sanitize rewrite (`my_role` -> `my-role`)
  * is recognized.
  *
@@ -247,17 +270,57 @@ export interface ResourceNameOptions {
   userSupplied?: boolean;
 }
 
+/** Hex characters of a stack-instance name suffix. */
+export const STACK_INSTANCE_SUFFIX_LENGTH = 12;
+
+/**
+ * The per-stack-instance suffix of the generated name for `name` (go-to-k/cdkd#5064):
+ * the first 12 hex of sha256 over the id and the name, NUL-separated (a v4
+ * UUID holds no NUL, so no two inputs share a digest input). A pure function,
+ * so every re-derivation within one stack lifetime reproduces it, and one-way,
+ * so a name does not disclose the id.
+ */
+export function stackInstanceNameSuffix(stackInstanceId: string, name: string): string {
+  return createHash('sha256')
+    .update(stackInstanceId)
+    .update('\u0000')
+    .update(name)
+    .digest('hex')
+    .substring(0, STACK_INSTANCE_SUFFIX_LENGTH);
+}
+
 /**
  * Generate a unique resource name from the logical ID.
  *
- * Generates names in CloudFormation-compatible format:
- * `{StackName}-{LogicalId}-{Hash}` (truncated to maxLength).
+ * - Auto-generated (`userSupplied: false`) in a scope carrying a stack
+ *   instance id: `{StackName}-{LogicalId}-{suffix}`, CloudFormation-style, the
+ *   `{StackName}-{LogicalId}` part cut to `maxLength - 13` (go-to-k/cdkd#5064).
+ * - Otherwise (a legacy stack, no scope, or a declared name) exactly the
+ *   pre-v13 output: `{StackName}-{name}` (or the bare name), cut with an
+ *   8-hex hash only when it is longer than `maxLength`.
  *
  * @param name The raw name (from properties or logicalId fallback)
  * @param options Length and character constraints
  * @returns A sanitized, truncated name that fits the constraints
  */
 export function generateResourceName(name: string, options: ResourceNameOptions): string {
+  const scope = stackScopeStore.getStore();
+  if (scope?.beforeStateRead === true && options.userSupplied !== true) {
+    throw new Error(
+      `cdkd internal error: a generated name for ${name} was derived before the state record ` +
+        `of ${scope.stackName} was read, so it cannot carry the stack's instance id`
+    );
+  }
+  return deriveResourceName(name, options, scope?.stackName, scope?.stackInstanceId);
+}
+
+/** {@link generateResourceName} for an explicit scope. */
+function deriveResourceName(
+  name: string,
+  options: ResourceNameOptions,
+  currentStackName: string | undefined,
+  stackInstanceId: string | undefined
+): string {
   const {
     maxLength,
     lowercase = false,
@@ -272,7 +335,6 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
   // active — the user owns that name and cdkd should not rewrite it.
   // Every other path (logical-id fallback, no withSkipPrefix scope,
   // flag set to false) keeps the prefix for cross-stack uniqueness.
-  const currentStackName = stackNameStore.getStore();
   const shouldPrefix = currentStackName && !(userSupplied && getCurrentSkipPrefix());
   const fullName = shouldPrefix ? `${currentStackName}-${name}` : name;
 
@@ -282,6 +344,15 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
 
   // Collapse consecutive hyphens and remove leading/trailing
   sanitized = sanitized.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+
+  // go-to-k/cdkd#5064: only a name cdkd generates for a stack with an id gets
+  // the suffix. A declared name (prefixed or not) is the user's, and a legacy
+  // stack keeps its names byte for byte.
+  if (shouldPrefix && !userSupplied && stackInstanceId !== undefined) {
+    const suffix = stackInstanceNameSuffix(stackInstanceId, name);
+    const base = sanitized.substring(0, maxLength - suffix.length - 1).replace(/-+$/, '');
+    return base === '' ? suffix : `${base}-${suffix}`;
+  }
 
   if (sanitized.length <= maxLength) {
     return sanitized;
@@ -328,12 +399,20 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
  *
  * @param physicalId the name AWS currently holds for the existing resource
  * @param logicalId the template logical id of the resource being replaced
+ * A stack with an instance id (go-to-k/cdkd#5064) also generates
+ * `{prefix}-{suffix}`, and that form is accepted only with the EXACT suffix
+ * `stackInstanceId` derives for `logicalId` — never a bare `-<12 hex>` shape,
+ * which a user's own name can end with.
+ *
  * @param stackName the deploying stack's name (absent = unresolvable, `false`)
+ * @param stackInstanceId the stack's instance id (absent: a legacy stack, or
+ *   unknown, so only the pre-v13 forms are recognized)
  */
 export function looksLikeCdkdGeneratedName(
   physicalId: string,
   logicalId: string,
-  stackName: string | undefined
+  stackName: string | undefined,
+  stackInstanceId: string | undefined
 ): boolean {
   if (!physicalId || !logicalId || !stackName) return false;
   // The skeleton drops every separator the per-type `allowedPattern` could
@@ -343,6 +422,14 @@ export function looksLikeCdkdGeneratedName(
   const derived = skeleton(`${stackName}-${logicalId}`);
   const actual = skeleton(physicalId);
   if (actual === derived) return true;
+  if (stackInstanceId !== undefined) {
+    const suffix = stackInstanceNameSuffix(stackInstanceId, logicalId);
+    const suffixed = /^(.*)-([0-9a-f]{12})$/.exec(physicalId.toLowerCase());
+    if (suffixed !== null && suffixed[2] === suffix) {
+      const base = skeleton(suffixed[1]!);
+      if (base.length > 0 && derived.startsWith(base)) return true;
+    }
+  }
   // Truncated form: `{prefix}-{8 hex}` where prefix is a cut of the same
   // derivation. Require BOTH halves — a bare prefix match would accept a
   // template-supplied name that merely starts the same way.
@@ -383,6 +470,78 @@ export function generateResourceNameWithFallback(
     return generateResourceName(userSuppliedName, { ...options, userSupplied: true });
   }
   return generateResourceName(logicalId, { ...options, userSupplied: false });
+}
+
+/** A name {@link generateResourceNameWithFallback} treats as declared. */
+function isDeclaredName(value: unknown): boolean {
+  return value !== undefined && value !== '';
+}
+
+/**
+ * Is `recorded` the name cdkd generates for `logicalId` in the current
+ * scope's stack under EITHER naming scheme (go-to-k/cdkd#5064): the legacy
+ * `{stackName}-{logicalId}`, or the suffixed one -- with the scope's id, or,
+ * when the scope carries none, with the suffix's exact base and length?
+ *
+ * Only for {@link recordedGeneratedNameKept}, whose answer KEEPS a name: the
+ * shape arm is acceptable there, and nowhere a `true` would claim a name.
+ */
+function isGeneratedNameOfEitherScheme(
+  recorded: string,
+  logicalId: string,
+  options: Omit<ResourceNameOptions, 'userSupplied'>
+): boolean {
+  const scope = stackScopeStore.getStore();
+  if (!scope?.stackName || recorded === '') return false;
+  const opts: ResourceNameOptions = { ...options, userSupplied: false };
+  if (recorded === deriveResourceName(logicalId, opts, scope.stackName, undefined)) return true;
+  if (scope.stackInstanceId !== undefined) {
+    return recorded === deriveResourceName(logicalId, opts, scope.stackName, scope.stackInstanceId);
+  }
+  // Any well-formed id yields the same base: only the suffix differs.
+  const probe = deriveResourceName(
+    logicalId,
+    opts,
+    scope.stackName,
+    '00000000-0000-4000-8000-000000000000'
+  );
+  const base = probe.slice(0, probe.length - STACK_INSTANCE_SUFFIX_LENGTH);
+  return (
+    recorded.length === probe.length &&
+    recorded.startsWith(base) &&
+    /^[0-9a-f]{12}$/.test(recorded.slice(base.length))
+  );
+}
+
+/**
+ * Should an `update()` that re-derives a resource's name KEEP the recorded
+ * one rather than replace the resource (go-to-k/cdkd#5064)?
+ *
+ * The IAM providers derive the name inside `update()` and replace the
+ * resource when it differs from the recorded physical id. For a resource no
+ * template ever named (neither the desired nor the previous bag declares a
+ * name), that difference can only come from the naming SCHEME: a v13 stack
+ * holding a resource named before it had an id (`cdkd import` of a legacy
+ * name), or a scope that lacks the stack's id. Neither is a rename anyone
+ * asked for -- CloudFormation never renames an un-named resource -- and
+ * replacing would create a new resource and delete the live one. So the
+ * recorded name is kept whenever it is this logical id's generated name under
+ * either scheme. A name that was declared (now or before) is never kept here:
+ * a declared rename still replaces.
+ */
+export function recordedGeneratedNameKept(input: {
+  recorded: string;
+  derived: string;
+  declaredName: unknown;
+  previousDeclaredName: unknown;
+  logicalId: string;
+  options: Omit<ResourceNameOptions, 'userSupplied'>;
+}): boolean {
+  if (input.derived === input.recorded) return false;
+  if (isDeclaredName(input.declaredName) || isDeclaredName(input.previousDeclaredName)) {
+    return false;
+  }
+  return isGeneratedNameOfEitherScheme(input.recorded, input.logicalId, input.options);
 }
 
 /**

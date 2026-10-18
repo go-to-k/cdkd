@@ -86,9 +86,10 @@ import {
 import {
   getCurrentSkipPrefix,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../provisioning/resource-name.js';
-import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import { stackInstanceIdOf } from '../state/stack-instance-id.js';
+import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   ledgerForStack,
@@ -633,6 +634,11 @@ export async function revertNestedChildFromJournal(args: {
     refuseMalformedState(base, childStackName, region, refusalRecovery);
     refuseMalformedOrphans(base, childStackName, region, refusalRecovery);
     refuseMalformedOrphanRecords(base, childStackName, region, refusalRecovery);
+    // go-to-k/cdkd#5064: the CHILD's own lifetime, not the parent's scope.
+    const childNamingScope = {
+      stackName: childStackName,
+      stackInstanceId: stackInstanceIdOf(base, displayStackName(childStackName)),
+    };
 
     const journal = await ctx.stateBackend.loadRollbackJournal(childStackName, region);
     const segments = (journal?.segments ?? []).filter((segment) => segment.runId === runId);
@@ -793,7 +799,7 @@ export async function revertNestedChildFromJournal(args: {
       const split = splitImportedOps(segment.operations, segment);
       const result = await withNestedStackContext(childCtx, () =>
         withSkipPrefix(skipPrefix, () =>
-          withStackName(childStackName, () =>
+          withStackScope(childNamingScope, () =>
             // go-to-k/cdkd#4438: the CHILD's own create-token ledger, not the
             // parent's the enclosing replay bound.
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>

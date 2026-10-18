@@ -565,6 +565,7 @@ describe('the success settle with DynamoDBGlobalTableProvider (go-to-k/cdkd#4606
       logger,
     } as unknown as RollbackExecutorContext;
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
         reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

@@ -101,6 +101,7 @@ async function run(opts: RunOptions = {}) {
         }
   ) as never;
   const out = await settleJournaledOrphansOnSuccess({
+    stackInstanceId: undefined,
     stateBackend: stateBackend as never,
     stackName: 'S',
     region: REGION,

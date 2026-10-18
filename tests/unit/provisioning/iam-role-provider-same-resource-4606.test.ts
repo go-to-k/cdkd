@@ -575,6 +575,7 @@ describe('the success settle with IAMRoleProvider (go-to-k/cdkd#4606)', () => {
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: backend as never,
       stackName: 'S',
       region: 'us-east-1',

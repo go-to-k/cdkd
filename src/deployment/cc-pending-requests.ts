@@ -116,6 +116,12 @@ export async function resolvePendingCloudControlRequests(params: {
    */
   stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
   /**
+   * The stack's instance id (go-to-k/cdkd#5064), from its record: an
+   * identifier segment carrying the suffix it derives is a NAME, never an
+   * AWS-minted id. `undefined` for a legacy record or none.
+   */
+  stackInstanceId: string | undefined;
+  /**
    * Deploy only: offered each CREATE that completed. Answering `true` keeps
    * the request in the journal for the deploy to RESUME — its CREATE of the
    * logical id takes the resource instead of making another (create.ts) and
@@ -188,6 +194,7 @@ async function settlePending(
     command: string;
     logger: Logger;
     stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
+    stackInstanceId: string | undefined;
     resume?: (op: FailedOperation, identifier: string) => boolean;
     identifierUnique?: IdentifierUniqueness;
   },
@@ -237,6 +244,7 @@ async function settlePending(
           attemptedProperties: op.attemptedProperties,
           logicalId: op.logicalId,
           stackName,
+          stackInstanceId: params.stackInstanceId,
         });
         const ended =
           outcome.status === 'succeeded'
@@ -363,6 +371,7 @@ export type IdentifierUniqueness = (args: {
   attemptedProperties: Record<string, unknown> | undefined;
   logicalId: string;
   stackName: string;
+  stackInstanceId: string | undefined;
 }) => Promise<boolean>;
 
 /**
@@ -384,6 +393,7 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
   attemptedProperties,
   logicalId,
   stackName,
+  stackInstanceId,
 }) => {
   // No bag: nothing to tell a name from an AWS-minted id by.
   if (attemptedProperties === undefined || holdsSecretReference(attemptedProperties)) return false;
@@ -407,7 +417,9 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
   return parts.some((part, i) => {
     if (part === '' || !readOnly.has(fields[i]!)) return false;
     return !nameSegments(part).some(
-      (segment) => sent.has(segment) || looksLikeCdkdGeneratedName(segment, logicalId, stackName)
+      (segment) =>
+        sent.has(segment) ||
+        looksLikeCdkdGeneratedName(segment, logicalId, stackName, stackInstanceId)
     );
   });
 };

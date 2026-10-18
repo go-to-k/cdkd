@@ -66,7 +66,7 @@ function bagOf(
   expect(r).not.toBe(RESOURCE_NOT_FOUND);
   return r as Record<string, unknown> | undefined;
 }
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
   CLAUSE_BREAK_PAYLOAD,
   PASTE_PAYLOADS,
@@ -145,7 +145,7 @@ describe('SchedulerScheduleProvider', () => {
       mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
       const { Name: _drop, ...props } = BASE_PROPS;
 
-      const result = await withStackName('MyStack', () => provider.create('Sched', TYPE, props));
+      const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, () => provider.create('Sched', TYPE, props));
 
       expect(result.physicalId).toContain('MyStack');
       expect(result.physicalId.length).toBeLessThanOrEqual(64);

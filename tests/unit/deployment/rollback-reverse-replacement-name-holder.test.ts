@@ -55,7 +55,7 @@ import {
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -530,7 +530,7 @@ describe('the unproven-holder refusal (#3979)', () => {
     };
     const state = { Tg: res(TG, { physicalId: newArn, properties: { Port: 81 } }) };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined }, () =>
       replayRollback([op], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -615,7 +615,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined }, () =>
       replayRollback([roleOp('CdkdX-my-role', 'my-role')], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -653,7 +653,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined }, () =>
       replayRollback([roleOp('imported-role', 'CdkdX-my-role')], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -691,7 +691,7 @@ describe('on the Cloud Control route the sent name is the requested one (#3979)'
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined }, () =>
       replayRollback([roleOp('role-old', 'my-role')], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
     );
 
@@ -732,7 +732,7 @@ describe('a Cloud Control re-create proves a generated name through what it sent
       Lg: res(LG, { physicalId: 'CdkdX-Lg', properties: { RetentionInDays: 3 }, provisionedBy: 'cc-api' }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined }, () =>
       replayRollback([op], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
     );
 
