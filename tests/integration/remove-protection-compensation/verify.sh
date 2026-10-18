@@ -54,9 +54,10 @@
 # naming it.
 #
 # Observed 2026-10-01 (first passing run):
-#   SdkInstance   "Failed to terminate EC2 Instance SdkInstance: The instance
-#                 '<id>' may not be terminated. Modify its 'disableApiStop'
-#                 instance attribute and try again."
+#   SdkInstance   "Failed to terminate EC2 Instance SdkInstance: <Class>. Re-run
+#                 with --verbose for AWS's own message." (AWS's text, "The
+#                 instance '<id>' may not be terminated...", is debug-only
+#                 since go-to-k/cdkd#2319)
 #   CcInstance    "DELETE failed for CcInstance: The instance '<id>' may not be
 #                 terminated. Modify its 'disableApiStop' ... (Service: Ec2,
 #                 Status Code: 400 ...)"

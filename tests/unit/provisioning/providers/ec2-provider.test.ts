@@ -552,7 +552,11 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
           .create('TwoFailSg', 'AWS::EC2::SecurityGroup', rules)
           .catch((e: unknown) => e);
 
-        expect((error as Error).message).toBe('Failed to create SecurityGroup TwoFailSg: undefined');
+        // A non-`Error` throw is named by its type, never stringified
+        // (go-to-k/cdkd#2319's `describeAwsFailure`).
+        expect((error as Error).message).toBe(
+          "Failed to create SecurityGroup TwoFailSg: a non-Error value of type undefined. Re-run with --verbose for AWS's own message."
+        );
       });
     });
 

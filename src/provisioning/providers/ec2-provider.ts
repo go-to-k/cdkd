@@ -94,7 +94,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, type AwsFailureText } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   CdkdError,
@@ -187,8 +187,10 @@ import {
 import {
   explicitDenyPolicyKind,
   isExplicitDenyError,
+  isNameCollisionError,
   isThrottlingError,
   markNonRetryable,
+  markRedactedCause,
   THROTTLING_ERROR_NAMES,
 } from '../../deployment/retryable-errors.js';
 import { withRetry } from '../../deployment/retry.js';
@@ -662,6 +664,32 @@ function isCreateTagsDenial(error: unknown): boolean {
     isNamedError(error, CREATE_TAGS_DENIAL_NAMES) &&
     describeAwsFailure(error).detail.includes('ec2:CreateTags')
   );
+}
+
+/**
+ * cdkd-authored sentences appended to an AWS error's own message, keyed by
+ * that error ({@link EC2Provider}'s `sendTaggedCreate`). The wrap that names
+ * the error by its class only re-appends them (go-to-k/cdkd#2319).
+ */
+const CDKD_NOTES = new WeakMap<Error, string>();
+
+/**
+ * What a thrown EC2 wrap says in place of an AWS-authored failure's own text
+ * (go-to-k/cdkd#2319): its class, plus two cdkd-authored facts that text
+ * carried and a reader of the thrown message needs. An "already exists" is
+ * restated, because the create-first replacement path reads the TOP-level
+ * message to credit a name collision (`isNameCollisionErrorFrom`), and EC2
+ * names the security-group one `InvalidGroup.Duplicate`, which no collision
+ * pattern matches. A {@link CDKD_NOTES} note is re-appended.
+ */
+function redactedEc2FailureText(error: unknown, failure: AwsFailureText): string {
+  // A non-`Error` throw is redacted too, but AWS did not author it, so it
+  // reports nothing.
+  if (!(error instanceof Error)) return failure.summary;
+  const collision = isNameCollisionError(failure.detail)
+    ? ' AWS reports that it already exists.'
+    : '';
+  return `${failure.summary}${collision}${CDKD_NOTES.get(error) ?? ''}`;
 }
 
 /** The error code EC2 answers a denied action with. */
@@ -1255,12 +1283,16 @@ export class EC2Provider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EC2 resource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EC2 resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1844,12 +1876,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create VPC ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create VPC ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (leftBehindId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
@@ -1929,12 +1965,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update VPC ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update VPC ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1984,10 +2024,8 @@ export class EC2Provider implements ResourceProvider {
         // `.detail`, never `.summary`: the substring test below is what keeps this
         // degradation alive, and it matches AWS's OWN wording. Byte-identical to
         // the ternary it replaced, minus that ternary's throw.
-        // It ALSO reaches a thrown `ProvisioningError` further down, which
-        // `extractDeploymentEventError` persists -- one of the ten such sites in
-        // this sweep. The disclosure question for all of them is
-        // go-to-k/cdkd#2319's.
+        // The thrown `ProvisioningError` further down names an AWS-authored
+        // failure by its class only (`wrapCaughtError`, go-to-k/cdkd#2319).
         const msg = describeAwsFailure(error).detail;
         if (
           (msg.includes('DependencyViolation') || msg.includes('has dependencies')) &&
@@ -2000,12 +2038,16 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to delete VPC ${logicalId}: ${msg}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete VPC ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -2215,12 +2257,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create Subnet ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Subnet ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (leftBehindId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
@@ -2298,12 +2344,16 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Subnet ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Subnet ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2396,10 +2446,8 @@ export class EC2Provider implements ResourceProvider {
         // `.detail`, never `.summary`: the substring test below is what keeps this
         // degradation alive, and it matches AWS's OWN wording. Byte-identical to
         // the ternary it replaced, minus that ternary's throw.
-        // It ALSO reaches a thrown `ProvisioningError` further down, which
-        // `extractDeploymentEventError` persists -- one of the ten such sites in
-        // this sweep. The disclosure question for all of them is
-        // go-to-k/cdkd#2319's.
+        // The thrown `ProvisioningError` further down names an AWS-authored
+        // failure by its class only (`wrapCaughtError`, go-to-k/cdkd#2319).
         const msg = describeAwsFailure(error).detail;
         const isDependencyError =
           msg.includes('has dependencies') || msg.includes('DependencyViolation');
@@ -2412,12 +2460,16 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to delete Subnet ${logicalId}: ${msg}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Subnet ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -2563,12 +2615,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create InternetGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create InternetGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -2619,12 +2675,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete InternetGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete InternetGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2842,12 +2902,16 @@ export class EC2Provider implements ResourceProvider {
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create EIP ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EIP ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (createdId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdId);
@@ -3015,12 +3079,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete EIP ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EIP ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3107,12 +3175,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create VPCGatewayAttachment ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create VPCGatewayAttachment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3177,12 +3249,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete VPCGatewayAttachment ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete VPCGatewayAttachment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3305,12 +3381,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create NatGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create NatGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (createdId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, createdId);
@@ -3370,12 +3450,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete NatGateway ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete NatGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 
@@ -3489,12 +3573,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create RouteTable ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create RouteTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3535,12 +3623,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete RouteTable ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete RouteTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3690,12 +3782,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Route ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3808,12 +3904,16 @@ export class EC2Provider implements ResourceProvider {
       // ProvisioningError.physicalId.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Route ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3867,12 +3967,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Route ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3916,12 +4020,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create SubnetRouteTableAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SubnetRouteTableAssociation ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3967,12 +4075,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SubnetRouteTableAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete SubnetRouteTableAssociation ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4119,12 +4231,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create SecurityGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SecurityGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (leftBehindId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
@@ -4283,12 +4399,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update SecurityGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update SecurityGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -4339,10 +4459,8 @@ export class EC2Provider implements ResourceProvider {
         // `.detail`, never `.summary`: the substring test below is what keeps this
         // degradation alive, and it matches AWS's OWN wording. Byte-identical to
         // the ternary it replaced, minus that ternary's throw.
-        // It ALSO reaches a thrown `ProvisioningError` further down, which
-        // `extractDeploymentEventError` persists -- one of the ten such sites in
-        // this sweep. The disclosure question for all of them is
-        // go-to-k/cdkd#2319's.
+        // The thrown `ProvisioningError` further down names an AWS-authored
+        // failure by its class only (`wrapCaughtError`, go-to-k/cdkd#2319).
         const msg = describeAwsFailure(error).detail;
         if (msg.includes('dependent object') && attempt < maxAttempts) {
           // Same side-channel as deleteSubnet: clean up Lambda-managed
@@ -4355,12 +4473,16 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to delete SecurityGroup ${logicalId}: ${msg}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete SecurityGroup ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -4686,12 +4808,16 @@ export class EC2Provider implements ResourceProvider {
         };
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to create SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const failure = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SecurityGroupIngress ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       // go-to-k/cdkd#4355: an Authorize AWS PROVABLY did not apply (a 4xx or
       // a throttle on a single send, with no earlier attempt of this dispatch
@@ -5345,12 +5471,16 @@ export class EC2Provider implements ResourceProvider {
       // ProvisioningError.physicalId.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update SecurityGroupIngress ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5542,12 +5672,16 @@ export class EC2Provider implements ResourceProvider {
         return notMatched();
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SecurityGroupIngress ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete SecurityGroupIngress ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -5852,12 +5986,16 @@ export class EC2Provider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create EC2 Instance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              undefined,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create EC2 Instance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  error instanceof Error ? error : undefined
+                )
             );
       if (leftBehindId !== undefined) {
         markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindId);
@@ -6114,12 +6252,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EC2 Instance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EC2 Instance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -6339,10 +6481,8 @@ export class EC2Provider implements ResourceProvider {
         // `.detail`, never `.summary`: the substring test below is what keeps this
         // degradation alive, and it matches AWS's OWN wording. Byte-identical to
         // the ternary it replaced, minus that ternary's throw.
-        // It ALSO reaches a thrown `ProvisioningError` further down, which
-        // `extractDeploymentEventError` persists -- one of the ten such sites in
-        // this sweep. The disclosure question for all of them is
-        // go-to-k/cdkd#2319's.
+        // The thrown `ProvisioningError` further down names an AWS-authored
+        // failure by its class only (`wrapCaughtError`, go-to-k/cdkd#2319).
         const msg = describeAwsFailure(error).detail;
         if (
           removeProtection &&
@@ -6363,12 +6503,16 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to terminate EC2 Instance ${logicalId}: ${msg}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to terminate EC2 Instance ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -6871,12 +7015,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create NetworkAcl ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create NetworkAcl ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -6906,12 +7054,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete NetworkAcl ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete NetworkAcl ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -7010,12 +7162,16 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create NetworkAclEntry ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create NetworkAclEntry ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -7067,12 +7223,16 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete NetworkAclEntry ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete NetworkAclEntry ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -7146,12 +7306,16 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create SubnetNetworkAclAssociation ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SubnetNetworkAclAssociation ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -7225,9 +7389,13 @@ export class EC2Provider implements ResourceProvider {
         );
         const explicit = isExplicitDenyError(untaggedDetail);
         const kind = explicit ? explicitDenyPolicyKind(untaggedDetail) : undefined;
-        taggedError.message =
-          `${taggedError.message} The create without tags was refused too (UnauthorizedOperation)` +
+        const note =
+          ` The create without tags was refused too (UnauthorizedOperation)` +
           `${explicit ? `; explicit deny${kind !== undefined ? ` (${kind})` : ''}` : ''}.`;
+        taggedError.message = `${taggedError.message}${note}`;
+        // The create's wrap names this AWS-authored error by its class only
+        // (go-to-k/cdkd#2319), so it re-appends the note from here.
+        CDKD_NOTES.set(taggedError, note);
         if (explicit) markNonRetryable(taggedError);
         throw taggedError;
       }
@@ -7393,6 +7561,40 @@ export class EC2Provider implements ResourceProvider {
         delay = Math.min(delay * 2, maxDelayMs);
       }
     }
+  }
+
+  /**
+   * Wrap what an EC2 operation caught into the error it throws, keeping the
+   * caller's identity out of the thrown message (go-to-k/cdkd#2319; the Glue
+   * twin is `wrapGlueError`).
+   *
+   * A thrown message is persisted to `deployments/{runId}.jsonl`, and EC2
+   * words an `UnauthorizedOperation` as `You are not authorized to perform
+   * this operation. User: arn:aws:sts::<account>:assumed-role/<role>/<session>
+   * is not authorized to perform: ...`. So an AWS-authored failure
+   * (`describeAwsFailure`) reaches `build` as its class
+   * ({@link redactedEc2FailureText}), and the message `build` would have made
+   * from AWS's own text goes to `debug`. A cdkd-authored or transport error
+   * keeps its text, byte-identical to before.
+   *
+   * `build` must thread `error` as the wrap's `cause`: the redaction is
+   * stamped (`markRedactedCause`) so the retry classifiers read that chain,
+   * where the withheld `not authorized to perform` still is. A non-`Error`
+   * throw has no chain, so it is not stamped. Every caller tests its own
+   * not-found and `DependencyViolation` wording on the CAUGHT error before
+   * wrapping, so no decision here reads the shortened message.
+   */
+  private wrapCaughtError(
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return build(failure.detail);
+    // `build` runs twice here (debug text, then the throw), so it must stay a
+    // side-effect-free constructor call.
+    this.logger.debug(build(failure.detail).message);
+    const wrapped = build(redactedEc2FailureText(error, failure));
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
