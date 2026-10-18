@@ -2,11 +2,12 @@
  * go-to-k/cdkd#5076: on a deploy that FAILS after re-creating a principal
  * under the same name, the lost-attachment rebuild of a child's record
  * (`executeDeployment`, the trimmed-record arms) used to spread its
- * `properties` into a new, unmarked object. The one child that reaches that
- * rebuild holding THIS pass's resolved bag is a Cloud Control child whose
- * update completed but sent nothing (it is dropped from `written`): its bag
- * is marked same-generation, and the spread lost the mark, so a 1-3
- * character secret embedded in a literal persisted in plaintext.
+ * `properties` into a new, unmarked object. A child reaches that rebuild
+ * holding THIS pass's resolved, marked bag when its record was installed but
+ * it is not in `written`: a Cloud Control child whose update completed but
+ * sent nothing (driven here), or an update arm that throws after installing
+ * its record. The spread lost the mark, so a 1-3 character secret embedded in
+ * a literal persisted in plaintext.
  *
  * Driven through `DeployEngine.deploy` with the REAL `DiffCalculator`,
  * `DagBuilder` and `IntrinsicFunctionResolver`; only the providers and the
@@ -243,8 +244,8 @@ describe('the lost-attachment rebuild keeps the record bag\'s marks (go-to-k/cdk
     expect((child?.properties['Tags'] as Array<{ Value: string }>)[0]!.Value).toBe(TAG_SOURCE);
     expect(JSON.stringify(stateBackend.saveState.mock.calls)).not.toContain('pin=x9');
     // The update sent nothing, so the record keeps the provenance it had
-    // before the deploy (the written mark selects that rule; unmarked, the
-    // field was dropped).
+    // before the deploy (the same-generation mark selects that rule;
+    // unmarked, the field was dropped).
     expect(child?.referenceProvenance).toEqual(PROVENANCE);
   });
 
@@ -315,7 +316,7 @@ describe('the lost-attachment rebuild keeps the record bag\'s marks (go-to-k/cdk
   });
 });
 
-describe('withPropertiesMarksOf carries exactly the marks the original carries', () => {
+describe('withPropertiesMarksOf carries the redaction marks the original carries', () => {
   const marksOf = (bag: object): string[] =>
     [
       isSameGenerationBag(bag) && 'same-generation',
@@ -323,16 +324,20 @@ describe('withPropertiesMarksOf carries exactly the marks the original carries',
       isWrittenFromDeployedTemplate(bag) && 'written',
     ].filter((m): m is string => m !== false);
 
-  it('each mark, alone', () => {
+  it('each redaction mark, alone', () => {
     const cases: Array<[string, (b: object) => object]> = [
       ['same-generation', markSameGenerationBag],
       ['leaf-certified', markLeafCertifiedBag],
-      ['written', markWrittenFromDeployedTemplate],
     ];
     for (const [name, mark] of cases) {
       const rebuilt = withPropertiesMarksOf(mark({}), {});
       expect({ name, marks: marksOf(rebuilt) }).toEqual({ name, marks: [name] });
     }
+  });
+
+  it('never the written-from-deployed-template mark (a trimmed list is not today\'s rendering)', () => {
+    const original = markSameGenerationBag(markWrittenFromDeployedTemplate({}));
+    expect(marksOf(withPropertiesMarksOf(original, {}))).toEqual(['same-generation']);
   });
 
   it('never mints a mark the original lacks', () => {

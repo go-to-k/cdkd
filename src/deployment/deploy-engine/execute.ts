@@ -874,7 +874,7 @@ export async function executeDeployment(
         newResources[lost.logicalId] = {
           ...record,
           // go-to-k/cdkd#5076: the trimmed lists only drop elements of the
-          // record's own lists, so the copy keeps exactly the bag's marks.
+          // record's own lists, so the copy keeps the bag's redaction marks.
           properties: withPropertiesMarksOf(record.properties, {
             ...record.properties,
             ...lost.trimmed,
@@ -895,7 +895,7 @@ export async function executeDeployment(
         newResources[lost.logicalId] = {
           ...record,
           // go-to-k/cdkd#5076: the trimmed lists only drop elements of the
-          // record's own lists, so the copy keeps exactly the bag's marks.
+          // record's own lists, so the copy keeps the bag's redaction marks.
           properties: withPropertiesMarksOf(record.properties, {
             ...record.properties,
             ...lost.trimmed,

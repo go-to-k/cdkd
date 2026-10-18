@@ -14,10 +14,7 @@ import {
   markLeafCertifiedBag,
   markSameGenerationBag,
 } from '../secret-redaction.js';
-import {
-  isWrittenFromDeployedTemplate,
-  markWrittenFromDeployedTemplate,
-} from '../masked-property-fingerprints.js';
+import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
 import type { DeployEngineOptions } from './options.js';
 
 /**
@@ -92,18 +89,19 @@ export function extractAllDependencies(
 
 /**
  * `rebuilt`, a spread copy of a record's `properties` that only drops elements
- * of the record's own lists (a lost attachment), with exactly the marks
- * `original` carries: the redaction
- * marks (`carryRedactionMarks`) and the written-from-deployed-template one
- * (go-to-k/cdkd#5076). A spread drops every mark, so without this the copy
- * persists under the `unproven` claim, where a 1-3 character embedded secret
- * stays in plaintext, and loses the provenance and fingerprint handling the
- * original's marks select. Never mints a mark `original` lacks.
+ * of the record's own lists (a lost attachment), with the REDACTION marks
+ * `original` carries (`carryRedactionMarks`, go-to-k/cdkd#5076): a spread
+ * drops every mark, so without them the copy persists under the `unproven`
+ * claim, where a 1-3 character embedded secret stays in plaintext. Never
+ * mints a mark `original` lacks.
+ *
+ * NOT the written-from-deployed-template mark: a trimmed holder list no longer
+ * equals today's rendering, and the save would stamp today's template
+ * fingerprint on it (`withMaskedPropertyFingerprints`), so a masked holder key
+ * could read as unchanged and the next deploy skip the re-attach.
  */
 export function withPropertiesMarksOf<T extends object>(original: unknown, rebuilt: T): T {
-  carryRedactionMarks(original, rebuilt);
-  if (isWrittenFromDeployedTemplate(original)) markWrittenFromDeployedTemplate(rebuilt);
-  return rebuilt;
+  return carryRedactionMarks(original, rebuilt);
 }
 
 /**
