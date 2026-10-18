@@ -61,6 +61,7 @@ import {
   importableOutputKeys,
   importableOutputs,
   orphansAfterRollback,
+  stackInstanceIdCarriedFrom,
 } from '../types/state.js';
 import {
   refuseMalformedOrphanRecords,
@@ -662,6 +663,7 @@ export async function revertNestedChildFromJournal(args: {
     const { skippedOutputs: _dropped, ...carried } = base;
     const next = (): StackState => ({
       ...carried,
+      ...stackInstanceIdCarriedFrom(base),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,
       resources: { ...stateResources },

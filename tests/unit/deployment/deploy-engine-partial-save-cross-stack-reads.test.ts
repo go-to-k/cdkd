@@ -184,6 +184,9 @@ function buildEngine(
       .fn()
       .mockResolvedValue(overrides.fresh ? null : { state: currentState, etag: 'e0' }),
     saveState,
+    stackInstanceIdForFirstWrite: vi
+      .fn()
+      .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
     loadRollbackJournal: vi.fn().mockResolvedValue(null),

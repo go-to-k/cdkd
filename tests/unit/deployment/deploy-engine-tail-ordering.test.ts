@@ -127,6 +127,9 @@ function buildHarness(opts: {
       order.push('saveState');
       return 'etag-1';
     }),
+    stackInstanceIdForFirstWrite: vi
+      .fn()
+      .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     deleteRollbackJournal: vi.fn().mockImplementation(async () => {
       order.push('journal:start');
       await opts.gate?.journal;

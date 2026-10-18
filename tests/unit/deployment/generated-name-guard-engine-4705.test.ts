@@ -134,6 +134,9 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     const stateBackend = {
       getState: vi.fn(async () => (opts.records ? { state: ownState, etag: 'e0' } : null)),
       saveState: vi.fn().mockResolvedValue('e1'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       listStacks: vi.fn(async () => []),
       loadRollbackJournal: vi.fn(async () => null),
       purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),

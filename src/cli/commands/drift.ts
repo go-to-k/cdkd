@@ -174,6 +174,7 @@ import {
   type ResourceProvider,
 } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import {
   secretNamedRecordNeedles,
   secretNamePrintingBag,
@@ -5019,6 +5020,7 @@ async function runAccept(
       const { skippedOutputs: _droppedByAccept, ...carriedState } = report.state;
       const newState: StackState = {
         ...carriedState,
+        ...stackInstanceIdCarriedFrom(report.state),
         resources,
         lastModified: Date.now(),
       };
@@ -7807,6 +7809,7 @@ async function runRevert(
           const { skippedOutputs: _droppedByRevert, ...carriedState } = report.state;
           const newState: StackState = {
             ...carriedState,
+            ...stackInstanceIdCarriedFrom(report.state),
             resources,
             lastModified: Date.now(),
           };

@@ -91,6 +91,7 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
   let mockStateBackend: {
     getState: ReturnType<typeof vi.fn>;
     saveState: ReturnType<typeof vi.fn>;
+    stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
   };
   let mockLockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
@@ -153,6 +154,9 @@ describe('DeployEngine - --strict-getatt output failures + fallback counter (#11
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: makeState(), etag: 'etag-old' }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     };
   });
 
@@ -344,6 +348,9 @@ describe('DeployEngine - strict output failure persists provisioning state (#111
           opts.priorState ? { state: opts.priorState, etag: opts.priorEtag ?? 'etag-0' } : null
         ),
       saveState: vi.fn().mockResolvedValue('etag-next'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     };
     const lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(true),

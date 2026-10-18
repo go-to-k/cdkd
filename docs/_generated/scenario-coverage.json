@@ -425,6 +425,11 @@
       "scenarios": []
     },
     {
+      "name": "apigw-cloudwatch-role-redeploy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "apigw-gateway-response",
       "annotated": true,
       "scenarios": []
@@ -584,6 +589,11 @@
     {
       "name": "cc-protection-flip-eks",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-required-name-generation",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -1187,6 +1197,11 @@
         "cdkd-asset-storage",
         "cdkd-gc"
       ]
+    },
+    {
+      "name": "generated-name-lifecycle",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "getatt-fallback-guard",
@@ -2323,6 +2338,13 @@
       ]
     },
     {
+      "name": "schema-v12-to-v13-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -3300,6 +3322,7 @@
         "legacy-state-migration",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
+        "schema-v12-to-v13-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"
@@ -3364,6 +3387,7 @@
     "access-key-cloudmap-fix-forward-orphan",
     "acm-certificate",
     "apigatewayv2-update-removal",
+    "apigw-cloudwatch-role-redeploy",
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
@@ -3377,6 +3401,7 @@
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",
+    "cc-required-name-generation",
     "cc-to-sdk-reroute",
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",
@@ -3419,6 +3444,7 @@
     "export-nested-stack",
     "fallback-recreate-children",
     "fifo-sqs-event-source",
+    "generated-name-lifecycle",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",
     "glue-securityconfig-replace",
