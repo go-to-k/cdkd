@@ -82,6 +82,10 @@ def handler(event, context):
     const api = new apigateway.RestApi(this, 'AuthApi', {
       restApiName: 'cdkd-auth-api',
       description: 'API Gateway with Cognito authorizer for cdkd testing',
+      // Skip CDK's auto-emitted AWS::ApiGateway::Account + its CloudWatch
+      // role — the role is RemovalPolicy.RETAIN by default, so it would
+      // survive destroy and collide (deterministic name) on the next run.
+      cloudWatchRole: false,
     });
 
     // Create Cognito Authorizer using L1 construct (CfnAuthorizer)
