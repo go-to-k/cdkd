@@ -1,3 +1,4 @@
+import { safeStringify } from '../../utils/aws-failure-text.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { derivePartitionAndUrlSuffix, sameRegion } from '../../utils/aws-partition.js';
 import { displayAwsMessage, displayIdent, displayStackName } from '../../utils/display-safe.js';
@@ -350,7 +351,7 @@ export function describeInnermostAwsError(error: unknown): string {
     if (cause === null || typeof cause !== 'object') break;
     innermost = cause;
   }
-  if (!(innermost instanceof Error)) return displayAwsMessage(String(innermost));
+  if (!(innermost instanceof Error)) return displayAwsMessage(safeStringify(innermost));
   const code = (innermost as { Code?: unknown }).Code;
   const name = typeof code === 'string' && code !== '' ? code : innermost.name;
   const message = displayAwsMessage(innermost.message);

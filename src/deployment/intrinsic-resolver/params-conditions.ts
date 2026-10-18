@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { stripControlChars } from '../../utils/regexp.js';
@@ -527,7 +528,7 @@ export async function evaluateConditions(
       resolver.logger.warn(
         displayMasked(
           resolver,
-          `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`,
+          `Failed to evaluate condition ${name}: ${describeAwsFailure(error).detail}, assuming false`,
           maskingContext
         )
       );

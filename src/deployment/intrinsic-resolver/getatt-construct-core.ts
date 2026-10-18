@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
 import type { ResourceState } from '../../types/state.js';
@@ -220,7 +221,7 @@ export async function constructAttributeForCoreTypes(
           // Rebuilt here rather than reusing `loggedId`, which the `try`
           // scopes away.
           resolver.logger.warn(
-            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, physicalId, context)}: ${displayMasked(resolver, error instanceof Error ? error.message : String(error), context)}`
+            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, physicalId, context)}: ${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
           );
           return [];
         }

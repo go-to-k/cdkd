@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -144,7 +145,7 @@ export function abandonedUnit(
    */
   preRedact?: (text: string) => string
 ): AbandonedResolution {
-  const raw = error instanceof Error ? error.message : String(error);
+  const raw = describeAwsFailure(error).detail;
   return {
     unit,
     subject: displayMasked(resolver, subject, context),

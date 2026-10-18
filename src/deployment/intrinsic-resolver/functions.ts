@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender, maskValueLeaves } from './masking-display.js';
 import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
@@ -755,7 +756,7 @@ export async function resolveGetAZs(
     throw new Error(
       `Fn::GetAZs: failed to describe availability zones for region ` +
         `${quotedRender(loggedRegion, "'")}: ` +
-        `${masks.text(error instanceof Error ? error.message : String(error))}`
+        `${masks.text(describeAwsFailure(error).detail)}`
     );
   }
 

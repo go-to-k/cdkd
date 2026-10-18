@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, logRender } from './masking-display.js';
 import { resolveDynamicReferencesWithLogTwin } from './dynamic-refs.js';
@@ -40,7 +41,7 @@ export function subPlaceholderWarning(
   varName: string,
   error: unknown
 ): string {
-  const reason = error instanceof Error ? error.message : String(error);
+  const reason = describeAwsFailure(error).detail;
   return `Fn::Sub variable ${varName} could not be resolved (${reason}), keeping placeholder`;
 }
 

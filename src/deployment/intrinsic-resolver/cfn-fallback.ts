@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
@@ -130,7 +131,7 @@ export class CfnFallbackCache {
           // so the two are spelled the same on purpose: a uniform pair is what
           // stops a future reader deciding this one may be dropped.
           `(region ${this.deps.resolverRegion}): ` +
-          `${displayMasked(this.deps.resolver, error instanceof Error ? error.message : String(error), context)}. ` +
+          `${displayMasked(this.deps.resolver, describeAwsFailure(error).detail, context)}. ` +
           `Grant cloudformation:ListExports to resolve exports from CloudFormation-managed stacks, ` +
           `or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -202,7 +203,7 @@ export class CfnFallbackCache {
     try {
       return await fetch;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeAwsFailure(error).detail;
       // Both halves are the spelling THIS line prints below, so the pair and
       // the rendering cannot disagree about what "masked" means. That is a
       // live constraint, not a tidiness one: go-to-k/cdkd#3408 round 2 moved

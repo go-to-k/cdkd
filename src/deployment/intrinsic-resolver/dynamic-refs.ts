@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { injectiveKey } from '../../state/record-keys.js';
@@ -279,7 +280,7 @@ export async function resolveDynamicReferencesWithLogTwin(
   if (context?.abandonedResolutions !== undefined) {
     const bag = context.abandonedResolutions;
     for (const { placeholder, because } of takeKeptPlaceholdersInsideReferences(bag, value)) {
-      const reason = because instanceof Error ? because.message : String(because);
+      const reason = describeAwsFailure(because).detail;
       bag.push(
         abandonedUnit(
           resolver,

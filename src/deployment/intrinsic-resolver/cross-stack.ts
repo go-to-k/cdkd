@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayLeaf, displayMasked } from './masking-display.js';
 import { resolveDynamicReferences } from './dynamic-refs.js';
@@ -603,7 +604,7 @@ export async function resolveImportValue(
         // What IS a closed leak is `loggedExportName` beside it (issue
         // #2133), and that is what the test for this site pins.
         `Exports index lookup failed for ${quotedRender(loggedExportName, "'", 'an export whose name is not a plain identifier')}: ` +
-          `${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}` +
+          `${displayMasked(resolver, describeAwsFailure(err).detail, context)}` +
           `; falling back to state.json scan`
       );
       entry = undefined;
@@ -733,7 +734,7 @@ export async function resolveImportValue(
                 // not write, which is built from the export name.
                 `Failed to patch exports index for ` +
                   `${quotedRender(displayMasked(resolver, exportName, context), "'", 'an export whose name is not a plain identifier')}: ` +
-                  `${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}`
+                  `${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
               );
             });
         }
@@ -749,7 +750,7 @@ export async function resolveImportValue(
         // NEITHER operand. `refStack` is a state-derived stack name and the
         // caught message quotes the state key it failed on.
         `Failed to read state for stack ${displayMasked(resolver, refStack, context)}: ` +
-          `${displayMasked(resolver, error instanceof Error ? error.message : String(error), context)}`
+          `${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
       );
       continue;
     }

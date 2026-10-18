@@ -1,3 +1,4 @@
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked } from './masking-display.js';
 import { isSettledInstanceState } from '../../provisioning/ec2-instance-state.js';
@@ -418,7 +419,7 @@ export async function constructAttributeForComputeTypes(
         // beside it already was: a state-record id is not always
         // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
         resolver.logger.warn(
-          `DescribeLaunchTemplates(${displayMasked(resolver, physicalId, context)}) failed for ${displayMasked(resolver, attributeName, context)}: ${displayMasked(resolver, err instanceof Error ? err.message : String(err), context)}`
+          `DescribeLaunchTemplates(${displayMasked(resolver, physicalId, context)}) failed for ${displayMasked(resolver, attributeName, context)}: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
         );
       }
       // Fallback to "$Latest" / "$Default" — both are AWS-accepted
