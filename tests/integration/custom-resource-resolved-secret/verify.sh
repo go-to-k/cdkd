@@ -92,6 +92,7 @@ VERSIONS_FILE=""
 
 . ../s3-versions.sh
 . ../cr-log-groups.sh
+. ../state-physical-id.sh
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 
@@ -180,8 +181,11 @@ if [ "${seeded}" -ne 1 ]; then
   exit 1
 fi
 
-# The handler's physical name: `<stack>-<logicalId>` (untruncated here).
-HANDLER_NAME="${STACK}-EventLogger455115CB"
+# The handler's physical name, read from state after each phase's own deploy
+# (go-to-k/cdkd#5064: a fresh stack's cdkd-generated name is no longer
+# predictable ahead of time, so each phase re-reads it right after its own
+# deploy rather than reusing one guessed constant across phases).
+HANDLER_NAME=""
 
 epoch_ms() { printf '%s000' "$(date +%s)"; }
 
@@ -303,6 +307,8 @@ cdkd_run env CDKD_TEST_UPDATE=ssm-secure node "${LOCAL_DIST}" deploy "${STACK}" 
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+HANDLER_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "EventLogger")" \
+  || { echo "FAIL: could not read EventLogger's physical id from state after phase A" >&2; exit 1; }
 assert_refused A ssm-secure SsmReader "${SECURE_VALUE}" "${A_SINCE}"
 
 echo "==> Phase B: deploy with nested — must be refused at the handler invoke"
@@ -311,6 +317,8 @@ cdkd_run env CDKD_TEST_UPDATE=nested node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+HANDLER_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "EventLogger")" \
+  || { echo "FAIL: could not read EventLogger's physical id from state after phase B" >&2; exit 1; }
 assert_refused B nested NestedReader "${NESTED_VALUE}" "${B_SINCE}"
 
 # --- Phase U: an UPDATE to the SecureString, then --revert-failed ------------
@@ -322,6 +330,8 @@ env CDKD_TEST_UPDATE=update-clean node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+HANDLER_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "EventLogger")" \
+  || { echo "FAIL: could not read EventLogger's physical id from state after phase U's clean deploy" >&2; exit 1; }
 echo "==> Phase U: update SsmUpdater to the SecureString reference — must be refused"
 U_SINCE=$(epoch_ms)
 cdkd_run env CDKD_TEST_UPDATE=update-secret node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -369,11 +379,14 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 STATE_C=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 HANDLER_C=$(printf '%s' "${STATE_C}" \
   | jq -r '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId] | first // ""')
-if [ "${HANDLER_C}" != "${HANDLER_NAME}" ]; then
-  echo "FAIL: the handler's physical name is '${HANDLER_C}', expected '${HANDLER_NAME}'" >&2
-  echo "    => the gone-probes between arms checked the wrong name" >&2
+if [ -z "${HANDLER_C}" ]; then
+  echo "FAIL: no AWS::Lambda::Function physical id in phase C's state" >&2
   exit 1
 fi
+# Phase C is its own fresh stack (go-to-k/cdkd#5064: no longer guaranteed to
+# share a name with an earlier phase's stack), so its own state read is what
+# the gone-probes below must use, not an earlier phase's captured name.
+HANDLER_NAME="${HANDLER_C}"
 set +e
 DESTROY_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
