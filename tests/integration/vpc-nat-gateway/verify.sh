@@ -711,7 +711,9 @@ if [ "${EIP_FAIL_RC}" -eq 0 ]; then
 fi
 # The injection fired as designed: the association failed on the malformed id
 # (not on an IAM refusal of the role's own scope), and the release was refused.
-if ! grep -q "i-cdkdmalformed" "${FF_LOG}"; then
+# This deploy is not --verbose, so the thrown error names AWS's failure CLASS
+# only (go-to-k/cdkd#2319), never the id AWS echoes in its own text.
+if ! grep -q "InvalidInstanceID.Malformed" "${FF_LOG}"; then
   echo "FAIL: the OrphanEip deploy as ${DENY_ROLE} failed, but not on the malformed instance id -- the role's policy refused a call the arm needs (output above)" >&2
   exit 1
 fi
