@@ -193,6 +193,28 @@ describe('GlueTriggerProvider removal (#1160)', () => {
     });
   });
 
+  it('a removed Schedule / Predicate is OMITTED from TriggerUpdate too (declared as handled)', async () => {
+    const previous = {
+      Name: 'trig',
+      Type: 'ON_DEMAND',
+      Actions: [{ JobName: 'job' }],
+      Schedule: 'cron(0 12 * * ? *)',
+      Predicate: { Conditions: [{ JobName: 'up', State: 'SUCCEEDED' }] },
+    };
+    const unhandled = await deployUpdate(
+      provider,
+      TRIGGER,
+      { Name: 'trig', Type: 'ON_DEMAND', Actions: [{ JobName: 'job' }] },
+      previous
+    );
+
+    expect(unhandled).toEqual([]);
+    expect(sentInput(UpdateTriggerCommand)).toEqual({
+      Name: 'trig',
+      TriggerUpdate: { Actions: [{ JobName: 'job' }] },
+    });
+  });
+
   it('a present Description / EventBatchingCondition is still sent (the other polarity)', async () => {
     const desired = {
       ...TRIGGER_PREVIOUS,

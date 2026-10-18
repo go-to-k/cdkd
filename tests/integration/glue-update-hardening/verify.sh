@@ -573,11 +573,16 @@ trigger_shape() { # usage: trigger_shape <trigger name>
     | jq -c '.Trigger | {Description, EventBatchingCondition, Jobs: [.Actions[].JobName]}'
 }
 assert_shape() { # usage: assert_shape <label> <want> <got>
-  if [ "$3" != "$2" ]; then
-    echo "FAIL: $1 is $3, expected $2" >&2
+  # Key-sorted on both sides: AWS's member order is not a contract. An empty
+  # read normalizes to "" and fails too.
+  local want got
+  want=$(printf '%s' "$2" | jq -cS .)
+  got=$(printf '%s' "$3" | jq -cS . 2>/dev/null) || got="$3"
+  if [ -z "${got}" ] || [ "${got}" != "${want}" ]; then
+    echo "FAIL: $1 is '$3', expected ${want}" >&2
     exit 1
   fi
-  echo "    OK: $1 is $3"
+  echo "    OK: $1 is ${got}"
 }
 assert_shape "Workflow (create)" \
   '{"Description":"cdkd workflow","DefaultRunProperties":{"stage":"integ"},"MaxConcurrentRuns":1}' \
@@ -983,9 +988,20 @@ echo "    OK: --replace deleted '${RENAME_TO}' first and re-created it under the
 # every one must read absent afterwards, in place. Phase 2f's flags stay set so
 # nothing else in the stack changes.
 echo "==> Phase 2g: removal (Workflow Description / DefaultRunProperties / MaxConcurrentRuns, trigger Description / EventBatchingCondition)"
-CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true CDKD_TEST_REMOVAL=true \
+REMOVAL_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true CDKD_TEST_REMOVAL=true \
   node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || {
+  printf '%s\n' "${REMOVAL_OUT}"
+  echo "FAIL: the removal deploy failed (output above)" >&2
+  exit 1
+}
+printf '%s\n' "${REMOVAL_OUT}"
+# Every removed property is handled (removalHandledInUpdate), so the shared
+# "leaves the current AWS value in place" warning must not name any of them.
+if printf '%s' "${REMOVAL_OUT}" | grep -F 'cdkd leaves the current AWS value in place' | grep -qE 'AWS::Glue::(Workflow|Trigger)'; then
+  echo "FAIL: the removal deploy warned that a Glue Workflow / Trigger property was left in place (issue #1160)" >&2
+  exit 1
+fi
 assert_shape "Workflow (removal)" \
   '{"Description":null,"DefaultRunProperties":null,"MaxConcurrentRuns":null}' \
   "$(workflow_shape)"
