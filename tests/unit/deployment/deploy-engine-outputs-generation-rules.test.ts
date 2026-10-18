@@ -55,6 +55,12 @@ const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_PIN]: PLAINTEXT_PIN,
 };
 
+// A PUBLIC (`String`) parameter: resolved, never recorded as a secret. A
+// template also carries these, which is why the outputs walk must not trust
+// every expression its template source spells.
+const EXPR_PUBLIC = '{{resolve:ssm:/app/public-endpoint}}';
+const PUBLIC_VALUE = 'public-endpoint-value';
+
 // A reference whose value MOVES between resolutions inside one deploy. The
 // real resolver reaches that state only for an `ssm` reference whose `Type`
 // came back unclassifiable (`cacheable = false`), so an `Export.Name` resolving
@@ -85,6 +91,7 @@ function resolveWithSecrets(
     if (value === EXPR_FAILS) {
       throw new Error("Dynamic reference: key 'nokey' not found in secret");
     }
+    if (value === EXPR_PUBLIC) return PUBLIC_VALUE;
     const plaintext = SECRET_BY_EXPRESSION[value];
     if (plaintext !== undefined) {
       ctx.recordedSecretValues?.set(plaintext, value);
@@ -316,6 +323,28 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
     expect(saved.outputs['Dsn']).toBe(DSN);
     expect(saved.outputs['Whole']).toBe(EXPR_A);
     expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
+  });
+
+  it('persists a PUBLIC parameter output resolved, not as the template expression (#1940: template-sourced, not a state rule)', async () => {
+    // `trustAnyExpression` is the flag this case reads: a STATE source holds no
+    // public expressions, so a state rule would copy the template's public
+    // token over the resolved value -- persisted config drift. A secret output
+    // beside it keeps the pass map non-empty, so the walk runs at all.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+      },
+      Outputs: {
+        Endpoint: { Value: EXPR_PUBLIC },
+        Whole: { Value: EXPR_A },
+      },
+    };
+
+    await makeEngine().deploy(stackName, template);
+
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    expect(saved.outputs['Endpoint']).toBe(PUBLIC_VALUE);
+    expect(saved.outputs['Whole']).toBe(EXPR_A);
   });
 
   it('does NOT merge the Export.Name resolution\'s pairs into the pass map: a value that moved there cannot conflict the evidence the value pass earned (issue #2485)', async () => {

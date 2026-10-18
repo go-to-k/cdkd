@@ -20,7 +20,7 @@ import {
   SECRET_MASK,
   carriesSecretMask,
   hasMaskableValues,
-  redactSecretsForState,
+  redactForState,
   withPhysicalNameCopies,
 } from '../secret-redaction.js';
 import {
@@ -479,7 +479,7 @@ export function isMaskedOwnIdCopy(
   if (producerSecrets === undefined || !hasMaskableValues(producerSecrets)) return false;
   return (
     withPhysicalNameCopies(producerSecrets, [physicalId], () =>
-      redactSecretsForState(healed, producerSecrets)
+      redactForState(healed, { provenance: 'value-scan', secrets: producerSecrets })
     ) === healed
   );
 }

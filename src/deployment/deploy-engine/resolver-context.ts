@@ -4,7 +4,7 @@ import type { ResourceState } from '../../types/state.js';
 import {
   hasMaskableValues,
   inheritNestedStackParameterAssociations,
-  redactSecretsForState,
+  redactForState,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import type { MaskedInputSources } from '../masked-property-fingerprints.js';
@@ -340,7 +340,10 @@ export function maskedInputSources(
         target === undefined ? undefined : deps.secretsRun().perResourceSecrets.get(target);
       if (targetSecrets !== undefined && hasMaskableValues(targetSecrets)) {
         const probe = { value };
-        const redacted = redactSecretsForState(probe, targetSecrets);
+        const redacted = redactForState(probe, {
+          provenance: 'value-scan',
+          secrets: targetSecrets,
+        });
         if (JSON.stringify(redacted) !== JSON.stringify(probe)) {
           return { value, keepAsWritten: true };
         }

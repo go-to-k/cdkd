@@ -21,7 +21,6 @@ import {
   valueAtCoordinate,
   type RecordedSecretValues,
   type SecretMasker,
-  TEMPLATE_SOURCED_RULES,
   carriesFreshNoEchoValue,
   carriesSecretMask,
   createUnionSecretMasker,
@@ -35,7 +34,7 @@ import {
   recordNoEchoAttributeValues,
   recordRecoverableMaskedOutput,
   redactInheritedParameterValue,
-  redactSecretsForState,
+  redactForState,
   unionOfSecretBags,
   physicalNameCopiesOf,
   recordPhysicalNameCopy,
@@ -504,11 +503,15 @@ function redactOutputsBag(
   return maskOutputsByPosition(
     deps.noEchoRun(),
     deps.noEchoDeps(),
-    redactSecretsForState(
+    redactForState(
       outputs,
-      outputsRun.outputSecrets,
-      outputsRun.outputsSourceUsable ? outputsRun.outputsTemplateSource : undefined,
-      TEMPLATE_SOURCED_RULES
+      outputsRun.outputsSourceUsable
+        ? {
+            provenance: 'template-sourced',
+            secrets: outputsRun.outputSecrets,
+            source: outputsRun.outputsTemplateSource,
+          }
+        : { provenance: 'value-scan', secrets: outputsRun.outputSecrets }
     )
   );
 }

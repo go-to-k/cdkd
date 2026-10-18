@@ -30,7 +30,7 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isSecretDerivedValue, maskerOrIdentity } from '../masked-retry-logger.js';
 import {
   SECRET_MASK,
-  redactSecretsForState,
+  redactForState,
   withoutPhysicalNameCopies,
 } from '../../deployment/secret-redaction.js';
 import {
@@ -619,8 +619,9 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     // copy is kept as plaintext since go-to-k/cdkd#4810, and re-redacting
     // with that rule would read every `Ref`'d group as re-pointed.
     return (
-      withoutPhysicalNameCopies(bag, () => redactSecretsForState(desiredGroup, bag)) !==
-      recordedGroup
+      withoutPhysicalNameCopies(bag, () =>
+        redactForState(desiredGroup, { provenance: 'value-scan', secrets: bag })
+      ) !== recordedGroup
     );
   }
 

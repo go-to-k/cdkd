@@ -53,7 +53,7 @@ import { conditionsAssumedFalse } from './assumed-conditions.js';
 import {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   printingCorpusOf,
-  redactSecretsForState,
+  redactForState,
 } from './secret-redaction.js';
 import type { RecordedSecretValues } from './secret-redaction.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
@@ -396,7 +396,10 @@ export function deployConditionInputs(
       unavailable.add(name);
       continue;
     }
-    const redacted: unknown = redactSecretsForState(value, inheritedSecrets);
+    const redacted: unknown = redactForState(value, {
+      provenance: 'value-scan',
+      secrets: inheritedSecrets,
+    });
     if (!containsNeedle(value)) {
       if (redacted !== value) unavailable.add(name);
       continue;

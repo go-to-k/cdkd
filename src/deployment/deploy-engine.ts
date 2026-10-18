@@ -8,7 +8,7 @@ import {
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
-  redactSecretsForState,
+  redactForState,
   scrubResourceRecord,
   maskSecretsInText,
   hasMaskableValues,
@@ -1328,7 +1328,8 @@ export class DeployEngine {
     // `imports[].sourceStack`, which are not template-derived and are read as
     // match keys. Each field is a bare string, so the value scan is the only
     // arm that can apply and a source bag would buy nothing.
-    const redact = (value: string): string => redactSecretsForState(value, secrets);
+    const redact = (value: string): string =>
+      redactForState(value, { provenance: 'value-scan', secrets: secrets });
     return {
       ...(state.imports === undefined
         ? {}
@@ -1381,7 +1382,7 @@ export class DeployEngine {
     absorbOutputsPassSecrets(this.maskingDeps());
     const secrets = allRecordedSecrets(this.secretsRun, this.maskingDeps());
     if (secrets.size === 0) return (name) => name;
-    return (name) => redactSecretsForState(name, secrets);
+    return (name) => redactForState(name, { provenance: 'value-scan', secrets: secrets });
   }
 
   /**

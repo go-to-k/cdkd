@@ -161,11 +161,9 @@ import {
   recordMaskOnlyValuesIn,
   recordNoEchoAttributeValues,
   recordPhysicalNameCopy,
-  redactSecretsForState,
+  redactForState,
   withPhysicalNameCopies,
   SECRET_MASK,
-  STATE_SOURCED_BASELINE_RULES,
-  STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import { noEchoAttributeNamesOf } from '../../deployment/deploy-engine/noecho.js';
@@ -3025,7 +3023,7 @@ function redactDriftValue(
   secrets: RecordedSecretValues,
   secretBearing: boolean
 ): unknown {
-  const redacted = redactSecretsForState(value, secrets);
+  const redacted = redactForState(value, { provenance: 'value-scan', secrets: secrets });
   if (!secretBearing) return redacted;
   if (redacted === undefined || redacted === null) return redacted;
   if (typeof redacted === 'string' && isWholeDynamicReference(redacted)) return redacted;
@@ -4961,12 +4959,11 @@ async function runAccept(
           outcome.secrets,
           otherPhysicalIds(report.state.resources, outcome.logicalId),
           () =>
-            redactSecretsForState(
-              newBaseline,
-              outcome.secrets,
-              existing.properties ?? {},
-              hasObserved ? STATE_SOURCED_BASELINE_RULES : STATE_SOURCED_READBACK_RULES
-            )
+            redactForState(newBaseline, {
+              provenance: hasObserved ? 'state-baseline' : 'state-readback',
+              secrets: outcome.secrets,
+              source: existing.properties ?? {},
+            })
         );
         let recordedChanges = 0;
         for (const change of accepted) {
@@ -7585,14 +7582,14 @@ async function runRevert(
                           // constant there changes nothing and is kept for symmetry
                           // with `--accept`.
                           keepBaselineAtUncertifiedPaths(
-                            redactSecretsForState(
-                              delta,
-                              secrets,
-                              revertBaseline,
-                              stateResource.observedProperties !== undefined
-                                ? STATE_SOURCED_BASELINE_RULES
-                                : STATE_SOURCED_READBACK_RULES
-                            ),
+                            redactForState(delta, {
+                              provenance:
+                                stateResource.observedProperties !== undefined
+                                  ? 'state-baseline'
+                                  : 'state-readback',
+                              secrets: secrets,
+                              source: revertBaseline,
+                            }),
                             [...outcome.uncertifiedPaths, ...(outcome.noEchoParameterPaths ?? [])],
                             revertBaseline
                           )
@@ -7639,7 +7636,10 @@ async function runRevert(
                         next.attributes === undefined
                           ? undefined
                           : keepRecordedAttributesOverMask(
-                              redactSecretsForState(next.attributes, secrets),
+                              redactForState(next.attributes, {
+                                provenance: 'value-scan',
+                                secrets: secrets,
+                              }),
                               next.attributes,
                               stateResource.attributes,
                               noEchoDeclared
