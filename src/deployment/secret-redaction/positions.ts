@@ -805,6 +805,11 @@ export function certifiesRenderedLiteral(
  *
  * Only on a claimed bag: the claim is what makes the scan's silence over a
  * sub-floor plaintext equivalence, and the proof is pass-local.
+ *
+ * The rendering and literal-text checks are the certificate's own conditions,
+ * as in {@link renderedLiteralSpans}; on every input found so far THE BOUND
+ * also refuses what they refuse (a probe removing either stays green), so
+ * they are kept as stated conditions, not as the only guard.
  */
 function certifiedMixedLiteral(
   bag: string,
