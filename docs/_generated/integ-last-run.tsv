@@ -39,7 +39,7 @@ cc-abandoned-create-resume	2026-10-15T19:59:59Z	PASS	111	verify.sh	re-run after 
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 cc-api-fallback-transitions	2026-10-15T18:54:20Z	PASS	80	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 cc-final-snapshot-handlers	2026-09-30T17:44:01Z	PASS	1223	verify.sh	PR #4234 (#4111 final-snapshot id dropped from Snapshot-delete log lines) @0f947d9; rc ok, 0 surviving state versions
-cc-getatt-readback	2026-10-11T09:33:22Z	PASS	116	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+cc-getatt-readback	2026-10-18T04:24:32Z	PASS	104	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-to-sdk-reroute	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -71,7 +71,7 @@ cross-region-concurrent-stacks	2026-10-11T21:12:45Z	PASS	216	verify.sh	PR #4809,
 cross-region-state-bucket	2026-10-03T07:02:29Z	PASS	32	verify.sh	rc ok, orph clean (#4283 PR #4449)
 cross-stack-cfn-fallback	2026-10-18T00:55:44Z	PASS	140	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 cross-stack-references	2026-10-09T07:58:21Z	PASS	40	standard	rc ok, orph clean (PR #4752 #4043 Phase C rollback)
-cross-stack-secret-import	2026-10-18T00:55:44Z	PASS	646	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
+cross-stack-secret-import	2026-10-18T05:36:24Z	PASS	660	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-17T02:35:06Z	PASS	1378	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
@@ -80,7 +80,7 @@ custom-resource-resolved-secret	2026-10-13T11:42:44Z	PASS	355	verify.sh	PR #4862
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
-deep-getatt-chains	2026-10-03T05:56:47Z	PASS	80	verify.sh	rc ok, orph clean (#4497)
+deep-getatt-chains	2026-10-18T05:53:52Z	PASS	61	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 deletion-ordering-complex	2026-10-11T09:33:22Z	PASS	205	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 deletion-policy-snapshot	2026-09-29T08:18:12Z	PASS	241	verify.sh	rc ok, orph clean (#4029 PR #4072)
@@ -98,8 +98,11 @@ docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504
 drift-revert	2026-10-18T04:10:16Z	PASS	331	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-18T04:10:16Z	PASS	361	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+drift-revert	2026-10-18T05:44:55Z	PASS	394	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
+drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
+drift-revert-vpc	2026-10-18T05:52:08Z	PASS	416	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean, no stray ENIs
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
-dynamic-ref-cross-region	2026-10-14T08:07:57Z	PASS	265	verify.sh	rc ok, orph clean; PR #4892 38f6093dc reader provenance promotion
+dynamic-ref-cross-region	2026-10-18T05:07:43Z	PASS	279	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
 dynamodb-fix-forward-orphan	2026-10-15T19:26:58Z	PASS	170	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 dynamodb-globaltable	2026-10-13T11:42:44Z	PASS	1833	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean, own state bucket
@@ -135,7 +138,7 @@ eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#47
 eventbridge-archive	2026-07-31T06:21:38Z	PASS	54	verify.sh	TTL-refresh sweep re-run; 3 phases clean, orph clean
 eventbridge-input-transformer	2026-10-14T05:21:01Z	PASS	80	verify.sh	rc ok, orph clean
 eventbridge-pipes	2026-10-16T08:48:48Z	PASS	165	verify.sh	rc ok, orph clean (#3341 slice 4996)
-eventbridge-scheduler	2026-09-30T18:16:33Z	PASS	95	verify.sh	rc ok, orph clean (#4242)
+eventbridge-scheduler	2026-10-18T04:23:38Z	PASS	52	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 export	2026-10-18T04:10:16Z	PASS	230	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
@@ -148,7 +151,7 @@ fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; unta
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
-getatt-fallback-guard	2026-10-14T09:23:37Z	PASS	160	verify.sh	rc ok, orph clean; PR #4889 f7a89df87
+getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 globaltable-fix-forward-orphan	2026-10-15T19:23:57Z	PASS	170	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph clean (#5032)
@@ -172,15 +175,15 @@ import-attribute-readback-misc	2026-09-27T14:13:26Z	PASS	266	verify.sh	rc ok, or
 import-attribute-readback-network	2026-10-11T09:33:22Z	PASS	306	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 import-attributes	2026-09-28T18:32:16Z	PASS	60	verify.sh	PR #4007 merge-gate run; rc ok, orph clean
 import-auto-mode	2026-10-06T02:45:41Z	PASS	85	verify.sh	rc ok, orph clean (#4607 PR #4608)
-import-deployed-parameter-secret	2026-10-14T22:28:38Z	PASS	361	verify.sh	PR #4916 (#3869) 958f7bc5f; own state bucket; rc ok, destroy clean, orph clean
+import-deployed-parameter-secret	2026-10-18T05:20:41Z	PASS	377	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-heal-prefix-record	2026-10-18T00:55:44Z	PASS	155	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 import-lambda-url-attributes	2026-10-01T10:13:53Z	PASS	105	verify.sh	PR #4302 (#2177 Lambda-family masking) at 514801018; rc ok, 5 deleted 0 errors, orph clean
 import-migrate-vpc	2026-09-28T17:48:20Z	PASS	350	verify.sh	rc ok, orph clean (#3950 lane B)
 import-nested-stack	2026-10-17T13:23:24Z	PASS	150	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
-import-reimport-masked-attrs	2026-10-12T05:11:28Z	PASS	210	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: deploy record masks non-attribute keys (EncryptionConfiguration, Tags), Name clear; reverted-fix run (8-d) went RED at Phase 1 (EncryptionConfiguration recorded in the clear); destroy 0 errors, orph clean
+import-reimport-masked-attrs	2026-10-18T05:25:05Z	PASS	246	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-import-secret-observed	2026-10-17T21:42:05Z	PASS	156	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
+import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-value-strong-ref	2026-10-18T00:55:44Z	PASS	200	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 importvalue-chain	2026-10-12T05:04:39Z	PASS	152	verify.sh	PR #4812 head build, rc ok, orph clean
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
@@ -275,7 +278,7 @@ nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 
 noecho-named-producer	2026-10-17T02:35:06Z	PASS	120	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
 noecho-parameter-masking	2026-10-18T00:55:44Z	PASS	1488	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 opensearch-domain-getatt	2026-10-03T06:34:29Z	PASS	1683	verify.sh	rc ok, orph clean (#4497)
-orphan-getatt-takeover	2026-10-15T07:48:13Z	PASS	60	verify.sh	rc ok, orph clean (#4937 PR #4943; pre-fix probe RED at Phase 4b)
+orphan-getatt-takeover	2026-10-18T05:38:03Z	PASS	82	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 output-never-resolved-diff	2026-10-16T21:07:57Z	PASS	186	verify.sh	rc ok, orph clean (OutputsRunState refactor #5021)
 outputs-only-export	2026-10-18T00:55:44Z	PASS	125	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
@@ -312,10 +315,13 @@ retain-orphan-redeploy	2026-10-17T07:24:50Z	PASS	260	verify.sh	rc ok, orph clean
 retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
 rollback-command	2026-10-18T04:10:16Z	PASS	832	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 rollback-cross-region-secret	2026-10-17T21:42:05Z	PASS	371	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
+retain-orphan-secret	2026-10-18T04:24:31Z	PASS	105	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, no versions survive
+rollback-command	2026-10-17T10:48:50Z	PASS	1032	verify.sh	rc ok, orph clean (rollback refactor #5027)
+rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
 rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-failure-injection	2026-10-17T13:29:07Z	PASS	356	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
-rollback-nested-cross-region-secret	2026-10-17T21:42:05Z	PASS	536	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
+rollback-nested-cross-region-secret	2026-10-18T04:44:15Z	PASS	522	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 rollback-replacement-retain	2026-10-17T10:48:50Z	PASS	70	verify.sh	rc ok (solo rerun after a batch-script wave-placement race), orph clean (rollback refactor #5027)
 rollback-replay-cc-generated-name	2026-10-17T10:48:50Z	PASS	170	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-replay-effective-props	2026-10-17T10:48:50Z	PASS	230	verify.sh	rc ok, orph clean (rollback refactor #5027)
@@ -343,13 +349,13 @@ schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
 schema-v8-to-v9-migration	2026-10-12T05:46:57Z	FAIL	160	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
 schema-v9-to-v10-migration	2026-10-16T18:55:45Z	PASS	185	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
-scrub-nested-child	2026-10-17T21:42:05Z	PASS	211	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
+scrub-nested-child	2026-10-18T05:11:18Z	PASS	199	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 sdk-ccapi-crossref	2026-10-12T05:09:48Z	PASS	110	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08, rc ok, destroy 0 errors, orph clean
 sdk-to-cc-autoroute	2026-10-15T02:06:45Z	PASS	225	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 secret-derived-immutable-names	2026-10-16T15:14:34Z	PASS	923	verify.sh	branch fix/3869-derived-name-items-2-3 (#3869 items 2-3, review round 2) 3bc74b129; us-east-1; own state bucket; rc ok, step 1b sentinel ok, all versions swept, orph clean
 secrets-array-nested	2026-10-17T21:42:05Z	PASS	500	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
-secrets-dynamic-ref	2026-10-18T00:55:44Z	PASS	902	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
-secrets-rotation-schedule	2026-10-03T04:27:48Z	PASS	72	verify.sh	rc ok, orph clean (#4283 PR #4449)
+secrets-dynamic-ref	2026-10-18T05:00:02Z	PASS	925	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
+secrets-rotation-schedule	2026-10-18T05:55:24Z	PASS	64	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 servicediscovery	2026-10-16T09:35:29Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4997)
@@ -364,7 +370,7 @@ sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clea
 sns-subscription-update	2026-10-13T11:42:44Z	PASS	135	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-ssm-secure-dynamic-ref	2026-10-16T09:35:29Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4997)
+ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 stack-copy-create-tokens	2026-10-11T09:33:22Z	PASS	2034	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stack-lock-renewal	2026-10-13T02:41:29Z	PASS	416	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 stage-assets	2026-10-11T21:14:13Z	PASS	150	verify.sh	PR #4809, rc ok, orph clean
