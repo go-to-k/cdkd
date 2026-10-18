@@ -1233,6 +1233,138 @@ describe('cdkd import', () => {
     expect(String(summaryCall?.[0])).toMatch(/1 imported, 1 not found, 1 unsupported/);
   });
 
+  describe('the stack instance id (state schema v13, go-to-k/cdkd#5064)', () => {
+    const ID = '00000000-0000-4000-8000-000000000000';
+    const OTHER_ID = '7c6b5a49-3827-4615-9a0b-1c2d3e4f5a6b';
+    const bucketTemplate = () =>
+      template({
+        MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+      });
+    const existing = (stackInstanceId?: string) => ({
+      state: {
+        version: 12,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          MyBucket: {
+            physicalId: 'my-bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        ...(stackInstanceId !== undefined && { stackInstanceId }),
+        lastModified: 0,
+      },
+      etag: '"existing-etag"',
+    });
+    const savedRoot = () =>
+      (mockSaveState.mock.calls[0] as unknown as [string, string, { stackInstanceId?: string }])[2];
+
+    beforeEach(() => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', bucketTemplate())] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })),
+      });
+    });
+
+    it('an import CREATING the record takes the id for its first write, writing nothing ahead', async () => {
+      await runImport(['import', '--app', 'x', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledTimes(1);
+      expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledWith('S', 'us-east-1', {
+        writeAhead: false,
+      });
+      expect(savedRoot().stackInstanceId).toBe(ID);
+    });
+
+    it('a re-import over a record with an id keeps it and asks for none', async () => {
+      mockGetState.mockResolvedValueOnce(existing(OTHER_ID));
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=my-bucket-name', '--force', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      expect(savedRoot().stackInstanceId).toBe(OTHER_ID);
+    });
+
+    it('a re-import over a LEGACY record keeps it legacy', async () => {
+      mockGetState.mockResolvedValueOnce(existing());
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=my-bucket-name', '--force', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      expect(Object.hasOwn(savedRoot(), 'stackInstanceId')).toBe(false);
+    });
+
+    it('a nested child takes its own id when it has no record, and keeps the one its record holds', async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-instance-id-'));
+      try {
+        const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(
+          childTemplatePath,
+          JSON.stringify({ Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } } })
+        );
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['Bucket', 'b']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+        type Saved = [string, string, { stackInstanceId?: string }];
+        const saved = (name: string) =>
+          (mockSaveState.mock.calls as unknown as Saved[]).find((c) => c[0] === name)?.[2];
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledWith('P~Child', 'us-east-1', {
+          writeAhead: false,
+        });
+        expect(saved('P')?.stackInstanceId).toBe(ID);
+        expect(saved('P~Child')?.stackInstanceId).toBe(ID);
+
+        // A child that already has a record keeps its id (a re-import rebuilds
+        // the child from nothing, so only this read can carry it).
+        mockSaveState.mockClear();
+        mockStackInstanceIdForFirstWrite.mockClear();
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child'
+            ? {
+                state: { version: 13, stackName: 'P~Child', resources: {}, outputs: {}, stackInstanceId: OTHER_ID, lastModified: 0 },
+                etag: '"c"',
+              }
+            : null
+        );
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalledWith(
+          'P~Child',
+          expect.anything(),
+          expect.anything()
+        );
+        expect(saved('P~Child')?.stackInstanceId).toBe(OTHER_ID);
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('adopts an ELBv2 load balancer by its UNPREFIXED template Name, and reports a failed lookup as failed (go-to-k/cdkd#3937)', async () => {
     // `cdkd import` runs outside any stack scope, so the lookup asks for the
     // bare (sanitized) name a CloudFormation-deployed stack carries, never
