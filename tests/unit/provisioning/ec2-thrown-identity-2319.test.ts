@@ -117,10 +117,10 @@ const NACL_ENTRY = {
 
 /**
  * Each wrap in ec2-provider.ts, the call that reaches it, and the prefix it
- * throws. Route and SecurityGroupIngress updates are a delete then a create,
- * each wrapping its own failure, which those updates pass through: an AWS
- * failure there reaches the delete / create rows below, never the update's own
- * wrap.
+ * throws. A SecurityGroupIngress update is a delete then a create, each
+ * wrapping its own failure, which the update passes through: an AWS failure
+ * there reaches the delete / create rows below, never the update's own wrap.
+ * A Route target change is one `ReplaceRoute` (#5068), under its own wrap.
  */
 const SITES: ReadonlyArray<[prefix: string, run: Run]> = [
   ['Failed to create VPC Res: ', create('AWS::EC2::VPC', VPC)],
@@ -153,6 +153,10 @@ const SITES: ReadonlyArray<[prefix: string, run: Run]> = [
   ['Failed to delete RouteTable Res: ', del('AWS::EC2::RouteTable', 'rtb-1')],
   ['Failed to create Route Res: ', create('AWS::EC2::Route', ROUTE)],
   ['Failed to delete Route Res: ', del('AWS::EC2::Route', 'rtb-1|0.0.0.0/0')],
+  [
+    'Failed to update Route Res: ',
+    update('AWS::EC2::Route', 'rtb-1|0.0.0.0/0', { ...ROUTE, GatewayId: 'igw-2' }, ROUTE),
+  ],
   [
     'Failed to create SubnetRouteTableAssociation Res: ',
     create('AWS::EC2::SubnetRouteTableAssociation', { SubnetId: 'subnet-1', RouteTableId: 'rtb-1' }),

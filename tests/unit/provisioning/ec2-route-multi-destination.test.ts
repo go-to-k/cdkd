@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { CreateRouteCommand, DeleteRouteCommand } from '@aws-sdk/client-ec2';
+import { CreateRouteCommand, DeleteRouteCommand, ReplaceRouteCommand } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.fn();
 
@@ -48,7 +48,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
  *
  * The refusal is TEMPLATE-path only. Both state-borne paths — the rollback
  * executor's reverse-replacement create (`CreateContext.replayingState`) and
- * `update()`'s delete-and-recreate, which `rollback --revert` / `drift
+ * `update()` (a `ReplaceRoute` since #5068), which `rollback --revert` / `drift
  * --revert` also drive — downgrade to a warning and keep the pre-fix
  * precedence, because a state record is not something the user can edit.
  */
@@ -303,7 +303,7 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
       ['no context', undefined],
       ['both flags false', { replayingState: false, desiredFromAwsReadback: false }],
     ])(
-      'REFUSES on a template-path update (%s) BEFORE the delete, so nothing is stranded',
+      'REFUSES on a template-path update (%s) BEFORE any AWS call',
       async (_label, context) => {
         mockSend.mockResolvedValue({});
 
@@ -312,8 +312,7 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
         expect(error).toBeInstanceOf(ProvisioningError);
         expect((error as Error).message).toMatch(/^Route MyRoute declares more than one destination/);
         expect((error as Error).message).toContain('The route was not changed.');
-        // Nothing at all went out: the whole point of refusing HERE rather than
-        // in the re-create is that the delete never ran.
+        // Nothing at all went out: the refusal precedes every AWS call.
         expect(mockSend).not.toHaveBeenCalled();
       }
     );
@@ -326,17 +325,39 @@ describe('EC2Provider AWS::EC2::Route multi-destination (#1566)', () => {
 
       const result = await multiDestinationUpdate(context);
 
-      expect(result.wasReplaced).toBe(true);
-      // update() deletes BEFORE re-creating, which is precisely why the guard
-      // cannot throw here — a refusal would leave the route deleted. Assert the
-      // ORDER, not mere presence: a presence check also passes if the calls
-      // were swapped, which would invalidate the reason for the downgrade.
-      const deleteAt = mockSend.mock.calls.findIndex((c) => c[0] instanceof DeleteRouteCommand);
-      const createAt = mockSend.mock.calls.findIndex((c) => c[0] instanceof CreateRouteCommand);
-      expect(deleteAt).toBeGreaterThanOrEqual(0);
-      expect(createAt).toBeGreaterThan(deleteAt);
-      expect(createInput()['GatewayId']).toBe('igw-2');
-      expect(warnings().some((m) => /declares more than one destination/.test(m))).toBe(true);
+      // Issue #5068: a target change on the SAME route is one atomic
+      // `ReplaceRoute`, so nothing is ever deleted and nothing can be stranded.
+      expect(result.wasReplaced).toBe(false);
+      expect(result.physicalId).toBe('rtb-123|0.0.0.0/0');
+      expect(
+        mockSend.mock.calls.some(
+          (c) => c[0] instanceof DeleteRouteCommand || c[0] instanceof CreateRouteCommand
+        )
+      ).toBe(false);
+      const replaced = mockSend.mock.calls.filter((c) => c[0] instanceof ReplaceRouteCommand);
+      expect(replaced).toHaveLength(1);
+      const input = (replaced[0]![0] as ReplaceRouteCommand).input as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(input['DestinationCidrBlock']).toBe('0.0.0.0/0');
+      expect(input['DestinationIpv6CidrBlock']).toBeUndefined();
+      expect(input['GatewayId']).toBe('igw-2');
+      // The same whole sentence the create arm emits (pinned above).
+      expect(warnings()).toEqual([
+        'Route MyRoute declares more than one destination ' +
+          '(DestinationCidrBlock, DestinationIpv6CidrBlock). ' +
+          'CloudFormation and EC2 accept exactly one of ' +
+          'DestinationCidrBlock/DestinationIpv6CidrBlock/DestinationPrefixListId; ' +
+          'remove the extra keys from the template. ' +
+          'Continuing with DestinationCidrBlock and ignoring the rest.',
+      ]);
+      // State records the bag actually sent (#1591).
+      expect(result.effectiveProperties).toEqual({
+        RouteTableId: 'rtb-123',
+        DestinationCidrBlock: '0.0.0.0/0',
+        GatewayId: 'igw-2',
+      });
     });
 
     it('leaves the unchanged-properties short-circuit untouched', async () => {

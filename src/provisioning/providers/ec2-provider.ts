@@ -27,6 +27,7 @@ import {
   DeleteRouteTableCommand,
   CreateRouteCommand,
   DeleteRouteCommand,
+  ReplaceRouteCommand,
   AssociateRouteTableCommand,
   DisassociateRouteTableCommand,
   CreateSecurityGroupCommand,
@@ -272,6 +273,30 @@ export function narrowRouteDestinations(properties: Record<string, unknown>): {
   const narrowed = { ...properties };
   for (const losingKey of declared.slice(1)) delete narrowed[losingKey];
   return { declared, narrowed };
+}
+
+/**
+ * The route TARGET keys `createRoute` and `updateRoute`'s `ReplaceRoute` arm
+ * send (issue #5068), read from one list so the two calls cannot disagree on
+ * which targets they carry. Every one is an "Update requires: No interruption"
+ * property in the CloudFormation schema and a field of both `CreateRouteRequest`
+ * and `ReplaceRouteRequest`. `OdbNetworkArn` is in neither call: cdkd records
+ * it as not yet implemented (`property-coverage.generated.ts`).
+ */
+function routeTargetParams(properties: Record<string, unknown>) {
+  return {
+    CarrierGatewayId: (properties['CarrierGatewayId'] as string) ?? undefined,
+    CoreNetworkArn: (properties['CoreNetworkArn'] as string) ?? undefined,
+    GatewayId: (properties['GatewayId'] as string) ?? undefined,
+    LocalGatewayId: (properties['LocalGatewayId'] as string) ?? undefined,
+    NatGatewayId: (properties['NatGatewayId'] as string) ?? undefined,
+    EgressOnlyInternetGatewayId: (properties['EgressOnlyInternetGatewayId'] as string) ?? undefined,
+    InstanceId: (properties['InstanceId'] as string) ?? undefined,
+    NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
+    TransitGatewayId: (properties['TransitGatewayId'] as string) ?? undefined,
+    VpcEndpointId: (properties['VpcEndpointId'] as string) ?? undefined,
+    VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
+  };
 }
 
 /**
@@ -3788,18 +3813,7 @@ export class EC2Provider implements ResourceProvider {
             : destinationIpv6CidrBlock
               ? { DestinationIpv6CidrBlock: destinationIpv6CidrBlock }
               : { DestinationPrefixListId: destinationPrefixListId }),
-          CarrierGatewayId: (properties['CarrierGatewayId'] as string) ?? undefined,
-          CoreNetworkArn: (properties['CoreNetworkArn'] as string) ?? undefined,
-          GatewayId: (properties['GatewayId'] as string) ?? undefined,
-          LocalGatewayId: (properties['LocalGatewayId'] as string) ?? undefined,
-          NatGatewayId: (properties['NatGatewayId'] as string) ?? undefined,
-          EgressOnlyInternetGatewayId:
-            (properties['EgressOnlyInternetGatewayId'] as string) ?? undefined,
-          InstanceId: (properties['InstanceId'] as string) ?? undefined,
-          NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
-          TransitGatewayId: (properties['TransitGatewayId'] as string) ?? undefined,
-          VpcEndpointId: (properties['VpcEndpointId'] as string) ?? undefined,
-          VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
+          ...routeTargetParams(properties),
         })
       );
 
@@ -3839,16 +3853,16 @@ export class EC2Provider implements ResourceProvider {
 
     // No-op short-circuit: a `cdkd drift --revert` round-trip can call
     // update() with new == old when only sibling resources drifted.
-    // Without this guard, the delete + recreate path below would
-    // needlessly churn a Route that AWS already has in the right shape.
+    // Without this guard, the `ReplaceRoute` below would needlessly
+    // rewrite a Route that AWS already has in the right shape.
     if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
       return { physicalId, wasReplaced: false };
     }
 
-    // The multi-destination refusal, on the TEMPLATE path, BEFORE the delete
-    // (issue #3728). The re-create below would refuse it anyway were it not
-    // handed the warn callback, but only AFTER `deleteRoute` has run, which is
-    // why that callback used to downgrade it on every update.
+    // The multi-destination refusal, on the TEMPLATE path, BEFORE any AWS
+    // call (issue #3728). Neither arm below refuses it: the `ReplaceRoute`
+    // arm warns, and the delete + create arm hands the re-create the warn
+    // callback because the route is already deleted by then.
     //
     // WHO reaches it: a template carrying extra destination keys behind
     // intrinsics that all resolved (the deploy pre-flight,
@@ -3879,8 +3893,73 @@ export class EC2Provider implements ResourceProvider {
       }
     }
 
-    // Route updates require replacement (DestinationCidrBlock and RouteTableId are immutable)
-    // For target changes, we delete and recreate
+    // The in-place arm (issue #5068): the route the physical id names is the
+    // one the desired bag names, so only a TARGET changed — every target key
+    // is "Update requires: No interruption" in CloudFormation, which EC2
+    // serves with the single atomic `ReplaceRoute`. Delete + create would
+    // leave the route table without the route between the two calls, and
+    // lose it outright if the create were refused.
+    //
+    // `RouteTableId` and the three destination keys are createOnly, so a
+    // change to either takes the engine's replacement path and never reaches
+    // `update()`. The identity check below is what decides the arm, not that
+    // premise: a bag whose route table or destination does not match the id
+    // still falls through to the delete + create arm, as before.
+    const { declared: declaredDestinations, narrowed: narrowedProperties } =
+      narrowRouteDestinations(properties);
+    const usedDestinationKey = declaredDestinations[0];
+    const routeTableId = properties['RouteTableId'];
+    const destination =
+      usedDestinationKey === undefined ? undefined : properties[usedDestinationKey];
+    if (
+      usedDestinationKey !== undefined &&
+      typeof routeTableId === 'string' &&
+      typeof destination === 'string' &&
+      `${routeTableId}|${destination}` === physicalId
+    ) {
+      // Only the two state-borne callers get here with more than one
+      // destination (the template path refused above). They keep the
+      // warning, and state records the bag actually sent (issue #1591).
+      let effectiveProperties: Record<string, unknown> | undefined;
+      if (declaredDestinations.length > 1) {
+        effectiveProperties = narrowedProperties;
+        this.logger.warn(
+          safeMsg`${routeMultipleDestinationsMessage(logicalId, declaredDestinations)} Continuing with ${usedDestinationKey} and ignoring the rest.`
+        );
+      }
+      try {
+        await this.ec2Client.send(
+          new ReplaceRouteCommand({
+            RouteTableId: routeTableId,
+            [usedDestinationKey]: destination,
+            ...routeTargetParams(properties),
+          })
+        );
+        this.logger.debug(safeMsg`Successfully replaced the target of Route ${logicalId}`);
+        return {
+          physicalId,
+          wasReplaced: false,
+          ...(effectiveProperties && { effectiveProperties }),
+        };
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapCaughtError(
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to update Route ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+    }
+
+    // The bag names a different route than the physical id (a destination or
+    // route table change that did not take the replacement path): delete the
+    // recorded route and create the desired one.
     try {
       await this.deleteRoute(logicalId, physicalId, resourceType);
       const createResult = await this.createRoute(
@@ -3902,11 +3981,10 @@ export class EC2Provider implements ResourceProvider {
         //    reach this warning with one.
         //  - the `|` separator: kept a warning on the template path too, by
         //    decision. Both segments are createOnly (`RouteTableId`, the
-        //    destination keys), so a changed value is a replacement and never
-        //    reaches `update()`: the id packed here is always the one the
-        //    recorded route already carries, which only an older binary could
-        //    have written, and the template can change it only by replacing
-        //    the route. Neither segment is realistically pipe-capable anyway.
+        //    destination keys), so a changed value is a replacement and does
+        //    not reach `update()`; an unchanged pipe-carrying pair matches the
+        //    id and takes the `ReplaceRoute` arm above, packing nothing.
+        //    Neither segment is realistically pipe-capable anyway.
         (message) => this.logger.warn(message),
         // Issue #2176 round 3: the re-create is what packs the composite id, so
         // the masker has to reach IT rather than being used in this frame.
