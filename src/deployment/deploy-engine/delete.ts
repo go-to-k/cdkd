@@ -17,6 +17,7 @@ import {
   hasAddressablePhysicalId,
   withheldAccountClause,
 } from '../../state/malformed-resources-bag.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
@@ -231,7 +232,7 @@ Drop the record with: ${dropCommand}`
       deleteProvider
     );
   } catch (deleteError) {
-    const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
+    const msg = describeAwsFailure(deleteError).detail;
     // Treat "not found" errors as success (resource already deleted) —
     // but never a USER ABORT (issues #2053 / #1952). The match is on the
     // MESSAGE, and an interrupt's message embeds a name the user chose, so

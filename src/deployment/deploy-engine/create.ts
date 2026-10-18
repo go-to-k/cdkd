@@ -649,7 +649,7 @@ async function refuseTakenCreateName(
     return refuse(
       `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
         `whether another resource already holds it: ` +
-        `${displayAwsMessage(maskName(probeError instanceof Error ? probeError.message : String(probeError)))}. ` +
+        `${displayAwsMessage(maskName(describeAwsFailure(probeError).detail))}. ` +
         `Nothing was created. Re-run the deploy once the check can succeed.`,
       probeError
     );

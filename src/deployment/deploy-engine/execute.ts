@@ -37,6 +37,7 @@ import {
   skippedOutputsCarriedFrom,
 } from '../../types/state.js';
 import { cyan, red } from '../../utils/colors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
@@ -158,7 +159,7 @@ export async function executeDeployment(
         engine.logger.debug(safeMsg`State saved after ${logicalId}`);
       } catch (error) {
         engine.logger.warn(
-          safeMsg`Failed to save state after ${logicalId}: ${asIsMessage(error instanceof Error ? error.message : String(error))}`
+          safeMsg`Failed to save state after ${logicalId}: ${asIsMessage(describeAwsFailure(error).detail)}`
         );
       }
     });
@@ -936,7 +937,7 @@ export async function executeDeployment(
       engine.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
     } catch (saveError) {
       engine.logger.warn(
-        safeMsg`Failed to save partial state before rollback: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
+        safeMsg`Failed to save partial state before rollback: ${asIsMessage(describeAwsFailure(saveError).detail)}`
       );
     }
 
@@ -1148,7 +1149,7 @@ export async function executeDeployment(
     } catch (saveError) {
       // ETag mismatch from per-resource saves — force overwrite with fresh ETag
       engine.logger.debug(
-        safeMsg`Retrying state save after rollback (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
+        safeMsg`Retrying state save after rollback (ETag mismatch): ${asIsMessage(describeAwsFailure(saveError).detail)}`
       );
       try {
         const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
@@ -1198,7 +1199,7 @@ export async function executeDeployment(
         }
       } catch (retryError) {
         engine.logger.warn(
-          safeMsg`Failed to save state after rollback: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))}`
+          safeMsg`Failed to save state after rollback: ${asIsMessage(describeAwsFailure(retryError).detail)}`
         );
       }
     }
@@ -1396,7 +1397,7 @@ export async function persistStateAfterOutputFailure(
     engine.logger.debug('State saved after output resolution failure');
   } catch (saveError) {
     engine.logger.debug(
-      safeMsg`Retrying state save after output resolution failure (ETag mismatch): ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))}`
+      safeMsg`Retrying state save after output resolution failure (ETag mismatch): ${asIsMessage(describeAwsFailure(saveError).detail)}`
     );
     try {
       const freshState = await engine.stateBackend.getState(stackName, engine.stackRegion);
@@ -1412,7 +1413,7 @@ export async function persistStateAfterOutputFailure(
       engine.logger.debug('State saved after output resolution failure (retry succeeded)');
     } catch (retryError) {
       engine.logger.warn(
-        safeMsg`Failed to save state after output resolution failure: ${asIsMessage(retryError instanceof Error ? retryError.message : String(retryError))} — resources were provisioned but not recorded; run deploy again to reconcile.`
+        safeMsg`Failed to save state after output resolution failure: ${asIsMessage(describeAwsFailure(retryError).detail)} — resources were provisioned but not recorded; run deploy again to reconcile.`
       );
     }
   }

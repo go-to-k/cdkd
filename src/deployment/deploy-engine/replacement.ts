@@ -21,6 +21,7 @@ import type {
 import type { ResourceState } from '../../types/state.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { green } from '../../utils/colors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
@@ -404,7 +405,7 @@ export async function replaceDeleteFirstAndRecreate(
         `during the --replace delete-first fallback: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
-        safeMsg`${asIsMessage(maskSecretsInText(deleteError instanceof Error ? deleteError.message : String(deleteError), shownSecrets))}`,
+        safeMsg`${asIsMessage(maskSecretsInText(describeAwsFailure(deleteError).detail, shownSecrets))}`,
       { cause: deleteError instanceof Error ? maskSecretsInError(deleteError, secrets) : undefined }
     );
   }
@@ -512,7 +513,7 @@ export async function replaceDeleteFirstAndRecreate(
         safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}). ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
-        safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(recreateError instanceof Error ? recreateError.message : String(recreateError), shownSecrets))}`,
+        safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(describeAwsFailure(recreateError).detail, shownSecrets))}`,
       {
         cause:
           recreateError instanceof Error ? maskSecretsInError(recreateError, secrets) : undefined,
@@ -686,7 +687,7 @@ export async function checkedReplacementNameChange(
         maskName(
           `${subject} requires replacement under a new name, and ${adoptsText}, but cdkd could ` +
             `not check whether another resource already holds it: ` +
-            `${displayAwsMessage(maskName(probeError instanceof Error ? probeError.message : String(probeError)))}. ` +
+            `${displayAwsMessage(maskName(describeAwsFailure(probeError).detail))}. ` +
             `Nothing was created or deleted. Re-run the deploy once the check can succeed.`
         ),
         'NAMED_REPLACEMENT_COLLISION',
@@ -801,9 +802,7 @@ export async function createFirstThenDeleteOld(
   } catch (createError) {
     // The old resource is untouched: a raw failure is the whole story.
     if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
-    const createMsg = displayAwsMessage(
-      maskName(createError instanceof Error ? createError.message : String(createError))
-    );
+    const createMsg = displayAwsMessage(maskName(describeAwsFailure(createError).detail));
     // Marked: the message quotes the collision text, which the recreate
     // retry classifier would otherwise retry for minutes.
     throw markNonRetryable(
@@ -925,10 +924,7 @@ export async function deleteReplacedAfterCreate(
       )
     );
   } catch (deleteError) {
-    const deleteMsg = maskSecretsInText(
-      deleteError instanceof Error ? deleteError.message : String(deleteError),
-      secrets
-    );
+    const deleteMsg = maskSecretsInText(describeAwsFailure(deleteError).detail, secrets);
     deleteFailed = true;
     // go-to-k/cdkd#2631: before the deferral below, whose retry runs only
     // after this row's op is journaled (and not at all if the deploy fails

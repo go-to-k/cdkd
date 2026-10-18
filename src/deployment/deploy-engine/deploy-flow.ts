@@ -1468,7 +1468,7 @@ export async function doDeployWithPrefetch(
             }
           } catch (saveError) {
             engine.logger.warn(
-              safeMsg`Failed to persist no-change state update: ${asIsMessage(saveError instanceof Error ? saveError.message : String(saveError))} — drift baseline / outputs will be re-resolved on next deploy.`
+              safeMsg`Failed to persist no-change state update: ${asIsMessage(describeAwsFailure(saveError).detail)} — drift baseline / outputs will be re-resolved on next deploy.`
             );
           }
         }
@@ -1934,7 +1934,7 @@ export async function doDeployWithPrefetch(
       engine.logger.debug('Lock released');
     } catch (lockError) {
       engine.logger.warn(
-        safeMsg`Failed to release lock: ${asIsMessage(lockError instanceof Error ? lockError.message : String(lockError))}`
+        safeMsg`Failed to release lock: ${asIsMessage(describeAwsFailure(lockError).detail)}`
       );
     }
   }

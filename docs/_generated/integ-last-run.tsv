@@ -29,7 +29,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-10-18T04:10:16Z	PASS	411	standard	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+bench-cdk-sample	2026-10-18T08:14:08Z	PASS	471	standard	destroy 0 errors, 0 orphans; #3361 PR 5041 f3eb58816; 3rd run (earlier 2 hit AWS-side Lambda ENI release lag >35min on PR and on main alike)
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -95,9 +95,9 @@ dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a321dac, PreferredMaintenanceWindow companion change proves Modify* fired before KEEP asserts; rc 0, destroy clean, orph clean
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-drift-revert	2026-10-18T05:44:55Z	PASS	394	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
+drift-revert	2026-10-18T08:14:08Z	PASS	325	verify.sh	rc 0, 0 orphans; #3361 PR 5041 f3eb58816
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
-drift-revert-vpc	2026-10-18T05:52:08Z	PASS	416	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean, no stray ENIs
+drift-revert-vpc	2026-10-18T08:14:08Z	PASS	366	verify.sh	rc 0, 0 orphans; #3361 PR 5041 f3eb58816
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-18T05:07:43Z	PASS	279	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -138,7 +138,7 @@ eventbridge-pipes	2026-10-16T08:48:48Z	PASS	165	verify.sh	rc ok, orph clean (#33
 eventbridge-scheduler	2026-10-18T04:23:38Z	PASS	52	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 eventbus-policy	2026-09-25T13:23:17Z	PASS	65	verify.sh	rc ok, orph clean; sha 762342a2a (#3718)
 eventsourcemapping-race	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-export	2026-10-18T04:10:16Z	PASS	230	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+export	2026-10-18T08:14:08Z	PASS	226	verify.sh	rc 0, 0 orphans; #3361 PR 5041 f3eb58816
 export-nested-stack	2026-10-18T00:55:44Z	PASS	185	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 fifo-sqs-event-source	2026-10-16T16:36:24Z	PASS	105	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; scope/limit retained, CBD reset
@@ -191,7 +191,7 @@ intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) fin
 kinesis-esm-filter	2026-10-16T08:48:48Z	PASS	70	verify.sh	rc ok, orph clean (#3341 slice 4996)
 kinesis-stream-mode-switch	2026-10-07T21:11:42Z	PASS	95	verify.sh	PR #4683 (#4639 reset/timeout replay stamp in withoutServerErrorRetries); rc 0, destroy clean, orph clean
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-10-18T04:10:16Z	PASS	115	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+lambda	2026-10-18T08:14:08Z	PASS	135	verify.sh	rc 0, 0 orphans; #3361 PR 5041 f3eb58816
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
 lambda-capacity-provider-default-name	2026-10-02T18:18:34Z	PASS	541	verify.sh	rc ok, orph clean (#4455)
@@ -255,13 +255,13 @@ loggroup-never-expire-guard	2026-10-12T00:02:47Z	PASS	122	verify.sh	PR #4820 (#3
 logs-loggroup-fix-forward-orphan	2026-10-16T09:35:29Z	PASS	95	verify.sh	rc ok, orph clean (#3341 slice 4997)
 lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 macro-expansion	2026-09-25T09:36:54Z	PASS	55	verify.sh	PR 3725 lane: identifier tail display boundaries; rc ok, orph clean
-microservices	2026-10-18T04:10:16Z	PASS	45	standard	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+microservices	2026-10-18T08:14:08Z	PASS	45	standard	destroy 0 errors, 0 orphans; #3361 PR 5041 f3eb58816
 migrate-from-cfn	2026-10-17T13:23:24Z	PASS	366	run.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-09-21T12:02:26Z	PASS	97	verify.sh	rc ok, orph clean; #3489 asset-publish sites (file + docker)
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
-multi-resource	2026-10-18T04:10:16Z	PASS	70	standard	rc 0, 0 orphans; #3361 PR 5042 0e89350c
-multi-stack-deps	2026-10-18T04:10:16Z	PASS	81	standard	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+multi-resource	2026-10-18T08:14:08Z	PASS	80	standard	destroy 0 errors, 0 orphans; #3361 PR 5041 f3eb58816
+multi-stack-deps	2026-10-18T08:14:08Z	PASS	85	standard	destroy 0 errors, 0 orphans; #3361 PR 5041 f3eb58816
 neptune-fix-forward-orphan	2026-10-15T19:44:42Z	PASS	3092	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
@@ -298,7 +298,7 @@ recreate-via-cc-api	2026-10-17T13:29:07Z	PASS	136	verify.sh	rc ok, orph clean (l
 recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 redacted-delete-address	2026-10-11T15:30:01Z	PASS	105	verify.sh	rc ok, orph clean (#4738 PR #4792)
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-18T04:10:16Z	PASS	2111	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+remove-protection	2026-10-18T08:14:08Z	PASS	2101	verify.sh	rc 0, 0 orphans; #3361 PR 5041 f3eb58816
 remove-protection-compensation	2026-10-15T17:25:51Z	PASS	236	verify.sh	PR #4965 (#4149) 7e3711376; us-east-1 + own us-east-1 state bucket, default VPC t3.nano; rc ok, orph clean, all 3 phases (batch with remove-protection)
 remove-protection-journaled-orphan	2026-10-18T04:10:16Z	PASS	682	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

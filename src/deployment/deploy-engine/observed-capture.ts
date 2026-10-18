@@ -20,6 +20,7 @@ import {
   hasReasonlessBaselineRefusal,
 } from '../../types/state.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import {
   isMaskedBaselineRecaptureCandidate,
@@ -172,7 +173,7 @@ export class ObservedCapture {
           ]);
           this.deps.logger.debug(
             // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
-            safeMsg`observedProperties capture for ${mask(logicalId)} (${mask(resourceType)}) failed: ${asIsMessage(mask(err instanceof Error ? err.message : String(err)))} — drift will fall back to template properties for this resource until the next successful deploy.`
+            safeMsg`observedProperties capture for ${mask(logicalId)} (${mask(resourceType)}) failed: ${asIsMessage(mask(describeAwsFailure(err).detail))} — drift will fall back to template properties for this resource until the next successful deploy.`
           );
           return undefined;
         }

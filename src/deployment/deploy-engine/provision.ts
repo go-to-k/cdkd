@@ -43,6 +43,7 @@ import { withStackRecords } from '../stack-records-scope.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import { secretNamesStoredIn } from '../secret-name-needles.js';
 import { type ReportedDeleteGuard, collectDeleteGuards } from '../delete-guard-scope.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { orphanedNameCollisionAdvice } from './name-collision.js';
@@ -461,7 +462,7 @@ export async function provisionResource(
     });
   } catch (error) {
     renderer.removeTask(logicalId);
-    const message = error instanceof Error ? error.message : String(error);
+    const message = describeAwsFailure(error).detail;
     // Issue #2038: MASKED, and at a strictly higher log level than the retry
     // give-up summary one statement below it. `perResourceSecrets` is
     // populated right after `resolver.resolve` and BEFORE the provider call
