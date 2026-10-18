@@ -30,6 +30,7 @@ import type {
 import type { AbandonedRequestOutcome } from '../../../src/provisioning/cloud-control-provider.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { Logger } from '../../../src/types/config.js';
+import { generateResourceName, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 function pendingOp(logicalId: string, token: string): FailedOperation {
   return {
@@ -478,6 +479,29 @@ describe('resolvePendingCloudControlRequests (#3252)', () => {
     });
     expect(reader.resumeAbandonedRequest).not.toHaveBeenCalled();
   });
+
+  // go-to-k/cdkd#5064: `params.stackInstanceId` must reach `identifierUnique`
+  // (and, in production, `ccIdentifierIsUnique`'s own naming check) — never a
+  // bare `undefined`, which would always ask the LEGACY (pre-v13) question.
+  it('#5064: forwards the record stack instance id to identifierUnique', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const journal = memoryJournal(journalOf(pendingOp('Logs', 't1')));
+    const identifierUnique = vi.fn().mockResolvedValue(true);
+
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: STACK_INSTANCE_ID,
+      identifierUnique,
+      journal,
+      loaded: structuredClone(journal.current()),
+      reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'my-group' } }),
+      logger: logger(),
+    });
+
+    expect(identifierUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ stackInstanceId: STACK_INSTANCE_ID })
+    );
+  });
 });
 
 describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (#3252)', () => {
@@ -542,6 +566,44 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
         stackInstanceId: undefined,
       })
     ).toBe(false);
+  });
+
+  // go-to-k/cdkd#5064: a v13 stack's un-named resource is minted
+  // `{stack}-{logicalId}-{12 hex}` (`generateResourceName` under
+  // `withStackScope`), which `looksLikeCdkdGeneratedName` only recognizes
+  // given the SAME `stackInstanceId` — so `ccIdentifierIsUnique` must forward
+  // it rather than always asking the legacy (undefined-id) question.
+  it('#5064: a suffixed generated name is recognized only with the record id in hand', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const suffixedName = withStackScope(
+      { stackName: 'MyStack', stackInstanceId: STACK_INSTANCE_ID },
+      () => generateResourceName('Thing', { maxLength: 64 })
+    );
+    ccSchema.fields = ['Id'];
+    ccSchema.readOnly = new Set(['Id']);
+
+    // The id is not in the sent bag at all — only `looksLikeCdkdGeneratedName`
+    // can recognize it, and only when it is handed the SAME instance id.
+    expect(
+      await ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: suffixedName,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+      })
+    ).toBe(false);
+    expect(
+      await ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: suffixedName,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: undefined,
+      })
+    ).toBe(true);
   });
 });
 
