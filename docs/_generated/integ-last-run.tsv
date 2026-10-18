@@ -95,9 +95,6 @@ dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a321dac, PreferredMaintenanceWindow companion change proves Modify* fired before KEEP asserts; rc 0, destroy clean, orph clean
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
-drift-revert	2026-10-18T04:10:16Z	PASS	331	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
-drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
-drift-revert-vpc	2026-10-18T04:10:16Z	PASS	361	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 drift-revert	2026-10-18T05:44:55Z	PASS	394	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 drift-revert-vpc	2026-10-18T05:52:08Z	PASS	416	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean, no stray ENIs
@@ -312,11 +309,8 @@ replacement-immutable-name	2026-10-14T12:12:31Z	PASS	146	verify.sh	rc ok, orph c
 replacement-rename-onto-holder	2026-10-17T05:11:06Z	PASS	611	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-17T07:24:50Z	PASS	260	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
-retain-orphan-secret	2026-09-30T08:16:22Z	PASS	80	verify.sh	PR #4184 (#2177 Secrets Manager masker, delegating to withDerivedNameMasks after #4195) @80278d5; rc ok, no versions survive
-rollback-command	2026-10-18T04:10:16Z	PASS	832	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
-rollback-cross-region-secret	2026-10-17T21:42:05Z	PASS	371	verify.sh	rc ok, orph clean (resolver-dynamic-refs refactor #5037)
 retain-orphan-secret	2026-10-18T04:24:31Z	PASS	105	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, no versions survive
-rollback-command	2026-10-17T10:48:50Z	PASS	1032	verify.sh	rc ok, orph clean (rollback refactor #5027)
+rollback-command	2026-10-18T04:10:16Z	PASS	832	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
 rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)
