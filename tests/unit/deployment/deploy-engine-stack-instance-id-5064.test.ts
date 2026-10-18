@@ -157,12 +157,19 @@ describe('DeployEngine and the stack instance id (go-to-k/cdkd#5064)', () => {
 
   it('a first deploy resolves the id once, written ahead, BEFORE the first create, and saves it', async () => {
     stateBackend.getState.mockResolvedValue(null);
+    // Resolved LATE: a create that did not wait for it would come first.
+    stateBackend.stackInstanceIdForFirstWrite.mockImplementation(async () => {
+      order.push('stack instance id asked');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push('stack instance id');
+      return ID;
+    });
     await makeEngine().deploy(STACK, template(['A', 'B']));
+    expect(order.slice(0, 2)).toEqual(['stack instance id asked', 'stack instance id']);
     expect(stateBackend.stackInstanceIdForFirstWrite).toHaveBeenCalledTimes(1);
     expect(stateBackend.stackInstanceIdForFirstWrite).toHaveBeenCalledWith(STACK, REGION, {
       writeAhead: true,
     });
-    expect(order[0]).toBe('stack instance id');
     expect(order.filter((o) => o.startsWith('create'))).toHaveLength(2);
     const saves = savedStates();
     expect(saves.length).toBeGreaterThan(0);
@@ -223,6 +230,41 @@ describe('DeployEngine and the stack instance id (go-to-k/cdkd#5064)', () => {
     const saves = savedStates();
     expect(saves.length).toBeGreaterThan(0);
     for (const saved of saves) expect(saved.stackInstanceId).toBe(OTHER_ID);
+  });
+
+  it('a first deploy with nothing to create writes its record (outputs only) with the id', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    const outputsOnly = {
+      Resources: {},
+      Outputs: { O: { Value: 'x' } },
+    } as unknown as CloudFormationTemplate;
+    await makeEngine().deploy(STACK, outputsOnly);
+    expect(stateBackend.stackInstanceIdForFirstWrite).toHaveBeenCalledTimes(1);
+    const saves = savedStates();
+    expect(saves.length).toBe(1);
+    expect(saves[0]!.stackInstanceId).toBe(ID);
+  });
+
+  it('a first deploy with nothing to create stops before its save when the write-ahead fails', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    stateBackend.stackInstanceIdForFirstWrite.mockRejectedValue(new Error('sibling write denied'));
+    const outputsOnly = {
+      Resources: {},
+      Outputs: { O: { Value: 'x' } },
+    } as unknown as CloudFormationTemplate;
+    await expect(makeEngine().deploy(STACK, outputsOnly)).rejects.toThrow('sibling write denied');
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('a first deploy declined at --require-approval writes no id ahead', async () => {
+    stateBackend.getState.mockResolvedValue(null);
+    const engine = makeEngine({
+      requireApproval: 'any-change',
+      approveDeployment: vi.fn().mockResolvedValue(false),
+    });
+    await expect(engine.deploy(STACK, template(['A']))).rejects.toThrow('was not approved');
+    expect(stateBackend.stackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+    expect(provider.create).not.toHaveBeenCalled();
   });
 
   it('--dry-run of a first deploy asks for no id and writes nothing', async () => {

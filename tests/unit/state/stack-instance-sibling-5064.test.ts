@@ -182,6 +182,53 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       expect(callsTo(sent, 'GetObjectCommand', SIBLING_KEY)).toHaveLength(2);
     });
 
+    it('a 409 (a concurrent write in flight) is asked once more, and then succeeds', async () => {
+      let puts = 0;
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => {
+          if (puts++ === 0) {
+            throw Object.assign(new Error('conflict'), {
+              name: 'ConditionalRequestConflict',
+              $metadata: { httpStatusCode: 409 },
+            });
+          }
+          return {};
+        },
+      });
+      const id = await backendFor(client).stackInstanceIdForFirstWrite(STACK, REGION, {
+        writeAhead: true,
+      });
+      const bodies = callsTo(sent, 'PutObjectCommand', SIBLING_KEY);
+      expect(bodies).toHaveLength(2);
+      expect(bodies.every((c) => c.input['IfNoneMatch'] === '*')).toBe(true);
+      expect(parseStackInstanceSibling(String(bodies[1]!.input['Body']))).toBe(id);
+    });
+
+    it('an endpoint without conditional writes takes a plain PUT, and the first save still drops it', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,
+        [`PutObjectCommand ${SIBLING_KEY}`]: (input) => {
+          if (input['IfNoneMatch'] !== undefined) {
+            throw Object.assign(new Error('not implemented'), {
+              name: 'NotImplemented',
+              $metadata: { httpStatusCode: 501 },
+            });
+          }
+          return {};
+        },
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      const id = await backend.stackInstanceIdForFirstWrite(STACK, REGION, { writeAhead: true });
+      const puts = callsTo(sent, 'PutObjectCommand', SIBLING_KEY);
+      expect(puts).toHaveLength(2);
+      expect(puts[1]!.input['IfNoneMatch']).toBeUndefined();
+      expect(parseStackInstanceSibling(String(puts[1]!.input['Body']))).toBe(id);
+      await backend.saveState(STACK, REGION, state(id));
+      expect(callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY)).toHaveLength(1);
+    });
+
     it('a lost race whose winner cannot be read back refuses', async () => {
       const { client } = makeClient({
         [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,

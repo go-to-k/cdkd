@@ -1029,6 +1029,7 @@ async function repairParentOutputAttributes(
         region,
         {
           ...locked.state,
+          ...stackInstanceIdCarriedFrom(locked.state),
           resources: {
             ...locked.state.resources,
             [parentRow.logicalId]: { ...row, attributes: locked.attributes },

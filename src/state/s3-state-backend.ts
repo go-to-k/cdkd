@@ -2112,8 +2112,8 @@ export class S3StateBackend {
       if (!options.writeAhead) return minted;
       await this.ensureClientForBucket();
       const body = stackInstanceSiblingBody(minted);
-      try {
-        await this.s3Client.send(
+      const put = async (): Promise<unknown> =>
+        this.s3Client.send(
           new PutObjectCommand({
             Bucket: this.config.bucket,
             ...(await this.ownerParam()),
@@ -2124,6 +2124,15 @@ export class S3StateBackend {
             IfNoneMatch: '*',
           })
         );
+      try {
+        try {
+          await put();
+        } catch (error) {
+          // 409 ConditionalRequestConflict is a concurrent write in flight, not
+          // "one exists": asked once more, it answers (as `ensureRetainedTombstone`).
+          if (!isConditionalConflict(error)) throw error;
+          await put();
+        }
       } catch (error) {
         if (isNotImplemented(error)) {
           // An endpoint without conditional writes: the read above, under the
@@ -2133,8 +2142,7 @@ export class S3StateBackend {
           return minted;
         }
         if (!isConditionFailure(error)) throw error;
-        // Another writer got there first (412), or is writing now (409):
-        // its id is the stack's.
+        // Another writer got there first: its id is the stack's.
         const winner = await read();
         if (winner === null) throw error;
         this.pendingStackInstanceSiblings.set(key, winner);

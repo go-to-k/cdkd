@@ -1294,6 +1294,13 @@ describe('cdkd import', () => {
       expect(Object.hasOwn(savedRoot(), 'stackInstanceId')).toBe(false);
     });
 
+    it('a failed id read stops the import before the journal mark and the save', async () => {
+      mockStackInstanceIdForFirstWrite.mockRejectedValueOnce(new Error('sibling read denied'));
+      await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockMarkRollbackJournalImported).not.toHaveBeenCalled();
+    });
+
     it('a nested child takes its own id when it has no record, and keeps the one its record holds', async () => {
       const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-instance-id-'));
       try {
@@ -1332,13 +1339,19 @@ describe('cdkd import', () => {
         type Saved = [string, string, { stackInstanceId?: string }];
         const saved = (name: string) =>
           (mockSaveState.mock.calls as unknown as Saved[]).find((c) => c[0] === name)?.[2];
+        const CHILD_ID = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+        // A distinct id per stack: a child that took its parent's would pass
+        // an equality on one shared value.
+        mockStackInstanceIdForFirstWrite.mockImplementation(async (name: unknown) =>
+          name === 'P~Child' ? CHILD_ID : ID
+        );
 
         await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
         expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledWith('P~Child', 'us-east-1', {
           writeAhead: false,
         });
         expect(saved('P')?.stackInstanceId).toBe(ID);
-        expect(saved('P~Child')?.stackInstanceId).toBe(ID);
+        expect(saved('P~Child')?.stackInstanceId).toBe(CHILD_ID);
 
         // A child that already has a record keeps its id (a re-import rebuilds
         // the child from nothing, so only this read can carry it).
@@ -1359,7 +1372,38 @@ describe('cdkd import', () => {
           expect.anything()
         );
         expect(saved('P~Child')?.stackInstanceId).toBe(OTHER_ID);
+
+        // A child with a LEGACY record stays legacy: no id is minted for it.
+        const childRecord = (extra: Record<string, unknown>) => ({
+          state: { version: 12, stackName: 'P~Child', resources: {}, outputs: {}, lastModified: 0, ...extra },
+          etag: '"c"',
+        });
+        mockSaveState.mockClear();
+        mockStackInstanceIdForFirstWrite.mockClear();
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child' ? childRecord({}) : null
+        );
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalledWith(
+          'P~Child',
+          expect.anything(),
+          expect.anything()
+        );
+        expect(Object.hasOwn(saved('P~Child') ?? {}, 'stackInstanceId')).toBe(false);
+        expect(saved('P~Child')).toBeDefined();
+
+        // A child record holding a damaged id is refused, never re-minted or
+        // read as legacy, and the child is not written.
+        mockSaveState.mockClear();
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child' ? childRecord({ stackInstanceId: 'damaged' }) : null
+        );
+        await expect(
+          runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+        ).rejects.toThrow();
+        expect(saved('P~Child')).toBeUndefined();
       } finally {
+        mockStackInstanceIdForFirstWrite.mockReset().mockResolvedValue(ID);
         rmSync(tmpdirPath, { recursive: true, force: true });
       }
     });

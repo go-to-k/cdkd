@@ -98,3 +98,19 @@ export function stackInstanceIdOf(
   if (!isStackInstanceId(value)) throw new MalformedStackInstanceIdError(stackLabel);
   return value;
 }
+
+/** What `cdkd state show --json` prints in place of a recorded id. */
+export const STACK_INSTANCE_ID_WITHHELD = '<withheld>';
+
+/**
+ * `state` for DISPLAY: a recorded id replaced by
+ * {@link STACK_INSTANCE_ID_WITHHELD} (its presence still says the stack is not
+ * a legacy one), an absent one left absent. Output a user may paste into an
+ * issue or a CI log must not carry the id the stack's names derive from.
+ */
+export function withStackInstanceIdWithheld<T extends { stackInstanceId?: unknown }>(state: T): T {
+  if (state === null || typeof state !== 'object' || state.stackInstanceId === undefined) {
+    return state;
+  }
+  return { ...state, stackInstanceId: STACK_INSTANCE_ID_WITHHELD };
+}

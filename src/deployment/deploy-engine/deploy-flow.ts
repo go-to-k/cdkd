@@ -190,10 +190,6 @@ export async function doDeployWithPrefetch(
   // failed -- the `finally` then checks whether it left one.
   let firstDeploy = false;
   let failed = false;
-  // go-to-k/cdkd#5064: a first deploy's write-ahead stack instance id, awaited
-  // before anything is created or saved. Never rejects (the original is
-  // awaited where it matters).
-  let stackInstanceIdSettled: Promise<void> | undefined;
   try {
     // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
     // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
@@ -1102,25 +1098,24 @@ export async function doDeployWithPrefetch(
       await gate;
     }
     // State schema v13 (go-to-k/cdkd#5064): a stack with no record gets its
-    // stack instance id now -- the one an earlier, interrupted run wrote ahead,
-    // or a fresh one written ahead -- under the lock, past the gate and before
-    // any create. It rides `currentState`, so every save of this deploy (the
-    // partial save of a failure included) carries it through
-    // `stackInstanceIdCarriedFrom`. Overlapped with the plan checks and the
-    // prompt below; awaited before the first save and the first create. A
-    // stack WITH a record never reaches here: an ordinary deploy pays nothing,
-    // and a legacy record stays legacy. `--dry-run` writes nothing.
-    const stackInstanceIdReady =
-      currentStateData === null || currentStateData === undefined
-        ? engine.options.dryRun
-          ? undefined
-          : engine.stateBackend
-              .stackInstanceIdForFirstWrite(stackName, engine.stackRegion, { writeAhead: true })
-              .then((id) => {
-                currentState.stackInstanceId = id;
-              })
-        : undefined;
-    stackInstanceIdSettled = stackInstanceIdReady?.catch(() => undefined);
+    // stack instance id at its first state write -- the one an earlier,
+    // interrupted run wrote ahead, or a fresh one written ahead -- under the
+    // lock, before the first save and the first create, and only once the
+    // deploy is going ahead (past the gate, the destructive-plan check and
+    // `--require-approval`), so a refused or declined deploy writes nothing.
+    // It rides `currentState`, so every save of this deploy (the partial save
+    // of a failure included) carries it through `stackInstanceIdCarriedFrom`.
+    // A stack WITH a record never reaches here: an ordinary deploy pays
+    // nothing, and a legacy record stays legacy. `--dry-run` writes nothing.
+    const resolveStackInstanceId = async (): Promise<void> => {
+      if (currentStateData !== null && currentStateData !== undefined) return;
+      if (engine.options.dryRun || currentState.stackInstanceId !== undefined) return;
+      currentState.stackInstanceId = await engine.stateBackend.stackInstanceIdForFirstWrite(
+        stackName,
+        engine.stackRegion,
+        { writeAhead: true }
+      );
+    };
     // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
     // capture of each unchanged record that holds a token and no provenance,
     // OFF the critical path (drained with the observed captures before a
@@ -1159,7 +1154,6 @@ export async function doDeployWithPrefetch(
       // deploy). Both are skipped in dry-run.
       let persistedOutputs: Record<string, unknown> = currentState.outputs ?? {};
       if (!engine.options.dryRun) {
-        await stackInstanceIdReady;
         // Resolve against `effectiveTemplate` (condition-pruned) — the same
         // map the executeDeployment path resolves. Outputs reference
         // resources, which come from `currentState.resources` (the arg), and
@@ -1386,6 +1380,8 @@ export async function doDeployWithPrefetch(
           orphansChanged ||
           healedAttributesPending
         ) {
+          // A first deploy with nothing to create still writes its record here.
+          await resolveStackInstanceId();
           try {
             const refreshedState: StackState = {
               version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1678,7 +1674,7 @@ export async function doDeployWithPrefetch(
     // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
     engine.resolver.resetPhysicalIdFallbackCount();
 
-    await stackInstanceIdReady;
+    await resolveStackInstanceId();
 
     // Progress counter for tracking overall deployment progress
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
@@ -1925,7 +1921,7 @@ export async function doDeployWithPrefetch(
     // finishes before the lock goes and before the caller destroys the
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
-    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch, stackInstanceIdSettled]);
+    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed
