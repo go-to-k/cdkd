@@ -305,7 +305,7 @@ export function recordAfterRollbackUpdate(
     ...(returned === undefined && idChanged ? withoutAttributes : restored),
     ...(replacedId !== undefined && { physicalId: replacedId }),
     ...(result.effectiveProperties && {
-      properties: copyKeepingGenerationClaim(result.effectiveProperties),
+      properties: copyClaimingProviderBag(result.effectiveProperties),
     }),
     ...(returned !== undefined && {
       attributes: result.wasReplaced ? { ...returned } : { ...restored.attributes, ...returned },
@@ -354,7 +354,7 @@ export function recordedPropertiesAfterReplayCreate(
   // under a no-op.
   return result.effectiveProperties === undefined
     ? restored.properties
-    : copyKeepingGenerationClaim(result.effectiveProperties);
+    : copyClaimingProviderBag(result.effectiveProperties);
 }
 
 /**
@@ -366,7 +366,7 @@ export function recordedPropertiesAfterReplayCreate(
  * `redactRollbackRecord` states the redaction claim from either mark. A plain
  * spread would drop them.
  */
-function copyKeepingGenerationClaim(properties: Record<string, unknown>): Record<string, unknown> {
+function copyClaimingProviderBag(properties: Record<string, unknown>): Record<string, unknown> {
   const copy = markLeafCertifiedBag({ ...properties });
   return isSameGenerationBag(properties) ? markSameGenerationBag(copy) : copy;
 }

@@ -522,8 +522,9 @@ export function singleSpanFrame(
  * substituted `effectiveProperties` built a bag of MIXED provenance; it takes
  * the narrower leaf-certified mark (`markLeafCertifiedBag`, go-to-k/cdkd#5063),
  * which licenses this claim because the arm accepts only a leaf equal to this
- * pass's own rendering, and a carried value fails that. A readback AWS rewrote at that offset to a value that coincides
- * with the 1-3 character secret is persisted as the expression: value-equal
+ * pass's own rendering, and a carried value fails that. A readback AWS
+ * rewrote at that offset to a value that coincides with the 1-3 character
+ * secret is persisted as the expression: value-equal
  * until the secret rotates, and the same residual the value scan already has
  * for a 4+ character coincidence in a readback. Every refusal of this arm
  * returns the scan's answer, so a leaf refused for interference (a frame
@@ -620,9 +621,10 @@ export function positionByEmbeddedSpan(
  * pair table holds only what the resolver resolved as SECRET -- a collapsed
  * loser and an unpinned `ssm` token included -- so a PUBLIC token (never
  * paired, issue #1901) refuses the whole source rather than being rendered
- * from a guess ({@link certifiedMixedLiteral} renders one from a PROOF). An empty plaintext distinguishes nothing, and one that is
- * itself a token is a persisted answer rather than a plaintext (the
- * self-referential #1917 shape, which {@link singleSpanFrame} refuses too).
+ * from a guess ({@link certifiedMixedLiteral} renders one from a PROOF). An
+ * empty plaintext distinguishes nothing, and one that is itself a token is a
+ * persisted answer rather than a plaintext (the self-referential #1917 shape,
+ * which {@link singleSpanFrame} refuses too).
  */
 function pairedSpans(
   source: string,

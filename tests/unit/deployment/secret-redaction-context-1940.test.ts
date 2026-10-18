@@ -234,8 +234,9 @@ interface Triple {
   previousStateRecord: object;
   /**
    * A provider's `effectiveProperties` (go-to-k/cdkd#5063): today's
-   * resolution with previous literals, a removed key and the PREVIOUS value
-   * of each moved reference CARRIED in.
+   * resolution with previous literals, a removed key and whole embedding
+   * leaves CARRIED in from a previous generation (every secret in such a leaf
+   * a previous value).
    */
   providerBag: object;
   plants: Plant[];
@@ -418,8 +419,9 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
   // A reference this generation MOVED (a rotation pinned to the previous
   // version stage), per secret plant.
   const moved = new Set(plants.filter((p) => p.secret && rand() < 0.5));
-  // The value a provider CARRIED for a moved reference: a previous one the
-  // pass never resolved, from characters no plant, literal or key uses.
+  // The value a provider CARRIED for a secret in a carried leaf: a previous
+  // one the pass never resolved, from characters no plant, literal or key
+  // uses.
   const rotated = new Map<Plant, string>(
     plants
       .filter((p) => p.secret)
@@ -888,7 +890,8 @@ describe('redactForState: planted-plaintext properties over generated triples', 
       movedReferences: 0,
       movedLiterals: 0,
       subFloorBesidePublic: 0,
-      carriedProviderLeaves: 0,
+      carriedSubFloorLeaves: 0,
+      carriedMultiSpanLeaves: 0,
     };
     for (const seed of SEEDS) {
       const t = generate(seed);
@@ -912,12 +915,12 @@ describe('redactForState: planted-plaintext properties over generated triples', 
         // go-to-k/cdkd#5063's: a provider-carried embedding leaf.
         const carried = at(t.providerBag, path);
         const resolvedLeaf = at(t.resolved, path);
-        if (
-          typeof carried === 'string' &&
-          carried !== resolvedLeaf &&
-          !carried.startsWith('old-')
-        ) {
-          count.carriedProviderLeaves!++;
+        if (typeof carried === 'string' && carried !== resolvedLeaf && !carried.startsWith('old-')) {
+          // One floor per shape the claim decides: a single sub-floor span
+          // (the frame arm) and a multi-span leaf (the rendering arms).
+          const secretsIn = t.plants.filter((p) => p.secret && leaf.includes(p.expression));
+          if (secretsIn.some((p) => p.subFloor)) count.carriedSubFloorLeaves!++;
+          if ((leaf.match(/\{\{resolve:/g) ?? []).length > 1) count.carriedMultiSpanLeaves!++;
         }
         // go-to-k/cdkd#5056's shape: a sub-floor secret beside a public token.
         const has = (pred: (p: Plant) => boolean): boolean =>

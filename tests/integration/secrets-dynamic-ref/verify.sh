@@ -533,6 +533,11 @@ cleanup() {
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # go-to-k/cdkd#5063's stream has a generated name: swept only once read.
+  if [ -n "${PIN_STREAM_NAME:-}" ]; then
+    aws kinesis delete-stream --stream-name "${PIN_STREAM_NAME}" --enforce-consumer-deletion \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   aws ssm delete-parameter --name "${PARAM_NAME}-mixed" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -4883,6 +4888,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --yes
 
 assert_gone "consumer Lambda '${FN_NAME}' still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
+assert_gone "Kinesis stream '${PIN_STREAM_NAME}' (go-to-k/cdkd#5063) still exists after destroy" aws kinesis describe-stream-summary --stream-name "${PIN_STREAM_NAME}" --region "${REGION}"
 echo "    OK: consumer Lambda is gone"
 
 # SecretsManager DeleteSecret SCHEDULES deletion with a recovery window

@@ -132,8 +132,8 @@ export function propertiesToRecord(
   // global-table provider restores the previous GSIs and billing mode), so an
   // object-level mark on it would vouch for leaves this pass never resolved,
   // which the v12 reference-provenance rule reads. It takes the narrower
-  // leaf-certified mark below instead (go-to-k/cdkd#5063). A provider that built its bag from this pass's resolution alone
-  // may mark it itself (`NestedStackProvider`, issue #4453); the narrowing
+  // leaf-certified mark below instead (go-to-k/cdkd#5063). A provider that
+  // built its bag from this pass's resolution alone may mark it itself (`NestedStackProvider`, issue #4453); the narrowing
   // below keeps that mark only when it removes nothing, so such a provider
   // narrows first.
   //
