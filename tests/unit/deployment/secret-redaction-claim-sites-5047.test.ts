@@ -94,8 +94,11 @@ describe('the same-generation claim at each writer that holds a marked bag (#504
   });
 
   it('a state-* context built by spreading cannot smuggle a claim (SEC1)', () => {
+    // `state-cross-generation`: `state-derived` declares a claim since
+    // go-to-k/cdkd#5056; this one does not, and positions no sub-floor span
+    // without one.
     const smuggled = {
-      provenance: 'state-derived',
+      provenance: 'state-cross-generation',
       secrets: pass(),
       source: { Url: SOURCE_LEAF },
       generation: 'same-generation',

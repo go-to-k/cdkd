@@ -6,7 +6,7 @@ import {
 } from './rules.js';
 import { type RecordedSecretValues, resolvedPlaintextOf, resolvedExpressionsOf } from './pairs.js';
 import { redactForState } from './context.js';
-import { recordedSecretExpressions } from './mask-only.js';
+import { provenPublicValue, recordedSecretExpressions } from './mask-only.js';
 import { dynamicReferenceSpans } from './redact-path.js';
 import { plaintextIndexOf } from './certified-positions.js';
 
@@ -561,6 +561,8 @@ export function singleSpanFrame(
  * [#4644](https://github.com/go-to-k/cdkd/issues/4644)): no frame can say which
  * span produced which value, so the source is RENDERED with each token's
  * pass-local plaintext and kept verbatim only where that rendering IS the bag.
+ * Where some tokens are PUBLIC, a claimed bag takes {@link certifiedMixedLiteral}
+ * (go-to-k/cdkd#5056), which renders those from their proven values.
  *
  * Everything else keeps the pre-#2485 fall-through: a multi-span source that
  * certificate refuses, a frame mismatch, a middle that is itself a complete token (an
@@ -593,11 +595,13 @@ export function positionByEmbeddedSpan(
 ): string {
   const frame = singleSpanFrame(bag, source);
   if (frame === undefined) {
-    if (
-      dynamicReferenceSpans(source).length >= 2 &&
-      certifiesRenderedLiteral(bag, source, secrets, bagIsSameGeneration)
-    ) {
-      return source;
+    if (dynamicReferenceSpans(source).length >= 2) {
+      if (certifiesRenderedLiteral(bag, source, secrets, bagIsSameGeneration)) return source;
+      // go-to-k/cdkd#5056: secret tokens beside a PUBLIC one.
+      if (bagIsSameGeneration) {
+        const mixed = certifiedMixedLiteral(bag, source, secrets);
+        if (mixed !== undefined) return mixed;
+      }
     }
     return redactForState(bag, { provenance: 'value-scan', secrets });
   }
@@ -615,7 +619,7 @@ export function positionByEmbeddedSpan(
  * pair table holds only what the resolver resolved as SECRET -- a collapsed
  * loser and an unpinned `ssm` token included -- so a PUBLIC token (never
  * paired, issue #1901) refuses the whole source rather than being rendered
- * from a guess. An empty plaintext distinguishes nothing, and one that is
+ * from a guess ({@link certifiedMixedLiteral} renders one from a PROOF). An empty plaintext distinguishes nothing, and one that is
  * itself a token is a persisted answer rather than a plaintext (the
  * self-referential #1917 shape, which {@link singleSpanFrame} refuses too).
  */
@@ -769,6 +773,135 @@ export function certifiesRenderedLiteral(
       spans[i]!.plaintext.length >= MIN_NEEDLE_LENGTH ? survivors[i]! : spans[i]!.plaintext
     )
   );
+}
+
+/**
+ * Position a literal source leaf embedding SECRET tokens beside one or more
+ * PUBLIC ones -- `postgres://{{resolve:ssm:/db/host}}:5432/?pin={{resolve:
+ * secretsmanager:...}}` -- on a bag its writer claimed same-generation
+ * (go-to-k/cdkd#5056). {@link certifiesRenderedLiteral} refuses such a leaf
+ * outright, since a public token has no pair, and the value scan then left a
+ * 1-3 character secret in it in plaintext.
+ *
+ * Returns the leaf to persist -- each secret span as its own token, each
+ * public span as its RESOLVED value, which is what state holds for a public
+ * reference (#1901) -- or `undefined` on any doubt:
+ *
+ * - every token is either paired in this pass (a secret, as in
+ *   {@link pairedSpans}) or has a PROVEN public value for this bag
+ *   ({@link provenPublicValue}: this pass's lookup proved it public and
+ *   nothing records it as a secret), with at least one of each;
+ * - a public value is not empty and spells no `{{resolve:` text;
+ * - the source, each span rendered with its plaintext or public value, IS
+ *   the bag, exactly, and its literal text holds no plaintext the scan would
+ *   rewrite ({@link renderedLiteralSpans}' checks);
+ * - THE BOUND, {@link certifiesRenderedLiteral}'s claimed arm: the value scan
+ *   of the bag equals the source rendered with each secret span's survivor
+ *   (its plaintext below the floor) and each public value, so an interfering
+ *   needle anywhere in the leaf keeps the scan's answer.
+ *
+ * Only on a claimed bag: the claim is what makes the scan's silence over a
+ * sub-floor plaintext equivalence, and the proof is pass-local.
+ *
+ * A public value EQUAL to or CONTAINING a secret's plaintext is accepted:
+ * the rendering fixes which span is which, the value is public by this pass's
+ * own lookup and stays in state either way, and a refusal here lands on the
+ * scan's answer, which keeps the short secret in plaintext at its own span
+ * too. (A 4+ character secret inside a public value fails THE BOUND, since
+ * the scan rewrites it there.)
+ */
+function certifiedMixedLiteral(
+  bag: string,
+  source: string,
+  secrets: RecordedSecretValues
+): string | undefined {
+  if (legacyMixedScan.has(secrets)) return undefined;
+  const answer = certifyMixedLiteral(bag, source, secrets);
+  if (answer !== undefined) mixedAnswered.add(secrets);
+  return answer;
+}
+
+const mixedAnswered = new WeakSet<RecordedSecretValues>();
+const legacyMixedScan = new WeakSet<RecordedSecretValues>();
+
+/**
+ * Did a walk over `secrets` position a leaf by {@link certifiedMixedLiteral}
+ * (go-to-k/cdkd#5056)? The gate on the one-time legacy repair: a record a
+ * pre-fix cdkd wrote can hold the old spelling only where today's walk takes
+ * this arm.
+ */
+export function mixedLiteralAnswered(secrets: RecordedSecretValues): boolean {
+  return mixedAnswered.has(secrets);
+}
+
+/**
+ * `run` with {@link certifiedMixedLiteral} off, as a pre-go-to-k/cdkd#5056
+ * cdkd walked, so a caller can recognise a record such a cdkd wrote for
+ * today's value. Synchronous, cleared on a throw. Its output can hold a short
+ * secret in plaintext: a comparison key, never persisted or printed.
+ */
+export function withLegacyMixedScan<T>(secrets: RecordedSecretValues, run: () => T): T {
+  if (legacyMixedScan.has(secrets)) return run();
+  legacyMixedScan.add(secrets);
+  try {
+    return run();
+  } finally {
+    legacyMixedScan.delete(secrets);
+  }
+}
+
+function certifyMixedLiteral(
+  bag: string,
+  source: string,
+  secrets: RecordedSecretValues
+): string | undefined {
+  const spans = dynamicReferenceSpans(source);
+  const parts: Array<
+    { kind: 'secret'; plaintext: string; survivor: string } | { kind: 'public'; value: string }
+  > = [];
+  for (const span of spans) {
+    const token = source.slice(span.start, span.end);
+    const plaintext = resolvedPlaintextOf(secrets, token);
+    if (plaintext !== undefined) {
+      if (plaintext === '' || isSingleDynamicReferenceToken(plaintext)) return undefined;
+      const survivor = secrets.get(plaintext);
+      if (survivor === undefined) return undefined;
+      parts.push({ kind: 'secret', plaintext, survivor });
+      continue;
+    }
+    const value = provenPublicValue(secrets, token);
+    if (value === undefined || value === '' || value.includes('{{resolve:')) return undefined;
+    parts.push({ kind: 'public', value });
+  }
+  const secretParts = parts.filter((p) => p.kind === 'secret');
+  const publicParts = parts.filter((p) => p.kind === 'public');
+  if (secretParts.length === 0 || publicParts.length === 0) return undefined;
+  const textOf =
+    (secret: (p: { plaintext: string; survivor: string }) => string) =>
+    (i: number): string => {
+      const part = parts[i]!;
+      return part.kind === 'secret' ? secret(part) : part.value;
+    };
+  if (
+    renderSpans(
+      source,
+      spans,
+      textOf((p) => p.plaintext)
+    ) !== bag
+  )
+    return undefined;
+  if (redactForState(source, { provenance: 'value-scan', secrets }) !== source) return undefined;
+  const scanned = redactForState(bag, { provenance: 'value-scan', secrets });
+  const expected = renderSpans(
+    source,
+    spans,
+    textOf((p) => (p.plaintext.length >= MIN_NEEDLE_LENGTH ? p.survivor : p.plaintext))
+  );
+  if (scanned !== expected) return undefined;
+  return renderSpans(source, spans, (i) => {
+    const part = parts[i]!;
+    return part.kind === 'secret' ? source.slice(spans[i]!.start, spans[i]!.end) : part.value;
+  });
 }
 
 /**

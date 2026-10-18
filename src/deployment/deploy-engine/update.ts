@@ -67,9 +67,12 @@ import {
   replaceEmbeddedPhysicalNameRewrites,
   overlapRuleAnswered,
   withLegacyOverlapScan,
+  mixedLiteralAnswered,
+  withLegacyMixedScan,
   differingStringLeaves,
   replaceWholeLeaves,
   legacyReferenceLeavesOnly,
+  legacyLeavesWithoutMask,
   repairEmbeddedPhysicalNamesTowards,
   isSingleDynamicReferenceToken,
   physicalNameCopiesOf,
@@ -654,6 +657,50 @@ export async function provisionUpdate(
     // The same spelling in the record's `attributes` / `observedProperties`
     // (the save redacted them with the same map): whole leaves only.
     const pairs = differingStringLeaves(legacyOverlap, desiredForSkipCheck);
+    for (const field of ['attributes', 'observedProperties'] as const) {
+      const target = currentResource[field];
+      if (target === undefined || target === null || pairs.length === 0) continue;
+      for (const key of Object.keys(target)) {
+        const repaired = replaceWholeLeaves(target[key], pairs);
+        if (repaired !== target[key]) target[key] = repaired;
+      }
+    }
+  }
+  // go-to-k/cdkd#5056, the same repair for a literal embedding a short
+  // secret beside a PUBLIC ssm token: a pre-fix cdkd persisted it as the
+  // value scan left it, the secret in plaintext. A leaf equal to what that
+  // walk persisted for TODAY's value is today's value unchanged, so it takes
+  // today's spelling with no send; anything else is a real edit. Only where
+  // today's walk took the mixed arm, so a deploy of a resource without such a
+  // leaf pays nothing; one with it pays a second, CPU-only walk on every
+  // update, as #4986's does. A legacy leaf holding a mask is left out: it
+  // matches whatever masked value it hides, a rotated one included. The
+  // legacy bag can hold plaintext: a comparison key, never persisted.
+  if (mixedLiteralAnswered(updateSecrets)) {
+    const legacyMixed = legacyLeavesWithoutMask(
+      withLegacyMixedScan(updateSecrets, () =>
+        maskAtCoordinates(
+          redactForState(resolvedProps, {
+            provenance: 'template-derived',
+            secrets: updateSecrets,
+            source: desiredProps,
+            generation: 'same-generation',
+          }),
+          comparisonCoordinates
+        )
+      )
+    ) as Record<string, unknown>;
+    for (const bag of new Set(repairable)) {
+      for (const key of Object.keys(bag)) {
+        const repaired = repairPhysicalNameCopyLeaves(
+          bag[key],
+          legacyMixed[key],
+          desiredForSkipCheck[key]
+        );
+        if (repaired !== bag[key]) bag[key] = repaired;
+      }
+    }
+    const pairs = differingStringLeaves(legacyMixed, desiredForSkipCheck);
     for (const field of ['attributes', 'observedProperties'] as const) {
       const target = currentResource[field];
       if (target === undefined || target === null || pairs.length === 0) continue;

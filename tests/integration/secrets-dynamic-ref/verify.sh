@@ -218,6 +218,11 @@ if [ -z "${EXPECTED_PIN_B64}" ] \
   exit 1
 fi
 EXPECTED_SECRET_PIN_STAGED_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin:AWSCURRENT}}"
+# The two-character pin beside a PUBLIC ssm reference in one literal
+# (go-to-k/cdkd#5056): state holds the public span RESOLVED and the pin as its
+# own token; the plaintext form must appear nowhere in state.
+EXPECTED_DB_PIN_BESIDE_PUBLIC_EXPR="${EXPECTED_SSM}/pin={{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}"
+EXPECTED_DB_PIN_BESIDE_PUBLIC="${EXPECTED_SSM}/pin=${EXPECTED_PIN}"
 # The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
 EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
@@ -2349,6 +2354,7 @@ ENV_DB_PORT_LITERAL=$(get_env DB_PORT_LITERAL)
 ENV_DB_PORT_SUB=$(get_env DB_PORT_SUB)
 ENV_DB_PORT_JOIN=$(get_env DB_PORT_JOIN)
 ENV_SECRET_PIN_STAGED=$(get_env SECRET_PIN_STAGED)
+ENV_DB_PIN_BESIDE_PUBLIC=$(get_env DB_PIN_BESIDE_PUBLIC)
 
 # The secret's ARN, for the ARN-form expression the L2 join assembles (issue
 # #2745): `secretValueFromJson` renders the ARN as a `Ref`, so the token the
@@ -2406,6 +2412,7 @@ check_not_literal DB_PORT_LITERAL "${ENV_DB_PORT_LITERAL}"
 check_not_literal DB_PORT_SUB "${ENV_DB_PORT_SUB}"
 check_not_literal DB_PORT_JOIN "${ENV_DB_PORT_JOIN}"
 check_not_literal SECRET_PIN_STAGED "${ENV_SECRET_PIN_STAGED}"
+check_not_literal DB_PIN_BESIDE_PUBLIC "${ENV_DB_PIN_BESIDE_PUBLIC}"
 check_not_literal SSM_SECURE_COPY "${ENV_SSM_SECURE_COPY}"
 check_not_literal PUBLIC_URL "${ENV_PUBLIC_URL}"
 
@@ -2439,6 +2446,11 @@ check_equals "DB_PORT_JOIN (L2 Fn::Join embedding a TWO-character :SecretString:
   "${ENV_DB_PORT_JOIN}" "${EXPECTED_DB_PORT_LITERAL}"
 check_equals "SECRET_PIN_STAGED (the two-character value, whole, :AWSCURRENT)" \
   "${ENV_SECRET_PIN_STAGED}" "${EXPECTED_PIN}"
+# The PREMISE of the #5056 state assertion: the live function holds the pin
+# spliced in beside the public value, so the state assertion is about a value
+# that exists.
+check_equals "DB_PIN_BESIDE_PUBLIC (literal: a public ssm reference beside a TWO-character :SecretString:<jsonkey>)" \
+  "${ENV_DB_PIN_BESIDE_PUBLIC}" "${EXPECTED_DB_PIN_BESIDE_PUBLIC}"
 # The MIXED leaf must reach AWS with the reference SUBSTITUTED INTO the
 # surrounding text (issue #1926 review). This is the PREMISE of Phase 1g: the
 # live resource holds the decrypted value, so a readback of it is a disclosure
@@ -2704,6 +2716,11 @@ if [ "${PORT_SHAPE}" != "string" ]; then
   echo "FAIL: premise: DB_PORT_LITERAL synthesized as '${PORT_SHAPE}', not a plain string -- the literal-leaf arm (#2516) is not what this deploy exercised" >&2
   exit 1
 fi
+BESIDE_SHAPE=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables.DB_PIN_BESIDE_PUBLIC | if . == null then "null" else type end] | first // "absent"' "${SYNTH_TEMPLATE}")
+if [ "${BESIDE_SHAPE}" != "string" ]; then
+  echo "FAIL: premise: DB_PIN_BESIDE_PUBLIC synthesized as '${BESIDE_SHAPE}', not a plain string -- the mixed literal arm (#5056) is not what this deploy exercised" >&2
+  exit 1
+fi
 PORT_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("DB_PORT_LITERAL")] | first' "${SYNTH_TEMPLATE}")
 PIN_STAGED_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("SECRET_PIN_STAGED")] | first' "${SYNTH_TEMPLATE}")
 case "${PORT_IDX}${PIN_STAGED_IDX}" in *null*|"")
@@ -2793,6 +2810,30 @@ if [ "${STATE_SECRET_PIN_STAGED}" = "${EXPECTED_SECRET_PIN_STAGED_EXPR}" ]; then
   echo "    OK: state SECRET_PIN_STAGED kept its OWN staged expression: ${STATE_SECRET_PIN_STAGED}"
 else
   echo "FAIL: state SECRET_PIN_STAGED is NOT its own {{resolve:...:pin:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PIN_STAGED}")" >&2
+  redaction_fail=1
+fi
+# go-to-k/cdkd#5056: the pin beside a public reference, in `properties` and
+# the readback alike. Printed only on equality; the plaintext form is the
+# pre-fix answer.
+STATE_DB_PIN_BESIDE_PUBLIC=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_PIN_BESIDE_PUBLIC // empty')
+OBS_DB_PIN_BESIDE_PUBLIC=$(printf '%s' "${STATE_JSON}" \
+  | jq -r '[.state.resources[] | select(.resourceType=="AWS::Lambda::Function")
+             | .observedProperties.Environment.Variables.DB_PIN_BESIDE_PUBLIC // empty] | first // empty')
+for pair in "properties:${STATE_DB_PIN_BESIDE_PUBLIC}" "observedProperties:${OBS_DB_PIN_BESIDE_PUBLIC}"; do
+  where="${pair%%:*}"
+  got="${pair#*:}"
+  if [ "${got}" = "${EXPECTED_DB_PIN_BESIDE_PUBLIC_EXPR}" ]; then
+    echo "    OK: ${where} DB_PIN_BESIDE_PUBLIC holds the public value and the pin's own token (#5056): ${got}"
+  elif [ "${got}" = "${EXPECTED_DB_PIN_BESIDE_PUBLIC}" ]; then
+    echo "FAIL: ${where} DB_PIN_BESIDE_PUBLIC holds the two-character secret in PLAINTEXT beside the public value (#5056)" >&2
+    redaction_fail=1
+  else
+    echo "FAIL: ${where} DB_PIN_BESIDE_PUBLIC is not the expected mixed form: $(mask "${got}")" >&2
+    redaction_fail=1
+  fi
+done
+if grep -qF "${EXPECTED_DB_PIN_BESIDE_PUBLIC}" <<< "${STATE_JSON}"; then
+  echo "FAIL: the pin beside the public value is somewhere in the persisted state document in plaintext (#5056)" >&2
   redaction_fail=1
 fi
 # The READBACK of the same resource, installed by the deploy's own capture

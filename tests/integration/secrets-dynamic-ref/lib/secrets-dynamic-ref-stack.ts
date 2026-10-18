@@ -55,6 +55,9 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // (`src/synthesis/app-executor.ts`); verify.sh guards the premise by
     // asserting the synthesized leaf really is a string.
     const literalSecretName = `cdkd-test-dynref-secret-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}`;
+    // The public parameter's name with a CONCRETE account, for a literal leaf
+    // spelling its reference (go-to-k/cdkd#5056): same parameter as `paramName`.
+    const literalParamName = `cdkd-test-dynref-param-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}`;
     // SecureString counterpart (issue #1901). NOT declared as a CDK resource:
     // CloudFormation cannot CREATE a SecureString parameter, so verify.sh
     // creates and deletes it out of band with `aws ssm put-parameter
@@ -201,6 +204,15 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // a token string CDK will concatenate (the `import-secret-observed`
         // fixture's spelling).
         DB_PORT_JOIN: `port:${secret.secretValueFromJson('pin').unsafeUnwrap()}`,
+        // The TWO-character pin beside a PUBLIC ssm reference in ONE literal
+        // (go-to-k/cdkd#5056). The multi-token arm refused the whole leaf on
+        // the public token (no secret pair), so state held the pin in
+        // plaintext; it now persists the public span resolved and the pin as
+        // its own token. A plain string (verify.sh asserts the synthesized
+        // shape). Keep this key above SECRET_PIN_STAGED: verify.sh requires
+        // STAGED to be the LAST key resolving the pin (DB_PORT_LITERAL's
+        // survivor premise); this arm reads its own pair and needs no order.
+        DB_PIN_BESIDE_PUBLIC: `{{resolve:ssm:${literalParamName}}}/pin={{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
         // The whole-value sibling of DB_PORT_LITERAL on the STAGED spelling.
         // Persisted by the whole-token arm regardless of the fix; its job is
         // to be the map's survivor for the two-character plaintext.

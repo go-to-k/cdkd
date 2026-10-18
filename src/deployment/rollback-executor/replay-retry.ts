@@ -14,7 +14,11 @@ import {
 // op's masker (`createOpMasker`) — the providers' shared module, not a second
 // copy of that security contract.
 import { createMaskedRetryLogger, type MaskerFn } from '../../provisioning/masked-retry-logger.js';
-import { type RecordedSecretValues } from '../secret-redaction.js';
+import {
+  type RecordedSecretValues,
+  isSameGenerationBag,
+  markSameGenerationBag,
+} from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
 import { type RollbackExecutorContext } from './types.js';
 import { safe } from './messages.js';
@@ -299,7 +303,9 @@ export function recordAfterRollbackUpdate(
   return {
     ...(returned === undefined && idChanged ? withoutAttributes : restored),
     ...(replacedId !== undefined && { physicalId: replacedId }),
-    ...(result.effectiveProperties && { properties: { ...result.effectiveProperties } }),
+    ...(result.effectiveProperties && {
+      properties: copyKeepingGenerationClaim(result.effectiveProperties),
+    }),
     ...(returned !== undefined && {
       attributes: result.wasReplaced ? { ...returned } : { ...restored.attributes, ...returned },
     }),
@@ -347,5 +353,18 @@ export function recordedPropertiesAfterReplayCreate(
   // under a no-op.
   return result.effectiveProperties === undefined
     ? restored.properties
-    : { ...result.effectiveProperties };
+    : copyKeepingGenerationClaim(result.effectiveProperties);
+}
+
+/**
+ * The top-level copy both record builders take of a provider's
+ * `effectiveProperties`, carrying the provider's same-generation mark onto it
+ * (go-to-k/cdkd#5056). A provider marks only a bag it built from the
+ * resolution it was handed (`NestedStackProvider`); on a replay that is the
+ * re-resolved journal, so `redactRollbackRecord` states the claim from the
+ * mark, as the deploy engine's persist does. A plain spread would drop it.
+ */
+function copyKeepingGenerationClaim(properties: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...properties };
+  return isSameGenerationBag(properties) ? markSameGenerationBag(copy) : copy;
 }

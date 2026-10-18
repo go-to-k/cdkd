@@ -502,6 +502,26 @@ export function differingStringLeaves(
 }
 
 /**
+ * `legacy` with every string leaf that holds a mask (`***`, whole or inside)
+ * dropped to `undefined` (go-to-k/cdkd#5056's repair). A masked spelling
+ * cannot tell two values apart: a record holding it would match today's
+ * legacy spelling after the masked value rotated, and the repair would then
+ * take today's form with no send. Such a leaf is left to the ordinary diff.
+ */
+export function legacyLeavesWithoutMask(legacy: unknown): unknown {
+  if (typeof legacy === 'string') return legacy.includes(SECRET_MASK) ? undefined : legacy;
+  if (Array.isArray(legacy)) return legacy.map(legacyLeavesWithoutMask);
+  if (legacy !== null && typeof legacy === 'object') {
+    const out = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(legacy as Record<string, unknown>)) {
+      out[key] = legacyLeavesWithoutMask(value);
+    }
+    return out;
+  }
+  return legacy;
+}
+
+/**
  * `legacy` with every string leaf that holds no `{{resolve:` reference (a
  * whole `***` included) replaced by `undefined`, so a position-wise repair
  * against it touches only a leaf a pre-go-to-k/cdkd#4986 walk spelled with a
