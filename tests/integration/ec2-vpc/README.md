@@ -9,6 +9,7 @@ Minimal VPC and Security Group deployment example for cdkd.
 - **Internet Gateway** - For public subnet internet access
 - **Route Table** - Public route table with internet gateway route
 - **Security Group** - Allows inbound HTTP (port 80) from anywhere
+- **Second VPC** - A bare VPC with DNS support off, for the removal phase
 
 No EC2 instances are created to avoid costs.
 
@@ -18,6 +19,8 @@ No EC2 instances are created to avoid costs.
 - Security Group with ingress rules
 - Resource dependencies (Security Group depends on VPC)
 - `Fn::GetAtt` for outputs (VPC ID, Security Group ID, Subnet IDs)
+- Removing `EnableDnsHostnames` / `EnableDnsSupport` resets them to the VPC
+  default, as CloudFormation does (`verify.sh`, `CDKD_TEST_REMOVAL=true`, issue #1160)
 
 ## Deploy
 

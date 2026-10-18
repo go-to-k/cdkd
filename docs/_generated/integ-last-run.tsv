@@ -97,7 +97,7 @@ docdb-neptune	2026-10-16T17:51:14Z	PASS	5073	verify.sh	PR #5019 (#5004) src e3a3
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-18T18:32:28Z	PASS	337	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
-drift-revert-vpc	2026-10-18T18:32:28Z	PASS	367	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
+drift-revert-vpc	2026-10-18T19:45:17Z	PASS	371	verify.sh	rc ok, orph clean (PR 5061)
 dsql	2026-10-01T14:55:31Z	PASS	211	verify.sh	rc ok, orph clean (#4290)
 dynamic-ref-cross-region	2026-10-18T05:07:43Z	PASS	279	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 dynamodb-autoscaling	2026-10-08T01:35:53Z	PASS	0	verify.sh	#4701 Phase 3: table rename replaces both ScalableTargets and both ScalingPolicies through ScalingTargetId, no NotFound; destroy 0 errors, 0 orphans
@@ -111,10 +111,10 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-13T02:41:29Z	PASS	55	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
-ec2-instance	2026-10-18T14:09:14Z	PASS	236	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
-ec2-instance-fanout	2026-10-18T14:09:14Z	PASS	85	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
-ec2-route-targets	2026-10-18T14:09:14Z	PASS	567	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
-ec2-vpc	2026-10-18T14:09:14Z	PASS	45	standard	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
+ec2-instance	2026-10-18T19:45:17Z	PASS	180	verify.sh	rc ok, orph clean (PR 5061)
+ec2-instance-fanout	2026-10-18T19:45:17Z	PASS	95	verify.sh	rc ok, orph clean (PR 5061)
+ec2-route-targets	2026-10-18T19:45:17Z	PASS	446	verify.sh	rc ok, orph clean (PR 5061); first run failed in Phase 2, unattributed, tracked in #5068; re-run PASS
+ec2-vpc	2026-10-18T19:45:17Z	PASS	105	verify.sh	rc ok, orph clean (PR 5061)
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
 ecs-bluegreen	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -355,7 +355,7 @@ serverless-api	2026-10-18T18:32:28Z	PASS	58	verify.sh	PR #5059 (#2319) S3 Tables
 servicediscovery	2026-10-16T09:35:29Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4997)
 servicediscovery-namespaces	2026-10-06T02:22:44Z	PASS	146	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
-sg-circular-dependency	2026-10-18T14:09:14Z	PASS	447	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
+sg-circular-dependency	2026-10-18T19:45:17Z	PASS	451	verify.sh	rc ok, orph clean (PR 5061)
 sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
 sns-pending-subscription	2026-10-13T05:13:33Z	PASS	85	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
@@ -382,9 +382,9 @@ type-change-replacement	2026-10-17T13:29:07Z	PASS	211	verify.sh	rc ok, orph clea
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
-vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
+vpc-lambda	2026-10-18T19:45:17Z	PASS	344	verify.sh	rc ok, orph clean (PR 5061)
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
-vpc-nat-gateway	2026-10-18T14:09:14Z	PASS	842	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
+vpc-nat-gateway	2026-10-18T19:45:17Z	PASS	761	verify.sh	rc ok, orph clean (PR 5061)
 wafv2	2026-08-11T03:29:45Z	PASS	240	standard	1544 lane: Scope guard replay-downgrade wiring; destroy 0 err 0 orph
 wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
