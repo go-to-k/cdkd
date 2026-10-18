@@ -792,9 +792,6 @@ export function certifiesRenderedLiteral(
  *   ({@link provenPublicValue}: this pass's lookup proved it public and
  *   nothing records it as a secret), with at least one of each;
  * - a public value is not empty and spells no `{{resolve:` text;
- * - NO secret plaintext of this leaf occurs inside any public value, at any
- *   length, so a public value equal to or containing the secret is never
- *   persisted beside it;
  * - the source, each span rendered with its plaintext or public value, IS
  *   the bag, exactly, and its literal text holds no plaintext the scan would
  *   rewrite ({@link renderedLiteralSpans}' checks);
@@ -806,12 +803,54 @@ export function certifiesRenderedLiteral(
  * Only on a claimed bag: the claim is what makes the scan's silence over a
  * sub-floor plaintext equivalence, and the proof is pass-local.
  *
- * The rendering and literal-text checks are the certificate's own conditions,
- * as in {@link renderedLiteralSpans}; on every input found so far THE BOUND
- * also refuses what they refuse (a probe removing either stays green), so
- * they are kept as stated conditions, not as the only guard.
+ * A public value EQUAL to or CONTAINING a secret's plaintext is accepted:
+ * the rendering fixes which span is which, the value is public by this pass's
+ * own lookup and stays in state either way, and a refusal here lands on the
+ * scan's answer, which keeps the short secret in plaintext at its own span
+ * too. (A 4+ character secret inside a public value fails THE BOUND, since
+ * the scan rewrites it there.)
  */
 function certifiedMixedLiteral(
+  bag: string,
+  source: string,
+  secrets: RecordedSecretValues
+): string | undefined {
+  if (legacyMixedScan.has(secrets)) return undefined;
+  const answer = certifyMixedLiteral(bag, source, secrets);
+  if (answer !== undefined) mixedAnswered.add(secrets);
+  return answer;
+}
+
+const mixedAnswered = new WeakSet<RecordedSecretValues>();
+const legacyMixedScan = new WeakSet<RecordedSecretValues>();
+
+/**
+ * Did a walk over `secrets` position a leaf by {@link certifiedMixedLiteral}
+ * (go-to-k/cdkd#5056)? The gate on the one-time legacy repair: a record a
+ * pre-fix cdkd wrote can hold the old spelling only where today's walk takes
+ * this arm.
+ */
+export function mixedLiteralAnswered(secrets: RecordedSecretValues): boolean {
+  return mixedAnswered.has(secrets);
+}
+
+/**
+ * `run` with {@link certifiedMixedLiteral} off, as a pre-go-to-k/cdkd#5056
+ * cdkd walked, so a caller can recognise a record such a cdkd wrote for
+ * today's value. Synchronous, cleared on a throw. Its output can hold a short
+ * secret in plaintext: a comparison key, never persisted or printed.
+ */
+export function withLegacyMixedScan<T>(secrets: RecordedSecretValues, run: () => T): T {
+  if (legacyMixedScan.has(secrets)) return run();
+  legacyMixedScan.add(secrets);
+  try {
+    return run();
+  } finally {
+    legacyMixedScan.delete(secrets);
+  }
+}
+
+function certifyMixedLiteral(
   bag: string,
   source: string,
   secrets: RecordedSecretValues
@@ -837,9 +876,6 @@ function certifiedMixedLiteral(
   const secretParts = parts.filter((p) => p.kind === 'secret');
   const publicParts = parts.filter((p) => p.kind === 'public');
   if (secretParts.length === 0 || publicParts.length === 0) return undefined;
-  for (const pub of publicParts) {
-    if (secretParts.some((sec) => pub.value.includes(sec.plaintext))) return undefined;
-  }
   const textOf =
     (secret: (p: { plaintext: string; survivor: string }) => string) =>
     (i: number): string => {

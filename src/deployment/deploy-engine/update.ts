@@ -67,6 +67,8 @@ import {
   replaceEmbeddedPhysicalNameRewrites,
   overlapRuleAnswered,
   withLegacyOverlapScan,
+  mixedLiteralAnswered,
+  withLegacyMixedScan,
   differingStringLeaves,
   replaceWholeLeaves,
   legacyReferenceLeavesOnly,
@@ -654,6 +656,44 @@ export async function provisionUpdate(
     // The same spelling in the record's `attributes` / `observedProperties`
     // (the save redacted them with the same map): whole leaves only.
     const pairs = differingStringLeaves(legacyOverlap, desiredForSkipCheck);
+    for (const field of ['attributes', 'observedProperties'] as const) {
+      const target = currentResource[field];
+      if (target === undefined || target === null || pairs.length === 0) continue;
+      for (const key of Object.keys(target)) {
+        const repaired = replaceWholeLeaves(target[key], pairs);
+        if (repaired !== target[key]) target[key] = repaired;
+      }
+    }
+  }
+  // go-to-k/cdkd#5056, the same one-time repair for a literal embedding a
+  // short secret beside a PUBLIC ssm token: a pre-fix cdkd persisted it as
+  // the value scan left it, the secret in plaintext. A leaf equal to what
+  // that walk persisted for TODAY's value is today's value unchanged, so it
+  // takes today's spelling with no send; anything else is a real edit. The
+  // legacy bag can hold plaintext: a comparison key, never persisted.
+  if (mixedLiteralAnswered(updateSecrets)) {
+    const legacyMixed = withLegacyMixedScan(updateSecrets, () =>
+      maskAtCoordinates(
+        redactForState(resolvedProps, {
+          provenance: 'template-derived',
+          secrets: updateSecrets,
+          source: desiredProps,
+          generation: 'same-generation',
+        }),
+        comparisonCoordinates
+      )
+    );
+    for (const bag of new Set(repairable)) {
+      for (const key of Object.keys(bag)) {
+        const repaired = repairPhysicalNameCopyLeaves(
+          bag[key],
+          legacyMixed[key],
+          desiredForSkipCheck[key]
+        );
+        if (repaired !== bag[key]) bag[key] = repaired;
+      }
+    }
+    const pairs = differingStringLeaves(legacyMixed, desiredForSkipCheck);
     for (const field of ['attributes', 'observedProperties'] as const) {
       const target = currentResource[field];
       if (target === undefined || target === null || pairs.length === 0) continue;

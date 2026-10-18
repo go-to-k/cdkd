@@ -209,8 +209,9 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // the public token (no secret pair), so state held the pin in
         // plaintext; it now persists the public span resolved and the pin as
         // its own token. A plain string (verify.sh asserts the synthesized
-        // shape). ORDER IS LOAD-BEARING as for DB_PORT_LITERAL: keep this key
-        // above SECRET_PIN_STAGED.
+        // shape). Keep this key above SECRET_PIN_STAGED: verify.sh requires
+        // STAGED to be the LAST key resolving the pin (DB_PORT_LITERAL's
+        // survivor premise); this arm reads its own pair and needs no order.
         DB_PIN_BESIDE_PUBLIC: `{{resolve:ssm:${literalParamName}}}/pin={{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
         // The whole-value sibling of DB_PORT_LITERAL on the STAGED spelling.
         // Persisted by the whole-token arm regardless of the fix; its job is

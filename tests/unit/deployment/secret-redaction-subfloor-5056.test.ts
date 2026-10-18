@@ -73,19 +73,52 @@ describe('a sub-floor secret beside a public ssm token (template-derived)', () =
     expect(persist(bag, urlSource, secrets, 'unproven')).toBe(scan(bag, secrets));
   });
 
-  it('refuses a public value EQUAL to the secret', () => {
+  it('positions the secret span when the public value EQUALS the secret', () => {
+    // The public value stays in state either way (it is public config); a
+    // refusal would add the secret's own span in plaintext beside it.
     const secrets = pass(PIN_VALUE);
     const bag = urlOf(PIN_VALUE, PIN_VALUE);
-    const out = persist(bag, urlSource, secrets, 'same-generation');
-    expect(out).toBe(scan(bag, secrets));
-    expect(out).not.toBe(urlOf(PIN_VALUE, PIN));
+    expect(persist(bag, urlSource, secrets, 'same-generation')).toBe(urlOf(PIN_VALUE, PIN));
+    expect(scan(bag, secrets)).toBe(bag);
   });
 
-  it('refuses a public value CONTAINING the secret', () => {
+  it('positions the secret span when the public value CONTAINS the secret', () => {
     const host = `db-${PIN_VALUE}.example.com`;
     const secrets = pass(host);
     const bag = urlOf(host, PIN_VALUE);
+    expect(persist(bag, urlSource, secrets, 'same-generation')).toBe(urlOf(host, PIN));
+  });
+
+  it('refuses an EMPTY public value', () => {
+    const secrets = pass('');
+    const bag = urlOf('', PIN_VALUE);
     expect(persist(bag, urlSource, secrets, 'same-generation')).toBe(scan(bag, secrets));
+  });
+
+  it('refuses a recorded plaintext that straddles literal text and a token', () => {
+    // Only the literal-text check sees a needle crossing the span edge: the
+    // returned spelling would carry `pin={{resolve` for the scan to rewrite.
+    const secrets = pass();
+    secrets.set('pin={{resolve', '{{resolve:secretsmanager:odd:SecretString:k}}');
+    const bag = urlOf(HOST_VALUE, PIN_VALUE);
+    expect(persist(bag, urlSource, secrets, 'same-generation')).toBe(scan(bag, secrets));
+  });
+
+  it('refuses a bag whose secret span holds ANOTHER plaintext sharing the survivor', () => {
+    // Only the rendering check tells the token's own plaintext from another
+    // one the map maps to the same survivor.
+    const pin = 'LONGPINVALUE01';
+    const sibling = '{{resolve:secretsmanager:db-pin:SecretString:pin::AWSCURRENT}}';
+    const secrets: RecordedSecretValues = new Map();
+    secrets.set(pin, PIN);
+    recordResolvedPair(secrets, PIN, pin);
+    secrets.set(pin, sibling);
+    secrets.set('OTHERVALUE99', sibling);
+    recordProvenPublicExpression(secrets, HOST, HOST_VALUE);
+    const bag = urlOf(HOST_VALUE, 'OTHERVALUE99');
+    const out = persist(bag, urlSource, secrets, 'same-generation');
+    expect(out).toBe(scan(bag, secrets));
+    expect(out).not.toBe(urlOf(HOST_VALUE, PIN));
   });
 
   it('refuses a public token with no proof, or a contradicted one', () => {

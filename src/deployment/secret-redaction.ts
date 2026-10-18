@@ -162,7 +162,11 @@ export {
   isSingleDynamicReferenceToken,
   maskMatchSpans,
 } from './secret-redaction/rules.js';
-export { intrinsicSkeletonPattern } from './secret-redaction/positions.js';
+export {
+  intrinsicSkeletonPattern,
+  mixedLiteralAnswered,
+  withLegacyMixedScan,
+} from './secret-redaction/positions.js';
 export { identityKeyFor } from './secret-redaction/identity-keys.js';
 export {
   pathCrossesDottedKey,
