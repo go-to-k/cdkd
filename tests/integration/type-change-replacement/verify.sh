@@ -33,7 +33,9 @@
 #      confirmed gone.
 #
 # This fixture INTENTIONALLY fails deploys, so the EXIT trap sweeps every
-# deterministic physical name from both variants before it drops the state.
+# physical name from both variants before it drops the state: the declared ones
+# by name, EqualBags' generated ones by prefix (their suffix is not known before
+# step 1, go-to-k/cdkd#5064).
 #
 # BSD/macOS-portable: no grep -P, no date -d.
 set -euo pipefail
@@ -90,15 +92,20 @@ JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
 # Physical names, per row and variant. The two EqualBags names are the ones
-# cdkd GENERATES for a nameless topic / log group (`<stack>-<logicalId>`, the
-# log group under `/cdkd/`); step 1 and step 5 cross-check them against the
-# physical id state records, so a change to that derivation fails loudly here
-# instead of turning the leak checks below into probes of a name nothing uses.
+# cdkd GENERATES for a nameless topic / log group:
+# `<stack>-<logicalId>-<12 hex>` (go-to-k/cdkd#5064: the stack instance suffix,
+# the log group under `/cdkd/`). The suffix cannot be predicted, so step 1 reads
+# the topic's from state (`resolve_equalbags_names`) and DERIVES the log group's
+# from it: both types hash the same stack instance id and logical id, so they
+# carry the SAME suffix. Step 5 cross-checks that derivation against the log
+# group state records, so a change to it fails loudly here instead of turning
+# the leak checks below into probes of a name nothing uses.
 SUBJECT_PARAM="/cdkd-integ/${STACK}/subject"
 SUBJECT_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${STACK}-subject"
 OVERLAP_NAME="/cdkd-integ/${STACK}/overlap" # parameter in v1, log group in v2
-EQUALBAGS_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${STACK}-EqualBags"
-EQUALBAGS_LOG_GROUP="/cdkd/${STACK}-EqualBags"
+EQUALBAGS_PREFIX="${STACK}-EqualBags-"
+EQUALBAGS_TOPIC_ARN=""
+EQUALBAGS_LOG_GROUP=""
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 
 LOG_DIR="$(mktemp -d)"
@@ -220,6 +227,21 @@ assert_v2_world() { # usage: assert_v2_world <step>
   require_state_field "${step}" EqualBags physicalId "${EQUALBAGS_LOG_GROUP}"
 }
 
+# Fill EqualBags' two generated names from the topic state records after a v1
+# deploy, asserting its shape.
+resolve_equalbags_names() {
+  local arn name
+  arn="$(state_field EqualBags physicalId)" || return 1
+  name="${arn##*:}"
+  if [ "${arn}" != "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${name}" ] \
+    || ! printf '%s' "${name}" | grep -qE "^${EQUALBAGS_PREFIX}[0-9a-f]{12}\$"; then
+    echo "[verify] FAIL: EqualBags' recorded topic '${arn}' is not the generated ${EQUALBAGS_PREFIX}<12 hex>"
+    exit 1
+  fi
+  EQUALBAGS_TOPIC_ARN="${arn}"
+  EQUALBAGS_LOG_GROUP="/cdkd/${name}"
+}
+
 # --- Teardown ---------------------------------------------------------------
 
 # Every deterministic physical name from BOTH variants, deleted directly. Runs
@@ -232,9 +254,21 @@ aggressive_cleanup() {
   aws ssm delete-parameter --name "${SUBJECT_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${OVERLAP_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${SUBJECT_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
-  aws sns delete-topic --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   aws logs delete-log-group --log-group-name "${OVERLAP_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  aws logs delete-log-group --log-group-name "${EQUALBAGS_LOG_GROUP}" --region "${REGION}" >/dev/null 2>&1 || true
+  # EqualBags' generated names, by prefix: any lifetime's suffix
+  # (go-to-k/cdkd#5064). Guarded so an empty STACK cannot widen the sweep.
+  case "${STACK:-}" in
+    CdkdTypeChange?*)
+      for t in $(aws sns list-topics --region "${REGION}" --query 'Topics[].TopicArn' --output text 2>/dev/null); do
+        case "${t##*:}" in "${EQUALBAGS_PREFIX}"?*) aws sns delete-topic --topic-arn "${t}" --region "${REGION}" >/dev/null 2>&1 || true ;; esac
+      done
+      for lg in $(aws logs describe-log-groups --log-group-name-prefix "/cdkd/${EQUALBAGS_PREFIX}" --region "${REGION}" \
+        --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
+      ;;
+    *) echo "[verify] teardown sweep refused: STACK='${STACK:-}' is not this fixture's stack" >&2 ;;
+  esac
   q_url="$(aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}" \
     --query 'QueueUrl' --output text 2>/dev/null || true)"
   if [ -n "${q_url}" ] && [ "${q_url}" != "None" ]; then
@@ -309,6 +343,7 @@ if [ "${RUN_RC}" -ne 0 ]; then
   echo "[verify] FAIL (step 1): v1 deploy exited ${RUN_RC} (output above)"
   exit 1
 fi
+resolve_equalbags_names
 assert_v1_world "step 1"
 # The #3036 arm is only the #3036 arm if EqualBags' RECORDED bag equals the bag
 # its v2 type declares (lib/: the same `Tags` list under both types). If cdkd

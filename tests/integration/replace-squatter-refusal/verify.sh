@@ -10,7 +10,10 @@
 # again. Now the old resource must hold the name the create actually SENT.
 #
 # Phases (one ECR repository, `Repo`; see the stack for the env knobs):
-#   A. Deploy nameless: cdkd generates the name G (captured from state).
+#   A. Deploy nameless: cdkd generates the name G (captured from state). On a
+#      new stack G carries the stack instance suffix (go-to-k/cdkd#5064), so it
+#      cannot be predicted: it is read from state, and stays the same for the
+#      rest of this stack's lifetime, which is what phase C relies on.
 #   B. REPO_NAME=N deploy: a replacement to the explicit name N; G is deleted.
 #   C. THE ARM. Create a squatter repository under G out of band, then deploy
 #      nameless again with --replace. The create sends G and collides with the
@@ -69,10 +72,13 @@ export AWS_REGION="${REGION}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 NAMED_REPO="cdkd-integ-rsq-named"
-# What cdkd generates for the nameless `Repo` of this stack: the name every
-# phase's squatter and sweep use. Phase A asserts the live name EQUALS it, so a
-# drift in the generation fails loudly instead of aiming the squatter elsewhere.
-GENERATED_REPO="$(printf '%s' "${STACK}-Repo" | tr '[:upper:]' '[:lower:]')"
+# What cdkd generates for the nameless `Repo` of this stack starts with this
+# prefix and ends with the 12-hex stack instance suffix (go-to-k/cdkd#5064).
+# The full name G is read from state in phase A (set below); every later phase's
+# squatter and sweep use it. Phase A asserts its SHAPE, so a drift in the
+# generation fails loudly instead of aiming the squatter elsewhere.
+GENERATED_PREFIX="$(printf '%s' "${STACK}-Repo-" | tr '[:upper:]' '[:lower:]')"
+GENERATED_REPO=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rsq.XXXXXX")"
@@ -118,7 +124,7 @@ cleanup() {
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
     --region "${REGION}" --yes >/dev/null 2>&1 || true
   delete_repo_best_effort "${NAMED_REPO}"
-  delete_repo_best_effort "${GENERATED_REPO}"
+  [ -n "${GENERATED_REPO}" ] && delete_repo_best_effort "${GENERATED_REPO}"
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
@@ -130,13 +136,21 @@ cleanup() {
 # A leftover repository (an interrupted run, or a CONCURRENT one) would turn
 # phase C into a false collision. Checked BEFORE the trap is armed, so a
 # refusal here never sweeps what it refused to touch.
-for name in "${NAMED_REPO}" "${GENERATED_REPO}"; do
-  if ! gone_probe aws ecr describe-repositories --repository-names "${name}" --region "${REGION}"; then
-    echo "[verify] FAIL: repository ${name} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
-    rm -rf "${LOG_DIR}"
-    exit 1
-  fi
-done
+if ! gone_probe aws ecr describe-repositories --repository-names "${NAMED_REPO}" --region "${REGION}"; then
+  echo "[verify] FAIL: repository ${NAMED_REPO} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
+  rm -rf "${LOG_DIR}"
+  exit 1
+fi
+# The generated name is unknown before phase A: refuse on any repository
+# under its prefix (a leftover of an earlier lifetime of this stack).
+LEFTOVER_GENERATED="$(aws ecr describe-repositories --region "${REGION}" \
+  --query "repositories[?starts_with(repositoryName, '${GENERATED_PREFIX}')].repositoryName" \
+  --output text)"
+if [ -n "${LEFTOVER_GENERATED}" ] && [ "${LEFTOVER_GENERATED}" != "None" ]; then
+  echo "[verify] FAIL: repository ${LEFTOVER_GENERATED} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
+  rm -rf "${LOG_DIR}"
+  exit 1
+fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
   echo "[verify] FAIL: s3://${STATE_BUCKET}/${STATE_KEY} already exists before the run — nothing was touched" >&2
   rm -rf "${LOG_DIR}"
@@ -168,10 +182,11 @@ echo "[verify] phase A: deploy ${STACK} with no repository name"
 deploy "${LOG_DIR}/a.log" '' '' \
   || { sed 's/^/  /' "${LOG_DIR}/a.log"; echo "[verify] FAIL: phase A deploy failed" >&2; exit 1; }
 A_ID="$(state_repo_id)"
-if [ "${A_ID}" != "${GENERATED_REPO}" ]; then
-  echo "[verify] FAIL: state records Repo as '${A_ID}', expected the generated '${GENERATED_REPO}'" >&2
+if ! printf '%s' "${A_ID}" | grep -qE "^${GENERATED_PREFIX}[0-9a-f]{12}\$"; then
+  echo "[verify] FAIL: state records Repo as '${A_ID}', expected a generated '${GENERATED_PREFIX}<12 hex>'" >&2
   exit 1
 fi
+GENERATED_REPO="${A_ID}"
 repo_created_at "${GENERATED_REPO}" >/dev/null
 echo "[verify] phase A ok: ${GENERATED_REPO} deployed"
 

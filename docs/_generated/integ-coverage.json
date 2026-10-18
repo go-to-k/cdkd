@@ -6817,6 +6817,7 @@
           "literal"
         ],
         "retain-orphan-redeploy": [
+          "l1",
           "literal"
         ],
         "s3-lifecycle": [
