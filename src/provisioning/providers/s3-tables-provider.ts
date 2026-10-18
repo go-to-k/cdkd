@@ -19,6 +19,7 @@ import {
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { isNameCollisionError, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -152,11 +153,55 @@ function tableIdentityFromGetTable(
  * S3 Tables API calls are synchronous - the CC API adds unnecessary
  * polling overhead for operations that complete immediately.
  */
+/**
+ * What a redacted wrap restates of AWS's withheld text (go-to-k/cdkd#2319):
+ * that the name is taken. The engine credits a name collision only when the
+ * TOP-level message says "already exists" (`isNameCollisionErrorFrom`), and S3
+ * Tables words it under `ConflictException`, a class no collision pattern
+ * matches -- so without this a create-first replacement of a named table
+ * bucket, namespace or table stops recognising one.
+ */
+function relayedCollision(detail: string): string {
+  return isNameCollisionError(detail) ? ' AWS reports that it already exists.' : '';
+}
+
+/** `text` closed as a sentence, for a wrap that continues after it. */
+function sentence(text: string): string {
+  return text.endsWith('.') ? text : `${text}.`;
+}
+
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
   private createClient: S3TablesClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3TablesProvider');
+
+  /**
+   * The failure wrap every catch that throws a `ProvisioningError` builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug`, and the wrap is
+   * stamped `markRedactedCause`, so the retry classifiers read the withheld
+   * text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text. Every delete checks `NotFoundException`
+   * by type before it wraps, so no "already deleted" reading depends on AWS's
+   * wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    this.logger.debug(build(failure.detail).message);
+    return markRedactedCause(build(`${failure.summary}${relayedCollision(failure.detail)}`));
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::S3Tables::TableBucket', new Set(['TableBucketName', 'Tags'])],
@@ -286,12 +331,16 @@ export class S3TablesProvider implements ResourceProvider {
       // also covers a control-flow error if one is ever added here.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update S3 Tables resource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update S3 Tables resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -421,12 +470,16 @@ export class S3TablesProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create S3 Table Bucket ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create S3 Table Bucket ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -463,12 +516,16 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 Table Bucket ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete S3 Table Bucket ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -636,12 +693,16 @@ export class S3TablesProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create S3 Tables Namespace ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create S3 Tables Namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -686,12 +747,16 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 Tables Namespace ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete S3 Tables Namespace ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -828,12 +893,16 @@ export class S3TablesProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create S3 Tables Table ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create S3 Tables Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       if (tableCreated) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
       throw thrown;
@@ -1402,12 +1471,16 @@ export class S3TablesProvider implements ResourceProvider {
       resolved = await this.resolveTableParts(physicalId);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to resolve S3 Tables Table ${logicalId} (${physicalId}): ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve S3 Tables Table ${logicalId} (${physicalId}): ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
     if (resolved === 'not-found') {
@@ -1452,12 +1525,16 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 Tables Table ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete S3 Tables Table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1649,12 +1726,16 @@ export class S3TablesProvider implements ResourceProvider {
         );
       } catch (err) {
         const cause = err instanceof Error ? err : undefined;
-        throw new ProvisioningError(
-          `applyTableTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${describeAwsFailure(err).detail}. State has NOT been updated so the next deploy will retry the tag-diff.`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          err,
+          (text) =>
+            new ProvisioningError(
+              `applyTableTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${sentence(text)} State has NOT been updated so the next deploy will retry the tag-diff.`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -1664,12 +1745,16 @@ export class S3TablesProvider implements ResourceProvider {
         await this.getClient().send(new TagResourceCommand({ resourceArn, tags: upserts }));
       } catch (err) {
         const cause = err instanceof Error ? err : undefined;
-        throw new ProvisioningError(
-          `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${describeAwsFailure(err).detail}. State has NOT been updated so the next deploy will retry the tag-diff.`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          err,
+          (text) =>
+            new ProvisioningError(
+              `applyTableTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${sentence(text)} State has NOT been updated so the next deploy will retry the tag-diff.`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -1719,12 +1804,16 @@ export class S3TablesProvider implements ResourceProvider {
         );
       } catch (err) {
         const cause = err instanceof Error ? err : undefined;
-        throw new ProvisioningError(
-          `applyTableBucketTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${describeAwsFailure(err).detail}. State has NOT been updated so the next deploy will retry the tag-diff.`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          err,
+          (text) =>
+            new ProvisioningError(
+              `applyTableBucketTagsDiff: UntagResource failed for ${resourceArn} (keys: ${removedKeys.join(', ')}): ${sentence(text)} State has NOT been updated so the next deploy will retry the tag-diff.`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }
@@ -1734,12 +1823,16 @@ export class S3TablesProvider implements ResourceProvider {
         await this.getClient().send(new TagResourceCommand({ resourceArn, tags: upserts }));
       } catch (err) {
         const cause = err instanceof Error ? err : undefined;
-        throw new ProvisioningError(
-          `applyTableBucketTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${describeAwsFailure(err).detail}. State has NOT been updated so the next deploy will retry the tag-diff.`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapCaughtError(
+          err,
+          (text) =>
+            new ProvisioningError(
+              `applyTableBucketTagsDiff: TagResource failed for ${resourceArn} (keys: ${Object.keys(upserts).join(', ')}): ${sentence(text)} State has NOT been updated so the next deploy will retry the tag-diff.`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
     }

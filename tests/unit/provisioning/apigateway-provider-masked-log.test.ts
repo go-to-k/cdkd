@@ -75,6 +75,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /** Long enough for the message-level substring arm. */
 const LONG = 'apigw-secret-stage-value';
@@ -103,6 +104,9 @@ const MASKED_ECHO = `Invalid value '${SECRET_MASK}' for the request`;
 
 const commandName = (command: unknown): string =>
   (command as { constructor: { name: string } }).constructor.name;
+
+/** Every debug line the provider wrote, joined. */
+const debugged = (): string => debugSpy.mock.calls.map((args) => String(args[0])).join('\n');
 
 /** Every debug and warn line the provider wrote, joined. */
 const transcript = (): string =>
@@ -392,7 +396,12 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
         const message = await thrownMessage(c.run(provider));
         expect(message).toContain(c.prefix);
         expect(message).not.toContain(LONG);
-        expect(message).toContain(MASKED_ECHO);
+        // go-to-k/cdkd#2319: AWS's sentence is withheld from the thrown
+        // message and reaches the debug line, masked there.
+        expect(message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+        expect(message).not.toContain('Invalid value');
+        expect(debugged()).toContain(MASKED_ECHO);
+        expect(debugged()).not.toContain(LONG);
       });
     }
 
@@ -469,10 +478,14 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       const reason = (result as { reason?: string }).reason ?? '';
       expect(reason).toContain('old API Gateway Resource res-old could not be deleted:');
       expect(reason).not.toContain(LONG);
-      expect(reason).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: the delete's wrap names the class; AWS's sentence is
+      // on the debug line, masked by the update's masker it now receives.
+      expect(reason).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
       const warned = warnSpy.mock.calls.map((args) => String(args[0])).join('\n');
       expect(warned).toContain('Failed to delete old API Gateway Resource res-old');
       expect(warned).not.toContain(LONG);
+      expect(debugged()).toContain(MASKED_ECHO);
+      expect(debugged()).not.toContain(LONG);
     });
 
     it('update() Account: the IAM propagation retry warning goes through the masked sink', async () => {
@@ -545,7 +558,9 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to update API Gateway Stage Stg:');
       expect(message).not.toContain(OLD_NAME);
-      expect(message).toContain(MASKED_ECHO);
+      expect(message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+      expect(debugged()).toContain(MASKED_ECHO);
+      expect(debugged()).not.toContain(OLD_NAME);
     });
 
     it('update(): a recorded *** previous name counts as secret-derived too (backstop)', async () => {
@@ -581,8 +596,10 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(`Stage already exist: ${SECRET_MASK}`);
+      expect(message).toContain(`ConflictException. ${VERBOSE_POINTER}`);
       expect(message).not.toContain(TINY_A);
+      expect(debugged()).toContain(`Stage already exist: ${SECRET_MASK}`);
+      expect(debugged()).not.toContain(TINY_A);
     });
 
     it('update() backstop: only the previous reference names the secret', async () => {
@@ -601,8 +618,9 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(MASKED_ECHO);
+      expect(message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
       expect(message).not.toContain(OLD_NAME);
+      expect(debugged()).toContain(MASKED_ECHO);
       expect(transcript()).toContain(`Updating API Gateway Stage Stg: ${SECRET_MASK}`);
       expect(transcript()).not.toContain(OLD_NAME);
     });
@@ -627,8 +645,10 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(`Invalid stage identifier specified: ${SECRET_MASK}`);
+      expect(message).toContain(`NotFoundException. ${VERBOSE_POINTER}`);
       expect(message).not.toContain(TINY_A);
+      expect(debugged()).toContain(`Invalid stage identifier specified: ${SECRET_MASK}`);
+      expect(debugged()).not.toContain(TINY_A);
     });
 
     it('update(): an ordinary recorded name renders unchanged (negative control)', async () => {
@@ -799,8 +819,11 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       },
     ] as const;
 
+    // The masked pass-through is the branch a NON-AWS-authored error takes
+    // (go-to-k/cdkd#2319 redacts an AWS-authored one to its class): a plain
+    // `Error` stands in for a transport or cdkd-authored failure.
     it.each(SITES)('$site: the stamp keeps it retryable', async ({ command, run }) => {
-      fakeApiGateway({ [command]: throwing(awsAuthored('BadRequestException', TRANSIENT)) });
+      fakeApiGateway({ [command]: throwing(new Error(TRANSIENT)) });
       const failure = await thrown(run(provider, retryMasker));
       // Non-vacuity: the rejection came from the site's own command.
       expect(mockSend.mock.calls.some(([c]) => commandName(c) === command)).toBe(true);
@@ -814,13 +837,25 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
     it.each(SITES)(
       '$site: a failure the mask left unchanged is not stamped',
       async ({ command, run }) => {
-        fakeApiGateway({
-          [command]: throwing(awsAuthored('BadRequestException', 'Bad request parameter')),
-        });
+        fakeApiGateway({ [command]: throwing(new Error('Bad request parameter')) });
         const failure = await thrown(run(provider, retryMasker));
         expect(failure.message).toContain('Bad request parameter');
         expect(hasRedactedCause(failure)).toBe(false);
         expect(retryable(failure)).toBe(false);
+      }
+    );
+
+    it.each(SITES)(
+      '$site: an AWS-authored failure is redacted, stamped, and still retryable (go-to-k/cdkd#2319)',
+      async ({ command, run }) => {
+        fakeApiGateway({ [command]: throwing(awsAuthored('BadRequestException', TRANSIENT)) });
+        const failure = await thrown(run(provider, retryMasker));
+        expect(mockSend.mock.calls.some(([c]) => commandName(c) === command)).toBe(true);
+        expect(failure.message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+        expect(failure.message).not.toContain('Invalid deployment identifier');
+        expect(isRetryableTransientError(failure, failure.message)).toBe(false);
+        expect(hasRedactedCause(failure)).toBe(true);
+        expect(retryable(failure)).toBe(true);
       }
     );
 
@@ -829,7 +864,7 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       // floor) reaches AWS's sentence, and it cuts `exist` to `***st`.
       const NAME = 'exi';
       fakeApiGateway({
-        CreateStageCommand: throwing(awsAuthored('BadRequestException', TRANSIENT)),
+        CreateStageCommand: throwing(new Error(TRANSIENT)),
       });
       const failure = await thrown(
         provider.create(
@@ -851,7 +886,7 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       // Stage's derived-name mask cuts `exist` to `***st`.
       const OLD = 'exi';
       fakeApiGateway({
-        UpdateStageCommand: throwing(awsAuthored('BadRequestException', TRANSIENT)),
+        UpdateStageCommand: throwing(new Error(TRANSIENT)),
       });
       const failure = await thrown(
         provider.update(
