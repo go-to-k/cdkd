@@ -201,6 +201,7 @@ import {
 } from '../../deployment/prior-attempt-scope.js';
 import { awaitInFlightSibling, getStackRecords } from '../../deployment/stack-records-scope.js';
 import { deleteSkipReason } from '../../deployment/delete-outcome.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -862,6 +863,25 @@ export class EC2Provider implements ResourceProvider {
     ['AWS::EC2::SubnetNetworkAclAssociation', new Set(['SubnetId', 'NetworkAclId'])],
   ]);
 
+  /**
+   * Issue #1160: `ModifyVpcAttribute` changes only the attribute it is sent,
+   * so a VPC update that skips a removed DNS attribute keeps its live value,
+   * while a CloudFormation update that removes one resets it to the VPC
+   * default (real A/B, us-east-1: `EnableDnsHostnames` true -> false and
+   * `EnableDnsSupport` false -> true after the removal). `updateVpc` diffs
+   * each value against the previous template, so a removed attribute that
+   * already held its default sends nothing.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::EC2::VPC',
+      new Map<string, unknown>([
+        ['EnableDnsHostnames', false],
+        ['EnableDnsSupport', true],
+      ]),
+    ],
+  ]);
+
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
     [
       'AWS::EC2::Instance',
@@ -1268,6 +1288,13 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     try {
       return await this.applyUpdate(
         logicalId,
@@ -1921,7 +1948,10 @@ export class EC2Provider implements ResourceProvider {
       // ModifyVpcAttribute calls. AWS treats ModifyVpcAttribute as
       // idempotent, but the canonical round-trip guard ("state==AWS
       // produces zero mutating SDK calls") is the structural check that
-      // catches future regressions in the diff logic.
+      // catches future regressions in the diff logic. A removed attribute
+      // arrives here as its `removalDefaults` value (#1160). AWS accepts the
+      // two calls in either order (hostnames on with support off included),
+      // so no ordering is enforced between them.
       const newDnsHostnames = asBool(properties['EnableDnsHostnames']);
       const oldDnsHostnames = asBool(previousProperties['EnableDnsHostnames']);
       if (newDnsHostnames !== undefined && newDnsHostnames !== oldDnsHostnames) {
