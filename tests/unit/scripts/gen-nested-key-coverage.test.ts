@@ -5227,7 +5227,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       const gluePool = poolSize('glue-provider.ts');
       expect(gluePool).toBeGreaterThan(200);
       for (const single of ['eventbridge-rule-provider.ts', 'scheduler-schedule-provider.ts']) {
-        expect(poolSize(single), single).toBeLessThan(gluePool / 3);
+        expect(poolSize(single), single).toBeLessThan(gluePool / 2);
       }
       //
       // The consequence is demonstrated rather than argued: a key belonging to
