@@ -152,7 +152,7 @@ getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 Re
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 globaltable-fix-forward-orphan	2026-10-15T19:23:57Z	PASS	170	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph clean (#5032)
-glue-update-hardening	2026-10-17T17:11:05Z	PASS	256	verify.sh	rc ok, orph clean (#5032)
+glue-update-hardening	2026-10-18T17:03:54Z	PASS	274	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
 iam-access-key	2026-10-16T08:48:48Z	PASS	65	verify.sh	rc ok, orph clean (#3341 slice 4996)
