@@ -26,6 +26,7 @@ import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
@@ -121,7 +122,7 @@ export async function loadJournaledOrphans(
     if (!journal) return NONE;
     segments = journal.segments;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = describeAwsFailure(err).detail;
     logger.warn(
       // No stack name of its own: the destroy's lines name it. The parse
       // error's detail may carry it, sanitized by the journal parser.
@@ -979,7 +980,7 @@ async function markSuperseded(
 }
 
 function errorDetail(err: unknown): string {
-  return displaySafe(err instanceof Error ? err.message : String(err));
+  return displaySafe(describeAwsFailure(err).detail);
 }
 
 /**
