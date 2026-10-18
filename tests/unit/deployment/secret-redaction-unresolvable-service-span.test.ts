@@ -12,14 +12,16 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const SENTINEL = 'sentinel-plaintext-2743';
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';

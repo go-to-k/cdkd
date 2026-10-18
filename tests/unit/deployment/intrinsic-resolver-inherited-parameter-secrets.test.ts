@@ -28,10 +28,10 @@ import {
   SECRET_MASK,
   recordNestedStackParameterExpressions,
   recordResolvedPair,
-  redactSecretsForState,
   recordNoEchoParameterFreshValue,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {

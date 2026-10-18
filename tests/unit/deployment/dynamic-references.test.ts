@@ -7,13 +7,13 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import {
-  redactSecretsForState,
   isSecretExpressionByVerdictOrSpelling,
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
   recordSecretExpression,
   forgetSecretExpression,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
   isScopedSecretVerdict,
   pinScopedSecretVerdict,

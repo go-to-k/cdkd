@@ -11,7 +11,6 @@ import {
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
   SECRET_MASK,
-  STATE_DERIVED_RULES,
 } from '../secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from '../update-outcome.js';
 import { redactRollbackRecord } from './replay-secrets.js';
@@ -538,7 +537,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     op.resourceType,
     desiredProps,
     previousState.properties,
-    STATE_DERIVED_RULES
+    'state-derived'
   );
   // Issue #4037: both sides are PLAINTEXT now; each name derives its own
   // record's id.

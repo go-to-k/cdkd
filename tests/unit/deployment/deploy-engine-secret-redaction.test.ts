@@ -3,11 +3,12 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { redactOperationsForJournal } from '../../../src/deployment/deploy-engine/rollback.js';
 import {
   scrubResourceRecord,
-  redactSecretsForState,
-  markSameGenerationBag,
   SECRET_MASK,
-  STATE_SOURCED_BASELINE_RULES,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -622,10 +623,9 @@ describe('the deploy journal previousState is a REPLAYED baseline, not a fresh o
     // keeps passing `STATE_SOURCED_READBACK_RULES` explicitly regardless: it
     // states what that site KNOWS rather than relying on a mark's absence.
     const record = replayedRecord();
-    const scrubbed = scrubResourceRecord(
-      { ...record, observedProperties: markSameGenerationBag({ ...record.observedProperties }) },
-      new Map<string, string>()
-    );
+    const scrubbed = scrubResourceRecord(record, new Map<string, string>(), undefined, undefined, {
+      observed: 'same-generation',
+    });
 
     expect(scrubbed.observedProperties).toEqual({ A: [SECRET_MASK] });
     expect(JSON.stringify(scrubbed)).not.toContain(UNCERTIFIABLE_LIVE);

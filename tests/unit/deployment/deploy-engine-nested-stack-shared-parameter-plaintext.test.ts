@@ -38,12 +38,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
-  redactSecretsForState,
   inheritNestedStackParameterAssociations,
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';

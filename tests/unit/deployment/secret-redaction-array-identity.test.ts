@@ -1,17 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord as scrubResourceRecordRaw,
-  markSameGenerationBag,
   clearRecordedSecretExpressions,
   recordSecretExpression,
+  SECRET_MASK,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   STATE_DERIVED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_SOURCED_BASELINE_RULES,
-  SECRET_MASK,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Every `scrubResourceRecord` call in this file models the DEPLOY PERSIST choke
@@ -19,13 +20,14 @@ import {
  * whose bag is a readback `DeployEngine.observedCapture.drainObservedCaptures` just took and
  * installed. That site installs it through `markSameGenerationBag`
  * (`src/deployment/deploy-engine.ts`, the single `observedProperties` writer on
- * the deploy path), and since issue
+ * the deploy path), the persist choke point states that mark as
+ * `claims.observed` (go-to-k/cdkd#5047), and since issue
  * [#2906](https://github.com/go-to-k/cdkd/issues/2906) the derivation's
  * fail-closed arm requires the mark as well as an empty secrets map — so a bare
  * object literal here would model a bag the persist path never produces in this
  * configuration, and would take the NON-failing readback rules.
  *
- * Marking is done HERE, once, rather than at the twenty call sites: the premise
+ * The claim is stated HERE, once, rather than at the twenty call sites: the premise
  * belongs to the whole file, and a per-site spelling is how nineteen sites come
  * to agree and one not to. The UNMARKED direction — a PRIOR generation's bag
  * being re-written unchanged, which must NOT be masked — is #2906's own subject
@@ -41,12 +43,10 @@ const scrubResourceRecord = <
   record: T,
   ...rest: Parameters<typeof scrubResourceRecordRaw<T>> extends [T, ...infer R] ? R : never
 ): T =>
-  scrubResourceRecordRaw(
-    record.observedProperties === undefined
-      ? record
-      : { ...record, observedProperties: markSameGenerationBag({ ...record.observedProperties }) },
-    ...rest
-  );
+  scrubResourceRecordRaw(record, rest[0], rest[1], rest[2], {
+    observed: 'same-generation',
+    ...rest[3],
+  });
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 const PLAINTEXT = 'the-real-resolved-secret-value';

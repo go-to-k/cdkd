@@ -1,12 +1,12 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vite-plus/test';
 import {
   clearRecordedSecretExpressions,
-  markSameGenerationBag,
   recordResolvedPair,
   recordSecretExpression,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Issue #2745, first site: a bag leaf whose `Fn::Join` / `Fn::Sub` source
@@ -95,7 +95,7 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
   beforeEach(() => clearRecordedSecretExpressions());
   afterEach(() => clearRecordedSecretExpressions());
 
-  describe('writes a 1-3 character middle as its token on a bag the engine marked', () => {
+  describe('writes a 1-3 character middle as its token on a bag claimed same-generation', () => {
     for (const [label, source, token] of SHAPES) {
       it(`through ${label}`, () => {
         const secrets = resolvedAlone(token, PIN);
@@ -103,29 +103,29 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
         // Premise: the scan itself leaves the leaf alone below its floor.
         expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
 
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
 
-        expect(redactSecretsForState(bag, secrets, { Dsn: source })).toEqual({
+        expect(redactSecretsForState(bag, secrets, { Dsn: source }, TEMPLATE_DERIVED_RULES, true)).toEqual({
           Dsn: `port:${token}`,
         });
       });
     }
 
     // The INVARIANT across the sub-floor range, not one length: for every
-    // middle below MIN_NEEDLE_LENGTH the scan is silent, an unmarked bag keeps
-    // the plaintext, and the mark is what writes the token. A floor lowered to
+    // middle below MIN_NEEDLE_LENGTH the scan is silent, an unclaimed bag keeps
+    // the plaintext, and the claim is what writes the token. A floor lowered to
     // 3 makes the scan write the survivor for `abc` and reds the premise here,
     // where a two-character-only premise stays green (maintainer-proxy pass).
     for (const middle of ['a', 'q7', 'abc'] as const) {
-      it(`for a ${middle.length}-character middle: scan silent, unmarked kept, marked written`, () => {
+      it(`for a ${middle.length}-character middle: scan silent, unclaimed kept, claimed written`, () => {
         const secrets = resolvedAlone(TOKEN_L2, middle);
         const leaf = `port:${middle}`;
         expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
         expect(redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: L2_JOIN })).toEqual({ Dsn: leaf });
 
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
 
-        expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN })).toEqual({
+        expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN }, TEMPLATE_DERIVED_RULES, true)).toEqual({
           Dsn: `port:${TOKEN_L2}`,
         });
       });
@@ -142,9 +142,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
           { Region: { Ref: 'AWS::Region' }, Account: { Ref: 'AWS::AccountId' }, Name: { Ref: 'Secret' } },
         ],
       };
-      const bag = markSameGenerationBag({ Dsn: `port:${PIN}` });
+      const bag = { Dsn: `port:${PIN}` };
 
-      expect(redactSecretsForState(bag, resolvedAlone(TOKEN_L2, PIN), { Dsn: source })).toEqual({
+      expect(redactSecretsForState(bag, resolvedAlone(TOKEN_L2, PIN), { Dsn: source }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Dsn: `port:${TOKEN_L2}`,
       });
     });
@@ -161,9 +161,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       ]);
       recordResolvedPair(secrets, TOKEN_L2, PIN);
       recordResolvedPair(secrets, other, 'zz');
-      const bag = markSameGenerationBag({ Dsn: `port:${PIN}` });
+      const bag = { Dsn: `port:${PIN}` };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: SUB_2ARG })).toEqual({
+      expect(redactSecretsForState(bag, secrets, { Dsn: SUB_2ARG }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Dsn: `port:${TOKEN_L2}`,
       });
     });
@@ -175,20 +175,20 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       const secrets: RecordedSecretValues = new Map([[PIN, TOKEN_STAGED]]);
       recordResolvedPair(secrets, TOKEN_L2, PIN);
       recordResolvedPair(secrets, TOKEN_STAGED, PIN);
-      const bag = markSameGenerationBag({ Dsn: `port:${PIN}`, Whole: PIN });
+      const bag = { Dsn: `port:${PIN}`, Whole: PIN };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN, Whole: TOKEN_STAGED })).toEqual({
+      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN, Whole: TOKEN_STAGED }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Dsn: `port:${TOKEN_L2}`,
         Whole: TOKEN_STAGED,
       });
     });
 
-    it('is read for the object handed in and threaded down the walk — a sub-bag walked on its own is not marked', () => {
+    it('is read for the object handed in and threaded down the walk — a sub-bag walked on its own is not claimed', () => {
       const secrets = resolvedAlone(TOKEN_L2, PIN);
       const source = { Environment: { Variables: { Dsn: L2_JOIN } } };
-      const bag = markSameGenerationBag({ Environment: { Variables: { Dsn: `port:${PIN}` } } });
+      const bag = { Environment: { Variables: { Dsn: `port:${PIN}` } } };
 
-      expect(redactSecretsForState(bag, secrets, source)).toEqual({
+      expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Environment: { Variables: { Dsn: `port:${TOKEN_L2}` } },
       });
       expect(
@@ -207,15 +207,15 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       const secrets: RecordedSecretValues = new Map([[PIN, TOKEN_STAGED]]);
       recordResolvedPair(secrets, SSM, PIN);
       recordResolvedPair(secrets, TOKEN_STAGED, PIN);
-      const bag = markSameGenerationBag({ Dsn: `port:${PIN}`, Whole: PIN });
+      const bag = { Dsn: `port:${PIN}`, Whole: PIN };
 
       expect(
-        redactSecretsForState(bag, secrets, { Dsn: { 'Fn::Sub': `port:${SSM}` }, Whole: TOKEN_STAGED })
+        redactSecretsForState(bag, secrets, { Dsn: { 'Fn::Sub': `port:${SSM}` }, Whole: TOKEN_STAGED }, TEMPLATE_DERIVED_RULES, true)
       ).toEqual({ Dsn: `port:${SSM}`, Whole: TOKEN_STAGED });
     });
   });
 
-  describe('leaves a 1-3 character middle to the value scan on a bag NOBODY marked', () => {
+  describe('leaves a 1-3 character middle to the value scan on a bag NOBODY claimed', () => {
     for (const [label, source, token] of SHAPES) {
       it(`through ${label}`, () => {
         const secrets = resolvedAlone(token, PIN);
@@ -229,7 +229,7 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
     }
   });
 
-  describe('above the needle floor, positions the leaf with or without the mark', () => {
+  describe('above the needle floor, positions the leaf with or without the claim', () => {
     const LONG = 'q7-long-enough-pin';
 
     it('writes the join leaf its OWN token where the scan wrote the survivor', () => {
@@ -259,9 +259,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       ]);
       recordResolvedPair(secrets, TOKEN_L2, LONG);
       const leaf = `port:${LONG}`;
-      const bag = markSameGenerationBag({ Dsn: leaf });
+      const bag = { Dsn: leaf };
 
-      const persisted = redactSecretsForState(bag, secrets, { Dsn: L2_JOIN });
+      const persisted = redactSecretsForState(bag, secrets, { Dsn: L2_JOIN }, TEMPLATE_DERIVED_RULES, true);
 
       expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
       expect(persisted).not.toEqual({ Dsn: `port:${TOKEN_L2}` });
@@ -466,7 +466,7 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
         const { bag, source, secrets } = build();
         const leaf = bag['Dsn']!;
 
-        const persisted = redactSecretsForState(markSameGenerationBag(bag), secrets, source);
+        const persisted = redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true);
 
         expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
         expect(persisted).toEqual({ Dsn: leaf });
@@ -528,12 +528,12 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
     it('still writes the leaf its own token, and an unrelated frame beside it its own', () => {
       const secrets = resolvedAlone(TOKEN_L2, PIN);
       secrets.set(`port:${PIN}`, `port:${TOKEN_L2}`);
-      const bag = markSameGenerationBag({ Dsn: `port:${PIN}`, Url: `url:${PIN}` });
+      const bag = { Dsn: `port:${PIN}`, Url: `url:${PIN}` };
       const URL_JOIN = {
         'Fn::Join': ['', ['url:{{resolve:secretsmanager:', { Ref: 'Secret' }, ':SecretString:pin::}}']],
       };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN, Url: URL_JOIN })).toEqual({
+      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN, Url: URL_JOIN }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Dsn: `port:${TOKEN_L2}`,
         Url: `url:${TOKEN_L2}`,
       });
@@ -550,9 +550,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       const longPrefix = 'p'.repeat(600);
       secrets.set(`${longPrefix}:${PIN}`, `${longPrefix}:${TOKEN_L2}`);
       const leaf = `port:${PIN}`;
-      const bag = markSameGenerationBag({ Dsn: leaf });
+      const bag = { Dsn: leaf };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN })).toEqual({ Dsn: leaf });
+      expect(redactSecretsForState(bag, secrets, { Dsn: L2_JOIN }, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: leaf });
     });
   });
 
@@ -578,9 +578,9 @@ describe('an Fn::Join / Fn::Sub leaf embedding one token is positioned by its li
       // a lowered floor would make the scan write the sibling by itself.
       expect(redactSecretsForState(`port:${PIN}`, secrets)).toBe(`port:${PIN}`);
 
-      const persisted = redactSecretsForState(markSameGenerationBag({ Dsn: `port:${PIN}` }), secrets, {
+      const persisted = redactSecretsForState({ Dsn: `port:${PIN}` }, secrets, {
         Dsn: source,
-      });
+      }, TEMPLATE_DERIVED_RULES, true);
 
       expect(persisted).toEqual({ Dsn: `port:${SECURE}` });
     });

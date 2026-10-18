@@ -13,9 +13,9 @@ import {
   carriesFreshNoEchoValue,
   clearRecoverableMaskedOutputs,
   recordRecoverableMaskedOutput,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
   ambientCredentialConfig,
   credentialFingerprint,

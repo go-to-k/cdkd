@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_DERIVED_RULES,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 // The reference the SOURCE bag holds at the leaf under test.
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
@@ -272,7 +274,7 @@ describe('secret-redaction - source generation and the token-shaped plaintext (i
       },
       new Map(),
       undefined,
-      STATE_SOURCED_CROSS_GENERATION_RULES
+      'state-cross-generation'
     );
 
     expect(envLeaf(scrubbed.observedProperties)).toBe(STATE_EXPR_PREV);
@@ -289,7 +291,7 @@ describe('secret-redaction - source generation and the token-shaped plaintext (i
       },
       new Map(),
       undefined,
-      STATE_SOURCED_CROSS_GENERATION_RULES
+      'state-cross-generation'
     );
 
     expect(envLeaf(scrubbed.observedProperties)).toBe(TEMPLATE_EXPR_CURR);
@@ -372,7 +374,7 @@ describe('secret-redaction - source generation and the token-shaped plaintext (i
       },
       new Map(),
       undefined,
-      STATE_SOURCED_CROSS_GENERATION_RULES
+      'state-cross-generation'
     );
 
     expect(envLeaf(scrubbed.observedProperties)).toBe(unrecordedSsm);

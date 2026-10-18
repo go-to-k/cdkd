@@ -1,23 +1,12 @@
-import {
-  type RecordedSecretValues,
-  markSameGenerationBag,
-  resolvedPlaintextOf,
-  substitutedSpellingOf,
-} from './pairs.js';
+import { type RecordedSecretValues, resolvedPlaintextOf, substitutedSpellingOf } from './pairs.js';
 import {
   type CrossStackAssociations,
   storeAssociation,
   crossStackAssociations,
   crossStackSourceKey,
 } from './cross-stack.js';
-import {
-  type PathSourceRules,
-  TEMPLATE_DERIVED_RULES,
-  isPlainObject,
-  isSingleDynamicReferenceToken,
-  MIN_NEEDLE_LENGTH,
-} from './rules.js';
-import { redactSecretsForState } from './redact-state.js';
+import { isPlainObject, isSingleDynamicReferenceToken, MIN_NEEDLE_LENGTH } from './rules.js';
+import { redactForState, redactAtProvenance } from './context.js';
 import {
   plaintextIndexOf,
   certifiedListForLeaf,
@@ -137,11 +126,11 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  * from the positioner rather than restating its rules is what keeps this from
  * drifting away from the persist path.
  *
- * THE `rules` PARAMETER IS THE CALLER'S GENERATION CLAIM, not a knob. The
- * DEPLOY path passes {@link TEMPLATE_DERIVED_RULES} (the default): its source is
+ * THE `provenance` PARAMETER IS THE CALLER'S GENERATION CLAIM, not a knob. The
+ * DEPLOY path passes `template-derived` (the default, `TEMPLATE_DERIVED_RULES`): its source is
  * the parent's TEMPLATE, which can carry a PUBLIC `ssm:` reference that must
  * stay resolved (issue #1901) and which cannot certify the generation of
- * anything. The rollback REPLAY passes {@link STATE_DERIVED_RULES}, because its
+ * anything. The rollback REPLAY passes `state-derived` (`STATE_DERIVED_RULES`), because its
  * source is the JOURNAL record — a persisted bag holding no public expressions,
  * and the same generation the bag was resolved from one statement earlier. That
  * is the identical pairing `redactRollbackRecord` already makes for the record
@@ -254,7 +243,7 @@ const UNFRAMED_SPELLING: unique symbol = Symbol('cdkd.nested-parameter.unframed-
  *         call sites reach this arm as well: `cdkd import` can leave raw
  *         intrinsics in a record's `properties`, which a rollback replay
  *         passes as its source, and the frame arm does not read `rules`.
- *   (ii)  `redactSecretsForState(resolvedValue, secrets) === resolvedValue`
+ *   (ii)  `redactForState(resolvedValue, { provenance: 'value-scan', secrets }) === resolvedValue`
  *         -- the value scan is SILENT on it: the sub-floor gate, byte-for-byte
  *         the bound the span arm accepted. What it refuses is a middle at or
  *         above the floor, whose substring carry the child already has (the
@@ -431,7 +420,7 @@ export function recordNestedStackParameterExpressions(
   resourceType: string,
   resolvedProperties: unknown,
   sourceProperties: unknown,
-  rules: PathSourceRules = TEMPLATE_DERIVED_RULES
+  provenance: 'template-derived' | 'state-derived' = 'template-derived'
 ): void {
   if (resourceType !== NESTED_STACK_RESOURCE_TYPE) return;
   if (secrets.size === 0) return;
@@ -444,17 +433,20 @@ export function recordNestedStackParameterExpressions(
   const sourceParameters = sourceProperties['Parameters'];
   if (!isPlainObject(resolvedParameters) || !isPlainObject(sourceParameters)) return;
 
-  // A MARKED shallow copy (issue #2745, the nested-stack site): the copy is
-  // this pass's own, so `positionByEmbeddedSpan` may write a sub-floor middle
-  // as the token this pass resolved it from. The seventh site on
-  // {@link markSameGenerationBag}'s list, which states the claim and why it
-  // holds at every caller of this function. The caller's object is never
-  // marked here -- what the record holds is the caller's business.
-  const positioned = redactSecretsForState(
-    markSameGenerationBag({ ...resolvedParameters }),
+  // A shallow copy walked under a same-generation CLAIM (issue #2745, the
+  // nested-stack site): the copy is this pass's own, so
+  // `positionByEmbeddedSpan` may write a sub-floor middle as the token this
+  // pass resolved it from. The seventh site on {@link markSameGenerationBag}'s
+  // list, which states the claim and why it holds at every caller of this
+  // function, under either provenance. The claim is an argument
+  // (go-to-k/cdkd#5047), so nothing is marked -- what the record holds is the
+  // caller's business.
+  const positioned = redactAtProvenance(
+    { ...resolvedParameters },
     secrets,
     sourceParameters,
-    rules
+    provenance,
+    true
   ) as Record<string, unknown>;
 
   let table = nestedStackParameterExpressions.get(secrets);
@@ -841,7 +833,8 @@ export function recordNestedStackParameterExpressions(
     // (ii) the value scan is SILENT on the value: the sub-floor gate. A middle
     // at or above the floor is refused here -- the child's substring carry
     // already has it.
-    if (redactSecretsForState(resolvedValue, secrets) !== resolvedValue) continue;
+    if (redactForState(resolvedValue, { provenance: 'value-scan', secrets }) !== resolvedValue)
+      continue;
     // The frame, and THIS leaf's own pair evidence: the pass resolved the
     // frame's token to the middle. For a LITERAL spelling it is
     // LOAD-BEARING UNDER BOTH RULESETS, and not implied by (i) + (ii) -- two
@@ -1187,7 +1180,8 @@ export function inheritedRenderedSpan(
     // association table answers (or poisons) is answered here the same way.
     const spelling = inheritedParameterExpression(reads.parent, name, value);
     if (typeof spelling !== 'string') return undefined;
-    if (redactSecretsForState(spelling, childSecrets) !== spelling) return undefined;
+    if (redactForState(spelling, { provenance: 'value-scan', secrets: childSecrets }) !== spelling)
+      return undefined;
     return { value, spelling };
   }
   return undefined;
@@ -1330,7 +1324,7 @@ export function redactInheritedParameterValue(
 ): unknown {
   return (
     inheritedParameterExpression(parentSecrets, parameterName, value) ??
-    redactSecretsForState(value, parentSecrets)
+    redactForState(value, { provenance: 'value-scan', secrets: parentSecrets })
   );
 }
 
@@ -1384,7 +1378,8 @@ export function positionByInheritedParameter(
   // ...and of the answer, for a parent expression that itself spells a
   // child needle. Deep equality, not identity: the value walk rebuilds every
   // array it visits, so `!==` would refuse every list leaf.
-  if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
+  if (!deepEqualJsonValue(redactForState(answer, { provenance: 'value-scan', secrets }), answer))
+    return undefined;
   return answer;
 }
 
@@ -1856,7 +1851,10 @@ function rendersReadTo(
   value: unknown
 ): boolean {
   if (typeof spelling === 'string' && typeof value === 'string') {
-    if (spelling === value) return redactSecretsForState(spelling, parentSecrets) === spelling;
+    if (spelling === value)
+      return (
+        redactForState(spelling, { provenance: 'value-scan', secrets: parentSecrets }) === spelling
+      );
     return rendersLiteralTo(spelling, parentSecrets, value);
   }
   if (Array.isArray(spelling) && Array.isArray(value) && spelling.length === value.length) {
@@ -2199,7 +2197,8 @@ export function positionByParameterReread(
     answer = matching[0]!.redacted;
   }
   if (carriesChildOnlyPlaintext(bag, secrets, reads.parent)) return undefined;
-  if (!deepEqualJsonValue(redactSecretsForState(answer, secrets), answer)) return undefined;
+  if (!deepEqualJsonValue(redactForState(answer, { provenance: 'value-scan', secrets }), answer))
+    return undefined;
   return answer;
 }
 

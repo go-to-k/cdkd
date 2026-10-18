@@ -424,12 +424,16 @@ export function substitutedSpellingOf(
  * provider succeeded, and `observedProperties`, an AWS readback installed
  * separately. So the fact is BAG-specific, not caller- or record-level, and it
  * is carried on the object: {@link markSameGenerationBag} at the moment the
- * successful result is installed, consulted by {@link redactSecretsForState}
- * for the object it is handed. A copy of the bag, a derived needle map, a
+ * successful result is installed, and read only at the call sites that state
+ * the walk's claim, outside the family: the deploy engine's persist choke
+ * point, the rollback journal, `redactOutputs` and the replay's record
+ * restore. No family function reads it; the walk and `scrubResourceRecord`
+ * take the claim as an argument (go-to-k/cdkd#5047). A copy of the bag, a derived needle map, a
  * previous generation's record, a scrub / drift walk and a bag nobody marked
- * all answer `false` and keep the fall-through. `cdkd import` marks the one
+ * all answer `false` and keep the fall-through. `cdkd import` claims the one
  * bag its own resolver produced (the sixth site below, issue #2745), and the
- * nested-stack recorder marks the COPY it positions (the seventh, same issue).
+ * nested-stack recorder claims the COPY it positions (the seventh, same issue);
+ * both state the claim to the walk and mark nothing.
  *
  * A `WeakSet` for the reason {@link resolvedPairsOf} is a `WeakMap`: the mark
  * dies with the object it is on, and nothing has to clear it.
@@ -467,9 +471,12 @@ const sameGenerationBags = new WeakSet<object>();
  * at all — there the safety comes from the empty secrets map, not from the
  * mark. Read the per-site list below rather than a rule over all seven.
  *
- * The seven call sites, and which of them the record HOLDS, because the earlier
+ * The seven claim sites, and which of them the record HOLDS, because the earlier
  * "two never-installed copies" reading of this paragraph was false once the
- * third copy arrived:
+ * third copy arrived. The first three MARK (the transport above), as does
+ * `NestedStackProvider` for the row bag it records with
+ * `cdkd:PendingChildDeletes` (issue #4453); the other four state
+ * `same-generation` to the walk directly, marking nothing:
  * - `propertiesToRecord` — the record's `properties`, installed. The resolved
  *   bag itself when the route drops nothing, a narrowed copy of it when it
  *   does, and `withoutSilentDropProperties` returns its input by reference in
@@ -498,14 +505,14 @@ const sameGenerationBags = new WeakSet<object>();
  *   merge of this pass's values with the previous bag's carried ones (issue
  *   #2771), mixed provenance and never marked, or — when that merge refuses —
  *   the previous bag kept whole, unmarked as above.
- * - the update arm's no-change re-check — a marked `{ ...resolvedProps }`
+ * - the update arm's no-change re-check — `resolvedProps` walked under the claim
  *   compared against the stored record so a stored token reads as a no-op.
  *   NOT installed; the object the provider is handed is the unmarked original.
- * - the rollback journal's FAILED-op `attemptedProperties` — a marked copy, so
+ * - the rollback journal's FAILED-op `attemptedProperties` — a claimed copy, so
  *   that persisted artifact does not carry the plaintext on exactly the
  *   failure path. NOT installed on the record.
  * - `cdkd import`'s `resolveImportedProperties` (issue #2745) — the bag
- *   import's OWN resolver produced from the imported template, marked as the
+ *   import's OWN resolver produced from the imported template, claimed as the
  *   redaction input; the record holds the redacted COPY, unmarked. Not a
  *   deploy pass, and the mark does not say it is: what it claims is PAIR
  *   PROVENANCE — this bag was produced from this source, in this pass, by the
@@ -516,7 +523,7 @@ const sameGenerationBags = new WeakSet<object>();
  *   captured separately, against the redacted record, and is never marked
  *   here.
  * - `recordNestedStackParameterExpressions` (issue #2745) — a shallow COPY of
- *   a nested-stack row's resolved `Parameters` sub-bag, marked as the
+ *   a nested-stack row's resolved `Parameters` sub-bag, claimed as the
  *   position pass's input so a sub-floor middle a literal frame embeds is
  *   written as its token there, which is what the recorder's sub-floor
  *   carry reads. NOT installed: the caller's own object is untouched, and

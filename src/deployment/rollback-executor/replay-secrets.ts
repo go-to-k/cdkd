@@ -6,6 +6,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from '../intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import {
+  isSameGenerationBag,
   scrubResourceRecord,
   redactForState,
   dynamicReferenceTokens,
@@ -415,7 +416,14 @@ export function redactRollbackRecord(
             source: journaledProps,
           }),
         };
-  return keepPersistedPlainRecordLeaves(scrubResourceRecord(positioned, secrets), record, {
+  // go-to-k/cdkd#5047: an in-process rollback restores the record the deploy
+  // held, whose readback a drain this deploy may have marked; the walk reads
+  // no mark, so that claim is stated here. `properties` has no source in this
+  // walk (positioned above), so it claims nothing.
+  const scrubbed = scrubResourceRecord(positioned, secrets, undefined, undefined, {
+    observed: isSameGenerationBag(positioned.observedProperties) ? 'same-generation' : 'unproven',
+  });
+  return keepPersistedPlainRecordLeaves(scrubbed, record, {
     properties: journaledProps,
     attributes: journaledAttributes,
   });

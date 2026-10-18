@@ -50,11 +50,11 @@ import {
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
-  markSameGenerationBag,
   recordNestedStackParameterExpressions,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 const CONSUMER_REGION = 'us-east-1';
 const PRODUCER_REGION = 'eu-west-1';
@@ -92,7 +92,7 @@ async function deployRow(
     recordedSecretValues: bag,
   } as never)) as { Parameters: Record<string, unknown> };
   recordNestedStackParameterExpressions(bag, 'AWS::CloudFormation::Stack', resolved, source);
-  const record = redactSecretsForState(markSameGenerationBag(structuredClone(resolved)), bag, source) as {
+  const record = redactSecretsForState(structuredClone(resolved), bag, source, TEMPLATE_DERIVED_RULES, true) as {
     Parameters: Record<string, unknown>;
   };
   return { bag, value: resolved.Parameters['Pin'], record: record.Parameters['Pin'] };

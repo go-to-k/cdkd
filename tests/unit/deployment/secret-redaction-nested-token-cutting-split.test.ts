@@ -18,9 +18,9 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   redactInheritedParameterValue,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import { poisonRenderedSpellingsCollidingIn } from '../../../src/deployment/intrinsic-resolver/parameter-secrets.js';
 import {
   rereadParameterExpression,

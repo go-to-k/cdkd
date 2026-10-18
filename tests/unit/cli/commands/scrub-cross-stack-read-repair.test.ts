@@ -116,9 +116,9 @@ import { clearRecordedSecretExpressions } from '../../../../src/deployment/secre
 import { scrubStack } from '../../../../src/cli/commands/scrub.js';
 import { producerNameIsUnresolved } from '../../../../src/cli/commands/recreate-downstream-consumers.js';
 import {
-  redactSecretsForState,
   SECRET_MASK,
 } from '../../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../../src/deployment/secret-redaction/redact-state.js';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 

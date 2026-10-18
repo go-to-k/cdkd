@@ -13,7 +13,7 @@
  * from (a `RecordedSecretValues` map on `ResolverContext`). This module turns
  * that record into two pure operations:
  *
- * - {@link redactSecretsForState} rewrites the bag cdkd is about to PERSIST so
+ * - {@link redactForState} rewrites the bag cdkd is about to PERSIST so
  *   each secret value is replaced by the original unresolved expression. This
  *   is CloudFormation-parity: CFn keeps the `{{resolve:...}}` reference in the
  *   template and resolves it service-side, so the concrete value never lands in
@@ -37,8 +37,8 @@
  * uniformly without threading a path argument through every resolver method.
  * Over-redaction (a coincidental match elsewhere) is harmless and the safe
  * direction; under-redaction would leak a secret, so a match is always
- * replaced. {@link redactSecretsForState} layers POSITION on top of that scan —
- * see its own doc and {@link redactByPath} — because a value match cannot tell
+ * replaced. {@link redactForState} layers POSITION on top of that scan —
+ * see `redactSecretsForState`'s own doc and `redactByPath` — because a value match cannot tell
  * two expressions apart once they resolve to the same plaintext.
  *
  * The module is a LEAF — it imports nothing outside `secret-redaction/` —
@@ -46,8 +46,11 @@
  * sit on a dense import ring.
  *
  * This file is a barrel: the implementation lives in `secret-redaction/*.ts`
- * (issue #4415), and it re-exports exactly the names it always exported, so no
- * importer changes. Import from here, never from a sibling directly.
+ * (issue #4415). Import from here, never from a sibling directly. The
+ * persistence walk itself, `redactSecretsForState`, and the `PathSourceRules`
+ * constants (and their `PathSourceRules` type) are family-private (go-to-k/cdkd#5047): outside the family a
+ * writer states a PROVENANCE through {@link redactForState}, and
+ * `scrubResourceRecord` / `recordNestedStackParameterExpressions` take one too.
  */
 export {
   type RecordedSecretValues,
@@ -145,13 +148,6 @@ export {
 } from './secret-redaction/nested-stack.js';
 export {
   MIN_NEEDLE_LENGTH,
-  type PathSourceRules,
-  TEMPLATE_DERIVED_RULES,
-  TEMPLATE_SOURCED_RULES,
-  STATE_SOURCED_READBACK_RULES,
-  STATE_SOURCED_BASELINE_RULES,
-  STATE_SOURCED_CROSS_GENERATION_RULES,
-  STATE_DERIVED_RULES,
   DYNAMIC_REFERENCE_INNER,
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   isSingleDynamicReferenceToken,
@@ -167,7 +163,10 @@ export {
 } from './secret-redaction/redact-path.js';
 export { spanNamesResolvableService } from './secret-redaction/anchors.js';
 export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';
-export { redactSecretsForState, scrubResourceRecord } from './secret-redaction/redact-state.js';
+export {
+  type ScrubGenerationClaims,
+  scrubResourceRecord,
+} from './secret-redaction/redact-state.js';
 export {
   type RedactionContext,
   type RedactionProvenance,

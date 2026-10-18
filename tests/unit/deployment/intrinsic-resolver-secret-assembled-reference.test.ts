@@ -23,10 +23,10 @@ import {
   maskRecordedSecretsInText,
   inheritNestedStackParameterAssociations,
   isRecordedSecretExpression,
-  markSameGenerationBag,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 /** The secret `Name`: inherited, above the needle floor. */
 const NAME = 'pinname-long';
@@ -163,7 +163,7 @@ async function persist(
     string,
     unknown
   >;
-  const record = redactSecretsForState(markSameGenerationBag(structuredClone(resolved)), bag, properties) as Record<
+  const record = redactSecretsForState(structuredClone(resolved), bag, properties, TEMPLATE_DERIVED_RULES, true) as Record<
     string,
     unknown
   >;

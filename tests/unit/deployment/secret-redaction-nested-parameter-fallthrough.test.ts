@@ -24,10 +24,10 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   redactInheritedParameterValue,
-  redactSecretsForState,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
   positionByEmbeddedSpan,
   rendersLiteralTo,

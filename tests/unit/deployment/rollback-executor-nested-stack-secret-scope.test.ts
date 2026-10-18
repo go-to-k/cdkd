@@ -39,9 +39,9 @@ import {
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 import {
   inheritNestedStackParameterAssociations,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';

@@ -25,15 +25,15 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import {
   inheritNestedStackParameterAssociations,
-  markSameGenerationBag,
   MIN_NEEDLE_LENGTH,
   recordIntrinsicLeafResolution,
   recordNestedStackParameterExpressions,
   recordResolvedPair,
-  redactSecretsForState,
   type IntrinsicLeafResolution,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 /** The sub-floor secret every reference below resolves to. */
 const PIN = 'q7';
@@ -186,7 +186,7 @@ async function deployRow(
     Parameters: Record<string, unknown>;
   };
   recordNestedStackParameterExpressions(bag, NESTED, resolved, source);
-  const record = redactSecretsForState(markSameGenerationBag(structuredClone(resolved)), bag, source) as {
+  const record = redactSecretsForState(structuredClone(resolved), bag, source, TEMPLATE_DERIVED_RULES, true) as {
     Parameters: Record<string, unknown>;
   };
   return { bag, resolved, record };
@@ -202,7 +202,7 @@ async function childPersist(parentRowBag: RecordedSecretValues, name: string, va
     source,
     contextFor({ [name]: value }, bag, parentRowBag) as never
   )) as Record<string, unknown>;
-  const record = redactSecretsForState(markSameGenerationBag(structuredClone(resolved)), bag, source) as {
+  const record = redactSecretsForState(structuredClone(resolved), bag, source, TEMPLATE_DERIVED_RULES, true) as {
     Value: unknown;
   };
   return record.Value;

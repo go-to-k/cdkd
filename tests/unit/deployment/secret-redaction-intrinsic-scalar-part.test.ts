@@ -2,13 +2,13 @@ import { describe, expect, it, beforeEach, afterEach } from 'vite-plus/test';
 import {
   clearRecordedSecretExpressions,
   inheritedParameterExpression,
-  markSameGenerationBag,
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   recordSecretExpression,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * A NUMBER or BOOLEAN `Fn::Join` part is literal text to the three readers of
@@ -91,9 +91,9 @@ describe('a number or boolean Fn::Join part is literal text to the intrinsic par
         // literal leaf's own token only with that pair and otherwise leaves the
         // value scan's survivor.
         expect(
-          redactSecretsForState(markSameGenerationBag({ L: `x:${PLAINTEXT}` }), secrets, {
+          redactSecretsForState({ L: `x:${PLAINTEXT}` }, secrets, {
             L: `x:${tokenFor(own)}`,
-          })
+          }, TEMPLATE_DERIVED_RULES, true)
         ).toEqual({ L: `x:${tokenFor(survivor)}` });
 
         expect(persistedPassword(secrets, part)).toBe(tokenFor(own));
@@ -191,10 +191,10 @@ describe('a number or boolean Fn::Join part is literal text to the intrinsic par
         // frame arm can write the token.
         expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
 
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
         const source = { Dsn: { 'Fn::Join': ['', ['port', part, `:${TOKEN}`]] } };
 
-        expect(redactSecretsForState(bag, secrets, source)).toEqual({ Dsn: `port${text}:${TOKEN}` });
+        expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: `port${text}:${TOKEN}` });
       });
     }
 
@@ -208,9 +208,9 @@ describe('a number or boolean Fn::Join part is literal text to the intrinsic par
       it(`still refuses a frame whose part is ${label}, keeping the middle in plaintext`, () => {
         const secrets = resolvedAlone();
         const leaf = `port${text}:${PIN}`;
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
         const source = { Dsn: { 'Fn::Join': ['', ['port', part, `:${TOKEN}`]] } };
-        expect(redactSecretsForState(bag, secrets, source)).toEqual({ Dsn: leaf });
+        expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: leaf });
       });
     }
   });

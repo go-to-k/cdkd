@@ -29,9 +29,9 @@ import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   SECRET_MASK,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
   redactParametersForDiff,
   type MaskingDeps,

@@ -13,6 +13,7 @@ import {
   maskSecretsInText,
   hasMaskableValues,
   isSameGenerationBag,
+  type ScrubGenerationClaims,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { outputMapsEqual } from './deploy-value-equality.js';
@@ -1014,20 +1015,26 @@ export class DeployEngine {
       // not resolved this deploy there is none, and `scrubResourceRecord` falls
       // back to the record's own `properties` for the observed bag (#1900).
       const templateProps = this.secretsRun.perResourceTemplateProps.get(logicalId);
+      // Issue #1852: merged BEFORE the scrub, so a healed value enters the
+      // same pass a provider-recorded attribute does. That pass has no needles
+      // for an UNCHANGED record (nothing resolved for it this deploy), so what
+      // keeps a sensitive value out is the read itself: masked keys are
+      // dropped in `readRecordAttributes`, and custom resources / nested stacks
+      // are never read.
+      const healed = this.attributeHealer.withHealedAttributes(logicalId, record);
       const scrubbed = scrubResourceRecord(
-        // Issue #1852: merged BEFORE the scrub, so a healed value enters the
-        // same pass a provider-recorded attribute does. That pass has no needles
-        // for an UNCHANGED record (nothing resolved for it this deploy), so what
-        // keeps a sensitive value out is the read itself: masked keys are
-        // dropped in `readRecordAttributes`, and custom resources / nested stacks
-        // are never read.
-        this.attributeHealer.withHealedAttributes(logicalId, record),
+        healed,
         secrets ?? new Map<string, string>(),
         // No template bag means this resource was not resolved this deploy (an
         // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
         // own already-redacted properties as the observed bag's source, which is
         // the #1900 path — so do NOT "simplify" this to `templateProps!`.
-        templateProps
+        templateProps,
+        undefined,
+        // go-to-k/cdkd#5047: the walk reads no mark, so the claims the record's
+        // bags carry (`propertiesToRecord`, `drainObservedCaptures`) are stated
+        // here, off the very objects those producers installed.
+        sameGenerationClaimsOf(healed)
       );
       // go-to-k/cdkd#4451: the masked properties' template fingerprints, read
       // off the SCRUBBED bag (only it holds `***`), and rebuilt only for a
@@ -1128,7 +1135,9 @@ export class DeployEngine {
               (sameResource
                 ? this.secretsRun.perResourceSecrets.get(entry.logicalId)
                 : undefined) ?? new Map<string, string>(),
-              orphanTemplateProps
+              orphanTemplateProps,
+              undefined,
+              sameGenerationClaimsOf(entry.state)
             ),
             orphanTemplateProps,
             state.resources
@@ -1669,4 +1678,15 @@ export class DeployEngine {
   maskingRetryLoggerFor(secrets: RecordedSecretValues): RetryLogger {
     return maskingRetryLogger(this.logger, secrets);
   }
+}
+
+/**
+ * What the deploy engine's producer marks say about a record's two walked
+ * bags, as {@link scrubResourceRecord}'s explicit claims (go-to-k/cdkd#5047).
+ */
+function sameGenerationClaimsOf(record: ResourceState): ScrubGenerationClaims {
+  return {
+    properties: isSameGenerationBag(record.properties) ? 'same-generation' : 'unproven',
+    observed: isSameGenerationBag(record.observedProperties) ? 'same-generation' : 'unproven',
+  };
 }

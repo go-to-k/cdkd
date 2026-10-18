@@ -4,19 +4,21 @@ import {
   crossStackSourceKey,
   isRecordedSecretExpression,
   isSameGenerationBag,
-  markSameGenerationBag,
   MIN_NEEDLE_LENGTH,
   recordCrossStackExpression,
   recordResolvedPair,
   recordSecretExpression,
-  redactSecretsForState,
-  STATE_DERIVED_RULES,
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
-  type PathSourceRules,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  type PathSourceRules,
+  STATE_DERIVED_RULES,
+  TEMPLATE_DERIVED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * POSITION certification for a NESTED-STACK CHILD's `{Ref: <Param>}` source
@@ -610,7 +612,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     clearRecordedSecretExpressions();
   });
 
-  function recordUnder(rules?: PathSourceRules, paired = true): RecordedSecretValues {
+  function recordUnder(rules?: 'state-derived', paired = true): RecordedSecretValues {
     const parent: RecordedSecretValues = new Map([[SSM_SHARED, SSM_EXPR_B]]);
     // An unpinned `ssm` resolution still records its PAIR (only the verdict
     // pin is withheld) -- the production shape. `paired = false` is the bag
@@ -637,7 +639,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     // `trustAnyExpression` alone no longer changes what the recorder writes
     // for a resolved reference; the constants still differ on
     // `sourceIsSameGeneration`, fenced by the replay call sites' own file.
-    for (const rules of [undefined, STATE_DERIVED_RULES]) {
+    for (const rules of [undefined, 'state-derived' as const]) {
       const parent = recordUnder(rules);
       expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBe(SSM_EXPR_A);
       expect(inheritedParameterExpression(parent, PARAM_B, SSM_SHARED)).toBe(SSM_EXPR_B);
@@ -652,7 +654,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
     // which a public token is never in. Red without it under STATE rules;
     // the TEMPLATE arm refuses earlier (`isKnownSecretExpression`) and is
     // the scope control.
-    for (const rules of [undefined, STATE_DERIVED_RULES]) {
+    for (const rules of [undefined, 'state-derived' as const]) {
       const parent = recordUnder(rules, false);
       expect(inheritedParameterExpression(parent, PARAM_A, SSM_SHARED)).toBeUndefined();
       // The SURVIVOR's own parameter is refused too: it has no pair either.
@@ -679,7 +681,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
       'AWS::CloudFormation::Stack',
       { Parameters: { Env: 'prod', Pw: 'prod' } },
       { Parameters: { Env: PUBLIC, Pw: EXPR_A } },
-      STATE_DERIVED_RULES
+      'state-derived'
     );
     expect(inheritedParameterExpression(parent, 'Env', 'prod')).toBeUndefined();
     expect(inheritedParameterExpression(parent, 'Pw', 'prod')).toBe(EXPR_A);
@@ -698,7 +700,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
   it('the two constants AGREE on a secretsmanager reference, which is why the ssm form is the probe', () => {
     // Scope control: without this, the two cases above could be read as a
     // blanket difference rather than the narrow one they are.
-    const bySpelling = (rules?: PathSourceRules): string | unknown[] | undefined => {
+    const bySpelling = (rules?: 'state-derived'): string | unknown[] | undefined => {
       const parent = collapsedParentBag();
       recordNestedStackParameterExpressions(
         parent,
@@ -710,7 +712,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
       return inheritedParameterExpression(parent, PARAM_A, SHARED);
     };
     expect(bySpelling()).toBe(EXPR_A);
-    expect(bySpelling(STATE_DERIVED_RULES)).toBe(EXPR_A);
+    expect(bySpelling('state-derived')).toBe(EXPR_A);
   });
 });
 
@@ -914,9 +916,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     // The PARENT's own record of the row, positioned the way `propertiesToRecord`
     // positions it (a marked bag): each leaf keeps ITS OWN token.
     const parentRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       parent,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(parentRecord.Parameters['Pin1']).toBe(frame(PIN_TOKEN_B));
     expect(parentRecord.Parameters['Pin2']).toBe(frame(PIN_TOKEN_A));
@@ -964,9 +967,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     // and the value scan's whole-value arm writes the entry, which is the
     // leaf's own frame.
     const parentRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       parent,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(parentRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
     expect(parentRecord.Parameters['Pin2']).toBe(`url:${PIN_TOKEN_B}`);
@@ -1003,9 +1007,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(parent.get(`port:${PIN}`)).toBe(`port:${PIN_TOKEN_A}`);
     expect(parent.get(`url:${PIN}`)).toBe(`url:${PIN_TOKEN_B}`);
     const parentRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       parent,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(parentRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
     expect(parentRecord.Parameters['Pin2']).toBe(`port:${PIN_TOKEN_A}`);
@@ -1060,9 +1065,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     expect(parent.has(`port:${PIN}`)).toBe(false);
     expect(parent.size).toBe(2);
     const parentRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       parent,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(parentRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
     expect(parentRecord.Parameters['Pin2']).toBe(`port${COLON_TOKEN}`);
@@ -1080,9 +1086,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     recordNestedStackParameterExpressions(three, NESTED, threeResolved, threeSource);
     expect(three.has(`port:${PIN}`)).toBe(false);
     const threeRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(threeResolved)),
+      structuredClone(threeResolved),
       three,
       threeSource
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(threeRecord.Parameters['Pin1']).toBe(`port:${PIN_TOKEN_A}`);
     expect(threeRecord.Parameters['Pin2']).toBe(`port${COLON_TOKEN}`);
@@ -1121,9 +1128,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       recordNestedStackParameterExpressions(row, NESTED, rowResolved, rowSource);
       expect(row.has(`port:${PIN}`)).toBe(false);
       const rowRecord = redactSecretsForState(
-        markSameGenerationBag(structuredClone(rowResolved)),
+        structuredClone(rowResolved),
         row,
         rowSource
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(rowRecord.Parameters['One']).toBe(`port:${PIN_TOKEN_A}`);
       expect(rowRecord.Parameters['Two']).toBe(two.source);
@@ -1156,9 +1164,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       recordNestedStackParameterExpressions(bag, NESTED, shapeResolved, shapeSource);
       expect(bag.has(shape.value)).toBe(false);
       const shapeRecord = redactSecretsForState(
-        markSameGenerationBag(structuredClone(shapeResolved)),
+        structuredClone(shapeResolved),
         bag,
         shapeSource
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(shapeRecord.Parameters['Pin1']).toBe(shape.sources[0]);
       expect(shapeRecord.Parameters['Pin2']).toBe(shape.sources[1]);
@@ -1176,9 +1185,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     recordNestedStackParameterExpressions(withPublic, NESTED, publicResolved, publicSource);
     expect(withPublic.has(`port:${PIN}`)).toBe(false);
     const publicRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(publicResolved)),
+      structuredClone(publicResolved),
       withPublic,
       publicSource
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(publicRecord.Parameters['One']).toBe(`port:${PIN_TOKEN_A}`);
     expect(publicRecord.Parameters['Pub']).toBe(`port:${PIN}`);
@@ -1206,9 +1216,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     recordNestedStackParameterExpressions(equalUrl, NESTED, urlResolved, urlSource);
     expect(equalUrl.has(urlValue)).toBe(false);
     const urlRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(urlResolved)),
+      structuredClone(urlResolved),
       equalUrl,
       urlSource
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown>; TemplateURL: unknown };
     expect(urlRecord.Parameters['Tpl']).toBe(`https://bucket/${PIN_TOKEN_A}.json`);
     expect(urlRecord.TemplateURL).toBe(urlValue);
@@ -1304,9 +1315,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
     recordNestedStackParameterExpressions(contained, NESTED, containedResolved, containedSource);
     expect(contained.has(atFloor)).toBe(false);
     const containedRecord = redactSecretsForState(
-      markSameGenerationBag(structuredClone(containedResolved)),
+      structuredClone(containedResolved),
       contained,
       containedSource
+    , TEMPLATE_DERIVED_RULES, true
     ) as { Parameters: Record<string, unknown> };
     expect(containedRecord.Parameters['Other']).toBe(`x-${atFloor}-y`);
     const alone = parentResolved([PIN_TOKEN_A, 'z'.repeat(MIN_NEEDLE_LENGTH - 1)]);
@@ -1326,7 +1338,7 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       NESTED,
       { Parameters: { Pin: frame(PIN) } },
       { Parameters: { Pin: frame(PIN_TOKEN_A) } },
-      STATE_DERIVED_RULES
+      'state-derived'
     );
     expect(parent.get(frame(PIN))).toBe(frame(PIN_TOKEN_A));
   });
@@ -1346,7 +1358,7 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       NESTED,
       { Parameters: { Env: 'prod', Pin: frame(PIN) } },
       { Parameters: { Env: PUBLIC, Pin: frame(PIN_TOKEN_A) } },
-      STATE_DERIVED_RULES
+      'state-derived'
     );
     expect(parent.has('prod')).toBe(false);
     const child: RecordedSecretValues = new Map([['prod', EXPR_C]]);
@@ -1537,9 +1549,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         expect(redactSecretsForState(frame(PIN), parent)).toBe(frame(PIN));
         const resolved = { Parameters: { Pin: frame(PIN) } };
         const parentRecord = redactSecretsForState(
-          markSameGenerationBag(structuredClone(resolved)),
+          structuredClone(resolved),
           parent,
           { Parameters: { Pin: source } }
+        , TEMPLATE_DERIVED_RULES, true
         ) as { Parameters: Record<string, unknown> };
         expect(parentRecord.Parameters['Pin']).toBe(frame(token));
 
@@ -1595,9 +1608,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         // Premise, BEFORE the carry: each leaf is already positioned to its own
         // frame on the parent's record, so the entry is what the case decides.
         const before = redactSecretsForState(
-          markSameGenerationBag(structuredClone(resolved)),
+          structuredClone(resolved),
           parent,
           source
+        , TEMPLATE_DERIVED_RULES, true
         ) as { Parameters: Record<string, unknown> };
         expect(before.Parameters).toEqual({ Lit: frame(PIN_TOKEN_A), Obj: frame(TWIN_TOKEN) });
 
@@ -1607,9 +1621,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         expect(inheritedParameterExpression(parent, 'Lit', frame(PIN))).toBe(frame(PIN_TOKEN_A));
         expect(inheritedParameterExpression(parent, 'Obj', frame(PIN))).toBe(frame(TWIN_TOKEN));
         const parentRecord = redactSecretsForState(
-          markSameGenerationBag(structuredClone(resolved)),
+          structuredClone(resolved),
           parent,
           source
+        , TEMPLATE_DERIVED_RULES, true
         ) as { Parameters: Record<string, unknown> };
         expect(parentRecord.Parameters['Lit']).toBe(frame(PIN_TOKEN_A));
         expect(parentRecord.Parameters['Obj']).toBe(frame(TWIN_TOKEN));
@@ -1655,8 +1670,8 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         const parent = parentResolved([TWIN_TOKEN, PIN], [PIN_TOKEN_A, PIN]);
         recordSecretExpression(TWIN_TOKEN);
         expect(parent.get(PIN)).toBe(PIN_TOKEN_A);
-        const bag = markSameGenerationBag({ Pin: PIN });
-        expect(redactSecretsForState(bag, parent, { Pin: TWIN_WHOLE })).toEqual({ Pin: TWIN_TOKEN });
+        const bag = { Pin: PIN };
+        expect(redactSecretsForState(bag, parent, { Pin: TWIN_WHOLE }, TEMPLATE_DERIVED_RULES, true)).toEqual({ Pin: TWIN_TOKEN });
         const before = [...parent];
         recordNestedStackParameterExpressions(
           parent,
@@ -1672,8 +1687,8 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         const parent = parentResolved([TWIN_TOKEN, PIN], [L2_TOKEN, PIN]);
         recordCrossStackExpression(parent, crossStackSourceKey(IMPORT)!, TWIN_TOKEN, PIN);
         expect(parent.get(PIN)).toBe(L2_TOKEN);
-        const bag = markSameGenerationBag({ Pin: PIN });
-        expect(redactSecretsForState(bag, parent, { Pin: IMPORT })).toEqual({ Pin: TWIN_TOKEN });
+        const bag = { Pin: PIN };
+        expect(redactSecretsForState(bag, parent, { Pin: IMPORT }, TEMPLATE_DERIVED_RULES, true)).toEqual({ Pin: TWIN_TOKEN });
         const before = [...parent];
         recordNestedStackParameterExpressions(
           parent,
@@ -1687,10 +1702,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       it('the VALUE SCAN: a 4+ character needle interfering with the frame', () => {
         const WORD_TOKEN = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:word::}}`;
         const parent = parentResolved([L2_TOKEN, PIN], [WORD_TOKEN, 'port']);
-        const bag = markSameGenerationBag({ Pin: frame(PIN) });
+        const bag = { Pin: frame(PIN) };
         // Premise: the scan rewrote the `port` needle, so the frame arm's bound
         // refused and the leaf holds the scan's answer, not the plaintext.
-        expect((redactSecretsForState(bag, parent, { Pin: L2_JOIN }) as Record<string, unknown>)['Pin']).toBe(
+        expect((redactSecretsForState(bag, parent, { Pin: L2_JOIN }, TEMPLATE_DERIVED_RULES, true) as Record<string, unknown>)['Pin']).toBe(
           `${WORD_TOKEN}:${PIN}`
         );
         const before = [...parent];
@@ -1721,9 +1736,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       const resolved = { Parameters: { Pub: frame(PIN) } };
       const source = { Parameters: { Pub: PUB_JOIN } };
       const parentRecord = redactSecretsForState(
-        markSameGenerationBag(structuredClone(resolved)),
+        structuredClone(resolved),
         parent,
         source
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(parentRecord.Parameters['Pub']).toBe(frame(DEV));
       const before = [...parent];
@@ -1744,17 +1760,19 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       // Premise: the object leaf IS positioned (so it would pass (i)), and the
       // plain literal is not -- only (iv) can refuse the entry.
       const before = redactSecretsForState(
-        markSameGenerationBag(structuredClone(resolved)),
+        structuredClone(resolved),
         parent,
         source
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(before.Parameters).toEqual({ Obj: frame(L2_TOKEN), Lit: frame(PIN) });
       recordNestedStackParameterExpressions(parent, NESTED, resolved, source);
       expect(parent.has(frame(PIN))).toBe(false);
       const parentRecord = redactSecretsForState(
-        markSameGenerationBag(structuredClone(resolved)),
+        structuredClone(resolved),
         parent,
         source
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(parentRecord.Parameters['Lit']).toBe(frame(PIN));
     });
@@ -1764,9 +1782,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       // Premise for both rows: the object leaf is positioned, so only (v) can
       // refuse the entry.
       const positionedList = redactSecretsForState(
-        markSameGenerationBag({ Parameters: { Obj: frame(PIN), Public: [frame(PIN)] } }),
+        { Parameters: { Obj: frame(PIN), Public: [frame(PIN)] } },
         withList,
         { Parameters: { Obj: L2_JOIN, Public: [frame(PIN)] } }
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(positionedList.Parameters['Obj']).toBe(frame(L2_TOKEN));
       recordNestedStackParameterExpressions(
@@ -1778,9 +1797,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       expect(withList.has(frame(PIN))).toBe(false);
       const withUrl = parentResolved([L2_TOKEN, PIN]);
       const positionedUrl = redactSecretsForState(
-        markSameGenerationBag({ Parameters: { Obj: frame(PIN) }, TemplateURL: frame(PIN) }),
+        { Parameters: { Obj: frame(PIN) }, TemplateURL: frame(PIN) },
         withUrl,
         { Parameters: { Obj: L2_JOIN }, TemplateURL: frame(PIN) }
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(positionedUrl.Parameters['Obj']).toBe(frame(L2_TOKEN));
       recordNestedStackParameterExpressions(
@@ -1811,7 +1831,7 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         NESTED,
         { Parameters: { Pin: frame(PIN) } },
         { Parameters: { Pin: L2_JOIN } },
-        STATE_DERIVED_RULES
+        'state-derived'
       );
       expect(parent.get(frame(PIN))).toBe(frame(L2_TOKEN));
     });
@@ -1841,9 +1861,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
         const resolved = { Parameters: { Pub: frame(PIN) } };
         const sources = { Parameters: { Pub: source } };
         const parentRecord = redactSecretsForState(
-          markSameGenerationBag(structuredClone(resolved)),
+          structuredClone(resolved),
           parent,
           sources
+        , TEMPLATE_DERIVED_RULES, true
         ) as { Parameters: Record<string, unknown> };
         expect(parentRecord.Parameters['Pub']).toBe(frame(PIN_TOKEN_A));
         const before = [...parent];
@@ -1861,9 +1882,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       const parent = parentResolved([SECURE, PIN]);
       // Premise: the frame arm positions the leaf, so the carry is what decides.
       const parentRecord = redactSecretsForState(
-        markSameGenerationBag({ Parameters: { Pin: frame(PIN) } }),
+        { Parameters: { Pin: frame(PIN) } },
         parent,
         { Parameters: { Pin: SECURE_JOIN } }
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(parentRecord.Parameters['Pin']).toBe(frame(SECURE));
       recordNestedStackParameterExpressions(
@@ -1886,9 +1908,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       // Premise: both leaves share the `port:` frame on the parent's record, so
       // (iv) would see one frame if the refused leaf counted as framed.
       const before = redactSecretsForState(
-        markSameGenerationBag({ Parameters: { Pub: frame(PIN), Lit: frame(PIN) } }),
+        { Parameters: { Pub: frame(PIN), Lit: frame(PIN) } },
         parent,
         { Parameters: { Pub: PUB_JOIN, Lit: frame(PIN_TOKEN_A) } }
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(before.Parameters).toEqual({ Pub: frame(DEV), Lit: frame(PIN_TOKEN_A) });
       recordNestedStackParameterExpressions(
@@ -1913,9 +1936,10 @@ describe('recordNestedStackParameterExpressions — the SUB-FLOOR CARRY (#2745)'
       const source = { Parameters: { Name: { 'Fn::Join': ['', [{ Ref: 'Prefix' }, 'word']] } } };
       // Premise: the pass DID rewrite the leaf, and to the recorded token.
       const positioned = redactSecretsForState(
-        markSameGenerationBag(structuredClone(resolved)),
+        structuredClone(resolved),
         parent,
         source
+      , TEMPLATE_DERIVED_RULES, true
       ) as { Parameters: Record<string, unknown> };
       expect(positioned.Parameters['Name']).toBe(WORD_TOKEN);
       const before = [...parent];

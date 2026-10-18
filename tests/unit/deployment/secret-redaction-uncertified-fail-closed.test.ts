@@ -36,16 +36,17 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
-  markSameGenerationBag,
   clearRecordedSecretExpressions,
+  SECRET_MASK,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   TEMPLATE_SOURCED_RULES,
-  SECRET_MASK,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 const EXPR_2 = '{{resolve:secretsmanager:app/other:SecretString:password}}';
@@ -60,6 +61,13 @@ const readback = (bag: unknown, source: unknown): Record<string, unknown> =>
     source,
     STATE_SOURCED_BASELINE_RULES
   ) as Record<string, unknown>;
+
+/**
+ * The claim the deploy persist choke point states for a readback
+ * `drainObservedCaptures` installed (go-to-k/cdkd#5047): its mark, as
+ * `scrubResourceRecord`'s explicit `claims.observed`.
+ */
+const FRESH = { observed: 'same-generation' } as const;
 
 describe('secret-redaction - the readback walk fails closed (issue #2852)', () => {
   beforeEach(() => clearRecordedSecretExpressions());
@@ -586,9 +594,12 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     const scrubbed = scrubResourceRecord(
       {
         properties: { Url: { 'Fn::Join': ['', ['postgres://u:', EXPR, '@h']] } },
-        observedProperties: markSameGenerationBag({ Url: `postgres://u:${PLAINTEXT}@h` }),
+        observedProperties: { Url: `postgres://u:${PLAINTEXT}@h` },
       },
-      new Map<string, string>()
+      new Map<string, string>(),
+      undefined,
+      undefined,
+      FRESH
     );
 
     expect(scrubbed.observedProperties).toEqual({ Url: SECRET_MASK });
@@ -623,7 +634,7 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     expect(JSON.stringify(scrubbed)).not.toContain(SECRET_MASK);
   });
 
-  it('the mark is the ONLY difference between the two verdicts', () => {
+  it('the claim is the ONLY difference between the two verdicts', () => {
     // The pair above differ in the bag's provenance and in nothing else, but
     // they also differ in SHAPE, so neither alone shows the mark is what
     // decides. Same record, same map, same source — one bag marked, one not.
@@ -639,8 +650,11 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     });
 
     const fresh = scrubResourceRecord(
-      record(markSameGenerationBag(bag())),
-      new Map<string, string>()
+      record(bag()),
+      new Map<string, string>(),
+      undefined,
+      undefined,
+      FRESH
     );
     expect(fresh.observedProperties).toEqual({ I: [SECRET_MASK, SECRET_MASK] });
 
@@ -676,13 +690,25 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     // unmarked pair would have shown the MARK deciding rather than the map.
     const record = {
       properties: { I: [EXPR, 'us-east-1'] },
-      observedProperties: markSameGenerationBag({ I: [PLAINTEXT, 'US-EAST-1'] }),
+      observedProperties: { I: [PLAINTEXT, 'US-EAST-1'] },
     };
 
-    const withMap = scrubResourceRecord(record, new Map([[PLAINTEXT_2, EXPR_2]]));
+    const withMap = scrubResourceRecord(
+      record,
+      new Map([[PLAINTEXT_2, EXPR_2]]),
+      undefined,
+      undefined,
+      FRESH
+    );
     expect(withMap.observedProperties).toEqual({ I: [PLAINTEXT, 'US-EAST-1'] });
 
-    const withoutMap = scrubResourceRecord(record, new Map<string, string>());
+    const withoutMap = scrubResourceRecord(
+      record,
+      new Map<string, string>(),
+      undefined,
+      undefined,
+      FRESH
+    );
     expect(withoutMap.observedProperties).toEqual({ I: [SECRET_MASK, SECRET_MASK] });
   });
 
@@ -698,9 +724,12 @@ describe('secret-redaction - fail-closed through scrubResourceRecord', () => {
     const scrubbed = scrubResourceRecord(
       {
         properties: { Config: { Password: EXPR } },
-        observedProperties: markSameGenerationBag({ Config: [{ Secret: PLAINTEXT }] }),
+        observedProperties: { Config: [{ Secret: PLAINTEXT }] },
       },
-      new Map<string, string>()
+      new Map<string, string>(),
+      undefined,
+      undefined,
+      FRESH
     );
 
     expect(scrubbed.observedProperties).toEqual({ Config: [{ Secret: SECRET_MASK }] });

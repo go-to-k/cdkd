@@ -30,9 +30,9 @@ import type { ResolverContext } from '../../../src/deployment/intrinsic-function
 import {
   recordNestedStackParameterExpressions,
   recordResolvedPair,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 // No real AWS client: the create-only DescribeType prefetch reads the
 // process-global client factory (see _inert-cloudformation-client.ts).

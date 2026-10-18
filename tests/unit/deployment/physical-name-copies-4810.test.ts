@@ -11,10 +11,10 @@ import {
   embeddedPhysicalNameRewrites,
   repairEmbeddedPhysicalNamesTowards,
   recordPhysicalNameCopy,
-  redactSecretsForState,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const NAME = 'sdin-q-1';

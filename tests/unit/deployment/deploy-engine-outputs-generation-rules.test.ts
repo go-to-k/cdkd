@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   recordResolvedPair,
-  redactSecretsForState,
-  TEMPLATE_DERIVED_RULES,
-  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  TEMPLATE_DERIVED_RULES,
+  TEMPLATE_SOURCED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 

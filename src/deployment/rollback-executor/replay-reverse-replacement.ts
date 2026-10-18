@@ -21,7 +21,6 @@ import {
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
-  STATE_DERIVED_RULES,
 } from '../secret-redaction.js';
 import {
   isNameCollisionErrorFrom,
@@ -261,7 +260,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     oldType,
     resolvedPrevProps,
     prev.properties,
-    STATE_DERIVED_RULES
+    'state-derived'
   );
   // go-to-k/cdkd#4690: the forward deleted the old resource BEFORE creating
   // the new one, so the reversal deletes the new one first. Re-creating
