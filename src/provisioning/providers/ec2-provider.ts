@@ -307,16 +307,20 @@ function routeTargetParams(properties: Record<string, unknown>) {
  * CloudFormation schema; the entry's identity (`NetworkAclId`, `RuleNumber`,
  * `Egress`) is createOnly and set by each caller.
  */
-function networkAclEntryRuleParams(properties: Record<string, unknown>) {
+function networkAclEntryRuleParams(properties: Record<string, unknown>, preferLegacyIcmp = false) {
   const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
   // CFn schema spells this property `Icmp`; the AWS API takes the same shape
   // under the key `IcmpTypeCode`. Accept both: CFn-canonical (template authors
   // / CDK L1) prefers `Icmp`; legacy state files written by pre-#613-fix cdkd
   // carry `IcmpTypeCode`, so fall back to it for backward compat (e.g. a
   // re-deploy after a binary upgrade where state.properties has the legacy key).
-  const icmpTypeCode = (properties['Icmp'] ?? properties['IcmpTypeCode']) as
-    | Record<string, unknown>
-    | undefined;
+  // `preferLegacyIcmp`: the caller saw only `IcmpTypeCode` change while both
+  // keys are present (see `updateNetworkAclEntry`).
+  const icmpTypeCode = (
+    preferLegacyIcmp
+      ? properties['IcmpTypeCode']
+      : (properties['Icmp'] ?? properties['IcmpTypeCode'])
+  ) as Record<string, unknown> | undefined;
   return {
     Protocol: String(properties['Protocol']),
     RuleAction: properties['RuleAction'] as 'allow' | 'deny',
@@ -7386,10 +7390,17 @@ export class EC2Provider implements ResourceProvider {
     const ruleNumber = properties['RuleNumber'];
     const egress = properties['Egress'] ?? false;
     const parts = physicalId.split('|');
+    if (parts.length !== 3) {
+      throw new ProvisioningError(
+        compositeIdFormatMessage(EC2_NETWORK_ACL_ENTRY_ID_FORMAT, logicalId, physicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
     if (
       typeof networkAclId !== 'string' ||
       ruleNumber === undefined ||
-      parts.length !== 3 ||
       parts[0] !== networkAclId ||
       parts[1] !== String(ruleNumber) ||
       parts[2] !== String(egress)
@@ -7401,7 +7412,7 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
-    if (properties['Protocol'] === undefined || !properties['RuleAction']) {
+    if (properties['Protocol'] == null || !properties['RuleAction']) {
       throw new ProvisioningError(
         `Protocol and RuleAction are required for NetworkAclEntry ${logicalId}`,
         resourceType,
@@ -7410,13 +7421,25 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // `networkAclEntryRuleParams` prefers `Icmp` over the legacy
+    // `IcmpTypeCode`. A `drift --revert` bag carries both (the readback emits
+    // both names) but overlays only the key the state record holds, so for a
+    // pre-#613 record the recorded ICMP is in `IcmpTypeCode` while `Icmp`
+    // still holds the drifted AWS value: send the key that changed.
+    const preferLegacyIcmp =
+      properties['Icmp'] !== undefined &&
+      properties['IcmpTypeCode'] !== undefined &&
+      JSON.stringify(properties['Icmp']) === JSON.stringify(previousProperties['Icmp']) &&
+      JSON.stringify(properties['IcmpTypeCode']) !==
+        JSON.stringify(previousProperties['IcmpTypeCode']);
+
     try {
       await this.ec2Client.send(
         new ReplaceNetworkAclEntryCommand({
           NetworkAclId: networkAclId,
           RuleNumber: parseInt(parts[1]!, 10),
           Egress: parts[2] === 'true',
-          ...networkAclEntryRuleParams(properties),
+          ...networkAclEntryRuleParams(properties, preferLegacyIcmp),
         })
       );
       this.logger.debug(safeMsg`Successfully replaced NetworkAclEntry ${logicalId} in place`);

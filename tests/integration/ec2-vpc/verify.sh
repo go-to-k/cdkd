@@ -75,8 +75,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   # Phase 2's SDK call log, left behind when a run fails before it is read.
-  if [ -n "${P2_CALLS:-}" ]; then
-    rm -f "${P2_CALLS}"
+  if [ -n "${P2_CALLS_DIR:-}" ]; then
+    rm -f "${P2_CALLS_DIR}/calls.jsonl"
+    rmdir "${P2_CALLS_DIR}" 2>/dev/null
   fi
   set -eu
 }
@@ -174,10 +175,10 @@ echo "    OK: baseline NACL entry ${ENTRY_ID} allows 0.0.0.0/0"
 
 # --- Phase 2: REMOVAL drops both DNS attributes (issue #1160) ---------
 echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs; change the NACL entry)"
-P2_CALLS="$(mktemp -t cdkd-ec2-vpc-p2-calls.XXXXXX)"
-# cdkd APPENDS one line at exit: start from no file, so its existence below
-# proves the log took effect.
-rm -f "${P2_CALLS}"
+# A private directory, so nothing can pre-place the path cdkd appends to; the
+# file starts absent, so its existence below proves the log took effect.
+P2_CALLS_DIR="$(mktemp -d -t cdkd-ec2-vpc-p2-calls.XXXXXX)"
+P2_CALLS="${P2_CALLS_DIR}/calls.jsonl"
 CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -219,6 +220,7 @@ if [ "${P2_REPLACE}" != "1" ] || [ "${P2_DELETE}" != "0" ] || [ "${P2_CREATE}" !
   exit 1
 fi
 rm -f "${P2_CALLS}"
+rmdir "${P2_CALLS_DIR}"
 
 P2_ENTRY_ID=$(nacl_entry_id)
 if [ "${P2_ENTRY_ID}" != "${ENTRY_ID}" ]; then

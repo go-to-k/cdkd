@@ -243,6 +243,44 @@ describe('EC2Provider AWS::EC2::NetworkAclEntry rule change uses ReplaceNetworkA
       expect(result).toEqual({ physicalId: ID, wasReplaced: false });
     });
 
+    it('drift --revert of a legacy IcmpTypeCode record sends the recorded ICMP, not the drifted Icmp', async () => {
+      // A pre-#613 state record holds only `IcmpTypeCode`, so the revert
+      // overlays that key alone; `Icmp` keeps the drifted AWS value.
+      const readback = {
+        NetworkAclId: 'acl-1',
+        RuleNumber: 100,
+        Egress: false,
+        Protocol: 1,
+        RuleAction: 'allow',
+        CidrBlock: '0.0.0.0/0',
+        Icmp: { Type: 0, Code: -1 },
+        IcmpTypeCode: { Type: 0, Code: -1 },
+      };
+      await provider.update(
+        'Entry',
+        ID,
+        TYPE,
+        { ...readback, IcmpTypeCode: { Type: 8, Code: -1 } },
+        readback,
+        { desiredFromAwsReadback: true }
+      );
+
+      expect(replaceInputs()[0]?.['IcmpTypeCode']).toEqual({ Type: 8, Code: -1 });
+    });
+
+    it('a template Icmp change wins when only Icmp changed', async () => {
+      const both = {
+        ...ENTRY,
+        Protocol: 1,
+        PortRange: undefined,
+        Icmp: { Type: 0, Code: -1 },
+        IcmpTypeCode: { Type: 0, Code: -1 },
+      };
+      await provider.update('Entry', ID, TYPE, { ...both, Icmp: { Type: 3, Code: 4 } }, both);
+
+      expect(replaceInputs()[0]?.['IcmpTypeCode']).toEqual({ Type: 3, Code: 4 });
+    });
+
     it('a refused ReplaceNetworkAclEntry fails the update with the entry untouched', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('The network ACL entry identified by 100 does not exist'), {
@@ -283,7 +321,6 @@ describe('EC2Provider AWS::EC2::NetworkAclEntry rule change uses ReplaceNetworkA
       ['another NetworkAclId', { ...ENTRY, NetworkAclId: 'acl-2', RuleAction: 'deny' }, ID],
       ['another RuleNumber', { ...ENTRY, RuleNumber: 200, RuleAction: 'deny' }, ID],
       ['another Egress', { ...ENTRY, Egress: true, RuleAction: 'deny' }, ID],
-      ['a malformed physical id', { ...ENTRY, RuleAction: 'deny' }, 'acl-1|100'],
     ])('%s', async (_label, props, physicalId) => {
       const error = await provider
         .update('Entry', physicalId, TYPE, props, ENTRY)
@@ -293,6 +330,26 @@ describe('EC2Provider AWS::EC2::NetworkAclEntry rule change uses ReplaceNetworkA
       expect((error as Error).message).toContain('cdkd deploy --replace');
       expect(mockSend).not.toHaveBeenCalled();
     });
+  });
+
+  it('a malformed physical id is refused with the id format, before any AWS call', async () => {
+    const error = await provider
+      .update('Entry', 'acl-1|100', TYPE, { ...ENTRY, RuleAction: 'deny' }, ENTRY)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(error).not.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((error as Error).message).toContain('Invalid physicalId format for NetworkAclEntry');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('a null Protocol is refused before any AWS call', async () => {
+    const error = await provider
+      .update('Entry', ID, TYPE, { ...ENTRY, Protocol: null, RuleAction: 'deny' }, ENTRY)
+      .catch((e: unknown) => e);
+
+    expect((error as Error).message).toContain('Protocol and RuleAction are required');
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('an unchanged bag still sends nothing', async () => {
