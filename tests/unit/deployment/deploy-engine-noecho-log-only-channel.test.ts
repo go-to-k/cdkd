@@ -269,9 +269,10 @@ describe('DeployEngine - the side set crosses its copies (go-to-k/cdkd#1998)', (
   });
 
   it('carries the Export.Name pass needles into the bag the failure is masked with', async () => {
-    // The name resolves through its own ForwardingSecrets map, which writes
-    // ENTRIES through but not the instance-keyed side set. A name resolution
-    // that fails AFTER recording the value must still have it masked.
+    // The name resolves through its own recording scope (go-to-k/cdkd#5048),
+    // whose entries and log-only side set are the pass map's. A name
+    // resolution that fails AFTER recording the value must still have it
+    // masked.
     const props = { Name: '/app/param', Type: 'String', Value: 'plain' };
     const h = harness(props);
     const outputs = {

@@ -66,6 +66,15 @@ export {
   isSameGenerationBag,
 } from './secret-redaction/pairs.js';
 export {
+  type RecordingKind,
+  type RecordingPolicy,
+  type LiveScopePolicy,
+  type RecordingScope,
+  openRecordingScope,
+  foldRecording,
+  recordSecretResolution,
+} from './secret-redaction/recording.js';
+export {
   recordSecretExpression,
   forgetSecretExpression,
   isRecordedSecretExpression,

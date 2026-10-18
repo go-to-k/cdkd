@@ -812,8 +812,9 @@ function writeFramedTokenWithinScanBound(
   const survivor = secrets.get(middle);
   // A type-narrowing formality, not a reachable refusal: the caller's pair
   // check already implies an entry for `middle` — both resolver seams `set`
-  // the entry beside `recordResolvedPair`, the one `mergeResolvedPairs` caller
-  // copies the entries first, and nothing deletes from a `RecordedSecretValues`
+  // the entry beside its pair (`recordSecretResolution`), every carry of the
+  // pairs (`mergeResolvedPairs`, `foldRecording`) copies or holds the entries
+  // first, and nothing deletes from a `RecordedSecretValues`
   // map. Kept in the fail-closed shape rather than as a non-null assertion.
   if (survivor === undefined) return scanned;
   if (scanned === prefix + survivor + suffix) return prefix + token + suffix;

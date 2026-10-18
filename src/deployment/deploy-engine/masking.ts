@@ -29,7 +29,8 @@ import {
   literalSplitDelimitersOf,
   maskSecretsInError,
   maskSecretsInText,
-  mergeResolvedPairs,
+  foldRecording,
+  type RecordingPolicy,
   recordLogOnlyParameterValue,
   recordLogOnlyValue,
   recordNoEchoAttributeValues,
@@ -37,8 +38,6 @@ import {
   redactInheritedParameterValue,
   redactForState,
   unionOfSecretBags,
-  physicalNameCopiesOf,
-  recordPhysicalNameCopy,
   recordedNoEchoValuesOf,
 } from '../secret-redaction.js';
 import {
@@ -423,18 +422,42 @@ export function rememberRecoverableMaskedOutputs(
 export function absorbOutputsPassSecrets(deps: MaskingDeps): void {
   const outputsRun = deps.outputsRun();
   for (const passSecrets of outputsRun.outputsPassSecretMaps) {
-    for (const [value, expr] of passSecrets) {
-      outputsRun.outputSecrets.set(value, expr);
-    }
-    mergeResolvedPairs(passSecrets, outputsRun.outputSecrets);
-    // go-to-k/cdkd#4849: the physical ids the pass read stay copies of an id
-    // in the outputs bag too (an `!Ref Topic` output, its export), or a
-    // resource NAMED from a `NoEcho` value stores its ARN output as `***`.
-    for (const physicalId of physicalNameCopiesOf.get(passSecrets) ?? []) {
-      recordPhysicalNameCopy(outputsRun.outputSecrets, physicalId);
-    }
+    foldRecording(passSecrets, outputsRun.outputSecrets, OUTPUTS_PASS_FOLD);
   }
 }
+
+/**
+ * What {@link absorbOutputsPassSecrets} folds from each outputs-pass map into
+ * the outputs bag, every recording kind named (go-to-k/cdkd#5048).
+ *
+ * - `pairs`, `mask-only-marks`: the evidence the outputs bag's persist walk
+ *   positions and masks with (issue #2485, #2453).
+ * - `reference-provenance` (state schema v12): carried as `mergeResolvedPairs`
+ *   carried it before #5048. Nothing reads it off this bag today: an output's
+ *   persisted provenance comes from its own per-output sink
+ *   (`reference-provenance-record.ts`).
+ * - `physical-name-copies` (go-to-k/cdkd#4849): the physical ids the pass read
+ *   stay copies of an id in the outputs bag too (an `!Ref Topic` output, its
+ *   export), or a resource NAMED from a `NoEcho` value stores its ARN output
+ *   as `***`.
+ * - `log-only` is withheld: the outputs bag is read only to PERSIST (this
+ *   module's outputs redaction, the cross-stack key normalizer, the
+ *   all-secrets union, which copies entries), and every line of the outputs
+ *   pass masks with the pass map itself.
+ * - `public-proofs` is withheld, as before #5048: carried, they would change
+ *   which mixed leaves the outputs walk keeps (`provenPublicValue`), a
+ *   behavior change this fold does not make.
+ *
+ * Exported for its test (`secret-redaction-recording-5048.test.ts`).
+ */
+export const OUTPUTS_PASS_FOLD: RecordingPolicy = {
+  pairs: 'carry',
+  'log-only': 'withhold',
+  'mask-only-marks': 'carry',
+  'reference-provenance': 'carry',
+  'physical-name-copies': 'carry',
+  'public-proofs': 'withhold',
+};
 
 /**
  * Redact the outputs bag. NOT a pure transform: it folds the outputs pass

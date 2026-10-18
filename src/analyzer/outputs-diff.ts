@@ -1006,7 +1006,7 @@ export async function resolveTemplateOutputs(
   // resolved before any alias is decided (go-to-k/cdkd#4043, Phase B). Each
   // name resolves into a bag of its OWN sharing the pass's log-only set, with
   // its entries forwarded into the pass bag once it resolves -- the deploy's
-  // `nameSecrets` (a `ForwardingSecrets` sharing the pass map's set) -- so an
+  // `nameSecrets` (a live recording scope, `openRecordingScope`) -- so an
   // `Fn::Base64` in a name records its encoding exactly as the deploy's does.
   const resolvedNames: Array<{
     outputKey: string;

@@ -27,8 +27,9 @@ import {
   markSameGenerationBag,
   maskSecretsInError,
   maskSecretsInText,
-  shareLogOnlyValues,
+  openRecordingScope,
   unionOfSecretBags,
+  type LiveScopePolicy,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
 import { safeStringify } from '../../utils/aws-failure-text.js';
@@ -167,48 +168,48 @@ export class OutputsRunState {
 }
 
 /**
- * A secrets map that keeps its OWN entries and also writes each one through
- * to `target` the moment it is recorded (issue
- * [#2814](https://github.com/go-to-k/cdkd/issues/2814)).
+ * What an export NAME's own recording map hands its pass (issue
+ * [#2814](https://github.com/go-to-k/cdkd/issues/2814), go-to-k/cdkd#5048).
+ * The name resolves through a LIVE scope (`openRecordingScope`): its own
+ * entries are what `exportNameSecretExposure` reads as "substituted into THIS
+ * name", which must stay exact -- a view of the whole pass map (`cdkd scrub`'s
+ * `SharedEntriesSecrets`) would report every secret the pass has recorded as
+ * one the name holds, and refuse every alias -- while every entry and log-only
+ * needle it records is the pass map's the moment it is recorded, a late record
+ * (a part the drain cap stopped waiting for) or one on a throwing path
+ * included. When this was a local copied into the pass map in a `finally`,
+ * such a record reached nothing.
  *
- * The outputs pass resolves each intrinsic `Export.Name` through one of these.
- * Its own entries are what `exportNameSecretExposure` reads as "substituted
- * into THIS name", which must stay exact -- a view of the whole pass map
- * (`cdkd scrub`'s `SharedEntriesSecrets`) would report every secret the pass
- * has recorded as one the name holds, and refuse every alias. The write-through
- * is what a copy could not give: a part the drain cap stopped waiting for
- * records AFTER the name's block has ended, and when this was a local copied
- * into the pass map in a `finally`, such a record reached nothing.
+ * Withheld, as before #5048 (the pass keeps only what the scope's entries
+ * write through):
  *
- * Only `set` writes through: it is the one operation the resolver performs on
- * a recording map (grepped -- no resolver path calls `delete` or `clear` on
- * one). `cdkd scrub`'s `SharedEntriesSecrets` overrides those too, and the
- * asymmetry is deliberate: that one is a VIEW holding no entries of its own,
- * while a `delete` here would leave the pass map carrying an entry this map
- * dropped -- one needle too many, which over-redacts rather than leaks.
- * The ENTRIES only, never the resolved pairs beside them
- * (issue #2485): those are keyed by map INSTANCE (`recordResolvedPair`), so
- * they stay on this one. A name never positions a leaf, and a value re-using
- * the same token records its own pair at the seam, so carrying them could add
- * nothing -- what it COULD do is mark a pair conflicting (an `ssm` reference
- * whose `Type` came back unclassifiable is never cached, so a name resolving
- * it re-asks AWS and can see a value that moved since the value pass) and
- * destroy the positioning the value pass had earned.
+ * - `pairs` (issue #2485): a name never positions a leaf, and a value
+ *   re-using the same token records its own pair at the seam, so carrying
+ *   them could add nothing -- what it COULD do is mark a pair conflicting (an
+ *   `ssm` reference whose `Type` came back unclassifiable is never cached, so
+ *   a name resolving it re-asks AWS and can see a value that moved since the
+ *   value pass) and destroy the positioning the value pass had earned.
+ * - `mask-only-marks`: they classify the values a pass persists or sends
+ *   (containment flattening, the fresh-`NoEcho` skip), and a name persists
+ *   no value; a value embedding the same needle records its own marks.
+ * - `reference-provenance`: state schema v12 persists it for the references a
+ *   value holds, and a name's reference is held by no value.
+ * - `physical-name-copies`: they NARROW the persist scan (a match inside a
+ *   read physical id is kept), so only a pass that read the id for the bag
+ *   it persists may carry them.
+ * - `public-proofs`: they let a persist walk keep a public token's resolved
+ *   value; a name's lookup proves nothing about a value's.
+ *
+ * Exported for its test (`secret-redaction-recording-5048.test.ts`).
  */
-class ForwardingSecrets extends Map<string, string> {
-  private readonly target: RecordedSecretValues | undefined;
-
-  constructor(target: RecordedSecretValues | undefined) {
-    super();
-    this.target = target;
-  }
-
-  override set(plaintext: string, expression: string): this {
-    super.set(plaintext, expression);
-    this.target?.set(plaintext, expression);
-    return this;
-  }
-}
+export const EXPORT_NAME_SCOPE: LiveScopePolicy = {
+  pairs: 'withhold',
+  'log-only': 'carry',
+  'mask-only-marks': 'withhold',
+  'reference-provenance': 'withhold',
+  'physical-name-copies': 'withhold',
+  'public-proofs': 'withhold',
+};
 
 /**
  * What a failed Output resolution does, shared by both passes of
@@ -704,22 +705,22 @@ export async function resolveOutputs(
       // part that outlived a full cap: an earlier failing output can leave
       // this drain with no wait at all. This map used to be a per-iteration
       // local copied into the pass map in a `finally`, so such a record was
-      // DROPPED. A `ForwardingSecrets` keeps its own entries (the exact set
-      // `exportNameSecretExposure` reads) and writes each through to the
-      // pass map when the resolver records it, late or not -- including a
+      // DROPPED. A live recording scope (`EXPORT_NAME_SCOPE`) keeps its own
+      // entries (the exact set `exportNameSecretExposure` reads) and writes
+      // each through to the pass map when the resolver records it, late or
+      // not -- including a
       // plaintext recorded just before this resolution throws, which the
       // failure's own message below masks against. `cdkd scrub`'s sibling
       // loop resolves the name through a VIEW of its pass map instead
       // (issue #2531); a view holds no entries of its own, which is why it
       // does not fit here.
-      const nameSecrets: RecordedSecretValues = new ForwardingSecrets(context.recordedSecretValues);
-      // The LOG-ONLY needles (go-to-k/cdkd#1998) are keyed by the map
-      // INSTANCE and do not write through with the entries, so the name map
-      // SHARES the pass map's set: a record at any time, a late one or one on
-      // a throwing path included, is visible to every print of this pass.
-      if (context.recordedSecretValues) {
-        shareLogOnlyValues(nameSecrets, context.recordedSecretValues);
-      }
+      // The LOG-ONLY needles (go-to-k/cdkd#1998) are the scope's pass's too, so
+      // a record at any time is visible to every print of this pass. With no
+      // pass map (never taken: `buildResolverContext` always sets one), the
+      // name records into a map of its own.
+      const nameSecrets: RecordedSecretValues = context.recordedSecretValues
+        ? openRecordingScope(context.recordedSecretValues, EXPORT_NAME_SCOPE).secrets
+        : new Map<string, string>();
       // The alias NAME can carry the same masked `Ref` the value can — an
       // `Fn::Sub` over one is ordinary. Guarded for the same reason as the
       // value: an export whose NAME is built from a raw physical id binds

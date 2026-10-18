@@ -85,14 +85,14 @@ export function recordResolvedPair(
 }
 
 /**
- * Carry the resolved pairs of `from` into `to`, for the one copy of a
- * resolver-populated map that POSITIONS anything: the deploy engine accumulates
- * each stack's output resolution into its `outputSecrets` bag entry by entry,
- * and without this the copy would keep the collapsed entries while dropping the
- * evidence — so a literal `Output` embedding one of two same-plaintext
- * references would fall back to the value scan and persist the sibling's
- * expression. The engine's other entry-by-entry copy — an `Export.Name`'s
- * secrets into the pass map — deliberately does NOT call this (and `cdkd
+ * Carry the resolved pairs of `from` into `to`, for a copy of a
+ * resolver-populated map that POSITIONS anything. The deploy engine's outputs
+ * bag is one, now through `foldRecording` (`recording.ts`, go-to-k/cdkd#5048),
+ * which carries this function's kinds one by one: without the pairs the copy
+ * would keep the collapsed entries while dropping the evidence -- so a literal
+ * `Output` embedding one of two same-plaintext references would fall back to
+ * the value scan and persist the sibling's expression. The engine's
+ * `Export.Name` scope deliberately does NOT carry them (and `cdkd
  * scrub`'s name loop resolves through a VIEW whose pairs never reach the pass
  * map at all, issue #2531): a name never
  * positions a leaf, a value re-using the same token records its own pair at
@@ -107,7 +107,7 @@ export function recordResolvedPair(
  *
  * It also carries the two mask-only side sets ({@link freshNoEchoValuesOf},
  * {@link containmentValuesOf}) for every plaintext `to` holds as mask-only
- * (go-to-k/cdkd#2453). The outputs bag is the caller that needs them: an
+ * (go-to-k/cdkd#2453). The outputs bag needs them: an
  * output EMBEDDING a `NoEcho` value is masked only through the containment
  * arm, which reads the mark off the map the bag is redacted with.
  */
@@ -115,12 +115,30 @@ export function mergeResolvedPairs(from: RecordedSecretValues, to: RecordedSecre
   carryMaskOnlyMarks(from, to);
   // State schema v12: the provenance travels with the pairs it describes.
   mergeReferenceProvenance(from, to);
+  mergePairTables(from, to);
+}
+
+/**
+ * The pair-table half of {@link mergeResolvedPairs} alone, for a fold that
+ * decides each recording kind separately (`secret-redaction/recording.ts`).
+ * Family-internal: not re-exported by the barrel.
+ */
+export function mergePairTables(from: RecordedSecretValues, to: RecordedSecretValues): void {
   const pairs = resolvedPairsOf.get(from);
   if (pairs === undefined) return;
   for (const [expression, plaintext] of pairs) {
     if (typeof plaintext === 'string') recordResolvedPair(to, expression, plaintext);
     else pairsFor(to).set(expression, CONFLICTING_PLAINTEXT);
   }
+}
+
+/**
+ * Make `view` record its pairs into `pass`'s table, live (go-to-k/cdkd#5048):
+ * the same table object, so a pair recorded through the view at any time is
+ * the pass's. Call it before anything records into `view`. Family-internal.
+ */
+export function sharePairTable(view: RecordedSecretValues, pass: RecordedSecretValues): void {
+  resolvedPairsOf.set(view, pairsFor(pass));
 }
 
 /**

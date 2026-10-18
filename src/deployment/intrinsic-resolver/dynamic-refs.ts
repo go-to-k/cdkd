@@ -30,7 +30,7 @@ import {
   type DynamicReferenceSubstitution,
   SECRET_MASK,
   dynamicReferenceTokens,
-  recordResolvedPair,
+  recordSecretResolution,
 } from '../secret-redaction.js';
 import { classifyReplaySecretRegion } from '../secret-region-classification.js';
 import { recordReferenceResolution } from '../secret-redaction/reference-provenance.js';
@@ -609,11 +609,12 @@ export async function resolveDynamicReferencesWithLogTwin(
         }
         const recorded = context?.recordedSecretValues;
         if (cached.secret && cached.value && recorded) {
-          recorded.set(cached.value, fullMatch);
-          // The uncollapsed twin of that entry (issue #2485) — see the
-          // fresh-resolution seam below.
-          // NOT for a pinned generation (go-to-k/cdkd#4847): see the fresh seam.
-          if (!pinnedGeneration) recordResolvedPair(recorded, fullMatch, cached.value);
+          // The entry and its uncollapsed twin (issue #2485), in one call — see
+          // the fresh-resolution seam below. No pair for a pinned generation
+          // (go-to-k/cdkd#4847): see the fresh seam.
+          recordSecretResolution(recorded, fullMatch, cached.value, {
+            pairEvidence: !pinnedGeneration,
+          });
         }
         // State schema v12: the provenance the lookup that filled this entry
         // read, recorded for THIS pass as the fresh seam below does.
@@ -901,15 +902,16 @@ export async function resolveDynamicReferencesWithLogTwin(
         // belongs to.
         const recorded = context?.recordedSecretValues;
         if (recorded) {
-          recorded.set(resolved, fullMatch);
-          // NOT for a value read at a pinned generation (go-to-k/cdkd#4847): the
-          // pair table keeps ONE plaintext per token, and the token's literal
-          // route resolves the current one. Two plaintexts would mark the pair
-          // CONFLICTING, positioning a literal leaf embedding the token would
-          // fall back to the value scan, and a plaintext under the needle
+          // No pair for a value read at a pinned generation (go-to-k/cdkd#4847):
+          // the pair table keeps ONE plaintext per token, and the token's
+          // literal route resolves the current one. Two plaintexts would mark
+          // the pair CONFLICTING, positioning a literal leaf embedding the token
+          // would fall back to the value scan, and a plaintext under the needle
           // floor would then persist. Equal plaintexts would add nothing. The
-          // value-keyed entry above still redacts and masks the pinned value.
-          if (!pinnedGeneration) recordResolvedPair(recorded, fullMatch, resolved);
+          // value-keyed entry still redacts and masks the pinned value.
+          recordSecretResolution(recorded, fullMatch, resolved, {
+            pairEvidence: !pinnedGeneration,
+          });
         }
         // State schema v12 (go-to-k/cdkd#4847 / #4852): which region answered
         // and which version it read, beside the pair and in the same pass.
