@@ -14,6 +14,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - Elastic IP address
  * - VPC Gateway Endpoint (S3)
  * - Launch Template
+ * - Removal of the VPC DNS attributes (CDKD_TEST_REMOVAL, issue #1160)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
  * Note: No EC2 instances are created to avoid costs.
@@ -26,6 +27,12 @@ export class Ec2VpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // REMOVAL phase (issue #1160): both VPCs drop EnableDnsHostnames and
+    // EnableDnsSupport. CloudFormation resets each to the VPC default
+    // (hostnames off, support on), while ModifyVpcAttribute changes only the
+    // attribute it is sent, so cdkd used to keep the old values.
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+
     // Create VPC with 1 AZ and no NAT gateways (cost saving)
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 1,
@@ -37,6 +44,20 @@ export class Ec2VpcStack extends cdk.Stack {
           subnetType: ec2.SubnetType.PUBLIC,
         },
       ],
+    });
+
+    // The L2 VPC sets hostnames on (non-default) and support on.
+    const cfnVpc = vpc.node.defaultChild as ec2.CfnVPC;
+    if (isRemoval) {
+      cfnVpc.addPropertyDeletionOverride('EnableDnsHostnames');
+      cfnVpc.addPropertyDeletionOverride('EnableDnsSupport');
+    }
+
+    // A second, bare VPC with DNS support off (non-default), so the removal
+    // phase also reaches the support reset. No subnets, no cost.
+    const dnsOffVpc = new ec2.CfnVPC(this, 'DnsOffVpc', {
+      cidrBlock: '10.1.0.0/16',
+      ...(isRemoval ? {} : { enableDnsHostnames: false, enableDnsSupport: false }),
     });
 
     // Create Security Group with HTTP ingress rule
@@ -116,6 +137,11 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
       description: 'VPC ID',
+    });
+
+    new cdk.CfnOutput(this, 'DnsOffVpcId', {
+      value: dnsOffVpc.ref,
+      description: 'DNS-support-off VPC ID (issue #1160 removal phase)',
     });
 
     new cdk.CfnOutput(this, 'SecurityGroupId', {

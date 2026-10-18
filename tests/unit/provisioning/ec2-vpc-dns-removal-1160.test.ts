@@ -46,11 +46,11 @@ import { prepareRemovalForUpdate } from '../../../src/provisioning/update-remova
 const VPC = 'AWS::EC2::VPC';
 
 /** The attribute payloads of every ModifyVpcAttribute sent, in order. */
-function modifyVpcInputs(): Array<Record<string, unknown>> {
+function modifyVpcInputs(): unknown[] {
   return mockSend.mock.calls
     .map((c) => c[0])
     .filter((cmd) => cmd instanceof ModifyVpcAttributeCommand)
-    .map((cmd) => (cmd as ModifyVpcAttributeCommand).input as Record<string, unknown>);
+    .map((cmd) => (cmd as ModifyVpcAttributeCommand).input);
 }
 
 describe('EC2Provider VPC DNS attribute removal (#1160)', () => {

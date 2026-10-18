@@ -3036,6 +3036,7 @@
           "l1"
         ],
         "ec2-vpc": [
+          "l1",
           "l2"
         ],
         "ecs-bluegreen": [
