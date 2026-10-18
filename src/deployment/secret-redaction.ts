@@ -67,6 +67,7 @@ export {
   markLeafCertifiedBag,
   isLeafCertifiedBag,
   redactionClaimOf,
+  carryRedactionMarks,
 } from './secret-redaction/pairs.js';
 export {
   type RecordingKind,

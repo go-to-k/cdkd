@@ -42,7 +42,7 @@ import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { DagExecutor } from '../dag-executor.js';
 import { buildDeletionDependencies, hasPending } from './dependencies.js';
-import { extractTemplateAttributes } from './record-shape.js';
+import { extractTemplateAttributes, withPropertiesMarksOf } from './record-shape.js';
 import { orderInlinePolicyWriters } from '../inline-policy-claims.js';
 import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
@@ -873,7 +873,12 @@ export async function executeDeployment(
         // landed attachment untracked.
         newResources[lost.logicalId] = {
           ...record,
-          properties: { ...record.properties, ...lost.trimmed },
+          // go-to-k/cdkd#5076: the trimmed lists only drop elements of the
+          // record's own lists, so the copy keeps exactly the bag's marks.
+          properties: withPropertiesMarksOf(record.properties, {
+            ...record.properties,
+            ...lost.trimmed,
+          }),
         };
         const lists = Object.keys(lost.trimmed).join(' / ');
         engine.logger.warn(
@@ -889,7 +894,12 @@ export async function executeDeployment(
       } else {
         newResources[lost.logicalId] = {
           ...record,
-          properties: { ...record.properties, ...lost.trimmed },
+          // go-to-k/cdkd#5076: the trimmed lists only drop elements of the
+          // record's own lists, so the copy keeps exactly the bag's marks.
+          properties: withPropertiesMarksOf(record.properties, {
+            ...record.properties,
+            ...lost.trimmed,
+          }),
         };
         engine.logger.warn(
           safeMsg`  ⚠ ${lost.logicalId} (${childType}) was removed from a resource this deploy re-created under the same id, and the deploy failed before writing it again: the next deploy writes it there again (its record keeps only the holders it is still on).`.concat(

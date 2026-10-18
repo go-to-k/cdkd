@@ -9,8 +9,15 @@ import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { markLeafCertifiedBag, markSameGenerationBag } from '../secret-redaction.js';
-import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
+import {
+  carryRedactionMarks,
+  markLeafCertifiedBag,
+  markSameGenerationBag,
+} from '../secret-redaction.js';
+import {
+  isWrittenFromDeployedTemplate,
+  markWrittenFromDeployedTemplate,
+} from '../masked-property-fingerprints.js';
 import type { DeployEngineOptions } from './options.js';
 
 /**
@@ -81,6 +88,22 @@ export function extractAllDependencies(
   const parameterNames = new Set(Object.keys(template?.Parameters ?? {}));
   const deps = [...parser.extractDependencies(resource)].filter((dep) => !parameterNames.has(dep));
   return deps.length > 0 ? deps : undefined;
+}
+
+/**
+ * `rebuilt`, a spread copy of a record's `properties` that only drops elements
+ * of the record's own lists (a lost attachment), with exactly the marks
+ * `original` carries: the redaction
+ * marks (`carryRedactionMarks`) and the written-from-deployed-template one
+ * (go-to-k/cdkd#5076). A spread drops every mark, so without this the copy
+ * persists under the `unproven` claim, where a 1-3 character embedded secret
+ * stays in plaintext, and loses the provenance and fingerprint handling the
+ * original's marks select. Never mints a mark `original` lacks.
+ */
+export function withPropertiesMarksOf<T extends object>(original: unknown, rebuilt: T): T {
+  carryRedactionMarks(original, rebuilt);
+  if (isWrittenFromDeployedTemplate(original)) markWrittenFromDeployedTemplate(rebuilt);
+  return rebuilt;
 }
 
 /**

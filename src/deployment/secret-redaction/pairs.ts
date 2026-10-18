@@ -608,3 +608,17 @@ export function isLeafCertifiedBag(bag: unknown): boolean {
 export function redactionClaimOf(bag: unknown): 'same-generation' | 'unproven' {
   return isSameGenerationBag(bag) || isLeafCertifiedBag(bag) ? 'same-generation' : 'unproven';
 }
+
+/**
+ * Carry onto `to` exactly the redaction marks `from` carries, same-generation
+ * and leaf-certified, and never one it lacks (go-to-k/cdkd#5076). For a
+ * writer that rebuilds a marked bag as a spread copy holding only values the
+ * bag already held (a list with elements dropped), so the claim still holds
+ * leaf by leaf: every claimed arm accepts a leaf only where it equals this
+ * pass's own rendering.
+ */
+export function carryRedactionMarks<T extends object>(from: unknown, to: T): T {
+  if (isSameGenerationBag(from)) markSameGenerationBag(to);
+  if (isLeafCertifiedBag(from)) markLeafCertifiedBag(to);
+  return to;
+}
