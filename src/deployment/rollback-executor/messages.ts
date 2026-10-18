@@ -28,6 +28,7 @@ import {
   safeMsg,
 } from '../../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { createSecretMasker, SECRET_MASK, type RecordedSecretValues } from '../secret-redaction.js';
 import {
   deleteIndeterminateGuards,
@@ -506,7 +507,7 @@ function rollbackFailureText(error: unknown): string {
       .map((line) => displaySafe(line))
       .join('\n');
   }
-  return displaySafe(error instanceof Error ? error.message : String(error));
+  return displaySafe(describeAwsFailure(error).detail);
 }
 
 /**

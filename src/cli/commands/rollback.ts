@@ -102,6 +102,7 @@ import {
   STACK_REF_MAX_CODE_POINTS,
   safeMsg,
 } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   refuseMalformedOrphanRecords,
   refuseMalformedOrphans,
@@ -143,7 +144,7 @@ export function backendErrorText(error: unknown, stackName: string, region: stri
   if (!isPasteableIdent(stackName) || !isPasteableIdent(region)) {
     return 'its error text names a stack or region that is not a plain identifier, so it is not shown';
   }
-  return displaySafe(error instanceof Error ? error.message : String(error));
+  return displaySafe(describeAwsFailure(error).detail);
 }
 
 /**

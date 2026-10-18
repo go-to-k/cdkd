@@ -1037,14 +1037,16 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
   });
 
   it('SOURCE SHAPE: every free-form error render takes displaySafe()', () => {
-    // The static twin of the two free-form cases: every `<x>.message :
-    // String(<x>)` interpolation in the executor must be wrapped, so the
+    // The static twin of the two free-form cases: every caught-value
+    // interpolation in the executor (`describeAwsFailure(<x>).detail`, the
+    // go-to-k/cdkd#3361 spelling of `<x>.message : String(<x>)`) must be wrapped, so the
     // reverse-replacement sites no unit case drives (a re-create failure, a
     // delete-new failure) are pinned by shape; the collision `msg` is pinned
     // by shape here too, beside the runtime case above that drives it.
     const src = readRollbackFamily();
     const lines = src.split('\n');
-    const free = /\$\{(\w+) instanceof Error \? \1\.message : String\(\1\)\}/;
+    const free =
+      /\$\{(?:(\w+) instanceof Error \? \1\.message : String\(\1\)|describeAwsFailure\(\w+\)\.detail)\}/;
     // The single exception is the `survivorReason` string, which is PERSISTED
     // (an event) -- its render happens in `cdkd events`.
     const offenders: string[] = [];
@@ -1055,7 +1057,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       }
     });
     expect(offenders).toEqual([]);
-    const wrapped = /\$\{displaySafe\((\w+) instanceof Error \? \1\.message : String\(\1\)\)\}/g;
+    const wrapped = /\$\{displaySafe\(describeAwsFailure\(\w+\)\.detail\)\}/g;
     // recreateError, deleteError (warn) -- and the fence proves it read the
     // file. The two per-op failure lines (rollbackError, revertError) render
     // through `rollbackFailureText`, whose free-form arm is the same wrapped
@@ -1069,7 +1071,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     expect((src.match(/^\s+(?:rollbackError|revertError),\n\s+mask\n\s+\)/gm) ?? []).length).toBe(2);
     expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(3);
     expect(src).toContain('const text = rollbackFailureText(error);');
-    expect(src).toContain('return displaySafe(error instanceof Error ? error.message : String(error));');
+    expect(src).toContain('return displaySafe(describeAwsFailure(error).detail);');
     expect(src).toContain('.map((line) => displaySafe(line))');
     // The per-line arm is keyed on IDENTITY, and every one of this module's
     // refusals registers through `ownRemedyError` (M7 of the go-to-k/cdkd#3764

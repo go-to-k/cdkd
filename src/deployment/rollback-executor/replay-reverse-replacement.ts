@@ -15,6 +15,7 @@ import { createdBeforeFailure } from '../../provisioning/auxiliary-failure.js';
 import { deleteSkipReason } from '../delete-outcome.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   maskSecretsInError,
   noEchoLeavesOf,
@@ -596,7 +597,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         mask(
           `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
             `(${mask(current.physicalId)}) was already deleted: ` +
-            `${displaySafe(recreateError instanceof Error ? recreateError.message : String(recreateError))}. ` +
+            `${displaySafe(describeAwsFailure(recreateError).detail)}. ` +
             // No command on this line (go-to-k/cdkd#4214): it carries
             // the provider's text and the new physical id.
             `The resource is now absent — fix forward by re-deploying the stack.`
@@ -690,7 +691,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       );
     } catch (createError) {
       const deletedMade = await deleteMarkedRecreate(createError, recreateCleanup);
-      const msg = createError instanceof Error ? createError.message : String(createError);
+      const msg = describeAwsFailure(createError).detail;
       // Reads the ERROR, not the rendered message (issue go-to-k/cdkd#3208):
       // ELBv2 states the collision in prose this predicate cannot see, and
       // the exception NAME that does say it is dropped by the provider wrap.
@@ -1167,7 +1168,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         mask(
           `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
             `(${displaySafe(mask(current.physicalId))}) failed: ` +
-            `${displaySafe(deleteError instanceof Error ? deleteError.message : String(deleteError))}. ` +
+            `${displaySafe(describeAwsFailure(deleteError).detail)}. ` +
             `Delete it manually — it is no longer tracked in state.`
         )
       );
@@ -1186,7 +1187,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       survivorReason =
         `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
         `deleted after the old resource was re-created: ` +
-        `${deleteError instanceof Error ? deleteError.message : String(deleteError)}. ` +
+        `${describeAwsFailure(deleteError).detail}. ` +
         `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`;
       result.warnings++;
     }
@@ -1311,7 +1312,7 @@ async function deleteMarkedRecreate(error: unknown, s: MarkedRecreateScope): Pro
     );
     failure = deleteSkipReason(outcome);
   } catch (deleteError) {
-    failure = deleteError instanceof Error ? deleteError.message : String(deleteError);
+    failure = describeAwsFailure(deleteError).detail;
   }
   if (failure === undefined) return true;
   s.logger.warn(

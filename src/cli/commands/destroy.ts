@@ -24,6 +24,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   exportInferredRegionForSdk,
@@ -229,7 +230,7 @@ export async function purgeEventsAfterDestroy(
   } catch (purgeError) {
     logger.warn(
       `  Failed to purge deployment-event history for ${displaySafe(stackName)}: ` +
-        `${displaySafe(purgeError instanceof Error ? purgeError.message : String(purgeError))}`
+        `${displaySafe(describeAwsFailure(purgeError).detail)}`
     );
     return null;
   }
@@ -519,7 +520,7 @@ async function destroyCommand(
           }
           throw named;
         }
-        synthError = error instanceof Error ? error : new Error(String(error));
+        synthError = error instanceof Error ? error : new Error(safeStringify(error));
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
     }
