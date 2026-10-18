@@ -62,12 +62,15 @@ producer with no change on the producer side.
 ## Q: What happens if I delete the state file?
 
 cdkd no longer knows any of the stack's resources, so the next `cdkd deploy`
-plans every one as a create. What happens then depends on the type:
+plans every one as a create. It is also a new lifetime of the stack: a resource
+whose name cdkd generates gets a new name, so its create makes a second
+resource beside the old one. For a name the template declares, what happens
+depends on the type:
 
 | Types | Result of the create |
 | --- | --- |
 | Most types | Fails with an already-exists error |
-| `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | Adopts the existing resource and re-applies your configuration over it |
+| `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | Adopts the existing resource and re-applies your configuration over it, when the name is the same |
 | Types with an AWS-assigned id: VPC, EC2 instance, ACM certificate, CloudFront distribution | Creates a second resource and orphans the first, once per attempt |
 
 To recover, leave the AWS resources in place and adopt them back into
@@ -87,8 +90,10 @@ explicitly, copying the name AWS reports:
 cdkd import MyStack --resource MyBucket=mystack-mybucket
 ```
 
-A generated name is `<StackName>-<LogicalId>` when that fits the type's length
-limit. Otherwise it is truncated with `-` and 8 hex characters appended
+A generated name is `<StackName>-<LogicalId>-` plus 12 hex characters, the
+`<StackName>-<LogicalId>` part cut to fit the type's length limit. A stack first
+deployed before that suffix existed keeps `<StackName>-<LogicalId>`, truncated
+with `-` and 8 hex characters appended when too long
 (`mystack-averylongconstructna-19184149`). See
 [Import Existing Resources](import.md).
 

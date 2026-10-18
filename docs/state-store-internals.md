@@ -65,9 +65,11 @@ stack's own evidence names that resource:
   `cdkd import` remedy, never adopted;
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
-  deploy that removed them from the template. The next deploy under the same
-  prefix that creates them again takes them back, and drops them from that
-  list once its record names them. Another prefix or another bucket does not
+  deploy that removed them from the template. A later deploy of the same
+  stack lifetime that creates them again takes them back, and drops them from
+  that list once its record names them. A destroy ends the lifetime: the
+  redeploy's generated names differ (#5064), so it never asks for them and
+  warns once, naming `cdkd import`. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
   kept in one write when it ends, beside its final state save; a destroy,
   once its record is gone, beside the marker's release. A crash before that
@@ -164,9 +166,10 @@ earlier record versions after an upgrade; without them that source licenses
 nothing.
 
 **After `cdkd state orphan`.** The orphan drops the record and empties the
-kept list, so nothing this stack records names its resources any more: a
-redeploy under the same prefix that would create one of them again by its
-generated name is refused, and `cdkd import <stack> --resource
+kept list, so nothing this stack records names its resources any more. The
+redeploy is a new lifetime whose generated names differ (#5064), so it creates
+new resources beside them; where a name still collides (a declared name, or a
+stack whose record predates the suffix) the create is refused, and `cdkd import <stack> --resource
 <logicalId>=<physicalId>` (the command the refusal prints) adopts it. This is
 deliberate: the orphan is how a record is handed over, and cdkd does not take
 the resources back on its own.

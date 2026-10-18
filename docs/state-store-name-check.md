@@ -58,8 +58,9 @@ resource belongs to it. cdkd looks in these places:
   crash finds the name there and takes the resource back.
 - **`retained.json`.** The stack let go of the resource but kept it in AWS
   (`RemovalPolicy.RETAIN`), in a destroy or in a deploy that removed it from
-  the template. The next deploy under the same prefix that creates it again
-  takes it back.
+  the template. A later deploy of the same stack lifetime that creates it
+  again takes it back. After a destroy, the redeploy is a new lifetime whose
+  generated names differ, so it never asks for the kept name.
 - **The stack's history**, only when the stack has no `retained.json` because
   an older cdkd destroyed it last. cdkd reads earlier versions of the record
   and the deployment events for a resource that was kept.
@@ -98,9 +99,11 @@ What to do depends on whose resource it is:
 ### After `cdkd state orphan`
 
 `cdkd state orphan` removes the record and empties `retained.json`, so nothing
-this stack records names its resources any more. A redeploy under the same
-prefix that would create one of them again is refused, and `cdkd import`
-adopts it.
+this stack records names its resources any more. A redeploy is a new lifetime
+of the stack: it creates new resources under new generated names beside the
+orphaned ones. A name the template declares (or a stack whose record predates
+generated-name suffixes) collides instead, and that create is refused;
+`cdkd import` adopts the orphaned resource.
 
 This is deliberate. Orphaning is how you hand a record over, and cdkd does not
 take the resources back on its own.
