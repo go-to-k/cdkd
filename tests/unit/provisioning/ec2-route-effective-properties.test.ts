@@ -156,7 +156,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
   });
 
   describe('the update arm — the path the drift actually reached users on', () => {
-    it('forwards the narrowed bag from the re-create', async () => {
+    it('returns the narrowed bag the in-place ReplaceRoute sent (#5068)', async () => {
       const result = await provider.update(
         'R',
         `${ROUTE_TABLE}|10.0.0.0/16`,
@@ -164,7 +164,27 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
         // The `drift --revert` shape this arm was written for. A TEMPLATE-path
-        // update refuses a multi-destination bag before the delete (#3728).
+        // update refuses a multi-destination bag before any AWS call (#3728).
+        { desiredFromAwsReadback: true }
+      );
+
+      expect(result.effectiveProperties).toEqual({
+        RouteTableId: ROUTE_TABLE,
+        DestinationCidrBlock: '10.0.0.0/16',
+        GatewayId: 'igw-abc',
+      });
+      expect(result.wasReplaced).toBe(false);
+    });
+
+    it('forwards the narrowed bag from the re-create when the bag names another route', async () => {
+      // The delete + create arm, kept for a bag whose destination does not
+      // match the physical id (#5068): its re-create is the call that narrows.
+      const result = await provider.update(
+        'R',
+        `${ROUTE_TABLE}|10.9.0.0/16`,
+        RESOURCE_TYPE,
+        multiDestination(),
+        { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.9.0.0/16' },
         { desiredFromAwsReadback: true }
       );
 
@@ -174,6 +194,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         GatewayId: 'igw-abc',
       });
       expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(`${ROUTE_TABLE}|10.0.0.0/16`);
     });
 
     it('recorded bag matches what readCurrentState can return — the drift is gone', async () => {
@@ -188,7 +209,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
         // The `drift --revert` shape this arm was written for. A TEMPLATE-path
-        // update refuses a multi-destination bag before the delete (#3728).
+        // update refuses a multi-destination bag before any AWS call (#3728).
         { desiredFromAwsReadback: true }
       );
 
@@ -198,7 +219,7 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
       expect(destinationKeys).toEqual(['DestinationCidrBlock']);
     });
 
-    it('the RECORDED key is the one that reached CreateRouteCommand', async () => {
+    it('the RECORDED key is the one that reached ReplaceRouteCommand', async () => {
       // Without this the suite only pins the returned object's shape, so
       // swapping the wire-call precedence would leave every row above green
       // while state recorded a key AWS does not hold — the original bug with a
@@ -210,16 +231,16 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.0.0.0/16' },
         // The `drift --revert` shape this arm was written for. A TEMPLATE-path
-        // update refuses a multi-destination bag before the delete (#3728).
+        // update refuses a multi-destination bag before any AWS call (#3728).
         { desiredFromAwsReadback: true }
       );
 
-      const created = mockSend.mock.calls
+      const sent = mockSend.mock.calls
         .map((c) => c[0])
-        .find((c) => c?.constructor?.name === 'CreateRouteCommand');
-      expect(created).toBeDefined();
-      const sentDestinationKeys = Object.keys(created.input).filter(
-        (k) => k.startsWith('Destination') && created.input[k] !== undefined
+        .find((c) => c?.constructor?.name === 'ReplaceRouteCommand');
+      expect(sent).toBeDefined();
+      const sentDestinationKeys = Object.keys(sent.input).filter(
+        (k) => k.startsWith('Destination') && sent.input[k] !== undefined
       );
       expect(sentDestinationKeys).toEqual(['DestinationCidrBlock']);
     });

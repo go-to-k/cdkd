@@ -7,6 +7,7 @@ import {
   DeleteTagsCommand,
   CreateRouteCommand,
   DeleteRouteCommand,
+  ReplaceRouteCommand,
   AuthorizeSecurityGroupIngressCommand,
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
@@ -263,7 +264,7 @@ describe('EC2Provider read-update round-trip', () => {
       expect(countMutatingCalls()).toBe(0);
     });
 
-    it('actual target change still triggers delete + recreate (replacement)', async () => {
+    it('actual target change is one in-place ReplaceRoute (#5068)', async () => {
       mockSend.mockResolvedValue({});
       const oldProps = {
         RouteTableId: 'rtb-1',
@@ -284,11 +285,13 @@ describe('EC2Provider read-update round-trip', () => {
         oldProps
       );
 
-      expect(result.wasReplaced).toBe(true);
+      expect(result.wasReplaced).toBe(false);
       const deleted = mockSend.mock.calls.some((c) => c[0] instanceof DeleteRouteCommand);
       const created = mockSend.mock.calls.some((c) => c[0] instanceof CreateRouteCommand);
-      expect(deleted).toBe(true);
-      expect(created).toBe(true);
+      const replaced = mockSend.mock.calls.filter((c) => c[0] instanceof ReplaceRouteCommand);
+      expect(deleted).toBe(false);
+      expect(created).toBe(false);
+      expect(replaced).toHaveLength(1);
     });
   });
 

@@ -14,7 +14,9 @@
 #      records carry the `|pl-` physicalId form, and `cdkd drift` reads back
 #      clean (exercises readRouteCurrentState's prefix-list matching live).
 #   2. UPDATE (CDKD_TEST_UPDATE=true): swap the prefix-list route's target from
-#      the IGW to the TGW. Assert the target swapped in AWS and drift is clean.
+#      the IGW to the TGW. Assert the swap was one ReplaceRoute with no
+#      DeleteRoute / CreateRoute (the SDK call log, issue #5068), the target
+#      swapped in AWS, and drift is clean.
 #   3. Destroy + assert the TGW attachment, TGW, prefix list, and VPC are gone
 #      and the cdkd state file is removed.
 #
@@ -240,22 +242,66 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
 echo "    drift clean after deploy"
 
 # --- Phase 2: swap the prefix-list route's target IGW -> TGW ----------------
+# Issue #5068: a target change is "Update requires: No interruption" in
+# CloudFormation, served by one atomic ReplaceRoute. A DeleteRoute + CreateRoute
+# leaves the route table without the route between the two calls, so the SDK
+# call log pins which calls the update sent even when the timing does not bite.
 echo "==> Phase 2: re-deploy swapping prefix-list route target to the TGW"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+P2_CALLS="$(mktemp -t cdkd-route-targets-p2-calls.XXXXXX)"
+# cdkd APPENDS one line at exit: start from no file, so its existence below
+# proves the log took effect.
+rm -f "${P2_CALLS}"
+CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-PL_ROUTE_TGW_P2="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
-  --query "RouteTables[0].Routes[?DestinationPrefixListId=='${PL_ID}'].TransitGatewayId | [0]" --output text)"
-if [ "${PL_ROUTE_TGW_P2}" != "${TGW_ID}" ]; then
-  echo "FAIL: after update, prefix-list route TransitGatewayId expected ${TGW_ID}, got '${PL_ROUTE_TGW_P2}'" >&2
+if [ ! -s "${P2_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${P2_CALLS} was not written — CDKD_SDK_CALL_LOG did not take effect" >&2
   exit 1
 fi
-PL_ROUTE_GW_P2="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
-  --query "RouteTables[0].Routes[?DestinationPrefixListId=='${PL_ID}'].GatewayId | [0]" --output text)"
-if [ "${PL_ROUTE_GW_P2}" != "None" ] && [ -n "${PL_ROUTE_GW_P2}" ]; then
-  echo "FAIL: after update, prefix-list route still carries GatewayId '${PL_ROUTE_GW_P2}'" >&2
+# Summed over every line (one per cdkd process); 0 when the command is absent.
+p2_calls() { # <command name>
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts["EC2Client."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1"
+}
+P2_REPLACE="$(p2_calls ReplaceRouteCommand)"
+P2_DELETE="$(p2_calls DeleteRouteCommand)"
+P2_CREATE="$(p2_calls CreateRouteCommand)"
+echo "    Phase 2 EC2 route calls: ReplaceRoute=${P2_REPLACE} DeleteRoute=${P2_DELETE} CreateRoute=${P2_CREATE}"
+if [ "${P2_REPLACE}" != "1" ] || [ "${P2_DELETE}" != "0" ] || [ "${P2_CREATE}" != "0" ]; then
+  echo "FAIL: the target swap must be exactly one ReplaceRoute and no DeleteRoute / CreateRoute (issue #5068)" >&2
+  cat "${P2_CALLS}" >&2
   exit 1
 fi
+rm -f "${P2_CALLS}"
+echo "    target swap sent one ReplaceRoute, no DeleteRoute / CreateRoute"
+
+# The whole route entry for the prefix-list destination, as JSON ('null' when
+# absent), and one field of it ('' when absent).
+pl_route_entry() {
+  aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
+    --query "RouteTables[0].Routes[?DestinationPrefixListId=='${PL_ID}'] | [0]" --output json
+}
+route_field() { # <route entry JSON> <field>
+  printf '%s' "$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s.trim()===""?"null":s);const v=r===null?undefined:r[process.argv[1]];process.stdout.write(v===undefined||v===null?"":String(v))})' "$2"
+}
+# Bounded read: EC2's describe APIs are eventually consistent.
+PL_ROUTE_P2=""
+for _ in 1 2 3 4 5 6; do
+  PL_ROUTE_P2="$(pl_route_entry)"
+  [ "$(route_field "${PL_ROUTE_P2}" TransitGatewayId)" = "${TGW_ID}" ] && break
+  sleep 5
+done
+p2_route_fail() {
+  echo "FAIL: after update, $1" >&2
+  echo "    prefix-list route entry: ${PL_ROUTE_P2}" >&2
+  exit 1
+}
+[ "$(route_field "${PL_ROUTE_P2}" TransitGatewayId)" = "${TGW_ID}" ] \
+  || p2_route_fail "prefix-list route TransitGatewayId expected ${TGW_ID}"
+[ -z "$(route_field "${PL_ROUTE_P2}" GatewayId)" ] \
+  || p2_route_fail "prefix-list route still carries a GatewayId"
+# A route ReplaceRoute rewrote keeps the origin of the CreateRoute that made it.
+[ "$(route_field "${PL_ROUTE_P2}" Origin)" = "CreateRoute" ] \
+  || p2_route_fail "prefix-list route Origin expected CreateRoute"
 echo "    prefix-list route target swapped to the TGW"
 
 echo "==> Phase 2: drift read-back (expect no drift)"

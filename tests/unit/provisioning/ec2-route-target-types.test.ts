@@ -3,6 +3,7 @@ import {
   CreateRouteCommand,
   DeleteRouteCommand,
   DescribeRouteTablesCommand,
+  ReplaceRouteCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.fn();
@@ -209,8 +210,8 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
     });
   });
 
-  describe('update: replacement re-create carries the new targets', () => {
-    it('target swap to TransitGatewayId deletes then re-creates with the new target', async () => {
+  describe('update: the new target reaches AWS', () => {
+    it('target swap to TransitGatewayId replaces the target in place (#5068)', async () => {
       mockSend.mockResolvedValue({});
       const result = await provider.update(
         'Route',
@@ -227,9 +228,22 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
           NatGatewayId: 'nat-444',
         }
       );
-      expect(deleteInput()['DestinationCidrBlock']).toBe('10.1.0.0/16');
-      expect(createInput()['TransitGatewayId']).toBe('tgw-333');
-      expect(result.wasReplaced).toBe(true);
+      const replaced = mockSend.mock.calls.find((c) => c[0] instanceof ReplaceRouteCommand);
+      expect(replaced).toBeDefined();
+      const input = (replaced![0] as ReplaceRouteCommand).input as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(input['RouteTableId']).toBe('rtb-111');
+      expect(input['DestinationCidrBlock']).toBe('10.1.0.0/16');
+      expect(input['TransitGatewayId']).toBe('tgw-333');
+      expect(input['NatGatewayId']).toBeUndefined();
+      expect(
+        mockSend.mock.calls.some(
+          (c) => c[0] instanceof DeleteRouteCommand || c[0] instanceof CreateRouteCommand
+        )
+      ).toBe(false);
+      expect(result.wasReplaced).toBe(false);
       expect(result.physicalId).toBe('rtb-111|10.1.0.0/16');
     });
 

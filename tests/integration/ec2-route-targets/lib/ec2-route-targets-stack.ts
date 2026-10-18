@@ -21,7 +21,7 @@ import type { Construct } from 'constructs';
  *
  * Phase 2 (CDKD_TEST_UPDATE=true) swaps the prefix-list route's target from
  * the Internet Gateway to the Transit Gateway, driving updateRoute's
- * delete + re-create through the prefix-list destination form.
+ * in-place ReplaceRoute (issue #5068) through the prefix-list destination form.
  */
 export class Ec2RouteTargetsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -75,8 +75,8 @@ export class Ec2RouteTargetsStack extends cdk.Stack {
     });
 
     // Route 1: prefix-list DESTINATION. Phase 1 targets the IGW; Phase 2
-    // swaps the target to the Transit Gateway (delete + re-create through
-    // the `rtb|pl-...` physicalId form).
+    // swaps the target to the Transit Gateway (one ReplaceRoute under the
+    // unchanged `rtb|pl-...` physicalId).
     const plRoute = new ec2.CfnRoute(this, 'PrefixListRoute', {
       routeTableId: routeTable.ref,
       destinationPrefixListId: prefixList.attrPrefixListId,
