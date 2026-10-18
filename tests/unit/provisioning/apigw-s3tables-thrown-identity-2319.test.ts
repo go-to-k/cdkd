@@ -266,6 +266,35 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
     });
   });
 
+  it.each(['TagResourceCommand', 'UntagResourceCommand'])(
+    'S3 Tables update() threads its masker to the %s tag-diff debug line',
+    async (command) => {
+      const SECRET = 's3tables-secret-tag-value';
+      failOn(
+        command,
+        Object.assign(new Error(`Invalid tag value '${SECRET}'`), {
+          name: 'BadRequestException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        })
+      );
+      const failure = await thrown(
+        new S3TablesProvider().update(
+          'Res',
+          TABLE_BUCKET_ARN,
+          'AWS::S3Tables::TableBucket',
+          { TableBucketName: 'b1', Tags: [{ Key: 'k2', Value: 'v' }] },
+          { TableBucketName: 'b1', Tags: [{ Key: 'k', Value: 'v' }] },
+          { maskSecrets: (text: string) => text.split(SECRET).join('***') }
+        )
+      );
+      expect(mockSend.mock.calls.some(([c]) => commandName(c) === command)).toBe(true);
+      expect(failure.message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+      expect(debugged()).toContain("Invalid tag value '***'");
+      expect(debugged()).not.toContain(SECRET);
+    }
+  );
+
   it('S3 Tables masks a secret AWS echoes back on the debug line', async () => {
     const SECRET = 's3tables-secret-tag-value';
     failOn(
