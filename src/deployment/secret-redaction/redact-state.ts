@@ -659,8 +659,9 @@ function redactOverlappingMatches(
  * `state-baseline` itself (`redactForState`) rather than lean on the
  * derivation.
  *
- * This is the one writer that READS the same-generation mark
- * (go-to-k/cdkd#5047): the deploy engine marks the bags it installs on a
+ * One of the writers that READ the same-generation mark (go-to-k/cdkd#5047;
+ * the journal's `properties` and `redactOutputs` are the others): the deploy
+ * engine marks the bags it installs on a
  * record (`propertiesToRecord`, `drainObservedCaptures`) long before this
  * walk, so the mark is the transport, and each walk below passes what it says
  * as its explicit claim.
