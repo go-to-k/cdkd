@@ -164,7 +164,9 @@ describe('redactForState: provenance selects the rules', () => {
     ] as const;
     for (const [provenance, rules] of positional) {
       const context = (
-        provenance === 'template-derived' || provenance === 'template-sourced'
+        provenance === 'template-derived' ||
+        provenance === 'template-sourced' ||
+        provenance === 'state-derived'
           ? { provenance, secrets, source, generation: 'unproven' }
           : { provenance, secrets, source }
       ) as RedactionContext;
@@ -242,11 +244,9 @@ interface GenerateOptions {
    * the option: only the plant index is remapped.
    */
   subFloorEmbedded: 'anywhere' | 'outside-arrays' | 'nowhere';
-  /** Whether one literal may embed a sub-floor plant beside a PUBLIC token (go-to-k/cdkd#5056). */
-  publicBesideSubFloor: boolean;
 }
 
-const EVERY_SHAPE: GenerateOptions = { subFloorEmbedded: 'anywhere', publicBesideSubFloor: true };
+const EVERY_SHAPE: GenerateOptions = { subFloorEmbedded: 'anywhere' };
 
 const LITERALS = ['arn-', 'prefix', 'host/', '-suffix', 'db=', ':'];
 const KEYS = ['Name', 'Value', 'Url', 'Config', 'Items', 'Tags', 'Env'];
@@ -326,16 +326,7 @@ function generate(seed: number, options: GenerateOptions = EVERY_SHAPE): Triple 
       const index = Math.floor(rand() * plants.length);
       return embedded && !subFloorAllowed && plants[index]!.subFloor ? 0 : index;
     };
-    const pair = (): [number, number] => {
-      const a = plant(true);
-      const b = plant(true);
-      const mixes = (x: number, y: number): boolean =>
-        plants[x]!.subFloor &&
-        !plants[y]!.secret &&
-        !plants[y]!.logOnly &&
-        !options.publicBesideSubFloor;
-      return [mixes(b, a) ? 0 : a, mixes(a, b) ? 0 : b];
-    };
+    const pair = (): [number, number] => [plant(true), plant(true)];
     switch (shape) {
       case 0:
         return [plant(false)];
@@ -573,7 +564,7 @@ function passFor(plants: Plant[], route: Route): RecordedSecretValues {
   return pass;
 }
 
-const SEEDS = Array.from({ length: 300 }, (_, i) => i + 1);
+const SEEDS = Array.from({ length: 600 }, (_, i) => i + 1);
 
 interface PropertyCase {
   name: string;
@@ -605,13 +596,13 @@ const PROPERTY_CASES: PropertyCase[] = [
       },
       source: t.template,
     }),
-    // The claim certifies an embedded span (`positionByEmbeddedSpan`), but
-    // not one beside a public token, which no pair renders (go-to-k/cdkd#5056).
-    shapes: { subFloorEmbedded: 'anywhere', publicBesideSubFloor: false },
+    // The claim certifies an embedded span (`positionByEmbeddedSpan`), beside
+    // a public token too, from its proven value (go-to-k/cdkd#5056).
+    shapes: EVERY_SHAPE,
     // That certification reads the pass's PAIR for the token, which
     // `EXPORT_NAME_SCOPE` withholds by design (a name positions no leaf):
     // under it, the sub-floor span is the value scan's, below its floor.
-    exportNameShapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: false },
+    exportNameShapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
@@ -628,7 +619,7 @@ const PROPERTY_CASES: PropertyCase[] = [
     }),
     // No claim: an embedded span needs the value scan's agreement, which a
     // sub-floor plant cannot give.
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
@@ -645,7 +636,7 @@ const PROPERTY_CASES: PropertyCase[] = [
     }),
     // No claim: an embedded span needs the value scan's agreement, which a
     // sub-floor plant cannot give.
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
@@ -661,18 +652,43 @@ const PROPERTY_CASES: PropertyCase[] = [
       source: t.template,
     }),
     // Unproven, as above; a readback array may also be reordered.
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
-    name: 'state-derived replay',
+    name: 'state-derived replay, same-generation',
     build: (t, route) => ({
       bag: t.resolved,
-      context: { provenance: 'state-derived', secrets: passFor(t.plants, route), source: t.stateRecord },
+      context: {
+        provenance: 'state-derived',
+        secrets: passFor(t.plants, route),
+        source: t.stateRecord,
+        generation: 'same-generation',
+      },
       source: t.stateRecord,
     }),
-    // A replay states no generation claim (go-to-k/cdkd#5056).
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    // The replay's claim certifies a sub-floor span (go-to-k/cdkd#5056).
+    shapes: EVERY_SHAPE,
+    // Except under `EXPORT_NAME_SCOPE`, which withholds the pair the span
+    // arm reads.
+    exportNameShapes: { subFloorEmbedded: 'nowhere' },
+    logs: true,
+  },
+  {
+    name: 'state-derived replay, unproven',
+    build: (t, route) => ({
+      bag: t.resolved,
+      context: {
+        provenance: 'state-derived',
+        secrets: passFor(t.plants, route),
+        source: t.stateRecord,
+        generation: 'unproven',
+      },
+      source: t.stateRecord,
+    }),
+    // No claim: an embedded span needs the value scan's agreement, which a
+    // sub-floor plant cannot give.
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
@@ -684,7 +700,7 @@ const PROPERTY_CASES: PropertyCase[] = [
     }),
     // A reordered unkeyed readback array refuses positioning (the keyed
     // descent needs an identity field), leaving the value scan.
-    shapes: { subFloorEmbedded: 'outside-arrays', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'outside-arrays' },
     logs: true,
   },
   {
@@ -746,7 +762,7 @@ const PROPERTY_CASES: PropertyCase[] = [
     }),
     // The source is a PREVIOUS generation: nothing proves a framed middle is
     // the token's plaintext.
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
   {
@@ -757,7 +773,7 @@ const PROPERTY_CASES: PropertyCase[] = [
       source: undefined,
     }),
     // No source: the value scan alone, whose substring floor is the bound.
-    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
+    shapes: { subFloorEmbedded: 'nowhere' },
     logs: true,
   },
 ];
@@ -824,6 +840,7 @@ describe('redactForState: planted-plaintext properties over generated triples', 
       defaultKeys: 0,
       movedReferences: 0,
       movedLiterals: 0,
+      subFloorBesidePublic: 0,
     };
     for (const seed of SEEDS) {
       const t = generate(seed);
@@ -844,6 +861,12 @@ describe('redactForState: planted-plaintext properties over generated triples', 
         }
         const previous = at(t.previousTemplate, path);
         if (typeof previous === 'string' && previous === `old-${leaf}`) count.movedLiterals!++;
+        // go-to-k/cdkd#5056's shape: a sub-floor secret beside a public token.
+        const has = (pred: (p: Plant) => boolean): boolean =>
+          t.plants.some((p) => pred(p) && leaf.includes(p.expression));
+        if (has((p) => p.subFloor) && has((p) => !p.secret && !p.logOnly)) {
+          count.subFloorBesidePublic!++;
+        }
       }
       const reordered = (resolved: unknown, readback: unknown): void => {
         if (Array.isArray(resolved) && Array.isArray(readback)) {
@@ -942,8 +965,7 @@ describe('redactForState: planted-plaintext properties over generated triples', 
       return pass;
     };
     // Counted only where the DROP is the cause: the same seed through the
-    // scope must hold, so a seed failing for another reason (#5056) adds
-    // nothing.
+    // scope must hold, so a seed failing for another reason adds nothing.
     const persist = (t: Triple, pass: RecordedSecretValues): unknown =>
       redactForState(t.resolved, {
         provenance: 'template-derived',

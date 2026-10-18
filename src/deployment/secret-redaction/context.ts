@@ -25,9 +25,11 @@ import { isRecordingScope } from './recording.js';
  * - a variant whose rules walk a source REQUIRES one, so a positional pass
  *   cannot silently degrade into a value scan by a dropped argument;
  * - the generation claim is a REQUIRED field where it is a real choice
- *   (`template-derived`, and `template-sourced`, whose deploy outputs bag is
- *   this pass's own resolution), and absent elsewhere: no caller of those
- *   variants holds a bag this pass produced (go-to-k/cdkd#5047).
+ *   (`template-derived`; `template-sourced`, whose deploy outputs bag is
+ *   this pass's own resolution; `state-derived`, whose rollback restore can
+ *   be the replay's own resolution, go-to-k/cdkd#5056), and absent elsewhere:
+ *   no caller of those variants holds a bag this pass produced
+ *   (go-to-k/cdkd#5047).
  *
  * The walk reads the claim from this field alone, never from a mark on the
  * bag. `markSameGenerationBag` is a TRANSPORT between a producer and a writer
@@ -69,11 +71,18 @@ export type RedactionContext =
       readonly generation: 'same-generation' | 'unproven';
     }
   | {
-      readonly provenance:
-        | 'state-readback'
-        | 'state-baseline'
-        | 'state-cross-generation'
-        | 'state-derived';
+      readonly provenance: 'state-derived';
+      readonly secrets: RecordedSecretValues;
+      readonly source: object;
+      /**
+       * `same-generation`: the bag is THIS pass's resolution of `source` (a
+       * rollback replay's restore of the journaled record, from a bag its
+       * producer marked; go-to-k/cdkd#5056). `unproven` otherwise.
+       */
+      readonly generation: 'same-generation' | 'unproven';
+    }
+  | {
+      readonly provenance: 'state-readback' | 'state-baseline' | 'state-cross-generation';
       readonly secrets: RecordedSecretValues;
       readonly source: object;
     };
@@ -120,9 +129,11 @@ export function redactForState<T>(bag: T, context: RedactionContext): T {
   const { secrets, source, provenance } = context;
   // Narrowed by PROVENANCE, never by the field's presence: a `state-*`
   // context built by spreading another object could carry a stray
-  // `generation` at runtime, and only the two template variants may claim.
+  // `generation` at runtime, and only the variants that declare it may claim.
   const claimed =
-    (context.provenance === 'template-derived' || context.provenance === 'template-sourced') &&
+    (context.provenance === 'template-derived' ||
+      context.provenance === 'template-sourced' ||
+      context.provenance === 'state-derived') &&
     context.generation === 'same-generation';
   if (!claimed || !isPlainBag(bag)) {
     return redactAtProvenance(bag, secrets, source, provenance, false);
