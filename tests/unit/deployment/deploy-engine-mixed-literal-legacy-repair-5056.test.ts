@@ -195,12 +195,16 @@ describe('a record a pre-#5056 cdkd wrote with a short secret beside a public to
     const run = await deploy(record(LEGACY_VALUE), template(`${HOST}/pin2=${PIN}`), [['Param']]);
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual(['update:Param']);
+    expect(run.persisted?.properties['Value']).toBe(`db.example.com/pin2=${PIN}`);
+    expect(JSON.stringify(run.persisted?.properties)).not.toContain('x9');
   });
 
   it("a record that is NOT the old spelling of today's value is still sent", async () => {
     const run = await deploy(record('db.example.com/pin=y8'), template(SOURCE), [['Param']]);
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual(['update:Param']);
+    expect(run.persisted?.properties['Value']).toBe(TODAY);
+    expect(JSON.stringify(run.persisted?.properties)).not.toContain('x9');
   });
 
   it('a fresh deploy persists today\'s spelling (the arm the repair keys on)', async () => {
