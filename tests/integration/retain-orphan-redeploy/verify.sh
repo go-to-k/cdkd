@@ -566,7 +566,7 @@ CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
 # Sentinel + marker on the same warning: the marker carries the count, the
 # sentinel is the independent `cdkd import` remedy clause.
 if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
-  echo "FAIL: the first deploy of a new lifetime did not warn about the kept role (no 'cdkd import' remedy line)"
+  echo "FAIL: the first deploy of a new lifetime did not warn about the kept topic (no 'cdkd import' remedy line)"
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi

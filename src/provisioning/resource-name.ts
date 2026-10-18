@@ -478,10 +478,11 @@ function isDeclaredName(value: unknown): boolean {
 }
 
 /**
- * Is `recorded` the name cdkd generates for `logicalId` in the current
- * scope's stack under EITHER naming scheme (go-to-k/cdkd#5064): the legacy
- * `{stackName}-{logicalId}`, or the suffixed one -- with the scope's id, or,
- * when the scope carries none, with the suffix's exact base and length?
+ * Is `recorded` a name cdkd generates for `logicalId` in the current scope's
+ * stack under EITHER naming scheme (go-to-k/cdkd#5064): the legacy
+ * `{stackName}-{logicalId}`, or the suffixed one under ANY stack instance id
+ * -- this lifetime's, or an earlier lifetime's that `cdkd import` brought in
+ * (the suffix's exact base, then 12 hex)?
  *
  * Only for {@link recordedGeneratedNameKept}, whose answer KEEPS a name: the
  * shape arm is acceptable there, and nowhere a `true` would claim a name.
@@ -495,9 +496,6 @@ function isGeneratedNameOfEitherScheme(
   if (!scope?.stackName || recorded === '') return false;
   const opts: ResourceNameOptions = { ...options, userSupplied: false };
   if (recorded === deriveResourceName(logicalId, opts, scope.stackName, undefined)) return true;
-  if (scope.stackInstanceId !== undefined) {
-    return recorded === deriveResourceName(logicalId, opts, scope.stackName, scope.stackInstanceId);
-  }
   // Any well-formed id yields the same base: only the suffix differs.
   const probe = deriveResourceName(
     logicalId,
@@ -517,8 +515,9 @@ function isGeneratedNameOfEitherScheme(
  * resource when it differs from the recorded physical id. For a resource no
  * template ever named (neither the desired nor the previous bag declares a
  * name), that difference can only come from the naming SCHEME: a v13 stack
- * holding a resource named before it had an id (`cdkd import` of a legacy
- * name), or a scope that lacks the stack's id. Neither is a rename anyone
+ * holding a resource named under another scheme or lifetime (`cdkd import` of
+ * a legacy name, or of what an earlier lifetime kept), or a scope that lacks
+ * the stack's id. Neither is a rename anyone
  * asked for -- CloudFormation never renames an un-named resource -- and
  * replacing would create a new resource and delete the live one. So the
  * recorded name is kept whenever it is this logical id's generated name under

@@ -428,8 +428,10 @@ export async function doDeployWithPrefetch(
         command: 'deploy',
         logger: engine.logger,
         stateResources: currentState.resources,
-        // A first deploy has no id yet: only the legacy name shapes are
-        // recognized there, and the sent bag still names what it sent.
+        // Before a first deploy's id is resolved (a re-run after a crash
+        // included, whose id is still in the write-ahead sibling) only the
+        // legacy name shapes are recognized; the sent bag, checked first,
+        // still names what the earlier attempt sent.
         stackInstanceId: nameScope().stackInstanceId,
         // A CREATE that completed is RESUMED when the template still declares
         // its logical id with the type and the journal holds the bag it sent
@@ -1699,6 +1701,7 @@ export async function doDeployWithPrefetch(
     });
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.
+    // A first deploy's guard starts after the prompt (below): nothing to re-read.
     if (prompted) engine.generatedNameGuard?.noteApprovalPrompted();
     startProvenanceCapture();
 
@@ -1722,7 +1725,7 @@ export async function doDeployWithPrefetch(
       if (kept.length > 0) {
         engine.logger.warn(
           safeMsg`An earlier deployment of ${displayStackName(stackName)} kept ${String(kept.length)} ` +
-            'resource(s) here (DeletionPolicy: Retain, or cdkd state orphan). This deploy does not take ' +
+            'resource(s) here (DeletionPolicy: Retain). This deploy does not take ' +
             'them back: it creates new resources under new names, as CloudFormation does. To manage a ' +
             "kept resource again, adopt it with 'cdkd import'."
         );

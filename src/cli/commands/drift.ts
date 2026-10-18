@@ -3350,7 +3350,9 @@ async function runDriftForStack(
     );
   }
 
-  // go-to-k/cdkd#5064: a revert re-derives names in the stack's lifetime.
+  // go-to-k/cdkd#5064: detection derives names in the stack's lifetime.
+  // `runRevert` runs after this scope closes; every `update()` it reaches
+  // keeps the recorded name of a resource the template does not name.
   const namingScope = {
     stackName,
     stackInstanceId: stackInstanceIdOf(result.state, displayStackName(stackName)),

@@ -248,6 +248,14 @@ sweep_named() {
         ;;
     esac
   done
+  # go-to-k/cdkd#5064: a RETAINed log group of a deploy whose record was never
+  # read (B's in the second bucket, when its deploy or read failed) carries a
+  # name no state recorded: swept by this run's stack prefix.
+  for lg in $(aws logs describe-log-groups --log-group-name-prefix "/cdkd/${STACK}-" --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+    case "${lg}" in
+      "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 ;;
+    esac
+  done
 }
 
 # WARN when a listing names anything, or could not be read: `warn_left <what> aws ...`.
@@ -606,7 +614,7 @@ echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd 
 EMPTY_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" - | jq -c '.resources = {} | .outputs = {} | del(.orphans)')"
 case "${EMPTY_RECORD}" in
   '{'*'"resources":{}'*) ;;
-  *) echo "FAIL: could not build an empty record from A's (got '${EMPTY_RECORD}')" >&2; exit 1 ;;
+  *) echo "FAIL: could not build an empty record from A's (${#EMPTY_RECORD} bytes)" >&2; exit 1 ;;
 esac
 # go-to-k/cdkd#5064: A's record carries its stack instance id, and so does this
 # copy -- which is what makes phase 5c's B derive A's queue name. Checked
