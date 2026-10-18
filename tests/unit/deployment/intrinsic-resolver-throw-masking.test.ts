@@ -257,7 +257,9 @@ const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
 const { resolveDynamicReferences } = await import(
   '../../../src/deployment/intrinsic-resolver/dynamic-refs.js'
 );
-const { redactSecretsForState } = await import('../../../src/deployment/secret-redaction.js');
+const { redactSecretsForState } = await import(
+  '../../../src/deployment/secret-redaction/redact-state.js'
+);
 const { maskValueLeaves } = await import(
   '../../../src/deployment/intrinsic-resolver/masking-display.js'
 );

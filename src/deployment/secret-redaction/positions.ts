@@ -5,7 +5,7 @@ import {
   MIN_NEEDLE_LENGTH,
 } from './rules.js';
 import { type RecordedSecretValues, resolvedPlaintextOf, resolvedExpressionsOf } from './pairs.js';
-import { redactSecretsForState } from './redact-state.js';
+import { redactForState } from './context.js';
 import { recordedSecretExpressions } from './mask-only.js';
 import { dynamicReferenceSpans } from './redact-path.js';
 import { plaintextIndexOf } from './certified-positions.js';
@@ -598,11 +598,11 @@ export function positionByEmbeddedSpan(
     ) {
       return source;
     }
-    return redactSecretsForState(bag, secrets);
+    return redactForState(bag, { provenance: 'value-scan', secrets });
   }
   const recorded = resolvedPlaintextOf(secrets, frame.token);
   if (recorded === undefined || recorded !== frame.middle) {
-    return redactSecretsForState(bag, secrets);
+    return redactForState(bag, { provenance: 'value-scan', secrets });
   }
   return writeFramedTokenWithinScanBound(bag, secrets, frame, bagIsSameGeneration);
 }
@@ -682,7 +682,7 @@ function renderSpans(
  * text the spelling states or the plaintext THIS pass resolved the token at
  * that span to. Exact equality only -- no search, no substring, nothing taken
  * from anywhere but the spelling -- so it can only CONFIRM a spelling, never
- * find one. `redactSecretsForState(spelling, secrets) === spelling` keeps a
+ * find one. `redactForState(spelling, { provenance: 'value-scan', secrets }) === spelling` keeps a
  * plaintext out of the literal text: returning the spelling would otherwise
  * persist it. The value scan spares a match strictly inside a resolvable span,
  * so the spelling's own tokens pass.
@@ -708,7 +708,9 @@ function renderedLiteralSpans(
   const spans = pairedSpans(spelling, secrets);
   if (spans === undefined) return undefined;
   if (renderSpans(spelling, spans, (i) => spans[i]!.plaintext) !== value) return undefined;
-  return redactSecretsForState(spelling, secrets) === spelling ? spans : undefined;
+  return redactForState(spelling, { provenance: 'value-scan', secrets }) === spelling
+    ? spans
+    : undefined;
 }
 
 /**
@@ -757,7 +759,7 @@ export function certifiesRenderedLiteral(
     if (survivor === undefined) return false;
     survivors.push(survivor);
   }
-  const scanned = redactSecretsForState(bag, secrets);
+  const scanned = redactForState(bag, { provenance: 'value-scan', secrets });
   if (scanned === renderSpans(source, spans, (i) => survivors[i]!)) return true;
   if (!bagIsSameGeneration) return false;
   return (
@@ -794,7 +796,7 @@ function writeFramedTokenWithinScanBound(
   frame: { token: string; prefix: string; suffix: string; middle: string },
   bagIsSameGeneration: boolean
 ): string {
-  const scanned = redactSecretsForState(bag, secrets);
+  const scanned = redactForState(bag, { provenance: 'value-scan', secrets });
   const { token, prefix, suffix, middle } = frame;
   // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: on
   // a bag whose generation is NOT proven the arm accepts only a leaf the scan

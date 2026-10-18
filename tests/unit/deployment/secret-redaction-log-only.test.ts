@@ -13,10 +13,10 @@ import {
   maskSecretsInText,
   mergeResolvedPairs,
   recordLogOnlyValue,
-  redactSecretsForState,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 // go-to-k/cdkd#1998: the LOG-ONLY needle class. A `NoEcho: true` template
 // parameter's value must not be PRINTED, and (maintainer decision) must not be

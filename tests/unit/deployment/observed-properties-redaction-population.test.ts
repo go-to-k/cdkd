@@ -28,7 +28,8 @@ import { dirname, join, relative, sep } from 'node:path';
  *     directions, plus a literal total. A NEW write site anywhere in `src/`
  *     reds this with a diff naming the file, whatever its RHS.
  *  2. SHAPE — every ASSIGNMENT-form site (`<expr>.observedProperties = ...`)
- *     must have `redactForState(` (or `redactSecretsForState(`) as its RHS, unless it is
+ *     must have `redactForState(` (or the family-internal `redactAtProvenance(` /
+ *     `redactSecretsForState(`) as its RHS, unless it is
  *     in {@link UNREDACTED_AT_SITE} with a reason. This is the one that would
  *     have caught #2828 on the day it was written.
  *
@@ -324,7 +325,7 @@ describe('observedProperties write population (issue #2828)', () => {
     for (const { path, line, text } of assignments) {
       if (path in UNREDACTED_AT_SITE) continue;
       expect(
-        /observedProperties[ \t]*(?:\?\?|\|\||&&)?=[ \t]*(?:redactSecretsForState|redactForState)\(/.test(text),
+        /observedProperties[ \t]*(?:\?\?|\|\||&&)?=[ \t]*(?:redactSecretsForState|redactForState|redactAtProvenance)\(/.test(text),
         `${path}:${line} assigns observedProperties without redactForState — ` +
           'this is the issue #2828 / #1926 class. Redact at the site, or add an ' +
           'UNREDACTED_AT_SITE entry naming where the redaction actually happens.'

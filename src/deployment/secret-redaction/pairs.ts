@@ -424,8 +424,10 @@ export function substitutedSpellingOf(
  * provider succeeded, and `observedProperties`, an AWS readback installed
  * separately. So the fact is BAG-specific, not caller- or record-level, and it
  * is carried on the object: {@link markSameGenerationBag} at the moment the
- * successful result is installed, consulted by {@link redactSecretsForState}
- * for the object it is handed. A copy of the bag, a derived needle map, a
+ * successful result is installed, and read by the writer that states the
+ * walk's claim (`scrubResourceRecord`, the journal's `properties`,
+ * `redactOutputs`); the walk itself takes the claim as an argument and never
+ * reads the mark (go-to-k/cdkd#5047). A copy of the bag, a derived needle map, a
  * previous generation's record, a scrub / drift walk and a bag nobody marked
  * all answer `false` and keep the fall-through. `cdkd import` marks the one
  * bag its own resolver produced (the sixth site below, issue #2745), and the
@@ -467,9 +469,10 @@ const sameGenerationBags = new WeakSet<object>();
  * at all — there the safety comes from the empty secrets map, not from the
  * mark. Read the per-site list below rather than a rule over all seven.
  *
- * The seven call sites, and which of them the record HOLDS, because the earlier
+ * The seven claim sites, and which of them the record HOLDS, because the earlier
  * "two never-installed copies" reading of this paragraph was false once the
- * third copy arrived:
+ * third copy arrived. Only the first three MARK (the transport above); the
+ * other four state `same-generation` to the walk directly, marking nothing:
  * - `propertiesToRecord` — the record's `properties`, installed. The resolved
  *   bag itself when the route drops nothing, a narrowed copy of it when it
  *   does, and `withoutSilentDropProperties` returns its input by reference in

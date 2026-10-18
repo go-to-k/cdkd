@@ -4,9 +4,6 @@ import {
   type PathSourceRules,
   TEMPLATE_DERIVED_RULES,
   buildNeedleRegex,
-  TEMPLATE_SOURCED_RULES,
-  STATE_SOURCED_BASELINE_RULES,
-  STATE_SOURCED_READBACK_RULES,
 } from './rules.js';
 import {
   spanNamesResolvableService,
@@ -15,6 +12,7 @@ import {
   resolvableReferenceSpans,
 } from './anchors.js';
 import { SECRET_MASK, type RecordedSecretValues, isSameGenerationBag } from './pairs.js';
+import { redactForState, redactAtProvenance } from './context.js';
 import { redactByPath, isReadbackProjectedFromState, isOrdinaryDate } from './redact-path.js';
 import {
   cutsContainmentNeedle,
@@ -47,10 +45,11 @@ export function redactSecretsForState<T>(
   bag: T,
   secrets: RecordedSecretValues,
   source?: unknown,
-  rules: PathSourceRules = TEMPLATE_DERIVED_RULES
+  rules: PathSourceRules = TEMPLATE_DERIVED_RULES,
+  bagIsSameGeneration = false
 ): T {
   return flattenEmbeddedNoEchoLeaves(
-    redactSecretsForStatePasses(bag, secrets, source, rules),
+    redactSecretsForStatePasses(bag, secrets, source, rules, bagIsSameGeneration),
     secrets
   );
 }
@@ -60,7 +59,8 @@ function redactSecretsForStatePasses<T>(
   bag: T,
   secrets: RecordedSecretValues,
   source: unknown,
-  rules: PathSourceRules
+  rules: PathSourceRules,
+  bagIsSameGeneration: boolean
 ): T {
   // The PATH pass runs even with no recorded secrets — that is the whole point
   // for an UNCHANGED resource, whose `perResourceSecrets` entry is empty
@@ -98,19 +98,18 @@ function redactSecretsForStatePasses<T>(
     // The second revision simply ran the scan LAST over their output, which is
     // the MIRROR defect — see {@link preferPositionDecisions}, where both are
     // measured and the merge that ends them is argued.
-    // The generation mark is read for the OBJECT this call was handed and
-    // threaded down the walk unchanged: a sub-bag walked on its own (a
-    // caller's slice) is a different object and answers `false`, which is the
-    // safe direction -- unless its caller marked it, as
-    // `recordNestedStackParameterExpressions` marks the COPY of a nested-stack
-    // `Parameters` block it hands in (issue #2745).
+    // The generation claim is the caller's ARGUMENT, threaded down the walk
+    // unchanged; it is never read off the bag (go-to-k/cdkd#5047), so a
+    // sub-bag walked on its own (a caller's slice) claims nothing unless its
+    // caller says so, as `recordNestedStackParameterExpressions` does for the
+    // copy of a nested-stack `Parameters` block it hands in (issue #2745).
     const positioned = redactByPath(
       bag,
       source,
       secrets,
       rules,
       recordedExpressionsOf(secrets),
-      isSameGenerationBag(bag)
+      bagIsSameGeneration
     );
     if (!isReadbackProjectedFromState(rules)) return positioned as T;
     // The path pass certifies a WHOLE-TOKEN source leaf and nothing else, so on
@@ -173,7 +172,7 @@ function redactSecretsForStatePasses<T>(
       true
     );
     return preferPositionDecisions(
-      redactSecretsForState(bag, derived.certain),
+      redactForState(bag, { provenance: 'value-scan', secrets: derived.certain }),
       refused,
       bag,
       marks,
@@ -641,8 +640,8 @@ function redactOverlappingMatches(
  * detect a no-op cheaply. Shared by the deploy engine's save choke point and
  * the `cdkd scrub` command so both scrub the same three fields identically.
  *
- * `observedRules` overrides the rules the `observedProperties` walk would
- * otherwise DERIVE from whether a `sourceProperties` bag was supplied. Exactly
+ * `observedProvenance` overrides the provenance the `observedProperties` walk
+ * would otherwise DERIVE from whether a `sourceProperties` bag was supplied. Exactly
  * one caller needs it and the reason is not obvious, so it is a parameter
  * rather than another derivation: `cdkd scrub` has already repositioned
  * `properties` against TODAY's template by the time it calls this, so the
@@ -656,9 +655,15 @@ function redactOverlappingMatches(
  * [#2906](https://github.com/go-to-k/cdkd/issues/2906)). A caller re-writing a
  * PRIOR generation's `observedProperties` unchanged therefore keeps it intact
  * rather than masking positions it cannot pair. A caller whose bag IS fresh but
- * which does not route it through {@link markSameGenerationBag} should pass
- * {@link STATE_SOURCED_BASELINE_RULES} through `observedRules` rather than lean
- * on the derivation.
+ * which does not route it through {@link markSameGenerationBag} should state
+ * `state-baseline` itself (`redactForState`) rather than lean on the
+ * derivation.
+ *
+ * This is the one writer that READS the same-generation mark
+ * (go-to-k/cdkd#5047): the deploy engine marks the bags it installs on a
+ * record (`propertiesToRecord`, `drainObservedCaptures`) long before this
+ * walk, so the mark is the transport, and each walk below passes what it says
+ * as its explicit claim.
  */
 export function scrubResourceRecord<
   T extends {
@@ -670,7 +675,7 @@ export function scrubResourceRecord<
   record: T,
   secrets: RecordedSecretValues,
   sourceProperties?: Record<string, unknown>,
-  observedRules?: PathSourceRules
+  observedProvenance?: 'state-readback' | 'state-cross-generation'
 ): T {
   // NOT `sourceProperties === undefined`: an UNCHANGED resource has neither a
   // secrets map nor a template bag, and its observed bag is exactly what needs
@@ -680,7 +685,16 @@ export function scrubResourceRecord<
     return record;
   }
   const next = { ...record };
-  next.properties = redactSecretsForState(record.properties, secrets, sourceProperties);
+  next.properties =
+    sourceProperties === undefined
+      ? redactForState(record.properties, { provenance: 'value-scan', secrets })
+      : redactAtProvenance(
+          record.properties,
+          secrets,
+          sourceProperties,
+          'template-derived',
+          isSameGenerationBag(record.properties)
+        );
   if (record.attributes) {
     // go-to-k/cdkd#4849: a copy of the record's OWN physical id among its
     // attributes (an SNS topic's `TopicArn`, a queue's `QueueUrl`) stays as
@@ -696,8 +710,10 @@ export function scrubResourceRecord<
     const attributes = record.attributes;
     next.attributes =
       ids.length > 0
-        ? withPhysicalNameCopies(secrets, ids, () => redactSecretsForState(attributes, secrets))
-        : redactSecretsForState(attributes, secrets);
+        ? withPhysicalNameCopies(secrets, ids, () =>
+            redactForState(attributes, { provenance: 'value-scan', secrets })
+          )
+        : redactForState(attributes, { provenance: 'value-scan', secrets });
   }
   if (record.observedProperties) {
     // `observedProperties` is a live AWS readback, so its OWN source of truth is
@@ -720,14 +736,14 @@ export function scrubResourceRecord<
     // still descend by an element IDENTITY KEY, which is order-independent
     // (issue #1915).
     //
-    // `observedRules` wins when the caller supplied one, because a caller can
+    // `observedProvenance` wins when the caller supplied one, because a caller can
     // know something this derivation cannot: that it already MOVED
     // `next.properties` to another generation. See the parameter's doc.
-    next.observedProperties = redactSecretsForState(
+    next.observedProperties = redactAtProvenance(
       record.observedProperties,
       secrets,
       sourceProperties ?? next.properties,
-      observedRules ??
+      observedProvenance ??
         // This branch redacts `observedProperties` SPECIFICALLY, so the
         // DESTINATION is known here and the fail-closed refusal of issue #2852
         // may apply — which is how the deploy's `drainObservedCaptures`
@@ -780,8 +796,8 @@ export function scrubResourceRecord<
         // replayed cases give and for no other: the bag ALREADY SITS in
         // `state.json` verbatim, so a mask protects no reader who is not
         // already exposed, while it destroys a baseline that was intact. A
-        // caller whose bag is fresh but which cannot mark it should pass
-        // {@link STATE_SOURCED_BASELINE_RULES} through `observedRules`, the way
+        // caller whose bag is fresh but which cannot mark it should state
+        // `state-baseline` itself (`redactForState`), the way
         // `cdkd state refresh-observed` and `cdkd import`'s observed capture
         // already do — neither reaches this derivation at all.
         //
@@ -798,12 +814,15 @@ export function scrubResourceRecord<
         // because the destination is already settled: the question left is
         // evidence, not where the bag lands.
         //
-        // A caller that supplied `observedRules` keeps its own choice.
+        // A caller that supplied `observedProvenance` keeps its own choice.
         (sourceProperties !== undefined
-          ? TEMPLATE_SOURCED_RULES
+          ? 'template-sourced'
           : secrets.size === 0 && isSameGenerationBag(record.observedProperties)
-            ? STATE_SOURCED_BASELINE_RULES
-            : STATE_SOURCED_READBACK_RULES)
+            ? 'state-baseline'
+            : 'state-readback'),
+      // The same mark, as the walk's generation claim, whatever the provenance:
+      // what the walk read off the bag before go-to-k/cdkd#5047.
+      isSameGenerationBag(record.observedProperties)
     );
   }
   return next;
@@ -923,7 +942,7 @@ export function embeddedPhysicalNameRewrites(
   const pairs: Array<readonly [string, string]> = [];
   withoutPhysicalNameCopies(legacySecrets, () => {
     for (const name of names) {
-      const legacy = redactSecretsForState(name, legacySecrets);
+      const legacy = redactForState(name, { provenance: 'value-scan', secrets: legacySecrets });
       if (
         typeof legacy === 'string' &&
         legacy !== name &&

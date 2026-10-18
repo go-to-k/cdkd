@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import {
-  recordResolvedPair,
-  redactSecretsForState,
-} from '../../../src/deployment/secret-redaction.js';
+import { recordResolvedPair, scrubResourceRecord } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 
@@ -626,12 +623,11 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     // object still installed on the record. No provider under
     // `src/provisioning/` does that today, so this case IS the population.
     //
-    // The mark itself is module-private, so the assertion is what it BUYS:
-    // after the deploy, the very object the provider handed back is walked
-    // again through the public entry point with a TEMPLATE source spelling
-    // the token and a pass map carrying the pair. Under
-    // `TEMPLATE_DERIVED_RULES` the source makes no generation claim of its
-    // own, so the OBJECT's mark is what decides -- marked, the sub-floor
+    // The assertion is what the mark BUYS: after the deploy, the very object
+    // the provider handed back is scrubbed again as a record's `properties`,
+    // with a TEMPLATE source spelling the token and a pass map carrying the
+    // pair. `scrubResourceRecord` states that bag's mark as the walk's
+    // same-generation claim (go-to-k/cdkd#5047) -- marked, the sub-floor
     // middle becomes the token; unmarked, the scan's answer stands.
     const aliased = {
       Environment: { Variables: { PORT_LITERAL: PORT_LITERAL_PLAINTEXT, PIN_WHOLE: PIN } },
@@ -653,9 +649,9 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     expect(mockProvider.readCurrentState).toHaveBeenCalled();
     const passMap = new Map<string, string>([[PIN, PIN_EXPR]]);
     recordResolvedPair(passMap, PIN_EXPR, PIN);
-    const walked = redactSecretsForState(aliased, passMap, {
+    const walked = scrubResourceRecord({ properties: aliased }, passMap, {
       Environment: { Variables: { PORT_LITERAL: PORT_LITERAL_SOURCE, PIN_WHOLE: PIN_EXPR } },
-    });
+    }).properties;
     expect(envOf(walked)['PORT_LITERAL']).toBe(PORT_LITERAL_PLAINTEXT);
   });
 

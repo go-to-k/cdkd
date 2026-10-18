@@ -16,11 +16,11 @@ import {
   recordMaskOnlyValuesIn,
   recordRecoverableMaskedOutput,
   recoverMaskedOutput,
-  redactSecretsForState,
   scrubResourceRecord,
   wholeStringLeavesOf,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 // Issue #2274: the MASK-ONLY needle class. A Lambda-backed custom resource's
 // handler can declare its response `Data` sensitive with `NoEcho: true`; the

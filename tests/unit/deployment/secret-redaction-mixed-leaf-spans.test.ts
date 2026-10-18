@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
+  type PathSourceRules,
+  type RecordedSecretValues,
+  SECRET_MASK,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_DERIVED_RULES,
-  type PathSourceRules,
-  type RecordedSecretValues,
-  SECRET_MASK,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 // The reference a PREVIOUS deploy already persisted into a MIXED leaf: the
 // dominant CDK shape, an `Fn::Join` around a secret, whose ordinary

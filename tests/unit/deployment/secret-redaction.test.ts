@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   maskSecretsInText,
   scrubResourceRecord,
-  STATE_SOURCED_READBACK_RULES,
-  TEMPLATE_SOURCED_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}}';
 

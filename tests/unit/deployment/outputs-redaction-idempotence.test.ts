@@ -29,12 +29,14 @@
 
 import { describe, it, expect } from 'vite-plus/test';
 import {
-  redactSecretsForState,
-  TEMPLATE_SOURCED_RULES,
-  STATE_SOURCED_BASELINE_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  TEMPLATE_SOURCED_RULES,
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}}';
 const SECRET_PLAINTEXT = 'super-secret-plaintext-value';

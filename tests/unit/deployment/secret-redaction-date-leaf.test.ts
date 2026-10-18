@@ -1,16 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
   type PathSourceRules,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_DERIVED_RULES,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Issue [#2427](https://github.com/go-to-k/cdkd/issues/2427) — the VALUE scan

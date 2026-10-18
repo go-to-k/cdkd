@@ -10,10 +10,10 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import {
   SECRET_MASK,
   clearRecordedSecretExpressions,
-  markSameGenerationBag,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -85,7 +85,7 @@ describe("a reader of an in-run producer's attribute (#4802)", () => {
     expect(bag.get(NAME)).toBe(REF);
     const source = { Value: { 'Fn::GetAtt': ['Producer', 'Arn'] } };
     expect(
-      redactSecretsForState(markSameGenerationBag({ Value: resolved }), bag, source)
+      redactSecretsForState({ Value: resolved }, bag, source, TEMPLATE_DERIVED_RULES, true)
     ).toEqual({ Value: `arn:aws:sqs:us-east-1:123456789012:${REF}` });
   });
 

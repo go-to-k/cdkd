@@ -81,7 +81,6 @@ import {
   printingCorpusOf,
   shareLogOnlyValues,
   maskSecretsInText,
-  STATE_SOURCED_CROSS_GENERATION_RULES,
   MIN_NEEDLE_LENGTH,
   inheritNestedStackParameterAssociations,
   recordNestedStackParameterExpressions,
@@ -8430,6 +8429,8 @@ export async function scrubStack(
               provenance: 'template-sourced',
               secrets: ownSecrets,
               source: templateProps,
+              // A record read from `state.json`: this run resolved none of it.
+              generation: 'unproven',
             }),
           }
         : record;
@@ -8447,12 +8448,7 @@ export async function scrubStack(
       // bag — because it is what cleans a legacy PLAINTEXT observed leaf.
       const scrubbed =
         secrets || templateProps
-          ? scrubResourceRecord(
-              positioned,
-              ownSecrets,
-              undefined,
-              STATE_SOURCED_CROSS_GENERATION_RULES
-            )
+          ? scrubResourceRecord(positioned, ownSecrets, undefined, 'state-cross-generation')
           : record;
       // go-to-k/cdkd#4043 Phase C, the migration rule: a plaintext this record
       // still holds at a `NoEcho` position is a needle of a SECOND scrub of
@@ -8465,12 +8461,7 @@ export async function scrubStack(
       const migrated =
         migrationNeedles === undefined
           ? scrubbed
-          : scrubResourceRecord(
-              scrubbed,
-              migrationNeedles,
-              undefined,
-              STATE_SOURCED_CROSS_GENERATION_RULES
-            );
+          : scrubResourceRecord(scrubbed, migrationNeedles, undefined, 'state-cross-generation');
       // go-to-k/cdkd#4847: provenance only for the tokens the record still holds.
       const written = keepHeldTokenProvenance(applyScrubNoEcho(migrated, record, plan));
       if (JSON.stringify(written) !== JSON.stringify(record)) recordsChanged++;
@@ -8504,7 +8495,7 @@ export async function scrubStack(
       for (const [plaintext, expression] of own ?? []) needles.set(plaintext, expression);
       if (needles.size === 0) return record;
       const scrubbed = keepHeldTokenProvenance(
-        scrubResourceRecord(record.state, needles, undefined, STATE_SOURCED_CROSS_GENERATION_RULES)
+        scrubResourceRecord(record.state, needles, undefined, 'state-cross-generation')
       );
       if (JSON.stringify(scrubbed) === JSON.stringify(record.state)) return record;
       recordsChanged++;
@@ -8667,6 +8658,8 @@ export async function scrubStack(
                   provenance: 'template-sourced',
                   secrets: outputSecrets,
                   source: outputsTemplateSource,
+                  // The STORED outputs bag, never this run's resolution.
+                  generation: 'unproven',
                 }
           )
         : state.outputs;

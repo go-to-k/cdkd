@@ -5,12 +5,12 @@ import {
   resetAccountInfoCache,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import {
-  redactSecretsForState,
   crossStackSourceKey,
   recordCrossStackExpression,
   clearRecordedSecretExpressions,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../../src/state/export-index-store.js';

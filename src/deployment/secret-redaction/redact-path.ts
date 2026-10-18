@@ -7,7 +7,7 @@ import {
   DYNAMIC_REFERENCE_INNER,
 } from './rules.js';
 import { spanNamesResolvableService } from './anchors.js';
-import { redactSecretsForState } from './redact-state.js';
+import { redactForState } from './context.js';
 import {
   positionByEmbeddedSpan,
   positionByIntrinsicSkeleton,
@@ -336,7 +336,7 @@ export function redactByPath(
       // out, and neither may be removed by editing only the other: each has its
       // own probe.
       //
-      // While BOTH exist, `redactSecretsForState(bag, secrets)` here would be
+      // While BOTH exist, `redactForState(bag, { provenance: 'value-scan', secrets })` here would be
       // byte-equivalent for a token of a RESOLVABLE service — the walk's own
       // token guard makes it whole-value-only for this shape — so a mutation swapping the two is an equivalent mutant
       // rather than an uncovered case. The duplication is the point: delete
@@ -347,7 +347,8 @@ export function redactByPath(
       // for a secret assembled into the service position, so it takes the
       // full value scan, which no longer spares it.
       if (!rules.sourceIsSameGeneration && isSingleDynamicReferenceToken(bag)) {
-        if (!spanNamesResolvableService(bag)) return redactSecretsForState(bag, secrets);
+        if (!spanNamesResolvableService(bag))
+          return redactForState(bag, { provenance: 'value-scan', secrets });
         return secrets.get(bag) ?? bag;
       }
       // The source leaf IS what state should hold — exact, and immune to two
@@ -567,7 +568,7 @@ export function redactByPath(
             bagIsSameGeneration
           );
         }
-        return redactSecretsForState(item, secrets);
+        return redactForState(item, { provenance: 'value-scan', secrets });
       });
     }
     if (rules.descendArrays && bag.length === source.length) {
@@ -624,14 +625,14 @@ export function redactByPath(
       // `constructor` / `toString` and hand the walk a function as the source.
       out[k] = Object.hasOwn(source, k)
         ? redactByPath(v, source[k], secrets, rules, secretExpressions, bagIsSameGeneration)
-        : redactSecretsForState(v, secrets);
+        : redactForState(v, { provenance: 'value-scan', secrets });
     }
     return out;
   }
   // Shapes diverged (an array whose length changed, a scalar where the source
   // has an object, a key the source lacks): fall back to the value scan, which
   // is strictly better than leaving the subtree unredacted.
-  return redactSecretsForState(bag, secrets);
+  return redactForState(bag, { provenance: 'value-scan', secrets });
 }
 
 /**

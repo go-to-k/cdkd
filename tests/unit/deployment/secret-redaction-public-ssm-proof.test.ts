@@ -1,12 +1,14 @@
 import { describe, it, expect, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   recordSecretExpression,
   clearRecordedSecretExpressions,
-  STATE_SOURCED_BASELINE_RULES,
-  STATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_BASELINE_RULES,
+  STATE_SOURCED_READBACK_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import {
   contradictProvenPublicExpression,
   recordProvenPublicExpression,

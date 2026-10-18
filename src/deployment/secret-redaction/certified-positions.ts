@@ -4,7 +4,7 @@ import {
   crossStackSourceKey,
   crossStackAssociations,
 } from './cross-stack.js';
-import { redactSecretsForState } from './redact-state.js';
+import { redactForState } from './context.js';
 
 /**
  * Walk a {@link RecordedSecretValues} the OTHER way: every expression the pass
@@ -154,7 +154,9 @@ export function certifiedListForLeaf(
   // that {@link redactByPath} then paid again on its own fallback scan.
   const certified = bag.map((element) => certifiedExpressionForLeaf(secrets, association, element));
   if (certified.every((expression) => expression === undefined)) return undefined;
-  return bag.map((element, i) => certified[i] ?? redactSecretsForState(element, secrets));
+  return bag.map(
+    (element, i) => certified[i] ?? redactForState(element, { provenance: 'value-scan', secrets })
+  );
 }
 
 /**

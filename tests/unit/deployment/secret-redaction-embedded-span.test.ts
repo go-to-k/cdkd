@@ -4,12 +4,14 @@ import {
   markSameGenerationBag,
   mergeResolvedPairs,
   recordResolvedPair,
-  redactSecretsForState,
   SECRET_MASK,
-  TEMPLATE_DERIVED_RULES,
-  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  TEMPLATE_DERIVED_RULES,
+  TEMPLATE_SOURCED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Issue #2485: a literal leaf that EMBEDS one `{{resolve:...}}` token beside a
@@ -67,7 +69,7 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
     ['the template-DERIVED rules (the deploy persist walk)', TEMPLATE_DERIVED_RULES],
     ['the template-SOURCED rules (a scrub / observed walk)', TEMPLATE_SOURCED_RULES],
   ] as const) {
-    it(`leaves an embedded 1-3 character secret to the value scan on a bag NOBODY marked, under ${label}`, () => {
+    it(`leaves an embedded 1-3 character secret to the value scan on a bag NOBODY claimed, under ${label}`, () => {
       // The scan's substring arm ignores needles shorter than four characters,
       // and below that floor a rewrite would be a NEW claim on a bag this pass
       // did not necessarily produce (a previous generation's record, an old
@@ -93,9 +95,9 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
     });
   }
 
-  describe('writes an embedded 1-3 character secret as its token on a bag the engine marked same-generation (issue #2516)', () => {
-    // The mark is the second half of the evidence: the pair says THIS pass
-    // resolved the token to the middle, the mark says THIS pass produced the
+  describe('writes an embedded 1-3 character secret as its token on a bag claimed same-generation (issue #2516)', () => {
+    // The claim is the second half of the evidence: the pair says THIS pass
+    // resolved the token to the middle, the claim says THIS pass produced the
     // bag. Below the scan's needle floor the scan makes no claim, so only the
     // two together license `prefix + token + suffix`.
     for (const middle of ['a', 'ab', 'abc'] as const) {
@@ -103,11 +105,11 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         const secrets: RecordedSecretValues = new Map([[middle, NAME]]);
         recordResolvedPair(secrets, NAME, middle);
         const leaf = `${PREFIX}${middle}${SUFFIX}`;
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
 
         // Premise: the scan itself leaves the leaf alone below its floor.
         expect(redactSecretsForState(leaf, secrets)).toBe(leaf);
-        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({
+        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true)).toEqual({
           Dsn: EMBEDDED_SOURCE,
         });
       });
@@ -125,9 +127,9 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
           recordResolvedPair(secrets, NAME, middle);
           recordResolvedPair(secrets, NAME_V1, middle);
           const source = { Whole: NAME_V1, Dsn: EMBEDDED_SOURCE };
-          const bag = markSameGenerationBag({ Whole: middle, Dsn: `${PREFIX}${middle}${SUFFIX}` });
+          const bag = { Whole: middle, Dsn: `${PREFIX}${middle}${SUFFIX}` };
 
-          expect(redactSecretsForState(bag, secrets, source)).toEqual({
+          expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({
             Whole: NAME_V1,
             Dsn: EMBEDDED_SOURCE,
           });
@@ -135,15 +137,15 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       }
     }
 
-    it('is read for the object handed in and threaded down the walk — a sub-bag walked on its own is not marked', () => {
+    it('is read for the object handed in and threaded down the walk — a sub-bag walked on its own is not claimed', () => {
       const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
       recordResolvedPair(secrets, NAME, 'ab');
       const leaf = `${PREFIX}ab${SUFFIX}`;
-      const bag = markSameGenerationBag({ Env: { Vars: { Dsn: leaf } } });
+      const bag = { Env: { Vars: { Dsn: leaf } } };
       const source = { Env: { Vars: { Dsn: EMBEDDED_SOURCE } } };
 
       // Threaded: the leaf three levels down takes the arm.
-      expect(redactSecretsForState(bag, secrets, source)).toEqual({
+      expect(redactSecretsForState(bag, secrets, source, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Env: { Vars: { Dsn: EMBEDDED_SOURCE } },
       });
       // Not inherited: the same object's sub-bag, walked as the top level, is
@@ -160,32 +162,32 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
       recordResolvedPair(secrets, NAME, 'ab');
       const leaf = `${PREFIX}ab${SUFFIX}`;
-      const keyed = markSameGenerationBag({ Env: [{ Name: 'DSN', Value: leaf }] });
-      const positional = markSameGenerationBag({ List: [leaf] });
+      const keyed = { Env: [{ Name: 'DSN', Value: leaf }] };
+      const positional = { List: [leaf] };
 
       expect(
-        redactSecretsForState(keyed, secrets, { Env: [{ Name: 'DSN', Value: EMBEDDED_SOURCE }] })
+        redactSecretsForState(keyed, secrets, { Env: [{ Name: 'DSN', Value: EMBEDDED_SOURCE }] }, TEMPLATE_DERIVED_RULES, true)
       ).toEqual({ Env: [{ Name: 'DSN', Value: EMBEDDED_SOURCE }] });
-      expect(redactSecretsForState(positional, secrets, { List: [EMBEDDED_SOURCE] })).toEqual({
+      expect(redactSecretsForState(positional, secrets, { List: [EMBEDDED_SOURCE] }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         List: [EMBEDDED_SOURCE],
       });
       // ...and the keyed arm's UNPAIRED-element positional fallback: the bag
       // element's identity is not in the source, the lengths agree and every
       // pairing sits at its own index, so it takes `source[i]` — through the
       // same threaded flag.
-      const fallback = markSameGenerationBag({
+      const fallback = {
         Env: [
           { Name: 'HOST', Value: 'db.internal' },
           { Name: 'RENAMED', Value: leaf },
         ],
-      });
+      };
       expect(
         redactSecretsForState(fallback, secrets, {
           Env: [
             { Name: 'HOST', Value: 'db.internal' },
             { Name: 'DSN', Value: EMBEDDED_SOURCE },
           ],
-        })
+        }, TEMPLATE_DERIVED_RULES, true)
       ).toEqual({
         Env: [
           { Name: 'HOST', Value: 'db.internal' },
@@ -194,17 +196,17 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       });
     });
 
-    it('does NOT survive a copy of the bag — the mark is on the object, not on its contents', () => {
+    it('reads the claim from its argument, never off the object: a MARKED bag walked unclaimed keeps the scan answer (go-to-k/cdkd#5047)', () => {
       const secrets: RecordedSecretValues = new Map([['ab', NAME]]);
       recordResolvedPair(secrets, NAME, 'ab');
       const leaf = `${PREFIX}ab${SUFFIX}`;
-      const bag = markSameGenerationBag({ Dsn: leaf });
-      const copy = { ...bag };
+      const bag = { Dsn: leaf };
+      const marked = markSameGenerationBag({ ...bag });
 
-      expect(redactSecretsForState(copy, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
-      // ...and a copy of the MAP still refuses too: the pair is per map
-      // instance, the mark per bag object, and both are needed.
-      expect(redactSecretsForState(bag, new Map(secrets), { Dsn: EMBEDDED_SOURCE })).toEqual({
+      expect(redactSecretsForState(marked, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+      // ...and a copy of the MAP still refuses even under the claim: the pair
+      // is per map instance, the claim per walk, and both are needed.
+      expect(redactSecretsForState(bag, new Map(secrets), { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true)).toEqual({
         Dsn: leaf,
       });
     });
@@ -215,9 +217,9 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       const secrets: RecordedSecretValues = new Map([['ab', NAME_V1]]);
       recordResolvedPair(secrets, NAME_V1, 'ab');
       const leaf = `${PREFIX}ab${SUFFIX}`;
-      const bag = markSameGenerationBag({ Dsn: leaf });
+      const bag = { Dsn: leaf };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: leaf });
     });
 
     for (const [label, first, second] of [
@@ -232,9 +234,9 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         recordResolvedPair(secrets, NAME, first);
         recordResolvedPair(secrets, NAME, second);
         const leaf = `${PREFIX}ab${SUFFIX}`;
-        const bag = markSameGenerationBag({ Dsn: leaf });
+        const bag = { Dsn: leaf };
 
-        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({
+        expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true)).toEqual({
           Dsn: leaf,
         });
       });
@@ -253,18 +255,18 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
       secrets.set('', NAME);
       recordResolvedPair(secrets, NAME, '');
       const leaf = `${PREFIX}${SUFFIX}`;
-      const bag = markSameGenerationBag({ Dsn: leaf });
+      const bag = { Dsn: leaf };
 
-      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE })).toEqual({ Dsn: leaf });
+      expect(redactSecretsForState(bag, secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true)).toEqual({ Dsn: leaf });
     });
 
-    describe('keeps refusing the three interference cases with the mark present', () => {
+    describe('keeps refusing the three interference cases under the claim', () => {
       // Each makes the scan rewrite SOMETHING, so `scanned === bag` is false
       // and the relaxed arm does not fire; the answer is the scan's, as it is
       // on an unmarked bag. A mutant testing the middle's LENGTH instead of
       // the scan's silence fails all three.
       function marked(leaf: string) {
-        return markSameGenerationBag({ Dsn: leaf });
+        return { Dsn: leaf };
       }
 
       it('a WHOLE leaf that is itself another recorded plaintext', () => {
@@ -275,7 +277,7 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         secrets.set(leaf, OTHER);
         recordResolvedPair(secrets, OTHER, leaf);
 
-        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true);
 
         expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
         expect(persisted).toEqual({ Dsn: OTHER });
@@ -289,7 +291,7 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         recordResolvedPair(secrets, OTHER, SUFFIX);
         const leaf = `${PREFIX}ab${SUFFIX}`;
 
-        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true);
 
         expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
         expect(persisted).toEqual({ Dsn: `${PREFIX}ab${OTHER}` });
@@ -304,7 +306,7 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         recordResolvedPair(secrets, OTHER, overlapping);
         const leaf = `${PREFIX}ab${SUFFIX}`;
 
-        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE });
+        const persisted = redactSecretsForState(marked(leaf), secrets, { Dsn: EMBEDDED_SOURCE }, TEMPLATE_DERIVED_RULES, true);
 
         expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
         expect(persisted).toEqual({ Dsn: `postgres://${OTHER}b${SUFFIX}` });

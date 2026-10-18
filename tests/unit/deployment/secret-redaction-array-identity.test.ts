@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord as scrubResourceRecordRaw,
   markSameGenerationBag,
   clearRecordedSecretExpressions,
   recordSecretExpression,
+  SECRET_MASK,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   STATE_DERIVED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_SOURCED_BASELINE_RULES,
-  SECRET_MASK,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Every `scrubResourceRecord` call in this file models the DEPLOY PERSIST choke

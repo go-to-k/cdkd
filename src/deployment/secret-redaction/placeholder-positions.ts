@@ -1,7 +1,7 @@
 import { isPlainObject, MIN_NEEDLE_LENGTH } from './rules.js';
 import { type RecordedSecretValues, intrinsicLeafResolutionOf } from './pairs.js';
 import { crossStackSourceKey, crossStackAssociations } from './cross-stack.js';
-import { redactSecretsForState } from './redact-state.js';
+import { redactForState } from './context.js';
 import { UNKNOWN_PART, joinPartLiteralText } from './positions.js';
 import { certifiedExpressionForLeaf } from './certified-positions.js';
 import { inheritedPseudoSpan, inheritedRenderedSpan } from './nested-stack.js';
@@ -345,7 +345,7 @@ export function positionByParameterPlaceholders(
     // flatten would leave an inline `***` that no replay refusal recognises
     // (only a leaf that IS `***` is). A slice the scan would rewrite at all
     // refuses instead, which is the value scan's whole-leaf answer.
-    if (redactSecretsForState(middle, secrets) !== middle) return undefined;
+    if (redactForState(middle, { provenance: 'value-scan', secrets }) !== middle) return undefined;
     persisted = before[1] + middle + after[1];
   }
   const afterStart = bag.length - after[0].length;
@@ -385,7 +385,8 @@ function acceptedPlaceholderRendering(
       }
     }
   }
-  if (redactSecretsForState(persisted, secrets) !== persisted) return undefined;
+  if (redactForState(persisted, { provenance: 'value-scan', secrets }) !== persisted)
+    return undefined;
   return persisted;
 }
 
@@ -462,7 +463,7 @@ function positionByRecordedParameterSpans(
   gaps.push(tail);
   persisted += tail;
   for (const gap of gaps) {
-    if (redactSecretsForState(gap, secrets) !== gap) return undefined;
+    if (redactForState(gap, { provenance: 'value-scan', secrets }) !== gap) return undefined;
   }
   return acceptedPlaceholderRendering(bag, persisted, certified, secrets);
 }

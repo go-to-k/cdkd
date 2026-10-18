@@ -25,6 +25,7 @@ import {
   carriesSecretMask,
   createUnionSecretMasker,
   hasMaskableValues,
+  isSameGenerationBag,
   literalSplitDelimitersOf,
   maskSecretsInError,
   maskSecretsInText,
@@ -510,6 +511,10 @@ function redactOutputsBag(
             provenance: 'template-sourced',
             secrets: outputsRun.outputSecrets,
             source: outputsRun.outputsTemplateSource,
+            // `resolveOutputs` marks the bag it resolved this pass (issue
+            // #2516); the claim that mark carries is stated here
+            // (go-to-k/cdkd#5047). A previous deploy's bag is unmarked.
+            generation: isSameGenerationBag(outputs) ? 'same-generation' : 'unproven',
           }
         : { provenance: 'value-scan', secrets: outputsRun.outputSecrets }
     )

@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
-  STATE_SOURCED_BASELINE_RULES,
   SECRET_MASK,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 const PLAINTEXT = 'the-real-resolved-secret-value';

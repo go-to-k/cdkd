@@ -6,13 +6,15 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { resolveDynamicReferences } from '../../../src/deployment/intrinsic-resolver/dynamic-refs.js';
 import {
-  redactSecretsForState,
   recordSecretExpression,
   clearRecordedSecretExpressions,
   intrinsicSkeletonPattern,
-  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  TEMPLATE_SOURCED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {

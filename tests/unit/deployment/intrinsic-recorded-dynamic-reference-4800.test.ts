@@ -13,10 +13,10 @@ import type { ResourceState } from '../../../src/types/state.js';
 import {
   SECRET_MASK,
   clearRecordedSecretExpressions,
-  markSameGenerationBag,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 const QUEUE_REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const QUEUE_NAME = 'sdin-q-1';
@@ -145,9 +145,10 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     expect(resolved).toEqual({ Value: PLAIN_ARN });
     // The reader's own record keeps no plaintext.
     const persisted = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       bag,
       source
+    , TEMPLATE_DERIVED_RULES, true
     );
     expect(persisted).toEqual({ Value: RECORDED_ARN });
   });
@@ -233,9 +234,10 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     const resolved = (await resolveWith(producer, source, { bag })) as Record<string, unknown>;
     expect(resolved).toEqual({ X: QUEUE_NAME, Y: QUEUE_NAME });
     const persisted = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       bag,
       source
+    , TEMPLATE_DERIVED_RULES, true
     );
     expect(persisted).toEqual({ X: cur, Y: prev });
   });
@@ -343,9 +345,10 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     const resolved = (await resolveWith(producer, source, { bag })) as Record<string, unknown>;
     expect(resolved).toEqual({ X: QUEUE_NAME, Y: QUEUE_NAME });
     const persisted = redactSecretsForState(
-      markSameGenerationBag(structuredClone(resolved)),
+      structuredClone(resolved),
       bag,
       source
+    , TEMPLATE_DERIVED_RULES, true
     );
     expect(persisted).toEqual({ X: cur, Y: prev });
   });

@@ -3,11 +3,13 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { redactOperationsForJournal } from '../../../src/deployment/deploy-engine/rollback.js';
 import {
   scrubResourceRecord,
-  redactSecretsForState,
   markSameGenerationBag,
   SECRET_MASK,
-  STATE_SOURCED_BASELINE_RULES,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 

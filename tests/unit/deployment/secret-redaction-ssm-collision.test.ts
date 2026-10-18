@@ -1,16 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   recordSecretExpression,
   forgetSecretExpression,
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   STATE_SOURCED_READBACK_RULES,
   STATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 // Two DISTINCT SecureString ssm parameters that happen to hold the SAME value —
 // a shared password rotated into two paths, which is ordinary rather than

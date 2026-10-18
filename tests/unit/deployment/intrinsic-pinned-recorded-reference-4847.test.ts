@@ -157,8 +157,15 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
-const { clearRecordedSecretExpressions, markSameGenerationBag, redactSecretsForState } =
-  await import('../../../src/deployment/secret-redaction.js');
+const { clearRecordedSecretExpressions } = await import(
+  '../../../src/deployment/secret-redaction.js'
+);
+const { redactSecretsForState } = await import(
+  '../../../src/deployment/secret-redaction/redact-state.js'
+);
+const { TEMPLATE_DERIVED_RULES } = await import(
+  '../../../src/deployment/secret-redaction/rules.js'
+);
 const { resolvedPlaintextOf } = await import('../../../src/deployment/secret-redaction/pairs.js');
 const { isRecordedSecretExpression } = await import(
   '../../../src/deployment/secret-redaction/mask-only.js'
@@ -728,9 +735,10 @@ describe('re-resolving a recorded reference by its v12 provenance (#4847)', () =
     expect(resolved).toEqual({ Description: 'pre-cd', Value: 'x-abcdef' });
     expect(resolvedPlaintextOf(bag, SHORT)).toBe('cd');
     const persisted = redactSecretsForState(
-      markSameGenerationBag(resolved),
+      resolved,
       bag,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as Record<string, unknown>;
     expect(persisted['Description']).toBe(`pre-${SHORT}`);
     expect(persisted['Value']).toBe(`x-${SHORT}`);
@@ -755,7 +763,7 @@ describe('re-resolving a recorded reference by its v12 provenance (#4847)', () =
       contextFor(producer, { Value: CROSS_REGION_NAME }, bag) as never
     )) as Record<string, unknown>;
     expect(resolved['Value']).toBe(`x-${SHORT}`);
-    const persisted = redactSecretsForState(markSameGenerationBag(resolved), bag, source) as Record<
+    const persisted = redactSecretsForState(resolved, bag, source, TEMPLATE_DERIVED_RULES, true) as Record<
       string,
       unknown
     >;

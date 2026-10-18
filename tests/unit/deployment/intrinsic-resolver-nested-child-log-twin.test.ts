@@ -105,8 +105,11 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const { IntrinsicFunctionResolver, resetAccountInfoCache } = await import(
   '../../../src/deployment/intrinsic-function-resolver.js'
 );
-const { recordNestedStackParameterExpressions, redactSecretsForState } = await import(
+const { recordNestedStackParameterExpressions } = await import(
   '../../../src/deployment/secret-redaction.js'
+);
+const { redactSecretsForState } = await import(
+  '../../../src/deployment/secret-redaction/redact-state.js'
 );
 
 const PIN_REF = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:pin}}`;

@@ -8,13 +8,15 @@ import {
   DYNAMIC_REFERENCE_TOKEN_SCAN,
   dynamicReferenceTokens,
   isSingleDynamicReferenceToken,
-  redactSecretsForState,
   scrubResourceRecord,
-  STATE_SOURCED_CROSS_GENERATION_RULES,
-  STATE_SOURCED_READBACK_RULES,
   WHOLE_DYNAMIC_REFERENCE_PATTERN,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_CROSS_GENERATION_RULES,
+  STATE_SOURCED_READBACK_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * Issue [#1936](https://github.com/go-to-k/cdkd/issues/1936): three spellings of
@@ -204,7 +206,7 @@ describe('a braced reference is not persisted as plaintext (issue #1936)', () =>
       record,
       new Map() as RecordedSecretValues,
       template,
-      STATE_SOURCED_CROSS_GENERATION_RULES
+      'state-cross-generation'
     );
 
     // The DISCRIMINATOR is which STRING each bag ends up holding — "redaction

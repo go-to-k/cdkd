@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 import {
-  redactSecretsForState,
   STATE_SOURCED_BASELINE_RULES,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 

@@ -2,15 +2,17 @@ import { describe, it, expect, afterEach } from 'vite-plus/test';
 import {
   clearRecordedSecretExpressions,
   recordSecretExpression,
-  redactSecretsForState,
   recordNestedStackParameterExpressions,
   recordResolvedPair,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
   recordInheritedParameterRead,
-  STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_DERIVED_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 /**
  * POSITION certification for a LIST-VALUED nested-stack child leaf (issue

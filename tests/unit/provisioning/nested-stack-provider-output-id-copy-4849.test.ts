@@ -21,10 +21,10 @@ import {
   attributeIdCopiesOf,
   physicalNameCopiesOf,
   recordNoEchoParameterFreshValue,
-  redactSecretsForState,
   scrubResourceRecord,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation(() => ({

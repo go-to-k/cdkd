@@ -6,9 +6,9 @@ import {
 import {
   SECRET_MASK,
   recordNoEchoParameterFreshValue,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 /**
  * go-to-k/cdkd#4043: a CDK nested child's `CommaDelimitedList` parameter fed a

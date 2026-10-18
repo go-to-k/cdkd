@@ -65,11 +65,10 @@ import {
 import { hasReadableOrphans } from '../../state/malformed-resources-bag.js';
 import {
   type RecordedSecretValues,
-  STATE_SOURCED_READBACK_RULES,
-  markSameGenerationBag,
+  isSameGenerationBag,
   maskSecretsInText,
   recordLogOnlyValue,
-  redactSecretsForState,
+  redactForState,
   scrubResourceRecord,
   maskAtCoordinates,
   noEchoCoordinatesOf,
@@ -132,32 +131,45 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
     const ownSecrets = secrets ?? new Map<string, string>();
     const next = { ...op } as CompletedOperation & FailedOperation;
     if (next.properties) {
+      // A COMPLETED op journals the record's own bag (`execute.ts`), which
+      // `propertiesToRecord` marked same-generation when this pass resolved
+      // it; the claim that mark carries is stated here (go-to-k/cdkd#5047), so
+      // a sub-floor embedded secret keeps its token in the journal too.
+      const properties = next.properties;
       next.properties = byPosition(
-        redactSecretsForState(next.properties, ownSecrets, templateProps)
+        templateProps === undefined
+          ? redactForState(properties, { provenance: 'value-scan', secrets: ownSecrets })
+          : redactForState(properties, {
+              provenance: 'template-derived',
+              secrets: ownSecrets,
+              source: templateProps,
+              generation: isSameGenerationBag(properties) ? 'same-generation' : 'unproven',
+            })
       );
     }
     if (next.attemptedProperties) {
       // Issue #2516: a FAILED op's attempted bag is the resolver's own
       // output of today's template — the provider threw, so
       // `propertiesToRecord` never marked it — and this journal is a
-      // persisted S3 artifact of its own. Marked as a COPY, the no-change
-      // re-check's pattern. Nothing reads the original after this journal
-      // is written (a `--revert-failed` replay re-resolves the journaled
-      // bag into a new object), so the copy guards a future reader rather
-      // than a present one — stated so the choice is not mistaken for a
-      // pinned behaviour.
+      // persisted S3 artifact of its own, so it is walked under a
+      // same-generation claim, the no-change re-check's pattern. The claim
+      // marks nothing (go-to-k/cdkd#5047): `redactForState` walks a copy.
+      const attempted = next.attemptedProperties;
       next.attemptedProperties = byPosition(
-        redactSecretsForState(
-          markSameGenerationBag({ ...next.attemptedProperties }),
-          ownSecrets,
-          templateProps
-        )
+        templateProps === undefined
+          ? redactForState(attempted, { provenance: 'value-scan', secrets: ownSecrets })
+          : redactForState(attempted, {
+              provenance: 'template-derived',
+              secrets: ownSecrets,
+              source: templateProps,
+              generation: 'same-generation',
+            })
       );
     }
     if (next.previousState) {
       // No `sourceProperties`: the previous record positions itself.
       //
-      // `STATE_SOURCED_READBACK_RULES` is passed EXPLICITLY (issue #2886):
+      // `state-readback` is passed EXPLICITLY (issue #2886):
       // left to `scrubResourceRecord`'s derivation, an op whose resource
       // resolved nothing this deploy — a DELETE, an UPDATE with no reference
       // of its own — arrives here with an EMPTY map (the guard above admits
@@ -193,7 +205,7 @@ export function redactOperationsForJournal<T extends CompletedOperation | Failed
         op.logicalId,
         previous,
         keepPersistedPlainRecordLeaves(
-          scrubResourceRecord(previous, ownSecrets, undefined, STATE_SOURCED_READBACK_RULES),
+          scrubResourceRecord(previous, ownSecrets, undefined, 'state-readback'),
           previous,
           loaded ?? {}
         ),

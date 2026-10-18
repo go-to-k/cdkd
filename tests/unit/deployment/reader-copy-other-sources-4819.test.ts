@@ -16,14 +16,14 @@ import {
   SECRET_MASK,
   clearRecordedSecretExpressions,
   inheritNestedStackParameterAssociations,
-  markSameGenerationBag,
   physicalNameCopiesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoParameterFreshValue,
   recordPhysicalNameCopy,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 import {
   redactParametersForDiff,
   type MaskingDeps,
@@ -144,7 +144,7 @@ describe('a reader copy of a physical id from other sources (#4819)', () => {
     // Premise: the import resolved, and the literal reference put the name in the bag.
     expect(resolved['Queues']).toEqual([URL]);
     expect(bag.get(NAME)).toBe(REF);
-    expect(redactSecretsForState(markSameGenerationBag({ ...resolved }), bag, source)).toEqual({
+    expect(redactSecretsForState({ ...resolved }, bag, source, TEMPLATE_DERIVED_RULES, true)).toEqual({
       Queues: [URL],
       Resource: `arn:aws:sqs:us-east-1:123456789012:${REF}`,
     });
@@ -322,9 +322,10 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
     expect(resolved['Queues']).toEqual([URL]);
     expect(child.get(NAME)).toBe(REF);
     const persisted = redactSecretsForState(
-      markSameGenerationBag({ ...resolved }),
+      { ...resolved },
       child,
       source
+    , TEMPLATE_DERIVED_RULES, true
     ) as Record<string, unknown>;
     expect(persisted['Queues']).toEqual([URL]);
     if ('Resource' in source) {
@@ -355,9 +356,10 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
       } as never)) as Record<string, unknown>;
       expect(child.get(NAME)).toBe(REF);
       const persisted = redactSecretsForState(
-        markSameGenerationBag({ ...resolved }),
+        { ...resolved },
         child,
         source
+      , TEMPLATE_DERIVED_RULES, true
       ) as Record<string, unknown>;
       // Control (no copies): the rewrite the destroy then failed on.
       expect(persisted['Queues']).toEqual([copies ? URL : URL.replace(NAME, REF)]);
@@ -395,7 +397,7 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
     const { child, resolved } = await resolveChild(parent, source);
     expect(resolved['Queues']).toEqual([URL]);
     expect(
-      redactSecretsForState(markSameGenerationBag({ ...resolved }), child, source)
+      redactSecretsForState({ ...resolved }, child, source, TEMPLATE_DERIVED_RULES, true)
     ).toEqual({ Queues: [URL.replace(NAME, REF)] });
   });
 
@@ -411,9 +413,9 @@ describe('a nested child reading a parent-passed physical id (#4819)', () => {
     const embedded = await resolveChild(parent, { Name: { Ref: PARAM } }, embedding);
     expect([...(physicalNameCopiesOf.get(embedded.child) ?? [])]).toEqual([URL]);
     expect(
-      redactSecretsForState(markSameGenerationBag({ ...embedded.resolved }), embedded.child, {
+      redactSecretsForState({ ...embedded.resolved }, embedded.child, {
         Name: { Ref: PARAM },
-      })
+      }, TEMPLATE_DERIVED_RULES, true)
     ).toEqual({ Name: embedding });
   });
 });

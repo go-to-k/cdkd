@@ -1,18 +1,20 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   redactForState,
-  redactSecretsForState,
   isSameGenerationBag,
   recordResolvedPair,
+  type RedactionContext,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   STATE_DERIVED_RULES,
-  type RedactionContext,
-  type RecordedSecretValues,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 import { rulesForProvenance } from '../../../src/deployment/secret-redaction/context.js';
 
 // go-to-k/cdkd#1940: the provenance-typed choke point. The property half keys
@@ -38,12 +40,14 @@ describe('redactForState: provenance selects the rules', () => {
     const noSource: RedactionContext = { provenance: 'state-baseline', secrets };
     // @ts-expect-error -- the generation claim is required for template-derived
     const noClaim: RedactionContext = { provenance: 'template-derived', secrets, source: {} };
+    // @ts-expect-error -- so is template-sourced's (go-to-k/cdkd#5047)
+    const noSourcedClaim: RedactionContext = { provenance: 'template-sourced', secrets, source: {} };
     // @ts-expect-error -- a value scan has no source to walk
     const scanWithSource: RedactionContext = { provenance: 'value-scan', secrets, source: {} };
     const maybe = undefined as Record<string, unknown> | undefined;
     // @ts-expect-error -- a possibly-undefined source would silently become a value scan
     const maybeSource: RedactionContext = { provenance: 'state-readback', secrets, source: maybe };
-    expect([noSource, noClaim, scanWithSource, maybeSource]).toHaveLength(4);
+    expect([noSource, noClaim, noSourcedClaim, scanWithSource, maybeSource]).toHaveLength(5);
   });
 
   it('keeps the same-generation mark off both the caller bag and the result', () => {
@@ -151,7 +155,7 @@ describe('redactForState: provenance selects the rules', () => {
     ] as const;
     for (const [provenance, rules] of positional) {
       const context = (
-        provenance === 'template-derived'
+        provenance === 'template-derived' || provenance === 'template-sourced'
           ? { provenance, secrets, source, generation: 'unproven' }
           : { provenance, secrets, source }
       ) as RedactionContext;
@@ -354,7 +358,12 @@ describe('redactForState: planted-plaintext properties over generated triples', 
       'template-sourced readback',
       (t) => [
         t.resolved,
-        { provenance: 'template-sourced', secrets: secretsOf(t.plants), source: t.template },
+        {
+          provenance: 'template-sourced',
+          secrets: secretsOf(t.plants),
+          source: t.template,
+          generation: 'unproven',
+        },
         t.template,
       ],
     ],

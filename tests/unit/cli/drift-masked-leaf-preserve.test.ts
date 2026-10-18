@@ -11,10 +11,10 @@ import {
 } from '../../../src/cli/commands/drift.js';
 import {
   SECRET_MASK,
-  redactSecretsForState,
   maskSecretsInText,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 // Every case in this file predating issue #2102 exercises the WHOLE-token arm,
 // which reads neither the surviving-token set nor the map — so they run with

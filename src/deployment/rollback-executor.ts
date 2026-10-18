@@ -54,7 +54,6 @@ import {
   maskedLeafCoordinatesOf,
   recordNestedStackParameterExpressions,
   recordNoEchoAttributeValues,
-  STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
@@ -1298,7 +1297,7 @@ async function replayFailedOperationsUnbound(
             op.resourceType,
             desiredProps,
             prev.properties,
-            STATE_DERIVED_RULES
+            'state-derived'
           );
           // Issue #4037, the `revert` arm's twin.
           opMasker.addNamed({

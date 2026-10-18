@@ -15,10 +15,10 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
   clearRecordedSecretExpressions,
-  markSameGenerationBag,
-  redactSecretsForState,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import { TEMPLATE_DERIVED_RULES } from '../../../src/deployment/secret-redaction/rules.js';
 
 const QUEUE_REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 const QUEUE_NAME = 'sdin-q-1';
@@ -115,7 +115,7 @@ describe('a recorded reference is re-resolved on producer-region evidence (#4805
     expect(resolved).toBe(PLAIN_ARN);
     const source = { Value: { 'Fn::GetAtt': ['Producer', 'Arn'] } };
     expect(
-      redactSecretsForState(markSameGenerationBag({ Value: resolved }), bag, source)
+      redactSecretsForState({ Value: resolved }, bag, source, TEMPLATE_DERIVED_RULES, true)
     ).toEqual({ Value: RECORDED_ARN });
   });
 

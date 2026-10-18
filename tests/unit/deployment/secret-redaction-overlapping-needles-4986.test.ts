@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   MIN_NEEDLE_LENGTH,
   SECRET_MASK,
@@ -12,6 +11,7 @@ import {
   repairPhysicalNameCopyLeaves,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
 
 // go-to-k/cdkd#4986: two recorded plaintexts that OVERLAP inside one leaf.
 // The substring arm's regex alternation is leftmost-first, so the first

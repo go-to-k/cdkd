@@ -36,16 +36,18 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
   markSameGenerationBag,
   clearRecordedSecretExpressions,
+  SECRET_MASK,
+} from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_BASELINE_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   TEMPLATE_SOURCED_RULES,
-  SECRET_MASK,
-} from '../../../src/deployment/secret-redaction.js';
+} from '../../../src/deployment/secret-redaction/rules.js';
 
 const EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 const EXPR_2 = '{{resolve:secretsmanager:app/other:SecretString:password}}';

@@ -6,11 +6,13 @@ import {
   secretReferenceTokensOf,
 } from '../../../src/deployment/masked-baseline-recapture.js';
 import {
-  redactSecretsForState,
   scrubResourceRecord,
-  STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
+import { redactSecretsForState } from '../../../src/deployment/secret-redaction/redact-state.js';
+import {
+  STATE_SOURCED_BASELINE_RULES,
+} from '../../../src/deployment/secret-redaction/rules.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 /**

@@ -249,13 +249,11 @@ export class ObservedCapture {
         // today (grepped at PR 2753 review), but the contract is delegated to
         // ~100 implementations with no guard, and the copy costs one spread.
         //
-        // Pinned from outside by walking the object the provider handed back
-        // through `redactSecretsForState` AFTER the deploy, under the DEFAULT
-        // rules: those make no generation claim of their own, so the mark on
-        // the object is what decides whether a sub-floor middle becomes the
-        // token. Under `STATE_SOURCED_READBACK_RULES` it would not decide --
-        // that constant claims the generation itself -- which is why the
-        // test does not reuse the persist path's own rules.
+        // Pinned from outside by scrubbing the object the provider handed back
+        // as a record's `properties` AFTER the deploy: `scrubResourceRecord`
+        // states that bag's mark as the walk's same-generation claim
+        // (go-to-k/cdkd#5047), so the mark decides whether a sub-floor middle
+        // becomes the token.
         // A masked-baseline re-capture (issue #3595) is installed UNMARKED: it
         // is the previous baseline with some masks replaced by the record's own
         // expressions, not a readback this pass took, so it must not claim the
