@@ -6013,7 +6013,10 @@ export class GlueTriggerProvider implements ResourceProvider {
         'Name',
         'Type',
         'WorkflowName',
-        // Omitted from the full-replace UpdateTrigger, which clears them.
+        // Omitted from the full-replace UpdateTrigger, which clears them
+        // (Description / EventBatchingCondition measured by a CFn A/B; the
+        // other three per the TriggerUpdate docs, and CFn requires each for
+        // its trigger Type, so a valid template cannot remove them).
         'Description',
         'Schedule',
         'Actions',

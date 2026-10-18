@@ -79,7 +79,8 @@ const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
  *     A/B showed CloudFormation clears each one, and so do the full-replace
  *     UpdateWorkflow / UpdateTrigger calls that omit them.
  *
- * All resources are idle (no schedule, ON_DEMAND trigger), so deploy + destroy
+ * All resources are idle (no schedule; ON_DEMAND / EVENT triggers, and nothing
+ * sends the event), so deploy + destroy
  * is fast and clean — no quota, no running jobs.
  */
 export class GlueUpdateHardeningStack extends cdk.Stack {

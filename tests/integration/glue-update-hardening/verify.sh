@@ -998,6 +998,8 @@ REMOVAL_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NA
 printf '%s\n' "${REMOVAL_OUT}"
 # Every removed property is handled (removalHandledInUpdate), so the shared
 # "leaves the current AWS value in place" warning must not name any of them.
+# This passes on the pre-declaration code too; the declaration itself is pinned
+# by tests/unit/provisioning/glue-workflow-removal-1160.test.ts.
 if printf '%s' "${REMOVAL_OUT}" | grep -F 'cdkd leaves the current AWS value in place' | grep -qE 'AWS::Glue::(Workflow|Trigger)'; then
   echo "FAIL: the removal deploy warned that a Glue Workflow / Trigger property was left in place (issue #1160)" >&2
   exit 1
