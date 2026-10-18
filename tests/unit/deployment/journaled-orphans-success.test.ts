@@ -4,6 +4,7 @@ import {
   settleJournaledOrphansOnSuccess,
 } from '../../../src/deployment/rollback-executor/journaled-orphans.js';
 import type { RollbackExecutorContext } from '../../../src/deployment/rollback-executor.js';
+import { getCurrentStackInstanceId } from '../../../src/provisioning/resource-name.js';
 
 // go-to-k/cdkd#4600: the success-path settle's fail-closed arms, driven
 // directly (the engine cases live in deploy-engine-rollback-journal.test.ts).
@@ -240,6 +241,36 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       reduced: 1,
     });
     expect(await run(undefined)).toEqual({ deletes: 1, out: { unaddressed: 0, keepJournal: false }, reduced: 0 });
+  });
+
+  // go-to-k/cdkd#5064: `deleteJournaledOrphans` (called from here) replays
+  // each segment inside `withStackScope({ stackName, stackInstanceId })`, so
+  // the provider's `delete()` call sees the RECORD's id passed through.
+  it('#5064: deletes an orphan inside the record stack instance scope', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const t = setup(journalOf(failedSeg([orphan()])));
+    const seenIds: Array<string | undefined> = [];
+    t.provider.delete.mockImplementation(async () => {
+      seenIds.push(getCurrentStackInstanceId());
+      return undefined;
+    });
+
+    const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: STACK_INSTANCE_ID,
+      stateBackend: t.stateBackend as never,
+      stackName: 'S',
+      region: REGION,
+      stateResources: {},
+      rollbackOrphans: undefined,
+      newerOperations: [],
+      foreignHolder: async () => undefined,
+      ctx: t.ctx,
+      logger: t.logger as never,
+    });
+
+    expect(t.provider.delete).toHaveBeenCalledTimes(1);
+    expect(seenIds).toEqual([STACK_INSTANCE_ID]);
+    expect(out.unaddressed).toBe(0);
   });
 });
 

@@ -23,6 +23,7 @@ const replay = vi.hoisted(() => ({
     nestedTemplates: unknown;
     run: unknown;
     stackScope: string | undefined;
+    stackInstanceIdScope: string | undefined;
     skipPrefixScope: boolean;
     ctx: Record<string, unknown>;
   }>,
@@ -38,6 +39,7 @@ const replay = vi.hoisted(() => ({
     | undefined,
   readRun: (() => undefined) as () => unknown,
   readStackName: (() => undefined) as () => string | undefined,
+  readStackInstanceId: (() => undefined) as () => string | undefined,
   readSkipPrefix: (() => false) as () => boolean,
 }));
 
@@ -62,6 +64,7 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
         nestedTemplates: nested?.nestedTemplates,
         run: replay.readRun(),
         stackScope: replay.readStackName(),
+        stackInstanceIdScope: replay.readStackInstanceId(),
         skipPrefixScope: replay.readSkipPrefix(),
         ctx,
       });
@@ -103,8 +106,10 @@ import { replayRollback } from '../../../src/deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import {
   getCurrentSkipPrefix,
+  getCurrentStackInstanceId,
   getCurrentStackName,
   withSkipPrefix,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { reserveStackCreateToken } from '../../../src/provisioning/providers/create-token-ledger.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
@@ -112,12 +117,16 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 replay.readNested = getCurrentNestedStackContext;
 replay.readRun = getNestedRevertRun;
 replay.readStackName = getCurrentStackName;
+replay.readStackInstanceId = getCurrentStackInstanceId;
 replay.readSkipPrefix = getCurrentSkipPrefix;
 
 const REGION = 'us-east-1';
 const CHILD = 'Parent~Child';
 
-function childState(resources: Record<string, unknown> = { Q: { resourceType: 'AWS::SQS::Queue' } }): StackState {
+function childState(
+  resources: Record<string, unknown> = { Q: { resourceType: 'AWS::SQS::Queue' } },
+  stackInstanceId?: string
+): StackState {
   return {
     version: 10,
     stackName: CHILD,
@@ -126,6 +135,7 @@ function childState(resources: Record<string, unknown> = { Q: { resourceType: 'A
     outputs: { QueueUrl: 'new-url' },
     exportNames: ['NewExport'],
     lastModified: 0,
+    ...(stackInstanceId !== undefined && { stackInstanceId }),
   } as StackState;
 }
 
@@ -355,6 +365,23 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     // No `cdkd rollback --orphan` reaches this replay, so its refusals must not
     // print one (go-to-k/cdkd#3845).
     expect(replay.calls[0]!.ctx['nestedChildRevert']).toBe(true);
+  });
+
+  // go-to-k/cdkd#5064: `childNamingScope` derives from the CHILD's OWN record
+  // (`stackInstanceIdOf(base, ...)`), not the enclosing parent replay's scope
+  // — a recreated child gets a fresh id independent of its parent's lifetime.
+  it("replays under the CHILD's own stack instance id, not the enclosing parent scope", async () => {
+    const CHILD_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const PARENT_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const h = harness({
+      segments: [seg('run-1', ['Q'])],
+      state: childState(undefined, CHILD_ID),
+    });
+
+    await withStackScope({ stackName: 'Parent', stackInstanceId: PARENT_ID }, () => h.run('run-1'));
+
+    expect(replay.calls).toHaveLength(1);
+    expect(replay.calls[0]!.stackInstanceIdScope).toBe(CHILD_ID);
   });
 
   // Issue #4018: a re-create derives a user-supplied name under the prefix

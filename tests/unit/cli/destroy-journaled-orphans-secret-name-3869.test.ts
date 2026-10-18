@@ -56,6 +56,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { getCurrentStackInstanceId } from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
 const REF = '{{resolve:secretsmanager:team:SecretString:queue::}}';
@@ -109,7 +110,7 @@ function journalOf(failedOperations: unknown[]) {
   };
 }
 
-function stateOf(resources: Record<string, ResourceState>): StackState {
+function stateOf(resources: Record<string, ResourceState>, stackInstanceId?: string): StackState {
   return {
     version: 8,
     stackName: 'TestStack',
@@ -117,6 +118,7 @@ function stateOf(resources: Record<string, ResourceState>): StackState {
     resources,
     outputs: {},
     lastModified: 1,
+    ...(stackInstanceId !== undefined && { stackInstanceId }),
   };
 }
 
@@ -217,6 +219,28 @@ describe('cdkd destroy masks a secret-derived name on journaled-orphan deletes a
     // Premise: the orphan's delete ran and logged its line.
     expect(lines).toEqual([expect.stringContaining('Deleting SQS queue Orphan: ')]);
     expect(lines[0]!.includes(STREAM)).toBe(shown);
+  });
+
+  // go-to-k/cdkd#5064: `deleteJournaledOrphans` is handed the record's
+  // `stackInstanceId`, so its replay (hence the provider's `delete()` call)
+  // runs inside that lifetime's naming scope.
+  it('#5064: deletes a journaled orphan inside the record stack instance scope', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const seenIds: Array<string | undefined> = [];
+    loadJournal.mockResolvedValue(journalOf([streamOp(STREAM)]));
+    providerDelete.mockImplementation(async () => {
+      seenIds.push(getCurrentStackInstanceId());
+      return undefined;
+    });
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      stateOf({}, STACK_INSTANCE_ID),
+      ctx()
+    );
+
+    expect(result.errorCount).toBe(0);
+    expect(seenIds).toEqual([STACK_INSTANCE_ID]);
   });
 
   it.each([
