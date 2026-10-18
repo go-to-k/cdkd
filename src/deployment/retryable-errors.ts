@@ -41,6 +41,7 @@ export {
 } from './retryable-errors/transient.js';
 export {
   isNameCollisionError,
+  relayedNameCollision,
   NAME_COLLISION_ERROR_NAMES,
   markNameCollision,
   markReplayMayCollide,

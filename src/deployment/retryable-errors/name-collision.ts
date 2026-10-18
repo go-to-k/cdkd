@@ -72,6 +72,19 @@ export function isNameCollisionError(message: string): boolean {
 }
 
 /**
+ * What a provider wrap that withheld AWS's text (go-to-k/cdkd#2319) restates
+ * of it: that the name is taken. {@link isNameCollisionErrorFrom} credits the
+ * "already exists" prose only when the TOP-level message carries it, and a
+ * `ConflictException` (S3 Tables, API Gateway) or `InvalidGroup.Duplicate`
+ * matches no collision pattern by name -- so a wrap reduced to the class would
+ * stop a create-first replacement recognising a collision. Returns a leading
+ * space plus the sentence, or `''`.
+ */
+export function relayedNameCollision(withheldText: string): string {
+  return isNameCollisionError(withheldText) ? ' AWS reports that it already exists.' : '';
+}
+
+/**
  * SDK exception NAMES that mean, on their own, "a resource with this NAME
  * already exists" — nothing else (issue
  * [#3208](https://github.com/go-to-k/cdkd/issues/3208)).

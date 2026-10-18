@@ -60,7 +60,11 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -365,22 +369,40 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * The failure wrap every `create()` / `update()` / `delete()` catch throws.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `log.debug` (masked), and
+   * the wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}).
+   *
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * masked (issue #2177): AWS quotes a rejected request value back (a stage
    * name, an integration URI, an authorizer URI) off the RESOLVED `properties`
    * bag, and masking the raw text reaches the masker's whole-value arm, which
-   * the assembled sentence cannot. The `cause` stays unmasked, and a message
-   * the mask CHANGED is stamped `markRedactedCause`, so the retry classifiers
-   * read that chain rather than a masked text a secret cut retry wording out
-   * of (the issue #4244 class). A method, so `gen-update-wrap-coverage` sees
-   * the catch that throws it as a wrap; the logic is `wrapMaskedAwsError`'s.
+   * the assembled sentence cannot. A message the mask CHANGED is stamped too
+   * (`wrapMaskedAwsError`, the issue #4244 class). A delete builds its sinks
+   * from `DeleteContext.maskSecrets`.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(log.mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(log.mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    return markRedactedCause(
+      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -755,12 +777,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Api ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway V2 Api ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -941,12 +968,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Stage ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway V2 Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1132,12 +1164,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Integration ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway V2 Integration ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1253,12 +1290,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Route ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway V2 Route ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1442,12 +1484,17 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway V2 Authorizer ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway V2 Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

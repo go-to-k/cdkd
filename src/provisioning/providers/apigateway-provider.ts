@@ -67,7 +67,11 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
@@ -297,20 +301,38 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2177): AWS quotes a rejected request value back (a stage
-   * name, an authorizer URI, a role ARN) off the RESOLVED `properties` bag, and
-   * masking the RAW text reaches the masker's whole-value arm. The `cause`
-   * stays unmasked, and a message the mask changed is stamped so the retry
-   * classifiers read that chain (`wrapMaskedAwsError`, issue #4259). A method,
-   * so `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * The failure wrap every `create()` / `update()` / `delete()` catch throws.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}).
+   *
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
+   * masked (issue #2177): AWS quotes a rejected request value back off the
+   * RESOLVED `properties` bag, and masking the RAW text reaches the masker's
+   * whole-value arm (`wrapMaskedAwsError`, issue #4259). A delete passes
+   * its `DeleteContext.maskSecrets`, or the identity.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   /**
@@ -457,7 +479,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
-        return this.deleteAccount(logicalId, physicalId, resourceType);
+        return this.deleteAccount(logicalId, physicalId, resourceType, context);
       case 'AWS::ApiGateway::Authorizer':
         return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Resource':
@@ -598,7 +620,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async deleteAccount(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Account ${logicalId}`);
 
@@ -618,12 +641,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Account ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Account ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Account ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -991,12 +1019,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Authorizer ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Authorizer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1124,7 +1157,11 @@ export class ApiGatewayProvider implements ResourceProvider {
               `may be orphaned and require manual cleanup.`
           );
         } else {
-          await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
+          // The update's masker, so the wrap's debug line of AWS's own text is
+          // masked like the warning below (go-to-k/cdkd#2319).
+          await this.deleteResource(logicalId, physicalId, resourceType, previousProperties, {
+            maskSecrets: log.mask,
+          });
         }
       } catch (error) {
         oldResourceSurvivor = replacedDeleteFailureVerdict(error);
@@ -1213,12 +1250,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Resource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1416,12 +1458,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Deployment ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Deployment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1995,12 +2042,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Stage ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Stage ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2534,12 +2586,17 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete API Gateway Method ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        context?.maskSecrets ?? ((text) => text),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete API Gateway Method ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
