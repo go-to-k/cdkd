@@ -40,7 +40,10 @@ describe('redactForState: provenance selects the rules', () => {
     const noClaim: RedactionContext = { provenance: 'template-derived', secrets, source: {} };
     // @ts-expect-error -- a value scan has no source to walk
     const scanWithSource: RedactionContext = { provenance: 'value-scan', secrets, source: {} };
-    expect([noSource, noClaim, scanWithSource]).toHaveLength(3);
+    const maybe = undefined as Record<string, unknown> | undefined;
+    // @ts-expect-error -- a possibly-undefined source would silently become a value scan
+    const maybeSource: RedactionContext = { provenance: 'state-readback', secrets, source: maybe };
+    expect([noSource, noClaim, scanWithSource, maybeSource]).toHaveLength(4);
   });
 
   it('keeps the same-generation mark off both the caller bag and the result', () => {
@@ -67,6 +70,43 @@ describe('redactForState: provenance selects the rules', () => {
     for (const bag of [redactedIn, redactedOut, untouchedIn, untouchedOut]) {
       expect(isSameGenerationBag(bag)).toBe(false);
     }
+  });
+
+  it('keeps the mark off the result where the walk falls back to the value scan', () => {
+    // A root shape the source does not share, on an empty map: the walk hands
+    // its input back by identity, which inside the choke point is the marked
+    // copy.
+    const secrets: RecordedSecretValues = new Map();
+    const shapes: Array<[unknown, object]> = [
+      [['a', 'b'], { A: 'a' }],
+      [{ A: 'x' }, ['x']],
+    ];
+    for (const [bag, source] of shapes) {
+      const out = redactForState(bag, {
+        provenance: 'template-derived',
+        secrets,
+        source,
+        generation: 'same-generation',
+      });
+      expect(out).toEqual(bag);
+      expect(isSameGenerationBag(out)).toBe(false);
+    }
+  });
+
+  it('never marks a non-plain bag, which a spread copy would strip of its prototype', () => {
+    class Props {
+      constructor(public readonly A: string) {}
+    }
+    const bag = new Props('x');
+    const out = redactForState(bag, {
+      provenance: 'template-derived',
+      secrets: new Map(),
+      source: { A: 'x' },
+      generation: 'same-generation',
+    });
+    expect(out).toBeInstanceOf(Props);
+    expect(isSameGenerationBag(out)).toBe(false);
+    expect(isSameGenerationBag(bag)).toBe(false);
   });
 
   it('makes the generation claim reach the walk (a sub-floor embedded secret)', () => {

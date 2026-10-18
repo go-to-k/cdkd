@@ -44,7 +44,7 @@ export type RedactionContext =
   | {
       readonly provenance: 'template-derived';
       readonly secrets: RecordedSecretValues;
-      readonly source: unknown;
+      readonly source: object;
       /**
        * `same-generation`: the bag is THIS pass's resolution of `source` by the
        * resolver that recorded `secrets` (see `markSameGenerationBag` for what
@@ -61,7 +61,7 @@ export type RedactionContext =
         | 'state-cross-generation'
         | 'state-derived';
       readonly secrets: RecordedSecretValues;
-      readonly source: unknown;
+      readonly source: object;
     };
 
 export type RedactionProvenance = RedactionContext['provenance'];
@@ -88,11 +88,16 @@ export function rulesForProvenance(
  * Redact `bag` for persistence under what `context` says about it — the
  * choke point every migrated writer goes through.
  *
- * A `same-generation` claim marks a SHALLOW COPY, never the caller's object.
- * The mark must not reach a stored record, where it would carry the claim into
- * a later pass it was not made for: the positional walk never returns its
- * input by identity (it rebuilds the bag even when nothing changes), and the
- * choke-point test pins that.
+ * `source` is an `object`, so a possibly-`undefined` value cannot slip a
+ * positional provenance into the value scan the walk takes without a source.
+ *
+ * A `same-generation` claim marks a SHALLOW COPY, never the caller's object,
+ * and the mark must not reach a stored record, where it would carry the claim
+ * into a later pass it was not made for. The walk usually rebuilds the bag,
+ * but where it falls back to the value scan (a root shape the source does not
+ * share, on an empty map) it returns its input -- the marked copy -- by
+ * identity, so that result is copied again, unmarked. Only a plain object or
+ * an array is marked: a spread would drop any other prototype.
  */
 export function redactForState<T>(bag: T, context: RedactionContext): T {
   if (context.provenance === 'value-scan') {
@@ -102,17 +107,20 @@ export function redactForState<T>(bag: T, context: RedactionContext): T {
   if (
     context.provenance !== 'template-derived' ||
     context.generation !== 'same-generation' ||
-    bag === null ||
-    typeof bag !== 'object'
+    !isPlainBag(bag)
   ) {
     return redactSecretsForState(bag, context.secrets, context.source, rules);
   }
-  return redactSecretsForState(
-    markSameGenerationBag(shallowCopy(bag)),
-    context.secrets,
-    context.source,
-    rules
-  );
+  const marked = markSameGenerationBag(shallowCopy(bag));
+  const redacted = redactSecretsForState(marked, context.secrets, context.source, rules);
+  return redacted === marked ? shallowCopy(marked) : redacted;
+}
+
+function isPlainBag(bag: unknown): bag is object {
+  if (Array.isArray(bag)) return true;
+  if (bag === null || typeof bag !== 'object') return false;
+  const proto: unknown = Object.getPrototypeOf(bag);
+  return proto === Object.prototype || proto === null;
 }
 
 function shallowCopy<T extends object>(bag: T): T {
