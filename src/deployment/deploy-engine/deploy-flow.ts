@@ -238,7 +238,9 @@ export async function doDeployWithPrefetch(
     // diff, and shared with the generated-name guard.
     const retainedAtFirstDeploy =
       idArrivesLater && !engine.options.dryRun
-        ? engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion)
+        ? Promise.resolve().then(() =>
+            engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion)
+          )
         : undefined;
     // Its failure is the guard's to report (it refuses on unreadable
     // evidence); the warning below only reads a successful answer.
