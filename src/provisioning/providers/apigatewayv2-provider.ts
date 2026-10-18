@@ -410,7 +410,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const failure = describeAwsFailure(error);
     if (!(error instanceof Error)) return build(log.mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
-    log.debug(build(failure.detail).message);
+    log.debug(build(log.mask(failure.detail)).message);
     return markRedactedCause(
       build(`${log.mask(failure.summary)}${relayedCollision(failure.detail)}`)
     );

@@ -255,6 +255,38 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
       expect(hasRedactedCause(failure)).toBe(false);
       expect(failure.cause).toBe(original);
     });
+
+    it('keeps a non-Error throw as text, unstamped', async () => {
+      failOn(command, 'socket hang up', answers);
+      const failure = await thrown(run());
+
+      expect(failure.message).toContain(`${prefix}socket hang up`);
+      expect(failure.message).not.toContain(VERBOSE_POINTER);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+  });
+
+  it('S3 Tables masks a secret AWS echoes back on the debug line', async () => {
+    const SECRET = 's3tables-secret-tag-value';
+    failOn(
+      'CreateTableBucketCommand',
+      Object.assign(new Error(`Invalid tag value '${SECRET}'`), {
+        name: 'BadRequestException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    const failure = await thrown(
+      new S3TablesProvider().create(
+        'Res',
+        'AWS::S3Tables::TableBucket',
+        { TableBucketName: 'b1' },
+        { maskSecrets: (text: string) => text.split(SECRET).join('***') }
+      )
+    );
+    expect(failure.message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+    expect(debugged()).toContain("Invalid tag value '***'");
+    expect(debugged()).not.toContain(SECRET);
   });
 
   it('closes the redacted class as one sentence before the tag-diff remedy', async () => {
@@ -316,13 +348,10 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
       expect(isNameCollisionErrorFrom(failure, 'Res')).toBe(true);
     });
 
-    it('a ConflictException that is not an occupied name restates nothing', async () => {
-      failOn('CreateTableBucketCommand', conflict('A conflicting operation is in progress.'));
-      const failure = await thrown(
-        new S3TablesProvider().create('Res', 'AWS::S3Tables::TableBucket', {
-          TableBucketName: 'b1',
-        })
-      );
+    it.each(cases)('$label: a ConflictException that is not an occupied name restates nothing', async ({ command, run }) => {
+      failOn(command, conflict('A conflicting operation is in progress.'));
+      const failure = await thrown(run());
+      expect(failure.message).toContain(`ConflictException. ${VERBOSE_POINTER}`);
       expect(failure.message).not.toContain('already exists');
       expect(isNameCollisionErrorFrom(failure, 'Res')).toBe(false);
     });

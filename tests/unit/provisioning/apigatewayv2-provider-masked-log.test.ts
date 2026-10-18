@@ -60,6 +60,7 @@ import {
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /** Long enough for the message-level substring arm. */
 const LONG = 'apigwv2-secret-request-value';
@@ -73,6 +74,13 @@ function bagOf(...values: string[]): RecordedSecretValues {
 const maskSecrets = createSecretMasker(bagOf(LONG, TINY_A));
 
 const echo = (value = LONG): Error => new Error(`Invalid value '${value}' for the request`);
+/** The same echo, AWS-authored (the marker fields `describeAwsFailure` keys on). */
+const awsEcho = (value = LONG): Error =>
+  Object.assign(echo(value), {
+    name: 'BadRequestException',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 400, requestId: 'req-0123456789' },
+  });
 /** The same text with only the secret masked: the diagnosis must survive the mask. */
 const MASKED_ECHO = `Invalid value '${SECRET_MASK}' for the request`;
 
@@ -559,6 +567,17 @@ describe('ApiGatewayV2Provider masked log sinks (issue #2177)', () => {
         expect(message).toContain(c.prefix);
         expect(message).not.toContain(LONG);
         expect(message).toContain(MASKED_ECHO);
+      });
+
+      it(`${c.label}: an AWS-authored echo is named by class, its text debug-logged masked (go-to-k/cdkd#2319)`, async () => {
+        fakeApiGatewayV2({ UpdateApiCommand: API_CREATED, [c.failingCommand]: throwing(awsEcho()) });
+        const message = await thrownMessage(c.run(provider, maskSecrets));
+        expect(message).toContain(c.prefix);
+        expect(message).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+        expect(message).not.toContain('Invalid value');
+        const debugged = debugSpy.mock.calls.map((args) => String(args[0])).join('\n');
+        expect(debugged).toContain(MASKED_ECHO);
+        expect(debugged).not.toContain(LONG);
       });
     }
   });
