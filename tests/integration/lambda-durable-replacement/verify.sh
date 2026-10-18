@@ -212,8 +212,10 @@ fi
 echo "    Resolved function name: ${FN}"
 # go-to-k/cdkd#5064: a new stack's generated name carries the 12-hex stack
 # instance suffix; the same name is asked for again by phase 2's replacement.
-if ! printf '%s' "${FN}" | grep -qE "^${STACK}-DurableFn[0-9A-F]{8}-[0-9a-f]{12}\$"; then
-  echo "FAIL: function name '${FN}' is not the generated ${STACK}-DurableFn<8 hex>-<12 hex>" >&2
+# `${STACK}-DurableFn<8 hex>` is 53 characters, cut to 64 - 13 = 51: the
+# logical id's hash keeps 6 of its 8 hex.
+if ! printf '%s' "${FN}" | grep -qE "^${STACK}-DurableFn[0-9A-F]{6}-[0-9a-f]{12}\$"; then
+  echo "FAIL: function name '${FN}' is not the generated ${STACK}-DurableFn<6 hex>-<12 hex>" >&2
   exit 1
 fi
 # The replacement classification only reaches the SDK provider's create/delete

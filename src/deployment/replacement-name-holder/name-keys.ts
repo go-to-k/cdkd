@@ -228,7 +228,7 @@ export const GENERATED_NAME_VERBATIM: ReadonlySet<string> = new Set([
  * Types whose SDK provider sends `generateResourceNameWithFallback(<property>,
  * logicalId, { maxLength })` — for an explicit name too — so the name AWS is
  * asked for is NOT the recorded one: it depends on the stack-name scope
- * (`withStackName`) and the prefix flag (`withSkipPrefix`) — the failed
+ * (`withStackScope`) and the prefix flag (`withSkipPrefix`) — the failed
  * deploy's flag, which `cdkd rollback` restores from the journal segment
  * (go-to-k/cdkd#4018), unless {@link replayPrefixChoice} finds that the OTHER
  * flag created the old resource (go-to-k/cdkd#4024) — and the default pattern

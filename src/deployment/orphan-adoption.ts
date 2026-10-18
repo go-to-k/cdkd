@@ -79,8 +79,8 @@ export type SiblingClaimReader = () => Promise<ReadonlySet<string>>;
  *
  * In that shape the name this deploy would generate equals the recorded
  * `physicalId` BY CONSTRUCTION — `generateResourceName` is deterministic over
- * exactly (stack name, logical id), truncation included, with no random
- * component. That matters because the engine cannot DERIVE the name to compare:
+ * exactly (stack name, stack instance id, logical id), truncation included,
+ * and a rollback orphan is of the same lifetime as the deploy adopting it. That matters because the engine cannot DERIVE the name to compare:
  * the per-type `ResourceNameOptions` live in the providers, and
  * `looksLikeCdkdGeneratedName`'s own doc records that the engine does not know
  * which type maps to which.

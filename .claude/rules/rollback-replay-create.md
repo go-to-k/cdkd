@@ -39,6 +39,6 @@ Decisions:
   bag never holds a generated name" survives.
 
 Both entry points bind `withStackScope` (the record's id), so the replayed
-name EQUALS the forward create's: The prefix flag is the segment's (#4018) unless the old physical id shows the
+name EQUALS the forward create's. The prefix flag is the segment's (#4018) unless the old physical id shows the
 OTHER flag created it: then both arms and the holder proof run under that one
 (`replayPrefixScope`, #4024).
