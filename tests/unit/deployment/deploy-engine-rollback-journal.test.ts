@@ -5,7 +5,11 @@ import {
   settleJournalAfterCleanRollback,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
+import {
+  withSkipPrefix,
+  withStackScope,
+  generateResourceName,
+} from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
@@ -959,6 +963,38 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         physicalId: `${stackName}-B`,
         physicalIdRecoveredFromError: true,
       });
+    });
+
+    // go-to-k/cdkd#5064: the deploy derives the planned name in the RECORD's
+    // own stack instance scope (`deploy-flow.ts`'s `nameScope()`), and must
+    // forward that SAME id to `resolvePendingCloudControlRequests` so the
+    // identifier-uniqueness check recognises a v13-suffixed name as cdkd's
+    // own, exactly as it recognises the legacy `{stackName}-{logicalId}` form
+    // above.
+    it("an identifier that is the v13 record's own suffixed name is not taken over", async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      (
+        engine as unknown as { stateBackend: { getState: ReturnType<typeof vi.fn> } }
+      ).stateBackend.getState.mockResolvedValue({
+        state: {
+          version: 13,
+          stackName,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: Date.now(),
+          stackInstanceId: STACK_INSTANCE_ID,
+        },
+        etag: 'e0',
+      });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
     });
 
     it.each([

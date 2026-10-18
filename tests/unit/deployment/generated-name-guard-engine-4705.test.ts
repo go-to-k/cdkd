@@ -821,6 +821,20 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(warned().slice(before).filter((w) => w.includes('resource(s) here'))).toEqual([]);
     });
 
+    it('a first deploy whose retained.json read fails warns nothing and does not fail the deploy', async () => {
+      // go-to-k/cdkd#5064: `retainedForWarning` catches the read's failure so
+      // the kept-resources warning degrades to "nothing kept" rather than
+      // failing the whole deploy over an advisory note (the guard's OWN read
+      // of the same evidence is what refuses on unreadable evidence, not this
+      // one).
+      const { engine, provider, stateBackend } = buildEngine({});
+      stateBackend.loadRetainedRecord.mockRejectedValue(new Error('S3 read error'));
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      expect(warned().slice(before).some((w) => w.includes('resource(s) here'))).toBe(false);
+    });
+
     it('a dry run of a first deploy derives no name and asks for no id', async () => {
       const { engine, provider, stateBackend } = buildEngine({ dryRun: true });
       provider.generatedCreateName.mockImplementation(() => {

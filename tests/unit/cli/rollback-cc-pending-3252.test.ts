@@ -4,6 +4,22 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
+// go-to-k/cdkd#3252: the takeover needs a UNIQUE identifier, judged from the
+// type's registry schema; these tests pin it (a minted `Id`), as the deploy
+// engine's equivalent suite does (`deploy-engine-rollback-journal.test.ts`).
+const ccSchema = vi.hoisted(() => ({
+  fields: ['Id'] as readonly string[] | undefined,
+  readOnly: new Set(['Id']) as ReadonlySet<string> | undefined,
+}));
+vi.mock('../../../src/provisioning/cc-import-identifier.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/cc-import-identifier.js')>()),
+  getPrimaryIdentifierFields: () => Promise.resolve(ccSchema.fields),
+}));
+vi.mock('../../../src/provisioning/read-only-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/read-only-properties.js')>()),
+  getTopLevelReadOnlyProperties: () => Promise.resolve(ccSchema.readOnly),
+}));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const l = {
     debug: vi.fn(),
@@ -52,9 +68,12 @@ vi.mock('../../../src/cli/commands/state.js', async () => {
 });
 
 import { rollbackCommand } from '../../../src/cli/commands/rollback.js';
+import { withStackScope, generateResourceName } from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
 const STACK = 'S';
+/** A v13 stack instance id (go-to-k/cdkd#5064). */
+const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 
 const pendingJournal = () => ({
   journalVersion: 1,
@@ -160,5 +179,49 @@ describe('rollbackCommand: a journaled abandoned Cloud Control CREATE (#3252)', 
       physicalIdRecoveredFromError: true,
       provisionedBy: 'cc-api',
     });
+  });
+
+  // go-to-k/cdkd#5064: `rollback.ts` reads the record's OWN stack instance id
+  // (`stackInstanceIdOf(stateData?.state, ...)`) and must forward that exact
+  // id to `resolvePendingCloudControlRequests`, or a v13-suffixed identifier
+  // is not recognised as cdkd's own and is wrongly recorded as a PROVEN-UNIQUE
+  // orphan (`createdIdentifierUnique: true`) instead of a plain one.
+  it("recognizes a suffixed identifier as the v13 record's own generated name", async () => {
+    const order: string[] = [];
+    const suffixedIdentifier = withStackScope(
+      { stackName: STACK, stackInstanceId: STACK_INSTANCE_ID },
+      () => generateResourceName('Group', { maxLength: 512 })
+    );
+    reader.resumeAbandonedRequest.mockResolvedValue({
+      status: 'succeeded',
+      identifier: suffixedIdentifier,
+    });
+    const backend = install(order);
+    backend.getState.mockResolvedValue({
+      state: { resources: {}, outputs: {}, stackInstanceId: STACK_INSTANCE_ID },
+      etag: 'e',
+    });
+    const journalWithAttemptedProperties = () => {
+      const j = pendingJournal();
+      return {
+        ...j,
+        segments: [
+          { ...j.segments[0]!, failedOperations: [{ ...j.segments[0]!.failedOperations[0]!, attemptedProperties: {} }] },
+        ],
+      };
+    };
+    backend.loadRollbackJournal.mockImplementation(async () => {
+      order.push('load');
+      return journalWithAttemptedProperties();
+    });
+    order.length = 0;
+    await rollbackCommand(STACK, { ...opts }).catch(() => undefined);
+    const rewrite = backend.rewriteRollbackJournalFailedOperations.mock.calls[0]![2] as unknown as (
+      op: unknown
+    ) => unknown;
+    const op = journalWithAttemptedProperties().segments[0]!.failedOperations[0]!;
+    const rewritten = rewrite(op) as Record<string, unknown>;
+    expect(rewritten).toMatchObject({ physicalId: suffixedIdentifier, physicalIdRecoveredFromError: true });
+    expect(rewritten).not.toHaveProperty('createdIdentifierUnique');
   });
 });
