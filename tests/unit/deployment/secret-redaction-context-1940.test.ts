@@ -189,11 +189,11 @@ interface Plant {
 
 interface Triple {
   /** What the template spells. */
-  template: unknown;
+  template: object;
   /** The persisted record: secret tokens kept, public ones stored resolved. */
-  stateRecord: unknown;
+  stateRecord: object;
   /** The resolution (and the readback, which echoes it). */
-  resolved: unknown;
+  resolved: object;
   plants: Plant[];
 }
 
@@ -266,9 +266,9 @@ function generate(seed: number): Triple {
   const top = 1 + Math.floor(rand() * 4);
   for (let i = 0; i < top; i++) root[`${pick(KEYS)}${i}`] = node(1);
   return {
-    template: render(root, (p) => p.expression),
-    stateRecord: render(root, (p) => (p.secret ? p.expression : p.value)),
-    resolved: render(root, (p) => p.value),
+    template: render(root, (p) => p.expression) as object,
+    stateRecord: render(root, (p) => (p.secret ? p.expression : p.value)) as object,
+    resolved: render(root, (p) => p.value) as object,
     plants,
   };
 }
