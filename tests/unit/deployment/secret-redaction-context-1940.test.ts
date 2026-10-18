@@ -57,8 +57,8 @@ describe('redactForState: provenance selects the rules', () => {
     const redactedOut = redactForState(redactedIn, context);
     expect(redactedOut).toEqual({ A: expr, B: 'public' });
 
-    // Nothing to redact: the walk returns its input by identity, which inside
-    // the choke point is the MARKED copy -- it must not escape.
+    // Nothing to redact: the result must still not be the MARKED copy the
+    // choke point handed the walk.
     const untouchedIn = { B: 'public' };
     const untouchedOut = redactForState(untouchedIn, context);
     expect(untouchedOut).toEqual(untouchedIn);

@@ -88,11 +88,11 @@ export function rulesForProvenance(
  * Redact `bag` for persistence under what `context` says about it — the
  * choke point every migrated writer goes through.
  *
- * A `same-generation` claim marks a SHALLOW COPY, never the caller's object,
- * and the mark never leaves this function: when nothing was redacted the walk
- * returns its input by identity, which here would be the marked copy, so an
- * unmarked copy is returned instead. A stored record therefore never carries
- * the claim into a later pass it was not made for.
+ * A `same-generation` claim marks a SHALLOW COPY, never the caller's object.
+ * The mark must not reach a stored record, where it would carry the claim into
+ * a later pass it was not made for: the positional walk never returns its
+ * input by identity (it rebuilds the bag even when nothing changes), and the
+ * choke-point test pins that.
  */
 export function redactForState<T>(bag: T, context: RedactionContext): T {
   if (context.provenance === 'value-scan') {
@@ -107,9 +107,12 @@ export function redactForState<T>(bag: T, context: RedactionContext): T {
   ) {
     return redactSecretsForState(bag, context.secrets, context.source, rules);
   }
-  const marked = markSameGenerationBag(shallowCopy(bag));
-  const redacted = redactSecretsForState(marked, context.secrets, context.source, rules);
-  return redacted === marked ? shallowCopy(marked) : redacted;
+  return redactSecretsForState(
+    markSameGenerationBag(shallowCopy(bag)),
+    context.secrets,
+    context.source,
+    rules
+  );
 }
 
 function shallowCopy<T extends object>(bag: T): T {
