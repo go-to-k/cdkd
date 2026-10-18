@@ -218,7 +218,7 @@ function buildersIn(file: string, text: string): Builder[] {
   for (const m of text.matchAll(/\b(?:saveState|saveScrubbedState)\(/g)) {
     const open = text.indexOf('{', m.index + m[0].length);
     if (open === -1 || !pairs.has(open)) continue;
-    if (!/^[^(){};]*,\s*$/.test(text.slice(m.index + m[0].length, open))) continue;
+    if (!plainArgumentsBefore(text.slice(m.index + m[0].length, open))) continue;
     // The record, not the save's options bag: it names `resources`.
     if (/\bresources\b/.test(topLevelOf(text, pairs, open))) opens.add(open);
   }
@@ -238,6 +238,22 @@ function buildersIn(file: string, text: string): Builder[] {
     text: text.slice(open, pairs.get(open)! + 1),
     topLevel: topLevelOf(text, pairs, open),
   }));
+}
+
+/**
+ * Do the characters between a call's `(` and a `{` hold only complete earlier
+ * arguments (calls included), ending in a comma at the call's own depth?
+ */
+function plainArgumentsBefore(between: string): boolean {
+  let depth = 0;
+  for (const c of between) {
+    if (c === '(') depth++;
+    else if (c === ')') {
+      depth--;
+      if (depth < 0) return false;
+    } else if (c === '{' || c === '}' || c === ';') return false;
+  }
+  return depth === 0 && /,\s*$/.test(between);
 }
 
 /**
@@ -299,6 +315,8 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
     const direct = `await saveState(\n  name,\n  region,\n  {\n    ...prev,\n    resources: r,\n  },\n  opts\n);\n`;
     const nestedOnly = `const s: StackState = {\n  ...prev,\n  extra: list.map((e) => { return { ...${CARRIER}e) }; }),\n};\n`;
     expect(buildersIn('x.ts', direct)).toHaveLength(1);
+    const directAfterCall = `await saveState(name, displaySafe(region), {\n  ...prev,\n  resources: r,\n});\n`;
+    expect(scan(directAfterCall)).toHaveLength(1);
     expect(scan(direct)).toHaveLength(1);
     expect(scan(nestedOnly)).toHaveLength(1);
     // A callback's `return` inside the builder is not the builder.

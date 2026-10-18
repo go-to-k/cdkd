@@ -205,6 +205,25 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
       expect(parseStackInstanceSibling(String(bodies[1]!.input['Body']))).toBe(id);
     });
 
+    it('a second 409 reads the winner back', async () => {
+      let reads = 0;
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () =>
+          reads++ === 0 ? noSuchKey() : bodyOf(stackInstanceSiblingBody(EARLIER_ID)),
+        [`PutObjectCommand ${SIBLING_KEY}`]: () => {
+          throw Object.assign(new Error('conflict'), {
+            name: 'ConditionalRequestConflict',
+            $metadata: { httpStatusCode: 409 },
+          });
+        },
+      });
+      const id = await backendFor(client).stackInstanceIdForFirstWrite(STACK, REGION, {
+        writeAhead: true,
+      });
+      expect(id).toBe(EARLIER_ID);
+      expect(callsTo(sent, 'PutObjectCommand', SIBLING_KEY)).toHaveLength(2);
+    });
+
     it('an endpoint without conditional writes takes a plain PUT, and the first save still drops it', async () => {
       const { client, sent } = makeClient({
         [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey,

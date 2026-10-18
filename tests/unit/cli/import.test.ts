@@ -1297,6 +1297,7 @@ describe('cdkd import', () => {
     it('a failed id read stops the import before the journal mark and the save', async () => {
       mockStackInstanceIdForFirstWrite.mockRejectedValueOnce(new Error('sibling read denied'));
       await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/sibling read denied/);
       expect(mockSaveState).not.toHaveBeenCalled();
       expect(mockMarkRollbackJournalImported).not.toHaveBeenCalled();
     });
@@ -1398,9 +1399,11 @@ describe('cdkd import', () => {
         mockGetState.mockImplementation(async (name: string) =>
           name === 'P~Child' ? childRecord({ stackInstanceId: 'damaged' }) : null
         );
+        errorSpy.mockClear();
         await expect(
           runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
         ).rejects.toThrow();
+        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/not a well-formed id/);
         expect(saved('P~Child')).toBeUndefined();
       } finally {
         mockStackInstanceIdForFirstWrite.mockReset().mockResolvedValue(ID);
