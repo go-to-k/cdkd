@@ -4888,8 +4888,9 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --yes
 
 assert_gone "consumer Lambda '${FN_NAME}' still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
-assert_gone "Kinesis stream '${PIN_STREAM_NAME}' (go-to-k/cdkd#5063) still exists after destroy" aws kinesis describe-stream-summary --stream-name "${PIN_STREAM_NAME}" --region "${REGION}"
 echo "    OK: consumer Lambda is gone"
+assert_gone "Kinesis stream '${PIN_STREAM_NAME}' (go-to-k/cdkd#5063) still exists after destroy" aws kinesis describe-stream-summary --stream-name "${PIN_STREAM_NAME}" --region "${REGION}"
+echo "    OK: the #5063 Kinesis stream is gone"
 
 # SecretsManager DeleteSecret SCHEDULES deletion with a recovery window
 # (7-30 days) by default; cdkd's secret provider matches CloudFormation and does

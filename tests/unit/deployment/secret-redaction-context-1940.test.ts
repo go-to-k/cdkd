@@ -919,8 +919,9 @@ describe('redactForState: planted-plaintext properties over generated triples', 
           // One floor per shape the claim decides: a single sub-floor span
           // (the frame arm) and a multi-span leaf (the rendering arms).
           const secretsIn = t.plants.filter((p) => p.secret && leaf.includes(p.expression));
-          if (secretsIn.some((p) => p.subFloor)) count.carriedSubFloorLeaves!++;
-          if ((leaf.match(/\{\{resolve:/g) ?? []).length > 1) count.carriedMultiSpanLeaves!++;
+          const spans = (leaf.match(/\{\{resolve:/g) ?? []).length;
+          if (spans === 1 && secretsIn.some((p) => p.subFloor)) count.carriedSubFloorLeaves!++;
+          if (spans > 1) count.carriedMultiSpanLeaves!++;
         }
         // go-to-k/cdkd#5056's shape: a sub-floor secret beside a public token.
         const has = (pred: (p: Plant) => boolean): boolean =>
