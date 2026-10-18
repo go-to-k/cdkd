@@ -3305,6 +3305,29 @@ export class GlueWorkflowProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()`, so the shared caller warns about none.
+   * `UpdateWorkflow` is a full replace — an omitted field is CLEARED, not kept
+   * — and a CloudFormation A/B showed CloudFormation clears all three removed
+   * fields too, so omitting them is the reset and no `removalDefaults` apply.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Workflow',
+      new Set([
+        // Create-only: a removal replaces.
+        'Name',
+        // Omitted from the full-replace UpdateWorkflow, which clears them.
+        'Description',
+        'DefaultRunProperties',
+        'MaxConcurrentRuns',
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+      ]),
+    ],
+  ]);
+
   private getClient(): GlueClient {
     if (!this.client) {
       ({ client: this.client, createClient: this.createClient } = newGlueClients(
@@ -3405,6 +3428,9 @@ export class GlueWorkflowProvider implements ResourceProvider {
     desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
+      // A full replace: a field left out here is CLEARED on AWS, which is how a
+      // property removed from the template is reset, as CloudFormation does
+      // (issue #1160). Never fill an absent field from `previousProperties`.
       await this.getClient().send(
         new UpdateWorkflowCommand({
           Name: physicalId,
@@ -5972,6 +5998,38 @@ export class GlueTriggerProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()`, so the shared caller warns about none.
+   * `UpdateTrigger` replaces the whole `TriggerUpdate` — an omitted field is
+   * CLEARED, not kept — and a CloudFormation A/B showed CloudFormation clears a
+   * removed `Description` and `EventBatchingCondition` too.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Trigger',
+      new Set([
+        // Create-only: a removal replaces.
+        'Name',
+        'Type',
+        'WorkflowName',
+        // Omitted from the full-replace UpdateTrigger, which clears them
+        // (Description / EventBatchingCondition measured by a CFn A/B; the
+        // other three per the TriggerUpdate docs, and CFn requires each for
+        // its trigger Type, so a valid template cannot remove them).
+        'Description',
+        'Schedule',
+        'Actions',
+        'Predicate',
+        'EventBatchingCondition',
+        // Read at create only; no live value to reset.
+        'StartOnCreation',
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+      ]),
+    ],
+  ]);
+
   private getClient(): GlueClient {
     if (!this.client) {
       ({ client: this.client, createClient: this.createClient } = newGlueClients(
@@ -6120,6 +6178,10 @@ export class GlueTriggerProvider implements ResourceProvider {
         }
       }
 
+      // A full replace: a field left out here is CLEARED on AWS, which is how a
+      // property removed from the template is reset, as CloudFormation does for
+      // Description and EventBatchingCondition (issue #1160). Never fill an
+      // absent field from `previousProperties`.
       const update: TriggerUpdate = {
         ...(properties['Description'] !== undefined && {
           Description: properties['Description'] as string,

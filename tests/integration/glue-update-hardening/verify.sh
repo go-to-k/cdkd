@@ -72,6 +72,13 @@
 #      it the table is deleted first and re-created (a new CreateTime). Before
 #      the fix the provider reworded the collision, so neither deploy reached
 #      the engine's collision handling and no flag could perform it.
+#  16. Removal of optional Workflow / Trigger properties (issue #1160, phase
+#      2g). The Workflow drops Description / DefaultRunProperties /
+#      MaxConcurrentRuns, the triggers Description and EventBatchingCondition.
+#      CloudFormation clears each one (measured A/B), and so do UpdateWorkflow
+#      and UpdateTrigger, which replace every field they are not given; the
+#      arm fails if cdkd ever carries a removed value forward. Tags, Actions
+#      and the Workflow itself are kept.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -112,6 +119,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# Phase 2g sets CDKD_TEST_REMOVAL on its own deploy only; a caller's export
+# would drop the removed properties from every earlier synth.
+unset CDKD_TEST_REMOVAL
 
 STACK="GlueUpdateHardeningStack"
 REGION="${AWS_REGION:-us-east-1}"
@@ -122,6 +132,7 @@ JOB_NAME_FALLBACK="${LOWER}-etl-job"
 WORKFLOW_NAME_FALLBACK="${LOWER}-workflow"
 CRAWLER_NAME_FALLBACK="${LOWER}-crawler"
 TRIGGER_NAME_FALLBACK="${LOWER}-trigger"
+EVENT_TRIGGER_NAME_FALLBACK="${LOWER}-event-trigger"
 CONNECTION_NAME="${LOWER}-connection"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -241,6 +252,8 @@ CRAWLER_NAME=$(echo "${STATE}" | jq -r '.outputs.CrawlerName // empty')
 [ -z "${CRAWLER_NAME}" ] && CRAWLER_NAME="${CRAWLER_NAME_FALLBACK}"
 TRIGGER_NAME=$(echo "${STATE}" | jq -r '.outputs.TriggerName // empty')
 [ -z "${TRIGGER_NAME}" ] && TRIGGER_NAME="${TRIGGER_NAME_FALLBACK}"
+EVENT_TRIGGER_NAME=$(echo "${STATE}" | jq -r '.outputs.EventTriggerName // empty')
+[ -z "${EVENT_TRIGGER_NAME}" ] && EVENT_TRIGGER_NAME="${EVENT_TRIGGER_NAME_FALLBACK}"
 # The crawler's DynamoDB target table is CDK-autonamed, so there is no
 # deterministic fallback — the output is the only source.
 CRAWLER_TABLE_NAME=$(echo "${STATE}" | jq -r '.outputs.CrawlerTableName // empty')
@@ -547,6 +560,41 @@ else
   echo "FAIL: trigger ${TRIGGER_NAME} missing" >&2
   exit 1
 fi
+
+# --- Assertion 16 baseline: the properties phase 2g removes are live (#1160)
+# Each shape is compact JSON, an absent field reading `null`, so the removal
+# phase's all-null expectation cannot pass on a read that returned nothing.
+workflow_shape() {
+  aws glue get-workflow --name "${WORKFLOW_NAME}" --region "${REGION}" --output json \
+    | jq -c '.Workflow | {Description, DefaultRunProperties, MaxConcurrentRuns}'
+}
+trigger_shape() { # usage: trigger_shape <trigger name>
+  aws glue get-trigger --name "$1" --region "${REGION}" --output json \
+    | jq -c '.Trigger | {Description, EventBatchingCondition, Jobs: [.Actions[].JobName]}'
+}
+assert_shape() { # usage: assert_shape <label> <want> <got>
+  # Key-sorted on both sides: AWS's member order is not a contract. An empty
+  # read normalizes to "" and fails too.
+  local want got
+  want=$(printf '%s' "$2" | jq -cS .)
+  got=$(printf '%s' "$3" | jq -cS . 2>/dev/null) || got="$3"
+  if [ -z "${got}" ] || [ "${got}" != "${want}" ]; then
+    echo "FAIL: $1 is '$3', expected ${want}" >&2
+    exit 1
+  fi
+  echo "    OK: $1 is ${got}"
+}
+assert_shape "Workflow (create)" \
+  '{"Description":"cdkd workflow","DefaultRunProperties":{"stage":"integ"},"MaxConcurrentRuns":1}' \
+  "$(workflow_shape)"
+assert_shape "ON_DEMAND trigger (create)" \
+  "{\"Description\":\"initial trigger description\",\"EventBatchingCondition\":null,\"Jobs\":[\"${JOB_NAME}\"]}" \
+  "$(trigger_shape "${TRIGGER_NAME}")"
+assert_shape "EVENT trigger (create)" \
+  "{\"Description\":\"cdkd event trigger\",\"EventBatchingCondition\":{\"BatchSize\":5,\"BatchWindow\":300},\"Jobs\":[\"${JOB_NAME}\"]}" \
+  "$(trigger_shape "${EVENT_TRIGGER_NAME}")"
+WF_CREATED=$(aws glue get-workflow --name "${WORKFLOW_NAME}" --region "${REGION}" \
+  --query 'Workflow.CreatedOn' --output text)
 
 # --- Sanity: connection exists (issue #4639) ---------------------------
 if aws glue get-connection --name "${CONNECTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
@@ -933,6 +981,48 @@ if [ "$(printf '%s' "${SAME_STATE}" | jq -r '.resources.RenameTable.physicalId /
 fi
 echo "    OK: --replace deleted '${RENAME_TO}' first and re-created it under the same address"
 
+# --- Phase 2g: REMOVAL of optional Workflow / Trigger properties (#1160) ---
+# The template no longer declares the Workflow's Description /
+# DefaultRunProperties / MaxConcurrentRuns, nor the triggers' Description /
+# EventBatchingCondition. CloudFormation clears each one (measured A/B), so
+# every one must read absent afterwards, in place. Phase 2f's flags stay set so
+# nothing else in the stack changes.
+echo "==> Phase 2g: removal (Workflow Description / DefaultRunProperties / MaxConcurrentRuns, trigger Description / EventBatchingCondition)"
+REMOVAL_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true CDKD_TEST_REMOVAL=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || {
+  printf '%s\n' "${REMOVAL_OUT}"
+  echo "FAIL: the removal deploy failed (output above)" >&2
+  exit 1
+}
+printf '%s\n' "${REMOVAL_OUT}"
+# Every removed property is handled (removalHandledInUpdate), so the shared
+# "leaves the current AWS value in place" warning must not name any of them.
+# This passes on the pre-declaration code too; the declaration itself is pinned
+# by tests/unit/provisioning/glue-workflow-removal-1160.test.ts.
+if printf '%s' "${REMOVAL_OUT}" | grep -F 'cdkd leaves the current AWS value in place' | grep -qE 'AWS::Glue::(Workflow|Trigger)'; then
+  echo "FAIL: the removal deploy warned that a Glue Workflow / Trigger property was left in place (issue #1160)" >&2
+  exit 1
+fi
+assert_shape "Workflow (removal)" \
+  '{"Description":null,"DefaultRunProperties":null,"MaxConcurrentRuns":null}' \
+  "$(workflow_shape)"
+assert_shape "ON_DEMAND trigger (removal)" \
+  "{\"Description\":null,\"EventBatchingCondition\":null,\"Jobs\":[\"${JOB_NAME}\"]}" \
+  "$(trigger_shape "${TRIGGER_NAME}")"
+assert_shape "EVENT trigger (removal)" \
+  "{\"Description\":null,\"EventBatchingCondition\":null,\"Jobs\":[\"${JOB_NAME}\"]}" \
+  "$(trigger_shape "${EVENT_TRIGGER_NAME}")"
+RM_WF_CREATED=$(aws glue get-workflow --name "${WORKFLOW_NAME}" --region "${REGION}" \
+  --query 'Workflow.CreatedOn' --output text)
+if [ -z "${WF_CREATED}" ] || [ "${RM_WF_CREATED}" != "${WF_CREATED}" ]; then
+  echo "FAIL: Workflow CreatedOn is '${RM_WF_CREATED}' after the removal, '${WF_CREATED}' after create (the removal must clear in place, not replace)" >&2
+  exit 1
+fi
+# The Workflow's tags are not part of the removal: the updated set stays.
+assert_all_tag_sets "${UPDATED_TAGS}" 'removal'
+echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept (issue #1160)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -944,6 +1034,7 @@ for chk in \
   "get-job --job-name ${JOB_NAME}" \
   "get-crawler --name ${CRAWLER_NAME}" \
   "get-trigger --name ${TRIGGER_NAME}" \
+  "get-trigger --name ${EVENT_TRIGGER_NAME}" \
   "get-workflow --name ${WORKFLOW_NAME}" \
   "get-connection --name ${CONNECTION_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
@@ -993,4 +1084,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + Workflow/Trigger property removal + clean destroy)"
