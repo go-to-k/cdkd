@@ -266,9 +266,21 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
     });
   });
 
-  it.each(['TagResourceCommand', 'UntagResourceCommand'])(
-    'S3 Tables update() threads its masker to the %s tag-diff debug line',
-    async (command) => {
+  const TAG_DIFF_TARGETS = [
+    { type: 'AWS::S3Tables::TableBucket', physicalId: TABLE_BUCKET_ARN, props: { TableBucketName: 'b1' } },
+    {
+      type: 'AWS::S3Tables::Table',
+      physicalId: `${TABLE_BUCKET_ARN}|ns1|t1`,
+      props: { TableBucketARN: TABLE_BUCKET_ARN, Namespace: 'ns1', TableName: 't1' },
+    },
+  ];
+  it.each(
+    TAG_DIFF_TARGETS.flatMap((t) =>
+      ['TagResourceCommand', 'UntagResourceCommand'].map((command) => ({ ...t, command }))
+    )
+  )(
+    'S3 Tables update() threads its masker to the $type $command tag-diff debug line',
+    async ({ type, physicalId, props, command }) => {
       const SECRET = 's3tables-secret-tag-value';
       failOn(
         command,
@@ -276,15 +288,16 @@ describe('S3 Tables / API Gateway thrown wraps keep the caller identity out (go-
           name: 'BadRequestException',
           $fault: 'client',
           $metadata: { httpStatusCode: 400 },
-        })
+        }),
+        { GetTableCommand: { tableARN: `${TABLE_BUCKET_ARN}/table/t1-id` } }
       );
       const failure = await thrown(
         new S3TablesProvider().update(
           'Res',
-          TABLE_BUCKET_ARN,
-          'AWS::S3Tables::TableBucket',
-          { TableBucketName: 'b1', Tags: [{ Key: 'k2', Value: 'v' }] },
-          { TableBucketName: 'b1', Tags: [{ Key: 'k', Value: 'v' }] },
+          physicalId,
+          type,
+          { ...props, Tags: [{ Key: 'k2', Value: 'v' }] },
+          { ...props, Tags: [{ Key: 'k', Value: 'v' }] },
           { maskSecrets: (text: string) => text.split(SECRET).join('***') }
         )
       );
