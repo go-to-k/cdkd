@@ -103,11 +103,11 @@ instead of the RANGE, a global needle where each subject spells its own, and
   name the discriminator (which client, which region) and assert THAT.
   `.claude/rules/testing.md` → "Mutation probes" owns the rest.
 - **NO discrimination is a claim about the FENCE — check three things first.**
-  The edit landed where you aimed it, in the PRODUCTION file (`grep -c` before,
-  `git diff` after; `perl -0pi` without `/g` hits only the first match); a case
-  REACHES that line by EVERY arm that can, which licenses a case per arm but
-  never a fence change nor DELETING a guard as "implied"; and the command ran
-  where you think it did (gotchas.md). Read the TALLY, never the rc.
+  The edit landed in the PRODUCTION file (`grep -c` before, `git diff` after;
+  `perl -0pi` without `/g` hits only the first match); a case REACHES the line
+  by EVERY arm, degenerate ones too (empty map, shape divergence; #5049),
+  licensing a case per arm, never a fence change nor DELETING a guard as
+  "implied"; and the command ran where you think (gotchas.md). Read the TALLY.
 
 ### 5-f'. Scanner/fence calibration (when the fix ships a repo-wide check)
 
