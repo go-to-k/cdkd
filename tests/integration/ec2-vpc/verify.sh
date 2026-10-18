@@ -5,7 +5,10 @@
 # where both VPCs drop EnableDnsHostnames and EnableDnsSupport. CloudFormation
 # resets each removed attribute to the VPC default (measured A/B, us-east-1:
 # hostnames true -> false, support false -> true), while ModifyVpcAttribute
-# changes only the attribute it is sent. Then destroys clean.
+# changes only the attribute it is sent. The same deploy changes the NACL
+# entry AllowHTTPIn's action and CIDR, asserted to be one in-place
+# ReplaceNetworkAclEntry with no DeleteNetworkAclEntry / CreateNetworkAclEntry
+# (the SDK call log, issue #5070). Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -71,6 +74,10 @@ cleanup() {
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Phase 2's SDK call log, left behind when a run fails before it is read.
+  if [ -n "${P2_CALLS:-}" ]; then
+    rm -f "${P2_CALLS}"
+  fi
   set -eu
 }
 
@@ -111,6 +118,22 @@ physical_id() { # usage: physical_id <logical-id>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "$1" '.resources[$l].physicalId // empty'
 }
 
+# The physical id of the ingress NACL entry at rule 100 (AllowHTTPIn), from
+# the cdkd state record: `<aclId>|100|false`.
+nacl_entry_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '[.resources[]
+    | select(.resourceType == "AWS::EC2::NetworkAclEntry")
+    | select(.physicalId | endswith("|100|false")) | .physicalId] | .[0] // empty'
+}
+# The live entry as JSON ('null' when absent), and one field of it ('' when absent).
+nacl_entry() { # usage: nacl_entry <acl-id>
+  aws ec2 describe-network-acls --region "${REGION}" --network-acl-ids "$1" \
+    --query "NetworkAcls[0].Entries[?RuleNumber==\`100\` && Egress==\`false\`] | [0]" --output json
+}
+entry_field() { # usage: entry_field <entry JSON> <field>
+  printf '%s' "$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s.trim()===""?"null":s);const v=r===null?undefined:r[process.argv[1]];process.stdout.write(v===undefined||v===null?"":String(v))})' "$2"
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -134,9 +157,28 @@ if [ "${MAIN_DNS}" != "True/True" ] || [ "${OFF_DNS}" != "False/False" ]; then
 fi
 echo "    OK: baseline DNS hostnames/support True/True and False/False"
 
+# Issue #5070 baseline: the entry allows 0.0.0.0/0 first, so deny and
+# 10.0.0.0/8 afterwards are the Phase 2 update's doing.
+ENTRY_ID=$(nacl_entry_id)
+NACL_ID="${ENTRY_ID%%|*}"
+if [ -z "${ENTRY_ID}" ] || [ "${NACL_ID}" = "${ENTRY_ID}" ]; then
+  echo "FAIL: no AWS::EC2::NetworkAclEntry with a '<aclId>|100|false' physical id in state (got '${ENTRY_ID}')" >&2
+  exit 1
+fi
+P1_ENTRY=$(nacl_entry "${NACL_ID}")
+if [ "$(entry_field "${P1_ENTRY}" RuleAction)" != "allow" ] || [ "$(entry_field "${P1_ENTRY}" CidrBlock)" != "0.0.0.0/0" ]; then
+  echo "FAIL: NACL entry ${ENTRY_ID} after create: expected allow 0.0.0.0/0, got ${P1_ENTRY}" >&2
+  exit 1
+fi
+echo "    OK: baseline NACL entry ${ENTRY_ID} allows 0.0.0.0/0"
+
 # --- Phase 2: REMOVAL drops both DNS attributes (issue #1160) ---------
-echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs)"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs; change the NACL entry)"
+P2_CALLS="$(mktemp -t cdkd-ec2-vpc-p2-calls.XXXXXX)"
+# cdkd APPENDS one line at exit: start from no file, so its existence below
+# proves the log took effect.
+rm -f "${P2_CALLS}"
+CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -155,6 +197,47 @@ if [ "${RM_MAIN_DNS}" != "False/True" ] || [ "${RM_OFF_DNS}" != "False/True" ]; 
 fi
 echo "    OK: removed DNS hostnames reset to False, removed DNS support reset to True, in place (issue #1160)"
 
+# Issue #5070: a NACL entry rule change is "Update requires: No interruption"
+# in CloudFormation, served by one atomic ReplaceNetworkAclEntry. A delete +
+# create leaves rule 100 absent between the two calls, so the SDK call log
+# pins which calls the update sent even when the timing does not bite.
+if [ ! -s "${P2_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${P2_CALLS} was not written - CDKD_SDK_CALL_LOG did not take effect" >&2
+  exit 1
+fi
+# Summed over every line (one per cdkd process); 0 when the command is absent.
+p2_calls() { # <command name>
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts["EC2Client."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1"
+}
+P2_REPLACE="$(p2_calls ReplaceNetworkAclEntryCommand)"
+P2_DELETE="$(p2_calls DeleteNetworkAclEntryCommand)"
+P2_CREATE="$(p2_calls CreateNetworkAclEntryCommand)"
+echo "    Phase 2 NACL entry calls: ReplaceNetworkAclEntry=${P2_REPLACE} DeleteNetworkAclEntry=${P2_DELETE} CreateNetworkAclEntry=${P2_CREATE}"
+if [ "${P2_REPLACE}" != "1" ] || [ "${P2_DELETE}" != "0" ] || [ "${P2_CREATE}" != "0" ]; then
+  echo "FAIL: the NACL entry change must be exactly one ReplaceNetworkAclEntry and no DeleteNetworkAclEntry / CreateNetworkAclEntry (issue #5070)" >&2
+  cat "${P2_CALLS}" >&2
+  exit 1
+fi
+rm -f "${P2_CALLS}"
+
+P2_ENTRY_ID=$(nacl_entry_id)
+if [ "${P2_ENTRY_ID}" != "${ENTRY_ID}" ]; then
+  echo "FAIL: the NACL entry physical id changed (must update in place): '${ENTRY_ID}' -> '${P2_ENTRY_ID}'" >&2
+  exit 1
+fi
+# Bounded read: EC2's describe APIs are eventually consistent.
+P2_ENTRY=""
+for _ in 1 2 3 4 5 6; do
+  P2_ENTRY=$(nacl_entry "${NACL_ID}")
+  [ "$(entry_field "${P2_ENTRY}" RuleAction)" = "deny" ] && [ "$(entry_field "${P2_ENTRY}" CidrBlock)" = "10.0.0.0/8" ] && break
+  sleep 5
+done
+if [ "$(entry_field "${P2_ENTRY}" RuleAction)" != "deny" ] || [ "$(entry_field "${P2_ENTRY}" CidrBlock)" != "10.0.0.0/8" ]; then
+  echo "FAIL: NACL entry ${ENTRY_ID} after update: expected deny 10.0.0.0/8, got ${P2_ENTRY}" >&2
+  exit 1
+fi
+echo "    OK: NACL entry ${ENTRY_ID} changed to deny 10.0.0.0/8 with one ReplaceNetworkAclEntry (issue #5070)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -170,4 +253,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + clean destroy)"
