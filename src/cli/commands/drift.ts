@@ -78,7 +78,7 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import {
   PATTERN_B_NAME_PROPERTIES,
   derivesPatternBName,
-  withStackName,
+  withStackScope,
 } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -89,12 +89,14 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
   safeMsg,
   stringifyJsonPayload,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   commandHole,
   pasteableCommand,
@@ -3348,7 +3350,12 @@ async function runDriftForStack(
     );
   }
 
-  return await withStackName(stackName, async () => {
+  // go-to-k/cdkd#5064: a revert re-derives names in the stack's lifetime.
+  const namingScope = {
+    stackName,
+    stackInstanceId: stackInstanceIdOf(result.state, displayStackName(stackName)),
+  };
+  return await withStackScope(namingScope, async () => {
     const outcomes: DriftOutcome[] = [];
     const state: StackState = result.state;
     const logger = getLogger();
@@ -4145,7 +4152,7 @@ async function runDriftForStack(
             : canonicalized;
           // Issue #4081: a declared Pattern B name the live one is DERIVED from
           // (the legacy stack-name prefix, a sanitize rewrite) is the same name.
-          // Inside this function's `withStackName` scope, which the check needs.
+          // Inside this function's `withStackScope`, which the check needs.
           const nameBaseline = canonicalizeDerivedPatternBName(
             resource.resourceType,
             paired.baseline,
@@ -4573,7 +4580,7 @@ export function buildReadCurrentStateContext(
  * output instead, which on a stack deployed with the legacy
  * `--prefix-user-supplied-names` is `<stack>-<name>`: a name difference on
  * every run, and an exit 1, with nothing drifted. {@link derivesPatternBName}
- * decides it under either prefix setting, in the CALLER's `withStackName`
+ * decides it under either prefix setting, in the CALLER's `withStackScope`
  * scope, so a live name it does not reproduce (another stack's prefix, a
  * different name) stays reported.
  *

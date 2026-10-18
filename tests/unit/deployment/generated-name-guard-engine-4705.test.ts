@@ -15,6 +15,11 @@ import {
   isInterruptedWaitError,
 } from '../../../src/provisioning/interrupt-watch.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import {
+  generateResourceName,
+  getCurrentStackInstanceId,
+  withStackScope,
+} from '../../../src/provisioning/resource-name.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
@@ -483,17 +488,24 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     await plain.engine.deploy(STACK, template);
     expect(plain.provider.lookupNames).toHaveBeenCalledTimes(1);
     events = [];
-    // The user takes a while to answer: the lookups are decided before it.
-    const prompted = buildEngine({
-      approve: async () => {
-        await new Promise((r) => setTimeout(r, 10));
-        return true;
-      },
-    });
+    // The user takes a while to answer: on a stack with a record the
+    // lookups are decided before it.
+    const approve = async (): Promise<boolean> => {
+      await new Promise((r) => setTimeout(r, 10));
+      return true;
+    };
+    const prompted = buildEngine({ approve, records: {} });
     await prompted.engine.deploy(STACK, template);
     // P2: the plan-time read, then ONE batched re-read once the prompt is
     // answered -- not one per DAG wave (Q1, Q2, Q3 are chained).
     expect(prompted.provider.lookupNames).toHaveBeenCalledTimes(2);
+    events = [];
+    // go-to-k/cdkd#5064: a FIRST deploy derives its names from the stack
+    // instance id it gets once it is going ahead, so it looks up once, after
+    // the prompt, and has nothing to re-read.
+    const first = buildEngine({ approve });
+    await first.engine.deploy(STACK, template);
+    expect(first.provider.lookupNames).toHaveBeenCalledTimes(1);
   });
 
   describe('review P1-P4: what the check costs, counted', () => {
@@ -697,11 +709,13 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       await engine.deploy(STACK, templateOf(levels));
       // One lookup; the ledger read once; two ledger writes (the intent, and
       // the success cleanup run beside the post-save writes); no evidence
-      // read (nothing held), no retained.json, no history, no re-read.
+      // read (nothing held), no history, no re-read. retained.json is read
+      // ONCE, beside the diff: a first deploy says what an earlier lifetime
+      // kept (go-to-k/cdkd#5064), and the guard would share that read.
       expect(provider.lookupNames).toHaveBeenCalledTimes(1);
       expect(stateBackend.loadCreateTokenLedger).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(2);
-      expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
+      expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveRetainedResources).not.toHaveBeenCalled();
       expect(stateBackend.earlierStateResources).not.toHaveBeenCalled();
       expect(stateBackend.getRawObject).not.toHaveBeenCalled();
@@ -713,5 +727,109 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     await engine.deploy(STACK, template);
     expect(provider.lookupNames).not.toHaveBeenCalled();
     expect(stateBackend.saveCreateTokenLedger).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5064: the names a deploy plans, looks up and creates are
+  // derived in the stack's naming scope -- its record's id, or the one a
+  // first deploy gets once it is going ahead.
+  describe('the stack instance id names what the deploy plans (#5064)', () => {
+    const MINTED = '00000000-0000-4000-8000-000000000000';
+    const RECORDED = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const named = (id: string | undefined, logicalId: string): string =>
+      withStackScope({ stackName: STACK, stackInstanceId: id }, () =>
+        generateResourceName(logicalId, { maxLength: 80 })
+      );
+    /** The provider derives as the real SQS one does, and records its scope. */
+    const deriving = (provider: ReturnType<typeof buildEngine>['provider']): string[] => {
+      const scopes: string[] = [];
+      provider.generatedCreateName.mockImplementation((_t: string, logicalId: string) =>
+        generateResourceName(logicalId, { maxLength: 80 })
+      );
+      provider.create.mockImplementation(async (logicalId: string) => {
+        scopes.push(`${logicalId}:${String(getCurrentStackInstanceId())}`);
+        return { physicalId: urlOf(generateResourceName(logicalId, { maxLength: 80 })), attributes: {} };
+      });
+      return scopes;
+    };
+    const warned = (): string[] => vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+
+    it('a first deploy looks up and creates under the id it gets once going ahead', async () => {
+      const { engine, provider, stateBackend } = buildEngine({});
+      const scopes = deriving(provider);
+      await engine.deploy(STACK, template);
+      expect(events[0]).toBe(`lookup:${['Q1', 'Q2', 'Q3'].map((q) => named(MINTED, q)).join(',')}`);
+      expect(stateBackend.stackInstanceIdForFirstWrite).toHaveBeenCalledTimes(1);
+      expect(scopes).toEqual([`Q1:${MINTED}`, `Q2:${MINTED}`, `Q3:${MINTED}`]);
+    });
+
+    it("a stack with a record names under the record's id; a legacy record under none", async () => {
+      const v13 = buildEngine({ records: {} });
+      v13.stateBackend.getState.mockResolvedValue({
+        state: {
+          version: 13,
+          stackName: STACK,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: 1,
+          stackInstanceId: RECORDED,
+        } as StackState,
+        etag: 'e0',
+      });
+      const v13Scopes = deriving(v13.provider);
+      await v13.engine.deploy(STACK, template);
+      expect(events[0]).toBe(`lookup:${['Q1', 'Q2', 'Q3'].map((q) => named(RECORDED, q)).join(',')}`);
+      expect(v13Scopes[0]).toBe(`Q1:${RECORDED}`);
+      expect(v13.stateBackend.stackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      events = [];
+      const legacy = buildEngine({ records: {} });
+      const legacyScopes = deriving(legacy.provider);
+      await legacy.engine.deploy(STACK, template);
+      expect(events[0]).toBe('lookup:App-Q1,App-Q2,App-Q3');
+      expect(legacyScopes[0]).toBe('Q1:undefined');
+    });
+
+    it('a recreated stack does not take back what its earlier lifetime kept, and says so once', async () => {
+      // The earlier lifetime (legacy names) kept Q1; AWS still holds it.
+      const kept = { logicalId: 'Q1', resourceType: QUEUE, physicalId: urlOf('App-Q1') };
+      const { engine, provider } = buildEngine({
+        retained: [kept],
+        holders: { 'App-Q1': urlOf('App-Q1') },
+      });
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      // Its new name is free: a new queue is created, the kept one untouched.
+      expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2', 'Q3']);
+      expect(events.some((e) => e.includes('App-Q1,') || e.endsWith('App-Q1'))).toBe(false);
+      const notes = warned()
+        .slice(before)
+        .filter((w) => w.includes('kept 1 resource(s)'));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+    });
+
+    it('warns about nothing kept: an empty record, or a stack that has one', async () => {
+      const before = warned().length;
+      const empty = buildEngine({ retained: [] });
+      await empty.engine.deploy(STACK, template);
+      const existing = buildEngine({
+        records: {},
+        retained: [{ logicalId: 'Q1', resourceType: QUEUE, physicalId: urlOf('App-Q1') }],
+      });
+      await existing.engine.deploy(STACK, template);
+      expect(warned().slice(before).filter((w) => w.includes('resource(s) here'))).toEqual([]);
+    });
+
+    it('a dry run of a first deploy derives no name and asks for no id', async () => {
+      const { engine, provider, stateBackend } = buildEngine({ dryRun: true });
+      provider.generatedCreateName.mockImplementation(() => {
+        throw new Error('derived a name in a dry run');
+      });
+      await engine.deploy(STACK, template);
+      expect(provider.generatedCreateName).not.toHaveBeenCalled();
+      expect(stateBackend.stackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
+    });
   });
 });

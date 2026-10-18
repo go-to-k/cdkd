@@ -62,6 +62,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     const foreignHolder = vi.fn(async () => undefined);
 
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: t.stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -92,6 +93,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     );
 
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: t.stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -123,6 +125,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     );
 
     const left = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: t.stateBackend as never,
       stackName: 'S',
       region: REGION,
@@ -154,6 +157,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     const run = async (deployRunId: string | undefined) => {
       const t = setup(journalOf(failedSeg([orphan()]), pending));
       const out = await settleJournaledOrphansOnSuccess({
+        stackInstanceId: undefined,
         stateBackend: t.stateBackend as never,
         stackName: 'S~Child',
         region: REGION,
@@ -188,6 +192,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
       })
     );
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: t.stateBackend as never,
       stackName: 'S~Child',
       region: REGION,
@@ -207,6 +212,7 @@ describe('settleJournaledOrphansOnSuccess (go-to-k/cdkd#4600)', () => {
     const run = async (holding: Awaited<ReturnType<Parameters<typeof settleJournaledOrphansOnSuccess>[0]['foreignHolder']>>) => {
       const t = setup(journalOf(failedSeg([orphan()])));
       const out = await settleJournaledOrphansOnSuccess({
+        stackInstanceId: undefined,
         stateBackend: t.stateBackend as never,
         stackName: 'S',
         region: REGION,

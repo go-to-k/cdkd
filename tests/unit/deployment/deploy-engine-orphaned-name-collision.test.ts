@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import { markAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -135,7 +135,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
   }
 
   /**
-   * Drive `provisionResource` INSIDE a `withStackName` scope, as the engine's
+   * Drive `provisionResource` INSIDE a `withStackScope` scope, as the engine's
    * own `deploy()` does: `looksLikeCdkdGeneratedName` reads it, and a test
    * without the scope takes the unresolvable branch and passes for the wrong
    * reason -- so every negative case here would be vacuous.
@@ -162,7 +162,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [id]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackName(stackName, () =>
+    await withStackScope({ stackName: stackName, stackInstanceId: undefined }, () =>
       provisionResource(engine, id, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
@@ -333,7 +333,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [LOGICAL]: { Type: REPLACED_TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
       provisionResource(engine, LOGICAL, change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the replacement collision refusal');

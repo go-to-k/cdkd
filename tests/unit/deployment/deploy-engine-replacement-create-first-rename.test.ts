@@ -27,7 +27,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 // go-to-k/cdkd#4438: a Retain that leaves the old resource alive rotates the
 // stack's create-token nonce; the type filter lives in the ledger module.
@@ -1101,7 +1101,7 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
   // The deploy's own scope (stack name, prefix flag) decides the sent name,
   // so each case runs inside one, as `cdkd deploy` does.
   const inDeployScope = <T>(skipPrefix: boolean, fn: () => Promise<T>): Promise<T> =>
-    withSkipPrefix(skipPrefix, () => withStackName('MyStack', fn));
+    withSkipPrefix(skipPrefix, () => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, fn));
   const lbArn = (name: string): string =>
     `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/${name}/0123456789abcdef`;
 

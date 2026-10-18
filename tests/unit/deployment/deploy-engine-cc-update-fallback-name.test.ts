@@ -64,7 +64,7 @@ describe('DeployEngine - Cloud Control fallback name is filled on CREATE, not on
   const stackName = 'lmi-stack';
   const RESOURCE_TYPE = 'AWS::Lambda::CapacityProvider';
   const PHYSICAL_ID = 'imported-provider-name';
-  // `DeployEngine.deploy` runs under `withStackName(stackName)`, so the name the
+  // `DeployEngine.deploy` runs under `withStackScope(stackName)`, so the name the
   // fill generates is exactly `<stack>-<logicalId>`.
   const GENERATED_NAME = 'lmi-stack-Provider';
 

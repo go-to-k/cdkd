@@ -17,7 +17,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceName, recordedGeneratedNameKept } from '../resource-name.js';
 import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -459,9 +459,23 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
-    const ruleName =
+    const derivedRuleName =
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
+    // go-to-k/cdkd#5064: `PutRule` is an upsert by name, so a derivation that
+    // differs from the recorded rule's name only by the naming scheme would
+    // CREATE a second rule. An un-named rule keeps the name its ARN carries.
+    const recordedRuleName = physicalId.split('/').pop() ?? '';
+    const ruleName = recordedGeneratedNameKept({
+      recorded: recordedRuleName,
+      derived: derivedRuleName,
+      declaredName: properties['Name'],
+      previousDeclaredName: previousProperties['Name'],
+      logicalId,
+      options: { maxLength: 64 },
+    })
+      ? recordedRuleName
+      : derivedRuleName;
     const newTargets = properties['Targets'] as RuleTarget[] | undefined;
     const oldTargets = previousProperties['Targets'] as RuleTarget[] | undefined;
 

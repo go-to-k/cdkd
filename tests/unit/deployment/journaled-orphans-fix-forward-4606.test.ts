@@ -100,6 +100,7 @@ async function run(opts: RunOptions = {}) {
   const stateResources = (record === undefined ? {} : { Orphan: record }) as never;
   const foreignHolder = vi.fn(async () => opts.holding);
   const out = await settleJournaledOrphansOnSuccess({
+    stackInstanceId: undefined,
     stateBackend: stateBackend as never,
     stackName: 'S',
     region: REGION,

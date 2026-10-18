@@ -115,6 +115,7 @@ function logger() {
 
 const base = {
   stackName: 'S',
+  stackInstanceId: undefined,
   region: 'us-east-1',
   command: 'deploy',
   // A unique (AWS-minted) identifier unless a case says otherwise; the
@@ -495,6 +496,7 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
       attemptedProperties,
       logicalId: 'Thing',
       stackName: 'MyStack',
+      stackInstanceId: undefined,
     });
   };
 
@@ -537,6 +539,7 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
         attemptedProperties: undefined,
         logicalId: 'Thing',
         stackName: 'MyStack',
+        stackInstanceId: undefined,
       })
     ).toBe(false);
   });

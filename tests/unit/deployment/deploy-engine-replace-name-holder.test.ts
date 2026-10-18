@@ -75,7 +75,7 @@ import { provisionResource } from '../../../src/deployment/deploy-engine/provisi
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -179,7 +179,7 @@ async function replaceOnce(opts: {
     },
   };
   const engine = makeEngine(opts.provider, opts.provisionedBy, opts.replace ?? true);
-  return withStackName(STACK, () =>
+  return withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
     provisionResource(
       engine,
       opts.logicalId,
@@ -482,7 +482,7 @@ describe('the proof reads what THIS create sent (#3979)', () => {
       },
     };
     const engine = makeEngine(provider);
-    const err = await withStackName(STACK, () =>
+    const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
       provisionResource(
         engine,
         'Stage',

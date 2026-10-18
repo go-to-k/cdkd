@@ -1,6 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import type { GeneratedNameGuard } from './generated-name-guard.js';
-import { withStackName } from '../provisioning/resource-name.js';
+import { withStackScopeBeforeStateRead } from '../provisioning/resource-name.js';
 import {
   ledgerForStack,
   withCreateTokenLedger,
@@ -992,12 +992,15 @@ export class DeployEngine {
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
-    // background.
+    // background. go-to-k/cdkd#5064: the stack's instance id is in its state
+    // record, which `doDeployWithPrefetch` reads under the lock and then opens
+    // the id-bearing `withStackScope` for everything that names a resource;
+    // until then a generated name is refused rather than derived without it.
     // go-to-k/cdkd#4438: the stack's create-token ledger, which the EFS, FSx
     // and CloudFront OAI providers fold into their lifetime-bound create
     // tokens (`src/provisioning/providers/create-token-ledger.ts`).
     const ledger = ledgerForStack(this.stateBackend, stackName, this.stackRegion);
-    return withStackName(stackName, () =>
+    return withStackScopeBeforeStateRead(stackName, () =>
       this.options.dryRun
         ? this.doDeploy(stackName, template)
         : withCreateTokenLedger(ledger, () => this.doDeploy(stackName, template))

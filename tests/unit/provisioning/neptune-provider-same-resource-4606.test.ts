@@ -625,6 +625,7 @@ describe('the success settle with NeptuneProvider (go-to-k/cdkd#4606)', () => {
         }
       : {};
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
         reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

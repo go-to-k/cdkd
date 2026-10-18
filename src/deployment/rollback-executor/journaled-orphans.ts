@@ -24,7 +24,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
-import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
@@ -272,6 +272,8 @@ export async function deleteJournaledOrphans(
   orphans: JournaledOrphans,
   stateResources: Record<string, ResourceState>,
   stackName: string,
+  /** The stack's instance id (go-to-k/cdkd#5064): its record's, `undefined` for a legacy one. */
+  stackInstanceId: string | undefined,
   ctx: RollbackExecutorContext,
   options: {
     isInterrupted?: () => boolean;
@@ -349,7 +351,7 @@ export async function deleteJournaledOrphans(
     const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
       withPrintingSecrets(printing, () =>
-        withStackName(stackName, () =>
+        withStackScope({ stackName, stackInstanceId }, () =>
           replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
             // A destroy run, not a rollback: its own run events frame these
             // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
@@ -450,6 +452,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
     | 'dropRollbackJournalFailedOperations'
   >;
   stackName: string;
+  /** The stack's instance id (go-to-k/cdkd#5064): its record's, `undefined` for a legacy one. */
+  stackInstanceId: string | undefined;
   region: string;
   /**
    * The stack's resources after the deploy; undefined when its record cannot
@@ -575,6 +579,7 @@ export async function settleJournaledOrphansOnSuccess(args: {
         acting,
         { ...stateResources },
         stackName,
+        args.stackInstanceId,
         // go-to-k/cdkd#4658 / #4696: the replay's delete asks the holder scan
         // and the identity of a journaled orphan; the ones this settle just
         // proved are not asked again (no second identity read).

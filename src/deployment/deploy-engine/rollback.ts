@@ -4,6 +4,7 @@ import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engi
 import { namingSecretsFor, printingSecretsFor } from './masking.js';
 import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../state/deployment-events-store.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
 import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
@@ -679,6 +680,7 @@ export async function settleJournalAfterSuccess(
       const own = await settleJournaledOrphansOnSuccess({
         stateBackend: deps.stateBackend,
         stackName,
+        stackInstanceId: stackInstanceIdOf(previousState, displayStackName(stackName)),
         region: deps.stackRegion,
         stateResources: finalResources,
         rollbackOrphans: previousState.orphans,
@@ -718,6 +720,8 @@ export async function settleJournalAfterSuccess(
         const settled = await settleJournaledOrphansOnSuccess({
           stateBackend: deps.stateBackend,
           stackName: child,
+          // go-to-k/cdkd#5064: the child's own lifetime.
+          stackInstanceId: stackInstanceIdOf(childState, displayStackName(child)),
           region: deps.stackRegion,
           stateResources: childState?.resources,
           rollbackOrphans: childState?.orphans,

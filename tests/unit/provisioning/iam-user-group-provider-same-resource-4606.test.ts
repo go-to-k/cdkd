@@ -721,6 +721,7 @@ describe.each(KINDS)('the success settle with IAMUserGroupProvider, $type (go-to
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: backend as never,
       stackName: 'S',
       region: 'us-east-1',

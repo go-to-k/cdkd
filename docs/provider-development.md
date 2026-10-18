@@ -231,8 +231,13 @@ async create(
 Five things in this method apply to every provider:
 
 - **The name.** When the template gives no name, `generateResourceName`
-  (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{Hash}`
-  and cuts it to the service's length limit.
+  (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{suffix}`,
+  where the 12-character suffix comes from the stack's instance id, and cuts the
+  `{StackName}-{LogicalId}` part to fit the service's length limit. A stack
+  deployed before the instance id existed keeps `{StackName}-{LogicalId}`.
+  Call it inside the stack's `withStackScope`: the deploy and every replay
+  open one, and a generated name derived before the deploy reads the stack's
+  state throws.
 - **The physical id.** Return what CloudFormation's `Ref` returns for the
   type. For a subnet group that is its name.
 - **The attributes.** Return each attribute a template can read with

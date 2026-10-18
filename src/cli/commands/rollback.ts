@@ -44,7 +44,8 @@ import {
   withNestedRevertRun,
   type NestedRevertRun,
 } from '../../deployment/nested-child-journal.js';
-import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { dropFailedJournalEntry, refuseDropFailedConflicts } from './rollback-drop-failed.js';
@@ -98,6 +99,7 @@ import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
@@ -879,6 +881,10 @@ export async function rollbackCommand(
         // loadRollbackJournal → parseRollbackJournal; it propagates as a hard
         // error telling the user to upgrade cdkd.
         const stateData = await setup.stateBackend.getState(stackName, region);
+        // go-to-k/cdkd#5064: the replay re-derives names in the lifetime the
+        // record names. No record (a first deploy that saved nothing) leaves
+        // only creates to delete, which derive no name.
+        const stackInstanceId = stackInstanceIdOf(stateData?.state, displayStackName(stackName));
         let journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
         // go-to-k/cdkd#3252: settle the Cloud Control CREATEs a failed deploy
         // stopped waiting for before the journal is planned: one that made its
@@ -894,6 +900,7 @@ export async function rollbackCommand(
             command: 'rollback',
             logger,
             stateResources: stateData?.state.resources,
+            stackInstanceId,
           })
         ) {
           journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
@@ -1096,13 +1103,15 @@ export async function rollbackCommand(
         // go-to-k/cdkd#4438: the stack's create-token ledger, so the replay's
         // re-creates send the stack's tokens and a Retain it honours rotates them.
         const createTokenLedger = ledgerForStack(setup.stateBackend, stackName, region);
-        /** The async scope a segment replays in: its stack name and its prefix flag. */
+        /** The async scope a segment replays in: its stack (name and lifetime) and its prefix flag. */
         const inSegmentScope = <T>(
           segment: { skipPrefix?: boolean },
           fn: () => Promise<T>
         ): Promise<T> =>
           withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
-            withStackName(stackName, () => withCreateTokenLedger(createTokenLedger, fn))
+            withStackScope({ stackName, stackInstanceId }, () =>
+              withCreateTokenLedger(createTokenLedger, fn)
+            )
           );
 
         // 5. Plan — newest-first, one block per segment.

@@ -17,7 +17,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceName, recordedGeneratedNameKept } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -547,9 +547,23 @@ export class IAMPolicyProvider implements ResourceProvider {
     const { value: v } = log;
     log.debug(`Updating IAM policy ${logicalId}: ${v(physicalId)}`);
 
-    const newPolicyName =
+    const derivedPolicyName =
       (properties['PolicyName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 64 });
+    // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
+    // the derivation only by the naming scheme keeps it, never a rename.
+    const newPolicyName =
+      oldPolicyName !== undefined &&
+      recordedGeneratedNameKept({
+        recorded: oldPolicyName,
+        derived: derivedPolicyName,
+        declaredName: properties['PolicyName'],
+        previousDeclaredName: previousProperties['PolicyName'],
+        logicalId,
+        options: { maxLength: 64 },
+      })
+        ? oldPolicyName
+        : derivedPolicyName;
     // Every name the recorded principals may hold the policy under
     // (go-to-k/cdkd#4152): the physical id's, and the recorded PolicyName when
     // it is a usable name that differs. They differ on a rollback revert, which
