@@ -59,6 +59,13 @@ const v13Scope = { stackName: STACK, stackInstanceId: ID };
 /** The name a v13 stack generates for `logicalId`. */
 const suffixed = (logicalId: string, maxLength: number): string =>
   withStackScope(v13Scope, () => generateResourceName(logicalId, { maxLength }));
+/** An EARLIER lifetime's id (a `cdkd import` of what that lifetime kept). */
+const OTHER_ID = '00000000-0000-4000-8000-000000000000';
+/** The name an EARLIER lifetime (a different stack instance id) generated. */
+const suffixedOther = (logicalId: string, maxLength: number): string =>
+  withStackScope({ stackName: STACK, stackInstanceId: OTHER_ID }, () =>
+    generateResourceName(logicalId, { maxLength })
+  );
 
 const sent = (klass: abstract new (...args: never[]) => unknown): Array<Record<string, unknown>> =>
   mockSend.mock.calls
@@ -86,6 +93,7 @@ describe('IAM role update keeps a generated name (#5064)', () => {
     ['a v13 stack, suffixed name', v13Scope, suffixed('Role', 64)],
     ['a v13 stack holding a legacy name (an import)', v13Scope, `${STACK}-Role`],
     ['a scope missing the id, suffixed name', legacyScope, suffixed('Role', 64)],
+    ["a v13 stack holding ANOTHER lifetime's suffixed name (an import)", v13Scope, suffixedOther('Role', 64)],
   ])('%s: a no-op update replaces nothing', async (_label, scope, physicalId) => {
     const result = await withStackScope(scope, () => noOp(physicalId));
     expect(result.wasReplaced).toBe(false);
@@ -100,7 +108,7 @@ describe('IAM role update keeps a generated name (#5064)', () => {
         ? { Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::1:role/new-role', RoleId: 'R' } }
         : {}
     );
-    await withStackScope(v13Scope, () =>
+    const result = await withStackScope(v13Scope, () =>
       new IAMRoleProvider().update(
         'Role',
         'old-role',
@@ -108,7 +116,27 @@ describe('IAM role update keeps a generated name (#5064)', () => {
         { AssumeRolePolicyDocument: doc, RoleName: 'new-role' },
         { AssumeRolePolicyDocument: doc, RoleName: 'old-role' }
       )
-    ).catch(() => undefined);
+    );
+    expect(result.wasReplaced).toBe(true);
+    expect(sent(CreateRoleCommand).map((i) => i['RoleName'])).toEqual(['MyStack-new-role']);
+  });
+
+  it('a name declared for the first time still replaces (no previous name to compare)', async () => {
+    mockSend.mockImplementation(async (command: unknown) =>
+      command instanceof CreateRoleCommand
+        ? { Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::1:role/new-role', RoleId: 'R' } }
+        : {}
+    );
+    const result = await withStackScope(legacyScope, () =>
+      new IAMRoleProvider().update(
+        'Role',
+        `${STACK}-Role`,
+        'AWS::IAM::Role',
+        { AssumeRolePolicyDocument: doc, RoleName: 'new-role' },
+        { AssumeRolePolicyDocument: doc }
+      )
+    );
+    expect(result.wasReplaced).toBe(true);
     expect(sent(CreateRoleCommand).map((i) => i['RoleName'])).toEqual(['MyStack-new-role']);
   });
 });
@@ -122,6 +150,7 @@ describe('IAM managed policy update keeps a generated name (#5064)', () => {
     ['a v13 stack, suffixed name', v13Scope, suffixed('Policy', 128)],
     ['a v13 stack holding a legacy name (an import)', v13Scope, `${STACK}-Policy`],
     ['a scope missing the id, suffixed name', legacyScope, suffixed('Policy', 128)],
+    ["a v13 stack holding ANOTHER lifetime's suffixed name (an import)", v13Scope, suffixedOther('Policy', 128)],
   ])('%s: a no-op update replaces nothing', async (_label, scope, name) => {
     const result = await withStackScope(scope, () =>
       new IAMManagedPolicyProvider().update(
@@ -137,6 +166,23 @@ describe('IAM managed policy update keeps a generated name (#5064)', () => {
     expect(sent(CreatePolicyCommand)).toEqual([]);
     expect(sent(DeletePolicyCommand)).toEqual([]);
   });
+
+  it('a name declared for the first time still replaces (no previous name to compare)', async () => {
+    mockSend.mockImplementation(async (command: unknown) =>
+      command instanceof CreatePolicyCommand ? { Policy: { Arn: arn('new-policy') } } : {}
+    );
+    const result = await withStackScope(legacyScope, () =>
+      new IAMManagedPolicyProvider().update(
+        'Policy',
+        arn(`${STACK}-Policy`),
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: doc, ManagedPolicyName: 'new-policy' },
+        { PolicyDocument: doc }
+      )
+    );
+    expect(result.wasReplaced).toBe(true);
+    expect(sent(CreatePolicyCommand).map((i) => i['PolicyName'])).toEqual(['MyStack-new-policy']);
+  });
 });
 
 describe('IAM inline policy update keeps a generated name (#5064)', () => {
@@ -145,6 +191,7 @@ describe('IAM inline policy update keeps a generated name (#5064)', () => {
   it.each([
     ['a v13 stack holding a legacy name (an import)', v13Scope, `${STACK}-Inline`],
     ['a scope missing the id, suffixed name', legacyScope, suffixed('Inline', 64)],
+    ["a v13 stack holding ANOTHER lifetime's suffixed name (an import)", v13Scope, suffixedOther('Inline', 64)],
   ])('%s: a no-op update renames nothing', async (_label, scope, name) => {
     const result = await withStackScope(scope, () =>
       new IAMPolicyProvider().update(
@@ -158,6 +205,21 @@ describe('IAM inline policy update keeps a generated name (#5064)', () => {
     expect(result.physicalId).toBe(name);
     expect(sent(PutRolePolicyCommand).map((i) => i['PolicyName'])).toEqual([name]);
     expect(sent(DeleteRolePolicyCommand)).toEqual([]);
+  });
+
+  it('a name declared for the first time still renames (no previous name to compare)', async () => {
+    const result = await withStackScope(legacyScope, () =>
+      new IAMPolicyProvider().update(
+        'Inline',
+        `${STACK}-Inline`,
+        'AWS::IAM::Policy',
+        { PolicyDocument: doc, Roles: ['r'], PolicyName: 'new-inline' },
+        { PolicyDocument: doc, Roles: ['r'] }
+      )
+    );
+    expect(result.physicalId).toBe('new-inline');
+    expect(sent(PutRolePolicyCommand).map((i) => i['PolicyName'])).toEqual(['new-inline']);
+    expect(sent(DeleteRolePolicyCommand).map((i) => i['PolicyName'])).toEqual([`${STACK}-Inline`]);
   });
 });
 
