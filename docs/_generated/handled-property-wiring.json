@@ -10799,10 +10799,13 @@
             "AWS::Events::EventBus"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "create"
+            "applyUpdate",
+            "create",
+            "update"
           ]
         },
         {

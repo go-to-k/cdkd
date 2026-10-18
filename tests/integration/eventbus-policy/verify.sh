@@ -15,6 +15,9 @@
 #      shape (old: {} / new: only the added Condition, no Principal echo).
 #   3. Re-deploy with CDKD_TEST_UPDATE=true; assert the deployed statement
 #      keeps Sid/Principal/Action/Resource AND gains the Condition.
+#   3b. Re-deploy adding CDKD_TEST_BUS_POLICY_UPDATE=true; assert the second
+#      bus's EventBus `Policy` (issue #5044, asserted live since Phase 1) now
+#      carries the new Sid and no longer the old one (whole-document replace).
 #   4. Destroy + assert bus is gone and the cdkd state is removed.
 #
 # Required env vars:
@@ -62,6 +65,7 @@ STACK="CdkdEventbusPolicyExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 BUS_NAME="cdkd-integ-buspolicy-bus"
+POLICY_BUS_NAME="cdkd-integ-buspolicy-prop-bus"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -76,6 +80,7 @@ cleanup() {
   fi
   aws events remove-permission --statement-id 'cdkd-integ-buspolicy-stmt' --event-bus-name "${BUS_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws events delete-event-bus --name "${BUS_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws events delete-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -126,6 +131,15 @@ if printf '%s' "${POLICY_P1}" | grep -q '"Condition"'; then
 fi
 echo "    bus policy statement live (no Condition yet)"
 
+# Issue #5044: the EventBus `Policy` property reaches AWS on create.
+PROP_POLICY_P1="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
+  --query 'Policy' --output text)"
+if ! printf '%s' "${PROP_POLICY_P1}" | grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v1"'; then
+  echo "FAIL: EventBus Policy property not applied on create (issue 5044): ${PROP_POLICY_P1}" >&2
+  exit 1
+fi
+echo "    EventBus Policy property applied on create"
+
 # --- Phase 2: diff for the Condition addition must render symmetrically ---
 echo "==> Phase 2: cdkd diff for the pure key addition (#1608 shape)"
 DIFF_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
@@ -160,14 +174,32 @@ for token in '"Sid":"cdkd-integ-buspolicy-stmt"' '"Action":"events:PutEvents"' '
 done
 echo "    full statement retained WITH the added Condition"
 
+# --- Phase 3b: change the EventBus Policy property (issue #5044) ----------
+echo "==> Phase 3b: re-deploy with a changed EventBus Policy Sid"
+CDKD_TEST_UPDATE=true CDKD_TEST_BUS_POLICY_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+PROP_POLICY_P3B="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
+  --query 'Policy' --output text)"
+if ! printf '%s' "${PROP_POLICY_P3B}" | grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v2"'; then
+  echo "FAIL: changed EventBus Policy property not applied on update (issue 5044): ${PROP_POLICY_P3B}" >&2
+  exit 1
+fi
+if printf '%s' "${PROP_POLICY_P3B}" | grep -qF 'cdkd-integ-buspolicy-prop-v1'; then
+  echo "FAIL: old EventBus Policy statement survived the whole-document update (issue 5044): ${PROP_POLICY_P3B}" >&2
+  exit 1
+fi
+echo "    EventBus Policy property replaced with the new document"
+
 # --- Phase 4: destroy -----------------------------------------------------
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "event bus ${BUS_NAME} still exists after destroy" aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
+assert_gone "event bus ${POLICY_BUS_NAME} still exists after destroy" aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}"
 echo "    bus policy + bus deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — EventBusPolicy deploy/diff/update/destroy, all 4 phases passed"
+echo "[verify] PASS — EventBusPolicy deploy/diff/update/destroy, all phases passed"
