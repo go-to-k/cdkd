@@ -135,7 +135,7 @@ ROTATION_FN_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda:
 LAMBDA_ARN="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
   --query 'RotationLambdaARN' --output text)"
 case "${LAMBDA_ARN}" in
-  *":function:${ROTATION_FN_NAME}"*) ;;
+  *":function:${ROTATION_FN_NAME}") ;;
   *) echo "FAIL: RotationLambdaARN does not point at the stack rotation fn ${ROTATION_FN_NAME}: '${LAMBDA_ARN}'" >&2; exit 1 ;;
 esac
 
