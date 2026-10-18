@@ -8,6 +8,19 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
+const ssmValue = vi.hoisted(() => ({ value: 'db.example.com' }));
+const legacyWalks = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../../../src/deployment/secret-redaction.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/deployment/secret-redaction.js')>();
+  return {
+    ...actual,
+    withLegacyMixedScan: <T>(...args: Parameters<typeof actual.withLegacyMixedScan<T>>): T => {
+      legacyWalks.count++;
+      return actual.withLegacyMixedScan(...args);
+    },
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),
@@ -28,7 +41,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     },
     ssm: {
       send: vi.fn().mockResolvedValue({
-        Parameter: { Value: 'db.example.com', Type: 'String', Version: 1 },
+        Parameter: { Value: ssmValue.value, Type: 'String', Version: 1 },
       }),
       config: { region: () => Promise.resolve('us-east-1') },
     },
@@ -61,7 +74,7 @@ vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
     readonly config = { region: () => Promise.resolve('us-east-1') };
     constructor(_config?: unknown) {}
     async send(): Promise<unknown> {
-      return { Parameter: { Value: 'db.example.com', Type: 'String', Version: 1 } };
+      return { Parameter: { Value: ssmValue.value, Type: 'String', Version: 1 } };
     }
     destroy(): void {}
   }
@@ -205,6 +218,31 @@ describe('a record a pre-#5056 cdkd wrote with a short secret beside a public to
     expect(run.calls).toEqual(['update:Param']);
     expect(run.persisted?.properties['Value']).toBe(TODAY);
     expect(JSON.stringify(run.persisted?.properties)).not.toContain('x9');
+  });
+
+  it('a legacy spelling holding a mask is left to the diff, which sends', async () => {
+    // A public value that itself spells `***`: the legacy spelling then holds
+    // a mask, which could hide a rotated value, so it never licenses the
+    // no-send repair.
+    ssmValue.value = 'db-***.example.com';
+    try {
+      const run = await deploy(record('db-***.example.com/pin=x9'), template(SOURCE), [['Param']]);
+      expect(run.thrown).toBeUndefined();
+      expect(run.calls).toEqual(['update:Param']);
+      expect(run.persisted?.properties['Value']).toBe(`db-***.example.com/pin=${PIN}`);
+    } finally {
+      ssmValue.value = 'db.example.com';
+    }
+  });
+
+  it('runs the legacy walk only where today\'s walk took the mixed arm', async () => {
+    legacyWalks.count = 0;
+    const plain = await deploy(record('plain-old'), template('plain-new'), [['Param']]);
+    expect(plain.calls).toEqual(['update:Param']);
+    expect(legacyWalks.count).toBe(0);
+    const mixed = await deploy(record(LEGACY_VALUE), template(SOURCE), [['Param']]);
+    expect(mixed.calls).toEqual([]);
+    expect(legacyWalks.count).toBeGreaterThan(0);
   });
 
   it('a fresh deploy persists today\'s spelling (the arm the repair keys on)', async () => {

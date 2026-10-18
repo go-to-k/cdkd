@@ -72,6 +72,7 @@ import {
   differingStringLeaves,
   replaceWholeLeaves,
   legacyReferenceLeavesOnly,
+  legacyLeavesWithoutMask,
   repairEmbeddedPhysicalNamesTowards,
   isSingleDynamicReferenceToken,
   physicalNameCopiesOf,
@@ -665,24 +666,30 @@ export async function provisionUpdate(
       }
     }
   }
-  // go-to-k/cdkd#5056, the same one-time repair for a literal embedding a
-  // short secret beside a PUBLIC ssm token: a pre-fix cdkd persisted it as
-  // the value scan left it, the secret in plaintext. A leaf equal to what
-  // that walk persisted for TODAY's value is today's value unchanged, so it
-  // takes today's spelling with no send; anything else is a real edit. The
+  // go-to-k/cdkd#5056, the same repair for a literal embedding a short
+  // secret beside a PUBLIC ssm token: a pre-fix cdkd persisted it as the
+  // value scan left it, the secret in plaintext. A leaf equal to what that
+  // walk persisted for TODAY's value is today's value unchanged, so it takes
+  // today's spelling with no send; anything else is a real edit. Only where
+  // today's walk took the mixed arm, so a deploy of a resource without such a
+  // leaf pays nothing; one with it pays a second, CPU-only walk on every
+  // update, as #4986's does. A legacy leaf holding a mask is left out: it
+  // matches whatever masked value it hides, a rotated one included. The
   // legacy bag can hold plaintext: a comparison key, never persisted.
   if (mixedLiteralAnswered(updateSecrets)) {
-    const legacyMixed = withLegacyMixedScan(updateSecrets, () =>
-      maskAtCoordinates(
-        redactForState(resolvedProps, {
-          provenance: 'template-derived',
-          secrets: updateSecrets,
-          source: desiredProps,
-          generation: 'same-generation',
-        }),
-        comparisonCoordinates
+    const legacyMixed = legacyLeavesWithoutMask(
+      withLegacyMixedScan(updateSecrets, () =>
+        maskAtCoordinates(
+          redactForState(resolvedProps, {
+            provenance: 'template-derived',
+            secrets: updateSecrets,
+            source: desiredProps,
+            generation: 'same-generation',
+          }),
+          comparisonCoordinates
+        )
       )
-    );
+    ) as Record<string, unknown>;
     for (const bag of new Set(repairable)) {
       for (const key of Object.keys(bag)) {
         const repaired = repairPhysicalNameCopyLeaves(

@@ -123,6 +123,7 @@ export {
   differingStringLeaves,
   replaceWholeLeaves,
   legacyReferenceLeavesOnly,
+  legacyLeavesWithoutMask,
   repairEmbeddedPhysicalNamesTowards,
 } from './secret-redaction/redact-state.js';
 export {
