@@ -146,6 +146,11 @@ cleanup() {
     aws ec2 delete-managed-prefix-list --region "${REGION}" --prefix-list-id "${pl_id}" >/dev/null 2>&1
   fi
 
+  # Phase 2's SDK call log, left behind when a run fails before it is read.
+  if [ -n "${P2_CALLS:-}" ]; then
+    rm -f "${P2_CALLS}"
+  fi
+
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
