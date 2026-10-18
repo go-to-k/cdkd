@@ -159,5 +159,5 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   worktree, so `git status --porcelain` must be EMPTY before a probe and
   otherwise they WAIT; and leave those files alone until the round ends
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
-- Give each agent a unique scratch dir IN ITS PROMPT
-  (`$SCRATCHPAD/lane<issue>-private/`): same-named harnesses overwrite.
+- Give each agent a unique scratch dir IN ITS PROMPT, one per LANE
+  (`$SCRATCHPAD/lane<issue><slice>-private/`): same-named files overwrite.
