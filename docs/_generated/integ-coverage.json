@@ -5064,6 +5064,7 @@
         "rollback-command",
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
+        "secrets-dynamic-ref",
         "stream-delete-redeploy",
         "tags-propagation"
       ],
@@ -5103,6 +5104,9 @@
         "secret-derived-immutable-names": [
           "l1",
           "literal"
+        ],
+        "secrets-dynamic-ref": [
+          "l1"
         ],
         "stream-delete-redeploy": [
           "l2",

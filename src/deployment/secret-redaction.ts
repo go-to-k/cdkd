@@ -64,6 +64,9 @@ export {
   recordIntrinsicLeafResolutionAs,
   markSameGenerationBag,
   isSameGenerationBag,
+  markLeafCertifiedBag,
+  isLeafCertifiedBag,
+  redactionClaimOf,
 } from './secret-redaction/pairs.js';
 export {
   type RecordingKind,

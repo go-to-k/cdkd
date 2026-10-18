@@ -533,6 +533,11 @@ cleanup() {
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # go-to-k/cdkd#5063's stream has a generated name: swept only once read.
+  if [ -n "${PIN_STREAM_NAME:-}" ]; then
+    aws kinesis delete-stream --stream-name "${PIN_STREAM_NAME}" --enforce-consumer-deletion \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   aws ssm delete-parameter --name "${PARAM_NAME}-mixed" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_UD_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${B64_IN_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -2836,6 +2841,55 @@ if grep -qF "${EXPECTED_DB_PIN_BESIDE_PUBLIC}" <<< "${STATE_JSON}"; then
   echo "FAIL: the pin beside the public value is somewhere in the persisted state document in plaintext (#5056)" >&2
   redaction_fail=1
 fi
+# go-to-k/cdkd#5063: the Kinesis stream's record is the PROVIDER's
+# `effectiveProperties` (premise: the recorded metric list is the EXPANDED one,
+# not `ALL`), and its tag embeds the two-character pin in a literal.
+PIN_STREAM_JSON=$(printf '%s' "${STATE_JSON}" \
+  | jq -c '[.state.resources[] | select(.resourceType=="AWS::Kinesis::Stream")] | first // empty')
+if [ -z "${PIN_STREAM_JSON}" ]; then
+  echo "FAIL: premise: no AWS::Kinesis::Stream record in state -- the #5063 arm did not deploy" >&2
+  exit 1
+fi
+PIN_STREAM_METRICS=$(printf '%s' "${PIN_STREAM_JSON}" \
+  | jq -r '.properties.DesiredShardLevelMetrics | if type == "array" then (map(select(. == "ALL")) | length | tostring) + ":" + (length | tostring) else "absent" end')
+case "${PIN_STREAM_METRICS}" in
+  0:[1-9]*) echo "    OK: premise: the stream record holds the provider's expanded metric list (${PIN_STREAM_METRICS#0:} names), so it is its effectiveProperties" ;;
+  *)
+    echo "FAIL: premise: the stream record's DesiredShardLevelMetrics is '${PIN_STREAM_METRICS}', not the expanded list -- the provider's effectiveProperties is not what was recorded (#5063)" >&2
+    exit 1 ;;
+esac
+PIN_STREAM_NAME=$(printf '%s' "${PIN_STREAM_JSON}" | jq -r '.physicalId // empty')
+if [ -z "${PIN_STREAM_NAME}" ]; then
+  echo "FAIL: premise: the stream record carries no physical id" >&2
+  exit 1
+fi
+# The value AWS holds: the pin spliced in, so the state assertion is about a
+# value that exists. Compared, never printed.
+PIN_STREAM_LIVE_TAG=$(aws kinesis list-tags-for-stream --stream-name "${PIN_STREAM_NAME}" --region "${REGION}" \
+  --query "Tags[?Key=='pin'].Value | [0]" --output text) || {
+  echo "FAIL: could not read the stream's tags" >&2
+  exit 1
+}
+if [ "${PIN_STREAM_LIVE_TAG}" != "kpin=${EXPECTED_PIN}" ]; then
+  echo "FAIL: premise: the stream's live 'pin' tag is not 'kpin=<pin>': $(mask "${PIN_STREAM_LIVE_TAG}")" >&2
+  exit 1
+fi
+EXPECTED_PIN_STREAM_TAG_EXPR="kpin={{resolve:secretsmanager:${SECRET_NAME}:SecretString:pin}}"
+STATE_PIN_STREAM_TAG=$(printf '%s' "${PIN_STREAM_JSON}" \
+  | jq -r '[.properties.Tags[]? | select(.Key=="pin") | .Value] | first // empty')
+if [ "${STATE_PIN_STREAM_TAG}" = "${EXPECTED_PIN_STREAM_TAG_EXPR}" ]; then
+  echo "    OK: the provider's effectiveProperties tag holds the pin's own token (#5063): ${STATE_PIN_STREAM_TAG}"
+elif [ "${STATE_PIN_STREAM_TAG}" = "kpin=${EXPECTED_PIN}" ]; then
+  echo "FAIL: the provider's effectiveProperties tag holds the two-character secret in PLAINTEXT (#5063)" >&2
+  redaction_fail=1
+else
+  echo "FAIL: the provider's effectiveProperties tag is not the expected form: $(mask "${STATE_PIN_STREAM_TAG}")" >&2
+  redaction_fail=1
+fi
+if grep -qF "kpin=${EXPECTED_PIN}" <<< "${STATE_JSON}"; then
+  echo "FAIL: the stream tag's pin is somewhere in the persisted state document in plaintext (#5063)" >&2
+  redaction_fail=1
+fi
 # The READBACK of the same resource, installed by the deploy's own capture
 # drain and walked at the persist choke point as its own bag against the
 # template: a mark on `properties` alone would leave this copy in plaintext.
@@ -4835,6 +4889,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "consumer Lambda '${FN_NAME}' still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
 echo "    OK: consumer Lambda is gone"
+assert_gone "Kinesis stream '${PIN_STREAM_NAME}' (go-to-k/cdkd#5063) still exists after destroy" aws kinesis describe-stream-summary --stream-name "${PIN_STREAM_NAME}" --region "${REGION}"
+echo "    OK: the #5063 Kinesis stream is gone"
 
 # SecretsManager DeleteSecret SCHEDULES deletion with a recovery window
 # (7-30 days) by default; cdkd's secret provider matches CloudFormation and does

@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -309,6 +310,28 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // already-created secret + param, so the consumer depends on both.
     fn.node.addDependency(secret);
     fn.node.addDependency(param);
+
+    // --- A provider's effectiveProperties echoing the two-character pin ------
+    // go-to-k/cdkd#5063. `DesiredShardLevelMetrics: ['ALL']` makes the Kinesis
+    // provider return `effectiveProperties` (the expanded metric list over a
+    // spread of what it was given), so the record is the PROVIDER's bag, and
+    // its tag value embeds the pin in a LITERAL. Before the fix that bag was
+    // never claimed, so the pin, below the value scan's floor, persisted in
+    // plaintext; it is now leaf-certified and persists as its reference.
+    // Kinesis tag values allow no `:`, hence `=`. L1, so no stateful-L2
+    // removal policy applies; a stream has no RETAIN default.
+    const pinStream = new kinesis.CfnStream(this, 'PinTagStream', {
+      shardCount: 1,
+      streamModeDetails: { streamMode: 'PROVISIONED' },
+      desiredShardLevelMetrics: ['ALL'],
+      tags: [
+        {
+          key: 'pin',
+          value: `kpin={{resolve:secretsmanager:${literalSecretName}:SecretString:pin}}`,
+        },
+      ],
+    });
+    pinStream.node.addDependency(secret);
 
     // --- A resource whose ONLY reference is a PUBLIC ssm one, inside text --
     // Issue #2036's drift arm (verify.sh Phase 1f4). `cdkd drift` resolves a

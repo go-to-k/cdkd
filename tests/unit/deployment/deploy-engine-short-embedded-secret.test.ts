@@ -511,13 +511,13 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     expect(JSON.stringify(savedState())).not.toContain(PORT_LITERAL_PLAINTEXT);
   });
 
-  it('a provider-substituted effectiveProperties bag is NOT marked: its sub-floor leaves keep the scan\'s answer', async () => {
+  it('a provider-substituted effectiveProperties bag is leaf-certified: a leaf equal to today\'s rendering takes its token, a carried one keeps the scan\'s answer', async () => {
     // A replacement bag is of MIXED provenance — here it carries a leaf the
     // provider restored from somewhere the pass never resolved (`Carried`)
-    // beside today's two. Marking the object would vouch for all three, so
-    // none is vouched for: the two literal leaves keep the plaintext (the
-    // residual the fix states), while the whole-value sibling is still
-    // positioned by the template source, which needs no generation claim.
+    // beside today's two. It is leaf-certified (go-to-k/cdkd#5063): the
+    // literal leaf equal to today's rendering of its source persists as its
+    // token, while `Carried`, which no source leaf renders, keeps the scan's
+    // answer. The whole-value sibling is positioned by the template source.
     mockProvider.create!.mockResolvedValue({
       physicalId: 'fn-phys',
       attributes: {},
@@ -538,9 +538,32 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     await makeEngine().deploy(stackName, template);
 
     const env = envOf(savedState().resources['Fn']!.properties);
-    expect(env['PORT_LITERAL']).toBe(PORT_LITERAL_PLAINTEXT);
+    expect(env['PORT_LITERAL']).toBe(PORT_LITERAL_SOURCE);
     expect(env['Carried']).toBe(PORT_LITERAL_PLAINTEXT);
     expect(env['PIN_WHOLE']).toBe(PIN_EXPR_STAGED);
+  });
+
+  it('a leaf-certified bag never claims a CARRIED value at a positioned path', async () => {
+    // The provider carries a previous value (`port:y8`, a pin rotated since)
+    // into the very leaf the template positions: the frame matches, but the
+    // middle is not what THIS pass resolved the token to, so no claim reaches
+    // it and it is not rewritten into today's reference (which would record
+    // a value AWS does not hold).
+    mockProvider.create!.mockResolvedValue({
+      physicalId: 'fn-phys',
+      attributes: {},
+      effectiveProperties: {
+        Environment: { Variables: { PORT_LITERAL: 'port:y8', PIN_WHOLE: PIN } },
+        Handler: 'index.handler',
+      },
+    });
+    mockProvider.readCurrentState!.mockResolvedValue(undefined);
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(changeMap('CREATE'));
+
+    await makeEngine().deploy(stackName, template);
+
+    const env = envOf(savedState().resources['Fn']!.properties);
+    expect(env['PORT_LITERAL']).toBe('port:y8');
   });
 
   it('a record the pass did NOT rewrite keeps its previous-generation plaintext when the deploy fails after resolution', async () => {
@@ -588,11 +611,10 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     expect(mockProvider.create).not.toHaveBeenCalled();
   });
 
-  it('the copy is what is marked, not the resolved bag itself: a later effectiveProperties substitution is still unmarked', async () => {
-    // The re-check finds a real change (the handler moved), the provider
-    // substitutes a replacement bag, and that bag must keep the residual —
-    // which it would not if the re-check had marked `resolvedProps` in place
-    // and a provider handed the SAME object back as `effectiveProperties`.
+  it('a provider handing the resolved bag back as effectiveProperties gets the leaf-certified claim', async () => {
+    // The re-check finds a real change (the handler moved), and the provider
+    // hands the SAME resolved object back as `effectiveProperties`: it is
+    // leaf-certified (go-to-k/cdkd#5063), so the literal leaf takes its token.
     const previous = {
       Environment: {
         Variables: { PORT_LITERAL: PORT_LITERAL_SOURCE, PIN_WHOLE: PIN_EXPR_STAGED },
@@ -611,7 +633,7 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
 
     expect(mockProvider.update).toHaveBeenCalled();
     const env = envOf(savedState().resources['Fn']!.properties);
-    expect(env['PORT_LITERAL']).toBe(PORT_LITERAL_PLAINTEXT);
+    expect(env['PORT_LITERAL']).toBe(PORT_LITERAL_SOURCE);
     expect(env['PIN_WHOLE']).toBe(PIN_EXPR_STAGED);
   });
 
@@ -814,12 +836,11 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     expect(envOf(record.properties)['PIN_WHOLE']).toBe(PIN_EXPR_STAGED);
   });
 
-  it('a Cloud Control route keeps a property the SDK route would drop, and its effectiveProperties bag is still unmarked', async () => {
+  it('a Cloud Control route keeps a property the SDK route would drop, and its effectiveProperties bag is leaf-certified', async () => {
     // The negative control for the route guard the same merge preserves: the
     // narrowing is the SDK route's, so a `cc-api` resource keeps the key --
-    // Cloud Control forwards the full map. The bag is a provider-substituted
-    // `effectiveProperties`, so its sub-floor leaf keeps the scan's answer,
-    // which is this fix's stated residual rather than a regression.
+    // Cloud Control forwards the full map. The provider-substituted bag is
+    // leaf-certified (go-to-k/cdkd#5063), so its sub-floor leaf takes its token.
     const DROPPED = 'CapacityProviderConfig';
     mockProviderRegistry.getProviderFor!.mockReturnValue({
       provider: mockProvider,
@@ -840,6 +861,6 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
 
     const record = savedState().resources['Fn']!;
     expect(record.properties[DROPPED]).toEqual({ Some: 'value' });
-    expect(envOf(record.properties)['PORT_LITERAL']).toBe(PORT_LITERAL_PLAINTEXT);
+    expect(envOf(record.properties)['PORT_LITERAL']).toBe(PORT_LITERAL_SOURCE);
   });
 });

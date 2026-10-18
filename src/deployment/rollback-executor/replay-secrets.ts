@@ -7,6 +7,7 @@ import { IntrinsicFunctionResolver, type ResolverContext } from '../intrinsic-fu
 import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import {
   isSameGenerationBag,
+  redactionClaimOf,
   scrubResourceRecord,
   redactForState,
   dynamicReferenceTokens,
@@ -414,11 +415,11 @@ export function redactRollbackRecord(
             provenance: 'state-derived',
             secrets: secrets,
             source: journaledProps,
-            // go-to-k/cdkd#5056: a provider's bag it built from the
-            // re-resolved journal alone carries its mark onto the record
+            // go-to-k/cdkd#5056 / #5063: a provider's bag carries its
+            // same-generation or leaf-certified mark onto the record
             // (`replay-retry.ts`); the deploy engine's persist honours the same
-            // mark. An unmarked `effectiveProperties` keeps the residual.
-            generation: isSameGenerationBag(record.properties) ? 'same-generation' : 'unproven',
+            // marks. The journal's own unresolved properties carry neither.
+            generation: redactionClaimOf(record.properties),
           }),
         };
   // go-to-k/cdkd#5047: an in-process rollback restores the record the deploy

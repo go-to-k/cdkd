@@ -9,7 +9,7 @@ import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { markSameGenerationBag } from '../secret-redaction.js';
+import { markLeafCertifiedBag, markSameGenerationBag } from '../secret-redaction.js';
 import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
 import type { DeployEngineOptions } from './options.js';
 
@@ -127,15 +127,15 @@ export function propertiesToRecord(
   // will hold is marked same-generation — the one fact the persist choke
   // point needs to write an embedded 1-3 character secret as its token
   // rather than leaving it in plaintext below the value scan's needle
-  // floor. An `effectiveProperties` replacement is NOT marked HERE: a
-  // provider may carry previous-state values into it (the DynamoDB
+  // floor. An `effectiveProperties` replacement is NOT marked same-generation
+  // HERE: a provider may carry previous-state values into it (the DynamoDB
   // global-table provider restores the previous GSIs and billing mode), so an
-  // object-level mark on it would vouch for leaves this pass never
-  // resolved. A provider that built its bag from this pass's resolution alone
-  // may mark it itself (`NestedStackProvider`, issue #4453); the narrowing
-  // below keeps that mark only when it removes nothing, so such a provider
-  // narrows first. Such a bag keeps the residual, stated on
-  // `positionByEmbeddedSpan`.
+  // object-level mark on it would vouch for leaves this pass never resolved,
+  // which the v12 reference-provenance rule reads. It takes the narrower
+  // leaf-certified mark below instead (go-to-k/cdkd#5063). A provider that
+  // built its bag from this pass's resolution alone may mark it itself
+  // (`NestedStackProvider`, issue #4453); the narrowing below keeps that mark
+  // only when it removes nothing, so such a provider narrows first.
   //
   // The mark goes on AFTER the route's silent-drop narrowing (issue #2750),
   // never before: that helper returns a NEW object whenever it drops a key,
@@ -149,10 +149,17 @@ export function propertiesToRecord(
   // same-generation mark this vouches for no leaf, so an
   // `effectiveProperties` bag takes it too.
   if (result.effectiveProperties) {
+    // go-to-k/cdkd#5063: leaf-certified, a REDACTION claim only (see
+    // `markLeafCertifiedBag`): the provider built it from this pass's resolved
+    // bag, so a leaf equal to today's rendering is persisted as today's
+    // reference, a sub-floor secret included. Marked after the narrowing,
+    // which can return a new object.
     return markWrittenFromDeployedTemplate(
-      provisionedBy === 'sdk'
-        ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
-        : result.effectiveProperties
+      markLeafCertifiedBag(
+        provisionedBy === 'sdk'
+          ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
+          : result.effectiveProperties
+      )
     );
   }
   const written =
