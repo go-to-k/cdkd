@@ -33,6 +33,7 @@ import { preparePropertiesForCcApi } from './routing.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { establishNoEchoEchoFidelity, noEchoPositionSources } from './noecho.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, displayAwsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
@@ -508,7 +509,7 @@ export async function updateByReplacement(
             safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
             // go-to-k/cdkd#2676: the wrapped error's (masked) message is
             // embedded as-is and LAST: it can end in cdkd's own remedy lines.
-            safeMsg`${asIsMessage(maskSecretsInText(deleteError instanceof Error ? deleteError.message : String(deleteError), shownSecrets))}`,
+            safeMsg`${asIsMessage(maskSecretsInText(describeAwsFailure(deleteError).detail, shownSecrets))}`,
           {
             cause:
               deleteError instanceof Error
@@ -652,10 +653,7 @@ export async function updateByReplacement(
       // create was handed resolved values), then rendered display-safe
       // and bounded, since an AWS message can echo a template value.
       const createMsg = displayAwsMessage(
-        maskSecretsInText(
-          createError instanceof Error ? createError.message : String(createError),
-          updateSecrets
-        )
+        maskSecretsInText(describeAwsFailure(createError).detail, updateSecrets)
       );
       // For the refusals that close it with their own `. `: a provider's
       // redacted summary ends in a period (go-to-k/cdkd#2319), and so does
@@ -982,7 +980,7 @@ export async function updateByReplacement(
         engine.replacementRun.replacedOldMaySurvive.set(logicalId, 'kept');
         engine.logger.warn(
           safeMsg`  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
-            safeMsg`failed: ${asIsMessage(snapshotError instanceof Error ? snapshotError.message : String(snapshotError))}. ` +
+            safeMsg`failed: ${asIsMessage(describeAwsFailure(snapshotError).detail)}. ` +
             `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot) — delete it ` +
             `manually once you have a snapshot; it is no longer tracked in state.`
         );

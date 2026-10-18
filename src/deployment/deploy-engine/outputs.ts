@@ -31,6 +31,7 @@ import {
   unionOfSecretBags,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
+import { safeStringify } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 
 /** See `deploy-engine.ts`: an inline type-only alias, for the `vi.mock` reason stated there. */
@@ -288,7 +289,7 @@ export function handleOutputResolutionFailure(
   // of it printed.
   const union = unionOfSecretBags([inheritedSecrets, secrets]);
   const detail = maskSecretsInText(
-    error instanceof Error ? error.message || error.name : String(error),
+    error instanceof Error ? error.message || error.name : safeStringify(error),
     union
   );
   if (deps.options.strictGetAtt) {

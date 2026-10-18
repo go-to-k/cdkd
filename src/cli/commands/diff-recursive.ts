@@ -1,4 +1,5 @@
 import { stripControlChars, stripForDisplay } from '../../utils/regexp.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
 import {
   describeFileReadFailure,
@@ -1598,7 +1599,7 @@ export async function computeStackDiff(
     } catch (error) {
       unboundParameterNames.add(name);
       logger.debug(
-        `Diff parameter binding for stack ${displayStackName(stackName)} is partial: ${error instanceof Error ? error.message : String(error)}`
+        `Diff parameter binding for stack ${displayStackName(stackName)} is partial: ${describeAwsFailure(error).detail}`
       );
     }
   }
@@ -1789,7 +1790,7 @@ export async function computeStackDiff(
     everyConditionKnown = unboundParameterNames.size === 0 && unknownConditions.size === 0;
   } catch (error) {
     logger.debug(
-      `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${error instanceof Error ? error.message : String(error)}`
+      `Diff condition evaluation for stack ${displayStackName(stackName)} skipped: ${describeAwsFailure(error).detail}`
     );
   }
   if (mismatchedRecords.length > 0) {

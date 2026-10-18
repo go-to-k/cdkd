@@ -754,7 +754,7 @@ export async function deleteRollbackJournalBestEffort(
     deleted = await deps.stateBackend.deleteRollbackJournal(stackName, deps.stackRegion);
   } catch (err) {
     deps.logger.debug(
-      safeMsg`Failed to delete rollback journal for ${displayStackName(stackName)}: ${err instanceof Error ? err.message : String(err)}`
+      safeMsg`Failed to delete rollback journal for ${displayStackName(stackName)}: ${describeAwsFailure(err).detail}`
     );
     deleted = false;
   }
@@ -769,7 +769,7 @@ export async function deleteRollbackJournalBestEffort(
     );
   } catch (markErr) {
     deps.logger.debug(
-      safeMsg`Failed to record superseded logical ids on the rollback journal for ${displayStackName(stackName)}: ${markErr instanceof Error ? markErr.message : String(markErr)}`
+      safeMsg`Failed to record superseded logical ids on the rollback journal for ${displayStackName(stackName)}: ${describeAwsFailure(markErr).detail}`
     );
   }
   return false;
@@ -811,7 +811,7 @@ export async function settleJournalAfterCleanRollback(
       await deps.stateBackend.popRollbackJournalSegment(stackName, deps.stackRegion);
     } catch (err) {
       deps.logger.debug(
-        safeMsg`Failed to pop the rollback journal segment after the clean rollback: ${asIsMessage(err instanceof Error ? err.message : String(err))}`
+        safeMsg`Failed to pop the rollback journal segment after the clean rollback: ${asIsMessage(describeAwsFailure(err).detail)}`
       );
       return false;
     }
@@ -821,7 +821,7 @@ export async function settleJournalAfterCleanRollback(
     await deps.stateBackend.popRollbackJournalSegment(stackName, deps.stackRegion);
   } catch (err) {
     deps.logger.warn(
-      safeMsg`Failed to settle the rollback journal after the clean rollback: ${err instanceof Error ? err.message : String(err)}. ` +
+      safeMsg`Failed to settle the rollback journal after the clean rollback: ${describeAwsFailure(err).detail}. ` +
         // No command named: a nested child's stack-less `cdkd rollback` would
         // resolve to the top-level stack (go-to-k/cdkd#3864).
         `The journal keeps the full segment; a later rollback replay is idempotent.`
@@ -1033,7 +1033,7 @@ export async function writeRollbackJournalSegment(
     return true;
   } catch (journalError) {
     deps.logger.warn(
-      safeMsg`Failed to write rollback journal: ${asIsMessage(journalError instanceof Error ? journalError.message : String(journalError))}. ` +
+      safeMsg`Failed to write rollback journal: ${asIsMessage(describeAwsFailure(journalError).detail)}. ` +
         `'cdkd rollback' will NOT be able to revert this deploy — use 'cdkd deploy' to resume or 'cdkd destroy' to clean up.`
     );
     return false;

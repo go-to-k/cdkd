@@ -49,6 +49,7 @@ import { acceptedCreateOnlyDropsField, secretNamedAttributesField } from './reco
 import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
@@ -737,8 +738,7 @@ export async function updateInPlace(
           );
         } catch (deleteError) {
           // If old resource doesn't exist (already deleted), proceed with CREATE
-          const deleteMsg =
-            deleteError instanceof Error ? deleteError.message : String(deleteError);
+          const deleteMsg = describeAwsFailure(deleteError).detail;
           // Typed check FIRST, and this arm is the worst of the four
           // already-deleted classifiers to get wrong (issue
           // go-to-k/cdkd#3236): reading "already gone" here does not
@@ -926,7 +926,7 @@ export async function updateInPlace(
               safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
               // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
               // as-is and LAST: it can end in cdkd's own remedy command lines.
-              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(createError instanceof Error ? createError.message : String(createError), shownSecrets))}`,
+              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(describeAwsFailure(createError).detail, shownSecrets))}`,
             { cause: createError instanceof Error ? createError : undefined }
           );
         }
