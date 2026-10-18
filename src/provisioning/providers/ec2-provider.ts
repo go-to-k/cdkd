@@ -7419,7 +7419,7 @@ export class EC2Provider implements ResourceProvider {
           ...networkAclEntryRuleParams(properties),
         })
       );
-      this.logger.debug(`Successfully replaced NetworkAclEntry ${logicalId} in place`);
+      this.logger.debug(safeMsg`Successfully replaced NetworkAclEntry ${logicalId} in place`);
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;

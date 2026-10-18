@@ -6382,6 +6382,7 @@
             "createSubnet",
             "createVpc",
             "update",
+            "updateNetworkAclEntry",
             "updateVpc"
           ]
         },
@@ -6639,8 +6640,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry",
             "verifyExplicit"
           ]
         },
@@ -6818,8 +6822,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry"
           ]
         },
         {
@@ -6947,8 +6954,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry"
           ]
         },
         {
@@ -7072,9 +7082,12 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNetworkAclEntry",
             "createSubnetNetworkAclAssociation",
+            "update",
+            "updateNetworkAclEntry",
             "verifyExplicit"
           ]
         },
@@ -7138,8 +7151,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry"
           ]
         },
         {
@@ -7168,8 +7184,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry"
           ]
         },
         {
@@ -7218,8 +7237,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
-            "createNetworkAclEntry"
+            "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry"
           ]
         },
         {
@@ -7233,8 +7255,11 @@
             "element-read"
           ],
           "seededBy": [
+            "applyUpdate",
             "create",
             "createNetworkAclEntry",
+            "update",
+            "updateNetworkAclEntry",
             "verifyExplicit"
           ]
         },
