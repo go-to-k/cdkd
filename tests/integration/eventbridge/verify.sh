@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# verify.sh - cdkd eventbridge integ + LogConfig backfill assertion (#609).
+# verify.sh - cdkd eventbridge integ + LogConfig backfill assertion (#609)
+# + removal of the bus's optional properties (#1160, Phase 1.75).
 #
 # Deploys the eventbridge fixture and asserts that LogConfig reaches AWS
 # via the CreateEventBus wire path (no separate control-plane API). Then
@@ -61,7 +62,7 @@ cleanup() {
   set +eu
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
+    env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
     destroy_rc=$?
   fi
@@ -98,7 +99,7 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -125,6 +126,16 @@ if [ "${PRE_DESC}" != "cdkd test bus" ]; then
   echo "FAIL: EventBus Description is '${PRE_DESC}' after create, expected 'cdkd test bus'" >&2
   exit 1
 fi
+# Issue #1160 baseline: the KMS key and the DLQ the removal phase drops are
+# live first, so their absence afterwards is the removal's doing.
+BUS_KEY_ARN=$(echo "${BUS}" | jq -r '.KmsKeyIdentifier // empty')
+BUS_DLQ_ARN=$(echo "${BUS}" | jq -r '.DeadLetterConfig.Arn // empty')
+if [ -z "${BUS_KEY_ARN}" ] || [ -z "${BUS_DLQ_ARN}" ]; then
+  echo "FAIL: EventBus KmsKeyIdentifier='${BUS_KEY_ARN}' DeadLetterConfig.Arn='${BUS_DLQ_ARN}' after create, expected both set" >&2
+  echo "      raw describe-event-bus: ${BUS}" >&2
+  exit 1
+fi
+echo "    OK: EventBus KmsKeyIdentifier + DeadLetterConfig set on AWS"
 
 # --- Assertion: Ref on AWS::Events::Rule resolves to the rule name ----
 # (bug found by /hunt-bugs 2026-07-02: cdkd returned the rule ARN; CFn's Ref
@@ -145,7 +156,7 @@ echo "    OK: Ref on AWS::Events::Rule == '${BUS_NAME}|${RULE_NAME}' (rule name,
 # hit the default bus, reported "does not exist", silently no-oped, and
 # left the rule orphaned on AWS.
 echo "==> Phase 1.5: update (drop the custom-bus rule, keep the bus, change its Description)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -179,15 +190,57 @@ if [ -z "${PRE_CREATED}" ] || [ "${POST_CREATED}" != "${PRE_CREATED}" ]; then
 fi
 echo "    OK: EventBus Description updated in place, CreationTime unchanged (issue #2613)"
 
+# --- Phase 1.75: REMOVAL drops the bus's optional properties (issue #1160) ---
+# The template no longer declares Description, KmsKeyIdentifier, LogConfig or
+# DeadLetterConfig. CloudFormation clears each one (measured A/B: no
+# Description, the AWS owned key, LogConfig OFF / NONE, no DLQ), while
+# UpdateEventBus keeps any field it is not given, so before the fix all four
+# stayed live.
+echo "==> Phase 1.75: removal (drop Description, KmsKeyIdentifier, LogConfig, DeadLetterConfig)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+if ! RM_BUS=$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"); then
+  echo "FAIL: custom bus '${BUS_NAME}' disappeared during the removal phase (describe-event-bus failed, its error above)" >&2
+  exit 1
+fi
+RM_DESC=$(echo "${RM_BUS}" | jq -r '.Description // empty')
+RM_KEY=$(echo "${RM_BUS}" | jq -r '.KmsKeyIdentifier // empty')
+RM_DLQ=$(echo "${RM_BUS}" | jq -r '.DeadLetterConfig.Arn // empty')
+RM_LOG=$(echo "${RM_BUS}" | jq -r '"\(.LogConfig.Level // "")/\(.LogConfig.IncludeDetail // "")"')
+if [ -n "${RM_DESC}" ] || [ -n "${RM_KEY}" ] || [ -n "${RM_DLQ}" ] || [ "${RM_LOG}" != "OFF/NONE" ]; then
+  echo "FAIL: EventBus kept a removed property (issue #1160): Description='${RM_DESC}' KmsKeyIdentifier='${RM_KEY}' DeadLetterConfig.Arn='${RM_DLQ}' LogConfig='${RM_LOG}'; expected all empty and LogConfig 'OFF/NONE', as CloudFormation leaves it" >&2
+  echo "      raw describe-event-bus: ${RM_BUS}" >&2
+  exit 1
+fi
+RM_CREATED=$(echo "${RM_BUS}" | jq -r '.CreationTime // empty')
+if [ "${RM_CREATED}" != "${PRE_CREATED}" ]; then
+  echo "FAIL: EventBus CreationTime is '${RM_CREATED}' after the removal, '${PRE_CREATED}' after create (the removal must clear in place, not replace)" >&2
+  exit 1
+fi
+echo "    OK: removed Description / KmsKeyIdentifier / DeadLetterConfig cleared, LogConfig OFF/NONE, in place (issue #1160)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
 
 assert_gone "EventBus '${BUS_NAME}' still exists after destroy" aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
 echo "    OK: EventBus is gone"
+
+assert_gone "DLQ '${BUS_DLQ_ARN##*:}' still exists after destroy" aws sqs get-queue-url --queue-name "${BUS_DLQ_ARN##*:}" --region "${REGION}"
+echo "    OK: bus DLQ is gone"
+# A KMS key is never deleted at once: destroy schedules it.
+KEY_STATE=$(aws kms describe-key --key-id "${BUS_KEY_ARN}" --region "${REGION}" --query KeyMetadata.KeyState --output text)
+if [ "${KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: bus KMS key ${BUS_KEY_ARN} is '${KEY_STATE}' after destroy, expected 'PendingDeletion'" >&2
+  exit 1
+fi
+echo "    OK: bus KMS key is PendingDeletion"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

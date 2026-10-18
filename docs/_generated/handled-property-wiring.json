@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 35
+    "classesWithBlindSpots": 36
   },
   "classes": [
     {
@@ -10823,7 +10823,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in update()"
+      ]
     },
     {
       "file": "eventbridge-rule-provider.ts",

@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1174** (**1172** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **35**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **36**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -56,6 +56,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `EMRClusterProvider` (emr-cluster-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceFleetConfigProvider` (emr-instance-fleet-config-provider.ts) | `computed key in update()`, `object spread in update()` |
 | `EMRInstanceGroupConfigProvider` (emr-instance-group-config-provider.ts) | `computed key in update()`, `object spread in update()` |
+| `EventBridgeBusProvider` (eventbridge-bus-provider.ts) | `withRemovalDefaults(...) in update()` |
 | `FirehoseProvider` (firehose-provider.ts) | `computed key in applyUpdate()` |
 | `FSxFileSystemProvider` (fsx-filesystem-provider.ts) | `computed key in detectVariantConfigKey()`, `computed key in update()` |
 | `IAMRoleProvider` (iam-role-provider.ts) | `object spread in update()`, `withRemovalDefaults(...) in update()` |

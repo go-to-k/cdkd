@@ -56,10 +56,11 @@ describe('EventBridgeBusProvider read-update round-trip', () => {
     // detection on console-side DLQ attach).
     //
     // cdkd drift --revert later round-trips that placeholder back
-    // through update(). AWS rejects `DeadLetterConfig: { Arn: '' }` as
-    // an invalid ARN. The fix sanitises at the wire layer in update()
-    // (and create()): empty-Arn placeholder is dropped before reaching
-    // UpdateEventBusCommand.
+    // through update(). `UpdateEventBus` reads `DeadLetterConfig: { Arn: '' }`
+    // as "remove the DLQ", so the placeholder must never be sent as one. The
+    // fix sanitises at the wire layer in update() (and create()): the
+    // empty-Arn placeholder is dropped before reaching UpdateEventBusCommand.
+    // Only a template REMOVAL sends that clear (issue #1160).
 
     // Build observed snapshot directly (matches what readCurrentState
     // would produce for a bus with no DLC; readCurrentState is
@@ -84,7 +85,7 @@ describe('EventBridgeBusProvider read-update round-trip', () => {
     await provider.update('L', BUS_NAME, RESOURCE_TYPE, observed, previous);
 
     // Assert: no UpdateEventBusCommand was sent with the empty-Arn
-    // placeholder DeadLetterConfig (the AWS-rejection shape).
+    // placeholder DeadLetterConfig (the API's remove-the-DLQ shape).
     const updateCalls = mockSend.mock.calls.filter(
       (c) => c[0] instanceof UpdateEventBusCommand
     );
