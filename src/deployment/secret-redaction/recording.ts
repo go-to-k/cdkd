@@ -120,19 +120,37 @@ export function openRecordingScope(
   const secrets = new WriteThroughSecrets(pass);
   scopeMaps.add(secrets);
   shareLogOnlyValues(secrets, pass);
-  if (policy.pairs === 'carry') sharePairTable(secrets, pass);
-  if (policy['mask-only-marks'] === 'carry') {
-    for (const table of [freshNoEchoValuesOf, containmentValuesOf, noEchoParameterValuesOf]) {
-      table.set(secrets, sideSetOf(table, pass));
-    }
+  for (const [kind, share] of Object.entries(SCOPE_SHARERS) as Array<
+    [SharedKind, (scope: RecordedSecretValues, to: RecordedSecretValues) => void]
+  >) {
+    if (policy[kind] === 'carry') share(secrets, pass);
   }
-  if (policy['reference-provenance'] === 'carry') shareReferenceProvenance(secrets, pass);
-  if (policy['physical-name-copies'] === 'carry') {
-    physicalNameCopiesOf.set(secrets, sideSetOf(physicalNameCopiesOf, pass));
-  }
-  if (policy['public-proofs'] === 'carry') sharePublicProofs(secrets, pass);
   return { secrets, pass };
 }
+
+/** The kinds a live scope may share or withhold (log-only is always shared). */
+type SharedKind = Exclude<RecordingKind, 'log-only'>;
+
+/**
+ * How a live scope SHARES each kind with its pass. A `Record` over every
+ * kind but log-only, so a kind added to {@link RECORDING_KINDS} without a
+ * sharer is a compile error here, never a `carry` silently ignored.
+ */
+const SCOPE_SHARERS: Readonly<
+  Record<SharedKind, (scope: RecordedSecretValues, pass: RecordedSecretValues) => void>
+> = {
+  pairs: sharePairTable,
+  'mask-only-marks': (scope, pass) => {
+    for (const table of [freshNoEchoValuesOf, containmentValuesOf, noEchoParameterValuesOf]) {
+      table.set(scope, sideSetOf(table, pass));
+    }
+  },
+  'reference-provenance': shareReferenceProvenance,
+  'physical-name-copies': (scope, pass) => {
+    physicalNameCopiesOf.set(scope, sideSetOf(physicalNameCopiesOf, pass));
+  },
+  'public-proofs': sharePublicProofs,
+};
 
 /** Is `secrets` a live scope's map (never a pass to persist with)? */
 export function isRecordingScope(secrets: RecordedSecretValues): boolean {
@@ -152,19 +170,33 @@ export function foldRecording(
 ): void {
   if (from === to) return;
   for (const [plaintext, expression] of from) to.set(plaintext, expression);
-  // After the entries: a mark is carried only for a plaintext `to` holds as
-  // mask-only.
-  if (policy['mask-only-marks'] === 'carry') carryMaskOnlyMarks(from, to);
-  if (policy['reference-provenance'] === 'carry') mergeReferenceProvenance(from, to);
-  if (policy.pairs === 'carry') mergePairTables(from, to);
-  if (policy['log-only'] === 'carry') carryLogOnlyValues(from, to);
-  if (policy['physical-name-copies'] === 'carry') {
+  for (const [kind, carry] of Object.entries(FOLD_CARRIERS) as Array<
+    [RecordingKind, (from: RecordedSecretValues, to: RecordedSecretValues) => void]
+  >) {
+    if (policy[kind] === 'carry') carry(from, to);
+  }
+}
+
+/**
+ * How {@link foldRecording} carries each kind, run in this order after the
+ * entries (a mask-only mark is carried only for a plaintext `to` holds as
+ * mask-only). A `Record` over every kind, so a kind added to
+ * {@link RECORDING_KINDS} without a carrier is a compile error here.
+ */
+const FOLD_CARRIERS: Readonly<
+  Record<RecordingKind, (from: RecordedSecretValues, to: RecordedSecretValues) => void>
+> = {
+  'mask-only-marks': carryMaskOnlyMarks,
+  'reference-provenance': mergeReferenceProvenance,
+  pairs: mergePairTables,
+  'log-only': carryLogOnlyValues,
+  'physical-name-copies': (from, to) => {
     for (const physicalId of physicalNameCopiesOf.get(from) ?? []) {
       recordPhysicalNameCopy(to, physicalId);
     }
-  }
-  if (policy['public-proofs'] === 'carry') carryPublicProofs(from, to);
-}
+  },
+  'public-proofs': carryPublicProofs,
+};
 
 /**
  * The resolver's ONE recording of a resolved secret: the value-keyed entry

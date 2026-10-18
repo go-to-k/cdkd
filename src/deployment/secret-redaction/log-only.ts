@@ -276,7 +276,7 @@ function printedLeavesOf(value: unknown): Set<string> {
  * Make `view` SHARE `target`'s log-only side set, so a needle recorded
  * through the view at any time — late, or on a path that throws — lands in
  * `target`'s set. For a recording VIEW or write-through map built over a pass
- * map (`ForwardingSecrets`, `SharedEntriesSecrets`): the side set is keyed by
+ * map (a live recording scope, `openRecordingScope`; `SharedEntriesSecrets`): the side set is keyed by
  * the bag INSTANCE, so without this every record through the view stays on
  * the view. Call it at the view's creation, before anything records.
  */

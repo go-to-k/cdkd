@@ -24,6 +24,7 @@ import {
 } from '../../../src/deployment/secret-redaction/rules.js';
 import { rulesForProvenance } from '../../../src/deployment/secret-redaction/context.js';
 import { recordProvenPublicExpression } from '../../../src/deployment/secret-redaction/mask-only.js';
+import { EXPORT_NAME_SCOPE } from '../../../src/deployment/deploy-engine/outputs.js';
 
 // go-to-k/cdkd#1940: the provenance-typed choke point. The property half keys
 // its oracle on the plaintext the GENERATOR planted, never on the recorded
@@ -550,11 +551,20 @@ const CARRY_ALL: LiveScopePolicy = {
  * The pass map as the resolver leaves it: each secret plant recorded through
  * its route (i). The scope is opened and DROPPED: no merge-back, no release.
  */
-function passFor(plants: Plant[]): RecordedSecretValues {
+/**
+ * How a plant routed through a scope (i) is recorded: a scope a writer opens
+ * over a VALUE's pass (`carry-all`), the one production scope policy
+ * (`export-name`, `EXPORT_NAME_SCOPE`: pairs withheld), or NOWHERE
+ * (`missing`: the pass truly lacks the plant, as a recording that never ran).
+ */
+type Route = 'carry-all' | 'export-name' | 'missing';
+
+function passFor(plants: Plant[], route: Route): RecordedSecretValues {
   const pass: RecordedSecretValues = new Map();
-  const scope = openRecordingScope(pass, CARRY_ALL);
+  const scope = openRecordingScope(pass, route === 'export-name' ? EXPORT_NAME_SCOPE : CARRY_ALL);
+  const orphan: RecordedSecretValues = new Map();
   for (const p of plants) {
-    const into = p.route === 'pass' ? pass : scope.secrets;
+    const into = p.route === 'pass' ? pass : route === 'missing' ? orphan : scope.secrets;
     if (p.logOnly) recordLogOnlyValue(into, p.value);
     // A public `ssm` lookup records its proof, as the resolver's does.
     else if (!p.secret) recordProvenPublicExpression(into, p.expression, p.value);
@@ -568,7 +578,14 @@ const SEEDS = Array.from({ length: 300 }, (_, i) => i + 1);
 interface PropertyCase {
   name: string;
   /** Persist `bag` under `context`; `source` is what oracle (b) positions against. */
-  build: (t: Triple) => { bag: unknown; context: RedactionContext; source: unknown };
+  build: (
+    t: Triple,
+    route: Route
+  ) => { bag: unknown; context: RedactionContext; source: unknown };
+  /** The recording routes (i) the case is held to; default the two scopes. */
+  routes?: readonly Route[];
+  /** Narrower shapes under `export-name`, whose scope withholds the pairs. */
+  exportNameShapes?: GenerateOptions;
   /** The shapes the case is held to; each narrowing names its bound. */
   shapes: GenerateOptions;
   /** Whether property (c) applies: the case's pass recorded the plants. */
@@ -578,11 +595,11 @@ interface PropertyCase {
 const PROPERTY_CASES: PropertyCase[] = [
   {
     name: 'template-derived, same-generation',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.resolved,
       context: {
         provenance: 'template-derived',
-        secrets: passFor(t.plants),
+        secrets: passFor(t.plants, route),
         source: t.template,
         generation: 'same-generation',
       },
@@ -591,15 +608,36 @@ const PROPERTY_CASES: PropertyCase[] = [
     // The claim certifies an embedded span (`positionByEmbeddedSpan`), but
     // not one beside a public token, which no pair renders (go-to-k/cdkd#5056).
     shapes: { subFloorEmbedded: 'anywhere', publicBesideSubFloor: false },
+    // That certification reads the pass's PAIR for the token, which
+    // `EXPORT_NAME_SCOPE` withholds by design (a name positions no leaf):
+    // under it, the sub-floor span is the value scan's, below its floor.
+    exportNameShapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: false },
+    logs: true,
+  },
+  {
+    name: 'template-derived, unproven, current template',
+    build: (t, route) => ({
+      bag: t.resolved,
+      context: {
+        provenance: 'template-derived',
+        secrets: passFor(t.plants, route),
+        source: t.template,
+        generation: 'unproven',
+      },
+      source: t.template,
+    }),
+    // No claim: an embedded span needs the value scan's agreement, which a
+    // sub-floor plant cannot give.
+    shapes: { subFloorEmbedded: 'nowhere', publicBesideSubFloor: true },
     logs: true,
   },
   {
     name: 'template-derived, unproven, previous-generation template',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.resolved,
       context: {
         provenance: 'template-derived',
-        secrets: passFor(t.plants),
+        secrets: passFor(t.plants, route),
         source: t.previousTemplate,
         generation: 'unproven',
       },
@@ -612,11 +650,11 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
   {
     name: 'template-sourced readback',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.readback,
       context: {
         provenance: 'template-sourced',
-        secrets: passFor(t.plants),
+        secrets: passFor(t.plants, route),
         source: t.template,
         generation: 'unproven',
       },
@@ -628,9 +666,9 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
   {
     name: 'state-derived replay',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.resolved,
-      context: { provenance: 'state-derived', secrets: passFor(t.plants), source: t.stateRecord },
+      context: { provenance: 'state-derived', secrets: passFor(t.plants, route), source: t.stateRecord },
       source: t.stateRecord,
     }),
     // A replay states no generation claim (go-to-k/cdkd#5056).
@@ -639,9 +677,9 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
   {
     name: 'state-readback',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.readback,
-      context: { provenance: 'state-readback', secrets: passFor(t.plants), source: t.stateRecord },
+      context: { provenance: 'state-readback', secrets: passFor(t.plants, route), source: t.stateRecord },
       source: t.stateRecord,
     }),
     // A reordered unkeyed readback array refuses positioning (the keyed
@@ -651,9 +689,9 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
   {
     name: 'state-baseline',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.readback,
-      context: { provenance: 'state-baseline', secrets: passFor(t.plants), source: t.stateRecord },
+      context: { provenance: 'state-baseline', secrets: passFor(t.plants, route), source: t.stateRecord },
       source: t.stateRecord,
     }),
     shapes: EVERY_SHAPE,
@@ -670,14 +708,38 @@ const PROPERTY_CASES: PropertyCase[] = [
     // Nothing was resolved, so nothing was recorded: the walk alone fails
     // closed, and no masker of this pass knows a value.
     logs: false,
+    routes: ['carry-all'],
+  },
+  {
+    // (i) with the recording truly MISSING the scope-routed plants (they were
+    // recorded nowhere), not merely missing from the writer's own writes. Only
+    // a baseline holds it: the walk fails closed on what the map cannot
+    // certify. Every other provenance needs the recording -- a value scan
+    // finds only recorded needles, and a span or skeleton arm only a recorded
+    // pair -- which is why recording must be structural (`recording.ts`), and
+    // why the generator's other routes record through a scope.
+    name: 'state-baseline, map MISSING plants (fails closed)',
+    build: (t, route) => ({
+      bag: t.readback,
+      context: {
+        provenance: 'state-baseline',
+        secrets: passFor(t.plants, route),
+        source: t.stateRecord,
+      },
+      source: t.stateRecord,
+    }),
+    shapes: EVERY_SHAPE,
+    routes: ['missing'],
+    // No masker can mask a value nothing recorded, so (c) cannot hold.
+    logs: false,
   },
   {
     name: 'state-cross-generation',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.resolved,
       context: {
         provenance: 'state-cross-generation',
-        secrets: passFor(t.plants),
+        secrets: passFor(t.plants, route),
         source: t.previousStateRecord,
       },
       source: t.previousStateRecord,
@@ -689,9 +751,9 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
   {
     name: 'value-scan',
-    build: (t) => ({
+    build: (t, route) => ({
       bag: t.resolved,
-      context: { provenance: 'value-scan', secrets: passFor(t.plants) },
+      context: { provenance: 'value-scan', secrets: passFor(t.plants, route) },
       source: undefined,
     }),
     // No source: the value scan alone, whose substring floor is the bound.
@@ -700,8 +762,10 @@ const PROPERTY_CASES: PropertyCase[] = [
   },
 ];
 
-function propertyFailures(c: PropertyCase, triple: Triple): string[] {
-  const { bag, context, source } = c.build(triple);
+const DEFAULT_ROUTES: readonly Route[] = ['carry-all', 'export-name'];
+
+function propertyFailures(c: PropertyCase, triple: Triple, route: Route): string[] {
+  const { bag, context, source } = c.build(triple, route);
   const out = redactForState(bag, context);
   const leaked = leakedPlaintexts(out, triple.plants);
   const invented = inventedExpressions(out, source, triple.plants, bag);
@@ -714,15 +778,35 @@ function propertyFailures(c: PropertyCase, triple: Triple): string[] {
 
 describe('redactForState: planted-plaintext properties over generated triples', () => {
   for (const c of PROPERTY_CASES) {
-    it(`${c.name}: no planted plaintext persists or prints, no expression is invented`, () => {
-      const failures: string[] = [];
-      for (const seed of SEEDS) {
-        const triple = generate(seed, c.shapes);
-        for (const f of propertyFailures(c, triple)) failures.push(`seed ${seed}: ${f}`);
-      }
-      expect(failures).toEqual([]);
-    });
+    for (const route of c.routes ?? DEFAULT_ROUTES) {
+      it(`${c.name} [${route}]: no planted plaintext persists or prints, no expression is invented`, () => {
+        const shapes = route === 'export-name' ? (c.exportNameShapes ?? c.shapes) : c.shapes;
+        const failures: string[] = [];
+        for (const seed of SEEDS) {
+          const triple = generate(seed, shapes);
+          for (const f of propertyFailures(c, triple, route)) {
+            failures.push(`seed ${seed}: ${f}`);
+          }
+        }
+        expect(failures).toEqual([]);
+      });
+    }
   }
+
+  it('routes the MISSING-map case through plants the pass truly lacks', () => {
+    // The population that case is about: scope-routed secret plants present
+    // in the readback but absent from the pass map.
+    let missing = 0;
+    for (const seed of SEEDS) {
+      const t = generate(seed);
+      const pass = passFor(t.plants, 'missing');
+      const text = JSON.stringify(t.readback);
+      missing += t.plants.filter(
+        (p) => p.secret && p.route === 'scope' && !pass.has(p.value) && text.includes(p.value)
+      ).length;
+    }
+    expect(missing).toBeGreaterThan(50);
+  });
 
   it('generates the populations the properties are about, per shape', () => {
     // An aggregate floor hides one dead shape, so each has its own: a
@@ -871,7 +955,7 @@ describe('redactForState: planted-plaintext properties over generated triples', 
     let printed = 0;
     for (const seed of SEEDS) {
       const t = generate(seed);
-      const scoped = passFor(t.plants);
+      const scoped = passFor(t.plants, 'carry-all');
       const pass = dropped(t.plants);
       if (
         leakedPlaintexts(persist(t, pass), t.plants).length > 0 &&
@@ -890,3 +974,4 @@ describe('redactForState: planted-plaintext properties over generated triples', 
     expect(printed).toBeGreaterThan(50);
   });
 });
+
