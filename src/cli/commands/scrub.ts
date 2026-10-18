@@ -72,7 +72,7 @@ import {
 import { resolveDynamicReferences } from '../../deployment/intrinsic-resolver/dynamic-refs.js';
 import {
   scrubResourceRecord,
-  redactSecretsForState,
+  redactForState,
   dynamicReferenceTokens,
   errorCauseChain,
   maskSecretsInError,
@@ -81,7 +81,6 @@ import {
   printingCorpusOf,
   shareLogOnlyValues,
   maskSecretsInText,
-  TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
   MIN_NEEDLE_LENGTH,
   inheritNestedStackParameterAssociations,
@@ -2663,7 +2662,7 @@ function redactUnaccountedOutputs(
   let repaired: Record<string, unknown> | undefined;
   for (const [key, value] of Object.entries(stored)) {
     if (accountedKeys.has(key)) continue;
-    const next = redactSecretsForState(value, secrets);
+    const next = redactForState(value, { provenance: 'value-scan', secrets: secrets });
     // NOT `next === value`: the value scan returns a string by identity when
     // nothing matched, but it CLONES every object / array it walks (an output
     // can hold a JSON array — a list-valued `Fn::GetAtt`), so an identity test
@@ -8333,7 +8332,10 @@ export async function scrubStack(
         ...allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets),
         ...outputSecrets,
       ]);
-      return JSON.stringify(redactSecretsForState(value, needles)) !== JSON.stringify(value);
+      return (
+        JSON.stringify(redactForState(value, { provenance: 'value-scan', secrets: needles })) !==
+        JSON.stringify(value)
+      );
     };
 
     const noEchoPublicTokens: ReadonlySet<string> = new Set([region, stack.stackName]);
@@ -8424,12 +8426,11 @@ export async function scrubStack(
       const positioned = templateProps
         ? {
             ...record,
-            properties: redactSecretsForState(
-              record.properties,
-              ownSecrets,
-              templateProps,
-              TEMPLATE_SOURCED_RULES
-            ),
+            properties: redactForState(record.properties, {
+              provenance: 'template-sourced',
+              secrets: ownSecrets,
+              source: templateProps,
+            }),
           }
         : record;
       // STATE_SOURCED_CROSS_GENERATION rules for the observed walk (issue #1917
@@ -8572,7 +8573,7 @@ export async function scrubStack(
     // deleted exactly this arm because a branch no probe can red is worse than
     // no branch (go-to-k/cdkd#3289).
     const redactCrossStackName = (name: string): string =>
-      redactSecretsForState(name, crossStackNeedles);
+      redactForState(name, { provenance: 'value-scan', secrets: crossStackNeedles });
     const newImports = state.imports?.map((entry) => {
       const exportName = redactCrossStackName(entry.exportName);
       if (exportName === entry.exportName) return entry;
@@ -8658,11 +8659,15 @@ export async function scrubStack(
     // #1934 BREAK class, irreversible in a way an unredacted leaf is not.
     const positionedOutputs =
       outputSecrets.size > 0
-        ? redactSecretsForState(
+        ? redactForState(
             state.outputs,
-            outputSecrets,
-            outputsSourceUntrusted ? undefined : outputsTemplateSource,
-            TEMPLATE_SOURCED_RULES
+            outputsSourceUntrusted
+              ? { provenance: 'value-scan', secrets: outputSecrets }
+              : {
+                  provenance: 'template-sourced',
+                  secrets: outputSecrets,
+                  source: outputsTemplateSource,
+                }
           )
         : state.outputs;
     // The widened pass (issue #2005): repair a stored output key today's

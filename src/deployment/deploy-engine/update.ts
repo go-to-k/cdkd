@@ -60,7 +60,6 @@ import {
   createSecretMasker,
   freshNoEchoLeafPositions,
   type FreshNoEchoLeaf,
-  markSameGenerationBag,
   maskAtCoordinates,
   withoutPhysicalNameCopies,
   repairPhysicalNameCopyLeaves,
@@ -77,7 +76,7 @@ import {
   noEchoCoordinatesOf,
   noEchoLeavesOf,
   recordNestedStackParameterExpressions,
-  redactSecretsForState,
+  redactForState,
   valueAtCoordinate,
   witnessNormalize,
   withoutNoEchoParameterEntries,
@@ -538,7 +537,12 @@ export async function provisionUpdate(
     );
   }
   const desiredForSkipCheck = maskAtCoordinates(
-    redactSecretsForState(markSameGenerationBag({ ...resolvedProps }), updateSecrets, desiredProps),
+    redactForState(resolvedProps, {
+      provenance: 'template-derived',
+      secrets: updateSecrets,
+      source: desiredProps,
+      generation: 'same-generation',
+    }),
     comparisonCoordinates
   );
   // go-to-k/cdkd#4810: a record written before the persist walk kept a read
@@ -553,11 +557,12 @@ export async function provisionUpdate(
   // only. The repaired record is what this deploy persists.
   const legacyDesired = withoutPhysicalNameCopies(updateSecrets, () =>
     maskAtCoordinates(
-      redactSecretsForState(
-        markSameGenerationBag({ ...resolvedProps }),
-        updateSecrets,
-        desiredProps
-      ),
+      redactForState(resolvedProps, {
+        provenance: 'template-derived',
+        secrets: updateSecrets,
+        source: desiredProps,
+        generation: 'same-generation',
+      }),
       comparisonCoordinates
     )
   );
@@ -625,11 +630,12 @@ export async function provisionUpdate(
   if (overlapRuleAnswered(updateSecrets)) {
     const legacyOverlapBag = withLegacyOverlapScan(updateSecrets, () =>
       maskAtCoordinates(
-        redactSecretsForState(
-          markSameGenerationBag({ ...resolvedProps }),
-          updateSecrets,
-          desiredProps
-        ),
+        redactForState(resolvedProps, {
+          provenance: 'template-derived',
+          secrets: updateSecrets,
+          source: desiredProps,
+          generation: 'same-generation',
+        }),
         comparisonCoordinates
       )
     );
@@ -716,11 +722,12 @@ export async function provisionUpdate(
     witnessNormalize(recordedAsWritten, undefined, desiredForSkipCheckAsWritten).differing.length >
       0;
   const todayAsWritten = witnessCanSpeak
-    ? redactSecretsForState(
-        markSameGenerationBag({ ...resolvedProps }),
-        withoutNoEchoParameterEntries(updateSecrets),
-        desiredProps
-      )
+    ? redactForState(resolvedProps, {
+        provenance: 'template-derived',
+        secrets: withoutNoEchoParameterEntries(updateSecrets),
+        source: desiredProps,
+        generation: 'same-generation',
+      })
     : undefined;
   const witness =
     todayAsWritten === undefined

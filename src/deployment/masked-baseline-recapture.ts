@@ -3,10 +3,9 @@ import {
   carriesSecretMask,
   dynamicReferenceTokens,
   mergeResolvedPairs,
-  redactSecretsForState,
+  redactForState,
   SECRET_MASK,
   spanNamesResolvableService,
-  STATE_SOURCED_BASELINE_RULES,
   wholeStringLeavesOf,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -224,22 +223,20 @@ export function recaptureMaskedBaseline(args: {
   // there is none in this empty-map pass, and the populated pass below is read
   // only at positions this one masked, where the walk refused to position
   // anything. Marking would change no answer.
-  const ordinary = redactSecretsForState(
-    readback,
-    new Map(),
-    properties,
-    STATE_SOURCED_BASELINE_RULES
-  );
+  const ordinary = redactForState(readback, {
+    provenance: 'state-baseline',
+    secrets: new Map(),
+    source: properties,
+  });
   if (!reproducesBaseline(ordinary, previous, admissible)) return undefined;
   // The same readback, with the record's own references resolved. Still the
   // fail-closed rules: a populated map is not evidence that every plaintext in
   // the readback is covered (a rotated secret is not in it).
-  const certified = redactSecretsForState(
-    readback,
-    secrets,
-    properties,
-    STATE_SOURCED_BASELINE_RULES
-  );
+  const certified = redactForState(readback, {
+    provenance: 'state-baseline',
+    secrets: secrets,
+    source: properties,
+  });
   let changed = false;
   const overlay = (old: unknown, fresh: unknown): unknown => {
     if (old === SECRET_MASK) {

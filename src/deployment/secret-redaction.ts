@@ -169,6 +169,11 @@ export { spanNamesResolvableService } from './secret-redaction/anchors.js';
 export { liveMatchesUnresolvedTokenFrame } from './secret-redaction/unresolved-token-frame.js';
 export { redactSecretsForState, scrubResourceRecord } from './secret-redaction/redact-state.js';
 export {
+  type RedactionContext,
+  type RedactionProvenance,
+  redactForState,
+} from './secret-redaction/context.js';
+export {
   type NoEchoCoordinate,
   type NoEchoPositionSources,
   readsNoEchoSource,

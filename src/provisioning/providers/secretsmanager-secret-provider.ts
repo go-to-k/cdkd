@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
-import { redactSecretsForState } from '../../deployment/secret-redaction.js';
+import { redactForState } from '../../deployment/secret-redaction.js';
 import {
   SecretsManagerClient,
   CreateSecretCommand,
@@ -1052,7 +1052,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    */
   private asPersisted<T>(bag: T): T {
     const secrets = getCurrentResourceSecrets();
-    return secrets !== undefined && secrets.size > 0 ? redactSecretsForState(bag, secrets) : bag;
+    return secrets !== undefined && secrets.size > 0
+      ? redactForState(bag, { provenance: 'value-scan', secrets: secrets })
+      : bag;
   }
 
   /**

@@ -7,9 +7,8 @@ import { IntrinsicFunctionResolver, type ResolverContext } from '../intrinsic-fu
 import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js';
 import {
   scrubResourceRecord,
-  redactSecretsForState,
+  redactForState,
   dynamicReferenceTokens,
-  STATE_DERIVED_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../secret-redaction.js';
@@ -410,12 +409,11 @@ export function redactRollbackRecord(
       ? record
       : {
           ...record,
-          properties: redactSecretsForState(
-            record.properties,
-            secrets,
-            journaledProps,
-            STATE_DERIVED_RULES
-          ),
+          properties: redactForState(record.properties, {
+            provenance: 'state-derived',
+            secrets: secrets,
+            source: journaledProps,
+          }),
         };
   return keepPersistedPlainRecordLeaves(scrubResourceRecord(positioned, secrets), record, {
     properties: journaledProps,

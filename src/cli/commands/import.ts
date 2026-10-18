@@ -50,7 +50,6 @@ import {
 import {
   canonicalCoordinates,
   carriesSecretMask,
-  markSameGenerationBag,
   maskAtCoordinates,
   maskReadbackAtCoordinates,
   hasMaskableValues,
@@ -60,10 +59,9 @@ import {
   readsNoEchoSource,
   type NoEchoPositionSources,
   noEchoLeavesOf,
-  redactSecretsForState,
+  redactForState,
   valueAtCoordinate,
   type NoEchoCoordinate,
-  STATE_SOURCED_BASELINE_RULES,
   type RecordedSecretValues,
   splitGetAttStringForm,
 } from '../../deployment/secret-redaction.js';
@@ -2997,11 +2995,12 @@ export async function resolveImportedProperties(
       // the observed capture below never sees the marked object.
       resource.properties =
         recordedSecretValues.size > 0
-          ? redactSecretsForState(
-              markSameGenerationBag(resolved),
-              recordedSecretValues,
-              unresolvedProperties
-            )
+          ? redactForState(resolved, {
+              provenance: 'template-derived',
+              secrets: recordedSecretValues,
+              source: unresolvedProperties,
+              generation: 'same-generation',
+            })
           : resolved;
       // Positioned after the loop, once every record's echoed attributes are
       // known (go-to-k/cdkd#4043 Phase C): a `Fn::GetAtt` consumer resolved
@@ -3122,7 +3121,10 @@ export async function resolveImportedProperties(
     // structurally (see `maskUncertifiedModelValues`); the residue is recorded
     // on the issue rather than claimed closed here.
     if (recordedSecretValues.size > 0 && resource.attributes !== undefined) {
-      resource.attributes = redactSecretsForState(resource.attributes, recordedSecretValues);
+      resource.attributes = redactForState(resource.attributes, {
+        provenance: 'value-scan',
+        secrets: recordedSecretValues,
+      });
     }
 
     // THE REFUSAL (see this function's doc block for the arms and why the
@@ -4275,13 +4277,15 @@ export async function captureObservedForImportedResources(
             // marks, through each list's identity field (the whole list where
             // nothing pairs), as the deploy's capture is.
             const marked = noEchoLeavesOf(resource) ?? [];
-            resource.observedProperties = redactSecretsForState(
+            resource.observedProperties = redactForState(
               marked.length > 0
                 ? maskReadbackAtCoordinates(observed, resource.properties ?? {}, marked)
                 : observed,
-              NO_RECORDED_SECRETS,
-              resource.properties ?? {},
-              STATE_SOURCED_BASELINE_RULES
+              {
+                provenance: 'state-baseline',
+                secrets: NO_RECORDED_SECRETS,
+                source: resource.properties ?? {},
+              }
             );
           }
         } catch (err) {

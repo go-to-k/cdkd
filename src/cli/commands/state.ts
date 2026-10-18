@@ -99,8 +99,7 @@ import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import {
-  redactSecretsForState,
-  STATE_SOURCED_BASELINE_RULES,
+  redactForState,
   maskReadbackAtCoordinates,
   noEchoLeavesOf,
   maskedLeafCoordinatesOf,
@@ -4806,7 +4805,7 @@ async function refreshObservedForStack(
             // holds `***` in `properties`, which positions nothing for the walk
             // below, so the readback's live value there is masked FIRST (through
             // each list's identity field, the whole list where none pairs them).
-            resource.observedProperties = redactSecretsForState(
+            resource.observedProperties = redactForState(
               maskReadbackAtCoordinates(observed, resource.properties ?? {}, [
                 // A record naming no coordinate (pre-v11, imported, scrubbed)
                 // still holds `***` where the value stood: mask there too, as
@@ -4814,9 +4813,11 @@ async function refreshObservedForStack(
                 ...maskedLeafCoordinatesOf(resource.properties ?? {}),
                 ...(noEchoLeavesOf(resource) ?? []),
               ]),
-              await publicSsmProver.proofBagFor(resource.properties ?? {}),
-              resource.properties ?? {},
-              STATE_SOURCED_BASELINE_RULES
+              {
+                provenance: 'state-baseline',
+                secrets: await publicSsmProver.proofBagFor(resource.properties ?? {}),
+                source: resource.properties ?? {},
+              }
             );
             // Issue #3466: BOTH fields, and only once a baseline was captured —
             // a marker left without its reason is re-stamped by the next deploy,
