@@ -24,6 +24,7 @@ import {
   nameGenerationsOf,
   nameScopeOf,
   nextNameGeneration,
+  replacementNameGeneration,
   retiredAfterRollbackOrphans,
   retiredNameGenerationsAfter,
   withNameGenerationReached,
@@ -75,6 +76,13 @@ describe('generated names carry the generation (go-to-k/cdkd#5064 phase 2)', () 
       });
       expect(generateResourceName('Queue', { maxLength: 80 })).toBe('MyStack-Queue-5f24ac9179b8');
     });
+  });
+
+  it("an inner stack scope does not inherit an outer stack's binding (a nested child)", () => {
+    const name = withNameGeneration({ logicalId: 'Queue', generation: 1 }, () =>
+      withStackScope(scope(new Map()), () => generateResourceName('Queue', { maxLength: 80 }))
+    );
+    expect(name).toBe('MyStack-Queue-5f24ac9179b8');
   });
 
   it('an id scope without a generations map refuses a generated name', () => {
@@ -230,6 +238,63 @@ describe('state helpers', () => {
   });
 });
 
+describe('retiredNameGenerationsLeaving (a partial destroy)', () => {
+  it('retires what is gone from the kept record, tolerates a malformed one', async () => {
+    const { retiredNameGenerationsLeaving } = await import('../../../src/state/name-generation.js');
+    const state = {
+      stackInstanceId: ID,
+      resources: { Gone: record({ nameGeneration: 2 }), Kept: record() },
+    };
+    expect(retiredNameGenerationsLeaving(state, { Kept: record() })).toEqual({
+      retiredNameGenerations: { Gone: 2 },
+    });
+    expect(retiredNameGenerationsLeaving({ ...state, stackInstanceId: undefined }, {})).toEqual({});
+    const broken = {
+      ...state,
+      resources: { Gone: record({ nameGeneration: -1 }) },
+      retiredNameGenerations: { Old: 1 },
+    };
+    expect(retiredNameGenerationsLeaving(broken, {})).toEqual({ retiredNameGenerations: { Old: 1 } });
+  });
+});
+
+describe('replacementNameGeneration', () => {
+  it('moves to the next generation on an id stack', () => {
+    expect(replacementNameGeneration(record({ nameGeneration: 1 }), 'Queue', ID, false)).toEqual({
+      generation: 2,
+      fields: { nameGeneration: 2 },
+    });
+  });
+  it('a resource that went with its parent keeps its fields (no bump)', () => {
+    const r = record({ nameGeneration: 1, nameGenerationHigh: 3 });
+    expect(replacementNameGeneration(r, 'Queue', ID, true)).toEqual({
+      generation: undefined,
+      fields: { nameGeneration: 1, nameGenerationHigh: 3 },
+    });
+  });
+  it('a legacy stack moves nothing', () => {
+    expect(replacementNameGeneration(record(), 'Queue', undefined, false)).toEqual({
+      generation: undefined,
+      fields: {},
+    });
+  });
+});
+
+describe('recognition bounds', () => {
+  it('nextNameGeneration skips every generation the physical id carries, in a row', () => {
+    const both = record({
+      physicalId: `x-${stackInstanceNameSuffix(ID, 'Queue', 1)}-${stackInstanceNameSuffix(ID, 'Queue', 2)}`,
+    });
+    expect(nextNameGeneration(both, 'Queue', ID)).toBe(3);
+  });
+  it('looksLikeCdkdGeneratedName stops at its cap however high a bound a state claims', () => {
+    const past = `MyStack-Queue-${stackInstanceNameSuffix(ID, 'Queue', 1025)}`;
+    const at = `MyStack-Queue-${stackInstanceNameSuffix(ID, 'Queue', 1024)}`;
+    expect(looksLikeCdkdGeneratedName(at, 'Queue', 'MyStack', ID, { through: 5000 })).toBe(true);
+    expect(looksLikeCdkdGeneratedName(past, 'Queue', 'MyStack', ID, { through: 5000 })).toBe(false);
+  });
+});
+
 describe('a replay derives the replayed record at ITS generation', () => {
   it("replayPrefixScope binds the record's generation over the scope's", async () => {
     const { replayPrefixScope } = await import('../../../src/deployment/rollback-executor/names.js');
@@ -270,6 +335,14 @@ describe('cdkd import and the name generation', () => {
     expect(importedNameGenerationFields(undefined, { logicalId: 'Queue', physicalId: 'x' })).toEqual({});
     // A row the import repairs contributes nothing, never a refusal.
     expect(importedNameGenerationFields(null, { logicalId: 'Queue', physicalId: 'x' })).toEqual({});
+    // A logical id that left the stack: the re-imported record goes past the
+    // generation an earlier copy reached (it may still hold that name).
+    expect(importedNameGenerationFields(undefined, { logicalId: 'Queue', physicalId: 'x' }, 2)).toEqual(
+      { nameGenerationHigh: 2 }
+    );
+    expect(
+      importedNameGenerationFields(prior, { logicalId: 'Queue', physicalId: 'other' }, 5)
+    ).toEqual({ nameGenerationHigh: 5 });
     const broken = record({ nameGeneration: -1 });
     expect(importedNameGenerationFields(broken, { logicalId: 'Queue', physicalId: broken.physicalId })).toEqual({});
   });

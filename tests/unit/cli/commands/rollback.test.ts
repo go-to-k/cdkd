@@ -1359,7 +1359,7 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
   function installFailedCreateStack(
     resourceType: string,
     deletionPolicy: 'Snapshot' | 'Retain',
-    opts: { initialDeploy?: boolean } = {}
+    opts: { initialDeploy?: boolean; stackInstanceId?: string } = {}
   ): FakeBackend {
     const failedOp = {
       logicalId: 'D',
@@ -1388,6 +1388,7 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
             },
           },
           outputs: {},
+          ...(opts.stackInstanceId !== undefined && { stackInstanceId: opts.stackInstanceId }),
           lastModified: 1,
         },
         etag: 'e0',
@@ -1431,6 +1432,20 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
     installFailedCreateStack('AWS::EC2::Volume', 'Retain');
     await rollbackCommand('S', { ...baseOpts, revertFailed: true });
     expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5064 phase 2: on a stack with an instance id the logical id
+  // retires at the orphan's generation, so a re-add asks for a new name.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { D: 0 }],
+    [undefined, undefined],
+  ])('Retain on a stack with id %s: retiredNameGenerations %j', async (stackInstanceId, retired) => {
+    const backend = installFailedCreateStack('AWS::EC2::Volume', 'Retain', {
+      ...(stackInstanceId !== undefined && { stackInstanceId }),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    const saved = backend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
   });
 
   it('Retain: the resource left in AWS is RECORDED in the saved state (#2934)', async () => {

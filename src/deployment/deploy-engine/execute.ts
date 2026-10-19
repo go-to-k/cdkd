@@ -65,6 +65,7 @@ import { provisionResource } from './provision.js';
 import {
   retiredAfterRollbackOrphans,
   retiredNameGenerationsAfter,
+  withNameGenerationReached,
 } from '../../state/name-generation.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
@@ -495,6 +496,23 @@ export async function executeDeployment(
             }),
           };
           failedOperations.push(failedOp);
+          // go-to-k/cdkd#5064 phase 2: the failed replacement's create may have
+          // made a resource under the generation it asked for. The record moves
+          // past it however the failure is then rolled back (or left), so no
+          // retry asks for that name again. A killed deploy never reaches here:
+          // its re-run derives the same generation and meets its own resource.
+          const attemptedGeneration =
+            change.changeType === 'UPDATE'
+              ? engine.replacementRun.attemptedNameGeneration.get(logicalId)
+              : undefined;
+          const heldNow = newResources[logicalId];
+          if (attemptedGeneration !== undefined && heldNow !== undefined) {
+            newResources[logicalId] = withNameGenerationReached(
+              heldNow,
+              logicalId,
+              attemptedGeneration
+            );
+          }
           let replacementOrphanOp: FailedOperation | undefined;
           if (orphanedBy !== undefined) {
             replacementOrphanOp = {

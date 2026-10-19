@@ -15,6 +15,7 @@
  * Legacy stacks (no id) never read or write any of this.
  */
 import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
+import { displayIdent } from '../utils/display-safe.js';
 import {
   isNameGeneration,
   stackInstanceNameSuffix,
@@ -24,8 +25,9 @@ import {
 /** A recorded name generation that is not a non-negative integer. */
 export class MalformedNameGenerationError extends Error {
   constructor(where: string) {
+    // A state-chosen key: rendered display-safe.
     super(
-      `The state record holds a name generation for ${where} that is not a non-negative ` +
+      `The state record holds a name generation for ${displayIdent(where)} that is not a non-negative ` +
         'integer. cdkd does not guess which name the resource was given, since the next ' +
         "replacement's name derives from it; restore the field from an earlier version of " +
         'state.json.'
@@ -118,6 +120,29 @@ export function nextNameGeneration(
   const physicalId = typeof record.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
   while (physicalId.includes(stackInstanceNameSuffix(stackInstanceId, logicalId, next))) next++;
   return next;
+}
+
+/**
+ * What a replacement of `record` creates its new resource at, and the fields
+ * the new record carries: the next generation on a stack with an instance id,
+ * unless the old resource is already gone with its parent (`keepsName`, a
+ * re-create under the same name), which carries the record's own fields. A
+ * legacy stack (no id) moves nothing.
+ */
+export function replacementNameGeneration(
+  record: ResourceState,
+  logicalId: string,
+  stackInstanceId: string | undefined,
+  keepsName: boolean
+): {
+  generation: number | undefined;
+  fields: Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'>;
+} {
+  if (stackInstanceId === undefined || keepsName) {
+    return { generation: undefined, fields: nameGenerationCarriedFrom(record) };
+  }
+  const generation = nextNameGeneration(record, logicalId, stackInstanceId);
+  return { generation, fields: nameGenerationField(generation) };
 }
 
 /**
@@ -239,4 +264,30 @@ export function nameGenerationReachedField(
 ): Pick<ResourceState, 'nameGenerationHigh'> {
   const reached = nameGenerationHighWaterOf(previous, logicalId);
   return reached === 0 ? {} : { nameGenerationHigh: reached };
+}
+
+/**
+ * The `retiredNameGenerations` field of a record a partial destroy keeps: every
+ * record of `state` missing from `remaining` left the stack. A malformed
+ * generation never stops a destroy: the field is then carried as it was.
+ */
+export function retiredNameGenerationsLeaving(
+  state: Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations' | 'resources'>,
+  remaining: Readonly<Record<string, unknown>>
+): Pick<StackState, 'retiredNameGenerations'> {
+  try {
+    return retiredNameGenerationsAfter(
+      state,
+      Object.entries(state.resources ?? {})
+        .filter(
+          ([logicalId, record]) =>
+            !Object.hasOwn(remaining, logicalId) && record !== null && typeof record === 'object'
+        )
+        .map(([logicalId, record]) => ({ logicalId, record }))
+    );
+  } catch {
+    return state.retiredNameGenerations === undefined
+      ? {}
+      : { retiredNameGenerations: state.retiredNameGenerations };
+  }
 }

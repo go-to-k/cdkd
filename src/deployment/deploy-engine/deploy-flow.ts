@@ -1679,7 +1679,13 @@ export async function doDeployWithPrefetch(
               if (
                 record === undefined ||
                 record.resourceType !== change.resourceType ||
-                !(change.propertyChanges ?? []).some((pc) => pc.requiresReplacement)
+                !(
+                  (change.propertyChanges ?? []).some((pc) => pc.requiresReplacement) ||
+                  // A `--recreate-via-*` target is a replacement too.
+                  recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(
+                    change.logicalId
+                  ) === true
+                )
               ) {
                 return undefined;
               }
