@@ -240,7 +240,6 @@ describe('AgentCoreRuntimeProvider', () => {
     // removed field is never refilled from the previous template, and the
     // update caller injects and warns about nothing for this type.
     it('omits every removed field from the full-replace update, as CloudFormation clears them (issue #1160)', async () => {
-      mockSend.mockResolvedValueOnce({ agentRuntimeId: 'runtime-12345', status: 'UPDATING' });
       const base = {
         AgentRuntimeName: 'my-runtime',
         RoleArn: 'arn:aws:iam::123456789012:role/my-role',
@@ -276,6 +275,9 @@ describe('AgentCoreRuntimeProvider', () => {
       expect(removal.injected).toEqual([]);
       expect(removal.unhandled).toEqual([]);
       expect(removal.properties).toBe(base);
+
+      // Queued only now: a failed expectation above must not leave it for the next test.
+      mockSend.mockResolvedValueOnce({ agentRuntimeId: 'runtime-12345', status: 'UPDATING' });
 
       await provider.update(
         'MyRuntime',

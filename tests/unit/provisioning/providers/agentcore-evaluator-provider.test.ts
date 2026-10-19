@@ -476,7 +476,6 @@ describe('AgentCoreEvaluatorProvider', () => {
     // merge-semantics UpdateEvaluator keeps an omitted field, so the removal
     // sends neither, the caller injects no reset, and nothing is warned about.
     it('keeps a removed Description / KmsKeyArn out of UpdateEvaluator, as CloudFormation keeps them (issue #1160)', async () => {
-      mockSend.mockResolvedValueOnce({ evaluatorArn: EVALUATOR_ARN, evaluatorId: EVALUATOR_ID });
       const desired = { EvaluatorName: 'my-evaluator', EvaluatorConfig: CODE_BASED_CONFIG, Level: 'SESSION' };
       const previous = {
         EvaluatorName: 'my-evaluator',
@@ -495,6 +494,9 @@ describe('AgentCoreEvaluatorProvider', () => {
       expect(removal.injected).toEqual([]);
       expect(removal.unhandled).toEqual([]);
       expect(removal.properties).toBe(desired);
+
+      // Queued only now: a failed expectation above must not leave it for the next test.
+      mockSend.mockResolvedValueOnce({ evaluatorArn: EVALUATOR_ARN, evaluatorId: EVALUATOR_ID });
 
       await provider.update(
         'MyEvaluator',
