@@ -209,6 +209,10 @@ assert_v1_world() { # usage: assert_v1_world <step>
   local high g name
   high="$(state_field EqualBags nameGenerationHigh)" || exit 1
   [ "${high}" = "MISSING" ] && high=0
+  case "${high}" in
+    0 | [1-9] | [1-9][0-9]) ;;
+    *) echo "[verify] FAIL (${step}): EqualBags records nameGenerationHigh '${high}', not a number"; exit 1 ;;
+  esac
   g=1
   while [ "${g}" -le "${high}" ]; do
     name="$(equalbags_log_group_at "${g}")" || { echo "[verify] FAIL (${step}): could not derive EqualBags' generation-${g} name"; exit 1; }
@@ -468,6 +472,13 @@ fi
 assert_gone "(step 3) FailingQueue ${FAILING_QUEUE_NAME} exists — the injected CreateQueue should have been rejected" \
   aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"
 assert_v1_world "step 3"
+# The rolled-back replacement reached generation 1, and the restored record
+# remembers it (go-to-k/cdkd#5064), so the v1-world probe above covered it.
+STEP3_HIGH="$(state_field EqualBags nameGenerationHigh)"
+if [ "${STEP3_HIGH}" != "1" ]; then
+  echo "[verify] FAIL (step 3): EqualBags records nameGenerationHigh '${STEP3_HIGH}' after the rollback, expected 1"
+  exit 1
+fi
 echo "[verify] step 3 ok: automatic rollback re-created each OLD type and deleted each new resource"
 
 # ---------------------------------------------------------------------------
