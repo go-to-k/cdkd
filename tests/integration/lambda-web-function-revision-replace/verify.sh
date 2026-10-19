@@ -435,6 +435,10 @@ echo "==> Phase 1c: deploy v1 again with this build, no change (heals the ${PREF
 # only the heal can answer the GetAtt. Its first write of this stack (v13).
 OUT="$(deploy "${V1}")" || { echo "${OUT}"; echo "FAIL: phase 1c deploy" >&2; exit 1; }
 echo "${OUT}"
+if sed $'s/\x1b\\[[0-9;]*m//g' <<<"${OUT}" | grep -qE 'RegionalEndpoint \(AWS::Lambda::WebFunctionEndpoint\) (updated|replaced|created)'; then
+  echo "FAIL: phase 1c: the deploy wrote the PerRegion endpoint, so its record no longer needs the heal" >&2
+  exit 1
+fi
 assert_regional_getatt 'phase 1c'
 HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
 if [ "${HAS_KEY}" != "true" ]; then
