@@ -1336,9 +1336,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     }
 
+    // The service's ARN when a GetService already ran in this update, so the
+    // Tags arm below does not read it a second time.
+    let knownArn: string | undefined;
     try {
       if (hasServiceChange) {
-        await this.keepUndeclaredServiceFields(physicalId, serviceChange);
+        knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
         const response = await client.send(
           new UpdateServiceCommand({
             Id: physicalId,
@@ -1419,8 +1422,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       if (hasTagChange) {
-        const described = await client.send(new GetServiceCommand({ Id: physicalId }));
-        const arn = described.Service?.Arn;
+        const arn =
+          knownArn ?? (await client.send(new GetServiceCommand({ Id: physicalId }))).Service?.Arn;
         if (!arn) {
           throw new ProvisioningError(
             safeMsg`Could not resolve the ARN of service discovery service ${logicalId}; its Tags were not updated`,
@@ -1478,18 +1481,18 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * the first and third and is refused for the second, so the live value is
    * echoed instead. `DnsConfig` echoes only `DnsRecords`, the one part
    * `DnsConfigChange` carries. No `GetService` is spent when every field is
-   * declared.
+   * declared. Returns the service ARN when it read one.
    */
   private async keepUndeclaredServiceFields(
     physicalId: string,
     serviceChange: ServiceChange
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     if (
       serviceChange.Description !== undefined &&
       serviceChange.DnsConfig !== undefined &&
       serviceChange.HealthCheckConfig !== undefined
     ) {
-      return;
+      return undefined;
     }
     const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
     if (serviceChange.Description === undefined && live?.Description !== undefined) {
@@ -1501,6 +1504,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (serviceChange.HealthCheckConfig === undefined && live?.HealthCheckConfig !== undefined) {
       serviceChange.HealthCheckConfig = live.HealthCheckConfig;
     }
+    return live?.Arn;
   }
 
   private async deleteService(

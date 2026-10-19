@@ -169,10 +169,13 @@ echo "    OK: phase 1 baseline (Description and DnsRecords TTL 90 on AWS)"
 # UpdateService replaces its body, so the change sent for the still-declared
 # DnsConfig clears an omitted Description. CloudFormation keeps it.
 echo "==> Phase 2: removal (drop Description from ${SERVICE_NAME})"
-CDKD_TEST_REMOVAL=description node "${LOCAL_DIST}" deploy "${STACK}" \
+if ! CDKD_TEST_REMOVAL=description node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes; then
+  echo "FAIL: the Description removal deploy failed (issue #1160): a removed Description must be kept, as CloudFormation keeps it" >&2
+  exit 1
+fi
 if [ "$(service_id "${SERVICE_NAME}")" != "${SERVICE_ID}" ]; then
   echo "FAIL: ${SERVICE_NAME} was replaced by the Description removal (must update in place)" >&2
   exit 1

@@ -18,9 +18,11 @@ import {
   GetOperationCommand,
   GetServiceCommand,
   ListNamespacesCommand,
+  TagResourceCommand,
   UpdateServiceCommand,
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
+import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 
 describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
@@ -243,6 +245,42 @@ describe('ServiceDiscoveryProvider — Service removal keeps the live value (#11
     await provider.update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('Description'), FULL);
     const change = sentChange();
     expect(Object.hasOwn(change, 'Description')).toBe(false);
+  });
+
+  it('a failed GetService read-back sends no UpdateService and throws a wrapped error carrying the cause', async () => {
+    const boom = new Error('throttled');
+    mockSend.mockImplementationOnce(async () => {
+      throw boom;
+    });
+    const err = await provider
+      .update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('Description'), FULL)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as ProvisioningError).message).toContain('Failed to update service discovery service Svc');
+    expect((err as ProvisioningError).cause).toBe(boom);
+    expect(mockSend.mock.calls.some(([c]) => c instanceof UpdateServiceCommand)).toBe(false);
+  });
+
+  it('a Tags change reuses the read-back ARN instead of a second GetService', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof GetServiceCommand) {
+        return { Service: { Id: 'srv-1', Arn: 'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-1' } };
+      }
+      if (cmd instanceof UpdateServiceCommand) return {};
+      return {};
+    });
+    await provider.update(
+      'Svc',
+      'srv-1',
+      'AWS::ServiceDiscovery::Service',
+      { ...without('Description'), Tags: [{ Key: 'k', Value: 'v' }] },
+      FULL
+    );
+    expect(mockSend.mock.calls.filter(([c]) => c instanceof GetServiceCommand)).toHaveLength(1);
+    const tag = mockSend.mock.calls.find(([c]) => c instanceof TagResourceCommand);
+    expect((tag![0] as TagResourceCommand).input.ResourceARN).toBe(
+      'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-1'
+    );
   });
 
   it('an HTTP service whose only field was the removed Description makes no call (kept)', async () => {
