@@ -346,7 +346,9 @@ The outcome depends on whether the replacement deletes first or creates first.
   the deploy. That clears a refusal from a dependent that still used the old
   resource, but not protection. This order is used by a property-driven replacement.
   The delete-first cases above also use it when the template renames the
-  resource. The old resource and its data stay in AWS, no longer tracked by
+  resource, and, on a stack with a `stackInstanceId`, for a resource the
+  template does not name, whose replacement gets a new generated name. The
+  old resource and its data stay in AWS, no longer tracked by
   cdkd. Delete it yourself once protection is off.
 
 #### Turning protection off in the template takes two deploys

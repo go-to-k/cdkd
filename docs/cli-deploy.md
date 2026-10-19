@@ -209,7 +209,9 @@ A deploy enforces that in two places, and refuses when a check fails:
   alarm, EventBridge rule, S3 bucket, ECS cluster, load balancer, target
   group or state machine, the deploy looks the name up first. If a resource
   holds the name and nothing this stack records names it, that create is
-  refused with `GENERATED_NAME_HELD`. See
+  refused with `GENERATED_NAME_HELD`. On a stack with a `stackInstanceId`,
+  a planned replacement of one of these types is checked the same way at the
+  new resource's next generated name. See
   [Name check before a create](state-store-name-check.md).
 - **Against the stack registry.** A first deploy claims the stack's marker in
   the state bucket, and refuses when the marker names another prefix. A later
@@ -217,8 +219,8 @@ A deploy enforces that in two places, and refuses when a check fails:
   or adds or updates a nested stack. See
   [Stack registry](state-store-registry.md).
 
-An ordinary redeploy pays for neither check: it looks no name up and makes no
-registry request.
+An ordinary redeploy that creates and replaces nothing pays for neither check:
+it looks no name up and makes no registry request.
 
 When the deploy fails, its automatic rollback keeps a resource it created,
 and does not delete it, if another prefix holds the stack or the check cannot

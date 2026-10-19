@@ -11,43 +11,35 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  // bumps: 2 region-prefixed key, 3 observedProperties, 4 imports, 5 deletion/updateReplace policy, 6 parent* (nested stacks), 7 provisionedBy, 8 outputReads, 9 exportNames, 10 observedBaselineRefused, 11 noEchoLeaves/noEchoAttributeNames, 12 referenceProvenance, 13 stackInstanceId
-  version: 1 | 2 | ... | 13;
+  version: 1 | 2 | ... | 13;      // each bump is its fields' `vN+`
   stackName: string;
   region?: string;      // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
   resources: Record<string, ResourceState>;
-  outputs: Record<string, unknown>; // resolved Output values — NOT coerced to string
-  imports?: StateImportEntry[];   // v4+: Fn::ImportValue refs; drive the destroy-time strong-reference refusal
-  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs; informational, no destroy refusal
-  exportNames?: string[];         // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = not known, [] = exports nothing
+  outputs: Record<string, unknown>; // see `outputs` below
+  imports?: StateImportEntry[];   // v4+: Fn::ImportValue refs; block the producer's destroy
+  outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs; see below
+  exportNames?: string[];         // v9+: see below
   skippedOutputs?: Record<string, string>; // no bump
-  orphans?: StackOrphanRecord[];  // no bump: rollback-orphaned Retain resources the next deploy re-adopts, carrying the discarded ResourceState verbatim
-  conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: deployed verdicts of secret-fed conditions, for `cdkd diff`
+  orphans?: StackOrphanRecord[];  // no bump: rollback-orphaned Retain resources (the discarded ResourceState verbatim); re-adopted on legacy stacks only
+  conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }>; // no bump: see below
   parentStack?: string;           // v6+: nested-stack CHILD records only (undefined = top-level); child key is cdkd/{parentStack}~{parentLogicalId}/{region}/state.json
   parentLogicalId?: string;       // v6+: the child's AWS::CloudFormation::Stack logical id in the parent
-  parentRegion?: string;          // v6+: parent's region (equals `region` until cross-region nested stacks ship)
+  parentRegion?: string;          // v6+: = `region`
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>; // v12+: key -> token
   stackInstanceId?: string;       // v13+: this lifetime's id; absent = legacy, forever
+  retiredNameGenerations?: Record<string, number>; // v13+: logical id -> generation it left at
   lastModified: number;
 }
 
-interface StateImportEntry {
-  sourceStack: string;   // producer stack whose Output was imported
-  sourceRegion: string;  // producer's region (load-bearing for state-key lookup)
-  exportName: string;    // Export.Name; REDACTED, so it may hold a {{resolve:}} expression
-}
-
-interface StateOutputReadEntry {
-  sourceStack: string;   // producer stack; REDACTED, so a MATCH on it must handle an expression
-  sourceRegion: string;  // producer's region
-  outputName: string;    // Outputs.<Name>, NOT Export.Name; REDACTED
-}
+// sourceRegion is load-bearing (the producer's state key); REDACTED fields may hold a {{resolve:}} expression a MATCH must handle
+interface StateImportEntry { sourceStack: string; sourceRegion: string; exportName: string /* REDACTED */ }
+interface StateOutputReadEntry { sourceStack: string /* REDACTED */; sourceRegion: string; outputName: string /* Outputs.<Name>, NOT Export.Name; REDACTED */ }
 
 interface ResourceState {
   physicalId: string;
   resourceType: string;
   properties: Record<string, unknown>;          // resolved values cdkd SENT (a narrowed or silently dropped property is absent)
-  observedProperties?: Record<string, unknown>; // AWS-current snapshot at deploy time (drift baseline)
+  observedProperties?: Record<string, unknown>; // v3+: AWS-current snapshot (drift baseline)
   attributes?: Record<string, unknown>;         // for Fn::GetAtt resolution
   dependencies?: string[];                      // for deletion order
   metadata?: Record<string, unknown>;
@@ -62,9 +54,11 @@ interface ResourceState {
   noEchoExactEchoLeaves?: string[][];       // no bump: `noEchoLeaves` echoed exactly (#4656)
   secretNamedAttributes?: string[];         // no bump: nested-stack row's `Outputs.<Key>` holding a child's secret-derived name (#3869)
   acceptedCreateOnlyDrops?: string[];       // no bump: create-only keys in `properties` the SDK route was told to drop (#2790)
-  constructPath?: string;                   // no bump: display only; stamped in `redactStateForPersist` on every deploy save (#4607)
+  constructPath?: string;                   // no bump: display only; `redactStateForPersist` stamps it (#4607)
   maskedPropertyFingerprints?: Record<string, string>; // no bump: per property held as `***`, sha256 of template text (#4451)
   maskedPropertyInputFingerprints?: Record<string, string>; // no bump: non-secret inputs resolved, bound to that hash (#4543)
+  nameGeneration?: number;                  // v13+: absent = 0
+  nameGenerationHigh?: number;              // v13+: set by a rollback
 }
 ```
 
@@ -80,9 +74,11 @@ Neither field hashes a secret-derived value. The input field is SEPARATE so an o
 
 Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/types/state.ts`): `exportNames` intersected with the bag when present, every key when not. The FIELD is the discriminator, not `version`: `undefined` = NOT KNOWN (the legacy rule), `[]` = KNOWN to export nothing. A save that RE-RESOLVES outputs writes the set, `[]` included (unlike `imports` / `outputReads`); one that CARRIES a bag spreads `exportNamesCarriedFrom(previous)`.
 
-## `stackInstanceId` (v13+, #5064)
+## `stackInstanceId` and name generations (v13+, #5064)
 
 Minted only at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`); read via `stackInstanceIdOf`. Never logged.
+
+Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
 
 ## `conditionVerdicts` (no bump)
 
@@ -140,6 +136,6 @@ Set on each create / update by a fire-and-forget `readCurrentState`, drained bef
 
 ## Rollback journal (NOT part of the state schema)
 
-`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix with its own `journalVersion`. Written when a deploy ends without a completed rollback (`--no-rollback` failure, SIGINT, before an automatic rollback): one `segment` per failed attempt, a verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` consumes it, `--revert-failed` replays `failedOperations`; it is popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion`: error.
+`rollback-journal.json` is a **sibling** of `state.json` under the same key prefix with its own `journalVersion`. Written when a deploy ends without a completed rollback (`--no-rollback` failure, SIGINT, before an automatic rollback): one `segment` per failed attempt, a verbatim `CompletedOperation[]` (UPDATE ops carry the ADDITIVE `previousResourceType`, #2668, and replacements `nameGeneration`) plus ADDITIVE `failedOperations` (each failed op's `previousState`, resolved `attemptedProperties`), and a provider-proven CREATE orphan's `physicalIdRecoveredFromError` + `deletionPolicy` (#1710) (no bump; an older classifier skips the op). `cdkd rollback` consumes it, `--revert-failed` replays `failedOperations`; it is popped per replayed segment and deleted on the next successful deploy (kept reduced while an orphan delete fails, #4600), clean rollback or destroy. A NESTED child's success instead APPENDS a `nested-pending-parent` segment (ADDITIVE reason and `previousOutputs`, no bump) that its parent's revert replays by `runId`; the ROOT's success deletes every descendant journal (#3754). Unknown `journalVersion`: error.
 
 **Secret redaction.** Its `properties` / `attemptedProperties` / `previousState` take `state.json`'s redaction (a public `String` / `StringList` ssm value stays resolved). The replay RE-RESOLVES them before `create()` / `update()` and re-redacts the rebuilt record.

@@ -225,7 +225,8 @@ resource record the op already carries. It also records whether the deploy
 deleted the old resource BEFORE creating the new one (`oldDeletedBeforeCreate`
 — additive, no bump; `--recreate-via-cc-api` / `--recreate-via-sdk-provider`,
 the update-unsupported fallback, `--replace`'s delete-first fallback, a child
-lost with its re-created parent): the
+lost with its re-created parent; on an id stack the first three create first
+for a generated name, which moves to its next generation): the
 rollback then deletes the new resource before re-creating the old one, so a
 port or name only one of them can hold does not collide. An absent value (an
 older binary's journal) keeps the create-first order. A failed UPDATE carries
@@ -429,7 +430,7 @@ with an "Upgrade cdkd" error.
 | 10 | `observedBaselineRefused` on each resource |
 | 11 | `noEchoLeaves` / `noEchoAttributeNames` on each resource; `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance` on each resource, `outputReferenceProvenance` on the stack |
-| 13 | `stackInstanceId` on the stack |
+| 13 | `stackInstanceId` and `retiredNameGenerations` on the stack, `nameGeneration` / `nameGenerationHigh` on each resource |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1331,6 +1332,45 @@ One residual: a pre-v13 binary's `deleteState` does not know the sibling, so
 a first deploy interrupted under v13, then deployed and destroyed by an older
 binary, leaves it, and the stack's next v13 first deploy takes that id.
 
+#### Name generations
+
+The same bump adds `ResourceState.nameGeneration` (absent = 0),
+`ResourceState.nameGenerationHigh` and `StackState.retiredNameGenerations`
+(`src/state/name-generation.ts`), written only on a stack with an id. The
+generated-name suffix is `sha256(id NUL logicalId)[:12]` at generation 0 and
+`sha256(id NUL logicalId NUL decimal(g))[:12]` at generation `g > 0`
+(`stackInstanceNameSuffix`). Every `StackScope` with an id carries the map
+`nameGenerationsOf` builds at the state read (a record's generation, a
+retired id's generation + 1, otherwise 0); a generated name derived in an id
+scope without it throws.
+
+- **Replacement.** The new resource is created at `nextNameGeneration`: one
+  past `max(nameGeneration, nameGenerationHigh)`, skipping a generation whose
+  suffix the record's own physical id already carries (a `cdkd import` of
+  another resource). Its name therefore differs, so a property-driven
+  replacement, `--recreate-via-*` and the update-not-supported fallback all
+  create first. A resource lost with its parent is re-created at its own
+  generation.
+- **Leaving the stack.** A deploy DELETE (a `Retain` included), `cdkd orphan`
+  and a rollback that leaves a `Retain` orphan write the record's highest
+  generation into `retiredNameGenerations`; `stackInstanceIdCarriedFrom`
+  carries the field.
+- **Rollback.** The old side is derived at the OLD record's generation; the
+  restored record's `nameGenerationHigh` is raised to the generation the
+  replacement reached, read from `CompletedOperation.nameGeneration` /
+  `FailedOperation.nameGeneration` (additive journal fields, no
+  `journalVersion` bump).
+- **`cdkd import`.** An unchanged physical id keeps both fields; another
+  physical id records no generation and the replaced record's high-water mark
+  as `nameGenerationHigh`.
+
+They are read through `nameGenerationOf` / `nameGenerationHighWaterOf` /
+`retiredNameGenerationsOf`, which refuse a value that is not a non-negative
+integer (read as 0, a replacement would ask for an earlier generation's
+name). A writer that rebuilds a `ResourceState` field by field spreads
+`nameGenerationCarriedFrom` (same resource) or `nameGenerationField` (a new
+generation), fenced by `tests/unit/state/stack-instance-id-carriers.test.ts`.
+
 #### Migration
 
 No read-time migration: a v12 document is read unchanged and stays a LEGACY
@@ -1627,7 +1667,7 @@ hash too, and edits to it are not seen through the mask.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState, 11 = +noEchoLeaves/noEchoAttributeNames on ResourceState, 12 = +referenceProvenance on ResourceState and +outputReferenceProvenance
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState, 11 = +noEchoLeaves/noEchoAttributeNames on ResourceState, 12 = +referenceProvenance on ResourceState and +outputReferenceProvenance, 13 = +stackInstanceId/retiredNameGenerations and +nameGeneration/nameGenerationHigh on ResourceState
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
@@ -1636,13 +1676,14 @@ interface StackState {
   outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
   exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
   skippedOutputs?: Record<string, string>  // informational, no version bump: Outputs keys the last deploy could not resolve and skipped → digest of their template inputs (issue #2740); absent = nothing skipped, or a record older than the field
-  orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`, kept so a later deploy can re-adopt one instead of colliding with the name it holds; absent = none
+  orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`; on a legacy stack (no stackInstanceId) kept so a later deploy can re-adopt one instead of colliding with the name it holds, on an id stack only warned about (never re-adopted); absent = none
   conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }> // no version bump: the deployed verdict of each condition `cdkd diff` reads that depends on a secret-fed parameter, with a fingerprint of its definitions and inputs (issue #4479); absent = no record
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>> // v12+: outputs key → token → where and at which version it was resolved; absent = not known
   stackInstanceId?: string                 // v13+: the id of this lifetime of the stack, minted at its first state write; absent = a legacy stack, which stays one
+  retiredNameGenerations?: Record<string, number> // v13+, id stacks only: logical id → the name generation its record left the stack at; a re-added id starts at that + 1; absent = none
   lastModified: number                     // Unix timestamp (milliseconds)
 }
 ```
@@ -2073,6 +2114,8 @@ interface ResourceState {
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
+  nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
+  nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none
 }
 ```
 

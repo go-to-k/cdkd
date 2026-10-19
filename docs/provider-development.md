@@ -232,12 +232,19 @@ Five things in this method apply to every provider:
 
 - **The name.** When the template gives no name, `generateResourceName`
   (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{suffix}`,
-  where the 12-character suffix comes from the stack's instance id, and cuts the
-  `{StackName}-{LogicalId}` part to fit the service's length limit. A stack
-  deployed before the instance id existed keeps `{StackName}-{LogicalId}`.
-  Call it inside the stack's `withStackScope`: the deploy and every replay
-  open one, and a generated name derived before the deploy reads the stack's
-  state throws.
+  where the 12-character suffix comes from the stack's instance id and the
+  resource's name generation, and cuts the `{StackName}-{LogicalId}` part to
+  fit the service's length limit. A stack deployed before the instance id
+  existed keeps `{StackName}-{LogicalId}`. Call it inside the stack's
+  `withStackScope`: the deploy and every replay open one, and a generated name
+  derived before the deploy reads the stack's state throws. A scope with an
+  instance id must also carry `nameGenerations` (built from the state record
+  by `nameGenerationsOf` in `src/state/name-generation.ts`), or the name
+  throws. A provider never picks a generation itself: the deploy binds a
+  replacement's next generation with `withNameGeneration` around the create.
+  A unit test that derives a generated name opens
+  `withStackScope({ stackName, stackInstanceId: undefined, nameGenerations: undefined }, ...)`
+  for a legacy name, or passes a map such as `new Map()` beside an id.
 - **The physical id.** Return what CloudFormation's `Ref` returns for the
   type. For a subnet group that is its name.
 - **The attributes.** Return each attribute a template can read with

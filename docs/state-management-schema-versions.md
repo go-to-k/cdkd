@@ -54,7 +54,7 @@ Upgrade every machine and CI job that deploys a stack at the same time.
 | 10 | `observedBaselineRefused` |
 | 11 | `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance`, `outputReferenceProvenance`: where each stored secret reference was resolved, and at which secret version |
-| 13 | `stackInstanceId`: the id of the stack's current lifetime, recorded when the stack is first written |
+| 13 | `stackInstanceId`: the id of the stack's current lifetime, recorded when the stack is first written; `nameGeneration`, `nameGenerationHigh` and `retiredNameGenerations`: which generated name each resource holds |
 
 [What a state record contains](state-management.md#what-a-state-record-contains)
 says what each field means. The contributor page
@@ -113,7 +113,34 @@ the id to `stack-instance.json` beside `state.json` before it creates any
 resource, and deletes that object once `state.json` holds the id. A first deploy interrupted before its record was written
 leaves the object, and the next deploy of the stack takes the id from it.
 
-Nothing reads the id yet: resource names are unchanged.
+The id is what makes a stack's generated names its own: a resource your
+template does not name is called `<StackName>-<LogicalId>-` plus 12 hex
+characters derived from the id. A stack without one keeps the older
+`<StackName>-<LogicalId>` names.
+
+## Name generations: a new name for each replacement
+
+On a stack with a `stackInstanceId`, the 12-character suffix also hashes the
+resource's name generation, recorded per resource:
+
+| Field | On | Meaning |
+| --- | --- | --- |
+| `nameGeneration` | A resource | The generation its generated name was derived at. Absent means `0`, the name a first create uses |
+| `nameGenerationHigh` | A resource | The highest generation a replacement ever created for it, when that is above `nameGeneration`. Set when a rollback restores the old resource |
+| `retiredNameGenerations` | The stack | For each logical ID whose resource left the stack (a delete, a `Retain` that kept it, `cdkd orphan` or `cdkd state orphan --resource`, or a rollback that left a `Retain` resource), the generation it left at |
+
+A replacement creates the new resource one generation past the highest the
+record knows, so the new name differs from the old one and cdkd creates the
+new resource before it deletes the old one, as CloudFormation does. A logical
+ID added again after its resource left starts one past its retired
+generation, so it never asks for the name the kept resource holds. Every value
+is computed from the state record, so a re-run after a crash derives the same
+names.
+
+A stack without a `stackInstanceId` never writes these fields, and its
+generated names do not change on a replacement. A value that is not a
+non-negative whole number makes cdkd refuse the stack until the record is
+repaired.
 
 ## `provisionedBy`: which route owns a resource
 
