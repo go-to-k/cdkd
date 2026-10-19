@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
@@ -12,6 +13,7 @@ import type { Construct } from 'constructs';
  * covers: AWS::ApiGateway::Stage
  * covers: AWS::ApiGateway::ClientCertificate
  * covers: AWS::Logs::LogGroup
+ * covers: AWS::ApiGateway::Account
  *
  * Exercises the formerly silent-drop Stage properties end to end via L1s
  * (the L2 RestApi's deployOptions cannot express ClientCertificateId or a
@@ -80,6 +82,23 @@ export class ApigwStagePropsStack extends cdk.Stack {
       arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
     });
 
+    // Access logging needs the account-level CloudWatch role, so the fixture
+    // sets its own instead of depending on whatever an earlier run left there.
+    // The role is DESTROYed with the stack: the account setting then points
+    // at a deleted role, which the next run's Account resource overwrites.
+    const cloudWatchRole = new iam.Role(this, 'ApiGatewayCloudWatchRole', {
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+        ),
+      ],
+    });
+    cloudWatchRole.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    const account = new apigateway.CfnAccount(this, 'Account', {
+      cloudWatchRoleArn: cloudWatchRole.roleArn,
+    });
+
     const stage = new apigateway.CfnStage(this, 'Stage', {
       restApiId: api.ref,
       stageName: 'live',
@@ -102,6 +121,7 @@ export class ApigwStagePropsStack extends cdk.Stack {
           }),
     });
     stage.addDependency(logGroup);
+    stage.addDependency(account);
 
     new cdk.CfnOutput(this, 'RestApiId', { value: api.ref });
     new cdk.CfnOutput(this, 'StageName', { value: stage.ref });
