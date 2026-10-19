@@ -904,7 +904,7 @@ describe('the debug line is masked as a whole, prefix included (go-to-k/cdkd#231
 
   it.each([
     {
-      helper: 'EMR InstanceGroupConfig statusReasonError',
+      helper: 'EMR InstanceGroupConfig wrapStatusReasonError',
       routes: {
         AddInstanceGroupsCommand: { InstanceGroupIds: ['ig-emr-fsx-efs-secret'] },
         ListInstanceGroupsCommand: {
@@ -922,7 +922,7 @@ describe('the debug line is masked as a whole, prefix included (go-to-k/cdkd#231
         new EMRInstanceGroupConfigProvider(poll).create('Res', GROUP, { ...GROUP_PROPS }, { maskSecrets: MASK }),
     },
     {
-      helper: 'FSx statusReasonError',
+      helper: 'FSx wrapStatusReasonError',
       routes: {
         DescribeFileSystemsCommand: {
           FileSystems: [

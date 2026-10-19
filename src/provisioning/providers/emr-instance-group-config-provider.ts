@@ -202,7 +202,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    * `build` runs twice, so it must stay a side-effect-free constructor call
    * threading `cause`.
    */
-  private statusReasonError(
+  private wrapStatusReasonError(
     mask: MaskerFn | undefined,
     reason: { code?: string | undefined; message?: string | undefined } | undefined,
     fallback: string,
@@ -785,7 +785,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       const enforceFailedStates = !toleratesStaleFailedState || hasLeftInitialState;
       if (state && enforceFailedStates && FAILED_STATES.has(state)) {
         const reason = group?.Status?.StateChangeReason;
-        throw this.statusReasonError(
+        throw this.wrapStatusReasonError(
           mask,
           { code: reason?.Code, message: reason?.Message },
           'no state-change reason reported',

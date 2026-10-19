@@ -386,7 +386,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * `build` runs twice, so it must stay a side-effect-free constructor call
    * threading `cause`.
    */
-  private statusReasonError(
+  private wrapStatusReasonError(
     mask: MaskerFn | undefined,
     message: string | undefined,
     build: (text: string, cause: Error | undefined) => ProvisioningError
@@ -1740,7 +1740,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       if (fs && lifecycle === 'AVAILABLE') return fs;
 
       if (lifecycle === 'FAILED' || lifecycle === 'MISCONFIGURED') {
-        throw this.statusReasonError(
+        throw this.wrapStatusReasonError(
           mask,
           fs?.FailureDetails?.Message,
           (text, cause) =>
@@ -1815,7 +1815,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
         if (updateActions.length > 0) seenTrackedAction = true;
         const failed = updateActions.find((a) => a.Status === 'FAILED');
         if (failed) {
-          throw this.statusReasonError(
+          throw this.wrapStatusReasonError(
             mask,
             failed.FailureDetails?.Message,
             (text, cause) =>
@@ -1892,7 +1892,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
 
       if (fs.Lifecycle === 'FAILED') {
-        throw this.statusReasonError(
+        throw this.wrapStatusReasonError(
           mask,
           fs.FailureDetails?.Message,
           (text, cause) =>
