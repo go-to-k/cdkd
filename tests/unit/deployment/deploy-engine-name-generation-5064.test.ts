@@ -1,0 +1,421 @@
+/**
+ * go-to-k/cdkd#5064 phase 2, through `DeployEngine.deploy` with the REAL
+ * `DiffCalculator` and `DagBuilder`: on a stack with an instance id a
+ * replacement creates its new resource under the NEXT name generation (so it
+ * creates first and needs no `--replace`), a crash re-run derives that same
+ * name again, a rollback records the generation the deleted copy reached, a
+ * logical id that left the stack comes back under a new name, and a
+ * rollback-left orphan is not taken back. A legacy stack (no id) keeps every
+ * name and every refusal it had.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { ResourceState, StackState } from '../../../src/types/state.js';
+import {
+  generateResourceName,
+  generateResourceNameWithFallback,
+  stackInstanceNameSuffix,
+} from '../../../src/provisioning/resource-name.js';
+
+const logger = vi.hoisted(() => {
+  const fns: Record<string, unknown> = {};
+  for (const k of ['setLevel', 'debug', 'info', 'warn', 'error']) fns[k] = vi.fn();
+  fns['child'] = () => fns;
+  return fns as Record<string, ReturnType<typeof vi.fn>> & { child: () => unknown };
+});
+vi.mock('../../../src/utils/logger.js', () => ({ getLogger: () => logger }));
+
+const renderer = {
+  start: vi.fn(),
+  stop: vi.fn(),
+  addTask: vi.fn(),
+  removeTask: vi.fn(),
+  updateTaskLabel: vi.fn(),
+  printAbove: (write: () => void) => write(),
+};
+vi.mock('../../../src/utils/live-renderer.js', () => ({ getLiveRenderer: () => renderer }));
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    cloudFormation: {
+      send: vi.fn(() =>
+        Promise.reject(
+          Object.assign(new Error('not authorized to perform: cloudformation:DescribeType'), {
+            name: 'AccessDeniedException',
+            $metadata: { httpStatusCode: 403 },
+          })
+        )
+      ),
+    },
+    sts: { send: vi.fn().mockResolvedValue({ Account: '123456789012' }) },
+  }),
+}));
+
+vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
+
+const STACK = 'NameGen';
+const REGION = 'us-east-1';
+const ID = '3d1f2e4c-5b6a-4c7d-8e9f-0a1b2c3d4e5f';
+const TABLE = 'AWS::DynamoDB::Table';
+const ROLE = 'AWS::IAM::Role';
+const QUEUE = 'AWS::SQS::Queue';
+
+/** The name cdkd generates for `logicalId` at `generation` on the id stack. */
+const genName = (logicalId: string, generation: number): string =>
+  `${STACK}-${logicalId}-${stackInstanceNameSuffix(ID, logicalId, generation)}`;
+
+const keySchema = (attr: string) => ({
+  KeySchema: [{ AttributeName: attr, KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: attr, AttributeType: 'S' }],
+  BillingMode: 'PAY_PER_REQUEST',
+});
+
+const tableRecord = (physicalId: string, attr: string, over: Partial<ResourceState> = {}) =>
+  ({
+    physicalId,
+    resourceType: TABLE,
+    properties: keySchema(attr),
+    attributes: {},
+    dependencies: [],
+    ...over,
+  }) as ResourceState;
+
+const stateOf = (
+  resources: Record<string, ResourceState>,
+  over: Partial<StackState> = {}
+): StackState =>
+  ({
+    version: 13,
+    region: REGION,
+    stackName: STACK,
+    resources,
+    outputs: {},
+    stackInstanceId: ID,
+    lastModified: 0,
+    ...over,
+  }) as StackState;
+
+const tableTemplate = (attr: string, extra: Record<string, unknown> = {}): CloudFormationTemplate =>
+  ({
+    Resources: { Table: { Type: TABLE, Properties: keySchema(attr) }, ...extra },
+  }) as unknown as CloudFormationTemplate;
+
+describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phase 2)', () => {
+  let events: string[];
+  /** Names AWS holds. */
+  let held: Set<string>;
+  let failCreate: Set<string>;
+  let provider: Record<string, ReturnType<typeof vi.fn>>;
+  let stateBackend: Record<string, ReturnType<typeof vi.fn>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    events = [];
+    held = new Set();
+    failCreate = new Set();
+    provider = {
+      create: vi.fn(async (logicalId: string, type: string, props: Record<string, unknown>) => {
+        const name =
+          type === ROLE
+            ? generateResourceNameWithFallback(
+                props['RoleName'] as string | undefined,
+                logicalId,
+                { maxLength: 64 }
+              )
+            : generateResourceName(logicalId, { maxLength: 255 });
+        if (failCreate.has(logicalId)) {
+          events.push(`fail ${name}`);
+          throw new Error(`${logicalId} failed`);
+        }
+        if (held.has(name)) {
+          events.push(`collide ${name}`);
+          throw Object.assign(new Error(`Resource ${name} already exists`), {
+            name: 'AlreadyExistsException',
+            $metadata: { httpStatusCode: 400 },
+          });
+        }
+        held.add(name);
+        events.push(`create ${name}`);
+        return { physicalId: name, attributes: {} };
+      }),
+      update: vi.fn(async (_l: string, physicalId: string) => ({
+        physicalId,
+        wasReplaced: false,
+      })),
+      delete: vi.fn(async (_l: string, physicalId: string) => {
+        held.delete(physicalId);
+        events.push(`delete ${physicalId}`);
+      }),
+      getAttribute: vi.fn(),
+      import: vi.fn(async () => null),
+    };
+    stateBackend = {
+      getState: vi.fn(),
+      saveState: vi.fn().mockResolvedValue('"etag-new"'),
+      stackInstanceIdForFirstWrite: vi.fn().mockResolvedValue(ID),
+      appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+    };
+  });
+
+  function makeEngine(options: Record<string, unknown> = {}): DeployEngine {
+    return new DeployEngine(
+      stateBackend as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      new DagBuilder(),
+      new DiffCalculator(),
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+      } as never,
+      // DynamoDB is stateful: its replacement needs the consent flag.
+      { dryRun: false, captureObservedState: false, forceStatefulRecreation: true, ...options },
+      REGION,
+      {
+        updateForStack: vi.fn().mockResolvedValue(undefined),
+        lookup: vi.fn().mockResolvedValue(null),
+        patchEntry: vi.fn().mockResolvedValue(undefined),
+      } as never
+    );
+  }
+
+  const load = (state: StackState) => {
+    for (const r of Object.values(state.resources)) held.add(r.physicalId);
+    stateBackend['getState']!.mockResolvedValue({ state, etag: '"e0"' });
+  };
+  const lastSaved = (): StackState => stateBackend['saveState']!.mock.calls.at(-1)![2] as StackState;
+
+  it('a replacement creates the next generation FIRST, deletes the old one, needs no --replace', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    await makeEngine().deploy(STACK, tableTemplate('id'));
+    expect(events).toEqual([`create ${genName('Table', 1)}`, `delete ${genName('Table', 0)}`]);
+    const saved = lastSaved().resources['Table']!;
+    expect(saved.physicalId).toBe(genName('Table', 1));
+    expect(saved.nameGeneration).toBe(1);
+  });
+
+  it('an un-named IAM role whose Path changes is replaced create-first at generation 1, no --replace', async () => {
+    const roleName = (g: number) => genName('Role', g);
+    const role = (path: string) => ({
+      AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+      Path: path,
+    });
+    load(
+      stateOf({
+        Role: {
+          physicalId: roleName(0),
+          resourceType: ROLE,
+          properties: role('/a/'),
+          attributes: {},
+          dependencies: [],
+        },
+      })
+    );
+    await makeEngine().deploy(STACK, {
+      Resources: { Role: { Type: ROLE, Properties: role('/b/') } },
+    } as unknown as CloudFormationTemplate);
+    expect(events).toEqual([`create ${roleName(1)}`, `delete ${roleName(0)}`]);
+    expect(lastSaved().resources['Role']!.nameGeneration).toBe(1);
+  });
+
+  it('the update-not-supported fallback also creates the next generation FIRST', async () => {
+    const TOPIC = 'AWS::SNS::Topic';
+    load(
+      stateOf({
+        Topic: {
+          physicalId: genName('Topic', 0),
+          resourceType: TOPIC,
+          properties: { DisplayName: 'a' },
+          attributes: {},
+          dependencies: [],
+        },
+      })
+    );
+    provider['update']!.mockRejectedValueOnce(
+      Object.assign(new Error('update is not supported for this type'), {
+        name: 'UnsupportedActionException',
+      })
+    );
+    await makeEngine().deploy(STACK, {
+      Resources: { Topic: { Type: TOPIC, Properties: { DisplayName: 'b' } } },
+    } as unknown as CloudFormationTemplate);
+    expect(events).toEqual([`create ${genName('Topic', 1)}`, `delete ${genName('Topic', 0)}`]);
+    expect(lastSaved().resources['Topic']!.nameGeneration).toBe(1);
+  });
+
+  it('a crash re-run derives the SAME next-generation name (a pure function of the record)', async () => {
+    const state = stateOf({ Table: tableRecord(genName('Table', 0), 'pk') });
+    failCreate.add('Table');
+    load(state);
+    await expect(makeEngine().deploy(STACK, tableTemplate('id'))).rejects.toThrow();
+    failCreate.clear();
+    load(state);
+    await makeEngine().deploy(STACK, tableTemplate('id'));
+    expect(events).toEqual([
+      `fail ${genName('Table', 1)}`,
+      `create ${genName('Table', 1)}`,
+      `delete ${genName('Table', 0)}`,
+    ]);
+    // The second run took generation 1, never 2.
+    expect(events.some((e) => e.includes(genName('Table', 2)))).toBe(false);
+  });
+
+  it('a rolled-back replacement records the generation it reached; the retry goes past it', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('After');
+    await expect(
+      makeEngine().deploy(
+        STACK,
+        tableTemplate('id', {
+          After: { Type: QUEUE, Properties: {}, DependsOn: ['Table'] },
+        })
+      )
+    ).rejects.toThrow();
+    const restored = lastSaved().resources['Table']!;
+    expect(restored.physicalId).toBe(genName('Table', 0));
+    expect(restored.nameGeneration).toBeUndefined();
+    expect(restored.nameGenerationHigh).toBe(1);
+    expect(held.has(genName('Table', 1))).toBe(false);
+    // The retry asks for generation 2, never the rolled-back copy's name.
+    events = [];
+    failCreate.clear();
+    load(stateOf({ Table: restored }));
+    await makeEngine().deploy(STACK, tableTemplate('id'));
+    expect(events[0]).toBe(`create ${genName('Table', 2)}`);
+    expect(lastSaved().resources['Table']!.nameGeneration).toBe(2);
+  });
+
+  it('--no-rollback journals the generation on the completed and the failed replacement', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('After');
+    await expect(
+      makeEngine({ noRollback: true }).deploy(
+        STACK,
+        tableTemplate('id', { After: { Type: QUEUE, Properties: {}, DependsOn: ['Table'] } })
+      )
+    ).rejects.toThrow();
+    const segment = stateBackend['appendRollbackJournalSegment']!.mock.calls.at(-1)![2] as {
+      operations: Array<{ logicalId: string; nameGeneration?: number }>;
+      failedOperations?: Array<{ logicalId: string; nameGeneration?: number }>;
+    };
+    expect(segment.operations.find((o) => o.logicalId === 'Table')?.nameGeneration).toBe(1);
+    // A CREATE journals the generation its name was derived at.
+    expect(segment.failedOperations?.find((o) => o.logicalId === 'After')?.nameGeneration).toBe(0);
+  });
+
+  it('a failed replacement create journals the generation it asked for', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('Table');
+    await expect(makeEngine({ noRollback: true }).deploy(STACK, tableTemplate('id'))).rejects.toThrow();
+    const segment = stateBackend['appendRollbackJournalSegment']!.mock.calls.at(-1)![2] as {
+      failedOperations?: Array<{ logicalId: string; nameGeneration?: number }>;
+    };
+    expect(segment.failedOperations?.find((o) => o.logicalId === 'Table')?.nameGeneration).toBe(1);
+  });
+
+  for (const policy of ['Delete', 'Retain'] as const) {
+    it(`a record that leaves the stack (DeletionPolicy ${policy}) retires its generation; a re-add takes the next`, async () => {
+      load(
+        stateOf({
+          Table: tableRecord(genName('Table', 0), 'pk'),
+          Old: tableRecord(genName('Old', 0), 'pk', { deletionPolicy: policy }),
+        })
+      );
+      await makeEngine().deploy(STACK, tableTemplate('pk'));
+      const afterRemove = lastSaved();
+      expect(afterRemove.resources['Old']).toBeUndefined();
+      expect(afterRemove.retiredNameGenerations).toEqual({ Old: 0 });
+      // Re-added: a new name, and the record says which generation.
+      events = [];
+      held.clear();
+      if (policy === 'Retain') held.add(genName('Old', 0));
+      load(afterRemove);
+      await makeEngine().deploy(STACK, {
+        Resources: {
+          Table: { Type: TABLE, Properties: keySchema('pk') },
+          Old: { Type: TABLE, Properties: keySchema('pk') },
+        },
+      } as unknown as CloudFormationTemplate);
+      expect(events).toEqual([`create ${genName('Old', 1)}`]);
+      const saved = lastSaved();
+      expect(saved.resources['Old']!.nameGeneration).toBe(1);
+      expect(saved.retiredNameGenerations).toEqual({ Old: 0 });
+    });
+  }
+
+  it('a rollback-left Retain orphan is not taken back on an id stack: a new name, a warning naming cdkd import', async () => {
+    const orphan = tableRecord(genName('Kept', 0), 'pk', { deletionPolicy: 'Retain' });
+    load(
+      stateOf(
+        { Table: tableRecord(genName('Table', 0), 'pk') },
+        {
+          orphans: [{ logicalId: 'Kept', orphanedAt: 1, state: orphan }],
+          retiredNameGenerations: { Kept: 0 },
+        }
+      )
+    );
+    held.add(genName('Kept', 0));
+    await makeEngine().deploy(STACK, {
+      Resources: {
+        Table: { Type: TABLE, Properties: keySchema('pk') },
+        Kept: { Type: TABLE, Properties: keySchema('pk') },
+      },
+    } as unknown as CloudFormationTemplate);
+    expect(provider['import']).not.toHaveBeenCalled();
+    expect(events).toEqual([`create ${genName('Kept', 1)}`]);
+    expect(held.has(genName('Kept', 0))).toBe(true);
+    const warned = logger['warn']!.mock.calls.map((c) => String(c[0]));
+    expect(warned.some((w) => w.includes('Kept') && w.includes("'cdkd import'"))).toBe(true);
+  });
+
+  describe('a legacy stack (no stack instance id) is unchanged', () => {
+    it('a replacement asks for the same legacy name, collides, and deletes nothing', async () => {
+      load(stateOf({ Table: tableRecord(`${STACK}-Table`, 'pk') }, { stackInstanceId: undefined }));
+      const error = await makeEngine()
+        .deploy(STACK, tableTemplate('id'))
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error & { cause?: Error }
+        );
+      expect(error?.cause?.message).toMatch(/requires replacement/);
+      expect(events).toEqual([`collide ${STACK}-Table`]);
+      expect(provider['delete']).not.toHaveBeenCalled();
+    });
+
+    it('--replace keeps the legacy delete-first order and the name, and writes no generation', async () => {
+      load(stateOf({ Table: tableRecord(`${STACK}-Table`, 'pk') }, { stackInstanceId: undefined }));
+      await makeEngine({ replace: true }).deploy(STACK, tableTemplate('id'));
+      expect(events).toEqual([
+        `collide ${STACK}-Table`,
+        `delete ${STACK}-Table`,
+        `create ${STACK}-Table`,
+      ]);
+      const saved = lastSaved();
+      expect(saved.resources['Table']!.physicalId).toBe(`${STACK}-Table`);
+      expect(Object.hasOwn(saved.resources['Table']!, 'nameGeneration')).toBe(false);
+    });
+
+    it('a removal retires nothing', async () => {
+      load(
+        stateOf(
+          {
+            Table: tableRecord(`${STACK}-Table`, 'pk'),
+            Old: tableRecord(`${STACK}-Old`, 'pk'),
+          },
+          { stackInstanceId: undefined }
+        )
+      );
+      await makeEngine().deploy(STACK, tableTemplate('pk'));
+      expect(Object.hasOwn(lastSaved(), 'retiredNameGenerations')).toBe(false);
+    });
+  });
+});

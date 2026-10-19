@@ -229,3 +229,22 @@ describe('state helpers', () => {
     expect(nameGenerationReachedField(record(), 'Queue')).toEqual({});
   });
 });
+
+describe('cdkd import and the name generation', () => {
+  it('keeps the fields on an unchanged physical id, records the reached one otherwise', async () => {
+    const { importedNameGenerationFields } = await import('../../../src/cli/commands/import.js');
+    const prior = record({ nameGeneration: 2, nameGenerationHigh: 3 });
+    expect(importedNameGenerationFields(prior, { logicalId: 'Queue', physicalId: prior.physicalId })).toEqual({
+      nameGeneration: 2,
+      nameGenerationHigh: 3,
+    });
+    expect(importedNameGenerationFields(prior, { logicalId: 'Queue', physicalId: 'other' })).toEqual({
+      nameGenerationHigh: 3,
+    });
+    expect(importedNameGenerationFields(undefined, { logicalId: 'Queue', physicalId: 'x' })).toEqual({});
+    // A row the import repairs contributes nothing, never a refusal.
+    expect(importedNameGenerationFields(null, { logicalId: 'Queue', physicalId: 'x' })).toEqual({});
+    const broken = record({ nameGeneration: -1 });
+    expect(importedNameGenerationFields(broken, { logicalId: 'Queue', physicalId: broken.physicalId })).toEqual({});
+  });
+});

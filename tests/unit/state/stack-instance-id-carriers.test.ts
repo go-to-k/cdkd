@@ -355,3 +355,68 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
     }
   });
 });
+
+/**
+ * go-to-k/cdkd#5064 phase 2: every `ResourceState` a writer builds FIELD BY
+ * FIELD into a resources map states the record's name generation -- carried
+ * (`nameGenerationCarriedFrom`), written for a new resource
+ * (`nameGenerationField`) or rebuilt (`nameGenerationReachedField`, an import
+ * helper). A literal that drops it is silent: the next replacement then asks
+ * for a name an earlier generation already holds. A literal that SPREADS a
+ * record carries the fields already.
+ */
+describe('every field-by-field ResourceState writer states the name generation (go-to-k/cdkd#5064 phase 2)', () => {
+  const sources = new Map<string, string>();
+  for (const path of listTs(SRC)) {
+    sources.set(relative(ROOT, path).split('\\').join('/'), readFileSync(path, 'utf8'));
+  }
+
+  /** `<x>Resources[...] = {` / `resources[...] = {` literals naming a physical id. */
+  function recordWritersIn(file: string, text: string): Builder[] {
+    const pairs = bracePairs(text);
+    const out: Builder[] = [];
+    for (const m of text.matchAll(/(?<![.\w])(?:[a-z][A-Za-z]*Resources|resources)\[[^\]\n]+\]\s*=\s*\{/g)) {
+      const open = m.index + m[0].length - 1;
+      if (!pairs.has(open)) continue;
+      const topLevel = topLevelOf(text, pairs, open);
+      if (!/\bphysicalId\s*:/.test(topLevel)) continue;
+      out.push({
+        file,
+        line: text.slice(0, open).split('\n').length,
+        text: text.slice(open, pairs.get(open)! + 1),
+        topLevel,
+      });
+    }
+    return out;
+  }
+  /** Opens by spreading a record, or names a generation helper or field. */
+  const states = (b: Builder): boolean =>
+    /^\{\s*\.\.\.[A-Za-z_$][\w$.]*\s*,/.test(b.topLevel) || /[nN]ameGeneration/.test(b.text);
+
+  it('the scanner flags a literal without the generation, and passes one with it or a spread', () => {
+    const scan = (text: string) => recordWritersIn('x.ts', text).filter((b) => !states(b));
+    expect(scan(`stateResources[id] = {\n  physicalId: p,\n  resourceType: t,\n};\n`)).toHaveLength(1);
+    expect(
+      scan(`stateResources[id] = {\n  physicalId: p,\n  ...nameGenerationField(g),\n};\n`)
+    ).toHaveLength(0);
+    expect(scan(`resources[id] = {\n  ...record,\n  physicalId: p,\n};\n`)).toHaveLength(0);
+    // `template.Resources[...]` is a template, never a record.
+    expect(recordWritersIn('x.ts', `template.Resources[id] = {\n  physicalId: p,\n};\n`)).toHaveLength(0);
+  });
+
+  it('every such writer in src/ states it', () => {
+    const writers = [...sources].flatMap(([file, text]) => recordWritersIn(file, text));
+    const missing = writers.filter((b) => !states(b)).map((b) => `${b.file}:${b.line}`);
+    expect(missing).toEqual([]);
+    expect(writers.length).toBeGreaterThanOrEqual(4);
+    const files = new Set(writers.map((b) => b.file));
+    for (const file of [
+      'src/deployment/deploy-engine/create.ts',
+      'src/deployment/deploy-engine/update-replace.ts',
+      'src/deployment/deploy-engine/update-in-place.ts',
+      'src/cli/commands/import.ts',
+    ]) {
+      expect(files).toContain(file);
+    }
+  });
+});
