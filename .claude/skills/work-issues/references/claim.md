@@ -11,8 +11,8 @@ its `<ref>` names the branch or worktree the lane agent will create.
 a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
-Write "the branch §5 will create in `<LANE_TREE>`" and post now — a claim that
-waits for the branch lands after the first edit. Such lanes are SERIAL (§3):
+Post now (the IN-PLACE `<ref>` above) — a claim that waits for the branch
+lands after the first edit. Such lanes are SERIAL (§3):
 claim the top one or the whole set, every lane after the first QUEUED.
 
 ```bash
@@ -56,7 +56,8 @@ Claiming to avoid collision with parallel agents."
 
 Mandatory, BEFORE the first edit.
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
-that list**: beside the fix and its unit test, each EXISTING suite whose
+that list**: beside the fix, its unit test and (user-visible) its
+`changelog.d/entries/` file, each EXISTING suite whose
 assertions the fix changes (`grep -rl '<[dir/]basename, no
 extension>' tests/unit` hits; suites need not mirror `src/`), the fixture §8-c will
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one
