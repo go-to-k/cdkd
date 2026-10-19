@@ -312,6 +312,48 @@ describe('the stack-instance.json sibling (go-to-k/cdkd#5064)', () => {
     });
   });
 
+  describe('readStackInstanceSibling (read only)', () => {
+    it('returns the id an earlier run wrote ahead with one read: no mint, no write, no post-save delete', async () => {
+      const { client, sent } = makeClient({
+        [`GetObjectCommand ${SIBLING_KEY}`]: () => bodyOf(stackInstanceSiblingBody(EARLIER_ID)),
+        [`PutObjectCommand ${STATE_KEY}`]: () => ({ ETag: '"e1"' }),
+      });
+      const backend = backendFor(client);
+      expect(await backend.readStackInstanceSibling(STACK, REGION)).toBe(EARLIER_ID);
+      expect(sent.map((c) => c.name)).toEqual(['GetObjectCommand']);
+      // Not marked for the first save's delete: only the deploy's own resolve does that.
+      await backend.saveState(STACK, REGION, state(EARLIER_ID));
+      expect(callsTo(sent, 'DeleteObjectCommand', SIBLING_KEY)).toHaveLength(0);
+      expect(everythingSaid()).not.toContain(EARLIER_ID);
+    });
+
+    it('returns undefined with no sibling, minting nothing', async () => {
+      const { client, sent } = makeClient({ [`GetObjectCommand ${SIBLING_KEY}`]: noSuchKey });
+      expect(await backendFor(client).readStackInstanceSibling(STACK, REGION)).toBeUndefined();
+      expect(sent.map((c) => c.name)).toEqual(['GetObjectCommand']);
+    });
+
+    it('refuses a sibling this binary cannot read, or cannot read at all, naming the stack', async () => {
+      for (const handler of [
+        () => bodyOf('{"stackInstanceVersion":99,"stackInstanceId":"x"}'),
+        () => {
+          throw Object.assign(new Error('Access Denied'), {
+            name: 'AccessDenied',
+            $metadata: { httpStatusCode: 403 },
+          });
+        },
+      ]) {
+        const { client, sent } = makeClient({ [`GetObjectCommand ${SIBLING_KEY}`]: handler });
+        const caught = await backendFor(client)
+          .readStackInstanceSibling(STACK, REGION)
+          .catch((e: unknown) => e);
+        expect(caught).toBeInstanceOf(StateError);
+        expect((caught as Error).message).toContain('write-ahead stack instance id of stack');
+        expect(sent.map((c) => c.name)).toEqual(['GetObjectCommand']);
+      }
+    });
+  });
+
   describe('the sibling after the first state save', () => {
     it('is deleted, and its versions purged, by the first save that carries its id', async () => {
       const { client, sent } = makeClient({

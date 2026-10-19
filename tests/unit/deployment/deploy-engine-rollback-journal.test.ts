@@ -997,6 +997,49 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(provider.create).toHaveBeenCalled();
     });
 
+    // go-to-k/cdkd#5064: a first deploy re-run after a crash has no record;
+    // its id is only in the write-ahead sibling, read WITHOUT minting, so the
+    // earlier attempt's suffixed name still reads as a name.
+    it('with no record yet, the write-ahead id makes a suffixed name read as generated', async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      const backend = (
+        engine as unknown as {
+          stateBackend: {
+            getState: ReturnType<typeof vi.fn>;
+            readStackInstanceSibling?: ReturnType<typeof vi.fn>;
+            stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
+          };
+        }
+      ).stateBackend;
+      backend.getState.mockResolvedValue(null);
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(STACK_INSTANCE_ID);
+      backend.stackInstanceIdForFirstWrite.mockResolvedValue(STACK_INSTANCE_ID);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).toHaveBeenCalledTimes(1);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const settled = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(settled).toMatchObject({ physicalId: suffixedIdentifier });
+      expect(settled).not.toHaveProperty('createdIdentifierUnique');
+    });
+
+    it('a deploy with a record never reads the write-ahead sibling', async () => {
+      const { engine } = resumingEngine({});
+      const backend = (
+        engine as unknown as { stateBackend: { readStackInstanceSibling?: ReturnType<typeof vi.fn> } }
+      ).stateBackend;
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(undefined);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).not.toHaveBeenCalled();
+    });
+
     it.each([
       ['an ARN embedding it', 'arn:aws:s3:::my-bucket'],
       ['a composite embedding it', 'parent-id|my-bucket'],

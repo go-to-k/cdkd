@@ -503,6 +503,64 @@ describe('resolvePendingCloudControlRequests (#3252)', () => {
     );
   });
 
+  // go-to-k/cdkd#5064: with no record yet, the id comes from a source the
+  // settle calls ONCE and only when it compares an identifier.
+  it('#5064: reads a lazy stack instance id once, only when an identifier is compared', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const journal = memoryJournal(
+      journalOf(pendingOp('Logs', 't1'), pendingOp('Bus', 't2'), pendingOp('Gone', 't3'))
+    );
+    const identifierUnique = vi.fn().mockResolvedValue(true);
+    const source = vi.fn(() => Promise.resolve<string | undefined>(STACK_INSTANCE_ID));
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: source,
+      identifierUnique,
+      journal,
+      loaded: structuredClone(journal.current()),
+      reader: () =>
+        readerOf({
+          t1: { status: 'succeeded', identifier: 'a' },
+          t2: { status: 'succeeded', identifier: 'b' },
+          t3: { status: 'failed' },
+        }),
+      logger: logger(),
+    });
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(identifierUnique).toHaveBeenCalledTimes(2);
+    for (const call of identifierUnique.mock.calls) {
+      expect(call[0]).toMatchObject({ stackInstanceId: STACK_INSTANCE_ID });
+    }
+
+    // Nothing made: no comparison, no read.
+    const quiet = memoryJournal(journalOf(pendingOp('Gone', 't3')));
+    const unread = vi.fn(() => Promise.resolve<string | undefined>(STACK_INSTANCE_ID));
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: unread,
+      journal: quiet,
+      loaded: structuredClone(quiet.current()),
+      reader: () => readerOf({ t3: { status: 'failed' } }),
+      logger: logger(),
+    });
+    expect(unread).not.toHaveBeenCalled();
+  });
+
+  it('#5064: a lazy source that refuses stops the settle before the journal is rewritten', async () => {
+    const journal = memoryJournal(journalOf(pendingOp('Logs', 't1')));
+    await expect(
+      resolvePendingCloudControlRequests({
+        ...base,
+        stackInstanceId: () => Promise.reject(new Error('sibling unreadable')),
+        journal,
+        loaded: structuredClone(journal.current()),
+        reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'a' } }),
+        logger: logger(),
+      })
+    ).rejects.toThrow('sibling unreadable');
+    expect(journal.writes).toBe(0);
+  });
+
   // go-to-k/cdkd#5064 phase 2: the bound is one past the higher of the op's
   // generation and the record's high-water mark.
   it('#5064 phase 2: forwards one past the highest generation the op or the record names', async () => {

@@ -901,7 +901,13 @@ export async function rollbackCommand(
             command: 'rollback',
             logger,
             stateResources: stateData?.state.resources,
-            stackInstanceId,
+            // No record yet (a first deploy that saved nothing): its id is
+            // only in the write-ahead sibling, read without minting so a
+            // generated name the abandoned create made reads as a name.
+            stackInstanceId:
+              stateData === null
+                ? () => setup.stateBackend.readStackInstanceSibling(stackName, region)
+                : stackInstanceId,
           })
         ) {
           journal = await setup.stateBackend.loadRollbackJournal(stackName, region);

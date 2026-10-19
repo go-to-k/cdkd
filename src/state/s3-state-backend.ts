@@ -2086,19 +2086,7 @@ export class S3StateBackend {
     options: { writeAhead: boolean }
   ): Promise<string> {
     const key = this.getStackInstanceKey(stackName, region);
-    const read = async (): Promise<string | null> => {
-      const body = await this.getRawObject(key);
-      if (body === null) return null;
-      const id = parseStackInstanceSibling(body);
-      if (id === null) {
-        throw new StateError(
-          `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
-            `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json) is in a format this cdkd version ` +
-            'cannot read; upgrade cdkd, or delete that object if it is damaged'
-        );
-      }
-      return id;
-    };
+    const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
     try {
       const existing = await read();
       if (existing !== null) {
@@ -2159,6 +2147,56 @@ export class S3StateBackend {
         `Failed to read or write the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
           `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
           'Nothing was created; re-run once the state bucket can be written.',
+        normalized
+      );
+    }
+  }
+
+  /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
+  private async readSiblingId(
+    key: string,
+    stackName: string,
+    region: string
+  ): Promise<string | null> {
+    const body = await this.getRawObject(key);
+    if (body === null) return null;
+    const id = parseStackInstanceSibling(body);
+    if (id === null) {
+      throw new StateError(
+        `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json) is in a format this cdkd version ` +
+          'cannot read; upgrade cdkd, or delete that object if it is damaged'
+      );
+    }
+    return id;
+  }
+
+  /**
+   * The id a stack's `stack-instance.json` sibling holds, READ ONLY: never
+   * mints, never writes, never marks the sibling for the post-save delete.
+   * For a caller that must RECOGNIZE a first deploy's generated names while
+   * the stack has no `state.json` (the Cloud Control pending-request settle,
+   * go-to-k/cdkd#5064); an ordinary deploy, whose record carries the id, never
+   * calls it. `undefined` when there is no sibling. Throws a `StateError`
+   * naming the stack (never the id) when it cannot be read or holds a body
+   * this binary cannot read.
+   */
+  async readStackInstanceSibling(stackName: string, region: string): Promise<string | undefined> {
+    try {
+      return (
+        (await this.readSiblingId(
+          this.getStackInstanceKey(stackName, region),
+          stackName,
+          region
+        )) ?? undefined
+      );
+    } catch (error) {
+      if (error instanceof StateError) throw error;
+      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
+      throw new StateError(
+        `Failed to read the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
+          'Nothing was changed; re-run once the state bucket can be read.',
         normalized
       );
     }

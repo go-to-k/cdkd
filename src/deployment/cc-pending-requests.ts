@@ -125,9 +125,11 @@ export async function resolvePendingCloudControlRequests(params: {
   /**
    * The stack's instance id (go-to-k/cdkd#5064), from its record: an
    * identifier segment carrying the suffix it derives is a NAME, never an
-   * AWS-minted id. `undefined` for a legacy record or none.
+   * AWS-minted id. `undefined` for a legacy record. A function for a stack
+   * with no record yet (a first deploy's write-ahead id): called at most once,
+   * and only when a settle compares an identifier.
    */
-  stackInstanceId: string | undefined;
+  stackInstanceId: StackInstanceIdSource;
   /**
    * Deploy only: offered each CREATE that completed. Answering `true` keeps
    * the request in the journal for the deploy to RESUME — its CREATE of the
@@ -208,7 +210,7 @@ async function settlePending(
           >
         >
       | undefined;
-    stackInstanceId: string | undefined;
+    stackInstanceId: StackInstanceIdSource;
     resume?: (op: FailedOperation, identifier: string) => boolean;
     identifierUnique?: IdentifierUniqueness;
   },
@@ -218,6 +220,10 @@ async function settlePending(
   const reader = params.reader();
   const isUnique = params.identifierUnique ?? ccIdentifierIsUnique;
   const stackShown = displayStackName(stackName);
+  const source = params.stackInstanceId;
+  let resolvedId: Promise<string | undefined> | undefined;
+  const stackInstanceId = (): Promise<string | undefined> =>
+    (resolvedId ??= typeof source === 'function' ? source() : Promise.resolve(source));
   const settlements = new Map<string, Settlement>();
   const unresolved: string[] = [];
   for (const [token, op] of pending) {
@@ -258,7 +264,7 @@ async function settlePending(
           attemptedProperties: op.attemptedProperties,
           logicalId: op.logicalId,
           stackName,
-          stackInstanceId: params.stackInstanceId,
+          stackInstanceId: await stackInstanceId(),
           // go-to-k/cdkd#5064 phase 2: one past the highest generation the op
           // or the record names. Too many only reads a name as generated, the
           // safe answer here (not unique: the resource is kept).
@@ -381,6 +387,12 @@ function holdsSecretReference(properties: unknown): boolean {
   if (properties === undefined) return false;
   return carriesSecretMask(properties) || JSON.stringify(properties).includes('{{resolve:');
 }
+
+/**
+ * Where a settle reads the stack instance id from: the record's value, or,
+ * for a stack with no record yet, a read of its write-ahead sibling.
+ */
+export type StackInstanceIdSource = string | undefined | (() => Promise<string | undefined>);
 
 /** Decides whether a Cloud Control identifier is unique (see {@link ccIdentifierIsUnique}). */
 export type IdentifierUniqueness = (args: {

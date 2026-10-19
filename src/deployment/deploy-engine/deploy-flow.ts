@@ -438,11 +438,14 @@ export async function doDeployWithPrefetch(
         command: 'deploy',
         logger: engine.logger,
         stateResources: currentState.resources,
-        // Before a first deploy's id is resolved (a re-run after a crash
-        // included, whose id is still in the write-ahead sibling) only the
-        // legacy name shapes are recognized; the sent bag, checked first,
-        // still names what the earlier attempt sent.
-        stackInstanceId: nameScope().stackInstanceId,
+        // Before a first deploy's record exists, a re-run after a crash has
+        // its id only in the write-ahead sibling: read there (never minted),
+        // and only when a request is pending, so the earlier attempt's
+        // generated name reads as a name. An ordinary deploy reads nothing.
+        stackInstanceId:
+          currentStateData?.state === undefined
+            ? () => engine.stateBackend.readStackInstanceSibling(stackName, engine.stackRegion)
+            : nameScope().stackInstanceId,
         // A CREATE that completed is RESUMED when the template still declares
         // its logical id with the type and the journal holds the bag it sent
         // (no secret mask: the create path compares that bag with what it
