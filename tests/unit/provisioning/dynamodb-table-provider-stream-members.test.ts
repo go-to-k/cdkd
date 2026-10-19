@@ -548,7 +548,12 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         mockSend.mockReset();
         const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
         aws.failures.set(command, [notFound()]);
-        await expect(update(desired, previous)).rejects.toThrow('Requested resource not found');
+        // go-to-k/cdkd#2319: the thrown message names the class; AWS's text is
+        // the cause.
+        await expect(update(desired, previous)).rejects.toMatchObject({
+          message: expect.stringContaining('ResourceNotFoundException.'),
+          cause: { message: 'Requested resource not found' },
+        });
         expect(sent(command)).toHaveLength(1);
       }
       const withPolicy = streamBlock('NEW_IMAGE', { ResourcePolicy: MEMBERS.ResourcePolicy });

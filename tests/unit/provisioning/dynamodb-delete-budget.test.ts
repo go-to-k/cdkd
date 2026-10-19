@@ -520,7 +520,14 @@ describe('the DELETE path spends ONE shared allowance (issue #1955)', () => {
         'AWS::DynamoDB::GlobalTable',
         {}
       )
-    ).rejects.toThrow(/Cannot delete table while indexes are being/);
+    ).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class and
+      // restates the condition; AWS's own sentence stays on the `cause`.
+      message: expect.stringMatching(
+        /ResourceInUseException\. .*AWS reports that a global secondary index is still being/
+      ),
+      cause: { message: expect.stringMatching(/Cannot delete table while indexes are being/) },
+    });
 
     // ONE attempt, not `1 + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`.
     expect(deletes).toBe(1);
@@ -541,7 +548,14 @@ describe('the DELETE path spends ONE shared allowance (issue #1955)', () => {
 
     await expect(
       new DynamoDBTableProvider().delete('Orders', 'shared-table', 'AWS::DynamoDB::Table', {})
-    ).rejects.toThrow(/Cannot delete table while indexes are being/);
+    ).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class and
+      // restates the condition; AWS's own sentence stays on the `cause`.
+      message: expect.stringMatching(
+        /ResourceInUseException\. .*AWS reports that a global secondary index is still being/
+      ),
+      cause: { message: expect.stringMatching(/Cannot delete table while indexes are being/) },
+    });
 
     expect(deletes).toBe(1);
   });
@@ -564,7 +578,14 @@ describe('the DELETE path spends ONE shared allowance (issue #1955)', () => {
         'AWS::DynamoDB::GlobalTable',
         {}
       )
-    ).rejects.toThrow(/Cannot delete table while indexes are being/);
+    ).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the thrown (persisted) message names the class and
+      // restates the condition; AWS's own sentence stays on the `cause`.
+      message: expect.stringMatching(
+        /ResourceInUseException\. .*AWS reports that a global secondary index is still being/
+      ),
+      cause: { message: expect.stringMatching(/Cannot delete table while indexes are being/) },
+    });
 
     expect(deletes).toBe(1 + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
   });

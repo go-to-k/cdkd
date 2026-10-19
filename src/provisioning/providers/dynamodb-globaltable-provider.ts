@@ -79,7 +79,12 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
-import { isThrottlingError, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
@@ -88,6 +93,8 @@ import {
   deleteTableWithIndexBusyRetry,
   hasTransitionalIndex,
   waitForIndexesSettled,
+  maskedLogger,
+  relayedIndexBusyDelete,
 } from '../dynamodb-index-busy-delete.js';
 import {
   AUTO_SCALING_TEARDOWN_MAX_RETRIES,
@@ -244,6 +251,11 @@ const DRIFT_STRIPPED_INDEX_MEMBERS: ReadonlyArray<{ listKey: string; member: str
  */
 function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
   return maskDeep(value, maskSecrets);
+}
+
+/** `text` closed as a sentence, for a wrap that continues after it. */
+function sentence(text: string): string {
+  return text.endsWith('.') ? text : `${text}.`;
 }
 
 export class DynamoDBGlobalTableProvider implements ResourceProvider {
@@ -508,19 +520,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * Wrap a failure that RELAYS AWS text, masked through `log`: the shared
-   * `wrapMaskedAwsError` stamps `markRedactedCause` when the mask changed the
-   * text, so retry classification reads the raw cause chain (the #4244 class).
-   * A provider-local factory so the update-wrap coverage scanner sees the
-   * `ProvisioningError` it returns. Never for a cdkd-authored refusal, which
-   * must not be stamped.
+   * Wrap a caught failure, masked through `log`. A provider-local factory so
+   * the update-wrap coverage scanner sees the `ProvisioningError` it returns.
+   * A catch that only ever sees a cdkd-authored refusal builds its own
+   * `ProvisioningError` instead; a catch-all that can see both (the deletes,
+   * whose try also runs cdkd's own waits) passes a cdkd-authored error
+   * through the masked pass-through below.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug`, masked both raw
+   * and as the finished line. The wrap is stamped `markRedactedCause`, so
+   * retry classification reads the withheld text on the `cause` chain. An
+   * "already exists" and an index-busy refusal are restated
+   * ({@link relayedNameCollision}, {@link relayedIndexBusyDelete}). A
+   * cdkd-authored or transport error keeps the masked pass-through of the
+   * shared `wrapMaskedAwsError`, which stamps when the mask changed the text
+   * (the #4244 class); a non-`Error` throw keeps its masked text, unstamped.
+   * The delete checks `ResourceNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(log.mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(log.mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    return markRedactedCause(
+      build(
+        `${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}${relayedIndexBusyDelete(
+          failure.detail
+        )}`
+      )
+    );
   }
 
   /**
@@ -3922,7 +3960,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 ttlErr,
                 (text) =>
                   new ProvisioningError(
-                    `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${text}. ` +
+                    `AWS rejected TimeToLive update on ${log.value(physicalId)}: ${sentence(text)} ` +
                       `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
                       `wait and redeploy, or keep the previous TTL state in this deploy.`,
                     resourceType,
@@ -5012,6 +5050,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // go-to-k/cdkd#2007: the table name can be secret-derived. The name is
     // masked as a VALUE too, so one below the substring floor is caught.
     const deleteMask: SecretMasker = context?.maskSecrets ?? ((text: string) => text);
+    // The sinks the two thrown wraps below route AWS's withheld text through.
+    const deleteLog = createMaskedLogSinks(this.logger, deleteMask);
+    const loopLogger = maskedLogger(this.logger, context?.maskSecrets, physicalId);
     const shownTable = deleteMask(physicalId);
     this.logger.debug(deleteMask(`Deleting DynamoDB GlobalTable ${logicalId}: ${shownTable}`));
 
@@ -5287,22 +5328,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // describe failure that did not happen. That is the exact double-wrap the
       // comment below already claims was fixed for the replica case.
       if (isInterruptedWaitError(describeErr)) throw describeErr;
-      // `.detail` below is deliberate, against `aws-failure-text.ts`'s note
-      // that `detail` is for `logger.debug` only: this arm THROWS the text, so
-      // it reaches the durable events store. It stays `.detail` because
-      // `destroy-runner.ts` substring-matches the same message for
-      // already-deleted detection, which `.summary` would delete. The
-      // disclosure half of that trade belongs to issue go-to-k/cdkd#2319, which
-      // owns every thrown site interpolating an AWS failure into a persisted
-      // error, rather than to go-to-k/cdkd#3341.
+      // An AWS-authored failure is reduced to its class (go-to-k/cdkd#2319):
+      // this arm THROWS, so the text reaches the durable events store. The
+      // typed RNF guard below returns before any wrap. `destroy-runner.ts`'s
+      // already-deleted substring match still sees a typed not-found raised
+      // inside the replica teardown, since the reduced text names the class
+      // (`...NotFoundException. Re-run with --verbose ...`); only a not-found
+      // stated in AWS's prose alone stops reading as already deleted, which
+      // errs toward keeping the state row.
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
-        throw new ProvisioningError(
-          `Failed to describe DynamoDB GlobalTable ${logicalId} before delete: ${describeAwsFailure(describeErr).detail}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
+        throw this.wrapMaskedError(
+          deleteLog,
+          describeErr,
+          (text) =>
+            new ProvisioningError(
+              `Failed to describe DynamoDB GlobalTable ${logicalId} before delete: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
       // RNF on the pre-delete DescribeTable — table already gone; the
@@ -5355,7 +5401,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // the re-arm below, and the derivation on
         // `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`.
         maxRetries: GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
-        logger: this.logger,
+        // go-to-k/cdkd#2319: `withRetry`'s debug line quotes AWS's raw
+        // message, which echoes the table name.
+        logger: loopLogger,
         deleteTable: async () => {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
           // AWS TOOK the delete. Nothing after this line may put the guard back
@@ -5418,11 +5466,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // the deadline's generic one.
         shouldKeepRetrying: () => {
           if (!budget.isExhausted()) return true;
-          this.logger.warn(
+          loopLogger.warn(
             `DynamoDB GlobalTable ${logicalId}: giving up the index-busy DeleteTable retry on ` +
               `${physicalId} — the delete path has spent its whole ` +
-              `${Math.round(budget.totalMs / 60_000)}-minute budget. AWS's own message follows; ` +
-              `re-running the destroy succeeds once the index is ACTIVE.`
+              `${Math.round(budget.totalMs / 60_000)}-minute budget, so the destroy fails on ` +
+              `AWS's refusal; re-running it succeeds once the index is ACTIVE.`
           );
           return false;
         },
@@ -5492,12 +5540,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // rather than start a fresh one. That is the whole compounding term of
       // issue #1955.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DynamoDB GlobalTable ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        deleteLog,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DynamoDB GlobalTable ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -6843,12 +6896,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       maskSecrets?: SecretMasker;
     }
   ): Promise<void> {
-    const base = opts?.maskSecrets ?? ((text: string) => text);
-    // The name masked as a VALUE first, so one below the masker's substring
-    // floor is caught too, then the whole line (AWS text can quote it).
-    const maskedName = base(tableName);
-    const mask = (text: string): string =>
-      base(maskedName === tableName ? text : text.split(tableName).join(maskedName));
     // The LOOP lives in `../dynamodb-index-busy-delete.ts` because the sibling
     // `AWS::DynamoDB::Table` provider needs the identical wait to re-arm its
     // own index-busy delete retry (issue #1931), and the tolerances it encodes
@@ -6861,12 +6908,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     await waitForIndexesSettled({
       tableName,
       logicalId,
-      logger: {
-        debug: (message: string) => this.logger.debug(mask(message)),
-        info: (message: string) => this.logger.info(mask(message)),
-        warn: (message: string) => this.logger.warn(mask(message)),
-        error: (message: string) => this.logger.error(mask(message)),
-      },
+      // The name masked as a VALUE first, so one below the masker's substring
+      // floor is caught too, then the whole line (AWS text can quote it).
+      logger: maskedLogger(this.logger, opts?.maskSecrets, tableName),
       describeTable: () =>
         this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName })),
       // The cap is the SMALLER of this caller's own constant and what the

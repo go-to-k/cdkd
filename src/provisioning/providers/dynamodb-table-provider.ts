@@ -98,6 +98,8 @@ import {
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
   deleteTableWithIndexBusyRetry,
+  maskedLogger,
+  relayedIndexBusyDelete,
   waitForIndexesSettled,
 } from '../dynamodb-index-busy-delete.js';
 import {
@@ -120,6 +122,8 @@ import {
   isAmbiguousOutcomeError,
   isThrottlingError,
   isTransientServerError,
+  markRedactedCause,
+  relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
@@ -1701,6 +1705,44 @@ export class DynamoDBTableProvider implements ResourceProvider {
   /** The credential half of the `AwsClients` `dynamoDBClient` came from (#4639). */
   private readonly credentialConfig: CredentialConfig;
   private logger = getLogger().child('DynamoDBTableProvider');
+
+  /**
+   * The failure wrap the create / update / delete catches build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug`, masked both raw
+   * and as the finished line, since AWS can echo a resolved value back. The
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" and an index-busy
+   * refusal are restated ({@link relayedNameCollision},
+   * {@link relayedIndexBusyDelete}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text, as in the S3 Tables provider's wrap
+   * (go-to-k/cdkd#5059); the deploy engine masks a thrown message. The delete
+   * checks `ResourceNotFoundException` by type before it wraps, so no "already
+   * deleted" reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: SecretMasker | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(
+      build(
+        `${m(failure.summary)}${relayedNameCollision(failure.detail)}${relayedIndexBusyDelete(
+          failure.detail
+        )}`
+      )
+    );
+  }
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::DynamoDB::Table',
@@ -2229,15 +2271,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
         markAuxiliaryFailure(error, logicalId);
       }
+      const cause = error instanceof Error ? error : undefined;
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              tableName,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              maskSecrets,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DynamoDB table ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  tableName,
+                  cause
+                )
             );
       // go-to-k/cdkd#4583: the rollback DeleteTable failed, so the table this
       // call created is left behind — let `rollback --revert-failed` delete it.
@@ -3727,12 +3775,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DynamoDB table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3941,6 +3994,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // acquired from the registry so a re-entry after a throttle CONTINUES this
     // clock rather than restarting it — see the field's own note and
     // `./dynamodb-delete-budget.ts`.
+    // The index-busy loop's sink (go-to-k/cdkd#2319): `withRetry`'s debug line
+    // quotes AWS's raw message, which echoes the table name.
+    const loopLogger = maskedLogger(this.logger, context?.maskSecrets, physicalId);
     const budget = this.deleteBudgets.acquire(
       deleteBudgetKey(physicalId, context?.expectedRegion),
       resolveDynamoDbDeleteBudgetMs(),
@@ -4059,7 +4115,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // this path — whose only pre-cost is the ACTIVE wait above — carries 14
         // (issue #1950; the derivation for both is on the constant).
         maxRetries: TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
-        logger: this.logger,
+        logger: loopLogger,
         deleteTable: async () => {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
           // AWS TOOK the delete. Nothing after this line may put the guard back
@@ -4101,7 +4157,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           waitForIndexesSettled({
             tableName: physicalId,
             logicalId,
-            logger: this.logger,
+            logger: loopLogger,
             describeTable: () =>
               this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId })),
             // The smaller of this loop's own re-arm cap and what the shared
@@ -4121,11 +4177,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // one, with nothing still polling behind the failed run.
         shouldKeepRetrying: () => {
           if (!budget.isExhausted()) return true;
-          this.logger.warn(
+          loopLogger.warn(
             `DynamoDB table ${logicalId}: giving up the index-busy DeleteTable retry on ` +
               `${physicalId} — the delete path has spent its whole ` +
-              `${Math.round(budget.totalMs / 60_000)}-minute budget. AWS's own message follows; ` +
-              `re-running the destroy succeeds once the index is ACTIVE.`
+              `${Math.round(budget.totalMs / 60_000)}-minute budget, so the destroy fails on ` +
+              `AWS's refusal; re-running it succeeds once the index is ACTIVE.`
           );
           return false;
         },
@@ -4185,12 +4241,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // rather than start a fresh one. That is the compounding term of issue
       // #1955.
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DynamoDB table ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DynamoDB table ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

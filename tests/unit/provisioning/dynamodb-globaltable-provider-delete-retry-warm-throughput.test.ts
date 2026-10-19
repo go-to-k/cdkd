@@ -97,6 +97,7 @@ import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
 } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 // The two WarmThroughput RULES live in a module both DynamoDB providers read,
 // so `AWS::DynamoDB::Table` (issue #1808) and `AWS::DynamoDB::GlobalTable`
 // (issue #1857) cannot answer the same question differently. The RULE is
@@ -253,10 +254,13 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
     // and after 9 sends.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, terminalInUseError);
 
-    await expect(provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
-      `Failed to delete DynamoDB GlobalTable Warm: Attempt to change a resource which is ` +
-        `still in use: Table is being created: ${TABLE_NAME}`
-    );
+    await expect(provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the class, never AWS's text, and no index-busy
+      // restatement for a conflict that is not one; AWS's text is the cause.
+      message: `Failed to delete DynamoDB GlobalTable Warm: ResourceInUseException. ${VERBOSE_POINTER}`,
+      cause: { message: expect.stringContaining('Table is being created') },
+    });
+
     expect(stub.attempts()).toBe(1);
   });
 
@@ -265,10 +269,18 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
     // real AWS sentence rather than a cdkd-invented timeout message.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, indexBusyError);
 
-    await expect(provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
-      'Failed to delete DynamoDB GlobalTable Warm: Attempt to change a resource which is ' +
-        'still in use: Cannot delete table while indexes are being created, updated, or deleted.'
-    );
+    await expect(provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the class plus cdkd's restatement of the condition
+      // in the thrown (persisted) message; AWS's own sentence is the cause.
+      message:
+        `Failed to delete DynamoDB GlobalTable Warm: ResourceInUseException. ${VERBOSE_POINTER} ` +
+        'AWS reports that a global secondary index is still being created, updated or ' +
+        'deleted; re-running the destroy succeeds once the index is ACTIVE.',
+      cause: {
+        message: expect.stringContaining('Cannot delete table while indexes are being created'),
+      },
+    });
+
     // `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES` retries after the first
     // attempt. Derived from the constant rather than written out: issue #1950
     // raised the SIBLING type to 14 and deliberately left this one at 8, so a
