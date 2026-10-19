@@ -338,13 +338,28 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
         Tg: { physicalId: arnOf(tgName(0)), resourceType: TG, properties: tg(80), attributes: {}, dependencies: [] },
       })
     );
-    await expect(
-      makeEngine().deploy(STACK, { Resources: { Tg: { Type: TG, Properties: tg(8080) } } } as unknown as CloudFormationTemplate)
-    ).rejects.toThrow();
+    const error = await makeEngine({ noRollback: true })
+      .deploy(STACK, { Resources: { Tg: { Type: TG, Properties: tg(8080) } } } as unknown as CloudFormationTemplate)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    // The guard's own refusal, not an early failure of the stubs.
+    const codes: unknown[] = [];
+    for (let c: unknown = error; c != null; c = (c as { cause?: unknown }).cause)
+      codes.push((c as { code?: unknown }).code);
+    expect(codes).toContain('GENERATED_NAME_HELD');
     expect(provider['create']).not.toHaveBeenCalled();
     const saved = lastSaved().resources['Tg']!;
     expect(saved.physicalId).toBe(arnOf(tgName(0)));
+    expect(saved.nameGeneration).toBeUndefined();
     expect(saved.nameGenerationHigh).toBeUndefined();
+    const segment = stateBackend['appendRollbackJournalSegment']!.mock.calls.at(-1)![2] as {
+      failedOperations?: Array<{ logicalId: string; nameGeneration?: number }>;
+    };
+    const failed = segment.failedOperations?.find((o) => o.logicalId === 'Tg');
+    expect(failed).toBeDefined();
+    expect(failed).not.toHaveProperty('nameGeneration');
   });
 
   it('an in-place update of a later generation keeps its fields; the next replacement goes past them', async () => {
