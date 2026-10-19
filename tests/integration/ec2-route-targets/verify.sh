@@ -213,7 +213,9 @@ for v in "${RTB_ID}" "${PL_ID}" "${TGW_ID}" "${IGW_ID}"; do
 done
 
 # Bounded re-read: DescribeRouteTables is eventually consistent right after
-# CreateRoute, so one read can miss a route the deploy just created.
+# CreateRoute, so one read can miss a route the deploy just created. Both
+# Phase 1 routes are read this way before the drift read-back below, which
+# reads the same table through cdkd.
 PL_ROUTE_TARGET_P1=""
 for _ in 1 2 3 4 5 6; do
   PL_ROUTE_TARGET_P1="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
@@ -227,8 +229,13 @@ if [ "${PL_ROUTE_TARGET_P1}" != "${IGW_ID}" ]; then
 fi
 echo "    prefix-list route present, targeting the IGW"
 
-TGW_ROUTE_TARGET="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
-  --query "RouteTables[0].Routes[?DestinationCidrBlock=='10.200.0.0/16'].TransitGatewayId | [0]" --output text)"
+TGW_ROUTE_TARGET=""
+for _ in 1 2 3 4 5 6; do
+  TGW_ROUTE_TARGET="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='10.200.0.0/16'].TransitGatewayId | [0]" --output text)"
+  [ "${TGW_ROUTE_TARGET}" = "${TGW_ID}" ] && break
+  sleep 5
+done
 if [ "${TGW_ROUTE_TARGET}" != "${TGW_ID}" ]; then
   echo "FAIL: CIDR route TransitGatewayId expected ${TGW_ID}, got '${TGW_ROUTE_TARGET}'" >&2
   exit 1
