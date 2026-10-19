@@ -26,7 +26,8 @@ state prefix appended to `<scratch>/integ-<PR>.live` at launch for a finisher.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
-  merge from the main tree consults the WRONG store (go-to-k/cdkd#2363). Its
+  merge from the main tree consults the WRONG store (go-to-k/cdkd#2363); read
+  it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`. Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
   integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
@@ -212,7 +213,7 @@ git fetch origin \
   && git branch -D <each branch this run created in THIS tree>
 ```
 
-**AS-IS is the whole rule for `<LAUNCH_BRANCH>`: RESTORE, never ADJUST.** **This step runs LAST, not per-lane**:
+**This step runs LAST, not per-lane**:
 §10-d branches in this tree.
 
 ### Release the claims
