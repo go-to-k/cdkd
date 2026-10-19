@@ -486,7 +486,7 @@ LAYER0=$(record '.provisionedBy')
 # An IAM role's physical id IS its name, on both routes and in state.
 SDK_NAME=$(record '.physicalId')
 [ -n "${SDK_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 1" >&2; exit 1; }
-printf '%s' "${SDK_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the SDK route did not mint a cdkd-generated name (got '${SDK_NAME}', expected ${STACK}-Role-<12 hex>)" >&2; exit 1; }
+grep -qE "${GENERATED_NAME_PATTERN}" <<<"${SDK_NAME}" || { echo "FAIL: the SDK route did not mint a cdkd-generated name (got '${SDK_NAME}', expected ${STACK}-Role-<12 hex>)" >&2; exit 1; }
 SUFFIX_G0="$(state_name_suffix "${LOGICAL_ID}" 0)" || { echo "FAIL: could not derive generation 0's suffix from state.json" >&2; exit 1; }
 [ "${SDK_NAME}" = "${STACK}-Role-${SUFFIX_G0}" ] || { echo "FAIL: the SDK route minted '${SDK_NAME}', not generation 0's '${STACK}-Role-${SUFFIX_G0}'" >&2; exit 1; }
 
@@ -537,7 +537,7 @@ RECORDED_PATH=$(record '.properties.Path // empty')
 
 CC_NAME=$(record '.physicalId')
 [ -n "${CC_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 2" >&2; exit 1; }
-printf '%s' "${CC_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the Cloud Control re-create did not carry a cdkd-generated name (got '${CC_NAME}', expected ${STACK}-Role-<12 hex>). preparePropertiesForCcApi should have filled it." >&2; exit 1; }
+grep -qE "${GENERATED_NAME_PATTERN}" <<<"${CC_NAME}" || { echo "FAIL: the Cloud Control re-create did not carry a cdkd-generated name (got '${CC_NAME}', expected ${STACK}-Role-<12 hex>). preparePropertiesForCcApi should have filled it." >&2; exit 1; }
 # The replacement took generation 1 (go-to-k/cdkd#5064), so the name moved; the
 # Cloud Control route must mint it by the SDK route's formula — the parity
 # #3199 extends to the rollback replay.

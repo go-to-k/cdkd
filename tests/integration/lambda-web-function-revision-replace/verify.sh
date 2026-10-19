@@ -435,7 +435,10 @@ echo "==> Phase 1c: deploy v1 again with this build, no change (heals the ${PREF
 # only the heal can answer the GetAtt. Its first write of this stack (v13).
 OUT="$(deploy "${V1}")" || { echo "${OUT}"; echo "FAIL: phase 1c deploy" >&2; exit 1; }
 echo "${OUT}"
-if sed $'s/\x1b\\[[0-9;]*m//g' <<<"${OUT}" | grep -qE 'RegionalEndpoint \(AWS::Lambda::WebFunctionEndpoint\) (updated|replaced|created)'; then
+# Stripped into a variable first: `grep -q` exiting on a match would give the
+# feeding `sed` SIGPIPE, and `pipefail` would turn the match into a miss.
+OUT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${OUT}")"
+if grep -qE 'RegionalEndpoint \(AWS::Lambda::WebFunctionEndpoint\) (updated|replaced|created)' <<<"${OUT_PLAIN}"; then
   echo "FAIL: phase 1c: the deploy wrote the PerRegion endpoint, so its record no longer needs the heal" >&2
   exit 1
 fi
@@ -548,7 +551,8 @@ echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare (unsupported or
 # skipped), so require every resource of the stack to have been compared: the
 # role, the function, the revision, the two endpoints and the two parameters.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(7 resources checked, 0 unsupported)'; then
+DRIFT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}")"
+if ! grep -qF '(7 resources checked, 0 unsupported)' <<<"${DRIFT_PLAIN}"; then
   echo "FAIL: drift did not compare all 7 resources -- expected '(7 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
