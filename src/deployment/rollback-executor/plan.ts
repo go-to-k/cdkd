@@ -208,7 +208,7 @@ export function sameIdRecreated(op: CompletedOperation): boolean {
  * an unchanged key reads the wrong way.
  *
  * Without a changed key to read (no journaled forward bag, or equal bags
- * holding a redacted value, behind which the change may hide) the record cannot
+ * holding the mask, behind which the change may hide) the record cannot
  * tell a reversed op from a pending one: `'undecidable'`, which the
  * reverse-replacement arm refuses before any write
  * ({@link sameIdReversalUndecidable}) rather than skip or delete again.
@@ -239,13 +239,15 @@ function sameIdReversalDone(
 }
 
 /**
- * go-to-k/cdkd#5096: does a recorded bag hold a value that may stand for a
- * secret it does not show -- the redaction mask, or a `{{resolve:...}}`
- * reference whose secret may have changed behind the same text?
+ * go-to-k/cdkd#5096: does a recorded bag hold the redaction mask, behind which
+ * a changed secret (a `NoEcho` value) is invisible? Not a `{{resolve:...}}`
+ * reference: the diff compares its text, so an unchanged reference forced no
+ * replacement, and the replay re-resolves it, so reversing again changes
+ * nothing. The mask may be part of a value.
  */
 function holdsRedactedLeaf(value: unknown): boolean {
   if (typeof value === 'string') {
-    return value.includes(SECRET_MASK) || value.includes('{{resolve:');
+    return value.includes(SECRET_MASK);
   }
   if (value === null || typeof value !== 'object') return false;
   return Object.values(value).some(holdsRedactedLeaf);

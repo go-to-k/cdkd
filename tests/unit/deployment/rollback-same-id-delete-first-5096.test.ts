@@ -245,6 +245,8 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     for (const [o, record] of [
       [secretOnly, { ...rec('pk'), properties: masked }],
       [unjournaled, rec('id')],
+      // A record equal to the old one decides nothing without the forward bag.
+      [unjournaled, rec('pk')],
     ] as const) {
       // Not read as already reversed...
       expect(classifyRollbackOp(o, { Table: record }, new Set())).toBe('reverse-replacement');
@@ -279,13 +281,18 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     expect(sameIdReversalUndecidable(op({ oldDeletedBeforeCreate: false, properties: undefined }), rec('id'))).toBe(false);
   });
 
-  it('a reference both bags spell the same way is undecidable too; equal plain bags are not', () => {
-    // A `{{resolve:...}}` reference: the secret behind it may have changed.
+  it('a reference both bags spell the same way decides like a plain value; equal plain bags too', () => {
+    // A `{{resolve:...}}` reference: an unchanged one forced no replacement and
+    // the replay re-resolves it, so the record decides.
     const ref = { ...keyed('pk'), SSESpecification: { KMSMasterKeyId: '{{resolve:ssm:k}}' } };
     const byRef = op({ properties: ref, previousState: { ...rec('pk'), properties: ref } });
     const refRecord = { ...rec('pk'), properties: ref };
-    expect(sameIdReversalUndecidable(byRef, refRecord)).toBe(true);
-    expect(classifyRollbackOp(byRef, { Table: refRecord }, new Set())).toBe('reverse-replacement');
+    expect(sameIdReversalUndecidable(byRef, refRecord)).toBe(false);
+    expect(classifyRollbackOp(byRef, { Table: refRecord }, new Set())).toBe('skip-already-done');
+    // The mask inside a longer value hides a change all the same.
+    const partial = { ...keyed('pk'), SSESpecification: { KMSMasterKeyId: 'alias/***-key' } };
+    const byPartial = op({ properties: partial, previousState: { ...rec('pk'), properties: partial } });
+    expect(sameIdReversalUndecidable(byPartial, { ...rec('pk'), properties: partial })).toBe(true);
     // Equal bags with nothing redacted (a child re-created with its re-created
     // parent): no property changed, so the record decides.
     const plain = op({ properties: keyed('pk') });

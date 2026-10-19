@@ -124,9 +124,9 @@ function refuseSameIdParentReversal(s: ReplayOpScope): void {
 
 /**
  * go-to-k/cdkd#5096: a same-id re-create whose record cannot say whether a
- * prior run already reversed it ({@link sameIdReversalUndecidable}): every key
- * the forward changed is masked the same way on both sides, or the journal
- * holds no forward bag. Reversing it again deletes what may be the restored
+ * prior run already reversed it ({@link sameIdReversalUndecidable}): its bags
+ * read the same before and after and hold the mask, or the journal holds no
+ * forward bag. Reversing it again deletes what may be the restored
  * resource, and skipping it may leave the new one under the old record, so
  * it refuses before anything is deleted.
  */
@@ -140,8 +140,9 @@ function refuseUndecidableSameIdReversal(s: ReplayOpScope): void {
         `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
           `(${refusalResourceType(op.resourceType)}): ` +
           `the deploy deleted it and re-created it under the same physical id, and its state ` +
-          `record cannot tell whether an earlier rollback already reversed it (the properties the ` +
-          `deploy changed are redacted the same way in both records, or were not journaled). Nothing was deleted. ` +
+          `record cannot tell whether an earlier rollback already reversed it (its recorded ` +
+          `properties read the same before and after the deploy and hold a redacted value, which ` +
+          `may hide what changed, or the deploy's properties were not journaled). Nothing was deleted. ` +
           `The journal is kept: fix forward by deploying the previous version of the template ` +
           `with cdkd deploy --replace` +
           (remedy.offered
