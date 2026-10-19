@@ -247,6 +247,15 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
         deletionPolicy: 'Retain',
         provisionedBy: 'sdk',
       },
+      // A name-adopting type made through Cloud Control: never taken back,
+      // so never recorded (an entry licenses by type and id alone).
+      CcQueue: {
+        physicalId: 'https://q/App-CcQueue',
+        resourceType: 'AWS::SQS::Queue',
+        properties: {},
+        deletionPolicy: 'Retain',
+        provisionedBy: 'cc-api',
+      },
     } as unknown as StackState['resources'],
   });
 
@@ -257,7 +266,8 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, unknown[]];
     // Every kept resource under a generated name, a Role included
     // (go-to-k/cdkd#5064: the next lifetime's first deploy names `cdkd import`
-    // for it); not the explicitly named bucket, which keeps its name.
+    // for it); not the explicitly named bucket, which keeps its name, nor
+    // the Cloud Control queue, which no create takes back.
     expect(entries).toEqual([
       { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
       { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },

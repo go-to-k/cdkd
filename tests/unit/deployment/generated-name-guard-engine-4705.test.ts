@@ -831,6 +831,19 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(notes[0]).toContain("adopt it with 'cdkd import'");
     });
 
+    it('names cdkd import for a kept resource of a type no create adopts (an IAM role)', async () => {
+      const kept = { logicalId: 'KeptRole', resourceType: 'AWS::IAM::Role', physicalId: 'App-KeptRole' };
+      const { engine, provider } = buildEngine({ retained: [kept] });
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      const notes = warned()
+        .slice(before)
+        .filter((w) => w.includes('kept 1 resource(s)'));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+    });
+
     it('warns about nothing kept: an empty record, or a stack that has one', async () => {
       const before = warned().length;
       const empty = buildEngine({ retained: [] });

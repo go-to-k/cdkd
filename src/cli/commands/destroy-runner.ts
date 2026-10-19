@@ -40,7 +40,7 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
 import {
-  keptUnderGeneratedName,
+  keptForRetainedRecord,
   recordRetainedForReadoption,
 } from '../../deployment/retained-readoption.js';
 import type { LockManager } from '../../state/lock-manager.js';
@@ -2109,7 +2109,7 @@ async function destroyStackInRegion(
             // takes back by its generated name is recorded for that create;
             // go-to-k/cdkd#5064: every kept generated-name resource is, so the
             // next lifetime's first deploy can name `cdkd import` for it.
-            if (keptUnderGeneratedName(resource)) {
+            if (keptForRetainedRecord(resource)) {
               retainedForReadoption.push({
                 logicalId,
                 resourceType: resource.resourceType,

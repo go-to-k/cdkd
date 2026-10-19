@@ -15,20 +15,33 @@ import { displayStackName, safeMsg } from '../utils/display-safe.js';
 
 /**
  * go-to-k/cdkd#5064: whether a kept resource holds a cdkd-generated name -- its
- * record carries no template name -- with a physical id. A destroy records
- * every such resource: the next deploy starts a new lifetime whose names
- * differ, creates beside it and names `cdkd import` for it. Only a
- * {@link keptForReadoption} entry licenses anything (the generated-name guard
- * asks for name-adopting types alone); any other entry only feeds that
- * warning.
+ * record carries no template name -- with a physical id.
  */
-export function keptUnderGeneratedName(resource: ResourceState): resource is ResourceState & {
+function keptUnderGeneratedName(resource: ResourceState): resource is ResourceState & {
   physicalId: string;
 } {
   if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
   const property = explicitNamePropertyFor(resource.resourceType);
   const properties = resource.properties as Record<string, unknown> | undefined;
   return property === undefined || !properties?.[property];
+}
+
+/**
+ * go-to-k/cdkd#5064: whether a destroy records a kept resource in
+ * `retained.json`. The next deploy starts a new lifetime whose names differ,
+ * creates beside every kept generated-name resource and names `cdkd import`
+ * for it. An entry licenses its holder by type and physical id alone (the
+ * generated-name guard reads no route), so a name-adopting type is recorded
+ * only when {@link keptForReadoption} would take it back; a type no create
+ * adopts by name can license nothing and only feeds that warning.
+ */
+export function keptForRetainedRecord(resource: ResourceState): resource is ResourceState & {
+  physicalId: string;
+} {
+  if (keptForReadoption(resource)) return true;
+  return (
+    !replacementCreateAdoptsName(resource.resourceType, 'sdk') && keptUnderGeneratedName(resource)
+  );
 }
 
 /**
