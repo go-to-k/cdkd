@@ -839,6 +839,7 @@ describe('a create that left a resource behind keeps its #4583 mark through the 
     );
     expect(failure.message).not.toContain(CALLER_ACCOUNT);
     expect(createdBeforeFailure(failure, 'Res', FLEET)).toBe('if-ABC123');
+    expect(isMarkedNonRetryable(failure)).toBe(true);
   });
 });
 
@@ -920,6 +921,40 @@ describe('the debug line is masked as a whole, prefix included (go-to-k/cdkd#231
       prefix: 'EMR instance group ig-*** entered failed state SUSPENDED: capacity',
       run: () =>
         new EMRInstanceGroupConfigProvider(poll).create('Res', GROUP, { ...GROUP_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'EMR Cluster wrapStatusReasonError',
+      routes: {
+        RunJobFlowCommand: { JobFlowId: 'j-emr-fsx-efs-secret' },
+        DescribeClusterCommand: {
+          Cluster: {
+            Id: 'j-emr-fsx-efs-secret',
+            Status: { State: 'TERMINATED_WITH_ERRORS', StateChangeReason: { Message: 'bootstrap' } },
+          },
+        },
+      },
+      prefix: 'EMR Cluster j-*** entered terminal state TERMINATED_WITH_ERRORS during creation: bootstrap',
+      run: () =>
+        new EMRClusterProvider(poll).create('Res', CLUSTER, { ...CLUSTER_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'EMR InstanceFleetConfig wrapStatusReasonError',
+      routes: {
+        AddInstanceFleetCommand: { InstanceFleetId: 'if-emr-fsx-efs-secret' },
+        ListInstanceFleetsCommand: {
+          InstanceFleets: [
+            {
+              Id: 'if-emr-fsx-efs-secret',
+              ProvisionedOnDemandCapacity: 0,
+              ProvisionedSpotCapacity: 0,
+              Status: { State: 'SUSPENDED', StateChangeReason: { Message: 'capacity' } },
+            },
+          ],
+        },
+      },
+      prefix: 'EMR instance fleet if-*** entered failed state SUSPENDED: capacity',
+      run: () =>
+        new EMRInstanceFleetConfigProvider(poll).create('Res', FLEET, { ...FLEET_PROPS }, { maskSecrets: MASK }),
     },
     {
       helper: 'FSx wrapStatusReasonError',
