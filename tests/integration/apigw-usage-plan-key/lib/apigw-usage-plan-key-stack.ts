@@ -15,7 +15,13 @@ export class ApigwUsagePlanKeyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const api = new apigw.RestApi(this, 'Api', { restApiName: `${this.stackName}-api` });
+    const api = new apigw.RestApi(this, 'Api', {
+      restApiName: `${this.stackName}-api`,
+      // Skip CDK's auto-emitted account settings + CloudWatch role: the role is
+      // RETAINed by default, so every run leaked it (see
+      // docs/integ-fixture-conventions.md, removal policy).
+      cloudWatchRole: false,
+    });
     api.root.addMethod(
       'GET',
       new apigw.MockIntegration({
