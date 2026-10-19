@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   applyDefaultNameForFallback,
   fallbackNamePropertyFor,
+  fallbackNameRuleTypes,
   withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
@@ -51,6 +52,8 @@ const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 describe('generated names fit their name property (#5064)', () => {
   it('covers every type cdkd generates a Cloud Control name for, each with a limit', () => {
     expect(types.length).toBeGreaterThanOrEqual(40);
+    // Both ways: a type added to the rules without a limit here fails.
+    expect(types.map(([type]) => type).sort()).toEqual(fallbackNameRuleTypes().sort());
     for (const [type, limit] of types) {
       expect(fallbackNamePropertyFor(type), type).toBe(limit.nameProperty);
       expect(Number.isFinite(limitOf(limit)), type).toBe(true);

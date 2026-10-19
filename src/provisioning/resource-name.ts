@@ -720,6 +720,11 @@ export function applyDefaultNameForFallback(
  * `AWS::Lambda::CapacityProvider`), and a RENAME where the type accepts the
  * update (`AWS::Cognito::UserPool`'s `UserPoolName`, for one).
  */
+/** Every type {@link applyDefaultNameForFallback} names (for the test that holds each to its limit). */
+export function fallbackNameRuleTypes(): string[] {
+  return Object.keys(FALLBACK_NAME_RULES);
+}
+
 export function fallbackNamePropertyFor(resourceType: string): string | undefined {
   return FALLBACK_NAME_RULES[resourceType]?.nameProperty;
 }
