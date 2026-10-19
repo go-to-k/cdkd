@@ -8,6 +8,17 @@
 #   - AWS::ApiGateway::Stage TracingEnabled (X-Ray) == true
 #   - AWS::ApiGateway::Stage Variables == { appVersion, featureFlag }
 # Both are read back via `aws apigateway get-stage` and parsed with jq.
+#
+# Also covers AWS::ApiGateway::Account removal (issue #1160): the baseline
+# deploy sets the account's CloudWatch role ARN, then a redeploy with
+# CDKD_TEST_REMOVAL=true drops CloudWatchRoleArn from the template and asserts
+# the account's role ARN is cleared, as CloudFormation clears it (measured A/B,
+# us-east-1). The account setting is a REGION-WIDE singleton: the pre-run value
+# is recorded and restored on every exit path. Do not run this fixture
+# concurrently, in the same region, with another one that sets the account's
+# CloudWatch role: apigw-stage-props, apigw-stage-throttling, and
+# apigw-cloudwatch-role-redeploy (#5084).
+#
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -62,6 +73,82 @@ STAGE_NAME="prod"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# --- AWS::ApiGateway::Account singleton helpers (issue #1160) --------------
+# The IAM path of the fixture's account role (lib/apigateway-stack.ts). A
+# pre-run role ARN under it is a leftover of an earlier run, never restored.
+ROLE_PATH="/cdkd-integ-apigateway/"
+# The account's CloudWatch role ARN before this run; empty until captured,
+# so a cleanup before the capture restores nothing.
+PRE_ACCOUNT_ROLE=""
+# The caller's account id, read with the pre-run role.
+CALLER_ACCOUNT=""
+
+# Prints the account's CloudWatch role ARN, or an empty line when unset.
+account_role() {
+  local arn
+  arn=$(aws apigateway get-account --region "${REGION}" \
+    --query cloudwatchRoleArn --output text) || return 1
+  [ "${arn}" = "None" ] && arn=""
+  printf '%s\n' "${arn}"
+}
+
+# Sets the account's CloudWatch role ARN ('' clears it). UpdateAccount is
+# throttled hard (TooManyRequests on back-to-back calls), so that one error
+# is retried; any other fails.
+set_account_role() { # usage: set_account_role <arn-or-empty>
+  local i out ops
+  # JSON, not shorthand: an IAM role name may contain a comma.
+  ops=$(jq -nc --arg v "$1" '[{op: "replace", path: "/cloudwatchRoleArn", value: $v}]') || return 1
+  for i in 1 2 3 4 5 6 7 8; do
+    if out=$(aws apigateway update-account --region "${REGION}" \
+      --patch-operations "${ops}" 2>&1 >/dev/null); then
+      return 0
+    fi
+    printf '%s' "${out}" | grep -q 'TooManyRequests' || { echo "${out}" >&2; return 1; }
+    sleep 15
+  done
+  echo "${out}" >&2
+  return 1
+}
+
+# Puts the account's CloudWatch role back to its pre-run value (none when
+# that value was unset, a leftover of this fixture, or a role that no longer
+# exists: UpdateAccount refuses a deleted role, and another fixture can leave
+# the account pointing at one). Returns 1 when the readback does not match or
+# the role's existence cannot be determined.
+restore_account_role() {
+  [ -n "${PRE_ACCOUNT_ROLE}" ] || return 0
+  local want now probe
+  want="${PRE_ACCOUNT_ROLE}"
+  case "${want}" in
+    NONE | *":role${ROLE_PATH}"*) want="" ;;
+  esac
+  now=$(account_role) || return 1
+  [ "${now}" = "${want}" ] && return 0
+  # Probe only a role in THIS account: another account's role reads as
+  # NoSuchEntity here, and must not be mistaken for a deleted one.
+  case "${want}" in
+    arn:*:iam::"${CALLER_ACCOUNT}":role/*)
+      # Not gone_probe: it exits on an undetermined probe, and this also runs
+      # from the EXIT trap, where the rest of cleanup must still run.
+      if ! probe=$(aws iam get-role --role-name "${want##*/}" 2>&1 >/dev/null); then
+        if printf '%s' "${probe}" | grep -q 'NoSuchEntity'; then
+          echo "WARN: the pre-run account CloudWatch role ${want} no longer exists; leaving the account role unset" >&2
+          want=""
+          [ "${now}" = "${want}" ] && return 0
+        else
+          echo "${probe}" >&2
+          return 1
+        fi
+      fi
+      ;;
+  esac
+  set_account_role "${want}" || return 1
+  now=$(account_role) || return 1
+  [ "${now}" = "${want}" ]
+}
+# ---------------------------------------------------------------------------
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
@@ -69,7 +156,11 @@ cleanup() {
   # should run as much as it can with the env it has.
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+    env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  fi
+  # After the destroy: it clears the account's CloudWatch role.
+  if ! restore_account_role; then
+    echo "WARN: could not restore the API Gateway account CloudWatch role in ${REGION} to '${PRE_ACCOUNT_ROLE}' (NONE = unset); set it by hand" >&2
   fi
   # The {proxy+} ANY curl in Assertion 4 invokes the Lambda, which auto-creates a
   # /aws/lambda/${STACK}* log group that is not stack-managed (CFn leaves it too).
@@ -104,6 +195,12 @@ echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   npm install
 fi
+
+echo "==> Recording the API Gateway account CloudWatch role (region-wide singleton)"
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+PRE_ROLE_READ=$(account_role)
+PRE_ACCOUNT_ROLE="${PRE_ROLE_READ:-NONE}"
+echo "    pre-run account CloudWatch role: ${PRE_ACCOUNT_ROLE}"
 
 echo "==> Pre-run cleanup"
 cleanup
@@ -226,9 +323,43 @@ if [ "${INVALID_CODE}" != "400" ]; then
 fi
 echo "    OK: POST /pets invalid body -> 400 (request validator enforced)"
 
+# --- Assertion 6: the Account's CloudWatchRoleArn reached AWS (baseline) ---
+# The removal phase below is vacuous unless the role ARN is live first.
+ACCOUNT_ROLE_NAME=$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role" and (.key | startswith("AccountCloudWatchRole"))) | .value.physicalId // empty')
+if [ -z "${ACCOUNT_ROLE_NAME}" ]; then
+  echo "FAIL: no AccountCloudWatchRole* AWS::IAM::Role record in state" >&2
+  exit 1
+fi
+ACCOUNT_ROLE_NOW=$(account_role)
+case "${ACCOUNT_ROLE_NOW}" in
+  *":role${ROLE_PATH}${ACCOUNT_ROLE_NAME}") ;;
+  *)
+    echo "FAIL: account CloudWatch role is '${ACCOUNT_ROLE_NOW}', expected the fixture role ${ROLE_PATH}${ACCOUNT_ROLE_NAME}" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: account CloudWatch role == the fixture role (baseline for the #1160 removal)"
+
+# --- Phase 1b: remove CloudWatchRoleArn from the Account (issue #1160) ---
+# CloudFormation clears the account's role ARN when the property is removed
+# (A/B, us-east-1). Pre-fix, cdkd sent UpdateAccount with an empty patch list,
+# which succeeds and keeps the role ARN.
+echo "==> Phase 1b: redeploy with CDKD_TEST_REMOVAL=true (Account drops CloudWatchRoleArn)"
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+ACCOUNT_ROLE_NOW=$(account_role)
+if [ -n "${ACCOUNT_ROLE_NOW}" ]; then
+  echo "FAIL: account CloudWatch role is still '${ACCOUNT_ROLE_NOW}' after CloudWatchRoleArn was removed from the template; CloudFormation clears it (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed CloudWatchRoleArn cleared the account's CloudWatch role (issue #1160)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" \
+CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -243,6 +374,15 @@ echo "    OK: REST API is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+assert_gone "account CloudWatch role ${ROLE_PATH}${ACCOUNT_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ACCOUNT_ROLE_NAME}"
+echo "    OK: account CloudWatch role is gone"
+
+if ! restore_account_role; then
+  echo "FAIL: could not restore the API Gateway account CloudWatch role in ${REGION} to '${PRE_ACCOUNT_ROLE}' (NONE = unset)" >&2
+  exit 1
+fi
+echo "    OK: account CloudWatch role restored to its pre-run value (${PRE_ACCOUNT_ROLE})"
 
 echo ""
 echo "==> apigateway test passed (Stage config-prop backfill closed + clean destroy)"

@@ -2317,6 +2317,7 @@
     "--parameters",
     "--password",
     "--password-stdin",
+    "--patch-operations",
     "--path",
     "--path-prefix",
     "--payload",
