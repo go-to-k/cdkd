@@ -11,16 +11,18 @@
 # What the first live run of this fixture established, and why the assertions
 # below are shaped the way they are:
 #
-#   * cdkd generates an unnamed function's physical name DETERMINISTICALLY
-#     within a stack's lifetime (`{stackName}-{logicalId}-{suffix}`, the suffix
-#     fixed by the stack instance id, go-to-k/cdkd#5064), so the create-first attempt lands on the name
-#     the OLD function still holds. An unnamed Lambda therefore collides exactly
-#     like a pinned one, and the physical id is IDENTICAL on both sides of the
-#     replacement — so issue #1625's suggested "assert the physical id changed"
-#     cannot be the proof of a replacement here. What proves it instead is the
-#     pair of end states: the collision refusal in phase 2 (a silently-skipped
-#     update would have reported success), and phase 3's live function carrying
-#     the NEW properties with NO durable config.
+#   * The function carries an EXPLICIT, per-run name (`CDKD_TEST_FN_NAME`), so
+#     the create-first attempt lands on the name the OLD function still holds
+#     and the physical id is IDENTICAL on both sides of the replacement — so
+#     issue #1625's suggested "assert the physical id changed" cannot be the
+#     proof of a replacement here. What proves it instead is the pair of end
+#     states: the collision refusal in phase 2 (a silently-skipped update would
+#     have reported success), and phase 3's live function carrying the NEW
+#     properties with NO durable config. The fixture was first written with an
+#     UNNAMED function, which collided the same way while cdkd generated the
+#     same name again; since go-to-k/cdkd#5064 phase 2 a replacement of an
+#     un-named resource creates at the next name generation, under a new name,
+#     and never collides — so the name is declared to keep this premise.
 #   * AWS spells the collision SINGULAR — `ResourceConflictException: Function
 #     already exist: <name>`. cdkd's `isNameCollisionError` matched only
 #     `already exists`, so until the fix shipped with this fixture NO Lambda
@@ -110,6 +112,13 @@ STACK="CdkdLambdaDurableReplacementExample"
 # Phase 1b's out-of-band name holder (issue #3808). Deterministic so `cleanup`
 # can delete it even when the phase never ran.
 HOLDER="${STACK}-NameHolder"
+# The managed function's declared name, fresh per run so a function an
+# interrupted run left behind cannot collide with phase 1's create. 35 + 4 + 8
+# characters, well under Lambda's 64. cdkd sends a declared name verbatim
+# (`--prefix-user-supplied-names` is off by default); phase 1 asserts it.
+RUN_ID="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+FN="${STACK}-fn-${RUN_ID}"
+export CDKD_TEST_FN_NAME="${FN}"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
@@ -125,14 +134,14 @@ cleanup() {
   # `lambda-config-field-removal` carries: `state destroy` can fail (lock held,
   # throttle, partial destroy) while the state.json delete below runs
   # unconditionally — which would orphan the function with no state record and
-  # no tag to find it by. The name carries the stack instance suffix
-  # (go-to-k/cdkd#5064), so it is unknown when `FN` was never resolved (a
-  # failure before phase 1's state read): sweep by its `${STACK}-DurableFn`
-  # prefix (the logical id carries CDK's 8-hex path hash). Guarded on a non-empty STACK so the prefix cannot widen.
+  # no tag to find it by. The name is per run, so an EARLIER run's function
+  # (`${STACK}-fn-<8 hex>`, or `${STACK}-DurableFn...` from before the name
+  # was declared) is swept by prefix. Guarded on a non-empty STACK so the
+  # prefix cannot widen.
   case "${STACK}" in
     CdkdLambdaDurableReplacement?*)
       for leftover in $(aws lambda list-functions --region "${REGION}" \
-        --query "Functions[?starts_with(FunctionName, '${STACK}-DurableFn')].FunctionName" \
+        --query "Functions[?starts_with(FunctionName, '${STACK}-fn-') || starts_with(FunctionName, '${STACK}-DurableFn')].FunctionName" \
         --output text 2>/dev/null); do
         aws lambda delete-function --function-name "${leftover}" --region "${REGION}" >/dev/null 2>&1
       done
@@ -203,21 +212,18 @@ if [ -z "${STATE}" ]; then
 fi
 
 FN_ROW="$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value')"
-FN="$(echo "${FN_ROW}" | jq -r '.physicalId')"
+FN_RECORDED="$(echo "${FN_ROW}" | jq -r '.physicalId')"
 FN_ROUTE="$(echo "${FN_ROW}" | jq -r '.provisionedBy // "sdk"')"
-if [ -z "${FN}" ] || [ "${FN}" = "null" ]; then
+if [ -z "${FN_RECORDED}" ] || [ "${FN_RECORDED}" = "null" ]; then
   echo "FAIL: no AWS::Lambda::Function row in state" >&2
   exit 1
 fi
-echo "    Resolved function name: ${FN}"
-# go-to-k/cdkd#5064: a new stack's generated name carries the 12-hex stack
-# instance suffix; the same name is asked for again by phase 2's replacement.
-# `${STACK}-DurableFn<8 hex>` is 53 characters, cut to 64 - 13 = 51: the
-# logical id's hash keeps 6 of its 8 hex.
-if ! printf '%s' "${FN}" | grep -qE "^${STACK}-DurableFn[0-9A-F]{6}-[0-9a-f]{12}\$"; then
-  echo "FAIL: function name '${FN}' is not the generated ${STACK}-DurableFn<6 hex>-<12 hex>" >&2
-  exit 1
-fi
+echo "    Resolved function name: ${FN_RECORDED}"
+# The premise: the function holds the DECLARED name verbatim, which phase 2's
+# replacement asks for again. A generated or prefixed name would mean the
+# replacement moves to another name (go-to-k/cdkd#5064 phase 2) and collides
+# with nothing.
+assert_eq "function physical name is the declared name" "${FN}" "${FN_RECORDED}"
 # The replacement classification only reaches the SDK provider's create/delete
 # path when the row is SDK-routed; a cc-api route would exercise something else
 # entirely (memory rule: type-keyed behavior needs a routing-matrix audit).
@@ -380,7 +386,7 @@ if ! printf '%s' "${REPLACE_OUT}" | grep -q 'deleting old'; then
 fi
 echo "    OK: delete-first fallback ran"
 
-# The re-created function keeps the deterministic name, so re-read by the SAME
+# The re-created function keeps the declared name, so re-read by the SAME
 # name — and assert the state row still points at it (a replacement that lost
 # the row would leave the next destroy unable to reach the function).
 STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
