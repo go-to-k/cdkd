@@ -213,16 +213,23 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
   });
 
   it('drops, with a warning, an entry the provider will not address', async () => {
-    mockProviderDelete.mockImplementation(async (_l: string, physicalId: string) =>
-      physicalId === OLD_TG ? { outcome: 'skipped', reason: 'malformed physicalId in state' } : undefined
+    mockProviderDelete.mockImplementation(async (_l: string, physicalId: string) => {
+      if (physicalId === OLD_TG) return { outcome: 'skipped', reason: 'malformed physicalId in state' };
+      throw new Error('boom'); // a failing sibling keeps the state
+    });
+    const state = makeState(
+      { Failing: res([], { physicalId: 'failing-id' }) },
+      { supersededResources: [entry] }
     );
-    const state = makeState({}, { supersededResources: [entry] });
 
     const result = await runDestroyForStack('TestStack', state, makeCtx());
 
     expect(result.skippedCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
     // Not kept: a re-run would refuse it forever.
-    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+    const last = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    expect(Object.keys(last.resources)).toEqual(['Failing']);
+    expect(last.supersededResources).toBeUndefined();
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('no longer tracked'))).toBe(true);
   });
 

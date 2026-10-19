@@ -477,7 +477,7 @@ describe('the supersededResources field travels with the record (#5111)', () => 
   });
 
   it("uses only the recorded run's --skip-final-snapshot consent", async () => {
-    const del = vi.fn(async () => undefined);
+    const del = vi.fn(async (..._args: unknown[]) => undefined);
     const provider = { delete: del } as unknown as ResourceProvider;
     const base = { region: 'us-east-1', maskSecrets: (t: string) => t, stop: () => false };
     await deleteSupersededEntry(entry, { provider, ...base });
