@@ -15,10 +15,21 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  * A `PrivateDnsNamespace` requires a VPC, but only the VPC id — no subnets /
  * NAT / IGW are needed, so a bare `CfnVPC` keeps the fixture light and the
  * destroy clean (no ENI / NAT orphan risk).
+ *
+ * Issue #1160 removal phases, selected by `CDKD_TEST_REMOVAL`:
+ * - `description`: `Service` drops its `Description`.
+ * - `dns`: additionally, `DnsKeptService` drops its `DnsConfig`.
+ * CloudFormation KEEPS both removed values on the service (live A/B
+ * 2026-10-20), so cdkd must too: `UpdateService` replaces its body, so an
+ * omitted Description is cleared and an omitted DnsConfig is refused.
  */
 export class ServiceDiscoveryStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const removal = process.env.CDKD_TEST_REMOVAL ?? '';
+    const dropDescription = removal === 'description' || removal === 'dns';
+    const dropDnsConfig = removal === 'dns';
 
     cdk.Tags.of(this).add('Project', 'cdkd');
     cdk.Tags.of(this).add('Example', 'servicediscovery');
@@ -41,6 +52,7 @@ export class ServiceDiscoveryStack extends cdk.Stack {
     new servicediscovery.CfnService(this, 'Service', {
       name: 'cdkd-svcdisc-service',
       namespaceId: namespace.attrId,
+      ...(dropDescription ? {} : { description: 'cdkd-svcdisc-kept-description' }),
       dnsConfig: {
         dnsRecords: [{ type: 'A', ttl: 60 }],
         routingPolicy: 'WEIGHTED',
@@ -49,6 +61,16 @@ export class ServiceDiscoveryStack extends cdk.Stack {
         team: 'cdkd',
         tier: 'backend',
       },
+    });
+
+    // Issue #1160: the `dns` removal phase drops this service's DnsConfig
+    // while its Description stays declared, so the update still sends a
+    // ServiceChange — one that must carry the live DnsRecords.
+    new servicediscovery.CfnService(this, 'DnsKeptService', {
+      name: 'cdkd-svcdisc-dns-kept',
+      namespaceId: namespace.attrId,
+      description: 'cdkd-svcdisc-dns-kept',
+      ...(dropDnsConfig ? {} : { dnsConfig: { dnsRecords: [{ type: 'A', ttl: 90 }] } }),
     });
 
     new cdk.CfnOutput(this, 'NamespaceId', {

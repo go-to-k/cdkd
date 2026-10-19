@@ -6,7 +6,9 @@
 # AWS::ServiceDiscovery::Service.ServiceAttributes actually reaches AWS on
 # deploy: ServiceAttributes ({team: cdkd, tier: backend}) is applied via the
 # post-create UpdateServiceAttributes control-plane call and is readable back
-# via GetServiceAttributes. Then destroys and confirms a clean teardown.
+# via GetServiceAttributes. Then two issue #1160 removal phases: a removed
+# Description and a removed DnsConfig must be KEPT on the live service, as
+# CloudFormation keeps them. Then destroys and confirms a clean teardown.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -53,6 +55,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 SERVICE_NAME="cdkd-svcdisc-service"
+DNS_KEPT_NAME="cdkd-svcdisc-dns-kept"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -138,8 +141,74 @@ if [ "${TIER}" != "backend" ]; then
 fi
 echo "    OK: ServiceAttributes {team: cdkd, tier: backend} reached AWS (ServiceAttributes backfill CLOSED)"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# service_id <name> -> the Cloud Map service id, or "None".
+service_id() {
+  aws servicediscovery list-services --region "${REGION}" \
+    --query "Services[?Name=='$1'].Id | [0]" --output text
+}
+# service_field <id> <jmespath> -> one field of GetService, "None" when absent.
+service_field() {
+  aws servicediscovery get-service --id "$1" --region "${REGION}" \
+    --query "Service.$2" --output text
+}
+
+DNS_KEPT_ID=$(service_id "${DNS_KEPT_NAME}")
+if [ -z "${DNS_KEPT_ID}" ] || [ "${DNS_KEPT_ID}" = "None" ]; then
+  echo "FAIL: could not resolve Cloud Map service id for name ${DNS_KEPT_NAME}" >&2
+  exit 1
+fi
+P1_DESC=$(service_field "${SERVICE_ID}" Description)
+P1_TTL=$(service_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL")
+if [ "${P1_DESC}" != "cdkd-svcdisc-kept-description" ] || [ "${P1_TTL}" != "90" ]; then
+  echo "FAIL: phase 1 baseline: ${SERVICE_NAME} Description='${P1_DESC}' (expected cdkd-svcdisc-kept-description), ${DNS_KEPT_NAME} DnsRecords[0].TTL='${P1_TTL}' (expected 90)" >&2
+  exit 1
+fi
+echo "    OK: phase 1 baseline (Description and DnsRecords TTL 90 on AWS)"
+
+# --- Phase 2: REMOVAL drops Service.Description (issue #1160) ---------
+# UpdateService replaces its body, so the change sent for the still-declared
+# DnsConfig clears an omitted Description. CloudFormation keeps it.
+echo "==> Phase 2: removal (drop Description from ${SERVICE_NAME})"
+CDKD_TEST_REMOVAL=description node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+if [ "$(service_id "${SERVICE_NAME}")" != "${SERVICE_ID}" ]; then
+  echo "FAIL: ${SERVICE_NAME} was replaced by the Description removal (must update in place)" >&2
+  exit 1
+fi
+P2_DESC=$(service_field "${SERVICE_ID}" Description)
+if [ "${P2_DESC}" != "cdkd-svcdisc-kept-description" ]; then
+  echo "FAIL: a removed Description was not kept (issue #1160): ${SERVICE_NAME} Description='${P2_DESC}', expected cdkd-svcdisc-kept-description, as CloudFormation keeps it" >&2
+  exit 1
+fi
+echo "    OK: removed Description kept on ${SERVICE_NAME} (issue #1160)"
+
+# --- Phase 3: REMOVAL drops DnsKeptService.DnsConfig (issue #1160) ----
+# Its Description stays declared, so a ServiceChange is still sent; without
+# the live DnsRecords AWS refuses it ("Service dns config cannot be null").
+echo "==> Phase 3: removal (drop DnsConfig from ${DNS_KEPT_NAME})"
+if ! CDKD_TEST_REMOVAL=dns node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes; then
+  echo "FAIL: the DnsConfig removal deploy failed (issue #1160): a removed DnsConfig must be kept, as CloudFormation keeps it, not sent as an UpdateService without DnsConfig" >&2
+  exit 1
+fi
+if [ "$(service_id "${DNS_KEPT_NAME}")" != "${DNS_KEPT_ID}" ]; then
+  echo "FAIL: ${DNS_KEPT_NAME} was replaced by the DnsConfig removal (must update in place)" >&2
+  exit 1
+fi
+P3_TTL=$(service_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL")
+P3_DESC=$(service_field "${SERVICE_ID}" Description)
+if [ "${P3_TTL}" != "90" ] || [ "${P3_DESC}" != "cdkd-svcdisc-kept-description" ]; then
+  echo "FAIL: a removed value was not kept (issue #1160): ${DNS_KEPT_NAME} DnsRecords[0].TTL='${P3_TTL}' (expected 90), ${SERVICE_NAME} Description='${P3_DESC}' (expected cdkd-svcdisc-kept-description)" >&2
+  exit 1
+fi
+echo "    OK: removed DnsConfig kept on ${DNS_KEPT_NAME} (DnsRecords TTL 90, issue #1160)"
+
+# --- Phase 4: destroy -------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -159,9 +228,15 @@ if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
   exit 1
 fi
 echo "    OK: Cloud Map service is gone"
+STILL_DNS_KEPT=$(service_id "${DNS_KEPT_NAME}")
+if [ -n "${STILL_DNS_KEPT}" ] && [ "${STILL_DNS_KEPT}" != "None" ]; then
+  echo "FAIL: Cloud Map service ${DNS_KEPT_NAME} (${STILL_DNS_KEPT}) still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: Cloud Map service ${DNS_KEPT_NAME} is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + clean destroy)"
+echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + removed Description / DnsConfig kept + clean destroy)"

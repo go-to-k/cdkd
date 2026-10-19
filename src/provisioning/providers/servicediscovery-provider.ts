@@ -174,6 +174,24 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     ['AWS::ServiceDiscovery::PrivateDnsNamespace', new Set(['Name', 'Vpc', 'Tags', 'Properties'])],
     ['AWS::ServiceDiscovery::HttpNamespace', new Set(['Name', 'Tags'])],
     ['AWS::ServiceDiscovery::PublicDnsNamespace', new Set(['Name', 'Tags', 'Properties'])],
+    // Name / NamespaceId / Type / HealthCheckCustomConfig are create-only;
+    // Tags and ServiceAttributes are diffed. A removed Description /
+    // DnsConfig / HealthCheckConfig is KEPT, as CloudFormation keeps it —
+    // see keepUndeclaredServiceFields.
+    [
+      'AWS::ServiceDiscovery::Service',
+      new Set([
+        'Name',
+        'NamespaceId',
+        'Type',
+        'HealthCheckCustomConfig',
+        'Tags',
+        'ServiceAttributes',
+        'Description',
+        'DnsConfig',
+        'HealthCheckConfig',
+      ]),
+    ],
   ]);
 
   private getClient(): ServiceDiscoveryClient {
@@ -1244,12 +1262,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `HealthCheckCustomConfig` are immutable on UpdateService — the
    * replacement-detection layer routes those through DELETE+CREATE.
    *
-   * Per AWS docs, omitting `DnsRecords` / `HealthCheckConfig` from the
-   * request DELETES that configuration. To preserve fields cdkd is not
-   * actively reverting, we always echo the AWS-current value when the
-   * caller did not supply a change. `cdkd drift --revert` passes the
-   * full AWS-current snapshot as `properties`, so the round-trip is
-   * value-preserving.
+   * The `ServiceChange` body REPLACES rather than merges: an omitted
+   * `Description` or `HealthCheckConfig` is cleared, and an omitted
+   * `DnsConfig` is refused on a DNS service (`Service dns config cannot be
+   * null`). A property the template does not declare is therefore filled
+   * from `GetService` before the call ({@link keepUndeclaredServiceFields}),
+   * which is also how CloudFormation treats a REMOVED one (issue #1160).
+   * `cdkd drift --revert` passes the full AWS-current snapshot as
+   * `properties`, so the round-trip is value-preserving.
    */
   private async updateService(
     logicalId: string,
@@ -1318,6 +1338,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     try {
       if (hasServiceChange) {
+        await this.keepUndeclaredServiceFields(physicalId, serviceChange);
         const response = await client.send(
           new UpdateServiceCommand({
             Id: physicalId,
@@ -1443,6 +1464,42 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
             cause
           )
       );
+    }
+  }
+
+  /**
+   * Fill each `ServiceChange` field the template does not declare with the
+   * service's live value, so the replace-style `UpdateService` keeps it.
+   *
+   * CloudFormation parity (issue #1160, live A/B 2026-10-20 in us-east-1): a
+   * `Description`, `DnsConfig` or `HealthCheckConfig` REMOVED from the
+   * template is KEPT on the service — CloudFormation issues no
+   * `UpdateService` for it. Sending the change without the field would clear
+   * the first and third and is refused for the second, so the live value is
+   * echoed instead. `DnsConfig` echoes only `DnsRecords`, the one part
+   * `DnsConfigChange` carries. No `GetService` is spent when every field is
+   * declared.
+   */
+  private async keepUndeclaredServiceFields(
+    physicalId: string,
+    serviceChange: ServiceChange
+  ): Promise<void> {
+    if (
+      serviceChange.Description !== undefined &&
+      serviceChange.DnsConfig !== undefined &&
+      serviceChange.HealthCheckConfig !== undefined
+    ) {
+      return;
+    }
+    const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
+    if (serviceChange.Description === undefined && live?.Description !== undefined) {
+      serviceChange.Description = live.Description;
+    }
+    if (serviceChange.DnsConfig === undefined && live?.DnsConfig?.DnsRecords !== undefined) {
+      serviceChange.DnsConfig = { DnsRecords: live.DnsConfig.DnsRecords };
+    }
+    if (serviceChange.HealthCheckConfig === undefined && live?.HealthCheckConfig !== undefined) {
+      serviceChange.HealthCheckConfig = live.HealthCheckConfig;
     }
   }
 
