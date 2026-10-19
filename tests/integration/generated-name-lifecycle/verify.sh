@@ -33,9 +33,10 @@
 #      listener), ChildRole (Path) and Queue (`--recreate-via-cc-api`), no
 #      --replace: each at generation 1's name, created before the old one was
 #      deleted, the old one gone (the in-use target group's delete deferred).
-#   D1 crash (name-adopting): the load balancer's Scheme flips; the deploy is
+#   D1 crash (name-adopting): the load balancer's Scheme flips (and Tg's port,
+#      since ELBv2 keeps a target group behind one load balancer); the deploy is
 #      killed once generation 1's load balancer exists; the re-run takes THAT
-#      load balancer, and no third one is created.
+#      load balancer, and no third one is created; Tg moves to generation 2.
 #   D2 crash (non-adopting): Table's key flips; killed once generation 2's
 #      table exists; the re-run refuses naming `cdkd import`; the import adopts
 #      it; a no-op deploy changes nothing; the next replacement takes
@@ -129,6 +130,9 @@ LEFT_TABLES=()
 # Load balancers a crash arm can leave outside state; deleted by cleanup, by
 # name, BEFORE the destroy (their network interfaces would hold the VPC).
 LEFT_ALB_NAMES=()
+# Target groups a crash arm can leave outside state; deleted by cleanup, by
+# name, after the load balancers and before the destroy.
+LEFT_TG_NAMES=()
 
 cleanup() {
   rc=$?
@@ -156,6 +160,13 @@ cleanup() {
         aws elbv2 delete-load-balancer --region "${REGION}" --load-balancer-arn "${arn}" >/dev/null 2>&1
         aws elbv2 wait load-balancers-deleted --region "${REGION}" --load-balancer-arns "${arn}" >/dev/null 2>&1
         ;;
+    esac
+  done
+  for name in "${LEFT_TG_NAMES[@]}"; do
+    arn="$(aws elbv2 describe-target-groups --region "${REGION}" --names "${name}" \
+      --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)"; [ $? -eq 0 ] || arn=""
+    case "${arn}" in
+      arn:*) aws elbv2 delete-target-group --region "${REGION}" --target-group-arn "${arn}" >/dev/null 2>&1 ;;
     esac
   done
   if [ -f "${LOCAL_DIST}" ]; then
@@ -585,9 +596,17 @@ ALB_GEN0="$(physical Alb)"
 ALB_GEN1_NAME="$(expected_name "${STATE_FILE}" "${STACK}" Alb 1 alb)" || fail "D1: name"
 VPC_ID="$(aws elbv2 describe-load-balancers --region "${REGION}" --load-balancer-arns "${ALB_GEN0}" \
   --query 'LoadBalancers[0].VpcId' --output text)"
-export GNL_ALB_INTERNAL=1
-# The killed run's load balancer is in no record until the re-run takes it.
+TG_GEN1_NAME="$(held_name tg "$(physical Tg)")" || fail "D1: tg name"
+TG_GEN2_NAME="$(expected_name "${STATE_FILE}" "${STACK}" Tg 2 tg)" || fail "D1: tg name"
+# The listener moves to the new load balancer, and ELBv2 refuses one target
+# group behind two load balancers ("cannot be associated with more than one
+# load balancer"), as it does to CloudFormation: a Scheme flip deploys only
+# with a new target group, so Tg's port flips too.
+export GNL_ALB_INTERNAL=1 GNL_TG_PORT=9090
+# The killed run's load balancer is in no record until the re-run takes it;
+# its target group likewise.
 LEFT_ALB_NAMES+=("${ALB_GEN1_NAME}")
+LEFT_TG_NAMES+=("${TG_GEN2_NAME}")
 deploy_and_kill_when "D1" aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}"
 ALB_KILLED_ARN="$(aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}" \
   --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
@@ -602,8 +621,12 @@ wait_alb_gone "D1" "$(held_name alb "${ALB_GEN0}")"
 assert_eq "D1: exactly one load balancer is left in the VPC (no third)" \
   "$(aws elbv2 describe-load-balancers --region "${REGION}" \
     --query "LoadBalancers[?VpcId=='${VPC_ID}'].LoadBalancerArn" --output text | wc -w | tr -d ' ')" "1"
-# The record names it now: the stack's destroy deletes it.
+assert_named "D1" Tg 2 tg
+assert_eq "D1: Tg records generation 2" "$(generation_of Tg)" "2"
+assert_tg_gone "D1" "${TG_GEN1_NAME}"
+# The record names them now: the stack's destroy deletes them.
 LEFT_ALB_NAMES=()
+LEFT_TG_NAMES=()
 
 # ===========================================================================
 echo "==> Phase D2: a killed replacement of a non-adopting type: refuse, import, go on"

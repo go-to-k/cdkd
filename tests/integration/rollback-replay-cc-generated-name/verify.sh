@@ -84,10 +84,13 @@
 #
 #   1. deploy, no routing flags     -> role created on the SDK route, UNNAMED in
 #                                      the template, so cdkd mints
-#                                      `<stack>-<logicalId>`.
+#                                      `<stack>-<logicalId>-<generation 0 suffix>`.
 #   2. ROLE_DESCRIPTION=... deploy --recreate-via-cc-api Role
-#                                   -> destroyed + re-created through Cloud
-#                                      Control; the record flips to `cc-api` and
+#                                   -> re-created through Cloud Control at name
+#                                      generation 1 (created first, then the
+#                                      generation-0 role deleted, #5064); the
+#                                      name is the SDK formula's for generation
+#                                      1; the record flips to `cc-api` and
 #                                      is asserted to hold NO `RoleName`; the
 #                                      live name is captured as CC_NAME and the
 #                                      live `CreateDate` as the phase-4 sentinel.
@@ -206,10 +209,34 @@ EXPLICIT_NAME="cdkd-replay-ccname-explicit"
 # the 12-hex stack instance suffix (go-to-k/cdkd#5064):
 # `CdkdReplayCcName-Role-<12 hex>`, 34 characters. `CdkdReplayCcName-Role` is
 # under the 64 - 13 = 51 characters the suffix leaves, so it is not cut, and
-# the assertions below pin that exact shape. The suffix is fixed for the
-# stack's lifetime, so the SDK create, the Cloud Control re-create and the
-# rollback's replay-CREATE must all mint the SAME name.
+# the assertions below pin that exact shape. The suffix hashes the record's
+# name generation too: phase 2's `--recreate-via-cc-api` is a replacement, so
+# its Cloud Control create takes generation 1 and a NEW name, created before
+# the generation-0 role is deleted. Both routes mint by ONE formula, so each
+# name is pinned to the suffix derived from state.json's stackInstanceId, and
+# the rollback's replay-CREATE must restore generation 1's name exactly.
 GENERATED_NAME_PATTERN="^${STACK}-Role-[0-9a-f]{12}\$"
+
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being state.json's
+# stackInstanceId. Read from S3 into node's stdin: the id is never printed.
+state_name_suffix() { # usage: state_name_suffix <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$1" "$2"
+}
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOCAL_DIST="${REPO_ROOT}/dist/cli.js"
@@ -460,6 +487,8 @@ LAYER0=$(record '.provisionedBy')
 SDK_NAME=$(record '.physicalId')
 [ -n "${SDK_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 1" >&2; exit 1; }
 printf '%s' "${SDK_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the SDK route did not mint a cdkd-generated name (got '${SDK_NAME}', expected ${STACK}-Role-<12 hex>)" >&2; exit 1; }
+SUFFIX_G0="$(state_name_suffix "${LOGICAL_ID}" 0)" || { echo "FAIL: could not derive generation 0's suffix from state.json" >&2; exit 1; }
+[ "${SDK_NAME}" = "${STACK}-Role-${SUFFIX_G0}" ] || { echo "FAIL: the SDK route minted '${SDK_NAME}', not generation 0's '${STACK}-Role-${SUFFIX_G0}'" >&2; exit 1; }
 
 # Phase 1 deliberately does NOT enumerate by path. `list-roles` is eventually
 # consistent, so every enumeration is a chance for a freshly-created role to be
@@ -509,7 +538,15 @@ RECORDED_PATH=$(record '.properties.Path // empty')
 CC_NAME=$(record '.physicalId')
 [ -n "${CC_NAME}" ] || { echo "FAIL: state record has no physicalId after phase 2" >&2; exit 1; }
 printf '%s' "${CC_NAME}" | grep -qE "${GENERATED_NAME_PATTERN}" || { echo "FAIL: the Cloud Control re-create did not carry a cdkd-generated name (got '${CC_NAME}', expected ${STACK}-Role-<12 hex>). preparePropertiesForCcApi should have filled it." >&2; exit 1; }
-[ "${CC_NAME}" = "${SDK_NAME}" ] || { echo "FAIL: the Cloud Control route minted '${CC_NAME}' where the SDK route minted '${SDK_NAME}'. Both are supposed to produce the SAME name — that equality is the invariant #3199 extends to the rollback replay." >&2; exit 1; }
+# The replacement took generation 1 (go-to-k/cdkd#5064), so the name moved; the
+# Cloud Control route must mint it by the SDK route's formula — the parity
+# #3199 extends to the rollback replay.
+SUFFIX_G1="$(state_name_suffix "${LOGICAL_ID}" 1)" || { echo "FAIL: could not derive generation 1's suffix from state.json" >&2; exit 1; }
+[ "${CC_NAME}" = "${STACK}-Role-${SUFFIX_G1}" ] || { echo "FAIL: the Cloud Control route minted '${CC_NAME}', not generation 1's '${STACK}-Role-${SUFFIX_G1}' by the SDK route's formula (generation 0 was '${SDK_NAME}')" >&2; exit 1; }
+GEN1=$(record '.nameGeneration // 0')
+[ "${GEN1}" = "1" ] || { echo "FAIL: after the --recreate-via-cc-api replacement the record says nameGeneration=${GEN1}, expected 1" >&2; exit 1; }
+assert_gone "the generation-0 role ${SDK_NAME} survived its --recreate-via-cc-api replacement" \
+  aws iam get-role --role-name "${SDK_NAME}" --region "${REGION}"
 
 CC_ROLES=$(roles_under_path_settled "${CC_NAME}")
 N_CC=$(count_words "${CC_ROLES}")
@@ -598,6 +635,8 @@ echo "[verify]   ok: ${EXPLICIT_NAME} is gone"
 #     fixture path — so the record and AWS agree after the replay.
 P2=$(record '.physicalId')
 [ "${P2}" = "${CC_NAME}" ] || { echo "FAIL: the state physicalId is '${P2}', expected the restored '${CC_NAME}'" >&2; exit 1; }
+GEN2=$(record '.nameGeneration // 0')
+[ "${GEN2}" = "1" ] || { echo "FAIL: after the rollback the record says nameGeneration=${GEN2}, expected the restored generation 1" >&2; exit 1; }
 LIVE_ARN=$(capture aws iam get-role --role-name "${P2}" --region "${REGION}" \
   --query 'Role.Arn' --output text)
 case "${LIVE_ARN}" in

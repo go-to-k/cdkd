@@ -60,8 +60,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Every repository of this stack's un-named Repo, by its generated-name prefix.
 stack_repos() { # usage: stack_repos -- names, one per line, or a hard failure
+  # The prefix EXACTLY: it ends at the `-` before the suffix, and an empty or
+  # other value would widen the sweep below.
   case "${REPO_PREFIX}" in
-    CdkdCcRequiredNameGenerationExample-Repo-?*) ;;
+    CdkdCcRequiredNameGenerationExample-Repo-) ;;
     *) echo "WARN: teardown sweep refused: unexpected prefix '${REPO_PREFIX}'" >&2; return 1 ;;
   esac
   local listed
