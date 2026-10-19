@@ -22,18 +22,34 @@ import {
   type StackScope,
 } from '../provisioning/resource-name.js';
 
-/** A recorded name generation that is not a non-negative integer. */
+/**
+ * A recorded name generation that is not a non-negative integer, or one so
+ * large that the generation after it is not a safe integer.
+ */
 export class MalformedNameGenerationError extends Error {
-  constructor(where: string) {
+  constructor(where: string, reason: 'malformed' | 'exhausted' = 'malformed') {
     // A state-chosen key: rendered display-safe.
     super(
-      `The state record holds a name generation for ${displayIdent(where)} that is not a non-negative ` +
-        'integer. cdkd does not guess which name the resource was given, since the next ' +
+      `The state record holds a name generation for ${displayIdent(where)} that is ` +
+        (reason === 'exhausted'
+          ? 'too large to derive the next one from (the next is not a safe integer). '
+          : 'not a non-negative integer. ') +
+        'cdkd does not guess which name the resource was given, since the next ' +
         "replacement's name derives from it; restore the field from an earlier version of " +
         'state.json.'
     );
     this.name = 'MalformedNameGenerationError';
   }
+}
+
+/**
+ * The generation after `generation`. Throws when that is not a non-negative
+ * safe integer, so no unsafe value is derived from, bound or written.
+ */
+function generationAfter(generation: number, logicalId: string): number {
+  const next = generation + 1;
+  if (!isNameGeneration(next)) throw new MalformedNameGenerationError(logicalId, 'exhausted');
+  return next;
 }
 
 /**
@@ -95,7 +111,7 @@ export function nameGenerationsOf(
 ): ReadonlyMap<string, number> {
   const out = new Map<string, number>();
   for (const [logicalId, retired] of retiredNameGenerationsOf(state)) {
-    out.set(logicalId, retired + 1);
+    out.set(logicalId, generationAfter(retired, logicalId));
   }
   for (const [logicalId, record] of Object.entries(state.resources ?? {})) {
     if (record === null || typeof record !== 'object') continue;
@@ -116,9 +132,11 @@ export function nextNameGeneration(
   logicalId: string,
   stackInstanceId: string
 ): number {
-  let next = nameGenerationHighWaterOf(record, logicalId) + 1;
+  let next = generationAfter(nameGenerationHighWaterOf(record, logicalId), logicalId);
   const physicalId = typeof record.physicalId === 'string' ? record.physicalId.toLowerCase() : '';
-  while (physicalId.includes(stackInstanceNameSuffix(stackInstanceId, logicalId, next))) next++;
+  while (physicalId.includes(stackInstanceNameSuffix(stackInstanceId, logicalId, next))) {
+    next = generationAfter(next, logicalId);
+  }
   return next;
 }
 

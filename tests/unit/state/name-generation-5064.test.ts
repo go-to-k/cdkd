@@ -163,6 +163,38 @@ describe('state helpers', () => {
     ).toThrow(MalformedNameGenerationError);
   });
 
+  it('refuses a generation whose successor is not a safe integer, never deriving it', () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    // A retired id re-added at retired + 1.
+    expect(() => nameGenerationsOf({ resources: {}, retiredNameGenerations: { Queue: max } })).toThrow(
+      MalformedNameGenerationError
+    );
+    expect(() =>
+      nameGenerationsOf({ resources: {}, retiredNameGenerations: { Queue: max } })
+    ).toThrow(/Queue.*too large/);
+    expect(nameGenerationsOf({ resources: {}, retiredNameGenerations: { Queue: max - 1 } }).get('Queue')).toBe(max);
+    // A replacement past the high-water mark, record or high field.
+    expect(() => nextNameGeneration(record({ nameGeneration: max }), 'Queue', ID)).toThrow(
+      MalformedNameGenerationError
+    );
+    expect(() =>
+      nextNameGeneration(record({ nameGenerationHigh: max, physicalId: 'x' }), 'Queue', ID)
+    ).toThrow(MalformedNameGenerationError);
+    // ...and through the skip over a generation the physical id carries.
+    const carried = record({
+      nameGeneration: max - 1,
+      physicalId: `x-${stackInstanceNameSuffix(ID, 'Queue', max)}`,
+    });
+    expect(() => nextNameGeneration(carried, 'Queue', ID)).toThrow(MalformedNameGenerationError);
+    expect(nextNameGeneration(record({ nameGeneration: max - 1, physicalId: 'x' }), 'Queue', ID)).toBe(max);
+    // The refusal never names the stack instance id.
+    try {
+      nextNameGeneration(record({ nameGeneration: max }), 'Queue', ID);
+    } catch (e) {
+      expect((e as Error).message).not.toContain(ID);
+    }
+  });
+
   it('nameScopeOf gives a map only beside an id', () => {
     expect(nameScopeOf('S', undefined, { resources: {} }).nameGenerations).toBeUndefined();
     expect(nameScopeOf('S', ID, { resources: {} }).nameGenerations).toBeInstanceOf(Map);
