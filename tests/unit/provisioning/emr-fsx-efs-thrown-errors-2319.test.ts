@@ -594,3 +594,353 @@ describe('EMR / FSx / EFS thrown wraps keep the caller identity out (go-to-k/cdk
     expect(createdBeforeFailure(failure, 'Res', CLUSTER)).toBe(CLUSTER_ID);
   });
 });
+
+/**
+ * A FAILED / terminal state's AWS reason, read off a SUCCESSFUL Describe, is
+ * thrown into the same persisted sink as a caught failure, and an EMR
+ * validation reason names IAM role ARNs (go-to-k/cdkd#2319).
+ */
+describe('EMR / FSx status-reason throws keep AWS text out of the message (go-to-k/cdkd#2319)', () => {
+  const ROLE_ARN = `arn:aws:iam::${CALLER_ACCOUNT}:role/emr-fsx-efs-secret-role`;
+  const REASON = `Service role ${ROLE_ARN} has insufficient EC2 permissions`;
+  const MASKED_REASON = `Service role arn:aws:iam::${CALLER_ACCOUNT}:role/***-role has insufficient EC2 permissions`;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    debugSpy.mockReset();
+    resetEMRClusterCreateRetryStateForTests();
+    resetEMRInstanceGroupCreateRetryStateForTests();
+    resetEMRInstanceFleetCreateRetryStateForTests();
+    resetIdempotencyTokensForTests();
+  });
+
+  type StatusSite = {
+    site: string;
+    prefix: string;
+    /** The reason code the service reports (FSx reports none). */
+    code?: string;
+    /** Route every command; `reason` is the Describe-reported reason, absent for none. */
+    route: (reason: { Code?: string; Message?: string } | undefined) => void;
+    run: (ctx?: { maskSecrets: (text: string) => string }) => Promise<unknown>;
+  };
+
+  const poll = { pollIntervalMs: 0, maxWaitMs: 5000 };
+  const answer = (routes: Record<string, unknown>) =>
+    mockSend.mockImplementation(async (command: unknown) => {
+      const value = routes[commandName(command)];
+      return typeof value === 'function' ? (value as () => unknown)() : (value ?? {});
+    });
+  const fsxFailed = (reason: { Message?: string } | undefined) => ({
+    FileSystems: [
+      {
+        FileSystemId: FS_ID,
+        Lifecycle: 'FAILED',
+        FileSystemType: 'LUSTRE',
+        ...(reason ? { FailureDetails: reason } : {}),
+      },
+    ],
+  });
+
+  const STATUS_SITES: StatusSite[] = [
+    {
+      site: 'EMR Cluster terminal state during create',
+      prefix: `EMR Cluster ${CLUSTER_ID} entered terminal state TERMINATED_WITH_ERRORS during creation: `,
+      code: 'VALIDATION_ERROR',
+      route: (reason) =>
+        answer({
+          RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+          DescribeClusterCommand: {
+            Cluster: {
+              Id: CLUSTER_ID,
+              Status: { State: 'TERMINATED_WITH_ERRORS', StateChangeReason: reason },
+            },
+          },
+        }),
+      run: (ctx) => new EMRClusterProvider(poll).create('Res', CLUSTER, { ...CLUSTER_PROPS }, ctx),
+    },
+    {
+      site: 'EMR InstanceGroupConfig failed state',
+      prefix: 'EMR instance group ig-ABC123 entered failed state SUSPENDED: ',
+      code: 'INSTANCE_FAILURE',
+      route: (reason) =>
+        answer({
+          AddInstanceGroupsCommand: { InstanceGroupIds: ['ig-ABC123'] },
+          ListInstanceGroupsCommand: {
+            InstanceGroups: [
+              {
+                Id: 'ig-ABC123',
+                RunningInstanceCount: 0,
+                Status: { State: 'SUSPENDED', StateChangeReason: reason },
+              },
+            ],
+          },
+        }),
+      run: (ctx) => new EMRInstanceGroupConfigProvider(poll).create('Res', GROUP, { ...GROUP_PROPS }, ctx),
+    },
+    {
+      site: 'EMR InstanceFleetConfig failed state',
+      prefix: 'EMR instance fleet if-ABC123 entered failed state SUSPENDED: ',
+      code: 'INSTANCE_FAILURE',
+      route: (reason) =>
+        answer({
+          AddInstanceFleetCommand: { InstanceFleetId: 'if-ABC123' },
+          ListInstanceFleetsCommand: {
+            InstanceFleets: [
+              {
+                Id: 'if-ABC123',
+                ProvisionedOnDemandCapacity: 0,
+                ProvisionedSpotCapacity: 0,
+                Status: { State: 'SUSPENDED', StateChangeReason: reason },
+              },
+            ],
+          },
+        }),
+      run: (ctx) => new EMRInstanceFleetConfigProvider(poll).create('Res', FLEET, { ...FLEET_PROPS }, ctx),
+    },
+    {
+      site: 'FSx FileSystem FAILED during create',
+      prefix: `FSx FileSystem ${FS_ID} entered lifecycle state FAILED: `,
+      route: (reason) =>
+        answer({
+          CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+          DescribeFileSystemsCommand: fsxFailed(reason),
+        }),
+      run: (ctx) => new FSxFileSystemProvider(poll).create('Res', FSX, { ...FSX_PROPS }, ctx),
+    },
+    {
+      site: 'FSx FILE_SYSTEM_UPDATE administrative action FAILED',
+      prefix: `FSx FileSystem ${FS_ID} update failed (FILE_SYSTEM_UPDATE administrative action): `,
+      route: (reason) =>
+        answer({
+          DescribeFileSystemsCommand: {
+            FileSystems: [
+              {
+                ...AVAILABLE_FS.FileSystems[0],
+                AdministrativeActions: [
+                  {
+                    AdministrativeActionType: 'FILE_SYSTEM_UPDATE',
+                    Status: 'FAILED',
+                    ...(reason ? { FailureDetails: reason } : {}),
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      run: (ctx) =>
+        new FSxFileSystemProvider(poll).update(
+          'Res',
+          FS_ID,
+          FSX,
+          { ...FSX_PROPS, StorageCapacity: 2400 },
+          { ...FSX_PROPS },
+          ctx
+        ),
+    },
+    {
+      site: 'FSx FileSystem FAILED during deletion',
+      prefix: `FSx FileSystem ${FS_ID} entered lifecycle state FAILED during deletion: `,
+      route: (reason) => answer({ DescribeFileSystemsCommand: fsxFailed(reason) }),
+      run: (ctx) => new FSxFileSystemProvider(poll).delete('Res', FS_ID, FSX, undefined, ctx),
+    },
+  ];
+
+  describe.each(STATUS_SITES)('$site', ({ prefix, code, route, run }) => {
+    it('names the reason by its code + pointer; the reason goes to masked debug and the cause', async () => {
+      route({ ...(code ? { Code: code } : {}), Message: REASON });
+      const failure = await thrown(run({ maskSecrets: MASK }));
+
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure.message).toContain(`${prefix}${code ? `${code}. ` : ''}${VERBOSE_POINTER}`);
+      expect(failure.message).not.toContain(CALLER_ACCOUNT);
+      expect(failure.message).not.toContain('insufficient EC2 permissions');
+      // The reason is the stamped cause, so the retry classifiers still read it.
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(retryClassificationText(failure)).toContain(REASON);
+      // AWS's text reaches debug, masked by the operation's own context.
+      expect(debugged()).toContain(`${prefix}${MASKED_REASON}`);
+      expect(debugged()).not.toContain('emr-fsx-efs-secret');
+    });
+
+    it('keeps cdkd\'s fallback, unstamped, when AWS reports no reason', async () => {
+      route(undefined);
+      const failure = await thrown(run());
+
+      expect(failure.message).toMatch(/: no (state-change reason|failure details) reported/);
+      expect(failure.message).not.toContain(VERBOSE_POINTER);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+  });
+});
+
+describe('a create that left a resource behind keeps its #4583 mark through the redacted wrap (go-to-k/cdkd#2319)', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    debugSpy.mockReset();
+    resetEMRInstanceGroupCreateRetryStateForTests();
+    resetEMRInstanceFleetCreateRetryStateForTests();
+    resetIdempotencyTokensForTests();
+  });
+  const poll = { pollIntervalMs: 0, maxWaitMs: 5000 };
+
+  /** Every send of `failing` rejects with `failWith`, `routes` answer the rest. */
+  function route(routes: Record<string, unknown>, failing: Record<string, unknown>): void {
+    mockSend.mockImplementation(async (command: unknown) => {
+      const name = commandName(command);
+      if (name in failing) throw failing[name];
+      return routes[name] ?? {};
+    });
+  }
+
+  it('FSx: the readiness poll is denied and the rollback delete fails', async () => {
+    route(
+      { CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } } },
+      {
+        DescribeFileSystemsCommand: accessDenied('AccessDenied', 'fsx:DescribeFileSystems'),
+        DeleteFileSystemCommand: new Error('rollback refused'),
+      }
+    );
+    const failure = await thrown(new FSxFileSystemProvider(poll).create('Res', FSX, { ...FSX_PROPS }));
+    expect(failure.message).toContain(`Failed to create FSx FileSystem Res: AccessDenied. ${VERBOSE_POINTER}`);
+    expect(failure.message).not.toContain(CALLER_ACCOUNT);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(createdBeforeFailure(failure, 'Res', FSX)).toBe(FS_ID);
+  });
+
+  it('EMR InstanceGroupConfig: the readiness poll is denied and the scale-to-0 cleanup fails', async () => {
+    route(
+      { AddInstanceGroupsCommand: { InstanceGroupIds: ['ig-ABC123'] } },
+      {
+        ListInstanceGroupsCommand: accessDenied('AccessDeniedException', 'elasticmapreduce:ListInstanceGroups'),
+        ModifyInstanceGroupsCommand: new Error('scale-down refused'),
+      }
+    );
+    const failure = await thrown(
+      new EMRInstanceGroupConfigProvider(poll).create('Res', GROUP, { ...GROUP_PROPS })
+    );
+    expect(failure.message).toContain(
+      `Failed to add EMR instance group Res: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+    expect(failure.message).not.toContain(CALLER_ACCOUNT);
+    expect(createdBeforeFailure(failure, 'Res', GROUP)).toBe('ig-ABC123');
+    expect(isMarkedNonRetryable(failure)).toBe(true);
+  });
+
+  it('EMR InstanceFleetConfig: the readiness poll is denied after the fleet was added', async () => {
+    route(
+      { AddInstanceFleetCommand: { InstanceFleetId: 'if-ABC123' } },
+      { ListInstanceFleetsCommand: accessDenied('AccessDeniedException', 'elasticmapreduce:ListInstanceFleets') }
+    );
+    const failure = await thrown(
+      new EMRInstanceFleetConfigProvider(poll).create('Res', FLEET, { ...FLEET_PROPS })
+    );
+    expect(failure.message).toContain(
+      `Failed to add EMR instance fleet Res: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+    expect(failure.message).not.toContain(CALLER_ACCOUNT);
+    expect(createdBeforeFailure(failure, 'Res', FLEET)).toBe('if-ABC123');
+  });
+});
+
+/**
+ * Each wrap masks the FINISHED debug line too (`m(build(m(detail)).message)`),
+ * not only AWS's text: the cdkd prefix names the logical id, which a debug
+ * sink the deploy engine does not bind could otherwise print unmasked.
+ */
+describe('the debug line is masked as a whole, prefix included (go-to-k/cdkd#2319)', () => {
+  const SECRET_ID = 'emr-fsx-efs-secret-Res';
+  beforeEach(() => {
+    mockSend.mockReset();
+    debugSpy.mockReset();
+    resetEMRClusterCreateRetryStateForTests();
+    resetEMRInstanceGroupCreateRetryStateForTests();
+    resetEMRInstanceFleetCreateRetryStateForTests();
+    resetIdempotencyTokensForTests();
+  });
+  const poll = { pollIntervalMs: 0, maxWaitMs: 5000 };
+  /** The one debug line carrying `needle`; fails unless exactly one does. */
+  const wrapLine = (needle: string): string => {
+    const lines = debugSpy.mock.calls.map((args) => String(args[0])).filter((l) => l.includes(needle));
+    expect(lines).toHaveLength(1);
+    return lines[0]!;
+  };
+
+  it.each([
+    {
+      helper: 'EMR Cluster wrapCaughtError',
+      command: 'RunJobFlowCommand',
+      prefix: 'Failed to create EMR Cluster ***-Res: ',
+      run: () =>
+        new EMRClusterProvider(poll).create(SECRET_ID, CLUSTER, { ...CLUSTER_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'EMR InstanceGroupConfig wrapCaughtError',
+      command: 'AddInstanceGroupsCommand',
+      prefix: 'Failed to add EMR instance group ***-Res: ',
+      run: () =>
+        new EMRInstanceGroupConfigProvider(poll).create(SECRET_ID, GROUP, { ...GROUP_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'EMR InstanceFleetConfig wrapCaughtError',
+      command: 'AddInstanceFleetCommand',
+      prefix: 'Failed to add EMR instance fleet ***-Res: ',
+      run: () =>
+        new EMRInstanceFleetConfigProvider(poll).create(SECRET_ID, FLEET, { ...FLEET_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'FSx wrapCaughtError',
+      command: 'CreateFileSystemCommand',
+      prefix: 'Failed to create FSx FileSystem ***-Res: ',
+      run: () => new FSxFileSystemProvider(poll).create(SECRET_ID, FSX, { ...FSX_PROPS }, { maskSecrets: MASK }),
+    },
+  ])('$helper', async ({ command, prefix, run }) => {
+    failOn(command, accessDenied('AccessDeniedException', 'x:Create'));
+    await thrown(run());
+    // The wrap's own line, not the provider's other (pre-existing) debug lines.
+    const line = wrapLine('User: ');
+    expect(line).toContain(`${prefix}User: ${CALLER_ARN} is not authorized`);
+    expect(line).not.toContain('emr-fsx-efs-secret');
+  });
+
+  it.each([
+    {
+      helper: 'EMR InstanceGroupConfig statusReasonError',
+      routes: {
+        AddInstanceGroupsCommand: { InstanceGroupIds: ['ig-emr-fsx-efs-secret'] },
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            {
+              Id: 'ig-emr-fsx-efs-secret',
+              RunningInstanceCount: 0,
+              Status: { State: 'SUSPENDED', StateChangeReason: { Message: 'capacity' } },
+            },
+          ],
+        },
+      },
+      prefix: 'EMR instance group ig-*** entered failed state SUSPENDED: capacity',
+      run: () =>
+        new EMRInstanceGroupConfigProvider(poll).create('Res', GROUP, { ...GROUP_PROPS }, { maskSecrets: MASK }),
+    },
+    {
+      helper: 'FSx statusReasonError',
+      routes: {
+        DescribeFileSystemsCommand: {
+          FileSystems: [
+            { FileSystemId: 'fs-emr-fsx-efs-secret', Lifecycle: 'FAILED', FailureDetails: { Message: 'stuck' } },
+          ],
+        },
+      },
+      prefix: 'FSx FileSystem fs-*** entered lifecycle state FAILED during deletion: stuck',
+      run: () =>
+        new FSxFileSystemProvider(poll).delete('Res', 'fs-emr-fsx-efs-secret', FSX, undefined, {
+          maskSecrets: MASK,
+        }),
+    },
+  ])('$helper', async ({ routes, prefix, run }) => {
+    mockSend.mockImplementation(async (command: unknown) => (routes as Record<string, unknown>)[commandName(command)] ?? {});
+    await thrown(run());
+    const line = wrapLine(' state ');
+    expect(line).toContain(prefix);
+    expect(line).not.toContain('emr-fsx-efs-secret');
+  });
+});

@@ -31,7 +31,7 @@ import {
   type RunJobFlowCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import {
@@ -322,6 +322,33 @@ export class EMRClusterProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
+  /**
+   * The error a FAILED / terminal state read off a successful Describe throws
+   * (go-to-k/cdkd#2319). AWS's reason (`Status.StateChangeReason`) reaches the
+   * same persisted sink as a caught failure, and a validation reason names IAM
+   * role ARNs, so the message carries the reason's code (if any) plus the
+   * `--verbose` pointer ({@link describeAwsStatusReason}). The reason goes to
+   * `debug` through the operation's masker, and becomes the `cause` the wrap
+   * is stamped `markRedactedCause` over, so the retry classifiers still read it
+   * as they read the message before. No reason keeps cdkd's fallback text.
+   *
+   * `build` runs twice, so it must stay a side-effect-free constructor call
+   * threading `cause`.
+   */
+  private statusReasonError(
+    mask: MaskerFn | undefined,
+    reason: { code?: string | undefined; message?: string | undefined } | undefined,
+    fallback: string,
+    build: (text: string, cause: Error | undefined) => ProvisioningError
+  ): ProvisioningError {
+    const text = describeAwsStatusReason(reason, fallback);
+    if (!text.redacted) return build(text.detail, undefined);
+    const m = maskerOrIdentity(mask);
+    const cause = new Error(text.detail);
+    this.logger.debug(m(build(m(text.detail), cause).message));
+    return markRedactedCause(build(m(text.summary), cause));
+  }
+
   private wrapCaughtError(
     mask: MaskerFn | undefined,
     error: unknown,
@@ -594,7 +621,12 @@ export class EMRClusterProvider implements ResourceProvider {
         );
       }
 
-      const cluster = await this.waitForClusterReady(clusterId, logicalId, resourceType);
+      const cluster = await this.waitForClusterReady(
+        clusterId,
+        logicalId,
+        resourceType,
+        context?.maskSecrets
+      );
 
       this.logger.debug(`Successfully created EMR Cluster ${logicalId}: ${clusterId}`);
 
@@ -1325,7 +1357,8 @@ export class EMRClusterProvider implements ResourceProvider {
   private async waitForClusterReady(
     clusterId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: MaskerFn
   ): Promise<Cluster> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -1337,13 +1370,19 @@ export class EMRClusterProvider implements ResourceProvider {
       if (cluster && state && CREATE_READY_STATES.has(state)) return cluster;
 
       if (state && TERMINAL_STATES.has(state)) {
-        const reason =
-          cluster?.Status?.StateChangeReason?.Message ?? 'no state-change reason reported';
-        throw new ProvisioningError(
-          `EMR Cluster ${clusterId} entered terminal state ${state} during creation: ${reason}`,
-          resourceType,
-          logicalId,
-          clusterId
+        const reason = cluster?.Status?.StateChangeReason;
+        throw this.statusReasonError(
+          mask,
+          { code: reason?.Code, message: reason?.Message },
+          'no state-change reason reported',
+          (text, cause) =>
+            new ProvisioningError(
+              `EMR Cluster ${clusterId} entered terminal state ${state} during creation: ${text}`,
+              resourceType,
+              logicalId,
+              clusterId,
+              cause
+            )
         );
       }
 

@@ -1184,8 +1184,9 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
       throw this.wrapMaskedError(
-        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -1380,8 +1381,9 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
       throw this.wrapMaskedError(
-        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -1858,8 +1860,9 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
       throw this.wrapMaskedError(
-        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        log,
         error,
         (text) =>
           new ProvisioningError(

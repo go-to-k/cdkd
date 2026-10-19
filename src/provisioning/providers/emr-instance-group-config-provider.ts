@@ -13,7 +13,7 @@ import {
   type AddInstanceGroupsCommandOutput,
 } from '@aws-sdk/client-emr';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { toSdkConfigurations } from '../emr-configuration.js';
@@ -189,6 +189,33 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
+  /**
+   * The error a FAILED / terminal state read off a successful Describe throws
+   * (go-to-k/cdkd#2319). AWS's reason (`Status.StateChangeReason`) reaches the
+   * same persisted sink as a caught failure, and a validation reason names IAM
+   * role ARNs, so the message carries the reason's code (if any) plus the
+   * `--verbose` pointer ({@link describeAwsStatusReason}). The reason goes to
+   * `debug` through the operation's masker, and becomes the `cause` the wrap
+   * is stamped `markRedactedCause` over, so the retry classifiers still read it
+   * as they read the message before. No reason keeps cdkd's fallback text.
+   *
+   * `build` runs twice, so it must stay a side-effect-free constructor call
+   * threading `cause`.
+   */
+  private statusReasonError(
+    mask: MaskerFn | undefined,
+    reason: { code?: string | undefined; message?: string | undefined } | undefined,
+    fallback: string,
+    build: (text: string, cause: Error | undefined) => ProvisioningError
+  ): ProvisioningError {
+    const text = describeAwsStatusReason(reason, fallback);
+    if (!text.redacted) return build(text.detail, undefined);
+    const m = maskerOrIdentity(mask);
+    const cause = new Error(text.detail);
+    this.logger.debug(m(build(m(text.detail), cause).message));
+    return markRedactedCause(build(m(text.summary), cause));
+  }
+
   private wrapCaughtError(
     mask: MaskerFn | undefined,
     error: unknown,
@@ -368,7 +395,9 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         groupId,
         logicalId,
         resourceType,
-        toNumber(properties['InstanceCount']) ?? 0
+        toNumber(properties['InstanceCount']) ?? 0,
+        false,
+        context?.maskSecrets
       );
 
       this.logger.debug(`Successfully added EMR instance group ${logicalId}: ${groupId}`);
@@ -544,7 +573,8 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
             // Resize path: tolerate a stale pre-modify failed state so a
             // deploy that RECOVERS a SUSPENDED group is not aborted by the
             // read lag. See waitForGroupReady's docstring.
-            true
+            true,
+            context?.maskSecrets
           );
         }
       }
@@ -731,7 +761,8 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     expectedCount: number,
-    toleratesStaleFailedState = false
+    toleratesStaleFailedState = false,
+    mask?: MaskerFn
   ): Promise<void> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -753,13 +784,19 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
       const enforceFailedStates = !toleratesStaleFailedState || hasLeftInitialState;
       if (state && enforceFailedStates && FAILED_STATES.has(state)) {
-        const reason =
-          group?.Status?.StateChangeReason?.Message ?? 'no state-change reason reported';
-        throw new ProvisioningError(
-          `EMR instance group ${groupId} entered failed state ${state}: ${reason}`,
-          resourceType,
-          logicalId,
-          groupId
+        const reason = group?.Status?.StateChangeReason;
+        throw this.statusReasonError(
+          mask,
+          { code: reason?.Code, message: reason?.Message },
+          'no state-change reason reported',
+          (text, cause) =>
+            new ProvisioningError(
+              `EMR instance group ${groupId} entered failed state ${state}: ${text}`,
+              resourceType,
+              logicalId,
+              groupId,
+              cause
+            )
         );
       }
 

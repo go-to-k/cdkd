@@ -397,3 +397,32 @@ export function describeAwsFailure(error: unknown): AwsFailureText {
     redacted: true,
   };
 }
+
+/**
+ * Describe an AWS STATUS REASON — text a SUCCESSFUL Describe reports about the
+ * resource (EMR `Status.StateChangeReason`, FSx `FailureDetails`) — for a
+ * thrown message (issue [#2319](https://github.com/go-to-k/cdkd/issues/2319)).
+ *
+ * It is not a caught error, so {@link describeAwsFailure} never sees it, yet it
+ * reaches the same persisted sink when a provider throws it: AWS words an EMR
+ * validation reason with IAM role ARNs, so it names the account. `summary` is
+ * the reason's machine `code` (when the service reports one) plus
+ * {@link VERBOSE_POINTER}; `detail` is AWS's text, for the `debug` log and for
+ * a `cause` the retry classifiers can read. An absent or empty `message` has
+ * nothing to withhold: both halves are `fallback`, unredacted.
+ */
+export function describeAwsStatusReason(
+  reason: { code?: string | undefined; message?: string | undefined } | undefined,
+  fallback: string
+): AwsFailureText {
+  const message = reason?.message;
+  if (message === undefined || message === '') {
+    return { summary: fallback, detail: fallback, redacted: false };
+  }
+  const code = reason?.code;
+  return {
+    summary: `${code ? `${code}. ` : ''}${VERBOSE_POINTER}`,
+    detail: message,
+    redacted: true,
+  };
+}

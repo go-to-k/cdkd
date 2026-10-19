@@ -85,7 +85,7 @@ describe('FSxFileSystemProvider.create — created-before-failure mark (#4583)',
 
     const error = await failedCreate();
 
-    expect((error as Error).message).toMatch(/FAILED: boom/);
+    expect((error as Error).message).toMatch(/FAILED: Re-run with --verbose for AWS's own message\./);
     expect(deleteCalls()).toHaveLength(1);
     expect(createdBeforeFailure(error, 'MyFs', TYPE)).toBe(FS_ID);
   });

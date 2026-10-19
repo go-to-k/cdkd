@@ -35,7 +35,7 @@ import {
   type LustreReadCacheSizingMode,
   type Tag,
 } from '@aws-sdk/client-fsx';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -372,6 +372,33 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
+  /**
+   * The error a FAILED lifecycle or administrative action read off a
+   * successful Describe throws (go-to-k/cdkd#2319). AWS's reason
+   * (`FailureDetails.Message`) reaches the same persisted sink as a caught
+   * failure and can name the account, so the message carries the `--verbose`
+   * pointer instead ({@link describeAwsStatusReason}; FSx reports no reason
+   * code). The reason goes to `debug` through the operation's masker, and
+   * becomes the `cause` the wrap is stamped `markRedactedCause` over, so the
+   * retry classifiers still read it as they read the message before. No reason
+   * keeps cdkd's fallback text.
+   *
+   * `build` runs twice, so it must stay a side-effect-free constructor call
+   * threading `cause`.
+   */
+  private statusReasonError(
+    mask: MaskerFn | undefined,
+    message: string | undefined,
+    build: (text: string, cause: Error | undefined) => ProvisioningError
+  ): ProvisioningError {
+    const text = describeAwsStatusReason({ message }, 'no failure details reported');
+    if (!text.redacted) return build(text.detail, undefined);
+    const m = maskerOrIdentity(mask);
+    const cause = new Error(text.detail);
+    this.logger.debug(m(build(m(text.detail), cause).message));
+    return markRedactedCause(build(m(text.summary), cause));
+  }
+
   private wrapCaughtError(
     mask: MaskerFn | undefined,
     error: unknown,
@@ -633,7 +660,12 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
       // FSx creation is async (typically 5-10 min for Lustre SCRATCH,
       // longer for PERSISTENT) — poll until AVAILABLE.
-      const fs = await this.waitForFileSystemAvailable(fileSystemId, logicalId, resourceType);
+      const fs = await this.waitForFileSystemAvailable(
+        fileSystemId,
+        logicalId,
+        resourceType,
+        context?.maskSecrets
+      );
 
       this.logger.debug(`Successfully created FSx FileSystem ${logicalId}: ${fileSystemId}`);
       this.createTokenFirstSentAt.delete(clientRequestToken);
@@ -1146,7 +1178,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
           // before returning — a lagging Describe read replica could
           // otherwise yield an empty filtered list (inProgress=false) and
           // return prematurely with the pre-update config.
-          respPendingActions.length > 0
+          respPendingActions.length > 0,
+          context?.maskSecrets
         );
       }
 
@@ -1694,7 +1727,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
   private async waitForFileSystemAvailable(
     fileSystemId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: MaskerFn
   ): Promise<FileSystem> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -1706,12 +1740,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
       if (fs && lifecycle === 'AVAILABLE') return fs;
 
       if (lifecycle === 'FAILED' || lifecycle === 'MISCONFIGURED') {
-        const detail = fs?.FailureDetails?.Message ?? 'no failure details reported';
-        throw new ProvisioningError(
-          `FSx FileSystem ${fileSystemId} entered lifecycle state ${lifecycle}: ${detail}`,
-          resourceType,
-          logicalId,
-          fileSystemId
+        throw this.statusReasonError(
+          mask,
+          fs?.FailureDetails?.Message,
+          (text, cause) =>
+            new ProvisioningError(
+              `FSx FileSystem ${fileSystemId} entered lifecycle state ${lifecycle}: ${text}`,
+              resourceType,
+              logicalId,
+              fileSystemId,
+              cause
+            )
         );
       }
 
@@ -1757,7 +1796,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     actionThresholdMs: number,
-    requireActionObservation: boolean
+    requireActionObservation: boolean,
+    mask?: MaskerFn
   ): Promise<FileSystem> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -1775,12 +1815,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
         if (updateActions.length > 0) seenTrackedAction = true;
         const failed = updateActions.find((a) => a.Status === 'FAILED');
         if (failed) {
-          const detail = failed.FailureDetails?.Message ?? 'no failure details reported';
-          throw new ProvisioningError(
-            `FSx FileSystem ${fileSystemId} update failed (FILE_SYSTEM_UPDATE administrative action): ${detail}`,
-            resourceType,
-            logicalId,
-            fileSystemId
+          throw this.statusReasonError(
+            mask,
+            failed.FailureDetails?.Message,
+            (text, cause) =>
+              new ProvisioningError(
+                `FSx FileSystem ${fileSystemId} update failed (FILE_SYSTEM_UPDATE administrative action): ${text}`,
+                resourceType,
+                logicalId,
+                fileSystemId,
+                cause
+              )
           );
         }
         const inProgress = updateActions.some(
@@ -1847,12 +1892,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
       }
 
       if (fs.Lifecycle === 'FAILED') {
-        const detail = fs.FailureDetails?.Message ?? 'no failure details reported';
-        throw new ProvisioningError(
-          `FSx FileSystem ${fileSystemId} entered lifecycle state FAILED during deletion: ${detail}`,
-          resourceType,
-          logicalId,
-          fileSystemId
+        throw this.statusReasonError(
+          mask,
+          fs.FailureDetails?.Message,
+          (text, cause) =>
+            new ProvisioningError(
+              `FSx FileSystem ${fileSystemId} entered lifecycle state FAILED during deletion: ${text}`,
+              resourceType,
+              logicalId,
+              fileSystemId,
+              cause
+            )
         );
       }
 
