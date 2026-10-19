@@ -15,6 +15,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - VPC Gateway Endpoint (S3)
  * - Launch Template
  * - Removal of the VPC DNS attributes (CDKD_TEST_REMOVAL, issue #1160)
+ * - An in-place NACL entry rule change in the same deploy (issue #5070)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
  * Note: No EC2 instances are created to avoid costs.
@@ -93,11 +94,16 @@ export class Ec2VpcStack extends cdk.Stack {
       subnetSelection: { subnetType: ec2.SubnetType.PUBLIC },
     });
 
+    // The same deploy (CDKD_TEST_REMOVAL) changes this entry's action and CIDR,
+    // both "Update requires: No interruption" in CloudFormation: one in-place
+    // ReplaceNetworkAclEntry under the unchanged `acl|100|false` physicalId,
+    // never a delete + create (issue #5070).
     nacl.addEntry('AllowHTTPIn', {
-      cidr: ec2.AclCidr.anyIpv4(),
+      cidr: isRemoval ? ec2.AclCidr.ipv4('10.0.0.0/8') : ec2.AclCidr.anyIpv4(),
       ruleNumber: 100,
       traffic: ec2.AclTraffic.tcpPort(80),
       direction: ec2.TrafficDirection.INGRESS,
+      ruleAction: isRemoval ? ec2.Action.DENY : ec2.Action.ALLOW,
     });
 
     nacl.addEntry('AllowAllOut', {

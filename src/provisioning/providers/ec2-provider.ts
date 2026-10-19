@@ -62,6 +62,7 @@ import {
   DeleteNetworkAclCommand,
   CreateNetworkAclEntryCommand,
   DeleteNetworkAclEntryCommand,
+  ReplaceNetworkAclEntryCommand,
   ReplaceNetworkAclAssociationCommand,
   DescribeNetworkAclsCommand,
   DescribeNetworkInterfacesCommand,
@@ -296,6 +297,41 @@ function routeTargetParams(properties: Record<string, unknown>) {
     TransitGatewayId: (properties['TransitGatewayId'] as string) ?? undefined,
     VpcEndpointId: (properties['VpcEndpointId'] as string) ?? undefined,
     VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
+  };
+}
+
+/**
+ * The rule fields `createNetworkAclEntry` and `updateNetworkAclEntry`'s
+ * `ReplaceNetworkAclEntry` send (issue #5070), from one place so the two calls
+ * cannot disagree. Every one is "Update requires: No interruption" in the
+ * CloudFormation schema; the entry's identity (`NetworkAclId`, `RuleNumber`,
+ * `Egress`) is createOnly and set by each caller.
+ */
+function networkAclEntryRuleParams(properties: Record<string, unknown>, preferLegacyIcmp = false) {
+  const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
+  // CFn schema spells this property `Icmp`; the AWS API takes the same shape
+  // under the key `IcmpTypeCode`. Accept both: CFn-canonical (template authors
+  // / CDK L1) prefers `Icmp`; legacy state files written by pre-#613-fix cdkd
+  // carry `IcmpTypeCode`, so fall back to it for backward compat (e.g. a
+  // re-deploy after a binary upgrade where state.properties has the legacy key).
+  // `preferLegacyIcmp`: the caller saw only `IcmpTypeCode` change while both
+  // keys are present (see `updateNetworkAclEntry`).
+  const icmpTypeCode = (
+    preferLegacyIcmp
+      ? properties['IcmpTypeCode']
+      : (properties['Icmp'] ?? properties['IcmpTypeCode'])
+  ) as Record<string, unknown> | undefined;
+  return {
+    Protocol: String(properties['Protocol']),
+    RuleAction: properties['RuleAction'] as 'allow' | 'deny',
+    CidrBlock: properties['CidrBlock'] as string | undefined,
+    Ipv6CidrBlock: properties['Ipv6CidrBlock'] as string | undefined,
+    PortRange: portRange
+      ? { From: portRange['From'] as number, To: portRange['To'] as number }
+      : undefined,
+    IcmpTypeCode: icmpTypeCode
+      ? { Code: icmpTypeCode['Code'] as number, Type: icmpTypeCode['Type'] as number }
+      : undefined,
   };
 }
 
@@ -1416,8 +1452,16 @@ export class EC2Provider implements ResourceProvider {
           properties,
           previousProperties
         );
-      case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::NetworkAclEntry':
+        return this.updateNetworkAclEntry(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
+      case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
         // Reject loudly instead of silently no-op'ing on
         // `cdkd drift --revert`. Same rationale as Subnet / IGW /
@@ -7225,40 +7269,12 @@ export class EC2Provider implements ResourceProvider {
     );
 
     try {
-      const cidrBlock = properties['CidrBlock'] as string | undefined;
-      const ipv6CidrBlock = properties['Ipv6CidrBlock'] as string | undefined;
-      const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
-      // CFn schema spells this property `Icmp`; the AWS API call below
-      // takes the same shape under the key `IcmpTypeCode`. Accept both:
-      // CFn-canonical (template authors / CDK L1) prefers `Icmp`; legacy
-      // state files written by pre-#613-fix cdkd carry `IcmpTypeCode`,
-      // so fall back to it for backward compat (e.g. re-deploy after a
-      // binary upgrade where state.properties has the legacy key).
-      const icmpTypeCode = (properties['Icmp'] ?? properties['IcmpTypeCode']) as
-        | Record<string, unknown>
-        | undefined;
-
       await this.ec2Client.send(
         new CreateNetworkAclEntryCommand({
           NetworkAclId: networkAclId,
           RuleNumber: ruleNumber,
-          Protocol: String(protocol),
-          RuleAction: ruleAction as 'allow' | 'deny',
           Egress: egress,
-          CidrBlock: cidrBlock,
-          Ipv6CidrBlock: ipv6CidrBlock,
-          PortRange: portRange
-            ? {
-                From: portRange['From'] as number,
-                To: portRange['To'] as number,
-              }
-            : undefined,
-          IcmpTypeCode: icmpTypeCode
-            ? {
-                Code: icmpTypeCode['Code'] as number,
-                Type: icmpTypeCode['Type'] as number,
-              }
-            : undefined,
+          ...networkAclEntryRuleParams(properties),
         })
       );
 
@@ -7336,6 +7352,124 @@ export class EC2Provider implements ResourceProvider {
         (text) =>
           new ProvisioningError(
             `Failed to delete NetworkAclEntry ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+  }
+
+  /**
+   * Issue #5070: `NetworkAclId`, `RuleNumber` and `Egress` are createOnly and
+   * name the entry; every other property (`RuleAction`, `Protocol`,
+   * `CidrBlock`, `Ipv6CidrBlock`, `PortRange`, `Icmp`) is "Update requires: No
+   * interruption" in CloudFormation, which EC2 serves with the single atomic
+   * `ReplaceNetworkAclEntry`. A delete + create (the `--replace` remedy the
+   * old refusal pointed at) leaves the rule number absent between the two
+   * calls, so traffic falls through to the next rule for the window.
+   */
+  private async updateNetworkAclEntry(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    // No-op short-circuit: a `cdkd drift --revert` round-trip can call
+    // update() with new == old when only sibling resources drifted.
+    if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
+      return { physicalId, wasReplaced: false };
+    }
+
+    // The identity check decides the arm, not the createOnly premise: the
+    // engine replaces on a changed key, so a bag naming a different entry
+    // than the physical id should not reach here, and is refused as before
+    // rather than rewriting some other rule number in place.
+    const networkAclId = properties['NetworkAclId'];
+    const ruleNumber = properties['RuleNumber'];
+    const egress = properties['Egress'] ?? false;
+    const parts = physicalId.split('|');
+    if (parts.length !== 3) {
+      throw new ProvisioningError(
+        compositeIdFormatMessage(EC2_NETWORK_ACL_ENTRY_ID_FORMAT, logicalId, physicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    if (
+      typeof networkAclId !== 'string' ||
+      ruleNumber === undefined ||
+      parts[0] !== networkAclId ||
+      parts[1] !== String(ruleNumber) ||
+      parts[2] !== String(egress)
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+      );
+    }
+
+    if (properties['Protocol'] == null || !properties['RuleAction']) {
+      throw new ProvisioningError(
+        `Protocol and RuleAction are required for NetworkAclEntry ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // `networkAclEntryRuleParams` prefers `Icmp` over the legacy
+    // `IcmpTypeCode`. A `drift --revert` bag carries both (the readback emits
+    // both names) but overlays only the key the state record holds, so for a
+    // pre-#613 record the recorded ICMP is in `IcmpTypeCode` while `Icmp`
+    // still holds the drifted AWS value: send the key that changed.
+    const preferLegacyIcmp =
+      properties['Icmp'] !== undefined &&
+      properties['IcmpTypeCode'] !== undefined &&
+      JSON.stringify(properties['Icmp']) === JSON.stringify(previousProperties['Icmp']) &&
+      JSON.stringify(properties['IcmpTypeCode']) !==
+        JSON.stringify(previousProperties['IcmpTypeCode']);
+
+    // The same overlay can leave both CIDR keys set when the entry's address
+    // family changed out-of-band (state recorded `CidrBlock`, AWS now holds
+    // `Ipv6CidrBlock`), and AWS rejects a rule naming both: send the key that
+    // changed and drop the AWS-side one. Only for the readback bag — a
+    // template naming both is the user's to fix, so AWS's refusal stands.
+    const ruleParams = networkAclEntryRuleParams(properties, preferLegacyIcmp);
+    if (
+      context?.desiredFromAwsReadback === true &&
+      ruleParams.CidrBlock !== undefined &&
+      ruleParams.Ipv6CidrBlock !== undefined
+    ) {
+      const v4Changed = properties['CidrBlock'] !== previousProperties['CidrBlock'];
+      const v6Changed = properties['Ipv6CidrBlock'] !== previousProperties['Ipv6CidrBlock'];
+      if (v4Changed && !v6Changed) ruleParams.Ipv6CidrBlock = undefined;
+      else if (v6Changed && !v4Changed) ruleParams.CidrBlock = undefined;
+    }
+
+    try {
+      await this.ec2Client.send(
+        new ReplaceNetworkAclEntryCommand({
+          NetworkAclId: networkAclId,
+          RuleNumber: parseInt(parts[1]!, 10),
+          Egress: parts[2] === 'true',
+          ...ruleParams,
+        })
+      );
+      this.logger.debug(safeMsg`Successfully replaced NetworkAclEntry ${logicalId} in place`);
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update NetworkAclEntry ${logicalId}: ${text}`,
             resourceType,
             logicalId,
             physicalId,

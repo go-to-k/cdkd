@@ -8,6 +8,9 @@ import {
   CreateRouteCommand,
   DeleteRouteCommand,
   ReplaceRouteCommand,
+  CreateNetworkAclEntryCommand,
+  DeleteNetworkAclEntryCommand,
+  ReplaceNetworkAclEntryCommand,
   AuthorizeSecurityGroupIngressCommand,
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
@@ -72,6 +75,10 @@ describe('EC2Provider read-update round-trip', () => {
     DeleteTagsCommand,
     CreateRouteCommand,
     DeleteRouteCommand,
+    ReplaceRouteCommand,
+    CreateNetworkAclEntryCommand,
+    DeleteNetworkAclEntryCommand,
+    ReplaceNetworkAclEntryCommand,
     AuthorizeSecurityGroupIngressCommand,
     AuthorizeSecurityGroupEgressCommand,
     RevokeSecurityGroupIngressCommand,
@@ -307,7 +314,6 @@ describe('EC2Provider read-update round-trip', () => {
       ['AWS::EC2::RouteTable', 'rtb-1'],
       ['AWS::EC2::SubnetRouteTableAssociation', 'rtbassoc-1'],
       ['AWS::EC2::NetworkAcl', 'acl-1'],
-      ['AWS::EC2::NetworkAclEntry', 'acl-1|100|ingress'],
       ['AWS::EC2::SubnetNetworkAclAssociation', 'aclassoc-1'],
     ];
 
@@ -324,6 +330,42 @@ describe('EC2Provider read-update round-trip', () => {
         expect(countMutatingCalls()).toBe(0);
       }
     );
+  });
+
+  describe('AWS::EC2::NetworkAclEntry (#5070: in-place ReplaceNetworkAclEntry)', () => {
+    const entry = {
+      NetworkAclId: 'acl-1',
+      RuleNumber: 100,
+      Protocol: 6,
+      RuleAction: 'allow',
+      Egress: false,
+      CidrBlock: '0.0.0.0/0',
+      PortRange: { From: 80, To: 80 },
+    };
+
+    it('round-trip on no-drift state sends zero mutating SDK calls', async () => {
+      const result = await provider.update('E', 'acl-1|100|false', 'AWS::EC2::NetworkAclEntry', entry, {
+        ...entry,
+      });
+      expect(result).toEqual({ physicalId: 'acl-1|100|false', wasReplaced: false });
+      expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('a rule change is one ReplaceNetworkAclEntry, no delete or create', async () => {
+      mockSend.mockResolvedValue({});
+      const result = await provider.update(
+        'E',
+        'acl-1|100|false',
+        'AWS::EC2::NetworkAclEntry',
+        { ...entry, RuleAction: 'deny' },
+        entry
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(countMutatingCalls()).toBe(1);
+      expect(
+        mockSend.mock.calls.filter((c) => c[0] instanceof ReplaceNetworkAclEntryCommand)
+      ).toHaveLength(1);
+    });
   });
 
   describe('AWS::EC2::Subnet (issue #1300: property-aware update)', () => {

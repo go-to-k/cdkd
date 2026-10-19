@@ -120,7 +120,8 @@ const NACL_ENTRY = {
  * throws. A SecurityGroupIngress update is a delete then a create, each
  * wrapping its own failure, which the update passes through: an AWS failure
  * there reaches the delete / create rows below, never the update's own wrap.
- * A Route target change is one `ReplaceRoute` (#5068), under its own wrap.
+ * A Route target change is one `ReplaceRoute` (#5068), and a NetworkAclEntry
+ * rule change one `ReplaceNetworkAclEntry` (#5070), each under its own wrap.
  */
 const SITES: ReadonlyArray<[prefix: string, run: Run]> = [
   ['Failed to create VPC Res: ', create('AWS::EC2::VPC', VPC)],
@@ -200,6 +201,15 @@ const SITES: ReadonlyArray<[prefix: string, run: Run]> = [
   ['Failed to delete NetworkAcl Res: ', del('AWS::EC2::NetworkAcl', 'acl-1')],
   ['Failed to create NetworkAclEntry Res: ', create('AWS::EC2::NetworkAclEntry', NACL_ENTRY)],
   ['Failed to delete NetworkAclEntry Res: ', del('AWS::EC2::NetworkAclEntry', 'acl-1|100|false')],
+  [
+    'Failed to update NetworkAclEntry Res: ',
+    update(
+      'AWS::EC2::NetworkAclEntry',
+      'acl-1|100|false',
+      { ...NACL_ENTRY, RuleAction: 'deny' },
+      NACL_ENTRY
+    ),
+  ],
   [
     'Failed to create SubnetNetworkAclAssociation Res: ',
     create('AWS::EC2::SubnetNetworkAclAssociation', { SubnetId: 'subnet-1', NetworkAclId: 'acl-1' }),
