@@ -14,8 +14,8 @@ api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no l
 apigateway	2026-10-18T18:32:28Z	PASS	117	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigatewayv2-update-removal	2026-10-18T18:32:28Z	PASS	181	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
-apigw-stage-props	2026-10-18T18:32:28Z	PASS	134	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
-apigw-stage-throttling	2026-10-18T18:32:28Z	PASS	113	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
+apigw-stage-props	2026-10-19T03:53:22Z	PASS	76	verify.sh	rc ok, orph clean
+apigw-stage-throttling	2026-10-19T03:53:22Z	PASS	73	verify.sh	rc ok, orph clean
 apigw-usage-plan-key	2026-10-19T01:54:58Z	PASS	70	verify.sh	PR #5081 CloudWatch-role fixture; us-east-1; rc ok, orph clean
 app-autoscaling-recreate	2026-10-08T03:35:50Z	PASS	0	verify.sh	#4706: an imported scalable target is recorded cc-api; --recreate-via-cc-api refused (also from a legacy sdk record), policy intact; destroy 0 errors, 0 orphans
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -113,7 +113,7 @@ dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph cl
 dynamodb-ttl-attr-change	2026-10-13T02:41:29Z	PASS	55	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 ec2-instance	2026-10-19T00:17:40Z	PASS	176	verify.sh	rc ok, orph clean (#5077)
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
-ec2-route-targets	2026-10-19T00:17:40Z	PASS	516	verify.sh	rc ok, orph clean (#5077)
+ec2-route-targets	2026-10-19T03:53:22Z	PASS	503	verify.sh	rc ok, orph clean
 ec2-vpc	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 slice 4995)
