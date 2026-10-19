@@ -1189,6 +1189,17 @@
       ]
     },
     {
+      "name": "generated-name-lifecycle",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain",
+        "elbv2-listener-tg-lb-deletion-order",
+        "rollback-failure-injection",
+        "state-schema-migration",
+        "update-replace-breadth"
+      ]
+    },
+    {
       "name": "getatt-fallback-guard",
       "annotated": false,
       "scenarios": []
@@ -2773,7 +2784,8 @@
       "scenario": "deletion-policy-retain",
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
       "fixtures": [
-        "deletion-policy-retain"
+        "deletion-policy-retain",
+        "generated-name-lifecycle"
       ]
     },
     {
@@ -2856,7 +2868,8 @@
       "scenario": "elbv2-listener-tg-lb-deletion-order",
       "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation).",
       "fixtures": [
-        "deletion-ordering-complex"
+        "deletion-ordering-complex",
+        "generated-name-lifecycle"
       ]
     },
     {
@@ -3220,6 +3233,7 @@
       "scenario": "rollback-failure-injection",
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
       "fixtures": [
+        "generated-name-lifecycle",
         "rollback-failure-injection"
       ]
     },
@@ -3304,6 +3318,7 @@
       "scenario": "state-schema-migration",
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
       "fixtures": [
+        "generated-name-lifecycle",
         "legacy-state-migration",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
@@ -3331,6 +3346,7 @@
       "scenario": "update-replace-breadth",
       "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.",
       "fixtures": [
+        "generated-name-lifecycle",
         "update-replace"
       ]
     },

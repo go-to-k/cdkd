@@ -673,6 +673,7 @@
         "custom-resource-resolved-secret",
         "destroy-nested-cross-region",
         "export-nested-stack",
+        "generated-name-lifecycle",
         "import-nested-stack",
         "list-parameters",
         "nested-stack",
@@ -702,6 +703,9 @@
           "literal"
         ],
         "export-nested-stack": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "import-nested-stack": [
@@ -1110,6 +1114,7 @@
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-attribute-readback",
         "import-heal-prefix-record",
@@ -1182,6 +1187,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l2"
@@ -1330,6 +1339,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1454,6 +1464,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -1560,6 +1573,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1674,6 +1688,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -1809,6 +1826,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1934,6 +1952,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2039,6 +2060,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2161,6 +2183,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -2480,6 +2505,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -2605,6 +2631,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-attribute-readback-final": [
@@ -2747,6 +2776,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2863,6 +2893,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2965,6 +2998,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -3106,6 +3140,9 @@
           "l2",
           "literal"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -3245,6 +3282,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -3367,6 +3405,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -3882,6 +3923,7 @@
       "integs": [
         "alb",
         "deletion-ordering-complex",
+        "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state"
@@ -3891,6 +3933,9 @@
           "literal"
         ],
         "deletion-ordering-complex": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "local-engine-role-identity": [
@@ -3913,6 +3958,7 @@
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3942,6 +3988,10 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "import-attribute-readback-network": [
           "l1"
@@ -3987,6 +4037,7 @@
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
@@ -4008,6 +4059,9 @@
         ],
         "elbv2-same-name-replacement": [
           "l1",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "import-attribute-readback-network": [
@@ -4073,6 +4127,7 @@
         "eventbridge",
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
@@ -4094,6 +4149,10 @@
           "l2"
         ],
         "eventbridge-input-transformer": [
+          "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "l2",
           "literal"
         ],
@@ -4371,6 +4430,7 @@
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
+        "generated-name-lifecycle",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4381,6 +4441,9 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "generated-name-lifecycle": [
+          "literal"
+        ],
         "iam-managed-policy": [
           "literal"
         ],
@@ -4417,6 +4480,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "export",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-recreate-reattach",
@@ -4436,6 +4500,9 @@
         ],
         "export": [
           "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "getstackoutput-crossregion": [
@@ -4503,6 +4570,7 @@
         "eventbridge-scheduler",
         "export",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -4678,6 +4746,10 @@
           "literal"
         ],
         "gc-custom-asset-names": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
           "literal"
         ],
         "glue-update-hardening": [
@@ -5257,6 +5329,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -5463,6 +5536,10 @@
           "l2"
         ],
         "gc-custom-asset-names": [
+          "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "l2",
           "literal"
         ],
@@ -5915,6 +5992,7 @@
         "ecs-service-update-props",
         "fallback-recreate-children",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "local-start-alb-from-state",
         "log-pipeline",
@@ -5990,6 +6068,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l1"
@@ -6277,6 +6359,7 @@
         "event-driven",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-value-strong-ref",
         "infra-security",
@@ -6381,6 +6464,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l2"
@@ -6667,6 +6754,7 @@
         "eventbridge-pipes",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "import-attribute-readback",
         "importvalue-chain",
@@ -6760,6 +6848,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "iam-propagation-stress": [
           "l2"
@@ -6943,6 +7035,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
@@ -7068,6 +7161,11 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "getstackoutput-crossregion": [
           "l1"
