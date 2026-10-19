@@ -123,7 +123,10 @@ onBeforeUnmount(() => {
         <span aria-hidden="true" class="track">
           <span class="run" />
           <span class="finish">
-            <span v-if="!lane.baseline" class="finish-icon iconify-icon icon-[lucide--circle-check]" />
+            <span
+              v-if="!lane.baseline"
+              class="finish-icon iconify-icon icon-[lucide--circle-check]"
+            />
             <span class="finish-time">{{ lane.seconds }} s</span>
           </span>
         </span>
@@ -139,7 +142,11 @@ onBeforeUnmount(() => {
       </span>
     </div>
     <figcaption v-if="note || safeUrl(href)" class="note">
-      {{ note }}<br v-if="note && safeUrl(href)" /><a v-if="safeUrl(href)" class="link" :href="safeUrl(href)">{{ linkText }}</a>
+      {{ note }}<br v-if="note && safeUrl(href)" /><a
+        v-if="safeUrl(href)"
+        class="link"
+        :href="safeUrl(href)"
+      >{{ linkText }}</a>
     </figcaption>
   </figure>
 </template>
