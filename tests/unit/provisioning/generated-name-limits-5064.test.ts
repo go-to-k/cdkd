@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   applyDefaultNameForFallback,
-  fallbackNamePropertyFor,
+  fallbackNamePathFor,
   fallbackNameRuleTypes,
   generatedNameFor,
   withStackScope,
@@ -20,8 +20,11 @@ import {
 interface Limit {
   nameProperty: string;
   schemaMaxLength?: number;
+  schemaMinLength?: number;
   schemaPattern?: string;
   apiMaxLength?: number;
+  /** A prefix the API refuses a name to start with (a security group's `sg-`). */
+  apiForbiddenPrefix?: string;
 }
 const fixture = JSON.parse(
   readFileSync(new URL('../../fixtures/generated-name-limits.json', import.meta.url), 'utf8')
@@ -56,7 +59,7 @@ describe('generated names fit their name property (#5064)', () => {
     // Both ways: a type added to the rules without a limit here fails.
     expect(types.map(([type]) => type).sort()).toEqual(fallbackNameRuleTypes().sort());
     for (const [type, limit] of types) {
-      expect(fallbackNamePropertyFor(type), type).toBe(limit.nameProperty);
+      expect(fallbackNamePathFor(type)?.join('.'), type).toBe(limit.nameProperty);
       expect(Number.isFinite(limitOf(limit)), type).toBe(true);
     }
   });
@@ -65,7 +68,26 @@ describe('generated names fit their name property (#5064)', () => {
   // Zone's (go-to-k/cdkd#5095).
   const ZONE = 'usw2-lax1-az1';
   const ccProps = (type: string): Record<string, unknown> =>
-    type === 'AWS::S3Express::DirectoryBucket' ? { LocationName: ZONE } : {};
+    type === 'AWS::S3Express::DirectoryBucket'
+      ? { LocationName: ZONE }
+      : type === 'AWS::Glue::Connection'
+        ? { ConnectionInput: { ConnectionType: 'JDBC' } }
+        : {};
+  /** The value at a dotted `nameProperty` (a Glue connection's `ConnectionInput.Name`). */
+  const at = (bag: Record<string, unknown>, path: string): unknown =>
+    path.split('.').reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], bag);
+  // go-to-k/cdkd#5095: a legacy stack's SDK provider sends the bare logical
+  // id of these, byte for byte, however long.
+  const BARE_LOGICAL_ID = [
+    'AWS::CodeBuild::Project',
+    'AWS::EC2::SecurityGroup',
+    'AWS::CloudTrail::Trail',
+    'AWS::Glue::Job',
+    'AWS::Glue::Crawler',
+    'AWS::Glue::Connection',
+    'AWS::Glue::Trigger',
+    'AWS::KinesisFirehose::DeliveryStream',
+  ];
   // go-to-k/cdkd#5095: on a legacy stack the Cloud Control handler still names these.
   const LEGACY_CC_UNNAMED = [
     'AWS::AutoScaling::AutoScalingGroup',
@@ -74,9 +96,15 @@ describe('generated names fit their name property (#5064)', () => {
     'AWS::Lambda::NetworkConnector',
     'AWS::Pipes::Pipe',
     'AWS::Scheduler::Schedule',
+    // CodeBuild has no Cloud Control handlers; its old rule still names it.
+    ...BARE_LOGICAL_ID.filter((t) => t !== 'AWS::CodeBuild::Project'),
   ];
   const fits = (name: string, limit: Limit): void => {
     expect(name.length).toBeLessThanOrEqual(limitOf(limit));
+    expect(name.length).toBeGreaterThanOrEqual(limit.schemaMinLength ?? 1);
+    if (limit.apiForbiddenPrefix !== undefined) {
+      expect(name.toLowerCase().startsWith(limit.apiForbiddenPrefix)).toBe(false);
+    }
     if (limit.schemaPattern !== undefined) {
       // `\Z` is the schema's end anchor where ECMAScript has `$`.
       expect(name).toMatch(new RegExp(limit.schemaPattern.replace(/\\Z/g, '$')));
@@ -96,18 +124,28 @@ describe('generated names fit their name property (#5064)', () => {
         expect(props).toEqual(ccProps(type));
         return;
       }
-      fits(props[limit.nameProperty] as string, limit);
+      fits(at(props, limit.nameProperty) as string, limit);
     });
 
     it.each(types)('%s, SDK provider', (type, limit) => {
       const name = scoped(() => generatedNameFor(type, LOGICAL_ID, { zoneId: ZONE }));
-      if (stackInstanceId === undefined && type === 'AWS::CodeBuild::Project') {
-        // A legacy stack's project keeps the bare logical id, byte for byte,
-        // however long (go-to-k/cdkd#5095).
+      if (stackInstanceId === undefined && BARE_LOGICAL_ID.includes(type)) {
         expect(name).toBe(LOGICAL_ID);
         return;
       }
       fits(name, limit);
     });
+  });
+
+  // A stack name may start with `sg-`; EC2 refuses a group name that does
+  // (go-to-k/cdkd#5095). Both routes drop the hyphen, in any case.
+  it.each(['sg-app', 'SG-app', 'Sg-app'])('a security group of stack %s', (stackName) => {
+    const scoped = <T>(fn: () => T): T =>
+      withStackScope({ stackName, stackInstanceId: ID, nameGenerations: new Map() }, fn);
+    const type = 'AWS::EC2::SecurityGroup';
+    const sdk = scoped(() => generatedNameFor(type, 'Group'));
+    expect(sdk).toMatch(new RegExp(`^${stackName.slice(0, 2)}app-Group-[0-9a-f]{12}$`));
+    expect(scoped(() => applyDefaultNameForFallback('Group', type, {}))['GroupName']).toBe(sdk);
+    fits(sdk, fixture.types[type]!);
   });
 });

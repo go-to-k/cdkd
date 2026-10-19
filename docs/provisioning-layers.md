@@ -232,6 +232,7 @@ each layer gave before:
 | `AWS::SSM::Parameter` | `/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
 | `AWS::CodeBuild::Project` | `<LogicalId>` | No Cloud Control route |
 | Auto Scaling group, DynamoDB global table, ECS task definition family, Lambda network connector, EventBridge pipe, EventBridge Scheduler schedule | `<StackName>-<LogicalId>` | Named by AWS |
+| EC2 security group, CloudTrail trail, Glue job, crawler, connection and trigger, Firehose delivery stream | `<LogicalId>` | Named by AWS |
 
 Neither layer generates the name of an `AWS::Events::EventBus`, which
 CloudFormation requires. A Cloud Control create of an un-named
@@ -239,6 +240,9 @@ CloudFormation requires. A Cloud Control create of an un-named
 from `LocationName`. When `LocationName` is an Availability Zone name rather
 than a zone id such as `use1-az5`, the create is refused; set `LocationName`
 to the zone id or declare `BucketName`.
+
+A generated security group name never starts with `sg-`, which EC2 refuses:
+for a stack whose name starts with `sg-`, the hyphen is dropped.
 
 ## Related
 

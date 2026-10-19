@@ -681,11 +681,25 @@ interface GeneratedNameRule {
    */
   zoneSuffix?: true;
   /**
+   * A prefix the service refuses a name to start with (a security group's
+   * `sg-`): a generated name starting with it, case-insensitively, drops the
+   * prefix's last character (`sg-app-...` becomes `sgapp-...`).
+   */
+  refusedPrefix?: string;
+  /**
+   * `nameProperty` is a key of this object property, not of the resource's
+   * top level (a Glue connection's `ConnectionInput.Name`).
+   */
+  nestedIn?: string;
+  /**
    * A stack WITHOUT an instance id (a legacy stack) keeps what each route
    * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
    */
   legacy?: {
-    /** The SDK provider sent the bare logical id (`AWS::CodeBuild::Project`). */
+    /**
+     * The SDK provider sent the bare logical id (`AWS::CodeBuild::Project`,
+     * the security group, trail, Glue and Firehose types).
+     */
     sdk?: 'logicalId';
     /**
      * The Cloud Control create filled nothing (`'none'`: the handler named the
@@ -896,6 +910,61 @@ const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     legacy: { cloudControl: 'none' },
     notAdopted: true,
   },
+  // go-to-k/cdkd#5095: the SDK provider sent the bare logical id, unique per
+  // VPC / account and region only, so two stacks with one logical id, or a
+  // replacement, collided. A legacy stack keeps it; its Cloud Control create
+  // still leaves the name to the handler. None was ever admitted to adoption.
+  // CreateSecurityGroup: up to 255 characters, not starting with `sg-`.
+  'AWS::EC2::SecurityGroup': {
+    nameProperty: 'GroupName',
+    options: { maxLength: 255 },
+    refusedPrefix: 'sg-',
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // 3-128 characters, letters, digits, `.`, `_`, `-`, starting and ending with
+  // a letter or digit: the generator emits `[a-zA-Z0-9-]`, a stack name starts
+  // with a letter, and the suffix is hex.
+  'AWS::CloudTrail::Trail': {
+    nameProperty: 'TrailName',
+    options: { maxLength: 128 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // Glue names: 1-255 characters (CreateJob / CreateCrawler / CreateTrigger /
+  // CreateConnection `Name`).
+  'AWS::Glue::Job': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Crawler': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Connection': {
+    nameProperty: 'Name',
+    nestedIn: 'ConnectionInput',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Trigger': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // 1-64 characters of `[a-zA-Z0-9._-]`.
+  'AWS::KinesisFirehose::DeliveryStream': {
+    nameProperty: 'DeliveryStreamName',
+    options: { maxLength: 64 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
 };
 
 /** Input a generated name needs beyond the logical id. */
@@ -924,7 +993,12 @@ function deriveRuleName(
     });
     return `${base}${suffix}`;
   }
-  return `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+  const refused = rule.refusedPrefix;
+  if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
+    return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;
+  }
+  return name;
 }
 
 /**
@@ -956,6 +1030,22 @@ export function generatedNameFor(
     throw new Error(`cdkd internal error: the generated ${resourceType} name needs a zone id`);
   }
   return name;
+}
+
+/**
+ * The object holding `rule`'s name property in `properties`: `properties`
+ * itself, or for a `nestedIn` rule that property's object, `undefined` when it
+ * is not one.
+ */
+function nameContainer(
+  rule: GeneratedNameRule,
+  properties: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (rule.nestedIn === undefined) return properties;
+  const nested = properties[rule.nestedIn];
+  return typeof nested === 'object' && nested !== null && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)
+    : undefined;
 }
 
 /**
@@ -998,8 +1088,14 @@ export function applyDefaultNameForFallback(
   const rule = FALLBACK_NAME_RULES[resourceType];
   if (!rule) return properties;
 
+  // A nested name needs its container: without one (a Glue connection's
+  // required `ConnectionInput`) there is nothing to fill, and Cloud Control
+  // reports the missing property.
+  const container = nameContainer(rule, properties);
+  if (container === undefined) return properties;
+
   // If the name property is already set, no need to generate
-  if (properties[rule.nameProperty]) return properties;
+  if (container[rule.nameProperty]) return properties;
 
   let generatedName: string | undefined;
   const legacy = scopeHasStackInstanceId() ? undefined : rule.legacy?.cloudControl;
@@ -1023,6 +1119,12 @@ export function applyDefaultNameForFallback(
     );
   }
 
+  if (rule.nestedIn !== undefined) {
+    return {
+      ...properties,
+      [rule.nestedIn]: { ...container, [rule.nameProperty]: generatedName },
+    };
+  }
   return {
     ...properties,
     [rule.nameProperty]: generatedName,
@@ -1052,7 +1154,20 @@ export function fallbackNameRuleTypes(): string[] {
 }
 
 export function fallbackNamePropertyFor(resourceType: string): string | undefined {
-  return FALLBACK_NAME_RULES[resourceType]?.nameProperty;
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  // A nested name is no top-level property: a caller reading one finds none.
+  return rule?.nestedIn === undefined ? rule?.nameProperty : undefined;
+}
+
+/**
+ * Where {@link applyDefaultNameForFallback} puts `resourceType`'s name: the
+ * top-level property, or `[container, property]` for a nested one
+ * (`['ConnectionInput', 'Name']`), or `undefined` when it fills none.
+ */
+export function fallbackNamePathFor(resourceType: string): readonly string[] | undefined {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule === undefined) return undefined;
+  return rule.nestedIn === undefined ? [rule.nameProperty] : [rule.nestedIn, rule.nameProperty];
 }
 
 /**
@@ -1074,8 +1189,28 @@ export function withoutGeneratedFallbackName(
   resolvedProps: Record<string, unknown>,
   prepared: Record<string, unknown>
 ): Record<string, unknown> {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule?.nestedIn !== undefined) {
+    // The same test one level down, restoring the container's own key.
+    const outer = rule.nestedIn;
+    const resolvedInner = nameContainer(rule, resolvedProps);
+    const preparedInner = nameContainer(rule, prepared);
+    if (resolvedInner === undefined || preparedInner === undefined) return prepared;
+    const inner = withoutGeneratedFallbackNameAt(rule.nameProperty, resolvedInner, preparedInner);
+    return inner === preparedInner ? prepared : { ...prepared, [outer]: inner };
+  }
   const nameProperty = fallbackNamePropertyFor(resourceType);
-  if (nameProperty === undefined || resolvedProps[nameProperty] || !(nameProperty in prepared)) {
+  if (nameProperty === undefined) return prepared;
+  return withoutGeneratedFallbackNameAt(nameProperty, resolvedProps, prepared);
+}
+
+/** {@link withoutGeneratedFallbackName} for one object and its name key. */
+function withoutGeneratedFallbackNameAt(
+  nameProperty: string,
+  resolvedProps: Record<string, unknown>,
+  prepared: Record<string, unknown>
+): Record<string, unknown> {
+  if (resolvedProps[nameProperty] || !(nameProperty in prepared)) {
     return prepared;
   }
   const restored = { ...prepared };

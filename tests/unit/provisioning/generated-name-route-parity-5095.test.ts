@@ -4,12 +4,14 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   applyDefaultNameForFallback,
   explicitNamePropertyFor,
+  fallbackNamePathFor,
   fallbackNamePropertyFor,
   fallbackNameRuleTypes,
   generateResourceName,
   generateResourceNameWithFallback,
   generatedNameFor,
   withStackScope,
+  withoutGeneratedFallbackName,
   type ResourceNameOptions,
 } from '../../../src/provisioning/resource-name.js';
 import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/replacement-name-holder.js';
@@ -39,9 +41,16 @@ const v13 = <T>(fn: () => T, generation = 0): T =>
   );
 
 const ccProps = (type: string): Record<string, unknown> =>
-  type === 'AWS::S3Express::DirectoryBucket' ? { LocationName: ZONE } : {};
+  type === 'AWS::S3Express::DirectoryBucket'
+    ? { LocationName: ZONE }
+    : type === 'AWS::Glue::Connection'
+      ? { ConnectionInput: { ConnectionType: 'JDBC' } }
+      : {};
+/** The value at `path` (a Glue connection's name is `ConnectionInput.Name`). */
+const at = (bag: Record<string, unknown>, path: readonly string[]): unknown =>
+  path.reduce<unknown>((v, k) => (v as Record<string, unknown> | undefined)?.[k], bag);
 const ccName = (type: string, logicalId: string): unknown =>
-  applyDefaultNameForFallback(logicalId, type, ccProps(type))[fallbackNamePropertyFor(type)!];
+  at(applyDefaultNameForFallback(logicalId, type, ccProps(type)), fallbackNamePathFor(type)!);
 const sdkName = (type: string, logicalId: string): string =>
   generatedNameFor(type, logicalId, { zoneId: ZONE });
 
@@ -59,6 +68,7 @@ const SECRET_LIKE = /[^a-zA-Z0-9-/_]/g;
 const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::AutoScaling::AutoScalingGroup': gen({ maxLength: 255 }),
   'AWS::CloudWatch::Alarm': gen({ maxLength: 255 }),
+  'AWS::CloudTrail::Trail': (id) => id,
   'AWS::CodeBuild::Project': (id) => id,
   'AWS::CodeCommit::Repository': gen({ maxLength: 100 }),
   'AWS::Cognito::UserPool': gen({ maxLength: 128 }),
@@ -67,6 +77,7 @@ const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::DocDB::DBSubnetGroup': gen({ maxLength: 255, lowercase: true }),
   'AWS::DynamoDB::GlobalTable': gen({ maxLength: 255 }),
   'AWS::DynamoDB::Table': gen({ maxLength: 255 }),
+  'AWS::EC2::SecurityGroup': (id) => id,
   'AWS::ECR::Repository': (id) => generateResourceName(id, { maxLength: 256 }).toLowerCase(),
   'AWS::ECS::Cluster': gen({ maxLength: 255 }),
   'AWS::ECS::Service': gen({ maxLength: 255 }),
@@ -75,7 +86,12 @@ const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::ElastiCache::SubnetGroup': gen({ maxLength: 255, lowercase: true }),
   'AWS::Events::Rule': gen({ maxLength: 64 }),
   'AWS::IAM::Policy': gen({ maxLength: 64 }),
+  'AWS::Glue::Connection': (id) => id,
+  'AWS::Glue::Crawler': (id) => id,
+  'AWS::Glue::Job': (id) => id,
+  'AWS::Glue::Trigger': (id) => id,
   'AWS::Kinesis::Stream': gen({ maxLength: 128 }),
+  'AWS::KinesisFirehose::DeliveryStream': (id) => id,
   'AWS::Lambda::Function': gen({ maxLength: 64 }),
   'AWS::Lambda::LayerVersion': gen({ maxLength: 64 }),
   'AWS::Lambda::NetworkConnector': gen({ maxLength: 64 }),
@@ -161,6 +177,15 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
   'AWS::Lambda::NetworkConnector': { sdk: 'MyStack-Resource', cc: undefined },
   'AWS::Pipes::Pipe': { sdk: 'MyStack-Resource', cc: undefined },
   'AWS::Scheduler::Schedule': { sdk: 'MyStack-Resource', cc: undefined },
+  // go-to-k/cdkd#5095's second set: the SDK provider sent the bare logical id,
+  // and a Cloud Control create left the name to the handler.
+  'AWS::EC2::SecurityGroup': { sdk: 'Resource', cc: undefined },
+  'AWS::CloudTrail::Trail': { sdk: 'Resource', cc: undefined },
+  'AWS::Glue::Job': { sdk: 'Resource', cc: undefined },
+  'AWS::Glue::Crawler': { sdk: 'Resource', cc: undefined },
+  'AWS::Glue::Connection': { sdk: 'Resource', cc: undefined },
+  'AWS::Glue::Trigger': { sdk: 'Resource', cc: undefined },
+  'AWS::KinesisFirehose::DeliveryStream': { sdk: 'Resource', cc: undefined },
 };
 
 const sdkGeneratedTypes = Object.keys(OLD_SDK);
@@ -279,8 +304,19 @@ describe("a legacy stack's names do not move (#5095)", () => {
       expect(explicitNamePropertyFor(type), type).toBe(property);
     }
     // Newly named, never admitted to adoption.
-    for (const type of ['AWS::ECS::TaskDefinition', 'AWS::Lambda::NetworkConnector', 'AWS::Pipes::Pipe']) {
-      expect(fallbackNamePropertyFor(type), type).toBeDefined();
+    for (const type of [
+      'AWS::ECS::TaskDefinition',
+      'AWS::Lambda::NetworkConnector',
+      'AWS::Pipes::Pipe',
+      'AWS::EC2::SecurityGroup',
+      'AWS::CloudTrail::Trail',
+      'AWS::Glue::Job',
+      'AWS::Glue::Crawler',
+      'AWS::Glue::Connection',
+      'AWS::Glue::Trigger',
+      'AWS::KinesisFirehose::DeliveryStream',
+    ]) {
+      expect(fallbackNamePathFor(type), type).toBeDefined();
       expect(explicitNamePropertyFor(type), type).toBeUndefined();
     }
   });
@@ -328,6 +364,46 @@ describe('a directory bucket on the Cloud Control route (#5095)', () => {
   });
 });
 
+describe("a Glue connection's nested name on the Cloud Control route (#5095)", () => {
+  const TYPE = 'AWS::Glue::Connection';
+  const input = { ConnectionType: 'JDBC', ConnectionProperties: { A: 'b' } };
+
+  it('a create fills ConnectionInput.Name, never a top-level Name', () => {
+    const props = { CatalogId: '123456789012', ConnectionInput: input };
+    const filled = v13(() => applyDefaultNameForFallback('Resource', TYPE, props));
+    expect(filled).toEqual({
+      CatalogId: '123456789012',
+      ConnectionInput: { ...input, Name: v13(() => generatedNameFor(TYPE, 'Resource')) },
+    });
+    expect(props.ConnectionInput).toEqual(input);
+    // The top-level `Name` is read-only in the schema: no reader takes one.
+    expect(fallbackNamePropertyFor(TYPE)).toBeUndefined();
+    expect(explicitNamePropertyFor(TYPE)).toBeUndefined();
+  });
+
+  it('a declared name, or no ConnectionInput, is left as is', () => {
+    const declared = { ConnectionInput: { ...input, Name: 'mine' } };
+    expect(v13(() => applyDefaultNameForFallback('Resource', TYPE, declared))).toBe(declared);
+    for (const props of [{}, { ConnectionInput: 'x' }, { ConnectionInput: [input] }]) {
+      expect(v13(() => applyDefaultNameForFallback('Resource', TYPE, props))).toBe(props);
+    }
+  });
+
+  it('an update takes the generated nested name back out', () => {
+    const resolved = { ConnectionInput: input };
+    const prepared = v13(() => applyDefaultNameForFallback('Resource', TYPE, resolved, 'omit'));
+    expect(withoutGeneratedFallbackName(TYPE, resolved, prepared)).toEqual({ ConnectionInput: input });
+    // The template's own falsy value comes back, as at the top level.
+    const empty = { ConnectionInput: { ...input, Name: '' } };
+    const preparedEmpty = v13(() => applyDefaultNameForFallback('Resource', TYPE, empty, 'omit'));
+    expect((preparedEmpty['ConnectionInput'] as Record<string, unknown>)['Name']).not.toBe('');
+    expect(withoutGeneratedFallbackName(TYPE, empty, preparedEmpty)).toEqual(empty);
+    // A declared name is kept, by identity.
+    const declared = { ConnectionInput: { ...input, Name: 'mine' } };
+    expect(withoutGeneratedFallbackName(TYPE, declared, declared)).toBe(declared);
+  });
+});
+
 describe('every SDK provider names an un-named resource through the rule (#5095)', () => {
   const dir = join(process.cwd(), 'src/provisioning/providers');
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
@@ -347,12 +423,38 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
     // could swap two calls' types and keep every type called: the nearest
     // `properties['X']` read before each call must be that type's property.
     // CodeBuild reads its `Name` inside `mapProperties` (its provider test pins it).
+    // Three read the name into a variable (or a nested object) first: each is
+    // pinned to its exact read and fallback below instead.
+    const VIA_VARIABLE: Record<string, { file: string; read: RegExp; fallback: RegExp }> = {
+      'AWS::CloudTrail::Trail': {
+        file: 'cloudtrail-provider.ts',
+        read: /const trailName = properties\['TrailName'\] as string \| undefined;/,
+        fallback: /Name: trailName \?\? generatedNameFor\('AWS::CloudTrail::Trail', logicalId\)/,
+      },
+      'AWS::KinesisFirehose::DeliveryStream': {
+        file: 'firehose-provider.ts',
+        read: /const deliveryStreamName = properties\['DeliveryStreamName'\] as string \| undefined;/,
+        fallback:
+          /DeliveryStreamName:\s+deliveryStreamName \|\| generatedNameFor\('AWS::KinesisFirehose::DeliveryStream', logicalId\)/,
+      },
+      'AWS::Glue::Connection': {
+        file: 'glue-provider.ts',
+        read: /const connectionInput = properties\['ConnectionInput'\] as Record<string, unknown> \| undefined;/,
+        fallback:
+          /const name =\s+\(connectionInput\['Name'\] as string \| undefined\) \?\?\s+generatedNameFor\('AWS::Glue::Connection', logicalId\);/,
+      },
+    };
+    for (const [type, pin] of Object.entries(VIA_VARIABLE)) {
+      const src = readFileSync(join(dir, pin.file), 'utf-8');
+      expect(src, type).toMatch(pin.read);
+      expect(src, type).toMatch(pin.fallback);
+    }
     const mismatched: string[] = [];
     let checked = 0;
     for (const f of files) {
       const src = readFileSync(join(dir, f), 'utf-8');
       for (const m of src.matchAll(/generatedNameFor\(\s*'([^']+)'/g)) {
-        if (m[1] === 'AWS::CodeBuild::Project') continue;
+        if (m[1] === 'AWS::CodeBuild::Project' || m[1]! in VIA_VARIABLE) continue;
         const reads = [...src.slice(Math.max(0, m.index - 400), m.index).matchAll(/properties\['(\w+)'\]/g)];
         checked++;
         if (reads.at(-1)?.[1] !== fallbackNamePropertyFor(m[1]!)) mismatched.push(`${f}: ${m[1]}`);

@@ -244,6 +244,44 @@
       "nameProperty": "Name",
       "schemaMaxLength": 64,
       "schemaPattern": "^[\\.\\-_A-Za-z0-9]+$"
+    },
+    "AWS::EC2::SecurityGroup": {
+      "nameProperty": "GroupName",
+      "apiMaxLength": 255,
+      "apiForbiddenPrefix": "sg-",
+      "apiSource": "CreateSecurityGroup GroupName: up to 255 characters, cannot start with sg-"
+    },
+    "AWS::CloudTrail::Trail": {
+      "nameProperty": "TrailName",
+      "schemaMaxLength": 128,
+      "schemaMinLength": 3,
+      "schemaPattern": "(^[a-zA-Z0-9]$)|(^[a-zA-Z0-9]([a-zA-Z0-9\\._-])*[a-zA-Z0-9]$)"
+    },
+    "AWS::Glue::Job": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateJob Name"
+    },
+    "AWS::Glue::Crawler": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateCrawler Name"
+    },
+    "AWS::Glue::Connection": {
+      "nameProperty": "ConnectionInput.Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateConnection ConnectionInput.Name"
+    },
+    "AWS::Glue::Trigger": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateTrigger Name"
+    },
+    "AWS::KinesisFirehose::DeliveryStream": {
+      "nameProperty": "DeliveryStreamName",
+      "schemaMaxLength": 64,
+      "schemaMinLength": 1,
+      "schemaPattern": "[a-zA-Z0-9._-]+"
     }
   }
 }

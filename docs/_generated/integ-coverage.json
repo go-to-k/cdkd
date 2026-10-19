@@ -2308,6 +2308,7 @@
         "emr-instance-fleets",
         "export",
         "fsx-lustre",
+        "generated-name-security-group",
         "lambda-capacity-provider-default-name",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2395,6 +2396,10 @@
         ],
         "fsx-lustre": [
           "l2",
+          "literal"
+        ],
+        "generated-name-security-group": [
+          "l1",
           "literal"
         ],
         "lambda-capacity-provider-default-name": [
@@ -3023,6 +3028,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "generated-name-lifecycle",
+        "generated-name-security-group",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -3166,6 +3172,10 @@
         ],
         "generated-name-lifecycle": [
           "l2"
+        ],
+        "generated-name-security-group": [
+          "l1",
+          "literal"
         ],
         "import-attribute-readback-final": [
           "l1"

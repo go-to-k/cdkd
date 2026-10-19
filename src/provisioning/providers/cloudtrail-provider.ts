@@ -46,6 +46,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /**
  * The selector set a trail carries when its template declares NO
@@ -301,7 +302,9 @@ export class CloudTrailProvider implements ResourceProvider {
     try {
       const result = await this.getCreateClient().send(
         new CreateTrailCommand({
-          Name: trailName ?? logicalId,
+          // go-to-k/cdkd#5095: a stack with an instance id generates the
+          // name; a legacy stack keeps the bare logical id.
+          Name: trailName ?? generatedNameFor('AWS::CloudTrail::Trail', logicalId),
           S3BucketName: s3BucketName,
           S3KeyPrefix: s3KeyPrefix,
           IsMultiRegionTrail: isMultiRegionTrail,

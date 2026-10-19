@@ -1212,6 +1212,11 @@
       ]
     },
     {
+      "name": "generated-name-security-group",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "getatt-fallback-guard",
       "annotated": false,
       "scenarios": []
@@ -3457,6 +3462,7 @@
     "export-nested-stack",
     "fallback-recreate-children",
     "fifo-sqs-event-source",
+    "generated-name-security-group",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",
     "glue-securityconfig-replace",

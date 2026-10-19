@@ -56,6 +56,7 @@ import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /**
  * `true` for `undefined` / `null` (ABSENT, the empty list) or a list of tag
@@ -219,7 +220,10 @@ export class FirehoseProvider implements ResourceProvider {
     let createdStreamName: string | undefined;
     try {
       const input: CreateDeliveryStreamCommandInput = {
-        DeliveryStreamName: deliveryStreamName || logicalId,
+        // go-to-k/cdkd#5095: a stack with an instance id generates the name;
+        // a legacy stack keeps the bare logical id.
+        DeliveryStreamName:
+          deliveryStreamName || generatedNameFor('AWS::KinesisFirehose::DeliveryStream', logicalId),
         DeliveryStreamType: deliveryStreamType as
           | 'DirectPut'
           | 'KinesisStreamAsSource'
