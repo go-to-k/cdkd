@@ -213,6 +213,57 @@ describe('ApiGatewayProvider', () => {
         expect(result.physicalId).toBe('ApiGatewayAccount');
         expect(mockSend).toHaveBeenCalledTimes(2);
       });
+
+      // Issue #1160: a CFn A/B in us-east-1 showed CloudFormation CLEARS a
+      // removed CloudWatchRoleArn, while UpdateAccount with an empty patch list
+      // keeps the role ARN set on the region's account.
+      it('clears CloudWatchRoleArn when the template removes it (#1160)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyAccount',
+          'ApiGatewayAccount',
+          resourceType,
+          {},
+          { CloudWatchRoleArn: 'arn:aws:iam::123456789012:role/OldRole' }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('UpdateAccountCommand');
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/cloudwatchRoleArn', value: '' },
+        ]);
+      });
+
+      it('sends the clear the deploy engine injected for a removed CloudWatchRoleArn (#1160)', async () => {
+        // The engine runs prepareRemovalForUpdate first: it injects the
+        // declared `''` and sets removedProperties, so the provider must not
+        // re-derive and must forward the injected value verbatim.
+        expect(provider.removalDefaults.get(resourceType)?.get('CloudWatchRoleArn')).toBe('');
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyAccount',
+          'ApiGatewayAccount',
+          resourceType,
+          { CloudWatchRoleArn: '' },
+          { CloudWatchRoleArn: 'arn:aws:iam::123456789012:role/OldRole' },
+          { removedProperties: new Set(['CloudWatchRoleArn']) }
+        );
+
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([
+          { op: 'replace', path: '/cloudwatchRoleArn', value: '' },
+        ]);
+      });
+
+      it('sends no patch when CloudWatchRoleArn was never declared (#1160)', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update('MyAccount', 'ApiGatewayAccount', resourceType, {}, {});
+
+        expect(mockSend.mock.calls[0][0].input.patchOperations).toEqual([]);
+      });
     });
 
     describe('delete', () => {

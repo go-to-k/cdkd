@@ -11,7 +11,7 @@ agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-co
 alb	2026-10-17T17:48:47Z	PASS	620	verify.sh	PR #5034 (#1160) 842d0d385; listener server.enabled kept false, Phase 2.5 listener back to SDK provider same ARN; destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
-apigateway	2026-10-18T18:32:28Z	PASS	117	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
+apigateway	2026-10-19T16:19:45Z	PASS	120	verify.sh	PR #5106 (#1160) Account CloudWatchRoleArn removal clears role; pre-fix probe RED at removal assertion; us-east-1; rc ok, orph clean
 apigatewayv2-update-removal	2026-10-18T18:32:28Z	PASS	181	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-stage-props	2026-10-19T04:30:40Z	PASS	90	verify.sh	rc ok, orph clean, own CW role+Account (#5083)
