@@ -5,11 +5,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { updateByReplacement } from './update-replace.js';
 import { getCurrentStackInstanceId, withNameGeneration } from '../../provisioning/resource-name.js';
-import {
-  nameGenerationCarriedFrom,
-  nameGenerationField,
-  nextNameGeneration,
-} from '../../state/name-generation.js';
+import { replacementNameGeneration } from '../../state/name-generation.js';
 import { updateInPlace } from './update-in-place.js';
 import {
   noteSecretNamedRecord,
@@ -1786,11 +1782,12 @@ export async function provisionUpdate(
     // holder proof); the old resource's delete names it by physical id. Not
     // for a resource that went with its parent: the old copy is gone, and the
     // re-create keeps its name.
-    const stackInstanceId = getCurrentStackInstanceId();
-    const nextGeneration =
-      stackInstanceId !== undefined && lostWithParent === undefined
-        ? nextNameGeneration(currentResource, logicalId, stackInstanceId)
-        : undefined;
+    const { generation: nextGeneration, fields: nameGenerationFields } = replacementNameGeneration(
+      currentResource,
+      logicalId,
+      getCurrentStackInstanceId(),
+      lostWithParent !== undefined
+    );
     if (nextGeneration !== undefined) {
       engine.replacementRun.attemptedNameGeneration.set(logicalId, nextGeneration);
     }
@@ -1818,10 +1815,7 @@ export async function provisionUpdate(
         updateReplacePolicy,
         updateSecrets,
         lostWithParent,
-        nameGenerationFields:
-          nextGeneration === undefined
-            ? nameGenerationCarriedFrom(currentResource)
-            : nameGenerationField(nextGeneration),
+        nameGenerationFields,
       });
     return markRestored(
       await (nextGeneration === undefined

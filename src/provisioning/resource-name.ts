@@ -68,14 +68,18 @@ export function withStackScope<T>(scope: StackScope, fn: () => T): T;
 export function withStackScope<T>(scope: StackScope, fn: () => T | Promise<T>): T | Promise<T> {
   // Copied: a caller mutating its object afterwards must not rename anything.
   // The generations map is taken as given (read-only, built per state read):
-  // a per-resource scope must not pay a copy of it.
-  return stackScopeStore.run(
-    {
-      stackName: scope.stackName,
-      stackInstanceId: scope.stackInstanceId,
-      nameGenerations: scope.nameGenerations,
-    },
-    fn
+  // a per-resource scope must not pay a copy of it. An outer
+  // `withNameGeneration` binding belongs to the outer stack (a parent's
+  // replacement around a nested child's deploy): it does not reach in.
+  return nameGenerationStore.exit(() =>
+    stackScopeStore.run(
+      {
+        stackName: scope.stackName,
+        stackInstanceId: scope.stackInstanceId,
+        nameGenerations: scope.nameGenerations,
+      },
+      fn
+    )
   );
 }
 

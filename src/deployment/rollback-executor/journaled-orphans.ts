@@ -290,6 +290,11 @@ export async function deleteJournaledOrphans(
      * schema v11 holds such a value in plaintext. `cdkd destroy` re-binds them.
      */
     noEchoValues?: RecordedSecretValues | undefined;
+    /**
+     * go-to-k/cdkd#5064 phase 2: the stack's retired name generations, so a
+     * re-added logical id's name derives as its record's create did.
+     */
+    retiredNameGenerations?: Record<string, number> | undefined;
   } = {}
 ): Promise<{
   failures: number;
@@ -352,15 +357,22 @@ export async function deleteJournaledOrphans(
     const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
       withPrintingSecrets(printing, () =>
-        withStackScope(nameScopeOf(stackName, stackInstanceId, { resources: stateResources }), () =>
-          replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
-            // A destroy run, not a rollback: its own run events frame these
-            // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
-            emitEnvelope: false,
-            inlinePolicyWriters,
-            forDestroy: true,
-            ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
-          })
+        withStackScope(
+          nameScopeOf(stackName, stackInstanceId, {
+            resources: stateResources,
+            ...(options.retiredNameGenerations !== undefined && {
+              retiredNameGenerations: options.retiredNameGenerations,
+            }),
+          }),
+          () =>
+            replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
+              // A destroy run, not a rollback: its own run events frame these
+              // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
+              emitEnvelope: false,
+              inlinePolicyWriters,
+              forDestroy: true,
+              ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
+            })
         )
       );
     const result =
@@ -463,6 +475,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
   stateResources: Record<string, ResourceState> | undefined;
   /** The record's rollback-orphan records (the caller guarded the container). */
   rollbackOrphans: unknown;
+  /** go-to-k/cdkd#5064 phase 2: the record's retired name generations. */
+  retiredNameGenerations?: Record<string, number> | undefined;
   /** This deploy's completed ops, newer than every segment. */
   newerOperations: readonly CompletedOperation[];
   /** This deploy's run id (see `loadJournaledOrphans`). */
@@ -586,7 +600,11 @@ export async function settleJournaledOrphansOnSuccess(args: {
         // proved are not asked again (no second identity read).
         { ...ctx, writtenThisRun, foreignHolder: args.foreignHolder, orphanDeleteProven: proven },
         // The warning below names `--drop-failed` itself.
-        { pointAtDrop: false, ...(args.isInterrupted && { isInterrupted: args.isInterrupted }) }
+        {
+          pointAtDrop: false,
+          ...(args.isInterrupted && { isInterrupted: args.isInterrupted }),
+          retiredNameGenerations: args.retiredNameGenerations,
+        }
       );
       leftInPlace = outcome.leftInPlace;
       failedDeletes = outcome.failedLogicalIds;

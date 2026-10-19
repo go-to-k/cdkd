@@ -186,15 +186,9 @@ describe('which creates are asked about', () => {
   // generation's name, so it is asked about like a create -- at that name.
   it('a replacement UPDATE with a generation is asked about, at the name derived under it', () => {
     const q = providerOf();
-    q.generatedCreateName.mockImplementation((_t: string, logicalId: string) =>
-      withStackScope(
-        {
-          stackName: 'App',
-          stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f',
-          nameGenerations: new Map(),
-        },
-        () => `gen-${logicalId}-${String(currentNameGeneration(logicalId))}`
-      )
+    q.generatedCreateName.mockImplementation(
+      (_t: string, logicalId: string) =>
+        `gen-${logicalId}-${String(currentNameGeneration(logicalId))}`
     );
     const guard = withStackScope(
       {
@@ -216,6 +210,30 @@ describe('which creates are asked about', () => {
     );
     expect(guard?.candidate('Repl')?.name).toBe('gen-Repl-2');
     expect(guard?.candidate('InPlace')).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5064: on a stack with an instance id what left the stack
+  // licenses nothing -- a rollback orphan included.
+  it('a rollback orphan licenses its holder on a legacy stack only', async () => {
+    const orphans = [
+      {
+        logicalId: 'A',
+        orphanedAt: 1,
+        state: { physicalId: 'held-A', resourceType: QUEUE, properties: {} },
+      },
+    ];
+    const legacy = GeneratedNameGuard.start(
+      inputOf([create('A', QUEUE)], { [QUEUE]: providerOf({ 'gen-A': 'held-A' }) }, { orphans })
+    );
+    expect(await legacy?.verdict('A')).toMatchObject({ kind: 'licensed', via: 'orphan' });
+    const idStack = GeneratedNameGuard.start(
+      inputOf(
+        [create('A', QUEUE)],
+        { [QUEUE]: providerOf({ 'gen-A': 'held-A' }) },
+        { orphans, newScheme: true }
+      )
+    );
+    expect(await idStack?.verdict('A')).toMatchObject({ kind: 'held' });
   });
 
   it('a redeploy with no creates reads and writes nothing', () => {

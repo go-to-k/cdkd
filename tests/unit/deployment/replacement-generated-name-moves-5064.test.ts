@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import { replacementGeneratedNameMoves } from '../../../src/deployment/replacement-name-holder.js';
 import { planOrphanAdoption } from '../../../src/deployment/orphan-adoption.js';
+import { generatedReplacementHolderAdvice } from '../../../src/deployment/deploy-engine/name-collision.js';
 import {
   stackInstanceNameSuffix,
   withNameGeneration,
@@ -99,6 +100,38 @@ describe('replacementGeneratedNameMoves', () => {
   });
 });
 
+describe('generatedReplacementHolderAdvice', () => {
+  const base = {
+    stackName: 'App',
+    logicalId: 'Table',
+    change: { desiredName: 'App-Table-abc', generated: true as const },
+    oldPhysicalId: 'App-Table-old',
+    mask: (text: string) => text,
+  };
+  it('names the import command for a top-level stack', () => {
+    const text = generatedReplacementHolderAdvice(base);
+    expect(text).toContain("cdkd import App --resource 'Table=App-Table-abc'");
+    expect(text).toContain('delete App-Table-old by hand');
+  });
+  it('a nested child names the top-level stack, never an unrunnable command', () => {
+    const text = generatedReplacementHolderAdvice({ ...base, stackName: 'App~Child' });
+    expect(text).toContain('through the top-level stack');
+    expect(text).not.toContain('cdkd import App~Child');
+  });
+  it('a command the mask would change is withheld', () => {
+    const text = generatedReplacementHolderAdvice({
+      ...base,
+      mask: (t: string) => t.replaceAll('App-Table-abc', '***'),
+    });
+    expect(text).toContain('adopt it with `cdkd import`');
+    expect(text).not.toContain('App-Table-abc');
+  });
+  it('says nothing for a name that is not a generated move', () => {
+    expect(generatedReplacementHolderAdvice({ ...base, change: { desiredName: 'x' } })).toBe('');
+    expect(generatedReplacementHolderAdvice({ ...base, change: undefined })).toBe('');
+  });
+});
+
 describe('planOrphanAdoption on a stack with an instance id', () => {
   const record: StackOrphanRecord = {
     logicalId: 'Kept',
@@ -145,6 +178,30 @@ describe('planOrphanAdoption on a stack with an instance id', () => {
     const outcome = await plan(true, ['Kept']).result;
     expect(outcome.remaining).toEqual([]);
     expect(outcome.warnings).toEqual([]);
+  });
+
+  it('warns only for a record the template declares again with the same type', async () => {
+    const run = async (resources: Record<string, unknown>) => {
+      const outcome = await planOrphanAdoption({
+        records: [record],
+        managedLogicalIds: new Set(),
+        template: { Resources: resources } as unknown as CloudFormationTemplate,
+        stackName: 'App',
+        region: 'us-east-1',
+        getProvider: () => ({}) as never,
+        nameProperties: () => ['QueueName'],
+        readSiblingClaims: async () => new Set(),
+        logger: { debug: () => undefined },
+        newScheme: true,
+      });
+      return outcome;
+    };
+    const undeclared = await run({});
+    expect(undeclared.warnings).toEqual([]);
+    expect(undeclared.remaining).toEqual([record]);
+    const retyped = await run({ Kept: { Type: 'AWS::SNS::Topic', Properties: {} } });
+    expect(retyped.warnings).toEqual([]);
+    expect(retyped.remaining).toEqual([record]);
   });
 
   it('a legacy stack still adopts (unchanged)', async () => {

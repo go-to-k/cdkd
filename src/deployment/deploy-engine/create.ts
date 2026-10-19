@@ -430,11 +430,19 @@ export async function guardedReplacementCreate<T>(
     stackName: string;
     createdVia: ProvisionedBy | undefined;
     resolvedProps: Record<string, unknown>;
+    /**
+     * The create keeps the old record's generation (a resource that went with
+     * its re-created parent): the guard planned the NEXT one's name, which this
+     * create does not send, so it is not asked.
+     */
+    keepsName?: boolean;
   },
   create: () => Promise<T>
 ): Promise<T> {
   const guard = engine.generatedNameGuard;
-  if (guard?.candidate(input.logicalId) === undefined) return create();
+  if (input.keepsName === true || guard?.candidate(input.logicalId) === undefined) {
+    return create();
+  }
   await refuseUnlicensedGeneratedName(engine, input);
   guard.noteSent(input.logicalId);
   let result: T;

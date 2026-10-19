@@ -622,12 +622,16 @@ assert_log_has "D2" "cdkd import" "interrupted earlier attempt of this replaceme
 fetch_state "D2 after the refusal"
 assert_eq "D2: nothing moved (Table still at generation 1)" "$(physical Table)" "${TABLE_GEN1}"
 assert_eq "D2: nothing was deleted (generation 1's table keeps its key)" "$(table_key "${TABLE_GEN1}")" "id"
+assert_eq "D2: the refused replacement raised the record past generation 2" "$(high_of Table)" "2"
 run_cdkd ok "D2 cdkd import" "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --resource "Table=${TABLE_GEN2}" --force --yes
 fetch_state "D2 after the import"
 assert_eq "D2: Table now names generation 2's table" "$(physical Table)" "${TABLE_GEN2}"
-assert_eq "D2: an imported record carries no generation of its own" "$(generation_of Table)" "0"
-assert_eq "D2: it remembers the generation the replaced record reached" "$(high_of Table)" "1"
+assert_eq "D2: an imported record carries no generation of its own" \
+  "$(state_field '.resources.Table | has("nameGeneration")')" "false"
+# The refused re-run raised the record past generation 2 (a failed replacement
+# never asks for its name again); the import keeps that.
+assert_eq "D2: it remembers the generation the replaced record reached" "$(high_of Table)" "2"
 deploy_local ok "D2 no-op after the import"
 fetch_state "D2 no-op"
 assert_eq "D2: the no-op kept the imported table" "$(physical Table)" "${TABLE_GEN2}"

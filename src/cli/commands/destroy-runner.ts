@@ -72,7 +72,7 @@ import {
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { withStackScope } from '../../provisioning/resource-name.js';
-import { nameScopeOf } from '../../state/name-generation.js';
+import { nameScopeOf, retiredNameGenerationsLeaving } from '../../state/name-generation.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   shouldRetainResource,
@@ -1775,6 +1775,10 @@ async function destroyStackInRegion(
     return {
       ...rest,
       ...stackInstanceIdCarriedFrom(state),
+      // go-to-k/cdkd#5064 phase 2: a partial destroy keeps the record; what it
+      // deleted or kept left the stack, so a redeploy re-adding a logical id
+      // asks for a name no earlier copy held.
+      ...retiredNameGenerationsLeaving(state, remainingResources),
       ...(keepEvidence && _imports !== undefined && { imports: _imports }),
       ...(keepEvidence && _outputReads !== undefined && { outputReads: _outputReads }),
       resources: { ...remainingResources },
@@ -1897,7 +1901,11 @@ async function destroyStackInRegion(
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
         },
-        { isInterrupted: () => lock.interrupted, noEchoValues }
+        {
+          isInterrupted: () => lock.interrupted,
+          noEchoValues,
+          retiredNameGenerations: state.retiredNameGenerations,
+        }
       );
       result.errorCount += orphanOutcome.failures;
       journaledOrphanFailures = orphanOutcome.failures;

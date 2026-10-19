@@ -2,8 +2,8 @@ import { CrossPrefixGuard } from '../../state/stack-registry.js';
 import {
   nameGenerationCarriedFrom,
   nameGenerationHighWaterOf,
-  nameGenerationReachedField,
 } from '../../state/name-generation.js';
+import { isNameGeneration } from '../../provisioning/resource-name.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { constructPathOf } from '../../analyzer/destructive-changes.js';
@@ -2497,7 +2497,11 @@ export function buildStackState(
       // generation the replaced record reached; the next replacement goes past
       // that and any generation whose name the adopted one already carries
       // (`nextNameGeneration`).
-      ...importedNameGenerationFields(prior, row),
+      ...importedNameGenerationFields(
+        prior,
+        row,
+        existingState?.retiredNameGenerations?.[row.logicalId]
+      ),
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
@@ -4920,16 +4924,26 @@ function constructPathField(path: string | undefined): { constructPath?: string 
  */
 export function importedNameGenerationFields(
   prior: ResourceState | null | undefined,
-  row: { logicalId: string; physicalId?: string | undefined }
+  row: { logicalId: string; physicalId?: string | undefined },
+  /** The logical id's retired generation, when an earlier record of it left the stack. */
+  retired?: unknown
 ): Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'> {
-  if (prior === null || typeof prior !== 'object') return {};
+  // A copy that left the stack may still hold that generation's name (Retain):
+  // the next replacement goes past it.
+  const retiredReached = isNameGeneration(retired) ? retired : 0;
+  const reachedField = (reached: number): Pick<ResourceState, 'nameGenerationHigh'> =>
+    reached === 0 ? {} : { nameGenerationHigh: reached };
+  if (prior === null || typeof prior !== 'object') return reachedField(retiredReached);
   try {
-    if (prior.physicalId !== row.physicalId)
-      return nameGenerationReachedField(prior, row.logicalId);
+    if (prior.physicalId !== row.physicalId) {
+      return reachedField(
+        Math.max(retiredReached, nameGenerationHighWaterOf(prior, row.logicalId))
+      );
+    }
     // Read first: a malformed value is dropped, not carried into the repair.
     nameGenerationHighWaterOf(prior, row.logicalId);
     return nameGenerationCarriedFrom(prior);
   } catch {
-    return {};
+    return reachedField(retiredReached);
   }
 }

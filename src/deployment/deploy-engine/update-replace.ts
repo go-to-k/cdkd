@@ -668,6 +668,7 @@ export async function updateByReplacement(
           stackName,
           createdVia: replaceDecision.provisionedBy,
           resolvedProps,
+          keepsName: lostWithParent !== undefined,
         },
         () =>
           engine.withRetry(
@@ -828,7 +829,15 @@ export async function updateByReplacement(
                   logicalId,
                   change: nameChange,
                   oldPhysicalId: currentResource.physicalId,
-                  mask: (value) => maskSecretsInText(value, updateSecrets),
+                  // The printing bag too: the old name can be secret-derived.
+                  mask: (value) =>
+                    maskSecretsInText(
+                      value,
+                      unionOfSecretBags([
+                        updateSecrets,
+                        printingSecretsFor(engine.secretsRun, logicalId),
+                      ])
+                    ),
                 }) +
                 ` Underlying collision: ${createMsg}`,
               updateSecrets

@@ -686,6 +686,7 @@ export async function settleJournalAfterSuccess(
         region: deps.stackRegion,
         stateResources: finalResources,
         rollbackOrphans: previousState.orphans,
+        retiredNameGenerations: previousState.retiredNameGenerations,
         newerOperations: completedOperations,
         ...(deployRunId !== undefined && { deployRunId }),
         foreignHolder: foreignHolderFor({ stackName, region: deps.stackRegion }),
@@ -727,6 +728,7 @@ export async function settleJournalAfterSuccess(
           region: deps.stackRegion,
           stateResources: childState?.resources,
           rollbackOrphans: childState?.orphans,
+          retiredNameGenerations: childState?.retiredNameGenerations,
           // The child's own success appended its completed ops as a
           // `nested-pending-parent` segment of this run (`deployRunId`).
           newerOperations: [],
