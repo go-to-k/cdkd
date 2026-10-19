@@ -8,25 +8,30 @@
 # back, and repeats. The reporter's only way out was hand-deleting resources
 # through the AWS API.
 #
-# go-to-k/cdkd#5064 changed what a whole-stack orphan / destroy does: a
-# generated name carries the stack instance suffix, and a stack whose record
-# was deleted gets a NEW id at its next deploy, so it never collides with what
-# its predecessor left behind (CloudFormation parity). The collision this arm
-# needs therefore comes from `state orphan --resource`, which drops ONE record
-# and keeps the stack's lifetime; the new-lifetime behavior is asserted on the
-# adoption arm (phases 11b-11c).
+# go-to-k/cdkd#5064 ended that loop on a stack with a stack instance id, as
+# CloudFormation does: a generated name carries a suffix hashing the id, the
+# logical id and the record's NAME GENERATION, and a record that leaves the
+# stack (a rollback's Retain orphan, `state orphan --resource`) retires its
+# generation, so the next create of that logical id asks for the NEXT
+# generation's name and never collides with what was left behind. A stack whose
+# record was deleted gets a new id altogether (phases 11b-11c).
 #
-# PASS CONDITION is not "the deploy succeeds" — a redeploy over an orphan MUST
-# fail. What this asserts is that cdkd NAMES the cause and that the remedy it
-# prints actually WORKS:
+# The #2902 DIAGNOSIS still matters for a create whose derived name IS held —
+# by a resource an interrupted earlier attempt created, say. This arm plants
+# such a holder on the name the redeploy will derive (phase 2b) and asserts
+# that cdkd NAMES the cause and that the remedy it prints actually WORKS:
 #
-#   1. deploy               — a role under a cdkd-GENERATED name
+#   1. deploy               — a role under a cdkd-GENERATED name (generation 0)
 #   2. state orphan --resource — drop the role's record (the stack keeps its
-#                            record and its instance id), leave the role in AWS
-#   3. redeploy             — must FAIL, and must print the diagnosis + command
+#                            record and its instance id, and retires the
+#                            role's generation 0), leave the role in AWS
+#   2b. plant a role out of band on the generation-1 name the redeploy derives
+#   3. redeploy             — must FAIL on that name, and must print the
+#                            diagnosis + command; the orphan is untouched
 #   4. run THAT command     — parsed out of the message, not hand-written
 #   5. redeploy             — must now SUCCEED (the loop is broken)
-#   6. destroy + gone probe
+#   6. destroy + gone probe; the orphan (no record names it) is deleted by
+#      the fixture
 #
 # Step 4 is the point. A message naming a remedy whose precondition the code
 # never checks is issue #2610's defect class, so this runs the command the
@@ -94,6 +99,45 @@ queue_state() { # usage: queue_state <url> <exists|gone>
   exit 1
 }
 
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being the stackInstanceId
+# of the state.json at <state-key>. Read from S3 into node's stdin: the id is
+# never printed.
+state_name_suffix() { # usage: state_name_suffix <state-key> <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/$1" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$2" "$3"
+}
+
+# Best-effort delete of a role and its policies, by name (cleanup only).
+delete_role_best_effort() { # usage: delete_role_best_effort <name>
+  (
+  set +eu
+  [ -n "$1" ] || exit 0
+  for p in $(aws iam list-role-policies --role-name "$1" \
+    --query 'PolicyNames[]' --output text 2>/dev/null); do
+    aws iam delete-role-policy --role-name "$1" --policy-name "${p}" >/dev/null 2>&1
+  done
+  for a in $(aws iam list-attached-role-policies --role-name "$1" \
+    --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+    aws iam detach-role-policy --role-name "$1" --policy-arn "${a}" >/dev/null 2>&1
+  done
+  aws iam delete-role --role-name "$1" >/dev/null 2>&1
+  )
+}
+
 cd "$(dirname "$0")"
 
 export AWS_PAGER=""
@@ -106,10 +150,19 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Resolved post-deploy; used by assertions + cleanup.
 ROLE_NAME=""
 ROLE_LOGICAL_ID=""
+# Phase 2b's out-of-band role on the name the redeploy generates (generation
+# 1), which phase 4 adopts and phase 6 destroys.
+SQUAT_ROLE_NAME=""
 REDEPLOY_LOG=""
 # The adoption arm (issue #2934) — a SECOND stack, so its own names.
 ADOPT_STACK="CdkdRetainOrphanAdoptExample"
 ADOPT_STATE_KEY="cdkd/${ADOPT_STACK}/${REGION}/state.json"
+# The role the phase 7 rollback orphans (RETAIN), which phase 9 no longer
+# takes back on a stack with a stack instance id (go-to-k/cdkd#5064); the
+# fixture deletes it itself after phase 10.
+ADOPT_ORPHAN_NAME=""
+# The role phase 9 creates beside it, under the next name generation; RETAIN
+# too, so phase 11's destroy keeps it and the cleanup deletes it by name.
 ADOPT_ROLE_NAME=""
 # The role the adoption stack's SECOND lifetime creates (phase 11b), retained
 # too by its destroy (phase 11c); the cleanup deletes it by name.
@@ -139,18 +192,10 @@ cleanup() {
       --yes
   fi
   # Belt-and-suspenders: the whole point of this fixture is a state record that
-  # no longer names the live role, so `state destroy` can legitimately miss it.
-  if [ -n "${ROLE_NAME}" ]; then
-    for p in $(aws iam list-role-policies --role-name "${ROLE_NAME}" \
-      --query 'PolicyNames[]' --output text 2>/dev/null); do
-      aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${p}" >/dev/null 2>&1
-    done
-    for a in $(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
-      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
-      aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${a}" >/dev/null 2>&1
-    done
-    aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
-  fi
+  # no longer names the live role, so `state destroy` can legitimately miss it
+  # — the orphan, and the out-of-band role phase 2b plants.
+  delete_role_best_effort "${ROLE_NAME}"
+  delete_role_best_effort "${SQUAT_ROLE_NAME}"
   # The adoption arm's stack. Its role carries RETAIN, so `state destroy`
   # deliberately leaves it standing — the by-name delete below is the only
   # thing that stops this fixture leaking a role per run.
@@ -160,20 +205,9 @@ cleanup() {
       --region "${REGION}" \
       --yes
   fi
-  if [ -n "${ADOPT_ROLE_NAME}" ]; then
-    for p in $(aws iam list-role-policies --role-name "${ADOPT_ROLE_NAME}" \
-      --query 'PolicyNames[]' --output text 2>/dev/null); do
-      aws iam delete-role-policy --role-name "${ADOPT_ROLE_NAME}" --policy-name "${p}" >/dev/null 2>&1
-    done
-    for a in $(aws iam list-attached-role-policies --role-name "${ADOPT_ROLE_NAME}" \
-      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
-      aws iam detach-role-policy --role-name "${ADOPT_ROLE_NAME}" --policy-arn "${a}" >/dev/null 2>&1
-    done
-    aws iam delete-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1
-  fi
-  if [ -n "${ADOPT_ROLE_NAME_2}" ]; then
-    aws iam delete-role --role-name "${ADOPT_ROLE_NAME_2}" >/dev/null 2>&1
-  fi
+  delete_role_best_effort "${ADOPT_ORPHAN_NAME}"
+  delete_role_best_effort "${ADOPT_ROLE_NAME}"
+  delete_role_best_effort "${ADOPT_ROLE_NAME_2}"
   for t in "${KEPT_TOPIC_ARN}" "${KEPT_TOPIC_ARN_2}"; do
     [ -n "${t}" ] && aws sns delete-topic --topic-arn "${t}" >/dev/null 2>&1
   done
@@ -265,13 +299,20 @@ if ! printf '%s' "${ROLE_NAME}" | grep -qE "^${ROLE_BASE}-[0-9a-f]{12}\$"; then
   echo "      the collision diagnosis under test would not fire for it" >&2
   exit 1
 fi
+# The derivation phase 2b aims its holder with must reproduce the name cdkd
+# minted at generation 0; a mismatch here is the derivation, not the arm.
+ROLE_SUFFIX_G0="$(state_name_suffix "${STATE_KEY}" "${ROLE_LOGICAL_ID}" 0)" || exit 1
+if [ "${ROLE_NAME}" != "${ROLE_BASE}-${ROLE_SUFFIX_G0}" ]; then
+  echo "FAIL: '${ROLE_NAME}' does not end in the generation-0 suffix derived from state.json's stackInstanceId (${ROLE_SUFFIX_G0})" >&2
+  exit 1
+fi
 
 # --- Phase 2: manufacture the orphan -----------------------------------
 echo "==> Phase 2: drop the role's state record, leave the role in AWS"
 # `--resource`, not the whole stack (go-to-k/cdkd#5064): the stack keeps its
-# record and so its instance id, and the redeploy below derives the SAME name.
-# A whole-stack orphan deletes the record; the next deploy would then be a new
-# lifetime, under a new name, and create a second role beside this one.
+# record and so its instance id, and the record that left retires the role's
+# generation 0 — so the redeploy derives the generation-1 name. A whole-stack
+# orphan deletes the record; the next deploy would then be a new lifetime.
 node "${LOCAL_DIST}" state orphan "${STACK}" --resource "${ROLE_LOGICAL_ID}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 ORPHANED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
@@ -280,7 +321,11 @@ if [ "$(printf '%s' "${ORPHANED_STATE}" | jq -r --arg k "${ROLE_LOGICAL_ID}" '.r
   exit 1
 fi
 if [ "$(printf '%s' "${ORPHANED_STATE}" | jq -r '.stackInstanceId // "" | length > 0')" != "true" ]; then
-  echo "FAIL: the stack record lost its stackInstanceId — the redeploy would be a new lifetime and could not collide" >&2
+  echo "FAIL: the stack record lost its stackInstanceId — the redeploy would be a new lifetime" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${ORPHANED_STATE}" | jq -r --arg k "${ROLE_LOGICAL_ID}" '.retiredNameGenerations[$k] // "none"')" != "0" ]; then
+  echo "FAIL: 'state orphan --resource' did not retire ${ROLE_LOGICAL_ID} at generation 0 (retiredNameGenerations)" >&2
   exit 1
 fi
 
@@ -288,14 +333,37 @@ if ! aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
   echo "FAIL: 'cdkd state orphan' deleted the AWS role — it must only drop state" >&2
   exit 1
 fi
-echo "    OK: role still live, state record gone"
+ROLE_CREATED="$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.CreateDate' --output text)"
+echo "    OK: role still live, state record gone, generation 0 retired"
+
+# --- Phase 2b: a holder on the name the redeploy derives ----------------
+# The orphan no longer collides (generation 0 is retired), so the diagnosis
+# needs a resource on the generation-1 name. Created with the template's own
+# trust policy and description, as an earlier attempt of this create would
+# have made it, so the adoption below changes nothing on it.
+ROLE_SUFFIX_G1="$(state_name_suffix "${STATE_KEY}" "${ROLE_LOGICAL_ID}" 1)" || exit 1
+SQUAT_CANDIDATE="${ROLE_BASE}-${ROLE_SUFFIX_G1}"
+if [ "${SQUAT_CANDIDATE}" = "${ROLE_NAME}" ]; then
+  echo "FAIL: generation 1's name equals generation 0's (${ROLE_NAME}) — the derivation is wrong" >&2
+  exit 1
+fi
+if ! gone_probe aws iam get-role --role-name "${SQUAT_CANDIDATE}"; then
+  echo "FAIL: ${SQUAT_CANDIDATE} exists before phase 2b planted it" >&2
+  exit 1
+fi
+echo "==> Phase 2b: plant a role on the generation-1 name ${SQUAT_CANDIDATE}"
+SQUAT_ROLE_NAME="${SQUAT_CANDIDATE}"
+aws iam create-role --role-name "${SQUAT_ROLE_NAME}" \
+  --description 'Resource whose cdkd-generated name the redeploy collides with' \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Action":"sts:AssumeRole","Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"}}]}' \
+  >/dev/null
 
 # --- Phase 3: the redeploy must FAIL, and must explain itself ----------
-echo "==> Phase 3: redeploy over the orphan (must fail WITH a diagnosis)"
+echo "==> Phase 3: redeploy over the held generation-1 name (must fail WITH a diagnosis)"
 REDEPLOY_LOG="$(mktemp)"
 if node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${REDEPLOY_LOG}" 2>&1; then
-  echo "FAIL: the redeploy SUCCEEDED over a live orphan — expected an already-exists failure" >&2
+  echo "FAIL: the redeploy SUCCEEDED over a live holder of ${SQUAT_ROLE_NAME} — expected an already-exists failure" >&2
   cat "${REDEPLOY_LOG}" >&2
   exit 1
 fi
@@ -315,7 +383,17 @@ if ! grep -q "is one cdkd DERIVED from" "${REDEPLOY_LOG}"; then
   cat "${REDEPLOY_LOG}" >&2
   exit 1
 fi
-echo "    OK: redeploy failed AND named the cause"
+# The diagnosis names the generation-1 name the create sent — not the orphan's.
+if ! grep -F "is one cdkd DERIVED from" "${REDEPLOY_LOG}" | grep -qF "(${SQUAT_ROLE_NAME})"; then
+  echo "FAIL: the diagnosis does not name ${SQUAT_ROLE_NAME}, the generation-1 name the redeploy derives:" >&2
+  grep -F "is one cdkd DERIVED from" "${REDEPLOY_LOG}" | sed 's/^/  /' >&2
+  exit 1
+fi
+if [ "$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.CreateDate' --output text)" != "${ROLE_CREATED}" ]; then
+  echo "FAIL: the orphaned role ${ROLE_NAME} was replaced or deleted by the failed redeploy" >&2
+  exit 1
+fi
+echo "    OK: redeploy failed on ${SQUAT_ROLE_NAME} AND named the cause; the orphan ${ROLE_NAME} is untouched"
 
 # --- Phase 4: run the command the MESSAGE printed ----------------------
 echo "==> Phase 4: follow cdkd's own remedy"
@@ -354,11 +432,11 @@ eval node '"${LOCAL_DIST}"' import '"${STACK}"' "${IMPORT_ARG}" \
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 REIMPORTED=$(echo "${STATE}" | jq -r --arg k "${ROLE_LOGICAL_ID}" '.resources[$k].physicalId // ""')
-if [ "${REIMPORTED}" != "${ROLE_NAME}" ]; then
-  echo "FAIL: after the advised import, state names '${REIMPORTED}', expected '${ROLE_NAME}'" >&2
+if [ "${REIMPORTED}" != "${SQUAT_ROLE_NAME}" ]; then
+  echo "FAIL: after the advised import, state names '${REIMPORTED}', expected '${SQUAT_ROLE_NAME}'" >&2
   exit 1
 fi
-echo "    OK: the advised command adopted the orphan back into state"
+echo "    OK: the advised command adopted ${SQUAT_ROLE_NAME} into state"
 
 # --- Phase 5: the loop is broken ---------------------------------------
 echo "==> Phase 5: redeploy again (must now SUCCEED)"
@@ -376,23 +454,33 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
-assert_gone "IAM role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}"
+assert_gone "IAM role ${SQUAT_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${SQUAT_ROLE_NAME}"
 echo "    OK: role gone"
+# The orphan of phase 2: no record names it, so the destroy must have left it,
+# and the fixture deletes it (it carries no policies).
+if [ "$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.CreateDate' --output text)" != "${ROLE_CREATED}" ]; then
+  echo "FAIL: the destroy replaced or deleted the orphaned role ${ROLE_NAME}, which no record names" >&2
+  exit 1
+fi
+aws iam delete-role --role-name "${ROLE_NAME}"
+assert_gone "the orphaned role ${ROLE_NAME} survived its own delete" aws iam get-role --role-name "${ROLE_NAME}"
+echo "    OK: orphan left by the destroy, then deleted by the fixture"
 
 # Nothing left for the cleanup trap to delete.
 ROLE_NAME=""
+SQUAT_ROLE_NAME=""
 
 # ---------------------------------------------------------------------------
 # The ADOPTION arm (issue #2934).
 #
-# Everything above proves the go-to-k/cdkd#2916 DIAGNOSIS: an orphan cdkd holds
-# no record for still stops the deploy, with advice. This arm proves the thing
-# that record buys — that a real rollback's orphan is re-adopted automatically
-# and the redeploy just works.
-#
-# The difference between the two arms is the difference the feature rests on:
-# above, the orphan is manufactured with `cdkd state orphan`, which writes NO
-# record. Here it comes from an actual failed deploy, which does.
+# Everything above proves the go-to-k/cdkd#2916 DIAGNOSIS: a create whose
+# derived name another resource holds stops the deploy, with advice. This arm
+# takes the orphan from an actual failed deploy, which writes an orphan
+# record. #2934 re-adopted that orphan automatically; on a stack with a stack
+# instance id (go-to-k/cdkd#5064, CloudFormation parity) the rollback retires
+# the orphan's name generation instead, and the redeploy creates a NEW role
+# under the next generation's name, leaves the orphan alone, and warns once
+# naming `cdkd import`. The fixture then deletes the orphan itself.
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -410,7 +498,7 @@ CDKD_TEST_ADOPT=fail node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
 # as "the role is missing" — accusing the feature instead of the fixture.
 # Taking it from the record also means these phases exercise the record itself.
 ADOPT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" - 2>/dev/null || echo '{}')"
-read -r ADOPT_LOGICAL_ID ADOPT_ROLE_NAME <<EOF
+read -r ADOPT_LOGICAL_ID ADOPT_ORPHAN_NAME <<EOF
 $(printf '%s' "${ADOPT_STATE}" | node -e '
 let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   let parsed = {};
@@ -419,23 +507,42 @@ let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   process.stdout.write((first?.logicalId ?? "") + " " + (first?.state?.physicalId ?? ""));
 });')
 EOF
-if [ -z "${ADOPT_ROLE_NAME}" ]; then
+if [ -z "${ADOPT_ORPHAN_NAME}" ]; then
   echo "FAIL: the rollback wrote no orphan record to ${ADOPT_STATE_KEY}."
-  echo "      Without it the redeploy cannot adopt and would collide instead,"
-  echo "      so a missing record means the feature is not wired."
+  echo "      Without it the redeploy has nothing to warn about, so a missing"
+  echo "      record means the feature is not wired."
   printf '%s\n' "${ADOPT_STATE}" | head -40
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-if ! aws iam get-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null 2>&1; then
-  echo "FAIL: the Retain role ${ADOPT_ROLE_NAME} is not in AWS after the failed deploy."
+if ! aws iam get-role --role-name "${ADOPT_ORPHAN_NAME}" >/dev/null 2>&1; then
+  echo "FAIL: the Retain role ${ADOPT_ORPHAN_NAME} is not in AWS after the failed deploy."
   echo "      Either the role was never created (the queue failed first, so the"
   echo "      dependsOn is not holding) or the rollback deleted it despite Retain."
   echo "      Either way the rest of this arm would assert nothing."
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-echo "    OK: ${ADOPT_ROLE_NAME} survived the rollback"
+ADOPT_ORPHAN_CREATED="$(aws iam get-role --role-name "${ADOPT_ORPHAN_NAME}" --query 'Role.CreateDate' --output text)"
+echo "    OK: ${ADOPT_ORPHAN_NAME} survived the rollback"
+
+# go-to-k/cdkd#5064: the failed FIRST deploy still wrote the stack's instance
+# id, the orphan holds the generation-0 name derived from it, and the rollback
+# retired that generation — which is what sends phase 9 to a new name.
+ADOPT_BASE="${ADOPT_STACK}-${ADOPT_LOGICAL_ID}"
+ADOPT_BASE="${ADOPT_BASE:0:51}"
+ADOPT_BASE="${ADOPT_BASE%%-}"
+ADOPT_SUFFIX_G0="$(state_name_suffix "${ADOPT_STATE_KEY}" "${ADOPT_LOGICAL_ID}" 0)" || exit 1
+if [ "${ADOPT_ORPHAN_NAME}" != "${ADOPT_BASE}-${ADOPT_SUFFIX_G0}" ]; then
+  echo "FAIL: the orphan '${ADOPT_ORPHAN_NAME}' is not ${ADOPT_LOGICAL_ID}'s generation-0 name ${ADOPT_BASE}-${ADOPT_SUFFIX_G0}"
+  exit 1
+fi
+if [ "$(printf '%s' "${ADOPT_STATE}" | jq -r --arg k "${ADOPT_LOGICAL_ID}" '.retiredNameGenerations[$k] // "none"')" != "0" ]; then
+  echo "FAIL: the rollback did not retire ${ADOPT_LOGICAL_ID} at generation 0 (retiredNameGenerations)"
+  exit 1
+fi
+ADOPT_SUFFIX_G1="$(state_name_suffix "${ADOPT_STATE_KEY}" "${ADOPT_LOGICAL_ID}" 1)" || exit 1
+ADOPT_EXPECTED_G1="${ADOPT_BASE}-${ADOPT_SUFFIX_G1}"
 
 echo "==> Phase 8: the rollback must have RECORDED exactly one orphan"
 ORPHAN_COUNT="$(printf '%s' "${ADOPT_STATE}" | node -e '
@@ -446,20 +553,20 @@ let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
 });')"
 if [ "${ORPHAN_COUNT}" != "1" ]; then
   echo "FAIL: expected exactly 1 orphan record in ${ADOPT_STATE_KEY}, got ${ORPHAN_COUNT}."
-  echo "      Without the record the redeploy below cannot adopt, and would"
-  echo "      collide instead — so a 0 here means the feature is not wired."
+  echo "      Without the record the redeploy below has nothing to warn about"
+  echo "      — so a 0 here means the feature is not wired."
   printf '%s\n' "${ADOPT_STATE}" | head -40
   exit 1
 fi
 echo "    OK: state carries 1 orphan record"
 
 # --- Phase 8b: the PREVIEW must agree with the deploy -------------------
-# go-to-k/cdkd#2943. The state now holds a verified-adoptable record and the
-# role is live in AWS, which is the only window where this can be measured:
-# before the rollback there is no record, and after Phase 9 the record is
-# consumed. Unit tests stub the pre-pass; this is the arm where `provider.
-# import()` really runs against AWS from the diff path.
-echo "==> Phase 8b: cdkd diff must preview the adoption, not a create"
+# go-to-k/cdkd#2943, inverted by go-to-k/cdkd#5064: on a stack with a stack
+# instance id the deploy does NOT take the orphan back (phase 9 creates a new
+# role), so the diff must not preview an adoption either. The state holds the
+# orphan record and the role is live in AWS — the window where an adoption
+# preview could appear at all.
+echo "==> Phase 8b: cdkd diff must NOT preview an adoption on a stack with an instance id"
 DIFF_LOG="$(mktemp)"
 # `|| DIFF_RC=$?`, not a bare `$?` on the next line: `set -e` is armed, so a
 # non-zero exit aborts the script BEFORE the assignment and every diagnostic
@@ -475,61 +582,83 @@ if [ "${DIFF_RC}" != "0" ]; then
   rm -f "${DIFF_LOG}"
   exit 1
 fi
-# The annotation, not merely "an update appeared": a stack whose other
-# resources changed would show updates anyway, so the token is what ties the
-# row to the orphan record.
-# The SUMMARY line, not the per-row annotation. This fixture's adopted role
-# already matches the template, so its row is NO_CHANGE and renders nothing —
-# which is how the first version of this phase failed against real AWS while
-# every unit test was green, and why the summary line exists at all.
-if ! grep -q "resource(s) to adopt from a previous rollback" "${DIFF_LOG}"; then
-  echo "FAIL: cdkd diff did not report the adoption in its summary line. Without"
-  echo "      the pre-pass the diff reports a CREATE for a resource the deploy"
-  echo "      adopts — the preview/apply divergence go-to-k/cdkd#2943 closes."
-  echo "      Sentinel check follows: if the summary count below IS present,"
-  echo "      the diff ran and the adoption simply did not happen."
-  grep -c "to create, " "${DIFF_LOG}" || echo "      (no diff summary line at all - the run did not produce a preview)"
+# SENTINEL: the diff summary line (`N to create, ...`) proves a preview was
+# rendered at all, so the absence below is "no adoption previewed", never "the
+# diff printed nothing".
+if ! grep -q "to create, " "${DIFF_LOG}"; then
+  echo "FAIL: cdkd diff printed no summary line — the run did not produce a preview,"
+  echo "      so the absence of an adoption line below would prove nothing."
   tail -40 "${DIFF_LOG}"
   rm -f "${DIFF_LOG}"
   exit 1
 fi
-echo "    OK: cdkd diff previewed the adoption"
+if grep -q "resource(s) to adopt from a previous rollback" "${DIFF_LOG}"; then
+  echo "FAIL: cdkd diff previewed an adoption of the rollback orphan on a stack with"
+  echo "      a stack instance id, where the deploy creates a new resource instead"
+  echo "      (go-to-k/cdkd#5064) — the preview/apply divergence go-to-k/cdkd#2943 closed."
+  tail -40 "${DIFF_LOG}"
+  rm -f "${DIFF_LOG}"
+  exit 1
+fi
+echo "    OK: cdkd diff previews no adoption"
 rm -f "${DIFF_LOG}"
 
-echo "==> Phase 9: redeploy with the failure repaired (must SUCCEED by adopting)"
+echo "==> Phase 9: redeploy with the failure repaired (must SUCCEED with a NEW role, leaving the orphan)"
 CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${ADOPT_LOG}" 2>&1 || {
-  echo "FAIL: the redeploy did not succeed. This is the loop the feature closes —"
-  echo "      an already-exists collision here means adoption never fired."
+  echo "FAIL: the redeploy did not succeed. On a stack with a stack instance id the"
+  echo "      orphan's generation is retired, so the create asks for a new name —"
+  echo "      an already-exists collision here means it asked for the orphan's."
   tail -40 "${ADOPT_LOG}"
   exit 1
 }
-if ! grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then
-  echo "FAIL: the redeploy succeeded but never announced the adoption."
-  echo "      A green deploy alone does not discriminate: it also passes if the"
-  echo "      role had been deleted and simply re-created, which is the outcome"
-  echo "      this feature exists to avoid."
+# The warning: the sentinel is its `cdkd import` remedy clause, the markers
+# are the "does not take it back" statement and the orphan's name, all on the
+# warning's one line.
+if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
+  echo "FAIL: the redeploy did not warn that the rollback's orphan is not taken back (no 'cdkd import' remedy line)"
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-echo "    OK: redeploy succeeded and announced the adoption"
-
-echo "==> Phase 10: the record is consumed and the role is managed again"
-ADOPT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" - 2>/dev/null || echo '{}')"
-AFTER="$(printf '%s' "${ADOPT_STATE}" | node -e '
-let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
-  let parsed = {};
-  try { parsed = JSON.parse(raw || "{}"); } catch { parsed = {}; }
-  const orphans = (parsed.orphans ?? []).length;
-  const adopted = parsed.resources?.[process.argv[1]] ? "yes" : "no";
-  process.stdout.write(orphans + " " + adopted);
-});' "${ADOPT_LOGICAL_ID}")"
-if [ "${AFTER}" != "0 yes" ]; then
-  echo "FAIL: expected '0 yes' (record consumed, role back under management), got '${AFTER}'."
-  printf '%s\n' "${ADOPT_STATE}" | head -40
+if ! grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | grep -F "This deploy does not take it back" | grep -qF "${ADOPT_ORPHAN_NAME}"; then
+  echo "FAIL: a 'cdkd import' remedy line is present but is not the orphan warning naming ${ADOPT_ORPHAN_NAME} (wording drifted?):"
+  grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | sed 's/^/  /'
   exit 1
 fi
-echo "    OK: record consumed, AdoptedRole is in resources"
+if grep -q "Adopting ${ADOPT_LOGICAL_ID}" "${ADOPT_LOG}"; then
+  echo "FAIL: the redeploy re-adopted the rollback orphan on a stack with a stack instance id"
+  tail -40 "${ADOPT_LOG}"
+  exit 1
+fi
+echo "    OK: redeploy succeeded, warned about the orphan, adopted nothing"
+
+echo "==> Phase 10: a new role under the generation-1 name; the orphan is untouched"
+ADOPT_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" -)"
+ADOPT_ROLE_NAME="$(printf '%s' "${ADOPT_STATE}" | jq -r --arg k "${ADOPT_LOGICAL_ID}" '.resources[$k].physicalId // ""')"
+if [ "${ADOPT_ROLE_NAME}" != "${ADOPT_EXPECTED_G1}" ]; then
+  echo "FAIL: state records ${ADOPT_LOGICAL_ID} as '${ADOPT_ROLE_NAME}', expected the generation-1 name ${ADOPT_EXPECTED_G1}"
+  echo "      (the rollback retired generation 0, so the create takes generation 1)."
+  exit 1
+fi
+aws iam get-role --role-name "${ADOPT_ROLE_NAME}" >/dev/null
+if [ "$(aws iam get-role --role-name "${ADOPT_ORPHAN_NAME}" --query 'Role.CreateDate' --output text)" != "${ADOPT_ORPHAN_CREATED}" ]; then
+  echo "FAIL: the orphan ${ADOPT_ORPHAN_NAME} was replaced or deleted by the redeploy"
+  exit 1
+fi
+# The record is kept until a deploy finds its logical id managed again: this
+# one planned before the new role existed.
+AFTER="$(printf '%s' "${ADOPT_STATE}" | jq -r '[((.orphans // []) | length), ((.orphans // [])[0].state.physicalId // "")] | map(tostring) | join(" ")')"
+if [ "${AFTER}" != "1 ${ADOPT_ORPHAN_NAME}" ]; then
+  echo "FAIL: expected the orphan record to be kept, still naming ${ADOPT_ORPHAN_NAME} ('1 ${ADOPT_ORPHAN_NAME}'), got '${AFTER}'."
+  exit 1
+fi
+echo "    OK: ${ADOPT_ROLE_NAME} is managed; the orphan ${ADOPT_ORPHAN_NAME} and its record are kept"
+# The orphan has served its purpose: no record will ever delete it, so the
+# fixture does (a trivial role, no policies).
+aws iam delete-role --role-name "${ADOPT_ORPHAN_NAME}"
+assert_gone "the orphan ${ADOPT_ORPHAN_NAME} survived its own delete" \
+  aws iam get-role --role-name "${ADOPT_ORPHAN_NAME}"
+ADOPT_ORPHAN_NAME=""
 KEPT_TOPIC_ARN="$(printf '%s' "${ADOPT_STATE}" | jq -r '.resources.KeptTopic.physicalId // ""')"
 if [ -z "${KEPT_TOPIC_ARN}" ]; then
   echo "FAIL: the fixed deploy recorded no KeptTopic — phase 11b's new-lifetime arm would assert nothing"
@@ -597,9 +726,6 @@ aws sns get-topic-attributes --topic-arn "${KEPT_TOPIC_ARN}" >/dev/null || {
   echo "FAIL: the kept topic ${KEPT_TOPIC_ARN} is gone after the new lifetime's deploy"
   exit 1
 }
-ADOPT_BASE="${ADOPT_STACK}-${ADOPT_LOGICAL_ID}"
-ADOPT_BASE="${ADOPT_BASE:0:51}"
-ADOPT_BASE="${ADOPT_BASE%%-}"
 for n in "${ADOPT_ROLE_NAME}" "${ADOPT_ROLE_NAME_2}"; do
   if ! printf '%s' "${n}" | grep -qE "^${ADOPT_BASE}-[0-9a-f]{12}\$"; then
     echo "FAIL: '${n}' is not a generated ${ADOPT_BASE}-<12 hex> name"
@@ -778,4 +904,4 @@ cleanup
 trap - EXIT INT TERM
 
 echo ""
-echo "=== PASS: retain-orphan-redeploy integ (orphan diagnosed + advised remedy recovers; a recorded orphan is re-adopted automatically; a new lifetime leaves a kept resource alone; state orphan --resource drops one record) ==="
+echo "=== PASS: retain-orphan-redeploy integ (a held derived name diagnosed + advised remedy recovers; a rollback orphan is left alone and the redeploy creates under the next name generation; a new lifetime leaves a kept resource alone; state orphan --resource drops one record) ==="
