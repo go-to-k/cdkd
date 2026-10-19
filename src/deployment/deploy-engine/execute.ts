@@ -53,6 +53,7 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import { isReplacementNameRefusal } from './name-collision.js';
 import { abandonedRequestOf } from '../../provisioning/wait-abandoned.js';
 import {
   createdBeforeFailure,
@@ -369,6 +370,14 @@ export async function executeDeployment(
           // stack's to revert, and the record could only say "delete it
           // manually" about the resource that refused it — another owner's.
           const refused = isRefusedBeforeApplying(provisionError, logicalId);
+          // go-to-k/cdkd#5064: a replacement refused on its name made nothing
+          // under the generation it asked for, so that generation is neither
+          // journaled as reached nor raised past: the retry asks for the name
+          // the refusal names (and its `cdkd import` advice adopts).
+          const attemptedGeneration =
+            change.changeType === 'UPDATE' && !isReplacementNameRefusal(provisionError, logicalId)
+              ? engine.replacementRun.attemptedNameGeneration.get(logicalId)
+              : undefined;
           const statePhysicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;
           if (refused && change.changeType === 'CREATE' && statePhysicalId === undefined) {
             throw provisionError;
@@ -479,10 +488,9 @@ export async function executeDeployment(
             // asked for, which `--revert-failed` records as reached; on a
             // CREATE, the one its name was derived at, which the settle of an
             // abandoned Cloud Control create recognizes that name by.
-            ...(change.changeType === 'UPDATE' &&
-              engine.replacementRun.attemptedNameGeneration.has(logicalId) && {
-                nameGeneration: engine.replacementRun.attemptedNameGeneration.get(logicalId),
-              }),
+            ...(attemptedGeneration !== undefined && {
+              nameGeneration: attemptedGeneration,
+            }),
             ...(change.changeType === 'CREATE' &&
               getCurrentStackInstanceId() !== undefined && {
                 nameGeneration: currentNameGeneration(logicalId) ?? 0,
@@ -502,10 +510,6 @@ export async function executeDeployment(
           // past it however the failure is then rolled back (or left), so no
           // retry asks for that name again. A killed deploy never reaches here:
           // its re-run derives the same generation and meets its own resource.
-          const attemptedGeneration =
-            change.changeType === 'UPDATE'
-              ? engine.replacementRun.attemptedNameGeneration.get(logicalId)
-              : undefined;
           const heldNow = newResources[logicalId];
           if (attemptedGeneration !== undefined && heldNow !== undefined) {
             newResources[logicalId] = withNameGenerationReached(

@@ -6,7 +6,11 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import { replacementGeneratedNameMoves } from '../../../src/deployment/replacement-name-holder.js';
 import { planOrphanAdoption } from '../../../src/deployment/orphan-adoption.js';
-import { generatedReplacementHolderAdvice } from '../../../src/deployment/deploy-engine/name-collision.js';
+import {
+  generatedReplacementHolderAdvice,
+  isReplacementNameRefusal,
+} from '../../../src/deployment/deploy-engine/name-collision.js';
+import { CdkdError, ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
   stackInstanceNameSuffix,
   withNameGeneration,
@@ -230,5 +234,26 @@ describe('planOrphanAdoption on a stack with an instance id', () => {
     const outcome = await result;
     expect(Object.keys(outcome.adopted)).toEqual(['Kept']);
     expect(provider.import).toHaveBeenCalled();
+  });
+});
+
+describe('isReplacementNameRefusal (a refused replacement keeps its generation)', () => {
+  const refusal = () => new CdkdError('refused', 'NAMED_REPLACEMENT_COLLISION');
+  const wrap = (logicalId: string, cause: Error) =>
+    new ProvisioningError(`Failed to update resource ${logicalId}`, 'AWS::ECR::Repository', logicalId, undefined, cause);
+
+  it("reads the refusal under the row's own wrap", () => {
+    expect(isReplacementNameRefusal(refusal(), 'Repo')).toBe(true);
+    expect(isReplacementNameRefusal(wrap('Repo', refusal()), 'Repo')).toBe(true);
+  });
+
+  it('any other failure is not a refusal: the record still moves past its generation', () => {
+    expect(isReplacementNameRefusal(new CdkdError('boom', 'PROVISIONING_ERROR'), 'Repo')).toBe(false);
+    expect(isReplacementNameRefusal(wrap('Repo', new Error('throttled')), 'Repo')).toBe(false);
+    expect(isReplacementNameRefusal(undefined, 'Repo')).toBe(false);
+  });
+
+  it("stops at a link naming another logical id (a nested child's refusal under the parent row)", () => {
+    expect(isReplacementNameRefusal(wrap('Child', wrap('Inner', refusal())), 'Child')).toBe(false);
   });
 });

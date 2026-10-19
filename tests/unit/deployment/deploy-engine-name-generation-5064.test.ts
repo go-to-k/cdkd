@@ -336,6 +336,31 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(saved.nameGenerationHigh).toBe(1);
   });
 
+  it('a replacement REFUSED on a squatter of its next name keeps the generation: the retry, plain or --replace, asks for the same name and refuses again', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    held.add(genName('Table', 1));
+    for (const options of [{}, { replace: true }, { noRollback: true }]) {
+      events = [];
+      await expect(makeEngine(options).deploy(STACK, tableTemplate('id'))).rejects.toThrow(
+        'Failed to update resource Table'
+      );
+      // The same next-generation name each time, and nothing deleted.
+      expect(events).toEqual([`collide ${genName('Table', 1)}`]);
+      const saved = lastSaved().resources['Table']!;
+      expect(saved.physicalId).toBe(genName('Table', 0));
+      expect(saved.nameGeneration).toBeUndefined();
+      expect(saved.nameGenerationHigh).toBeUndefined();
+      load(lastSaved());
+    }
+    // Nothing reached generation 1, so the journal claims none.
+    const segment = stateBackend['appendRollbackJournalSegment']!.mock.calls.at(-1)![2] as {
+      failedOperations?: Array<{ logicalId: string; nameGeneration?: number }>;
+    };
+    const failed = segment.failedOperations?.find((o) => o.logicalId === 'Table');
+    expect(failed).toBeDefined();
+    expect(failed).not.toHaveProperty('nameGeneration');
+  });
+
   it('a failed CREATE of a re-added logical id journals the generation its name took', async () => {
     load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }, { retiredNameGenerations: { Old: 0 } }));
     failCreate.add('Old');

@@ -1359,7 +1359,10 @@ scope without it throws.
   restored record's `nameGenerationHigh` is raised to the generation the
   replacement reached, read from `CompletedOperation.nameGeneration` /
   `FailedOperation.nameGeneration` (additive journal fields, no
-  `journalVersion` bump).
+  `journalVersion` bump). A failed replacement raises it the same way, except
+  one refused on its name (`NAMED_REPLACEMENT_COLLISION`: its create collided
+  or never ran), which made nothing at that generation and journals none, so
+  the retry asks for the name the refusal names.
 - **`cdkd import`.** An unchanged physical id keeps both fields; another
   physical id records no generation and the replaced record's high-water mark
   as `nameGenerationHigh`.

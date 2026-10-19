@@ -7,7 +7,7 @@ import {
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import type { ChangeType } from '../../types/state.js';
 import { displaySafe } from '../../utils/display-safe.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { isNameCollisionErrorFrom, isReplayedNameCollisionFrom } from '../retryable-errors.js';
 import { isAuxiliaryMarkOf, RETRY_AUXILIARY_OWNER } from '../../provisioning/auxiliary-failure.js';
 
@@ -377,4 +377,26 @@ export function orphanedNameCollisionAdvice(
     `the same stack deployed in another region derives the same name. ${deleteArm}` +
     `${holeNote}\nAdopt with: ${adopt.command}`
   );
+}
+
+/**
+ * True when a failed replacement of `logicalId` was refused by a
+ * `NAMED_REPLACEMENT_COLLISION`: its create collided on the name (AWS refused
+ * the name another resource holds) or was refused before it was sent. Either
+ * way the create made nothing under the generation it asked for, so the record
+ * keeps its generation and the retry asks for the same name the refusal names
+ * (go-to-k/cdkd#5064). Walks the bounded `.cause` chain, stopping at a link
+ * that names another logical id (a nested child's refusal under the parent
+ * row's error).
+ */
+export function isReplacementNameRefusal(error: unknown, logicalId: string): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 10 && current != null; depth++) {
+    if (typeof current !== 'object') return false;
+    const linkId = (current as { logicalId?: unknown }).logicalId;
+    if (typeof linkId === 'string' && linkId !== logicalId) return false;
+    if (current instanceof CdkdError && current.code === 'NAMED_REPLACEMENT_COLLISION') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
