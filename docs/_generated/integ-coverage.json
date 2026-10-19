@@ -945,6 +945,7 @@
       "integs": [
         "api-cognito",
         "appsync",
+        "bedrock-agentcore",
         "cc-write-only-create-only",
         "cognito",
         "cognito-custom-attribute-add",
@@ -963,6 +964,9 @@
         ],
         "appsync": [
           "l1"
+        ],
+        "bedrock-agentcore": [
+          "l2"
         ],
         "cc-write-only-create-only": [
           "l2"
