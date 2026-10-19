@@ -14,6 +14,24 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displayStackName, safeMsg } from '../utils/display-safe.js';
 
 /**
+ * go-to-k/cdkd#5064: whether a kept resource holds a cdkd-generated name -- its
+ * record carries no template name -- with a physical id. A destroy records
+ * every such resource: the next deploy starts a new lifetime whose names
+ * differ, creates beside it and names `cdkd import` for it. Only a
+ * {@link keptForReadoption} entry licenses anything (the generated-name guard
+ * asks for name-adopting types alone); any other entry only feeds that
+ * warning.
+ */
+export function keptUnderGeneratedName(resource: ResourceState): resource is ResourceState & {
+  physicalId: string;
+} {
+  if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
+  const property = explicitNamePropertyFor(resource.resourceType);
+  const properties = resource.properties as Record<string, unknown> | undefined;
+  return property === undefined || !properties?.[property];
+}
+
+/**
  * go-to-k/cdkd#4705: whether a kept resource is one a later create of the
  * stack would take back by name -- a name-adopting SDK type whose record
  * carries no template name (its name is cdkd-generated), with a physical id.
@@ -21,11 +39,10 @@ import { displayStackName, safeMsg } from '../utils/display-safe.js';
 export function keptForReadoption(resource: ResourceState): resource is ResourceState & {
   physicalId: string;
 } {
-  if (!replacementCreateAdoptsName(resource.resourceType, resource.provisionedBy)) return false;
-  if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
-  const property = explicitNamePropertyFor(resource.resourceType);
-  const properties = resource.properties as Record<string, unknown> | undefined;
-  return property === undefined || !properties?.[property];
+  return (
+    replacementCreateAdoptsName(resource.resourceType, resource.provisionedBy) &&
+    keptUnderGeneratedName(resource)
+  );
 }
 
 /**
@@ -74,16 +91,16 @@ export async function recordRetainedForReadoption(
   } catch (error) {
     if (error instanceof RetainedTimeUnconfirmedError) {
       logger.warn(
-        safeMsg`Recorded the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
-          safeMsg`a later deploy takes back by name, but their time could not be confirmed from S3 ` +
+        safeMsg`Recorded the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)}, ` +
+          safeMsg`but their time could not be confirmed from S3 ` +
           safeMsg`(${describeAwsFailure(error.cause).summary}); they carry this machine's clock instead.`
       );
       return;
     }
     logger.warn(
       safeMsg`Could not record the ${String(kept.length)} kept resource(s) of ${displayStackName(stackName)} ` +
-        safeMsg`a later deploy takes back by name (${describeAwsFailure(error).summary}). That deploy ` +
-        `refuses to create them over the kept ones; adopt them with 'cdkd import' then.`
+        safeMsg`(${describeAwsFailure(error).summary}). A later deploy may refuse to create one over ` +
+        `its kept copy, or not name them; adopt a kept one with 'cdkd import'.`
     );
   }
 }

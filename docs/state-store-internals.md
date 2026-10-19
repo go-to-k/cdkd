@@ -81,7 +81,9 @@ without one reads all of them:
   (`retiredNameGenerations`), so its name differs and the list licenses
   nothing; a destroy ends the lifetime, so the redeploy's generated names
   differ too (#5064), never asks for them and warns once, naming
-  `cdkd import`. Another prefix or another bucket does not
+  `cdkd import`. A destroy lists every kept resource whose name cdkd
+  generated, of any type; only a name-adopting type's entry is ever taken
+  back. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
   kept in one write when it ends, beside its final state save; a destroy,
   once its record is gone, beside the marker's release. A crash before that

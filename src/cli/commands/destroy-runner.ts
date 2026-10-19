@@ -40,7 +40,7 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
 import {
-  keptForReadoption,
+  keptUnderGeneratedName,
   recordRetainedForReadoption,
 } from '../../deployment/retained-readoption.js';
 import type { LockManager } from '../../state/lock-manager.js';
@@ -764,7 +764,7 @@ async function destroyStackInRegion(
     errorCount: 0,
     interrupted: false,
   };
-  // go-to-k/cdkd#4705: the kept resources a later create takes back by name.
+  // go-to-k/cdkd#4705 / #5064: the kept resources under a generated name.
   const retainedForReadoption: RetainedResource[] = [];
   // Review H-2: their record's read, started with the first one, off the
   // critical path.
@@ -2106,8 +2106,10 @@ async function destroyStackInRegion(
             );
             result.retainedCount++;
             // go-to-k/cdkd#4705: a kept resource a later create of this stack
-            // takes back by its generated name is recorded for that create.
-            if (keptForReadoption(resource)) {
+            // takes back by its generated name is recorded for that create;
+            // go-to-k/cdkd#5064: every kept generated-name resource is, so the
+            // next lifetime's first deploy can name `cdkd import` for it.
+            if (keptUnderGeneratedName(resource)) {
               retainedForReadoption.push({
                 logicalId,
                 resourceType: resource.resourceType,

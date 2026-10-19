@@ -255,12 +255,13 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     await runDestroyForStack('App', retainedState(), h.ctx);
     expect(h.saveRetainedResources).toHaveBeenCalledTimes(1);
     const [, , entries] = h.saveRetainedResources.mock.calls[0]! as unknown as [string, string, unknown[]];
-    // The S3 bucket and log group with generated names; not the explicitly
-    // named bucket (its create probes by name already), nor a Role (whose
-    // create fails natively with EntityAlreadyExists).
+    // Every kept resource under a generated name, a Role included
+    // (go-to-k/cdkd#5064: the next lifetime's first deploy names `cdkd import`
+    // for it); not the explicitly named bucket, which keeps its name.
     expect(entries).toEqual([
       { logicalId: 'Bucket', resourceType: 'AWS::S3::Bucket', physicalId: 'app-bucket-x' },
       { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/cdkd/App-Logs' },
+      { logicalId: 'Role', resourceType: 'AWS::IAM::Role', physicalId: 'App-Role' },
     ]);
     // (h): after the record's delete, and never a tombstone over a kept list.
     expect(h.deleteState.mock.invocationCallOrder[0]!).toBeLessThan(
@@ -374,7 +375,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
     h.saveRetainedResources.mockRejectedValueOnce(new RetainedTimeUnconfirmedError(new Error('HEAD 503')));
     await runDestroyForStack('App', retainedState(), h.ctx);
     const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(text).toMatch(/Recorded the 2 kept resource\(s\) of App .*their time could not be confirmed from S3/);
+    expect(text).toMatch(/Recorded the 3 kept resource\(s\) of App, .*their time could not be confirmed from S3/);
     expect(text).not.toMatch(/Could not record the/);
   });
 
@@ -393,6 +394,7 @@ describe('runDestroyForStack -- what a destroy keeps, and the registry marker (g
       'Old=https://q/App-Old',
       'Bucket=app-bucket-x',
       'Logs=/cdkd/App-Logs',
+      'Role=App-Role',
     ]);
   });
 
