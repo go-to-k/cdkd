@@ -80,6 +80,8 @@ ROLE_PATH="/cdkd-integ-apigateway/"
 # The account's CloudWatch role ARN before this run; empty until captured,
 # so a cleanup before the capture restores nothing.
 PRE_ACCOUNT_ROLE=""
+# The caller's account id, read with the pre-run role.
+CALLER_ACCOUNT=""
 
 # Prints the account's CloudWatch role ARN, or an empty line when unset.
 account_role() {
@@ -121,21 +123,26 @@ restore_account_role() {
   case "${want}" in
     NONE | *":role${ROLE_PATH}"*) want="" ;;
   esac
-  if [ -n "${want}" ]; then
-    # Not gone_probe: it exits on an undetermined probe, and this also runs
-    # from the EXIT trap, where the rest of cleanup must still run.
-    if ! probe=$(aws iam get-role --role-name "${want##*/}" 2>&1 >/dev/null); then
-      if printf '%s' "${probe}" | grep -q 'NoSuchEntity'; then
-        echo "WARN: the pre-run account CloudWatch role ${want} no longer exists; leaving the account role unset" >&2
-        want=""
-      else
-        echo "${probe}" >&2
-        return 1
-      fi
-    fi
-  fi
   now=$(account_role) || return 1
   [ "${now}" = "${want}" ] && return 0
+  # Probe only a role in THIS account: another account's role reads as
+  # NoSuchEntity here, and must not be mistaken for a deleted one.
+  case "${want}" in
+    arn:*:iam::"${CALLER_ACCOUNT}":role/*)
+      # Not gone_probe: it exits on an undetermined probe, and this also runs
+      # from the EXIT trap, where the rest of cleanup must still run.
+      if ! probe=$(aws iam get-role --role-name "${want##*/}" 2>&1 >/dev/null); then
+        if printf '%s' "${probe}" | grep -q 'NoSuchEntity'; then
+          echo "WARN: the pre-run account CloudWatch role ${want} no longer exists; leaving the account role unset" >&2
+          want=""
+          [ "${now}" = "${want}" ] && return 0
+        else
+          echo "${probe}" >&2
+          return 1
+        fi
+      fi
+      ;;
+  esac
   set_account_role "${want}" || return 1
   now=$(account_role) || return 1
   [ "${now}" = "${want}" ]
@@ -190,6 +197,7 @@ if [ ! -d node_modules ]; then
 fi
 
 echo "==> Recording the API Gateway account CloudWatch role (region-wide singleton)"
+CALLER_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 PRE_ROLE_READ=$(account_role)
 PRE_ACCOUNT_ROLE="${PRE_ROLE_READ:-NONE}"
 echo "    pre-run account CloudWatch role: ${PRE_ACCOUNT_ROLE}"
