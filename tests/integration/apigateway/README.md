@@ -32,6 +32,14 @@ This stack includes the following resources:
    model identifier specified" / "Invalid Request Validator identifier
    specified". `verify.sh` curls a valid body (-> 200) and an invalid body
    missing the required `name` (-> 400, rejected by the validator).
+9. **Account `CloudWatchRoleArn` removal (#1160)**: an L1 `AWS::ApiGateway::Account`
+   points at a fixture role under the IAM path `/cdkd-integ-apigateway/`. A
+   redeploy with `CDKD_TEST_REMOVAL=true` drops `CloudWatchRoleArn`, and
+   `verify.sh` asserts the account's role ARN is cleared, as CloudFormation
+   clears it. The account setting is a region-wide singleton: `verify.sh`
+   records its pre-run value and restores it on every exit path. Do not run
+   this fixture at the same time as another one that sets the account's
+   CloudWatch role in the same region.
 
 ## Deploy
 
@@ -76,6 +84,7 @@ Expected response:
 - [ ] Outputs are correctly resolved (API URL, API ID, function name, ARN)
 - [ ] The endpoint responds with the expected JSON payload
 - [ ] Stage `tracingEnabled` and stage `variables` reach AWS (#609 backfill)
+- [ ] Removing the Account's `CloudWatchRoleArn` clears the account's role ARN (#1160)
 
 ## Clean up
 
