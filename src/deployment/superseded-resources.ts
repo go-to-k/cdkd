@@ -90,11 +90,19 @@ export const SUPERSEDED_KEPT_REMEDY =
   'cdkd keeps it in state: the next `cdkd deploy` of this stack retries the delete, and ' +
   '`cdkd destroy` deletes it';
 
-/** What {@link deleteSupersededEntry} did. */
+/** `state` without `supersededResources`, for a writer that writes its own. */
+export function withoutSuperseded<T extends Pick<StackState, 'supersededResources'>>(
+  state: T
+): Omit<T, 'supersededResources'> {
+  const { supersededResources: _dropped, ...rest } = state;
+  return rest;
+}
+
+/** What {@link deleteSupersededEntry} did: deleted, not deleted (a provider's reason), or failed. */
 export type SupersededDeleteOutcome =
-  | { outcome: 'deleted' }
-  | { outcome: 'skipped'; reason: string }
-  | { outcome: 'failed'; error: unknown };
+  | { kind: 'deleted' }
+  | { kind: 'notDeleted'; reason: string }
+  | { kind: 'failed'; error: unknown };
 
 /**
  * Send the delete of one superseded resource, as the replacement that
@@ -142,7 +150,7 @@ export async function deleteSupersededEntry(
       input.stop
     );
   } catch (error) {
-    return { outcome: 'failed', error };
+    return { kind: 'failed', error };
   }
   // Issue #2422: into the caller's guard sink, when it binds one.
   reportDeleteGuards(result, {
@@ -151,7 +159,7 @@ export async function deleteSupersededEntry(
     provisionedBy: record.provisionedBy,
   });
   const reason = deleteSkipReason(result);
-  return reason === undefined ? { outcome: 'deleted' } : { outcome: 'skipped', reason };
+  return reason === undefined ? { kind: 'deleted' } : { kind: 'notDeleted', reason };
 }
 
 /**

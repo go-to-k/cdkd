@@ -106,7 +106,11 @@ import {
   type NoEchoDeps,
 } from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
-import { isSupersededHeld, isSupersededResourceRecord } from './superseded-resources.js';
+import {
+  isSupersededHeld,
+  isSupersededResourceRecord,
+  withoutSuperseded,
+} from './superseded-resources.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1112,6 +1116,8 @@ export class DeployEngine {
     // already-redacted properties as the observed bag's source. That is correct
     // rather than merely tolerable: a record minted by an earlier rollback was
     // already scrubbed when it was written, so the identity return preserves it.
+    const orphanEntries = state.orphans;
+    // go-to-k/cdkd#5111: shared with `supersededResources` below.
     const scrubDroppedRecord = (entry: {
       logicalId: string;
       state: ResourceState;
@@ -1164,7 +1170,7 @@ export class DeployEngine {
         )
       );
     };
-    const orphans = state.orphans?.map((entry) => ({ ...entry, state: scrubDroppedRecord(entry) }));
+    const orphans = orphanEntries?.map((entry) => ({ ...entry, state: scrubDroppedRecord(entry) }));
     // go-to-k/cdkd#5111: a superseded resource's record is secret-bearing in
     // exactly the way an orphan's is, and scrubbed the same way. One a record
     // holds again (a rollback took it back) is not persisted: it is no longer
@@ -1198,12 +1204,11 @@ export class DeployEngine {
       ...rest
     } = state;
     // go-to-k/cdkd#5111: written below from the filtered set only.
-    const { supersededResources: _carriedSuperseded, ...lifetime } =
-      stackInstanceIdCarriedFrom(state);
     const outputReferenceProvenance = this.outputReferenceProvenanceFor(state.outputs, outputs);
     return {
       ...rest,
-      ...lifetime,
+      // go-to-k/cdkd#5111: `supersededResources` is written below, filtered.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(state)),
       resources,
       outputs,
       ...(orphans === undefined ? {} : { orphans }),

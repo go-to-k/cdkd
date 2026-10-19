@@ -76,9 +76,9 @@ export async function retryCarriedSupersededResources(
             stop: () => engine.interrupted,
           });
         } catch (error) {
-          outcome = { outcome: 'failed' as const, error };
+          outcome = { kind: 'failed' as const, error };
         }
-        if (outcome.outcome === 'failed') {
+        if (outcome.kind === 'failed') {
           const detail = maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
           engine.logger.warn(
             safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${physicalId}): ${detail}. ${SUPERSEDED_KEPT_REMEDY}.`
@@ -87,7 +87,7 @@ export async function retryCarriedSupersededResources(
         }
         removeSuperseded(host, entry);
         changed = true;
-        if (outcome.outcome === 'skipped') {
+        if (outcome.kind === 'notDeleted') {
           engine.logger.warn(
             safeMsg`  ⚠ ${deleteSkippedMessage(logicalId, physicalId, outcome.reason, 'while cleaning up the superseded resource', { commandFreeLine: true })}. Delete it manually — it is no longer tracked in state.`
           );

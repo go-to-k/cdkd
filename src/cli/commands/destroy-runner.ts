@@ -146,7 +146,9 @@ import {
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
   deleteSupersededEntry,
+  isSupersededHeld,
   supersededResourcesOf,
+  withoutSuperseded,
 } from '../../deployment/superseded-resources.js';
 import {
   createUnionSecretMasker,
@@ -1246,11 +1248,9 @@ async function destroyStackInRegion(
   }
   // go-to-k/cdkd#5111: deleted after the resources above.
   if (supersededCount > 0) {
-    logger.info(`\nOld resources a replacement left to delete (${supersededCount}):`);
+    logger.info(safeMsg`\nOld resources a replacement left to delete (${supersededCount}):`);
     for (const entry of supersededResourcesOf(state)) {
-      logger.info(
-        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)}), superseded`
-      );
+      logger.info(safeMsg`  - ${entry.logicalId} (${entry.state.resourceType}), superseded`);
     }
   }
 
@@ -1796,8 +1796,6 @@ async function destroyStackInRegion(
       supersededResources: _superseded,
       ...rest
     } = state;
-    const { supersededResources: _carriedSuperseded, ...lifetime } =
-      stackInstanceIdCarriedFrom(state);
     // go-to-k/cdkd#4150: EXCEPT while a remaining record's secret-derived
     // principal list still needs that producer-region evidence, or a re-run
     // would classify its reference `local` where this run read `ambiguous`.
@@ -1814,7 +1812,8 @@ async function destroyStackInRegion(
     );
     return {
       ...rest,
-      ...lifetime,
+      // go-to-k/cdkd#5111: `supersededResources` is written below, from what is left.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(state)),
       // go-to-k/cdkd#5064 phase 2: a partial destroy keeps the record; what it
       // deleted or kept left the stack, so a redeploy re-adding a logical id
       // asks for a name no earlier copy held.
@@ -2764,19 +2763,29 @@ async function destroyStackInRegion(
       if (lock.interrupted) break;
       const { logicalId } = entry;
       const { physicalId, resourceType } = entry.state;
+      const drop = (): void => {
+        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
+      };
+      // A record holds it again (a rollback took it back): deleted above, as
+      // that record's resource, or kept with it.
+      if (isSupersededHeld(entry, state.resources)) {
+        drop();
+        continue;
+      }
+      // Every line names the id under the row's printing bag: the id can
+      // spell a secret-derived name (go-to-k/cdkd#3869).
       const bag = printingBagOf(logicalId);
-      const outcome = await withPrintingSecrets(bag, () =>
-        withStackRecords(
-          {
-            live: () => Object.entries(remainingResources),
-            survivors: () => Object.entries(remainingResources),
-          },
-          async () => {
-            logger.info(
-              `Deleting ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)} (${displaySafe(maskSecretsInText(physicalId, bag))})...`
-            );
-            try {
-              return await deleteSupersededEntry(entry, {
+      await withPrintingSecrets(bag, async () => {
+        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
+        let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
+        try {
+          outcome = await withStackRecords(
+            {
+              live: () => Object.entries(remainingResources),
+              survivors: () => Object.entries(remainingResources),
+            },
+            () =>
+              deleteSupersededEntry(entry, {
                 provider: destroyProviderRegistry.getProviderFor({
                   resourceType,
                   ...(entry.state.provisionedBy !== undefined && {
@@ -2788,35 +2797,28 @@ async function destroyStackInRegion(
                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
                 maskSecrets: createUnionSecretMasker([bag]),
                 stop: () => lock.interrupted,
-              });
-            } catch (error) {
-              return { outcome: 'failed' as const, error };
-            }
-          }
-        )
-      );
-      if (outcome.outcome === 'deleted') {
-        result.deletedCount++;
-        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
-        logger.info(
-          `  ✓ Deleted ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)}`
-        );
-        continue;
-      }
-      if (outcome.outcome === 'skipped') {
-        result.skippedCount++;
+              })
+          );
+        } catch (error) {
+          outcome = { kind: 'failed', error };
+        }
+        if (outcome.kind === 'deleted') {
+          result.deletedCount++;
+          drop();
+          logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
+          return;
+        }
+        const why =
+          outcome.kind === 'notDeleted'
+            ? outcome.reason
+            : maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
+        if (outcome.kind === 'notDeleted') result.skippedCount++;
+        else result.errorCount++;
         logger.warn(
-          `  ⚠ ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)} was not deleted ` +
-            `(${displaySafe(outcome.reason)}). State preserved: it stays recorded, and a re-run of the destroy retries it.`
+          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+            'State preserved: it stays recorded, and a re-run of the destroy retries it.'
         );
-        continue;
-      }
-      result.errorCount++;
-      logger.error(
-        `  ✗ Failed to delete ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)}: ` +
-          `${displaySafe(maskSecretsInText(describeAwsFailure(outcome.error).detail, bag))}. ` +
-          `State preserved: it stays recorded, and a re-run of the destroy retries it.`
-      );
+      });
     }
 
     // Carry the graceful-interrupt outcome (issue #816) into the result so the

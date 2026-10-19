@@ -197,4 +197,18 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     expect(result.deletedCount).toBe(1);
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
   });
+
+  it('does not delete twice an entry a record holds again (a rollback took it back)', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const state = makeState(
+      { Tg: res([], { physicalId: OLD_TG, resourceType: entry.state.resourceType }) },
+      { supersededResources: [entry] }
+    );
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockProviderDelete.mock.calls.map((c) => [c[0], c[1]])).toEqual([['Tg', OLD_TG]]);
+    expect(result.deletedCount).toBe(1);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
 });
