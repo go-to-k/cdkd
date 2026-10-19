@@ -9,8 +9,8 @@ paths:
 
 - **state-prefix.ts** — `DEFAULT_STATE_PREFIX` (`'cdkd'`) and
   `CUSTOM_RESOURCE_RESPONSE_PREFIX`, homed in the STATE layer and RE-EXPORTED by
-  `src/cli/commands/state-file-keys.ts` (`src/state/**` importing `src/cli/**`
-  inverts layers). It is only the DEFAULT — commands
+  `src/cli/commands/state-file-keys.ts` (the reverse import inverts layers).
+  It is only the DEFAULT — commands
   accept `--state-prefix`, so whole-bucket listings do NOT scope to it.
 - **s3-noncurrent-version-purge.ts** / **s3-replication-purge-gap.ts**:
   [state-version-purge.md](state-version-purge.md).
@@ -36,8 +36,7 @@ paths:
   `UnknownRollbackJournalVersionError`
   (#1183). The journal is a
   SIBLING of `state.json` at `{prefix}/{stack}/{region}/rollback-journal.json`,
-  deliberately NOT part of the state schema: its own `journalVersion`, no
-  `StackState.version` bump. It goes through `S3StateBackend.*RollbackJournal`,
+  NOT part of the state schema (its own `journalVersion`). It goes through `S3StateBackend.*RollbackJournal`,
   and `deleteState` sweeps the key. `create-tokens.json` is the second
   sibling (`src/state/create-token-ledger.ts`, [#4438](https://github.com/go-to-k/cdkd/issues/4438)):
   `deleteState` deletes it FIRST and fails closed: a ledger that outlives its
@@ -46,7 +45,8 @@ paths:
   that finds no record replaces such a ledger instead of resuming it.
   **stack-instance-id.ts**'s `stack-instance.json` (#5064) is the third: read
   only while `state.json` is absent, deleted by the first save holding its id
-  and, fail-closed, by `deleteState`.
+  and, fail-closed, by `deleteState`. **name-generation.ts**:
+  [state-schema.md](state-schema.md).
 
   `parseRollbackJournal` validates the per-operation shape the executor keys on
   and the records it dereferences, refusing by INDEX and TYPE with no value

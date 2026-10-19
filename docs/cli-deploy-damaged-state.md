@@ -49,7 +49,10 @@ and what it refuses in each.
 | `orphans` list | Not a list, or a list holding a record cdkd cannot read | An absent field |
 
 The `orphans` list records the `DeletionPolicy: Retain` resources that a
-rollback left standing, so that the next deploy can adopt them back.
+rollback left standing. On a stack first deployed before generated names
+carried a suffix, the next deploy adopts them back; on any other stack it
+leaves them in AWS, warns, and creates new resources under new names, and only
+[`cdkd import`](import.md) adopts one.
 
 ## Why cdkd refuses and does not repair
 

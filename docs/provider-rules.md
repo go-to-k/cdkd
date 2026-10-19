@@ -289,7 +289,7 @@ implementation. Three details are worth copying:
     `--recreate-via-*` destroy-then-create, the `--replace` delete-first
     fallback, the update-failure replacement, and `createFirstThenDeleteOld`,
     which `--recreate-via-*` and the update-failure replacement take for a
-    renamed resource) are driven by freshly resolved
+    renamed resource, or a generated name moving to its next generation) are driven by freshly resolved
     TEMPLATE properties and never set `replayingState`, so the refusal stands
     where the user can actually act on it. (They DO pass a context — every
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
