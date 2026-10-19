@@ -941,6 +941,13 @@ export class EC2Provider implements ResourceProvider {
         ['EnableDnsSupport', true],
       ]),
     ],
+    // Issue #1160: a CloudFormation update that removes `Monitoring` turns
+    // detailed monitoring off (real A/B, us-east-1: `Monitoring.State`
+    // `enabled` -> `disabled`). `updateInstanceSecurityProps` diffs it against
+    // the previous template, so the injected `false` calls UnmonitorInstances
+    // only when monitoring was on. The other Instance properties that
+    // `update()` modifies in place get no reset (see that method).
+    ['AWS::EC2::Instance', new Map<string, unknown>([['Monitoring', false]])],
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
@@ -1450,7 +1457,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::NetworkAclEntry':
         return this.updateNetworkAclEntry(
@@ -6356,7 +6364,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // Most EC2 Instance property changes require replacement.
     // Immutable properties (ImageId, SubnetId, KeyName) are handled by
@@ -6382,7 +6391,13 @@ export class EC2Provider implements ResourceProvider {
         properties['Tags']
       );
 
-      await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
+      await this.updateInstanceSecurityProps(
+        logicalId,
+        physicalId,
+        properties,
+        previousProperties,
+        context
+      );
 
       // Refresh attributes. The map REPLACES the record's (the engine does
       // not merge it with the previous one), and that is the right answer
@@ -6430,15 +6445,40 @@ export class EC2Provider implements ResourceProvider {
    *   - CreditSpecification   -> ModifyInstanceCreditSpecification
    * EbsOptimized is NOT here: it can only be changed on a STOPPED instance, so
    * an EbsOptimized change is routed to replacement (see ReplacementRules).
+   *
+   * Removal (issue #1160, real CloudFormation A/B in us-east-1): CloudFormation
+   * resets a removed `Monitoring` to off, which arrives here as the `false`
+   * from `removalDefaults`. It KEEPS a removed `MetadataOptions` and a removed
+   * `CreditSpecification` (`HttpTokens: required` / hop limit 3 and
+   * `CPUCredits: standard` stayed), so a removed one sends nothing. A removed
+   * `DisableApiTermination` FAILS the CloudFormation update ("No attributes
+   * specified", an empty ModifyInstanceAttribute) and the value stays; cdkd
+   * keeps it too, as the fail-safe direction for termination protection, and
+   * warns that it was left in place.
    */
   private async updateInstanceSecurityProps(
+    logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<void> {
     // DisableApiTermination — ModifyInstanceAttribute.
     const newDisableApiTermination = this.coerceBool(properties['DisableApiTermination']);
     const oldDisableApiTermination = this.coerceBool(previousProperties['DisableApiTermination']);
+    // An update caller names the removed template keys; `drift --revert`
+    // names none (its previous side is an AWS readback, which always carries
+    // DisableApiTermination). A direct call falls back to the two bags.
+    const terminationProtectionRemoved =
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has('DisableApiTermination')
+        : previousProperties['DisableApiTermination'] !== undefined &&
+          properties['DisableApiTermination'] === undefined;
+    if (terminationProtectionRemoved) {
+      this.logger.warn(
+        safeMsg`${logicalId} (AWS::EC2::Instance): DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value (CloudFormation fails this update). Set DisableApiTermination to false to turn termination protection off.`
+      );
+    }
     if (
       newDisableApiTermination !== undefined &&
       newDisableApiTermination !== oldDisableApiTermination

@@ -30,10 +30,21 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * resource on the SDK path — verified by the `provisionedBy` assertion in
  * verify.sh — and (b) is the only place the new `Placement` create path runs
  * against real AWS.
+ *
+ * REMOVAL phase (CDKD_TEST_REMOVAL=true, issue #1160): the backfill instance
+ * drops DisableApiTermination / MetadataOptions / Monitoring /
+ * CreditSpecification. A CloudFormation A/B showed CloudFormation turns a
+ * removed Monitoring off, keeps a removed MetadataOptions /
+ * CreditSpecification, and FAILS the update for a removed
+ * DisableApiTermination (the value stays). EbsOptimized stays declared: an
+ * EbsOptimized change is routed to replacement, and this phase must update in
+ * place.
  */
 export class Ec2InstanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // Create VPC with 1 AZ and no NAT gateways (cost saving)
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -80,19 +91,26 @@ export class Ec2InstanceStack extends cdk.Stack {
       // the instance is protected when it is not. `cdkd destroy
       // --remove-protection` (exercised by verify.sh) flips this off before
       // terminate.
-      disableApiTermination: true,
-      // IMDSv2 enforcement inline on the instance (no LaunchTemplate).
-      metadataOptions: {
-        httpTokens: 'required',
-        httpEndpoint: 'enabled',
-        httpPutResponseHopLimit: 1,
-      },
-      // Detailed CloudWatch monitoring.
-      monitoring: true,
+      // The removal phase (issue #1160) drops the four properties below that
+      // update() modifies in place; see the class doc for what CloudFormation
+      // does with each.
+      ...(isRemoval
+        ? {}
+        : {
+            disableApiTermination: true,
+            // IMDSv2 enforcement inline on the instance (no LaunchTemplate).
+            metadataOptions: {
+              httpTokens: 'required',
+              httpEndpoint: 'enabled',
+              httpPutResponseHopLimit: 1,
+            },
+            // Detailed CloudWatch monitoring.
+            monitoring: true,
+            // T-family burstable CPU credit mode.
+            creditSpecification: { cpuCredits: 'unlimited' },
+          }),
       // Dedicated EBS throughput.
       ebsOptimized: true,
-      // T-family burstable CPU credit mode.
-      creditSpecification: { cpuCredits: 'unlimited' },
     });
 
     // Outputs
