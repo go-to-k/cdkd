@@ -230,6 +230,32 @@ describe('state helpers', () => {
   });
 });
 
+describe('a replay derives the replayed record at ITS generation', () => {
+  it("replayPrefixScope binds the record's generation over the scope's", async () => {
+    const { replayPrefixScope } = await import('../../../src/deployment/rollback-executor/names.js');
+    const quiet = { debug: () => undefined, info: () => undefined, warn: () => undefined };
+    // `cdkd rollback` reads the post-failure record (generation 1); the old
+    // resource it re-creates was generation 0.
+    const name = withStackScope(scope(new Map([['Queue', 1]])), () => {
+      const run = replayPrefixScope(
+        {
+          resourceType: 'AWS::SQS::Queue',
+          properties: {},
+          logicalId: 'Queue',
+          physicalId: 'MyStack-Queue-5f24ac9179b8',
+          via: 'sdk',
+          nameGeneration: 0,
+        },
+        quiet as never,
+        (text: string) => text,
+        true
+      );
+      return run(() => generateResourceName('Queue', { maxLength: 80 }));
+    });
+    expect(name).toBe('MyStack-Queue-5f24ac9179b8');
+  });
+});
+
 describe('cdkd import and the name generation', () => {
   it('keeps the fields on an unchanged physical id, records the reached one otherwise', async () => {
     const { importedNameGenerationFields } = await import('../../../src/cli/commands/import.js');
