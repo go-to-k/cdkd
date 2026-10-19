@@ -575,6 +575,7 @@ class SecurityGroupRule {
 
   equal(other: SecurityGroupRule): boolean {
     return (
+      this.groupId === other.groupId &&
       this.ipProtocol === other.ipProtocol &&
       this.fromPort === other.fromPort &&
       this.toPort === other.toPort &&
