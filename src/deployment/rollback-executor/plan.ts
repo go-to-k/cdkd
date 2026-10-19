@@ -161,6 +161,13 @@ export function isReplacementOp(op: CompletedOperation): boolean {
     // go-to-k/cdkd#4615: a changed id is a replacement unless the provider
     // said it updated in place.
     ((op.previousState.physicalId !== op.physicalId && op.wasReplaced !== false) ||
+      // go-to-k/cdkd#5096: the forward deleted the old resource and created
+      // the new one under the SAME physical id (`--replace` delete-first, a
+      // fixed-name `--recreate-via-*`, the update-not-supported fallback): the
+      // live resource is the new one, so an in-place revert -- which cannot
+      // change a create-only property -- would leave it while the record
+      // claims the old one. The replacement is reversed instead.
+      sameIdRecreated(op) ||
       isTypeChangeOp(op) ||
       // Issue #3892: an equal id can still be two resources (a Glue table
       // whose id is placed by DatabaseName), and an in-place revert of such
@@ -171,6 +178,21 @@ export function isReplacementOp(op: CompletedOperation): boolean {
         oldProperties: op.previousState.properties,
         newProperties: op.properties,
       }))
+  );
+}
+
+/**
+ * go-to-k/cdkd#5096: an UPDATE whose forward deleted the old resource first
+ * and re-created it under the same physical id. Only the engine's own stamp
+ * says so (`oldDeletedBeforeCreate`); an in-place update the provider
+ * reported as such (`wasReplaced: false`) is not one.
+ */
+function sameIdRecreated(op: CompletedOperation): boolean {
+  return (
+    op.oldDeletedBeforeCreate === true &&
+    op.wasReplaced !== false &&
+    op.physicalId !== undefined &&
+    op.previousState?.physicalId === op.physicalId
   );
 }
 
@@ -258,6 +280,9 @@ export function classifyRollbackOp(
     if (
       current.physicalId === op.previousState!.physicalId &&
       sameTypeAsOld &&
+      // go-to-k/cdkd#5096: under a same-id re-create the id is no evidence:
+      // the old record is back only when it says so.
+      (!sameIdRecreated(op) || deepEqual(current.properties, op.previousState!.properties)) &&
       // Issue #3892: the equal id may be the NEW resource (a Glue table in
       // another database); it is the old one only when its record says so.
       !equalIdNamesDifferentResources({
