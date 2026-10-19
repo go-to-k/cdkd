@@ -29,7 +29,11 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import { markNameCollision } from '../../deployment/retryable-errors.js';
+import {
+  markNameCollision,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -47,6 +51,7 @@ import {
   logicalIdShown,
 } from '../composite-id.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -247,6 +252,11 @@ function templateZoneVisibility(properties: Record<string, unknown>): boolean | 
   return attachesAVpc ? true : undefined;
 }
 
+/** `text` closed as a sentence, for a wrap that continues after it. */
+function sentence(text: string): string {
+  return text.endsWith('.') ? text : `${text}.`;
+}
+
 /**
  * Route 53's refusal to CREATE a CNAME beside another record of the same DNS
  * name. Measured (us-east-1, 2026-09-26, `InvalidChangeBatch`):
@@ -277,7 +287,9 @@ export function isCnameConflictRefusal(error: unknown): boolean {
 }
 
 /**
- * Appended to a create failure `isCnameConflictRefusal` recognises. The
+ * Placed after the logical id of a create failure `isCnameConflictRefusal`
+ * recognises, ahead of the failure text so it reads cleanly after the
+ * redacted class sentence (go-to-k/cdkd#2319). The
  * collision classifier reads the `markNameCollision` marker the same site
  * sets (#3816), but this text is still what `isRecreateRetryableError` sees
  * on the delete-then-re-create retry — removing it stops that retry.
@@ -352,6 +364,38 @@ export class Route53Provider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('Route53Provider');
 
+  /**
+   * The failure wrap the create / update / delete catches build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * `maskSecrets` (`mask`), since a record value AWS echoes back can be a
+   * resolved secret, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain (`is marked
+   * disabled for mutation`, `not authorized to perform`). An "already exists"
+   * (a duplicate record) is restated ({@link relayedNameCollision}), which
+   * `isRecreateRetryableError` reads on the top-level message. A cdkd-authored
+   * or transport error, or a non-`Error` throw, keeps its text; the deploy
+   * engine masks a thrown message. Both deletes recognise "already gone" on
+   * the RAW error before they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Route53::HostedZone',
@@ -403,13 +447,14 @@ export class Route53Provider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.createHostedZone(logicalId, resourceType, properties);
+        return this.createHostedZone(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::Route53::RecordSet':
-        return this.createRecordSet(logicalId, resourceType, properties);
+        return this.createRecordSet(logicalId, resourceType, properties, context?.maskSecrets);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -434,7 +479,8 @@ export class Route53Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::Route53::RecordSet':
         return this.updateRecordSet(
@@ -495,7 +541,8 @@ export class Route53Provider implements ResourceProvider {
   private async createHostedZone(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 hosted zone ${logicalId}`);
 
@@ -609,7 +656,7 @@ export class Route53Provider implements ResourceProvider {
       }
 
       // Apply tags (HostedZoneTags)
-      await this.applyHostedZoneTags(zoneId, properties, logicalId);
+      await this.applyHostedZoneTags(zoneId, properties, logicalId, undefined, mask);
 
       // Configure query logging
       await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
@@ -668,14 +715,17 @@ export class Route53Provider implements ResourceProvider {
             );
           }
           const cause = uhfError instanceof Error ? uhfError : undefined;
-          throw new ProvisioningError(
-            `Failed to enable Accelerated Recovery on hosted zone ${logicalId} (${zoneId}): ${
-              describeAwsFailure(uhfError).detail
-            }`,
-            resourceType,
-            logicalId,
-            zoneId,
-            cause
+          throw this.wrapCaughtError(
+            mask,
+            uhfError,
+            (text) =>
+              new ProvisioningError(
+                `Failed to enable Accelerated Recovery on hosted zone ${logicalId} (${zoneId}): ${text}`,
+                resourceType,
+                logicalId,
+                zoneId,
+                cause
+              )
           );
         }
       }
@@ -697,15 +747,21 @@ export class Route53Provider implements ResourceProvider {
       // BEFORE the rethrow: the Accelerated Recovery arm throws its own
       // ProvisioningError, which must carry the mark too.
       if (zoneCreated) markAuxiliaryFailure(error, logicalId);
+      const cause = error instanceof Error ? error : undefined;
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              undefined,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create hosted zone ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
             );
       // go-to-k/cdkd#4583: the zone (created, or adopted by caller reference
       // from this create's own earlier attempt) is live with no state record.
@@ -830,7 +886,8 @@ export class Route53Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
@@ -855,7 +912,7 @@ export class Route53Provider implements ResourceProvider {
       // Update tags. Passing the PREVIOUS side is what makes this a diff
       // rather than an add-only apply — a tag dropped from the template is
       // sent as a `RemoveTagKeys` entry (issue #1160).
-      await this.applyHostedZoneTags(physicalId, properties, logicalId, previousProperties);
+      await this.applyHostedZoneTags(physicalId, properties, logicalId, previousProperties, mask);
 
       // Update query logging config. The previous side likewise turns an
       // absent desired block from "nothing to do" into a REMOVAL.
@@ -916,12 +973,17 @@ export class Route53Provider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update hosted zone ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -975,12 +1037,17 @@ export class Route53Provider implements ResourceProvider {
       const failure =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to delete hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
+          : this.wrapCaughtError(
+              context?.maskSecrets,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to delete hosted zone ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  physicalId,
+                  cause
+                )
             );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1168,7 +1235,8 @@ export class Route53Provider implements ResourceProvider {
   private async createRecordSet(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 record set ${logicalId}`);
 
@@ -1213,13 +1281,18 @@ export class Route53Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       const cnameConflict = isCnameConflictRefusal(error);
-      const wrapped = new ProvisioningError(
-        `Failed to create record set ${logicalId}: ${describeAwsFailure(error).detail}` +
-          (cnameConflict ? CNAME_CONFLICT_COLLISION_NOTE : ''),
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const wrapped = this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create record set ${logicalId}` +
+              `${cnameConflict ? CNAME_CONFLICT_COLLISION_NOTE : ''}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       throw cnameConflict ? markNameCollision(wrapped) : wrapped;
     }
@@ -1316,12 +1389,17 @@ export class Route53Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update record set ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update record set ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1552,12 +1630,17 @@ export class Route53Provider implements ResourceProvider {
       // in `deleteHostedZone`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete record set ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete record set ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1816,7 +1899,8 @@ export class Route53Provider implements ResourceProvider {
     zoneId: string,
     properties: Record<string, unknown>,
     logicalId: string,
-    previousProperties?: Record<string, unknown>
+    previousProperties?: Record<string, unknown>,
+    mask?: (text: string) => string
   ): Promise<void> {
     // A present-but-MALFORMED desired list must not be read as "the user
     // removed every tag". `readHostedZoneTags` collapses anything it cannot
@@ -1886,12 +1970,11 @@ export class Route53Provider implements ResourceProvider {
       );
     } catch (error) {
       const detail = describeAwsFailure(error).detail;
-      // `detail` is `.detail` and not `.summary` because the REMOVAL arm below
-      // throws it, and its callers wrap this in `withRetry` -- a wire name
-      // alone would not tell a retryable tag failure from a permanent one.
-      // Same persisted-message caveat as the GlobalTable pre-delete describe;
-      // both belong to go-to-k/cdkd#2319 (thrown sites interpolating an AWS
-      // failure into a persisted error), not to go-to-k/cdkd#3341.
+      // The REMOVAL arm below throws through `wrapCaughtError`, so an
+      // AWS-authored failure is persisted as its class only (go-to-k/cdkd#2319)
+      // and stamped: its callers wrap this in `withRetry`, which reads the
+      // withheld text on the `cause` chain to tell a retryable tag failure
+      // from a permanent one. The warn on the ADD arm is terminal-only.
       // A failed ADD is self-healing: the template still declares the tag, so
       // the next deploy retries it. A failed REMOVAL is NOT — this update
       // returns success, state is rewritten WITHOUT the tag, and the next
@@ -1900,17 +1983,25 @@ export class Route53Provider implements ResourceProvider {
       // reporting clean. That is precisely the #1160 failure mode this fix
       // exists to close, so a removal failure has to be loud.
       if (removeTagKeys.length > 0) {
-        throw new ProvisioningError(
-          `Failed to remove tag(s) ${removeTagKeys.join(', ')} from hosted zone ${logicalId}: ` +
-            `${detail}. The removal will NOT be retried on the next deploy (state no longer ` +
-            `records the tag), so it is reported instead of ignored.`,
-          'AWS::Route53::HostedZone',
-          logicalId,
-          zoneId,
-          error instanceof Error ? error : undefined
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to remove tag(s) ${removeTagKeys.join(', ')} from hosted zone ${logicalId}: ` +
+                `${sentence(text)} The removal will NOT be retried on the next deploy (state no ` +
+                `longer records the tag), so it is reported instead of ignored.`,
+              'AWS::Route53::HostedZone',
+              logicalId,
+              zoneId,
+              cause
+            )
         );
       }
-      this.logger.warn(`Failed to apply tags to hosted zone ${logicalId}: ${detail}`);
+      // Masked: AWS can echo a resolved tag value back (go-to-k/cdkd#2319).
+      const m = mask ?? ((text: string) => text);
+      this.logger.warn(m(`Failed to apply tags to hosted zone ${logicalId}: ${m(detail)}`));
     }
   }
 
@@ -2256,6 +2347,11 @@ export class Route53Provider implements ResourceProvider {
     // misleading "specify one of these" message.
     let lookupErrorMessage: string | undefined;
     let lookupErrorCause: Error | undefined;
+    // What the throw below shows of the lookup failure: AWS-authored text is
+    // reduced to its class (go-to-k/cdkd#2319), and the warn beside the
+    // assignment carries AWS's own text.
+    let lookupErrorShown: string | undefined;
+    let lookupErrorRedacted = false;
 
     // Declared outside the try for the same reason the two lookup-error
     // bindings above are: the ambiguity + sound-negative decisions below sit
@@ -2346,15 +2442,15 @@ export class Route53Provider implements ResourceProvider {
         // under both spellings. The point is that nothing about this binding
         // changes, not that it is always populated.
         //
-        // NOTE it also reaches a THROWN `ProvisioningError` below, and so the
-        // persisted `deployments/*.jsonl` store, while `aws-failure-text.ts`
-        // documents `detail` as `logger.debug` ONLY. That is pre-existing --
-        // the raw `.message` went to the same place -- and is deliberately not
-        // changed here, because `.summary` would alter the refusal's wording.
-        // Flagged so the site does not read as audited by the helper while
-        // sitting outside its contract.
-        lookupErrorMessage = describeAwsFailure(error).detail;
+        // The THROWN `ProvisioningError` below shows `lookupErrorShown`
+        // instead, since that message is persisted to `deployments/*.jsonl`
+        // (go-to-k/cdkd#2319): the class for an AWS-authored failure, stamped
+        // so `withRetry` still reads AWS's text on the `cause` chain.
+        const failure = describeAwsFailure(error);
+        lookupErrorMessage = failure.detail;
         lookupErrorCause = error instanceof Error ? error : undefined;
+        lookupErrorRedacted = error instanceof Error && failure.redacted;
+        lookupErrorShown = lookupErrorRedacted ? failure.summary : failure.detail;
         this.logger.warn(
           `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
         );
@@ -2409,19 +2505,16 @@ export class Route53Provider implements ResourceProvider {
     // not position against AWS's ordering), and reporting that as "specify a
     // zone" names neither the cause nor a remedy for a user who did specify
     // one.
-    // `lookupErrorMessage` below reaches a THROWN message that
-    // `extractDeploymentEventError` persists -- one of the ten such sites in
-    // this sweep, and the one two successive audits left UNCOUNTED: its
-    // conversion sits beside a `logger.warn`, so a reader who starts from the
-    // logger call sites finds it and stops. The note belongs HERE, at the
-    // throw. `.detail` keeps AWS's own sentence; the disclosure question for
-    // every site of that shape is go-to-k/cdkd#2319's. The middle arm ends in
+    // The first arm reaches a THROWN message that `extractDeploymentEventError`
+    // persists, so it shows `lookupErrorShown` (AWS's class, not its text, for
+    // an AWS-authored failure; go-to-k/cdkd#2319) and is stamped below. Its
+    // truthiness stays keyed on `lookupErrorMessage`. The middle arm ends in
     // `subject.remedy`, a `--resource` fragment, so it shows the logical id
     // and the zone name only when plain (go-to-k/cdkd#4226).
-    throw new ProvisioningError(
+    const unresolved = new ProvisioningError(
       lookupErrorMessage
         ? `Could not resolve HostedZoneName "${String(hostedZoneName)}" for ${subject.noun} ` +
-            `${logicalId}: ${lookupErrorMessage}`
+            `${logicalId}: ${lookupErrorShown}`
         : typeof hostedZoneName === 'string' && hostedZoneName
           ? `Could not determine whether HostedZoneName ${zoneNameShown(hostedZoneName)} exists for ` +
             `${subject.noun} ${logicalIdShown(logicalId)} — the hosted-zone listing ended before the name ` +
@@ -2433,6 +2526,7 @@ export class Route53Provider implements ResourceProvider {
       physicalId,
       lookupErrorCause
     );
+    throw lookupErrorMessage && lookupErrorRedacted ? markRedactedCause(unresolved) : unresolved;
   }
 
   /**

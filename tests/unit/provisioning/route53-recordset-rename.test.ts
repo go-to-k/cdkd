@@ -47,6 +47,7 @@ import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
 import type { ResourceNotFound } from '../../../src/types/resource.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
@@ -529,7 +530,11 @@ describe('Route53Provider create classifies Route 53 name conflicts as collision
   ])('%s is a name collision', async (_label, message) => {
     const error = await createError(batchRefusal(message));
     expect(error).toBeInstanceOf(ProvisioningError);
-    expect((error as Error).message).toContain(message);
+    // AWS's text is withheld from the persisted message (go-to-k/cdkd#2319);
+    // the collision is still recognised from the class + restatement.
+    expect((error as Error).message).toContain(`InvalidChangeBatch. ${VERBOSE_POINTER}`);
+    expect((error as Error).message).not.toContain(message);
+    expect(((error as Error).cause as Error).message).toBe(message);
     expect(isNameCollisionErrorFrom(error, 'Rec')).toBe(true);
     // Anchored on the logical id, like every other collision.
     expect(isNameCollisionErrorFrom(error, 'OtherRecord')).toBe(false);
