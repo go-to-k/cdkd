@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { warnUnretriedReplacedDeletes } from '../../../src/deployment/deploy-engine/replacement.js';
 import { retryCarriedSupersededResources } from '../../../src/deployment/deploy-engine/superseded-retry.js';
 import {
   addSuperseded,
@@ -394,6 +395,32 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     const all = [...printed.info, ...printed.warn].join('\n');
     expect(all).toContain('Failed to delete old resource Tg');
     expect(all).not.toContain(secretName);
+  });
+
+  it('a deferral left unretried says whether state still tracks it', () => {
+    const engine = makeEngine();
+    const run = engine.replacementRun;
+    const deferred = (physicalId: string) => ({
+      physicalId,
+      resourceType: TG,
+      provisionedBy: undefined,
+      failureMessage: 'in use',
+      retry: async () => undefined,
+    });
+    run.deferredReplacedDeletes = new Map([
+      ['Tg', deferred(OLD_TG)],
+      ['Masked', deferred('masked-id')],
+    ]);
+    // Only Tg's was recorded (`canRecordSuperseded` refused the masked one).
+    run.supersededEntries.set('Tg', { logicalId: 'Tg', supersededAt: 1, state: record(OLD_TG, TG, {}) });
+
+    warnUnretriedReplacedDeletes(run, engine.replacementDeps(), 'failed');
+
+    const tg = printed.warn.find((l) => l.includes(`old resource Tg (${OLD_TG})`));
+    const masked = printed.warn.find((l) => l.includes('old resource Masked (masked-id)'));
+    expect(tg).toContain('cdkd keeps it in state');
+    expect(masked).toContain('no longer tracked in state');
+    expect(masked).not.toContain('keeps it in state');
   });
 
   it('the persist choke point keeps an entry no record holds', () => {

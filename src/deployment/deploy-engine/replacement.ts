@@ -1263,15 +1263,17 @@ export function warnUnretriedReplacedDeletes(
 ): void {
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
-  // go-to-k/cdkd#5111: each is recorded in state, so the next deploy retries it.
-  const note =
-    why === 'failed'
-      ? 'not retried: the deploy failed first; cdkd keeps it in state, and the next deploy retries the delete'
-      : 'not retried: the deploy was interrupted; cdkd keeps it in state, and the next deploy retries the delete';
+  const cause = why === 'failed' ? 'the deploy failed first' : 'the deploy was interrupted';
+  // go-to-k/cdkd#5111: a recorded one stays in state for the next deploy; one
+  // `canRecordSuperseded` kept in memory only is no longer tracked.
+  const noteFor = (logicalId: string): string =>
+    run.supersededEntries.has(logicalId)
+      ? `not retried: ${cause}; cdkd keeps it in state, and the next deploy retries the delete`
+      : `not retried: ${cause}; it is no longer tracked in state, so delete it manually`;
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
       deps.logger.warn(
-        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${note})`
+        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
       )
     );
   }

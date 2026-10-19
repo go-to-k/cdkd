@@ -576,7 +576,12 @@ export const SKIPPED_REMEDY =
  */
 export function countProtectedResources(state: StackState): number {
   let count = 0;
-  for (const resource of Object.values(state.resources ?? {})) {
+  // go-to-k/cdkd#5111: the superseded copies too, whose delete gets the flag.
+  const records = [
+    ...Object.values(state.resources ?? {}),
+    ...supersededResourcesOf(state).map((entry) => entry.state),
+  ];
+  for (const resource of records) {
     const locator = perType(PROTECTION_PROPERTY_BY_TYPE, resource.resourceType);
     if (locator) {
       const isActive = (recorded: unknown): boolean =>

@@ -530,5 +530,20 @@ describe('countProtectedResources', () => {
       expect(countProtectedResources(lb({ LoadBalancerAttributes: [null, 5, 'x'] }))).toBe(0);
     });
   });
-});
 
+  it('counts a protected superseded copy too (go-to-k/cdkd#5111)', () => {
+    const state = makeState({});
+    state.supersededResources = [
+      {
+        logicalId: 'Lg',
+        supersededAt: 1,
+        state: {
+          physicalId: 'lg-old',
+          resourceType: 'AWS::Logs::LogGroup',
+          properties: { DeletionProtectionEnabled: true },
+        },
+      },
+    ];
+    expect(countProtectedResources(state)).toBe(1);
+  });
+});
