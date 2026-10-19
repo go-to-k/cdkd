@@ -767,6 +767,10 @@ G_BUCKET="$(physical Bucket)"
 G_RULE="$(held_name rule "$(physical Rule)")"
 G_TG="$(held_name tg "$(physical Tg)")"
 G_LOG_GROUP="$(physical LogGroup)"
+# An empty id would make its gone-probe below pass without testing anything.
+for id in "${G_TABLE}" "${G_ROLE}" "${G_FN}" "${G_TOPIC}" "${G_BUCKET}" "${G_RULE}" "${G_TG}" "${G_LOG_GROUP}"; do
+  [ -n "${id}" ] || fail "H: a resource of the last lifetime has no recorded id (premise)"
+done
 run_cdkd ok "H destroy" "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "H: state file still exists" \
