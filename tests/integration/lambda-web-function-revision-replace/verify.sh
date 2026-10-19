@@ -25,7 +25,7 @@
 # parameter), and records the whole map (`attrRegionalEndpoints`), which is
 # compared with what AWS reports.
 #
-# Both released binaries run before this build's first deploy: this build
+# Both released binaries run before this build's first deploy (phase 1c): this build
 # writes state schema v13 (go-to-k/cdkd#5064), which no earlier release reads.
 # Phases 3 and 3b replace the revision three more times on the SDK route, each
 # leaving exactly one revision behind the same two endpoints.
@@ -400,13 +400,14 @@ for id in Revision Endpoint; do
   fi
 done
 echo "    OK: Revision and Endpoint still recorded provisionedBy=cc-api"
-# Sentinel: the release before the fix serves the ARN, or phase 2 would pass
+echo "    (${PREFIX_CDKD_VERSION} recorded the renamed PerRegion endpoint provisionedBy=$(record RegionalEndpoint '.provisionedBy'))"
+# Sentinel: the release before the fix serves the ARN, or phase 1c would pass
 # without the record lacking the attribute it heals.
 GOT="$(param_value)"
 case "${GOT}" in
   arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the GetAtt to the endpoint ARN (the #4978 bug)" ;;
   *)
-    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the GetAtt to '${GOT}', not the ARN -- phase 2 no longer exercises the heal" >&2
+    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the GetAtt to '${GOT}', not the ARN -- phase 1c no longer exercises the heal" >&2
     exit 1
     ;;
 esac
@@ -414,7 +415,7 @@ GOT="$(param_value "${MAX_ENVS_PARAM}")"
 case "${GOT}" in
   arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to the endpoint ARN (the #4992 bug)" ;;
   *)
-    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to '${GOT}', not the ARN -- phase 2 no longer exercises its heal" >&2
+    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to '${GOT}', not the ARN -- phase 1c no longer exercises its heal" >&2
     exit 1
     ;;
 esac
@@ -429,18 +430,43 @@ if [ "${HAS_KEY}" != "false" ]; then
   exit 1
 fi
 
+echo "==> Phase 1c: deploy v1 again with this build, no change (heals the ${PREFIX_CDKD_VERSION} record)"
+# Nothing changes, so no provider rewrites the PerRegion endpoint's record:
+# only the heal can answer the GetAtt. Its first write of this stack (v13).
+OUT="$(deploy "${V1}")" || { echo "${OUT}"; echo "FAIL: phase 1c deploy" >&2; exit 1; }
+echo "${OUT}"
+assert_regional_getatt 'phase 1c'
+HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
+if [ "${HAS_KEY}" != "true" ]; then
+  echo "FAIL: phase 1c: the healed regional DomainName was not saved to the record (${HAS_KEY})" >&2
+  exit 1
+fi
+echo "    OK: phase 1c: the healed attribute was saved to the record"
+for id in Revision Endpoint; do
+  GOT="$(record "${id}" '.provisionedBy')"
+  if [ "${GOT}" != "cc-api" ]; then
+    echo "FAIL: phase 1c: the no-change deploy moved ${id} to provisionedBy=${GOT}; phase 2 would no longer exercise the cc-api -> sdk move" >&2
+    exit 1
+  fi
+done
+echo "    OK: Revision and Endpoint still recorded provisionedBy=cc-api"
+assert_serves v1
+
 # The revision replacement every later code change must repeat: replaced, the
 # inline delete refused and retried, exactly one revision left, the old one
 # gone, the endpoints not recreated. Prints the remaining revision.
 replace_revision() { # usage: replace_revision <phase> <marker> <old-revision>
   local version out t0 rev
-  version="$(upload_code "$2")"
+  # `|| exit 1` on each capture: `set -e` does not reach inside `$( )`.
+  version="$(upload_code "$2")" || exit 1
+  [ -n "${version}" ] || { echo "FAIL: $1: the code upload returned no version id" >&2; exit 1; }
   t0="$(date +%s)"
   out="$(deploy "${version}")" || { echo "${out}" >&2; echo "FAIL: $1 deploy" >&2; exit 1; }
   echo "${out}" >&2
   echo "    $1 deploy took $(($(date +%s) - t0)) s" >&2
   assert_replaced "$1" "${out}" "$3"
-  rev="$(assert_one_revision "$1" | tail -1)"
+  rev="$(assert_one_revision "$1" | tail -1)" || exit 1
+  [ -n "${rev}" ] || { echo "FAIL: $1: no remaining revision was read" >&2; exit 1; }
   [ "${rev}" = "$3" ] && { echo "FAIL: $1: the remaining revision is the OLD one ($3)" >&2; exit 1; }
   assert_gone "$1: old revision $3 still exists" \
     aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "$3" --region "${REGION}"
@@ -460,7 +486,7 @@ assert_endpoints_kept() { # usage: assert_endpoints_kept <phase>
   echo "    OK: $1: endpoints ${EP1} and ${REP1B} kept"
 }
 
-echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control, heals the ${PREFIX_CDKD_VERSION} record)"
+echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
 R="$(replace_revision 'phase 2' v2 "${REV1}")"
 REV2="$(sed -n 2p <<<"${R}")"
 assert_route 'phase 2' sdk
@@ -469,12 +495,6 @@ assert_route 'phase 2' sdk
 assert_endpoints_kept 'phase 2'
 assert_serves v2
 assert_regional_getatt 'phase 2'
-HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
-if [ "${HAS_KEY}" != "true" ]; then
-  echo "FAIL: phase 2: the healed regional DomainName was not saved to the record (${HAS_KEY})" >&2
-  exit 1
-fi
-echo "    OK: phase 2: the healed attribute was saved to the record"
 
 echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
 R="$(replace_revision 'phase 3' v3 "${REV2}")"
