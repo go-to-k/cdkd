@@ -156,7 +156,7 @@ describe('EC2Provider AWS::EC2::Instance property removal (#1160)', () => {
   });
 
   it('the caller-named removal warns too; drift --revert (none named) does not', async () => {
-    const previous = { ImageId: 'ami-1', DisableApiTermination: false };
+    const previous = { ImageId: 'ami-1', DisableApiTermination: 'true' };
     const prep = prepareRemovalForUpdate(provider, TYPE, { ImageId: 'ami-1' }, previous);
     await provider.update('Web', 'i-1', TYPE, prep.properties, previous, prep.context);
     expect(terminationWarnings()).toHaveLength(1);
@@ -166,6 +166,18 @@ describe('EC2Provider AWS::EC2::Instance property removal (#1160)', () => {
       removedProperties: new Set(),
     });
     expect(terminationWarnings()).toHaveLength(0);
+  });
+
+  it('a removed DisableApiTermination that was false does not warn (protection already off)', async () => {
+    await provider.update(
+      'Web',
+      'i-1',
+      TYPE,
+      { ImageId: 'ami-1' },
+      { ImageId: 'ami-1', DisableApiTermination: false }
+    );
+    expect(terminationWarnings()).toHaveLength(0);
+    expect(mutatingCommands()).toHaveLength(0);
   });
 
   it('a present DisableApiTermination does not warn', async () => {

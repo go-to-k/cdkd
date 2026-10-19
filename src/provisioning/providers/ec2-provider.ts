@@ -6469,14 +6469,15 @@ export class EC2Provider implements ResourceProvider {
     // An update caller names the removed template keys; `drift --revert`
     // names none (its previous side is an AWS readback, which always carries
     // DisableApiTermination). A direct call falls back to the two bags.
+    // Only a removed `true` warns: a removed `false` leaves protection off.
     const terminationProtectionRemoved =
-      context?.removedProperties !== undefined
+      oldDisableApiTermination === true &&
+      (context?.removedProperties !== undefined
         ? context.removedProperties.has('DisableApiTermination')
-        : previousProperties['DisableApiTermination'] !== undefined &&
-          properties['DisableApiTermination'] === undefined;
+        : properties['DisableApiTermination'] === undefined);
     if (terminationProtectionRemoved) {
       this.logger.warn(
-        safeMsg`${logicalId} (AWS::EC2::Instance): DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value (CloudFormation fails this update). Set DisableApiTermination to false to turn termination protection off.`
+        safeMsg`${logicalId} (AWS::EC2::Instance): DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value, as CloudFormation does not turn it off. Set DisableApiTermination to false to turn termination protection off.`
       );
     }
     if (

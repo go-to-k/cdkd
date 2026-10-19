@@ -1125,10 +1125,13 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes >"${P1D_LOG}" 2>&1 || {
   cat "${P1D_LOG}" >&2
+  rm -rf "${P1D_DIR}"
   echo "FAIL: the issue #1160 removal deploy failed (log above)" >&2
   exit 1
 }
-cat "${P1D_LOG}"
+P1D_OUTPUT=$(cat "${P1D_LOG}")
+rm -rf "${P1D_DIR}"
+printf '%s\n' "${P1D_OUTPUT}"
 
 RM_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 RM_INSTANCE_ID=$(echo "${RM_STATE}" | jq -r '.outputs.InstanceId // ""')
@@ -1144,11 +1147,21 @@ if [ -n "${RM_RECORDED}" ]; then
   exit 1
 fi
 
-RM_INSTANCE=$(aws ec2 describe-instances \
-  --instance-ids "${INSTANCE_ID}" \
-  --region "${REGION}" \
-  --query 'Reservations[0].Instances[0]' --output json)
-RM_MONITORING=$(echo "${RM_INSTANCE}" | jq -r '.Monitoring.State // "null"')
+# Read a few times: DescribeInstances is eventually consistent, so the first
+# read right after UnmonitorInstances can still say `enabled`. The pre-fix
+# code sends no call at all, so it stays `enabled` on every read.
+RM_MONITORING=""
+for _ in 1 2 3 4 5 6; do
+  RM_INSTANCE=$(aws ec2 describe-instances \
+    --instance-ids "${INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'Reservations[0].Instances[0]' --output json)
+  RM_MONITORING=$(echo "${RM_INSTANCE}" | jq -r '.Monitoring.State // "null"')
+  if [ "${RM_MONITORING}" = "disabled" ] || [ "${RM_MONITORING}" = "disabling" ]; then
+    break
+  fi
+  sleep 5
+done
 if [ "${RM_MONITORING}" != "disabled" ] && [ "${RM_MONITORING}" != "disabling" ]; then
   echo "FAIL: issue #1160 -- a removed Monitoring left Monitoring.State '${RM_MONITORING}' on ${INSTANCE_ID}; expected disabled/disabling, as CloudFormation turns it off" >&2
   exit 1
@@ -1178,11 +1191,12 @@ if [ "${RM_DISABLE_TERM}" != "True" ]; then
   echo "FAIL: issue #1160 -- a removed DisableApiTermination changed termination protection to '${RM_DISABLE_TERM}'; it must stay True (CloudFormation fails this update and keeps it)" >&2
   exit 1
 fi
-if ! grep -qF "DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value" "${P1D_LOG}"; then
+# A here-string, not a pipe: `grep -q` exits on the first match, and under
+# pipefail the writer's SIGPIPE would fail the check.
+if ! grep -qF "DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value" <<<"${P1D_OUTPUT}"; then
   echo "FAIL: issue #1160 -- the removal deploy did not warn that termination protection was left in place" >&2
   exit 1
 fi
-rm -rf "${P1D_DIR}"
 echo "    OK: removed MetadataOptions / CreditSpecification / DisableApiTermination kept (required / unlimited / True), with the termination-protection warning (issue #1160)"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
