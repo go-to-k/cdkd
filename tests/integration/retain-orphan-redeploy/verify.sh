@@ -543,6 +543,9 @@ if [ "$(printf '%s' "${ADOPT_STATE}" | jq -r --arg k "${ADOPT_LOGICAL_ID}" '.ret
 fi
 ADOPT_SUFFIX_G1="$(state_name_suffix "${ADOPT_STATE_KEY}" "${ADOPT_LOGICAL_ID}" 1)" || exit 1
 ADOPT_EXPECTED_G1="${ADOPT_BASE}-${ADOPT_SUFFIX_G1}"
+# Registered for the cleanup BEFORE the deploy: a deploy that fails after
+# creating it would otherwise leave a Retain role behind.
+ADOPT_ROLE_NAME="${ADOPT_EXPECTED_G1}"
 
 echo "==> Phase 8: the rollback must have RECORDED exactly one orphan"
 ORPHAN_COUNT="$(printf '%s' "${ADOPT_STATE}" | node -e '
