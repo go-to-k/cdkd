@@ -192,7 +192,7 @@ describe('planOrphanAdoption (#2934)', () => {
     // empty-array check.
     expect(importFn).not.toHaveBeenCalled();
     expect(readSiblingClaims).not.toHaveBeenCalled();
-    expect(plan).toEqual({ adopted: {}, remaining: [], refusals: [], notices: [] });
+    expect(plan).toEqual({ adopted: {}, remaining: [], refusals: [], notices: [], warnings: [] });
   });
 
   it('drops a record whose logical id state already MANAGES, before any AWS call', async () => {

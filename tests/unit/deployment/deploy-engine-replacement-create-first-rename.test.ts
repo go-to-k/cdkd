@@ -1101,7 +1101,7 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
   // The deploy's own scope (stack name, prefix flag) decides the sent name,
   // so each case runs inside one, as `cdkd deploy` does.
   const inDeployScope = <T>(skipPrefix: boolean, fn: () => Promise<T>): Promise<T> =>
-    withSkipPrefix(skipPrefix, () => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, fn));
+    withSkipPrefix(skipPrefix, () => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, fn));
   const lbArn = (name: string): string =>
     `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/${name}/0123456789abcdef`;
 

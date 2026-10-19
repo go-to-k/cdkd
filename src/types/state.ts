@@ -583,6 +583,19 @@ export interface StackState {
    */
   stackInstanceId?: string;
 
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): per logical id whose record LEFT
+   * this stack (a deploy's delete, `Retain` included, or `cdkd orphan`), the
+   * highest name generation that record reached (`max(nameGeneration,
+   * nameGenerationHigh)`). A later CREATE of the same logical id takes the
+   * next generation, so a re-added resource never asks for a name an earlier
+   * copy held -- CloudFormation's random suffix gives the same guarantee.
+   * Written only on a stack with a `stackInstanceId`; carried with it through
+   * {@link stackInstanceIdCarriedFrom}. Read through
+   * `retiredNameGenerationsOf` (`src/state/name-generation.ts`).
+   */
+  retiredNameGenerations?: Record<string, number>;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }
@@ -649,6 +662,27 @@ export interface StackOrphanRecord {
 export interface ResourceState {
   /** Physical resource ID (ARN, name, etc.) */
   physicalId: string;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the GENERATION of the name cdkd
+   * generated for this resource on a stack with a `stackInstanceId`. ABSENT =
+   * 0, the generation every first create takes. A replacement creates the new
+   * resource under the next generation (a new name, so it is created before
+   * the old one is deleted, as CloudFormation does); a CREATE of a logical id
+   * whose earlier record left the stack takes the generation after
+   * `StackState.retiredNameGenerations`. Never written on a legacy stack.
+   * Read through `nameGenerationOf` (`src/state/name-generation.ts`).
+   */
+  nameGeneration?: number;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the highest generation a
+   * replacement of this resource ever CREATED, when it exceeds
+   * `nameGeneration` -- a rollback put the older resource back. The next
+   * replacement goes past it, so a name a rolled-back copy held is never asked
+   * for again. ABSENT = `nameGeneration`.
+   */
+  nameGenerationHigh?: number;
 
   /** CloudFormation resource type (e.g., AWS::Lambda::Function) */
   resourceType: string;
@@ -1438,9 +1472,11 @@ export function exportNamesCarriedFrom(
 }
 
 /**
- * Carry {@link StackState.stackInstanceId} across a rebuild (state schema v13,
- * go-to-k/cdkd#5064): absent stays absent, present stays as it was, VERBATIM
- * (a malformed value is the reader's to refuse, never a writer's to drop).
+ * Carry {@link StackState.stackInstanceId} and
+ * {@link StackState.retiredNameGenerations} across a rebuild (state schema
+ * v13, go-to-k/cdkd#5064): absent stays absent, present stays as it was,
+ * VERBATIM (a malformed value is the reader's to refuse, never a writer's to
+ * drop).
  *
  * **Every** field-enumerating `StackState` literal must spread this, beside
  * {@link orphansCarriedFrom}. A dropped id is silent and turns the stack into
@@ -1450,11 +1486,17 @@ export function exportNamesCarriedFrom(
  * (`tests/unit/state/stack-instance-id-carriers.test.ts`).
  */
 export function stackInstanceIdCarriedFrom(
-  previous: Pick<StackState, 'stackInstanceId'> | null | undefined
-): Pick<StackState, 'stackInstanceId'> {
-  return previous?.stackInstanceId === undefined
-    ? {}
-    : { stackInstanceId: previous.stackInstanceId };
+  previous: Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'> | null | undefined
+): Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'> {
+  // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
+  // its id -- a writer that dropped them would hand a re-added resource a
+  // name an earlier copy of it held.
+  return {
+    ...(previous?.stackInstanceId !== undefined && { stackInstanceId: previous.stackInstanceId }),
+    ...(previous?.retiredNameGenerations !== undefined && {
+      retiredNameGenerations: previous.retiredNameGenerations,
+    }),
+  };
 }
 
 /**

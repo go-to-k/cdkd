@@ -904,7 +904,7 @@ describe('DeployEngine — --replace wire-through', () => {
         // would pass for the wrong reason.
         rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
         collideOnCreate();
-        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',
@@ -950,7 +950,7 @@ describe('DeployEngine — --replace wire-through', () => {
           // here is the derived one.
           return { physicalId: GENERATED_PID, attributes: {} };
         });
-        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',

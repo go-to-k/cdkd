@@ -54,8 +54,8 @@ import { generateResourceName, withStackScope } from '../../../src/provisioning/
 const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 const STACK = 'MyStack';
 
-const legacyScope = { stackName: STACK, stackInstanceId: undefined };
-const v13Scope = { stackName: STACK, stackInstanceId: ID };
+const legacyScope = { stackName: STACK, stackInstanceId: undefined, nameGenerations: undefined };
+const v13Scope = { stackName: STACK, stackInstanceId: ID, nameGenerations: new Map() };
 /** The name a v13 stack generates for `logicalId`. */
 const suffixed = (logicalId: string, maxLength: number): string =>
   withStackScope(v13Scope, () => generateResourceName(logicalId, { maxLength }));
@@ -63,7 +63,7 @@ const suffixed = (logicalId: string, maxLength: number): string =>
 const OTHER_ID = '7b1e2c3d-9a8f-4e6d-b5c4-a3b2c1d0e9f8';
 /** The name an EARLIER lifetime (a different stack instance id) generated. */
 const suffixedOther = (logicalId: string, maxLength: number): string =>
-  withStackScope({ stackName: STACK, stackInstanceId: OTHER_ID }, () =>
+  withStackScope({ stackName: STACK, stackInstanceId: OTHER_ID, nameGenerations: new Map() }, () =>
     generateResourceName(logicalId, { maxLength })
   );
 

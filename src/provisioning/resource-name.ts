@@ -16,6 +16,17 @@ import { createHash } from 'node:crypto';
 export interface StackScope {
   stackName: string;
   stackInstanceId: string | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2: the GENERATION each logical id's generated name
+   * is derived at, from the state record the scope's names belong to
+   * (`nameGenerationsOf`, `src/state/name-generation.ts`): a record's own
+   * generation, a re-added id's retired generation + 1, and 0 for an id the
+   * map does not hold (a first create). Required beside a `stackInstanceId`:
+   * a generated name derived in a scope with an id and no map THROWS rather
+   * than silently taking generation 0, which would name a replaced resource
+   * after its predecessor. `undefined` with no id (legacy, declared names).
+   */
+  nameGenerations: ReadonlyMap<string, number> | undefined;
 }
 
 /**
@@ -39,7 +50,10 @@ export function withStackScopeBeforeStateRead<T>(
   stackName: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  return stackScopeStore.run({ stackName, stackInstanceId: undefined, beforeStateRead: true }, fn);
+  return stackScopeStore.run(
+    { stackName, stackInstanceId: undefined, nameGenerations: undefined, beforeStateRead: true },
+    fn
+  );
 }
 
 /**
@@ -53,10 +67,76 @@ export function withStackScope<T>(scope: StackScope, fn: () => Promise<T>): Prom
 export function withStackScope<T>(scope: StackScope, fn: () => T): T;
 export function withStackScope<T>(scope: StackScope, fn: () => T | Promise<T>): T | Promise<T> {
   // Copied: a caller mutating its object afterwards must not rename anything.
+  // The generations map is taken as given (read-only, built per state read):
+  // a per-resource scope must not pay a copy of it.
   return stackScopeStore.run(
-    { stackName: scope.stackName, stackInstanceId: scope.stackInstanceId },
+    {
+      stackName: scope.stackName,
+      stackInstanceId: scope.stackInstanceId,
+      nameGenerations: scope.nameGenerations,
+    },
     fn
   );
+}
+
+/** A generation {@link withNameGeneration} binds for ONE logical id. */
+interface NameGenerationOverride {
+  logicalId: string;
+  generation: number;
+}
+
+const nameGenerationStore = new AsyncLocalStorage<NameGenerationOverride>();
+
+/** Is `value` a usable name generation (a non-negative safe integer)? */
+export function isNameGeneration(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Run `fn` with `logicalId`'s generated name derived at `generation` instead
+ * of the scope's (go-to-k/cdkd#5064 phase 2): the next generation around a
+ * replacement's create, its name check and its holder proof, and the old
+ * record's generation around a rollback's re-create of it. Every other
+ * logical id keeps the scope's generation; an inner binding replaces an outer
+ * one.
+ */
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => Promise<T>
+): Promise<T>;
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => T
+): T;
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => T | Promise<T>
+): T | Promise<T> {
+  if (!isNameGeneration(binding.generation)) {
+    throw new Error(
+      `cdkd internal error: name generation ${String(binding.generation)} for ${binding.logicalId} is not a non-negative integer`
+    );
+  }
+  return nameGenerationStore.run(
+    { logicalId: binding.logicalId, generation: binding.generation },
+    fn
+  );
+}
+
+/**
+ * The generation `logicalId`'s generated name is derived at in the current
+ * async context: a {@link withNameGeneration} binding for it, else the scope's
+ * map, else 0. `undefined` when the scope carries a stack instance id but no
+ * map -- a derivation there would guess.
+ */
+export function currentNameGeneration(logicalId: string): number | undefined {
+  const bound = nameGenerationStore.getStore();
+  if (bound !== undefined && bound.logicalId === logicalId) return bound.generation;
+  const scope = stackScopeStore.getStore();
+  if (scope?.nameGenerations === undefined) {
+    return scope?.stackInstanceId === undefined ? 0 : undefined;
+  }
+  return scope.nameGenerations.get(logicalId) ?? 0;
 }
 
 /**
@@ -274,19 +354,31 @@ export interface ResourceNameOptions {
 export const STACK_INSTANCE_SUFFIX_LENGTH = 12;
 
 /**
+ * The most generations {@link looksLikeCdkdGeneratedName} hashes through: a
+ * bound on a state-chosen number, far past any replacement count a stack sees.
+ */
+const MAX_RECOGNIZED_GENERATION = 1024;
+
+/**
  * The per-stack-instance suffix of the generated name for `name` (go-to-k/cdkd#5064):
  * the first 12 hex of sha256 over the id and the name, NUL-separated (a v4
  * UUID holds no NUL, so no two inputs share a digest input). A pure function,
  * so every re-derivation within one stack lifetime reproduces it, and one-way,
  * so a name does not disclose the id.
+ *
+ * `generation` (phase 2): 0 hashes exactly the phase-1 input; a later one
+ * appends a NUL and its decimal digits, so each replacement of a resource asks
+ * for a name no earlier generation held. A logical id holds no NUL, so no
+ * (name, generation) pair shares a digest input with another.
  */
-export function stackInstanceNameSuffix(stackInstanceId: string, name: string): string {
-  return createHash('sha256')
-    .update(stackInstanceId)
-    .update('\u0000')
-    .update(name)
-    .digest('hex')
-    .substring(0, STACK_INSTANCE_SUFFIX_LENGTH);
+export function stackInstanceNameSuffix(
+  stackInstanceId: string,
+  name: string,
+  generation = 0
+): string {
+  const hash = createHash('sha256').update(stackInstanceId).update('\u0000').update(name);
+  if (generation !== 0) hash.update('\u0000').update(String(generation));
+  return hash.digest('hex').substring(0, STACK_INSTANCE_SUFFIX_LENGTH);
 }
 
 /**
@@ -311,7 +403,21 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
         `of ${scope.stackName} was read, so it cannot carry the stack's instance id`
     );
   }
-  return deriveResourceName(name, options, scope?.stackName, scope?.stackInstanceId);
+  // go-to-k/cdkd#5064 phase 2: only a GENERATED name on a stack with an id
+  // reads the generation, so a declared name or a legacy stack never asks.
+  let generation = 0;
+  if (scope?.stackInstanceId !== undefined && options.userSupplied !== true) {
+    const known = currentNameGeneration(name);
+    if (known === undefined) {
+      throw new Error(
+        `cdkd internal error: a generated name for ${name} was derived in a scope of ` +
+          `${scope.stackName} that carries no name generations, so it could name the resource ` +
+          `after an earlier generation`
+      );
+    }
+    generation = known;
+  }
+  return deriveResourceName(name, options, scope?.stackName, scope?.stackInstanceId, generation);
 }
 
 /** {@link generateResourceName} for an explicit scope. */
@@ -319,7 +425,8 @@ function deriveResourceName(
   name: string,
   options: ResourceNameOptions,
   currentStackName: string | undefined,
-  stackInstanceId: string | undefined
+  stackInstanceId: string | undefined,
+  generation = 0
 ): string {
   const {
     maxLength,
@@ -349,7 +456,7 @@ function deriveResourceName(
   // the suffix. A declared name (prefixed or not) is the user's, and a legacy
   // stack keeps its names byte for byte.
   if (shouldPrefix && !userSupplied && stackInstanceId !== undefined) {
-    const suffix = stackInstanceNameSuffix(stackInstanceId, name);
+    const suffix = stackInstanceNameSuffix(stackInstanceId, name, generation);
     const base = sanitized.substring(0, maxLength - suffix.length - 1).replace(/-+$/, '');
     return base === '' ? suffix : `${base}-${suffix}`;
   }
@@ -407,12 +514,17 @@ function deriveResourceName(
  * @param stackName the deploying stack's name (absent = unresolvable, `false`)
  * @param stackInstanceId the stack's instance id (absent: a legacy stack, or
  *   unknown, so only the pre-v13 forms are recognized)
+ * @param generations the name generations the suffix may carry
+ *   (go-to-k/cdkd#5064 phase 2): every one from 0 through `through`. Absent:
+ *   0 through one past the generation the current scope derives for
+ *   `logicalId` -- a replaced resource's old and new names both count.
  */
 export function looksLikeCdkdGeneratedName(
   physicalId: string,
   logicalId: string,
   stackName: string | undefined,
-  stackInstanceId: string | undefined
+  stackInstanceId: string | undefined,
+  generations?: { through: number }
 ): boolean {
   if (!physicalId || !logicalId || !stackName) return false;
   // The skeleton drops every separator the per-type `allowedPattern` could
@@ -423,11 +535,17 @@ export function looksLikeCdkdGeneratedName(
   const actual = skeleton(physicalId);
   if (actual === derived) return true;
   if (stackInstanceId !== undefined) {
-    const suffix = stackInstanceNameSuffix(stackInstanceId, logicalId);
     const suffixed = /^(.*)-([0-9a-f]{12})$/.exec(physicalId.toLowerCase());
-    if (suffixed !== null && suffixed[2] === suffix) {
+    if (suffixed !== null) {
       const base = skeleton(suffixed[1]!);
-      if (base.length > 0 && derived.startsWith(base)) return true;
+      const through = Math.min(
+        generations?.through ?? (currentNameGeneration(logicalId) ?? 0) + 1,
+        MAX_RECOGNIZED_GENERATION
+      );
+      for (let g = 0; g <= through; g++) {
+        if (suffixed[2] !== stackInstanceNameSuffix(stackInstanceId, logicalId, g)) continue;
+        if (base.length > 0 && derived.startsWith(base)) return true;
+      }
     }
   }
   // Truncated form: `{prefix}-{8 hex}` where prefix is a cut of the same

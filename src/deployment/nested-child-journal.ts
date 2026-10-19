@@ -89,6 +89,7 @@ import {
   withStackScope,
 } from '../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../state/stack-instance-id.js';
+import { nameScopeOf, retiredAfterRollbackOrphans } from '../state/name-generation.js';
 import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
@@ -635,10 +636,11 @@ export async function revertNestedChildFromJournal(args: {
     refuseMalformedOrphans(base, childStackName, region, refusalRecovery);
     refuseMalformedOrphanRecords(base, childStackName, region, refusalRecovery);
     // go-to-k/cdkd#5064: the CHILD's own lifetime, not the parent's scope.
-    const childNamingScope = {
-      stackName: childStackName,
-      stackInstanceId: stackInstanceIdOf(base, displayStackName(childStackName)),
-    };
+    const childNamingScope = nameScopeOf(
+      childStackName,
+      stackInstanceIdOf(base, displayStackName(childStackName)),
+      base
+    );
 
     const journal = await ctx.stateBackend.loadRollbackJournal(childStackName, region);
     const segments = (journal?.segments ?? []).filter((segment) => segment.runId === runId);
@@ -674,6 +676,8 @@ export async function revertNestedChildFromJournal(args: {
       region,
       resources: { ...stateResources },
       ...orphansAfterRollback(base, mintedOrphans),
+      // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
+      ...retiredAfterRollbackOrphans(base, mintedOrphans),
       ...(restoring && restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
       ...(restoring &&
         restoredReads && {

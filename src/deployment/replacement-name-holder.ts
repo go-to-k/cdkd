@@ -64,6 +64,7 @@ export {
   replayPrefixChoice,
   rewrittenNameSpellings,
   replacementSentNameMoves,
+  replacementGeneratedNameMoves,
   maskRewrittenSentName,
   reverseReplacementRewrittenNameTypes,
   reverseReplacementCaseInsensitiveTypes,

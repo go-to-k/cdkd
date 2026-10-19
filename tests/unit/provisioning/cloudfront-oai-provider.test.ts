@@ -100,9 +100,9 @@ describe('CloudFrontOAIProvider', () => {
         CloudFrontOriginAccessIdentityConfig: { Comment: 'Allows CloudFront to reach the bucket' },
       };
       const type = 'AWS::CloudFront::CloudFrontOriginAccessIdentity';
-      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => provider.create('MyOAI', type, props));
-      await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined }, () => provider.create('MyOAI', type, props));
-      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
 
       const refs = mockSend.mock.calls.map(
         ([cmd]) => cmd.input.CloudFrontOriginAccessIdentityConfig.CallerReference
@@ -126,9 +126,9 @@ describe('CloudFrontOAIProvider', () => {
           },
         });
       const deploy = (l: CreateTokenLedger) =>
-        withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => withCreateTokenLedger(l, () => provider.create('MyOAI', type, props)));
+        withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(l, () => provider.create('MyOAI', type, props)));
 
-      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => provider.create('MyOAI', type, props)); // no ledger
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props)); // no ledger
       await deploy(ledger());
       expect(Object.keys(JSON.parse(body!).sent)).toEqual(['MyOAI']);
       body = undefined; // the record and its ledger deleted: a destroy

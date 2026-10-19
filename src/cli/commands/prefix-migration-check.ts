@@ -129,7 +129,7 @@ export function findPendingPrefixRenames(
     //                 on a user-supplied name) — what the next deploy targets.
     // Declared names only (`userSupplied: true`), which the stack instance id
     // never enters (go-to-k/cdkd#5064): no id is needed in the scope.
-    const scope = { stackName, stackInstanceId: undefined };
+    const scope = { stackName, stackInstanceId: undefined, nameGenerations: undefined };
     const legacyName = withStackScope(scope, () =>
       withSkipPrefix(false, () =>
         generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })

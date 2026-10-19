@@ -5,7 +5,11 @@ import {
   reverseReplacementRewrittenNameTypes,
   rewrittenNameSpellings,
 } from '../replacement-name-holder.js';
-import { explicitNamePropertyFor, withSkipPrefix } from '../../provisioning/resource-name.js';
+import {
+  explicitNamePropertyFor,
+  withNameGeneration,
+  withSkipPrefix,
+} from '../../provisioning/resource-name.js';
 // Issues #2038 / #4037: the derived-name masks run over one op's masker
 // (`createOpMasker`) — the providers' shared module, not a second copy of
 // that security contract.
@@ -143,13 +147,28 @@ interface RestorableBaselineRefusal {
  * names derive from the PLAINTEXT replay properties.
  */
 export function replayPrefixScope(
-  input: Parameters<typeof replayPrefixChoice>[0] & { logicalId: string },
+  input: Parameters<typeof replayPrefixChoice>[0] & {
+    logicalId: string;
+    /**
+     * go-to-k/cdkd#5064 phase 2: the name generation of the record whose
+     * physical id this op replays (the OLD record a reverse replacement
+     * re-creates, the current one an in-place revert updates). Its generated
+     * name is derived at it, whatever generation the replay's scope holds for
+     * the logical id; `undefined` binds none.
+     */
+    nameGeneration: number | undefined;
+  },
   logger: Logger,
   mask: MaskerFn,
   restoring: boolean
 ): <T>(fn: () => T) => T {
+  const generation = input.nameGeneration;
+  const inGeneration = <T>(fn: () => T): T =>
+    generation === undefined
+      ? fn()
+      : withNameGeneration({ logicalId: input.logicalId, generation }, fn);
   const choice = replayPrefixChoice(input);
-  if (choice.kind === 'not-applicable') return (fn) => fn();
+  if (choice.kind === 'not-applicable') return (fn) => inGeneration(fn);
   const setting = (skip: boolean): string => (skip ? 'SKIPPED' : 'KEPT');
   const subject = `${safe(input.logicalId)} (${safe(input.resourceType)})`;
   // A declared name the op's secrets touch (a `{{resolve:...}}` the replay
@@ -224,7 +243,7 @@ export function replayPrefixScope(
     );
   }
   const skip = choice.skipPrefix;
-  return (fn) => withSkipPrefix(skip, fn);
+  return (fn) => withSkipPrefix(skip, () => inGeneration(fn));
 }
 
 /**

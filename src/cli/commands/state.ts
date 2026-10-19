@@ -98,6 +98,7 @@ import {
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import {
   redactForState,
   maskReadbackAtCoordinates,
@@ -4626,7 +4627,7 @@ async function refreshObservedForStack(
     // provider-internal resource-name resolution sees the right stack and
     // lifetime (go-to-k/cdkd#5064; mirrors the deploy engine's scope).
     const stackInstanceId = stackInstanceIdOf(state, displayStackName(stackName));
-    await withStackScope({ stackName, stackInstanceId }, async () => {
+    await withStackScope(nameScopeOf(stackName, stackInstanceId, state), async () => {
       // go-to-k/cdkd#3869: each read runs under the record's printing bag, as
       // `cdkd drift` does: a provider's debug line, and a failed read's AWS
       // error, name the physical id, which for a resource named from a secret

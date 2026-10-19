@@ -72,6 +72,7 @@ import {
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   shouldRetainResource,
@@ -2036,10 +2037,11 @@ async function destroyStackInRegion(
     // spelled in this stack's naming scope, as the deploy that created it
     // derived it (go-to-k/cdkd#5064: its lifetime too); a destroy binds none
     // of its own.
-    const namingScope = {
+    const namingScope = nameScopeOf(
       stackName,
-      stackInstanceId: stackInstanceIdOf(state, displayStackName(stackName)),
-    };
+      stackInstanceIdOf(state, displayStackName(stackName)),
+      state
+    );
     const printingBagOf = (logicalId: string): RecordedSecretValues =>
       withStackScope(namingScope, () => judgedBagOf(logicalId));
 

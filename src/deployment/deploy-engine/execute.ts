@@ -1,4 +1,8 @@
 import { hasNoCloudControlHandlers } from '../../provisioning/unsupported-types.js';
+import {
+  currentNameGeneration,
+  getCurrentStackInstanceId,
+} from '../../provisioning/resource-name.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
 import {
   lostChildActions,
@@ -58,6 +62,10 @@ import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
+import {
+  retiredAfterRollbackOrphans,
+  retiredNameGenerationsAfter,
+} from '../../state/name-generation.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -465,6 +473,18 @@ export async function executeDeployment(
               engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
                 oldDeletedBeforeCreate: true,
               }),
+            // go-to-k/cdkd#5064 phase 2: the generation the failed replacement
+            // asked for, which `--revert-failed` records as reached; on a
+            // CREATE, the one its name was derived at, which the settle of an
+            // abandoned Cloud Control create recognizes that name by.
+            ...(change.changeType === 'UPDATE' &&
+              engine.replacementRun.attemptedNameGeneration.has(logicalId) && {
+                nameGeneration: engine.replacementRun.attemptedNameGeneration.get(logicalId),
+              }),
+            ...(change.changeType === 'CREATE' &&
+              getCurrentStackInstanceId() !== undefined && {
+                nameGeneration: currentNameGeneration(logicalId) ?? 0,
+              }),
             ...(orphanedBy !== undefined && {
               replacementOrphaned: engine.replacementRun.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)
@@ -594,6 +614,13 @@ export async function executeDeployment(
             previousState !== undefined && {
               previousResourceType: previousState.resourceType,
             }),
+          // go-to-k/cdkd#5064 phase 2: a replacement that moved the record to a
+          // new name generation; a rollback records it as reached.
+          ...(change.changeType === 'UPDATE' &&
+            engine.replacementRun.attemptedNameGeneration.has(logicalId) &&
+            newResources[logicalId]?.nameGeneration !== undefined && {
+              nameGeneration: newResources[logicalId]!.nameGeneration,
+            }),
         });
 
         saveStateAfterResource(logicalId);
@@ -691,6 +718,16 @@ export async function executeDeployment(
               provisionedBy: previousState?.provisionedBy,
               previousState,
             });
+            // go-to-k/cdkd#5064 phase 2: the record left the stack (deleted, or
+            // kept under Retain), so a later create of its logical id asks for
+            // the next generation's name -- never one this copy held. Every save
+            // carries the field through `stackInstanceIdCarriedFrom`.
+            if (previousState !== undefined && newResources[logicalId] === undefined) {
+              Object.assign(
+                currentState,
+                retiredNameGenerationsAfter(currentState, [{ logicalId, record: previousState }])
+              );
+            }
 
             saveStateAfterResource(logicalId);
           },
@@ -1119,6 +1156,8 @@ export async function executeDeployment(
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
         ...stackInstanceIdCarriedFrom(currentState),
+        // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
+        ...retiredAfterRollbackOrphans(currentState, rollbackOrphans),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -1178,6 +1217,7 @@ export async function executeDeployment(
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansAfterRollback(currentState, rollbackOrphans),
           ...stackInstanceIdCarriedFrom(currentState),
+          ...retiredAfterRollbackOrphans(currentState, rollbackOrphans),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a

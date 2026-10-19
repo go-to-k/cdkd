@@ -21,7 +21,7 @@ import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/re
  */
 
 const STACK = 'MyStack';
-const inStack = <T>(fn: () => T): T => withStackScope({ stackName: STACK, stackInstanceId: undefined }, fn);
+const inStack = <T>(fn: () => T): T => withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, fn);
 
 /** The expression each Pattern B provider evaluates for an explicit name. */
 function generate(type: string, declared: string): string {

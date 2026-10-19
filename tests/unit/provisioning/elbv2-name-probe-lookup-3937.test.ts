@@ -186,7 +186,7 @@ describe('the #3937 name probe against the real ELBv2 lookups', () => {
       });
 
       await withSkipPrefix(true, () =>
-        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, async () => {
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           await provider.import(lookupInput(c.type, { Name: 7 }));
           await provider.create('Res', c.type, { Name: 7, TargetType: 'lambda' });
         })
@@ -230,7 +230,7 @@ describe('the #3937 name probe against the real ELBv2 lookups', () => {
       });
 
       await withSkipPrefix(skip, () =>
-        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, async () => {
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           await provider.import(lookupInput(c.type, { Name: declared }));
           await provider.create('Res', c.type, { Name: declared, TargetType: 'lambda' });
         })

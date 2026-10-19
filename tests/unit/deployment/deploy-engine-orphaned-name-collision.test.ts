@@ -163,7 +163,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [id]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackScope({ stackName: stackName, stackInstanceId }, () =>
+    await withStackScope({ stackName: stackName, stackInstanceId, nameGenerations: new Map() }, () =>
       provisionResource(engine, id, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
@@ -195,7 +195,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
   // stack instance id the scope carries, not just the stack name.
   it('also names a v13 suffixed name as cdkd’s own orphan', async () => {
     const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
-    const suffixedName = withStackScope({ stackName: STACK, stackInstanceId: ID }, () =>
+    const suffixedName = withStackScope({ stackName: STACK, stackInstanceId: ID, nameGenerations: new Map() }, () =>
       generateResourceName(LOGICAL, { maxLength: 64 })
     );
     const advice = adviceIn(await attempt('CREATE', STACK, suffixedName, undefined, ID));
@@ -348,7 +348,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [LOGICAL]: { Type: REPLACED_TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provisionResource(engine, LOGICAL, change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the replacement collision refusal');

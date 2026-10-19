@@ -281,7 +281,7 @@ describe('the name-holder diagnosis carries no apostrophe (go-to-k/cdkd#4265)', 
   });
 
   it('the rewritten-name arm', () => {
-    const d = withStackScope({ stackName: 'Stk', stackInstanceId: undefined }, () =>
+    const d = withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       diagnosisOf(
         ask({
           oldResourceType: 'AWS::IAM::Role',

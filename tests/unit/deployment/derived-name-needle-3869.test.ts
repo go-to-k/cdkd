@@ -84,7 +84,7 @@ describe('secretNameNeedlesOf — is a record named from a secret, and what does
   it('a name resolved this deploy and REWRITTEN by its provider: every derived spelling', () => {
     const secret = 'alice@example.com';
     const bag: Bag = new Map([[secret, REF]]);
-    withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, () => {
+    withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const needles = secretNameNeedlesOf(
         'Role',
         {

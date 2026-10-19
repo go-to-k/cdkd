@@ -297,7 +297,7 @@ describe('generatedCreateName is the name create() sends', () => {
     sqsSend.mockResolvedValue({ QueueUrl: 'u', Attributes: { QueueArn: 'arn' } });
     cloudWatchSend.mockResolvedValue({ MetricAlarms: [{ AlarmArn: 'arn' }] });
     logsSend.mockResolvedValue({ logGroups: [{ logGroupName: 'x', arn: 'arn' }] });
-    await withStackScope({ stackName: 'App', stackInstanceId: undefined }, async () => {
+    await withStackScope({ stackName: 'App', stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
       const sqs = new SQSQueueProvider();
       await sqs.create('MyQueue', 'AWS::SQS::Queue', {}).catch(() => undefined);
       expect(callsOf(sqsSend, CreateQueueCommand)[0]!.input['QueueName']).toBe(
@@ -330,9 +330,9 @@ describe('review CB-13: an ELBv2 Name given as an intrinsic is a declared name, 
     (type) => {
       const provider = new ELBv2Provider();
       for (const Name of [{ Ref: 'P' }, { 'Fn::Join': ['-', ['a', 'b']] }, { 'Fn::Sub': 'x-${AWS::Region}' }, { 'Fn::ImportValue': 'E' }]) {
-        expect(withStackScope({ stackName: 'App', stackInstanceId: undefined }, () => provider.generatedCreateName(type, 'Lb', { Name })), JSON.stringify(Name)).toBeUndefined();
+        expect(withStackScope({ stackName: 'App', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.generatedCreateName(type, 'Lb', { Name })), JSON.stringify(Name)).toBeUndefined();
       }
-      expect(withStackScope({ stackName: 'App', stackInstanceId: undefined }, () => provider.generatedCreateName(type, 'Lb', {}))).toMatch(/^App-Lb/);
+      expect(withStackScope({ stackName: 'App', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.generatedCreateName(type, 'Lb', {}))).toMatch(/^App-Lb/);
     }
   );
 });
@@ -462,7 +462,7 @@ describe('review P2: after an approval prompt, 250 alarms are re-read in ceil(N/
       resourceType: 'AWS::CloudWatch::Alarm',
       desiredProperties: {},
     }));
-    const guard = withStackScope({ stackName: 'App', stackInstanceId: undefined }, () =>
+    const guard = withStackScope({ stackName: 'App', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       GeneratedNameGuard.start({
         stackName: 'App',
         region: 'us-east-1',

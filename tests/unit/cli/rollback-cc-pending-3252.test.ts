@@ -189,7 +189,7 @@ describe('rollbackCommand: a journaled abandoned Cloud Control CREATE (#3252)', 
   it("recognizes a suffixed identifier as the v13 record's own generated name", async () => {
     const order: string[] = [];
     const suffixedIdentifier = withStackScope(
-      { stackName: STACK, stackInstanceId: STACK_INSTANCE_ID },
+      { stackName: STACK, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
       () => generateResourceName('Group', { maxLength: 512 })
     );
     reader.resumeAbandonedRequest.mockResolvedValue({

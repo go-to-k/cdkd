@@ -378,7 +378,7 @@ describe('revertNestedChildFromJournal (#3754)', () => {
       state: childState(undefined, CHILD_ID),
     });
 
-    await withStackScope({ stackName: 'Parent', stackInstanceId: PARENT_ID }, () => h.run('run-1'));
+    await withStackScope({ stackName: 'Parent', stackInstanceId: PARENT_ID, nameGenerations: new Map() }, () => h.run('run-1'));
 
     expect(replay.calls).toHaveLength(1);
     expect(replay.calls[0]!.stackInstanceIdScope).toBe(CHILD_ID);

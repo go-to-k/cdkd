@@ -65,7 +65,7 @@ describe('generated names fit their name property (#5064)', () => {
     ['a legacy stack', undefined],
   ])('%s', (_label, stackInstanceId) => {
     it.each(types)('%s', (type, limit) => {
-      const props = withStackScope({ stackName: STACK, stackInstanceId }, () =>
+      const props = withStackScope({ stackName: STACK, stackInstanceId, nameGenerations: new Map() }, () =>
         applyDefaultNameForFallback(LOGICAL_ID, type, {})
       );
       const name = props[limit.nameProperty] as string;

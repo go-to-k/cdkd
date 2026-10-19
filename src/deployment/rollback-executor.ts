@@ -46,6 +46,7 @@
  *    replays each op exactly once).
  */
 
+import { nameGenerationOf, withNameGenerationReached } from '../state/name-generation.js';
 import { withReplayDeletePrinting } from './rollback-executor/replay-scope.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
 import {
@@ -1334,6 +1335,7 @@ async function replayFailedOperationsUnbound(
               logicalId: op.logicalId,
               physicalId: current.physicalId,
               via: revertVia,
+              nameGeneration: nameGenerationOf(current, op.logicalId),
             },
             logger,
             mask,
@@ -1388,7 +1390,13 @@ async function replayFailedOperationsUnbound(
           }
           stateResources[op.logicalId] = maskRestoredNoEchoRecord(
             redactRollbackRecord(
-              recordAfterRollbackUpdate(prev, revertFailedResult),
+              // go-to-k/cdkd#5064 phase 2: the failed replacement's create may
+              // have made a resource under the generation it asked for.
+              withNameGenerationReached(
+                recordAfterRollbackUpdate(prev, revertFailedResult),
+                op.logicalId,
+                op.nameGeneration
+              ),
               secrets,
               prev.properties,
               prev.attributes

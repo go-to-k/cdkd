@@ -44,10 +44,12 @@ import {
   replacementRequestsDifferentName,
   maskRewrittenSentName,
   replacementSentNameMoves,
+  replacementGeneratedNameMoves,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
 import { withStackRecords } from '../stack-records-scope.js';
+import { generatedReplacementHolderAdvice } from './name-collision.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
@@ -179,6 +181,16 @@ export class ReplacementRunState {
    * settling the failed UPDATE as a no-op. Cleared per `deploy()`.
    */
   oldDeletedBeforeCreate = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#5064 phase 2: per logical id this deploy REPLACED (or tried
+   * to) on a stack with an instance id, the name generation its new resource
+   * was created at. Journaled on the op that failed (`FailedOperation.
+   * nameGeneration`), so `cdkd rollback --revert-failed` raises the restored
+   * record's high-water mark past a copy the failed create may have made.
+   * Cleared per `deploy()`.
+   */
+  attemptedNameGeneration = new Map<string, number>();
 }
 
 /**
@@ -203,6 +215,22 @@ export interface ReplacementDeps {
   maskingRetryLoggerFor: DeployEngine['maskingRetryLoggerFor'];
   inlinePolicyClaimedFor: DeployEngine['inlinePolicyClaimedFor'];
   recordEvent: DeployEngine['recordEvent'];
+  /**
+   * go-to-k/cdkd#5064 phase 2: run a replacement's create through the
+   * generated-name guard (`guardedReplacementCreate`, `create.ts`).
+   */
+  guardedReplacementCreate: <T>(
+    input: {
+      logicalId: string;
+      resourceType: string;
+      stackName: string;
+      createdVia: ProvisionedBy | undefined;
+      resolvedProps: Record<string, unknown>;
+    },
+    create: () => Promise<T>
+  ) => Promise<T>;
+  /** Does the generated-name guard check `logicalId`'s create (its replacement included)? */
+  generatedNameGuarded: (logicalId: string) => boolean;
 }
 
 /**
@@ -598,6 +626,14 @@ export async function checkedReplacementNameChange(
   // different name unless the type folds case.
   const adopts = replacementCreateAdoptsName(resourceType, input.createdVia);
   const typeChanged = input.oldResourceType !== resourceType;
+  const generatedMove = replacementGeneratedNameMoves({
+    oldResourceType: input.oldResourceType,
+    newResourceType: resourceType,
+    createdVia: input.createdVia,
+    desiredProperties: input.desiredProperties,
+    physicalId: currentResource.physicalId,
+    logicalId,
+  });
   const change =
     replacementRequestsDifferentName(question) ??
     (adopts || replacementOrderIsCaseSensitive(resourceType)
@@ -612,8 +648,14 @@ export async function checkedReplacementNameChange(
       physicalId: currentResource.physicalId,
       logicalId,
     }) ??
-    (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined);
+    (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined) ??
+    // go-to-k/cdkd#5064 phase 2: a generated name at the next generation.
+    generatedMove;
   if (change === undefined) return undefined;
+  // That move is checked by the generated-name guard when it planned the
+  // replacement (a lookup at plan time, the intent in the ledger so a crash
+  // re-run takes its own resource back); the probe below covers the rest.
+  if (change === generatedMove && deps.generatedNameGuarded(logicalId)) return change;
   const probe = replacementNameProbe({
     resourceType,
     createdVia: input.createdVia,
@@ -757,6 +799,10 @@ export async function createFirstThenDeleteOld(
     retainOld?: boolean;
     /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
     noEchoDeleteValues?: NoEchoDeleteValues | undefined;
+    /** go-to-k/cdkd#5064 phase 2: what the generated-name guard reads. */
+    stackName: string;
+    createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
   }
 ): Promise<ResourceCreateResult> {
   const { logicalId, resourceType, currentResource, secrets } = input;
@@ -787,17 +833,27 @@ export async function createFirstThenDeleteOld(
   );
   let createResult: ResourceCreateResult;
   try {
-    createResult = await deps.withRetry(
+    createResult = await deps.guardedReplacementCreate(
+      {
+        logicalId,
+        resourceType,
+        stackName: input.stackName,
+        createdVia: input.createdVia,
+        resolvedProps: input.resolvedProps,
+      },
       () =>
-        withCurrentResourceSecrets(secrets, () =>
-          input.createProvider.create(logicalId, resourceType, input.createProps, {
-            maskSecrets: createSecretMasker(secrets),
-          })
-        ),
-      logicalId,
-      undefined,
-      undefined,
-      input.createProvider
+        deps.withRetry(
+          () =>
+            withCurrentResourceSecrets(secrets, () =>
+              input.createProvider.create(logicalId, resourceType, input.createProps, {
+                maskSecrets: createSecretMasker(secrets),
+              })
+            ),
+          logicalId,
+          undefined,
+          undefined,
+          input.createProvider
+        )
     );
   } catch (createError) {
     // The old resource is untouched: a raw failure is the whole story.
@@ -814,7 +870,14 @@ export async function createFirstThenDeleteOld(
             `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
             (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
             `. Choose a name no other resource holds, or delete the resource holding it if it ` +
-            `is yours.`
+            `is yours.` +
+            generatedReplacementHolderAdvice({
+              stackName: input.stackName,
+              logicalId,
+              change: input.change,
+              oldPhysicalId: currentResource.physicalId,
+              mask: maskName,
+            })
         ),
         'NAMED_REPLACEMENT_COLLISION',
         createError instanceof Error ? createError : undefined

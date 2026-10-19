@@ -179,7 +179,7 @@ async function replaceOnce(opts: {
     },
   };
   const engine = makeEngine(opts.provider, opts.provisionedBy, opts.replace ?? true);
-  return withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+  return withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
     provisionResource(
       engine,
       opts.logicalId,
@@ -482,7 +482,7 @@ describe('the proof reads what THIS create sent (#3979)', () => {
       },
     };
     const engine = makeEngine(provider);
-    const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provisionResource(
         engine,
         'Stage',

@@ -177,6 +177,7 @@ import {
 } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import {
   secretNamedRecordNeedles,
   secretNamePrintingBag,
@@ -3353,10 +3354,11 @@ async function runDriftForStack(
   // go-to-k/cdkd#5064: detection derives names in the stack's lifetime.
   // `runRevert` runs after this scope closes; every `update()` it reaches
   // keeps the recorded name of a resource the template does not name.
-  const namingScope = {
+  const namingScope = nameScopeOf(
     stackName,
-    stackInstanceId: stackInstanceIdOf(result.state, displayStackName(stackName)),
-  };
+    stackInstanceIdOf(result.state, displayStackName(stackName)),
+    result.state
+  );
   return await withStackScope(namingScope, async () => {
     const outcomes: DriftOutcome[] = [];
     const state: StackState = result.state;

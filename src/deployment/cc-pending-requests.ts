@@ -47,7 +47,7 @@ import { displacedPhysicalIdShown } from './nested-child-journal.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { getPrimaryIdentifierFields } from '../provisioning/cc-import-identifier.js';
 import { getTopLevelReadOnlyProperties } from '../provisioning/read-only-properties.js';
-import { looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
+import { isNameGeneration, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
 import type { Logger } from '../types/config.js';
 
 /** The two Cloud Control provider methods the resolver needs. */
@@ -114,7 +114,14 @@ export async function resolvePendingCloudControlRequests(params: {
    * before the journal was cleared) is dropped, never turned into an orphan
    * of a resource state owns.
    */
-  stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
+  stateResources?:
+    | Readonly<
+        Record<
+          string,
+          { physicalId?: unknown; nameGeneration?: unknown; nameGenerationHigh?: unknown }
+        >
+      >
+    | undefined;
   /**
    * The stack's instance id (go-to-k/cdkd#5064), from its record: an
    * identifier segment carrying the suffix it derives is a NAME, never an
@@ -193,7 +200,14 @@ async function settlePending(
     region: string;
     command: string;
     logger: Logger;
-    stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
+    stateResources?:
+      | Readonly<
+          Record<
+            string,
+            { physicalId?: unknown; nameGeneration?: unknown; nameGenerationHigh?: unknown }
+          >
+        >
+      | undefined;
     stackInstanceId: string | undefined;
     resume?: (op: FailedOperation, identifier: string) => boolean;
     identifierUnique?: IdentifierUniqueness;
@@ -245,6 +259,10 @@ async function settlePending(
           logicalId: op.logicalId,
           stackName,
           stackInstanceId: params.stackInstanceId,
+          // go-to-k/cdkd#5064 phase 2: one past the highest generation the op
+          // or the record names. Too many only reads a name as generated, the
+          // safe answer here (not unique: the resource is kept).
+          nameGenerationsThrough: generationsThrough(op, held),
         });
         const ended =
           outcome.status === 'succeeded'
@@ -372,6 +390,11 @@ export type IdentifierUniqueness = (args: {
   logicalId: string;
   stackName: string;
   stackInstanceId: string | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2: every name generation the identifier may carry
+   * a generated name of, 0 through this one. Absent: the scope's default.
+   */
+  nameGenerationsThrough?: number | undefined;
 }) => Promise<boolean>;
 
 /**
@@ -394,6 +417,7 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
   logicalId,
   stackName,
   stackInstanceId,
+  nameGenerationsThrough,
 }) => {
   // No bag: nothing to tell a name from an AWS-minted id by.
   if (attemptedProperties === undefined || holdsSecretReference(attemptedProperties)) return false;
@@ -419,10 +443,34 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
     return !nameSegments(part).some(
       (segment) =>
         sent.has(segment) ||
-        looksLikeCdkdGeneratedName(segment, logicalId, stackName, stackInstanceId)
+        looksLikeCdkdGeneratedName(
+          segment,
+          logicalId,
+          stackName,
+          stackInstanceId,
+          nameGenerationsThrough === undefined ? undefined : { through: nameGenerationsThrough }
+        )
     );
   });
 };
+
+/**
+ * The highest name generation an abandoned create's identifier may carry a
+ * generated name of: one past the op's own (absent = 0) and the record's
+ * high-water mark. A malformed value counts as 0 plus the record's: any doubt
+ * only widens what reads as generated.
+ */
+function generationsThrough(
+  op: { nameGeneration?: unknown },
+  held: { nameGeneration?: unknown; nameGenerationHigh?: unknown } | undefined
+): number {
+  const own = isNameGeneration(op.nameGeneration) ? op.nameGeneration : 0;
+  let recorded = 0;
+  for (const value of [held?.nameGeneration, held?.nameGenerationHigh]) {
+    if (isNameGeneration(value)) recorded = Math.max(recorded, value);
+  }
+  return Math.max(own, recorded) + 1;
+}
 
 /**
  * A value's comparable pieces, lowercased: the whole value and its `:` / `/`

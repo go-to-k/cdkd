@@ -93,6 +93,7 @@ import {
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
 import type { DeleteDeps } from './deploy-engine/delete.js';
 import { doDeployWithPrefetch } from './deploy-engine/deploy-flow.js';
+import { guardedReplacementCreate } from './deploy-engine/create.js';
 import {
   buildResolverContext,
   type ResolverContextDeps,
@@ -835,6 +836,9 @@ export class DeployEngine {
       maskingRetryLoggerFor: (...args) => this.maskingRetryLoggerFor(...args),
       inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
       recordEvent: (...args) => this.recordEvent(...args),
+      guardedReplacementCreate: (input, create) => guardedReplacementCreate(this, input, create),
+      generatedNameGuarded: (logicalId) =>
+        this.generatedNameGuard?.candidate(logicalId) !== undefined,
     };
   }
 

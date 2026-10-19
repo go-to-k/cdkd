@@ -287,6 +287,7 @@ export async function adoptRollbackOrphans(
         logger: deps.logger,
       }),
       logger: { debug: (m) => deps.logger.debug(m) },
+      newScheme: currentState.stackInstanceId !== undefined,
     })
   );
 
@@ -301,6 +302,7 @@ export async function adoptRollbackOrphans(
   // needle only over-masks. The thrown refusal too: it names the id and
   // carries no command, and the logical id beside it is what the user acts on.
   for (const notice of plan.notices) deps.logger.info(maskSecretsInText(notice, named));
+  for (const warning of plan.warnings) deps.logger.warn(maskSecretsInText(warning, named));
 
   // go-to-k/cdkd#4801: for the journal's keep, what state held for each
   // adopted id. Installed BEFORE the refusal below, so a refused run never
