@@ -104,8 +104,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The generated names are `<stack>-<logicalId>-<12 hex>` (go-to-k/cdkd#5064):
 # the suffix derives from the stack instance id, so they are READ FROM STATE
 # after phase 1 (`resolve_generated_names`) and asserted against their shape,
-# never predicted. All are well under their caps (140 for a provider, 64 for the
-# function), so `<stack>-<logicalId>` is not cut. SPARE_REWIRED is the
+# never predicted. Both caps are 64 (a provider's NAME is refused over 64,
+# whatever the schema's 140 for the ARN form), so `<stack>-<logicalId>` is cut
+# to 51 characters before the suffix where it is longer (the spare's is 52). SPARE_REWIRED is the
 # out-of-band name phase 2b deliberately makes DIFFERENT, known up front.
 # `cleanup` resolves the generated ones from state when phase 1 never did, and
 # skips an empty one.
@@ -373,13 +374,17 @@ VPC_ID="$(read_state "s['resources']['Vpc8378EB38']['physicalId']")"
 OPERATOR_ROLE="$(read_state "s['resources'].get('ProviderOperatorRoleDF614C31', {}).get('physicalId', '')")"
 SPARE_OPERATOR_ROLE="$(read_state "s['resources'].get('SpareProviderOperatorRole6345D27C', {}).get('physicalId', '')")"
 
-# go-to-k/cdkd#5064: each generated name is `<stack>-<logicalId>-<12 hex>`.
+# go-to-k/cdkd#5064: each generated name is `<stack>-<logicalId>` cut to
+# 64 - 13 = 51 characters (a trailing hyphen dropped), then `-<12 hex>`.
 for pair in "${PROVIDER_LOGICAL} ${STATE_PROVIDER_ID}" "${SPARE_LOGICAL} ${STATE_SPARE_ID}" \
   "${FUNCTION_LOGICAL} ${STATE_FUNCTION_ID}"; do
   logical="${pair%% *}"
   id="${pair#* }"
-  printf '%s' "${id}" | grep -qE "^${STACK}-${logical}-[0-9a-f]{12}\$" ||
-    { echo "FAIL: ${logical} physicalId '${id}' is not the generated ${STACK}-${logical}-<12 hex>" >&2; exit 1; }
+  base="${STACK}-${logical}"
+  base="${base:0:51}"
+  base="${base%-}"
+  printf '%s' "${id}" | grep -qE "^${base}-[0-9a-f]{12}\$" ||
+    { echo "FAIL: ${logical} physicalId '${id}' is not the generated ${base}-<12 hex>" >&2; exit 1; }
 done
 # The capacity providers and the function share the stack's one suffix
 # derivation but not a suffix: each hashes its own logical id.
