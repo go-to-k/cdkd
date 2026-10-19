@@ -372,6 +372,50 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(held.has(genName('Kept', 0))).toBe(true);
   });
 
+  // go-to-k/cdkd#5064: a CREATE the rollback deletes retires its generation,
+  // so the next create asks for a new name (an SQS queue or a secret refuses
+  // a just-deleted one), as CloudFormation names a re-create anew.
+  const madeThenFailed = {
+    Resources: {
+      Table: { Type: TABLE, Properties: keySchema('pk') },
+      Made: { Type: QUEUE, Properties: {} },
+      Fail: { Type: QUEUE, Properties: {}, DependsOn: ['Made'] },
+    },
+  } as unknown as CloudFormationTemplate;
+
+  it('a CREATE the rollback deletes retires its generation; the next create takes the next name', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('Fail');
+    await expect(makeEngine().deploy(STACK, madeThenFailed)).rejects.toThrow();
+    expect(events).toContain(`delete ${genName('Made', 0)}`);
+    const saved = lastSaved();
+    expect(saved.resources['Made']).toBeUndefined();
+    expect(saved.retiredNameGenerations).toEqual({ Made: 0 });
+
+    events = [];
+    failCreate.clear();
+    load(saved);
+    await makeEngine().deploy(STACK, madeThenFailed);
+    expect(events).toContain(`create ${genName('Made', 1)}`);
+    expect(events).not.toContain(`create ${genName('Made', 0)}`);
+  });
+
+  it('a re-added id created at retired + 1 and rolled back retires at that generation', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }, { retiredNameGenerations: { Made: 2 } }));
+    failCreate.add('Fail');
+    await expect(makeEngine().deploy(STACK, madeThenFailed)).rejects.toThrow();
+    expect(events).toContain(`delete ${genName('Made', 3)}`);
+    expect(lastSaved().retiredNameGenerations).toEqual({ Made: 3 });
+  });
+
+  it('a legacy stack retires nothing when the rollback deletes a CREATE', async () => {
+    load(stateOf({ Table: tableRecord(`${STACK}-Table`, 'pk') }, { stackInstanceId: undefined }));
+    failCreate.add('Fail');
+    await expect(makeEngine().deploy(STACK, madeThenFailed)).rejects.toThrow();
+    expect(events).toContain(`delete ${STACK}-Made`);
+    expect(Object.hasOwn(lastSaved(), 'retiredNameGenerations')).toBe(false);
+  });
+
   it('a --recreate-via-* target of a name-adopting type is looked up at its next-generation name', async () => {
     const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
     const tgName = (g: number) =>

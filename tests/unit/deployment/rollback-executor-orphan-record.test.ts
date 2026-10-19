@@ -326,6 +326,73 @@ describe('the failed-in-flight CREATE arm records too (#2934)', () => {
   });
 });
 
+describe('a CREATE taken back reaches the caller BEFORE the per-op save (go-to-k/cdkd#5064)', () => {
+  it.each([
+    ['delete', res({ physicalId: 'cdkd-sandbox-KeptRole', nameGeneration: 2 }), undefined],
+    ['Retain', res({ physicalId: 'cdkd-sandbox-KeptRole', deletionPolicy: 'Retain', nameGeneration: 2 }), undefined],
+    ['--orphan', res({ physicalId: 'cdkd-sandbox-KeptRole', nameGeneration: 2 }), new Set(['KeptRole'])],
+  ])('a completed CREATE (%s) reports its record before `afterOp`', async (_arm, record, orphanLogicalIds) => {
+    const { ctx } = makeCtx();
+    const state: Record<string, ResourceState> = { KeptRole: record };
+    const order: string[] = [];
+    const result = await replayRollback([createOp()], state, 'MyStack', ctx, {
+      ...(orphanLogicalIds && { orphanLogicalIds }),
+      onRolledBackCreate: (create) => {
+        order.push(`rolledBack ${create.logicalId}`);
+        expect(create.record).toBe(record);
+      },
+      afterOp: () => {
+        order.push('afterOp');
+      },
+    });
+    expect(state['KeptRole']).toBeUndefined();
+    expect(order).toEqual(['rolledBack KeptRole', 'afterOp']);
+    expect(result.rolledBackCreates.map((c) => c.logicalId)).toEqual(['KeptRole']);
+  });
+
+  it('a failed CREATE deleted or kept by Retain reports before `afterOp`, with its op generation', async () => {
+    for (const deletionPolicy of [undefined, 'Retain'] as const) {
+      const { ctx } = makeCtx();
+      const record = res({
+        physicalId: 'cdkd-sandbox-PartialRole',
+        ...(deletionPolicy && { deletionPolicy }),
+      });
+      const state: Record<string, ResourceState> = { PartialRole: record };
+      const order: string[] = [];
+      const result = await replayFailedOperations(
+        [
+          {
+            logicalId: 'PartialRole',
+            changeType: 'CREATE',
+            resourceType: 'AWS::IAM::Role',
+            physicalId: 'cdkd-sandbox-PartialRole',
+            nameGeneration: 3,
+          } as FailedOperation,
+        ],
+        state,
+        'MyStack',
+        ctx,
+        {
+          onRolledBackCreate: () => order.push('rolledBack'),
+          afterOp: () => {
+            order.push('afterOp');
+          },
+        }
+      );
+      expect(order).toEqual(['rolledBack', 'afterOp']);
+      expect(result.rolledBackCreates).toEqual([
+        { logicalId: 'PartialRole', record, nameGeneration: 3 },
+      ]);
+    }
+  });
+
+  it('a CREATE whose record is gone already (a re-run) reports nothing', async () => {
+    const { ctx } = makeCtx();
+    const result = await replayRollback([createOp()], {}, 'MyStack', ctx);
+    expect(result.rolledBackCreates).toEqual([]);
+  });
+});
+
 describe('orphansAfterRollback (#2934)', () => {
   const entry = (logicalId: string, orphanedAt: number, physicalId: string) => ({
     logicalId,

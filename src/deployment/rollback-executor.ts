@@ -46,8 +46,15 @@
  *    replays each op exactly once).
  */
 
-import { nameGenerationOf, withNameGenerationReached } from '../state/name-generation.js';
-import { withReplayDeletePrinting } from './rollback-executor/replay-scope.js';
+import {
+  nameGenerationOf,
+  withNameGenerationReached,
+  type RolledBackCreate,
+} from '../state/name-generation.js';
+import {
+  noteRolledBackCreate,
+  withReplayDeletePrinting,
+} from './rollback-executor/replay-scope.js';
 import type { ResourceState, StackOrphanRecord } from '../types/state.js';
 import {
   createSecretMasker,
@@ -211,6 +218,12 @@ async function replayRollbackUnbound(
      */
     onOrphan?: (record: StackOrphanRecord) => void;
     /**
+     * go-to-k/cdkd#5064: called the moment a CREATE's record leaves (deleted,
+     * or left in AWS), BEFORE `afterOp` saves, for the reason `onOrphan` is:
+     * every save from then on retires its generation (`retiredAfterRollback`).
+     */
+    onRolledBackCreate?: (create: RolledBackCreate) => void;
+    /**
      * go-to-k/cdkd#4225: the completed writes an `AWS::IAM::Policy` revert or
      * delete, or a role / group / user revert, asks about before removing an
      * inline policy name. A caller that
@@ -234,6 +247,7 @@ async function replayRollbackUnbound(
     skipped: 0,
     interrupted: false,
     orphaned: [],
+    rolledBackCreates: [],
   };
 
   if (operations.length === 0) {
@@ -293,7 +307,8 @@ async function replayRollbackUnbound(
       inlinePolicyWriters,
       options.afterOp,
       options.isInterrupted,
-      createdInSegment
+      createdInSegment,
+      options.onRolledBackCreate
     );
   }
 
@@ -317,7 +332,8 @@ async function replayRollbackUnbound(
         inlinePolicyWriters,
         options.afterOp,
         options.isInterrupted,
-        createdInSegment
+        createdInSegment,
+        options.onRolledBackCreate
       );
     }
   }
@@ -455,7 +471,8 @@ async function replaySingle(
   inlinePolicyWriters: RollbackInlinePolicyWriters,
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean,
-  createdInSegment: ReadonlySet<string> = new Set()
+  createdInSegment: ReadonlySet<string> = new Set(),
+  onRolledBackCreate?: (create: RolledBackCreate) => void
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -501,6 +518,7 @@ async function replaySingle(
     orphanLogicalIds,
     result,
     onOrphan,
+    onRolledBackCreate,
     inlinePolicyWriters,
     afterOp,
     isInterrupted,
@@ -675,6 +693,12 @@ async function replayFailedOperationsUnbound(
      */
     onOrphan?: (record: StackOrphanRecord) => void;
     /**
+     * go-to-k/cdkd#5064: called the moment a CREATE's record leaves (deleted,
+     * or left in AWS), BEFORE `afterOp` saves, for the reason `onOrphan` is:
+     * every save from then on retires its generation (`retiredAfterRollback`).
+     */
+    onRolledBackCreate?: (create: RolledBackCreate) => void;
+    /**
      * Emit the ROLLBACK_STARTED / ROLLBACK_FINISHED envelope around the
      * failed-op replay. The command passes true for a failed-only segment
      * (zero completed ops), where `replayRollback` returns early without
@@ -699,9 +723,11 @@ async function replayFailedOperationsUnbound(
     remainingFailedOps: [],
     skippedOps: [],
     orphaned: [],
+    rolledBackCreates: [],
     leftInPlace: 0,
   };
   const { logger } = ctx;
+  const rolledBack = { result, onRolledBackCreate: options.onRolledBackCreate };
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
   // concrete secret for the failed-op provider replay (GHSA fix).
   const resolver = new ReplayResolvers(ctx.region);
@@ -910,7 +936,11 @@ async function replayFailedOperationsUnbound(
             result.orphaned.push(orphaned);
             options.onOrphan?.(orphaned);
           }
-          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) {
+            delete stateResources[op.logicalId];
+            // go-to-k/cdkd#5064: the kept resource holds its name in AWS.
+            noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+          }
           // go-to-k/cdkd#4438: as on the `orphan-retain` arm.
           await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
@@ -989,7 +1019,10 @@ async function replayFailedOperationsUnbound(
               logger.info(
                 safeMsg`  Rollback: partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) is already gone — nothing to delete`
               );
-              if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+              if (!recordUnderIdIsNotOwn(op, stateResources)) {
+                delete stateResources[op.logicalId];
+                noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+              }
               await options.afterOp?.(op.logicalId);
               ctx.recordEvent?.({
                 eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1178,7 +1211,11 @@ async function replayFailedOperationsUnbound(
             result.warnings++;
             result.leftInPlace++;
           }
-          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) {
+            delete stateResources[op.logicalId];
+            // go-to-k/cdkd#5064: the next create asks for a new name.
+            noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+          }
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',

@@ -30,6 +30,8 @@ const replay = vi.hoisted(() => ({
   failuresFor: new Set<string>(),
   warningsFor: new Set<string>(),
   orphanFor: new Set<string>(),
+  /** go-to-k/cdkd#5064: CREATEs the replay deletes, reported with this generation. */
+  deletedCreateFor: new Map<string, number>(),
   /** Runs inside the replay, with the scope the replay was bound in. */
   duringReplay: undefined as
     | ((inner: NestedRevertRun, ctx: Record<string, unknown>) => void)
@@ -53,7 +55,11 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
       stateResources: Record<string, unknown>,
       stackName: string,
       ctx: Record<string, unknown>,
-      options: { afterOp?: () => Promise<void>; onOrphan?: (record: unknown) => void }
+      options: {
+        afterOp?: () => Promise<void>;
+        onOrphan?: (record: unknown) => void;
+        onRolledBackCreate?: (create: unknown) => void;
+      }
     ) => {
       replay.duringReplay?.(replay.readRun() as NestedRevertRun, ctx);
       const nested = replay.readNested();
@@ -74,6 +80,13 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
           // drop the resource from state and mint an orphan record.
           delete stateResources[op.logicalId];
           options.onOrphan?.({ logicalId: op.logicalId, state: { physicalId: 'kept' } });
+        } else if (replay.deletedCreateFor.has(op.logicalId)) {
+          // What the real executor does for a deleted rolled-back CREATE.
+          delete stateResources[op.logicalId];
+          options.onRolledBackCreate?.({
+            logicalId: op.logicalId,
+            record: { nameGeneration: replay.deletedCreateFor.get(op.logicalId) },
+          });
         } else {
           stateResources[op.logicalId] = { reverted: true };
         }
@@ -217,6 +230,7 @@ beforeEach(() => {
   replay.failuresFor.clear();
   replay.warningsFor.clear();
   replay.orphanFor.clear();
+  replay.deletedCreateFor.clear();
   replay.duringReplay = undefined;
 });
 
@@ -636,6 +650,24 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     replay.orphanFor.add('Kept');
     const h = harness({
       segments: [seg('r', ['Kept'])],
+      state: childState(undefined, stackInstanceId),
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
+  // go-to-k/cdkd#5064: a CREATE the child's replay deletes retires its
+  // generation, so a re-create asks for a new name; a legacy child retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { Made: 2 }],
+    [undefined, undefined],
+  ])('retires a deleted CREATE on a child with id %s: %j', async (stackInstanceId, retired) => {
+    replay.deletedCreateFor.set('Made', 2);
+    const h = harness({
+      segments: [seg('r', ['Made'])],
       state: childState(undefined, stackInstanceId),
     });
 

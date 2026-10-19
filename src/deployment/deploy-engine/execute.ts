@@ -63,7 +63,8 @@ import { deployStackRecordsView, type InFlightWrite } from '../stack-records-sco
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
 import {
-  retiredAfterRollbackOrphans,
+  retiredAfterRollback,
+  type RolledBackCreate,
   retiredNameGenerationsAfter,
   withNameGenerationReached,
 } from '../../state/name-generation.js';
@@ -1023,6 +1024,9 @@ export async function executeDeployment(
     // spread nothing and a stack that never orphaned keeps a byte-identical
     // record.
     let rollbackOrphans: StackOrphanRecord[] = [];
+    // go-to-k/cdkd#5064: the CREATEs that rollback took back; each logical
+    // id's generation retires, so the next create asks for a new name.
+    let rollbackCreates: RolledBackCreate[] = [];
     // The nested rows the automatic rollback actually reverted (issue
     // #3754): only their children's pending segments are settled with it.
     let rollbackSettledNested: SettledNestedRows = new Map();
@@ -1156,6 +1160,7 @@ export async function executeDeployment(
       // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
       // and neither can see `rollbackResult`.
       rollbackOrphans = rollbackResult.orphaned;
+      rollbackCreates = rollbackResult.rolledBackCreates;
       rollbackSettledNested = rollbackResult.settledNested;
       rollbackRemainingFailedOps = rollbackResult.remainingFailedOps;
     }
@@ -1174,8 +1179,9 @@ export async function executeDeployment(
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
         ...stackInstanceIdCarriedFrom(currentState),
-        // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
-        ...retiredAfterRollbackOrphans(currentState, rollbackOrphans),
+        // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
+        // and a CREATE it took back is named anew by the next create.
+        ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -1235,7 +1241,7 @@ export async function executeDeployment(
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansAfterRollback(currentState, rollbackOrphans),
           ...stackInstanceIdCarriedFrom(currentState),
-          ...retiredAfterRollbackOrphans(currentState, rollbackOrphans),
+          ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a

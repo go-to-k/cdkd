@@ -1,3 +1,4 @@
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withoutPendingRequest } from '../cc-pending-requests.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
@@ -438,6 +439,8 @@ export async function performRollback(
    */
   skipped: number;
   orphaned: StackOrphanRecord[];
+  /** go-to-k/cdkd#5064: the CREATEs it took back, whose generations retire. */
+  rolledBackCreates: RolledBackCreate[];
   /**
    * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
    * failure, no skip), with the grandchildren each completed. A row the
@@ -567,6 +570,7 @@ export async function performRollback(
     warnings: result.warnings + run.warnings + (failed?.warnings ?? 0),
     skipped: result.skipped + (failed?.skipped ?? 0),
     orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
+    rolledBackCreates: [...(failed?.rolledBackCreates ?? []), ...result.rolledBackCreates],
     settledNested: run.settled,
     remainingFailedOps: failedOperations.filter((_, i) => !handled.has(i)),
   };

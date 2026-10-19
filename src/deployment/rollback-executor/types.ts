@@ -1,3 +1,4 @@
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import type { ForeignHolding } from './journaled-orphans.js';
 import type { DeploymentEvent } from '../../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
@@ -583,6 +584,14 @@ export interface RollbackReplayResult {
    * persist by reading a missing field as "nothing to do".
    */
   orphaned: StackOrphanRecord[];
+  /**
+   * go-to-k/cdkd#5064: the CREATEs this replay took back, each reported the
+   * moment its record left `stateResources` (before `afterOp` saves, through
+   * the replay's `onRolledBackCreate`). The caller retires each logical id's
+   * generation (`retiredAfterRollback`), so the next create asks for a new
+   * name. Always an array, as {@link orphaned}.
+   */
+  rolledBackCreates: RolledBackCreate[];
 }
 
 /** Spelled locally: importing the CLI's copy would invert the layer direction. */

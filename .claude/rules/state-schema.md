@@ -78,7 +78,7 @@ Every reader goes through ONE predicate, `importableOutputKeys(state)` (`src/typ
 
 Minted only at a stack's FIRST state write (first deploy: written ahead to the `stack-instance.json` sibling before any create, reused on a re-run; `cdkd import` creating the record). Absent = legacy forever. Writers spread `stackInstanceIdCarriedFrom` (`stack-instance-id-carriers.test.ts`); read via `stackInstanceIdOf`. Never logged.
 
-Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
+Id stacks only: the generated-name suffix hashes the generation (`src/state/name-generation.ts`), a pure function of the record: a replacement creates at `nextNameGeneration`, a re-added id at retired + 1. Every path whose record leaves the stack retires its generation (`retiredNameGenerationsAfter` / `retiredAfterRollback`), a rollback's taken-back CREATE included. An id `StackScope` needs `nameGenerationsOf`'s map. Read via `nameGenerationOf` / `retiredNameGenerationsOf` (malformed, or a successor past a safe integer = refuse); writers spread `nameGenerationCarriedFrom` / `nameGenerationField`.
 
 ## `conditionVerdicts` (no bump)
 

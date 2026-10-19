@@ -1,4 +1,5 @@
 import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import type { Logger } from '../../types/config.js';
 import type { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -27,6 +28,8 @@ export interface ReplayOpScope {
   readonly orphanLogicalIds: Set<string>;
   readonly result: RollbackReplayResult;
   readonly onOrphan: ((record: StackOrphanRecord) => void) | undefined;
+  /** go-to-k/cdkd#5064: told of a CREATE taken back before `afterOp` saves. */
+  readonly onRolledBackCreate: ((create: RolledBackCreate) => void) | undefined;
   readonly inlinePolicyWriters: RollbackInlinePolicyWriters;
   readonly afterOp: ((logicalId: string) => Promise<void> | void) | undefined;
   readonly isInterrupted: (() => boolean) | undefined;
@@ -63,4 +66,28 @@ export function withReplayDeletePrinting<T>(
   return withPrintingSecrets(scope.secrets, () =>
     deployBag === undefined ? fn() : withPrintingSecrets(deployBag, fn)
   );
+}
+
+/**
+ * go-to-k/cdkd#5064: report that a CREATE's resource was taken back and its
+ * record (`undefined` for none) left `stateResources`: onto `result`, and to
+ * the caller's callback BEFORE the arm's `afterOp` saves, so every save from
+ * then on retires the logical id's generation. CREATE ops only.
+ */
+export function noteRolledBackCreate(
+  scope: {
+    result: Pick<RollbackReplayResult, 'rolledBackCreates'>;
+    onRolledBackCreate: ((create: RolledBackCreate) => void) | undefined;
+  },
+  op: { logicalId: string; changeType: string; nameGeneration?: unknown },
+  record: ResourceState | undefined
+): void {
+  if (op.changeType !== 'CREATE') return;
+  const create: RolledBackCreate = {
+    logicalId: op.logicalId,
+    record,
+    ...(op.nameGeneration !== undefined && { nameGeneration: op.nameGeneration }),
+  };
+  scope.result.rolledBackCreates.push(create);
+  scope.onRolledBackCreate?.(create);
 }

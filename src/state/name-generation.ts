@@ -214,7 +214,10 @@ export function withNameGenerationReached<T extends ResourceState>(
  */
 export function retiredNameGenerationsAfter(
   state: Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'>,
-  leaving: Iterable<{ logicalId: string; record: ResourceState }>
+  leaving: Iterable<{
+    logicalId: string;
+    record: Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'>;
+  }>
 ): Pick<StackState, 'retiredNameGenerations'> {
   if (state.stackInstanceId === undefined) return {};
   const retired = new Map(retiredNameGenerationsOf(state));
@@ -253,21 +256,61 @@ export function nameScopeOf(
 }
 
 /**
- * The `retiredNameGenerations` field after a rollback left `orphaned` records
- * in AWS (`DeletionPolicy: Retain`): on a stack with an instance id nothing
- * takes such a resource back implicitly (only `cdkd import` does), so its
- * logical id retires at the generation the orphan holds and a later create
- * asks for a new name, leaving the orphan alone. Spread AFTER
- * `stackInstanceIdCarriedFrom`, which carries the field it extends.
+ * A CREATE a rollback took back (deleted, or left in AWS with its record
+ * dropped): the record it removed, `undefined` for a create that never saved
+ * one, and the generation the journaled op names (a failed CREATE's).
  */
-export function retiredAfterRollbackOrphans(
+export interface RolledBackCreate {
+  logicalId: string;
+  record: Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'> | undefined;
+  nameGeneration?: unknown;
+}
+
+/**
+ * The highest generation a rolled-back create reached: its record's high-water
+ * mark or its op's generation, 0 for neither. A malformed value is skipped,
+ * never thrown: a rollback that already took the resource back must still
+ * save.
+ */
+function rolledBackCreateReached(create: RolledBackCreate): number {
+  let reached = 0;
+  for (const value of [
+    create.record?.nameGeneration,
+    create.record?.nameGenerationHigh,
+    create.nameGeneration,
+  ]) {
+    if (isNameGeneration(value)) reached = Math.max(reached, value);
+  }
+  return reached;
+}
+
+/**
+ * The `retiredNameGenerations` field after a rollback. Each logical id
+ * retires at the generation it reached when the rollback:
+ *
+ * - left `orphaned` records in AWS (`DeletionPolicy: Retain`): nothing takes
+ *   such a resource back implicitly (only `cdkd import` does), so a later
+ *   create asks for a new name and leaves the orphan alone;
+ * - took back a CREATE (`rolledBackCreates`): as CloudFormation names a
+ *   re-create anew, the next create of the logical id asks for the next
+ *   generation's name, never the one a just-deleted resource held (an SQS
+ *   queue or a Secrets Manager secret refuses that name for a while).
+ *
+ * `{}` on a legacy stack. Spread AFTER `stackInstanceIdCarriedFrom`, which
+ * carries the field it extends.
+ */
+export function retiredAfterRollback(
   state: Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'>,
-  orphaned: readonly StackOrphanRecord[]
+  orphaned: readonly StackOrphanRecord[],
+  rolledBackCreates: readonly RolledBackCreate[] = []
 ): Pick<StackState, 'retiredNameGenerations'> {
-  return retiredNameGenerationsAfter(
-    state,
-    orphaned.map((o) => ({ logicalId: o.logicalId, record: o.state }))
-  );
+  return retiredNameGenerationsAfter(state, [
+    ...orphaned.map((o) => ({ logicalId: o.logicalId, record: o.state })),
+    ...rolledBackCreates.map((c) => ({
+      logicalId: c.logicalId,
+      record: { nameGenerationHigh: rolledBackCreateReached(c) },
+    })),
+  ]);
 }
 
 /**

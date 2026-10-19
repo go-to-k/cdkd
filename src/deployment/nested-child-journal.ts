@@ -89,7 +89,11 @@ import {
   withStackScope,
 } from '../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../state/stack-instance-id.js';
-import { nameScopeOf, retiredAfterRollbackOrphans } from '../state/name-generation.js';
+import {
+  nameScopeOf,
+  retiredAfterRollback,
+  type RolledBackCreate,
+} from '../state/name-generation.js';
 import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
@@ -653,6 +657,9 @@ export async function revertNestedChildFromJournal(args: {
 
     const stateResources: Record<string, ResourceState> = { ...base.resources };
     const mintedOrphans: StackOrphanRecord[] = [];
+    // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
+    // it stands (as `mintedOrphans`), so each retires its generation.
+    const rolledBackCreates: RolledBackCreate[] = [];
     // The OLDEST segment of the run that CARRIES a snapshot is the child
     // before this run touched it. Not `segments[0]` blindly: in a run where the
     // child failed and rolled itself back before a later attempt succeeded,
@@ -677,7 +684,7 @@ export async function revertNestedChildFromJournal(args: {
       resources: { ...stateResources },
       ...orphansAfterRollback(base, mintedOrphans),
       // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
-      ...retiredAfterRollbackOrphans(base, mintedOrphans),
+      ...retiredAfterRollback(base, mintedOrphans, rolledBackCreates),
       ...(restoring && restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
       ...(restoring &&
         restoredReads && {
@@ -818,6 +825,7 @@ export async function revertNestedChildFromJournal(args: {
                     replayRollback(split.replay, stateResources, childStackName, execCtx, {
                       afterOp: save,
                       onOrphan: (record) => mintedOrphans.push(record),
+                      onRolledBackCreate: (create) => rolledBackCreates.push(create),
                       inlinePolicyWriters,
                       failedOperations: segment.failedOperations,
                     })

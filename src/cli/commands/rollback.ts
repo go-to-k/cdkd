@@ -46,7 +46,11 @@ import {
 } from '../../deployment/nested-child-journal.js';
 import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
-import { nameScopeOf, retiredAfterRollbackOrphans } from '../../state/name-generation.js';
+import {
+  nameScopeOf,
+  retiredAfterRollback,
+  type RolledBackCreate,
+} from '../../state/name-generation.js';
 import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { dropFailedJournalEntry, refuseDropFailedConflicts } from './rollback-drop-failed.js';
@@ -1052,6 +1056,9 @@ export async function rollbackCommand(
         // it is read inside the state literal rather than captured, so each save
         // persists the set as it stands at that moment.
         const mintedOrphans: StackOrphanRecord[] = [];
+        // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
+        // it stands (as `mintedOrphans`), so each retires its generation.
+        const rolledBackCreates: RolledBackCreate[] = [];
         const orphanLogicalIds = new Set(options.orphan ?? []);
 
         // Informational role-arn note (issue #1183): the newest segment recorded
@@ -1329,7 +1336,7 @@ export async function rollbackCommand(
             resources: { ...stateResources },
             ...orphansAfterRollback(baseState, mintedOrphans),
             // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
-            ...retiredAfterRollbackOrphans(baseState, mintedOrphans),
+            ...retiredAfterRollback(baseState, mintedOrphans, rolledBackCreates),
             lastModified: Date.now(),
           });
           try {
@@ -1505,6 +1512,7 @@ export async function rollbackCommand(
                               // returns is absent from every intermediate save
                               // (issue #2934).
                               onOrphan: (record) => mintedOrphans.push(record),
+                              onRolledBackCreate: (create) => rolledBackCreates.push(create),
                               inlinePolicyWriters,
                             })
                         )
@@ -1602,6 +1610,7 @@ export async function rollbackCommand(
                           // on return would be missing from every intermediate save
                           // — and a crash there loses it for good (issue #2934).
                           onOrphan: (record) => mintedOrphans.push(record),
+                          onRolledBackCreate: (create) => rolledBackCreates.push(create),
                           inlinePolicyWriters,
                           failedOperations: failedForGuard,
                         })

@@ -210,7 +210,7 @@ export async function planOrphanAdoption(params: {
    * go-to-k/cdkd#5064: the stack has a `stackInstanceId`. What a rollback
    * left in AWS is then never taken back implicitly, as CloudFormation never
    * takes back a resource that left a stack: its logical id retired at the
-   * orphan's generation (`retiredAfterRollbackOrphans`), so a create of it
+   * orphan's generation (`retiredAfterRollback`), so a create of it
    * asks for a new name and leaves the orphan alone. Nothing is read from AWS;
    * a record is dropped once its logical id is managed again, kept otherwise.
    */

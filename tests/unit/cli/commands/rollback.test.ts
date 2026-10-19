@@ -1358,8 +1358,8 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
 
   function installFailedCreateStack(
     resourceType: string,
-    deletionPolicy: 'Snapshot' | 'Retain',
-    opts: { initialDeploy?: boolean; stackInstanceId?: string } = {}
+    deletionPolicy: 'Snapshot' | 'Retain' | 'Delete',
+    opts: { initialDeploy?: boolean; stackInstanceId?: string; nameGeneration?: number } = {}
   ): FakeBackend {
     const failedOp = {
       logicalId: 'D',
@@ -1385,6 +1385,7 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
               dependencies: [],
               deletionPolicy,
               provisionedBy: 'sdk',
+              ...(opts.nameGeneration !== undefined && { nameGeneration: opts.nameGeneration }),
             },
           },
           outputs: {},
@@ -1446,6 +1447,45 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
     await rollbackCommand('S', { ...baseOpts, revertFailed: true });
     const saved = backend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
+  // go-to-k/cdkd#5064: a CREATE `--revert-failed` deletes retires its
+  // generation, so the next create asks for a new name; legacy retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', undefined, { D: 0 }],
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', 2, { D: 2 }],
+    [undefined, undefined, undefined],
+  ])(
+    'a deleted failed CREATE on a stack with id %s (generation %s): retiredNameGenerations %j',
+    async (stackInstanceId, nameGeneration, retired) => {
+      const backend = installFailedCreateStack('AWS::EC2::Volume', 'Delete', {
+        ...(stackInstanceId !== undefined && { stackInstanceId }),
+        ...(nameGeneration !== undefined && { nameGeneration }),
+      });
+      await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+      expect(replayProvider.delete).toHaveBeenCalledOnce();
+      // Every save once the record left carries it (the per-op save included).
+      for (const call of backend.saveState.mock.calls) {
+        const saved = call[2] as StackState;
+        if (saved.resources['D'] === undefined) expect(saved.retiredNameGenerations).toEqual(retired);
+      }
+      const last = backend.saveState.mock.calls.at(-1)![2] as StackState;
+      expect(last.resources['D']).toBeUndefined();
+      expect(last.retiredNameGenerations).toEqual(retired);
+    }
+  );
+
+  it('a completed CREATE the replay deletes retires its generation (go-to-k/cdkd#5064)', async () => {
+    const backend = installOneCreateSegment();
+    const loaded = (await (backend.getState as () => Promise<unknown>)()) as { state: StackState };
+    loaded.state.stackInstanceId = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    loaded.state.resources['Bucket']!.nameGeneration = 1;
+    backend.getState.mockResolvedValue(loaded);
+    await rollbackCommand('S', { ...baseOpts });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    const last = backend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(last.resources['Bucket']).toBeUndefined();
+    expect(last.retiredNameGenerations).toEqual({ Bucket: 1 });
   });
 
   it('Retain: the resource left in AWS is RECORDED in the saved state (#2934)', async () => {

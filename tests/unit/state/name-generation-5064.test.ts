@@ -25,9 +25,10 @@ import {
   nameScopeOf,
   nextNameGeneration,
   replacementNameGeneration,
-  retiredAfterRollbackOrphans,
+  retiredAfterRollback,
   retiredNameGenerationsAfter,
   withNameGenerationReached,
+  type RolledBackCreate,
 } from '../../../src/state/name-generation.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -245,15 +246,38 @@ describe('state helpers', () => {
     ).toEqual({ retiredNameGenerations: { Topic: 0 } });
   });
 
-  it('retiredAfterRollbackOrphans retires each orphan at its generation', () => {
+  it('retiredAfterRollback retires each orphan at its generation', () => {
     expect(
-      retiredAfterRollbackOrphans({ stackInstanceId: ID }, [
+      retiredAfterRollback({ stackInstanceId: ID }, [
         { logicalId: 'Bucket', orphanedAt: 1, state: record({ nameGeneration: 1 }) },
       ])
     ).toEqual({ retiredNameGenerations: { Bucket: 1 } });
     expect(
-      retiredAfterRollbackOrphans({}, [{ logicalId: 'Bucket', orphanedAt: 1, state: record() }])
+      retiredAfterRollback({}, [{ logicalId: 'Bucket', orphanedAt: 1, state: record() }])
     ).toEqual({});
+  });
+
+  it('retiredAfterRollback retires each rolled-back CREATE at the highest generation it reached', () => {
+    const at = (create: RolledBackCreate) =>
+      retiredAfterRollback({ stackInstanceId: ID }, [], [create]).retiredNameGenerations;
+    // A never-saved create: 0, so the next one takes generation 1.
+    expect(at({ logicalId: 'Q', record: undefined })).toEqual({ Q: 0 });
+    expect(at({ logicalId: 'Q', record: { nameGeneration: 1, nameGenerationHigh: 4 } })).toEqual({ Q: 4 });
+    expect(at({ logicalId: 'Q', record: { nameGeneration: 2 }, nameGeneration: 5 })).toEqual({ Q: 5 });
+    // A malformed value never stops the rollback's save: skipped.
+    expect(
+      at({ logicalId: 'Q', record: { nameGeneration: -1 as number }, nameGeneration: 'x' })
+    ).toEqual({ Q: 0 });
+    // Never below what the stack already retired, and beside an orphan.
+    expect(
+      retiredAfterRollback(
+        { stackInstanceId: ID, retiredNameGenerations: { Q: 7 } },
+        [{ logicalId: 'B', orphanedAt: 1, state: record({ nameGeneration: 2 }) }],
+        [{ logicalId: 'Q', record: { nameGeneration: 3 } }]
+      )
+    ).toEqual({ retiredNameGenerations: { Q: 7, B: 2 } });
+    // A legacy stack retires nothing.
+    expect(retiredAfterRollback({}, [], [{ logicalId: 'Q', record: undefined }])).toEqual({});
   });
 
   it('field helpers write nothing for generation 0 and carry verbatim', () => {
