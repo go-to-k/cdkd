@@ -157,6 +157,10 @@ as the old one (a fixed name): the id cannot tell the two apart, but an
 in-place revert could not undo the create-only change that forced the
 replacement. Whether it has already been reversed is read from the state
 record: it is done once every property the deploy changed holds its old value.
+When the record cannot say (every property the deploy changed is a secret
+redacted the same way before and after, or the journal holds no properties for
+the deploy), the rollback refuses that resource rather than skip it or delete
+it again.
 A resource that AWS stores other resources inside (a Lambda function's
 permissions, an SNS topic's subscriptions, an IAM role's inline policies) is
 refused instead when the stack records such a resource depending on it (one the

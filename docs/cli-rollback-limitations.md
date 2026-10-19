@@ -82,6 +82,12 @@ is kept. Delete the new resource yourself, or remove
   resource: deleting it again would take the other one too. Nothing is
   deleted. Deploy the previous template with `cdkd deploy --replace`, or orphan
   the resource.
+- **A resource re-created under its own name whose only change was a secret.**
+  When every property the deploy changed is redacted the same way in state
+  before and after, state cannot tell whether an earlier rollback already
+  reversed it, so the rollback refuses that resource before deleting anything.
+  Deploy the previous template with `cdkd deploy --replace`, or orphan the
+  resource.
 - **A re-create that fails after it made the resource.** The rollback deletes
   what the re-create made, unless the old resource's `DeletionPolicy` is
   `Retain` or `Snapshot`. A resource it keeps or cannot delete is named in a

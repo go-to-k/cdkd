@@ -4,6 +4,7 @@ import { equalIdNamesDifferentResources } from '../type-change-guard.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { SECRET_MASK } from '../secret-redaction.js';
 import {
   type OldTypeSources,
   nonEmptyString,
@@ -206,8 +207,8 @@ export function sameIdRecreated(op: CompletedOperation): boolean {
  * same way compares equal, so neither a re-run nor a redaction difference on
  * an unchanged key reads the wrong way.
  *
- * Without a changed key to read (no journaled forward bag, or every key the
- * forward changed is a secret both bags mask the same way) the record cannot
+ * Without a changed key to read (no journaled forward bag, or equal bags
+ * holding a redacted value, behind which the change may hide) the record cannot
  * tell a reversed op from a pending one: `'undecidable'`, which the
  * reverse-replacement arm refuses before any write
  * ({@link sameIdReversalUndecidable}) rather than skip or delete again.
@@ -227,8 +228,27 @@ function sameIdReversalDone(
   const changed = [...new Set([...Object.keys(before), ...Object.keys(forward)])].filter(
     (key) => !deepEqual(own(before, key), own(forward, key))
   );
-  if (changed.length === 0) return 'undecidable';
+  if (changed.length === 0) {
+    // Equal bags with nothing redacted: the forward changed no property (a
+    // child re-created with its re-created parent), so reversing it again
+    // leaves what the reversal would: read it as done. A redacted leaf may
+    // hide the change, which the record then cannot show.
+    return holdsRedactedLeaf(before) ? 'undecidable' : deepEqual(now, before);
+  }
   return changed.every((key) => deepEqual(own(now, key), own(before, key)));
+}
+
+/**
+ * go-to-k/cdkd#5096: does a recorded bag hold a value that may stand for a
+ * secret it does not show -- the redaction mask, or a `{{resolve:...}}`
+ * reference whose secret may have changed behind the same text?
+ */
+function holdsRedactedLeaf(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(SECRET_MASK) || value.includes('{{resolve:');
+  }
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some(holdsRedactedLeaf);
 }
 
 /**

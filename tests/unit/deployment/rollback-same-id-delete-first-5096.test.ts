@@ -279,6 +279,22 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     expect(sameIdReversalUndecidable(op({ oldDeletedBeforeCreate: false, properties: undefined }), rec('id'))).toBe(false);
   });
 
+  it('a reference both bags spell the same way is undecidable too; equal plain bags are not', () => {
+    // A `{{resolve:...}}` reference: the secret behind it may have changed.
+    const ref = { ...keyed('pk'), SSESpecification: { KMSMasterKeyId: '{{resolve:ssm:k}}' } };
+    const byRef = op({ properties: ref, previousState: { ...rec('pk'), properties: ref } });
+    const refRecord = { ...rec('pk'), properties: ref };
+    expect(sameIdReversalUndecidable(byRef, refRecord)).toBe(true);
+    expect(classifyRollbackOp(byRef, { Table: refRecord }, new Set())).toBe('reverse-replacement');
+    // Equal bags with nothing redacted (a child re-created with its re-created
+    // parent): no property changed, so the record decides.
+    const plain = op({ properties: keyed('pk') });
+    expect(sameIdReversalUndecidable(plain, rec('pk'))).toBe(false);
+    expect(classifyRollbackOp(plain, { Table: rec('pk') }, new Set())).toBe('skip-already-done');
+    expect(sameIdReversalUndecidable(plain, rec('id'))).toBe(false);
+    expect(classifyRollbackOp(plain, { Table: rec('id') }, new Set())).toBe('reverse-replacement');
+  });
+
   it('a same-id op the engine did not stamp delete-first keeps the in-place revert', () => {
     const inPlace = op({ oldDeletedBeforeCreate: false });
     expect(isReplacementOp(inPlace)).toBe(false);
