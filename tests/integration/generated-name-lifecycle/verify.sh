@@ -112,7 +112,7 @@ CHILD_STATE_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 # The LAST v12-writing cdkd release on npm when this fixture was written.
 # Phase A1 asserts it writes `version: 12` AND no id, so a wrong pin fails
 # loudly instead of quietly testing something else.
-V12_CDKD_VERSION="0.301.9"
+V12_CDKD_VERSION="0.301.12"
 V12_TMPDIR=""
 V12_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
