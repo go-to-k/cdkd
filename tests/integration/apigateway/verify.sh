@@ -15,8 +15,9 @@
 # the account's role ARN is cleared, as CloudFormation clears it (measured A/B,
 # us-east-1). The account setting is a REGION-WIDE singleton: the pre-run value
 # is recorded and restored on every exit path. Do not run this fixture
-# concurrently with another one that sets the account's CloudWatch role in the
-# same region.
+# concurrently, in the same region, with another one that sets the account's
+# CloudWatch role: apigw-stage-props, apigw-stage-throttling, and
+# apigw-cloudwatch-role-redeploy (#5084).
 #
 # Then destroys and confirms a clean teardown.
 #
@@ -93,10 +94,12 @@ account_role() {
 # throttled hard (TooManyRequests on back-to-back calls), so that one error
 # is retried; any other fails.
 set_account_role() { # usage: set_account_role <arn-or-empty>
-  local i out
+  local i out ops
+  # JSON, not shorthand: an IAM role name may contain a comma.
+  ops=$(jq -nc --arg v "$1" '[{op: "replace", path: "/cloudwatchRoleArn", value: $v}]') || return 1
   for i in 1 2 3 4 5 6 7 8; do
     if out=$(aws apigateway update-account --region "${REGION}" \
-      --patch-operations "op=replace,path=/cloudwatchRoleArn,value=$1" 2>&1 >/dev/null); then
+      --patch-operations "${ops}" 2>&1 >/dev/null); then
       return 0
     fi
     printf '%s' "${out}" | grep -q 'TooManyRequests' || { echo "${out}" >&2; return 1; }
@@ -107,15 +110,30 @@ set_account_role() { # usage: set_account_role <arn-or-empty>
 }
 
 # Puts the account's CloudWatch role back to its pre-run value (none when
-# that value was unset or a leftover of this fixture). Returns 1 when the
-# readback does not match.
+# that value was unset, a leftover of this fixture, or a role that no longer
+# exists: UpdateAccount refuses a deleted role, and another fixture can leave
+# the account pointing at one). Returns 1 when the readback does not match or
+# the role's existence cannot be determined.
 restore_account_role() {
   [ -n "${PRE_ACCOUNT_ROLE}" ] || return 0
-  local want now
+  local want now probe
   want="${PRE_ACCOUNT_ROLE}"
   case "${want}" in
     NONE | *":role${ROLE_PATH}"*) want="" ;;
   esac
+  if [ -n "${want}" ]; then
+    # Not gone_probe: it exits on an undetermined probe, and this also runs
+    # from the EXIT trap, where the rest of cleanup must still run.
+    if ! probe=$(aws iam get-role --role-name "${want##*/}" 2>&1 >/dev/null); then
+      if printf '%s' "${probe}" | grep -q 'NoSuchEntity'; then
+        echo "WARN: the pre-run account CloudWatch role ${want} no longer exists; leaving the account role unset" >&2
+        want=""
+      else
+        echo "${probe}" >&2
+        return 1
+      fi
+    fi
+  fi
   now=$(account_role) || return 1
   [ "${now}" = "${want}" ] && return 0
   set_account_role "${want}" || return 1

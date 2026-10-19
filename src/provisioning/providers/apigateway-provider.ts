@@ -395,8 +395,9 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update a resource. `context` is read for its masker only (issue #2177);
-   * see `create()`.
+   * Update a resource. `context` is read for its masker (issue #2177; see
+   * `create()`) and, on the Account arm, for `removedProperties` via
+   * `withRemovalDefaults` (issue #1160).
    */
   async update(
     logicalId: string,
