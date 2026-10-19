@@ -43,7 +43,12 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { earliestDefined, reserveStackCreateToken } from './create-token-ledger.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
@@ -55,6 +60,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceIdentityVerdict,
+  CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -348,6 +354,36 @@ export class FSxFileSystemProvider implements ResourceProvider {
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   }
 
+  /**
+   * The failure wrap every create / update / delete catch builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text; the deploy engine masks a thrown
+   * message. The delete checks `FileSystemNotFound` by type before it wraps,
+   * so no "already deleted" reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = maskerOrIdentity(mask);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::FSx::FileSystem',
@@ -419,7 +455,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
@@ -637,13 +674,22 @@ export class FSxFileSystemProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      const message = `Failed to create FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`;
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create FSx FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
       if (survivorId !== undefined) {
-        const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
         markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
-        throw thrown;
       }
-      throw new ProvisioningError(message, resourceType, logicalId, undefined, cause);
+      throw thrown;
     }
   }
 
@@ -1149,12 +1195,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update FSx FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1498,19 +1549,24 @@ export class FSxFileSystemProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete FSx FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete FSx FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 
     // Deletion is async — poll until the file system is GONE. A timeout is
     // a hard error (never warn-and-continue): a half-deleted FSx file
     // system keeps billing and the destroy must not report success.
-    await this.waitForFileSystemDeleted(physicalId, logicalId, resourceType);
+    await this.waitForFileSystemDeleted(physicalId, logicalId, resourceType, context?.maskSecrets);
 
     this.logger.debug(`Successfully deleted FSx FileSystem ${logicalId}`);
   }
@@ -1752,7 +1808,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
   private async waitForFileSystemDeleted(
     fileSystemId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: MaskerFn
   ): Promise<void> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -1769,12 +1826,17 @@ export class FSxFileSystemProvider implements ResourceProvider {
       } catch (error) {
         if (error instanceof FileSystemNotFound) return;
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${describeAwsFailure(error).detail}`,
-          resourceType,
-          logicalId,
-          fileSystemId,
-          cause
+        throw this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${text}`,
+              resourceType,
+              logicalId,
+              fileSystemId,
+              cause
+            )
         );
       }
 

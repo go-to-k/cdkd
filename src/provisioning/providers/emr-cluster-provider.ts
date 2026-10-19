@@ -34,7 +34,11 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   pasteableAwsCommand,
@@ -56,7 +60,7 @@ import {
   toSdkStepConfigs,
 } from '../emr-configuration.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { createMaskedLogSinks } from '../masked-retry-logger.js';
+import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   collectOrphanIds,
   orphanCommandRegionArg,
@@ -298,6 +302,36 @@ export class EMRClusterProvider implements ResourceProvider {
   constructor(options?: { pollIntervalMs?: number; maxWaitMs?: number }) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  }
+
+  /**
+   * The failure wrap every create / update / delete catch builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text; the deploy engine masks a thrown
+   * message. The delete checks `InvalidRequestException` by type before it
+   * wraps, so no "already gone" reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = maskerOrIdentity(mask);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -612,14 +646,23 @@ export class EMRClusterProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      const message = `Failed to create EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`;
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create EMR Cluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+      );
       if (survivorId !== undefined) {
-        const thrown = new ProvisioningError(message, resourceType, logicalId, undefined, cause);
         markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
         markNonRetryable(thrown);
-        throw thrown;
       }
-      throw new ProvisioningError(message, resourceType, logicalId, undefined, cause);
+      throw thrown;
     }
   }
 
@@ -1017,12 +1060,17 @@ export class EMRClusterProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EMR Cluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1140,12 +1188,17 @@ export class EMRClusterProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to describe EMR Cluster ${logicalId} before deletion: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to describe EMR Cluster ${logicalId} before deletion: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 
@@ -1201,19 +1254,24 @@ export class EMRClusterProvider implements ResourceProvider {
       flip.deleteAccepted = true;
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to terminate EMR Cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to terminate EMR Cluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
 
     // Termination is async — poll until TERMINATED. A timeout is a hard error
     // (never warn-and-continue): a still-running EMR cluster keeps billing
     // per instance-hour and the destroy must not report success.
-    await this.waitForClusterTerminated(physicalId, logicalId, resourceType);
+    await this.waitForClusterTerminated(physicalId, logicalId, resourceType, context?.maskSecrets);
 
     this.logger.debug(`Successfully deleted EMR Cluster ${logicalId}`);
   }
@@ -1304,7 +1362,8 @@ export class EMRClusterProvider implements ResourceProvider {
   private async waitForClusterTerminated(
     clusterId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: MaskerFn
   ): Promise<void> {
     const startTime = Date.now();
     const transientState = { count: 0 };
@@ -1316,12 +1375,17 @@ export class EMRClusterProvider implements ResourceProvider {
       } catch (error) {
         if (error instanceof InvalidRequestException) return; // aged out of Describe = gone
         const cause = error instanceof Error ? error : undefined;
-        throw new ProvisioningError(
-          `Failed to poll EMR Cluster ${clusterId} termination: ${describeAwsFailure(error).detail}`,
-          resourceType,
-          logicalId,
-          clusterId,
-          cause
+        throw this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to poll EMR Cluster ${clusterId} termination: ${text}`,
+              resourceType,
+              logicalId,
+              clusterId,
+              cause
+            )
         );
       }
 

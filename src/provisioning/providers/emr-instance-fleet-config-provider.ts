@@ -17,7 +17,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { toSdkInstanceTypeConfigs } from '../emr-configuration.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { createMaskedLogSinks } from '../masked-retry-logger.js';
+import { createMaskedLogSinks, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   collectOrphanIds,
   orphanCommandRegionArg,
@@ -44,7 +44,11 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 
 /**
  * Default polling budget for an instance fleet reaching RUNNING. Adding a
@@ -201,6 +205,35 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
   constructor(options?: { pollIntervalMs?: number; maxWaitMs?: number }) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  }
+
+  /**
+   * The failure wrap the create and update catches build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text; the deploy engine masks a thrown
+   * message.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = maskerOrIdentity(mask);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -402,12 +435,17 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to add EMR instance fleet ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              undefined,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              context?.maskSecrets,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to add EMR instance fleet ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the fleet exists once AddInstanceFleet returned its
       // id (the id delete() takes); name it for --revert-failed.
@@ -605,12 +643,17 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update EMR instance fleet ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EMR instance fleet ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
