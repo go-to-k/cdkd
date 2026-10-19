@@ -187,13 +187,27 @@ export function isReplacementOp(op: CompletedOperation): boolean {
  * says so (`oldDeletedBeforeCreate`); an in-place update the provider
  * reported as such (`wasReplaced: false`) is not one.
  */
-function sameIdRecreated(op: CompletedOperation): boolean {
+export function sameIdRecreated(op: CompletedOperation): boolean {
   return (
     op.oldDeletedBeforeCreate === true &&
     op.wasReplaced !== false &&
     op.physicalId !== undefined &&
     op.previousState?.physicalId === op.physicalId
   );
+}
+
+/**
+ * go-to-k/cdkd#5096: has a same-id re-create already been reversed? The id
+ * cannot say, so the record does: it is the forward's no longer once the
+ * reversal rewrote it -- to the old properties, or to the bag the replayed
+ * create returned (`effectiveProperties`), which equals neither side. Read
+ * that way a re-run never deletes the restored resource again. A record that
+ * differs from the forward's only in how it was redacted reads as reversed:
+ * nothing is deleted, and the record still names what AWS holds.
+ */
+function sameIdReversalDone(op: CompletedOperation, current: ResourceState): boolean {
+  if (deepEqual(current.properties, op.previousState!.properties)) return true;
+  return op.properties !== undefined && !deepEqual(current.properties, op.properties);
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {
@@ -281,8 +295,8 @@ export function classifyRollbackOp(
       current.physicalId === op.previousState!.physicalId &&
       sameTypeAsOld &&
       // go-to-k/cdkd#5096: under a same-id re-create the id is no evidence:
-      // the old record is back only when it says so.
-      (!sameIdRecreated(op) || deepEqual(current.properties, op.previousState!.properties)) &&
+      // the record says whether the reversal ran.
+      (!sameIdRecreated(op) || sameIdReversalDone(op, current)) &&
       // Issue #3892: the equal id may be the NEW resource (a Glue table in
       // another database); it is the old one only when its record says so.
       !equalIdNamesDifferentResources({

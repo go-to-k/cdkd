@@ -75,6 +75,13 @@ is kept. Delete the new resource yourself, or remove
   the new resource, and the journal is kept.
 - **A failed re-create on the delete-first order.** The resource is then
   absent, and the message says so. Run `cdkd deploy` to fix it forward.
+- **A resource re-created under its own name that holds other resources.**
+  When the deploy deleted and re-created a resource under the same name, and
+  the stack records a resource AWS stores inside it (a function's permission,
+  a topic's subscription, a role's inline policy), the rollback refuses that
+  resource: deleting it again would take the other one too. Nothing is
+  deleted. Deploy the previous template with `cdkd deploy --replace`, or orphan
+  the resource.
 - **A re-create that fails after it made the resource.** The rollback deletes
   what the re-create made, unless the old resource's `DeletionPolicy` is
   `Retain` or `Snapshot`. A resource it keeps or cannot delete is named in a
