@@ -68,8 +68,41 @@ export function addSuperseded(
   host: Pick<StackState, 'supersededResources'>,
   entry: SupersededResourceRecord
 ): void {
-  host.supersededResources = [...(host.supersededResources ?? []), entry];
+  // One entry per resource: a re-recorded one replaces the earlier entry, or
+  // a later run would delete (and count) it twice.
+  const others = (Array.isArray(host.supersededResources) ? host.supersededResources : []).filter(
+    (row) =>
+      !isSupersededResourceRecord(row) ||
+      row.state.physicalId !== entry.state.physicalId ||
+      row.state.resourceType !== entry.state.resourceType
+  );
+  host.supersededResources = [...others, entry];
 }
+
+/**
+ * Whether a deferred delete of `record` can be recorded for a later run
+ * (go-to-k/cdkd#5111): only when that run can send the delete with the
+ * context this run had. Not for a record holding a NoEcho mask (its delete
+ * needs values only this run re-resolved) nor an IAM inline policy (its
+ * delete asks this run's records whether another writer took the name, #4821);
+ * those keep the in-memory deferral and its warning.
+ */
+export function canRecordSuperseded(
+  record: ResourceState,
+  deleteContext: { noEchoDeleteValues?: unknown; inlinePolicyClaimed?: unknown }
+): boolean {
+  if (deleteContext.noEchoDeleteValues !== undefined) return false;
+  if (deleteContext.inlinePolicyClaimed !== undefined) return false;
+  if (Array.isArray(record.noEchoLeaves) && record.noEchoLeaves.length > 0) return false;
+  return !INLINE_POLICY_TYPES.has(record.resourceType);
+}
+
+const INLINE_POLICY_TYPES = new Set([
+  'AWS::IAM::Policy',
+  'AWS::IAM::RolePolicy',
+  'AWS::IAM::UserPolicy',
+  'AWS::IAM::GroupPolicy',
+]);
 
 /**
  * Forget `entry` (by identity) on `host`; the field goes when it empties, so
@@ -115,40 +148,42 @@ export async function deleteSupersededEntry(
   input: {
     provider: ResourceProvider;
     region: string;
-    skipFinalSnapshot: boolean;
+    /** `cdkd destroy --remove-protection`. */
+    removeProtection?: boolean;
     maskSecrets: (text: string) => string;
     /** Set by `cdkd destroy` only (`DeleteContext.stackDestroy`). */
     stackDestroy?: boolean;
     /** An interrupt: stop waiting out an "in use" refusal. */
     stop: () => boolean;
+    /** Send once, without waiting out an "in use" refusal (a deploy's carried retry). */
+    once?: boolean;
   }
 ): Promise<SupersededDeleteOutcome> {
   const record = entry.state;
   let result: void | ResourceDeleteResult;
   try {
-    result = await retryWhileInUse(
-      () =>
-        input.provider.delete(
-          entry.logicalId,
-          record.physicalId,
-          record.resourceType,
-          record.properties,
-          {
-            expectedRegion: input.region,
-            ...(entry.forceDataDelete === true && { forceDataDelete: true }),
-            ...(entry.finalSnapshotIdentifier !== undefined && {
-              finalSnapshotIdentifier: entry.finalSnapshotIdentifier,
-            }),
-            deletionPolicy: replacementDeletePolicy(entry.updateReplacePolicy),
-            ...(input.skipFinalSnapshot && { skipFinalSnapshot: true }),
-            ...(input.stackDestroy === true && { stackDestroy: true }),
-            recordedAttributes: record.attributes,
-            recordedNoEchoLeaves: record.noEchoLeaves,
-            maskSecrets: input.maskSecrets,
-          }
-        ),
-      input.stop
-    );
+    const send = (): Promise<void | ResourceDeleteResult> =>
+      input.provider.delete(
+        entry.logicalId,
+        record.physicalId,
+        record.resourceType,
+        record.properties,
+        {
+          expectedRegion: input.region,
+          ...(entry.forceDataDelete === true && { forceDataDelete: true }),
+          ...(entry.finalSnapshotIdentifier !== undefined && {
+            finalSnapshotIdentifier: entry.finalSnapshotIdentifier,
+          }),
+          deletionPolicy: replacementDeletePolicy(entry.updateReplacePolicy),
+          ...(entry.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+          ...(input.removeProtection === true && { removeProtection: true }),
+          ...(input.stackDestroy === true && { stackDestroy: true }),
+          recordedAttributes: record.attributes,
+          recordedNoEchoLeaves: record.noEchoLeaves,
+          maskSecrets: input.maskSecrets,
+        }
+      );
+    result = input.once === true ? await send() : await retryWhileInUse(send, input.stop);
   } catch (error) {
     return { kind: 'failed', error };
   }
@@ -200,8 +235,10 @@ export async function retryWhileInUse<T>(send: () => Promise<T>, stop: () => boo
       return await send();
     } catch (error) {
       if (attempt >= supersededInUseRetry.attempts || stop() || !isInUseRefusal(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, supersededInUseRetry.delayMs));
+      // An interrupt during the wait sends nothing more.
+      if (stop()) throw error;
     }
-    await new Promise((resolve) => setTimeout(resolve, supersededInUseRetry.delayMs));
   }
 }
 

@@ -152,6 +152,7 @@ import {
 } from '../../deployment/superseded-resources.js';
 import {
   createUnionSecretMasker,
+  unionOfSecretBags,
   maskSecretsInText,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
@@ -502,7 +503,9 @@ export interface DestroyRunnerResult {
    * destroy left in AWS with a warning, recorded only in the rollback journal,
    * whose entry is settled. Includes those a nested child left: that child
    * deleted its own state, so its row counts as deleted and its orphans here.
-   * Such a skip still exits 2, but never keeps the state.
+   * And a superseded resource the provider would not address, whose entry is
+   * dropped (go-to-k/cdkd#5111). Such a skip still exits 2, but never keeps
+   * the state.
    */
   journaledOrphanSkips: number;
   /**
@@ -2774,7 +2777,12 @@ async function destroyStackInRegion(
       }
       // Every line names the id under the row's printing bag: the id can
       // spell a secret-derived name (go-to-k/cdkd#3869).
-      const bag = printingBagOf(logicalId);
+      // The OLD record's own needles too, judged as an orphan's are, beside
+      // the row's current one (a rotated secret's name).
+      const bag = unionOfSecretBags([
+        printingBagOf(logicalId),
+        orphanRecordsPrintingBag([entry], noEchoValues),
+      ]);
       await withPrintingSecrets(bag, async () => {
         logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
         let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
@@ -2793,7 +2801,7 @@ async function destroyStackInRegion(
                   }),
                 }).provider,
                 region: state.region ?? regionForState,
-                skipFinalSnapshot: ctx.skipFinalSnapshot === true,
+                ...(ctx.removeProtection === true && { removeProtection: true }),
                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
                 maskSecrets: createUnionSecretMasker([bag]),
                 stop: () => lock.interrupted,
@@ -2812,8 +2820,19 @@ async function destroyStackInRegion(
           outcome.kind === 'notDeleted'
             ? outcome.reason
             : maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
-        if (outcome.kind === 'notDeleted') result.skippedCount++;
-        else result.errorCount++;
+        if (outcome.kind === 'notDeleted') {
+          // As the deploy treats it: a provider that will not address it
+          // would refuse every re-run, so the record goes, with this line.
+          drop();
+          result.skippedCount++;
+          result.journaledOrphanSkips++;
+          logger.warn(
+            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+              'Delete it manually — it is no longer tracked in state.'
+          );
+          return;
+        }
+        result.errorCount++;
         logger.warn(
           safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
             'State preserved: it stays recorded, and a re-run of the destroy retries it.'

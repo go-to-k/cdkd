@@ -20,7 +20,11 @@ import {
 } from './rollback.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
-import { supersededResourcesOf } from '../superseded-resources.js';
+import {
+  isSupersededHeld,
+  removeSuperseded,
+  supersededResourcesOf,
+} from '../superseded-resources.js';
 import {
   type DeployEngine,
   type ProvisionCounts,
@@ -208,7 +212,13 @@ export async function executeDeployment(
   // row's save persists it; the ones an earlier deploy recorded are retried at
   // the cleanup below.
   engine.replacementRun.supersededHost = currentState;
-  const carriedSuperseded = supersededResourcesOf(currentState);
+  const carriedSuperseded = supersededResourcesOf(currentState).filter((entry) => {
+    // One a record holds again (`cdkd rollback` took it back) leaves the live
+    // record too, so no later recording duplicates it.
+    if (!isSupersededHeld(entry, currentState.resources)) return true;
+    removeSuperseded(currentState, entry);
+    return false;
+  });
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.

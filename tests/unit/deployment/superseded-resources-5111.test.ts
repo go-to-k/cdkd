@@ -14,11 +14,16 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import { retryCarriedSupersededResources } from '../../../src/deployment/deploy-engine/superseded-retry.js';
 import {
+  addSuperseded,
+  canRecordSuperseded,
+  deleteSupersededEntry,
   holdsSupersededResources,
   isInUseRefusal,
+  retryWhileInUse,
   supersededInUseRetry,
   supersededResourcesOf,
 } from '../../../src/deployment/superseded-resources.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction/log-only.js';
 import { recordCanOwnResources } from '../../../src/state/cross-prefix-stack-scan.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import {
@@ -335,7 +340,8 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
 
     const final = await run(state, new Map([['Listener', listenerChange]]));
 
-    expect(provider.delete).toHaveBeenCalledTimes(2);
+    // One attempt: an entry still in use must not slow every later deploy.
+    expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(supersededResourcesOf(final).map((e) => e.state.physicalId)).toEqual([OLD_TG]);
     expect(
       printed.warn.some(
@@ -370,6 +376,24 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(
       engine.withParentInfo({ ...host, supersededResources: [held] }).supersededResources
     ).toBeUndefined();
+  });
+
+  it("masks the OLD record's secret-derived name, judged on its own record", async () => {
+    // The old copy's name came from a secret the new copy no longer uses.
+    const secretName = 'tg-s3cr3t-v1';
+    const engine = makeEngine();
+    const old = record(secretName, TG, { Name: '{{resolve:secretsmanager:tg-name}}' });
+    const entry: SupersededResourceRecord = { logicalId: 'Tg', supersededAt: 1, state: old };
+    const host = { supersededResources: [entry] } as StackState;
+    vi.mocked(provider.delete).mockRejectedValueOnce(new Error(`Cannot delete ${secretName}: in use`));
+
+    await retryCarriedSupersededResources(engine, host, [entry], {
+      Tg: record(NEW_TG, TG, { Name: 'plain' }),
+    });
+
+    const all = [...printed.info, ...printed.warn].join('\n');
+    expect(all).toContain('Failed to delete old resource Tg');
+    expect(all).not.toContain(secretName);
   });
 
   it('the persist choke point keeps an entry no record holds', () => {
@@ -428,5 +452,67 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     expect(isInUseRefusal(inUse(OLD_TG))).toBe(true);
     expect(isInUseRefusal(new Error('wrapped', { cause: inUse(OLD_TG) }))).toBe(true);
     expect(isInUseRefusal(new Error('ConflictException: in use'))).toBe(false);
+  });
+
+  it('records a deferral only where a later run can send the same delete', () => {
+    expect(canRecordSuperseded(record(OLD_TG, TG, {}), {})).toBe(true);
+    expect(canRecordSuperseded(record('p', 'AWS::IAM::Policy', {}), {})).toBe(false);
+    expect(canRecordSuperseded(record('p', 'AWS::IAM::RolePolicy', {}), {})).toBe(false);
+    expect(canRecordSuperseded(record(OLD_TG, TG, {}), { inlinePolicyClaimed: () => false })).toBe(
+      false
+    );
+    expect(canRecordSuperseded(record(OLD_TG, TG, {}), { noEchoDeleteValues: new Map() })).toBe(
+      false
+    );
+    expect(
+      canRecordSuperseded({ ...record(OLD_TG, TG, {}), noEchoLeaves: [['Secret']] }, {})
+    ).toBe(false);
+  });
+
+  it('records one entry per resource', () => {
+    const host: Pick<StackState, 'supersededResources'> = { supersededResources: [entry] };
+    const again = { ...entry, supersededAt: 2 };
+    addSuperseded(host, again);
+    expect(host.supersededResources).toEqual([again]);
+  });
+
+  it("uses only the recorded run's --skip-final-snapshot consent", async () => {
+    const del = vi.fn(async () => undefined);
+    const provider = { delete: del } as unknown as ResourceProvider;
+    const base = { region: 'us-east-1', maskSecrets: (t: string) => t, stop: () => false };
+    await deleteSupersededEntry(entry, { provider, ...base });
+    expect(del.mock.calls[0]![4]).not.toHaveProperty('skipFinalSnapshot');
+    await deleteSupersededEntry({ ...entry, skipFinalSnapshot: true }, { provider, ...base });
+    expect(del.mock.calls[1]![4]).toHaveProperty('skipFinalSnapshot', true);
+  });
+
+  it('the in-use wait stops on an interrupt during the wait, sending nothing more', async () => {
+    const defaults = { ...supersededInUseRetry };
+    supersededInUseRetry.delayMs = 0;
+    supersededInUseRetry.attempts = 5;
+    try {
+      // Not interrupted when the refusal arrives; interrupted during the wait.
+      let checks = 0;
+      const stop = (): boolean => ++checks > 1;
+      const send = vi.fn(async () => {
+        throw inUse(OLD_TG);
+      });
+      await expect(retryWhileInUse(send, stop)).rejects.toThrow('in use');
+      expect(send).toHaveBeenCalledTimes(1);
+
+      const always = vi.fn(async () => {
+        throw inUse(OLD_TG);
+      });
+      await expect(retryWhileInUse(always, () => false)).rejects.toThrow('in use');
+      expect(always).toHaveBeenCalledTimes(5);
+
+      const other = vi.fn(async () => {
+        throw new Error('AccessDenied');
+      });
+      await expect(retryWhileInUse(other, () => false)).rejects.toThrow('AccessDenied');
+      expect(other).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.assign(supersededInUseRetry, defaults);
+    }
   });
 });

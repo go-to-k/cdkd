@@ -703,6 +703,12 @@ export interface SupersededResourceRecord {
 
   /** The replacement ran under `--force-stateful-recreation`. */
   forceDataDelete?: true;
+
+  /**
+   * The replacement ran under `--skip-final-snapshot`. Only this consent
+   * counts: a later run's flag never skips a snapshot this one promised.
+   */
+  skipFinalSnapshot?: true;
 }
 
 /**

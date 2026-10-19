@@ -211,4 +211,27 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     expect(result.deletedCount).toBe(1);
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
   });
+
+  it('drops, with a warning, an entry the provider will not address', async () => {
+    mockProviderDelete.mockImplementation(async (_l: string, physicalId: string) =>
+      physicalId === OLD_TG ? { outcome: 'skipped', reason: 'malformed physicalId in state' } : undefined
+    );
+    const state = makeState({}, { supersededResources: [entry] });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.skippedCount).toBe(1);
+    // Not kept: a re-run would refuse it forever.
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('no longer tracked'))).toBe(true);
+  });
+
+  it('passes --remove-protection to the delete', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const state = makeState({}, { supersededResources: [entry] });
+
+    await runDestroyForStack('TestStack', state, { ...makeCtx(), removeProtection: true });
+
+    expect(mockProviderDelete.mock.calls[0]![4]).toHaveProperty('removeProtection', true);
+  });
 });

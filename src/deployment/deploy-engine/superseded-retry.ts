@@ -5,7 +5,8 @@ import { green } from '../../utils/colors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { deleteSkippedMessage } from '../delete-outcome.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
-import { createSecretMasker, maskSecretsInText } from '../secret-redaction.js';
+import { createSecretMasker, maskSecretsInText, unionOfSecretBags } from '../secret-redaction.js';
+import { orphanRecordsPrintingBag } from '../secret-name-needles.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import {
   SUPERSEDED_KEPT_REMEDY,
@@ -43,8 +44,12 @@ export async function retryCarriedSupersededResources(
     if (engine.interrupted) break;
     const { logicalId } = entry;
     const { physicalId, resourceType } = entry.state;
-    // The id can spell a secret-derived name (go-to-k/cdkd#3869).
-    const bag = secretNameBagFor(engine.secretsRun, logicalId);
+    // The id can spell a secret-derived name (go-to-k/cdkd#3869): the OLD
+    // record's own, judged as an orphan's is, beside the row's current one.
+    const bag = unionOfSecretBags([
+      secretNameBagFor(engine.secretsRun, logicalId),
+      orphanRecordsPrintingBag([entry]),
+    ]);
     if (isSupersededHeld(entry, resources)) {
       removeSuperseded(host, entry);
       changed = true;
@@ -71,9 +76,10 @@ export async function retryCarriedSupersededResources(
           outcome = await deleteSupersededEntry(entry, {
             provider: route.provider,
             region: engine.stackRegion,
-            skipFinalSnapshot: engine.options.skipFinalSnapshot === true,
             maskSecrets: createSecretMasker(bag),
             stop: () => engine.interrupted,
+            // One attempt: an entry still in use must not slow every deploy.
+            once: true,
           });
         } catch (error) {
           outcome = { kind: 'failed' as const, error };

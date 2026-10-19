@@ -22,6 +22,7 @@ import type { ResourceState, StackState, SupersededResourceRecord } from '../../
 import {
   SUPERSEDED_KEPT_REMEDY,
   addSuperseded,
+  canRecordSuperseded,
   removeSuperseded,
   retryWhileInUse,
 } from '../superseded-resources.js';
@@ -1042,7 +1043,10 @@ export async function deleteReplacedAfterCreate(
       // a deploy killed before the retry below left the old resource in AWS
       // with no record at all.
       const host = run.supersededHost;
-      if (host !== undefined) {
+      if (
+        host !== undefined &&
+        canRecordSuperseded(currentResource, { noEchoDeleteValues, inlinePolicyClaimed })
+      ) {
         const entry: SupersededResourceRecord = {
           logicalId,
           supersededAt: Date.now(),
@@ -1050,6 +1054,7 @@ export async function deleteReplacedAfterCreate(
           ...(updateReplacePolicy !== undefined && { updateReplacePolicy }),
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           ...(deps.options.forceStatefulRecreation === true && { forceDataDelete: true as const }),
+          ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
         };
         addSuperseded(host, entry);
         run.supersededEntries.set(logicalId, entry);

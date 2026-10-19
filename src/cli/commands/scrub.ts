@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { isSupersededResourceRecord } from '../../deployment/superseded-resources.js';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -8513,6 +8514,27 @@ export async function scrubStack(
       recordsChanged++;
       return { ...record, state: scrubbed };
     });
+    // go-to-k/cdkd#5111: a superseded resource's record moved out of
+    // `resources` verbatim, so it gets the same pass an orphan does, with this
+    // run's needles (it has no logical-id slot of its own to resolve).
+    const newSuperseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.map((entry) => {
+          if (!isSupersededResourceRecord(entry)) return entry;
+          const needles = new Map(
+            allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
+          );
+          if (needles.size === 0) return entry;
+          const scrubbed = keepHeldTokenProvenance(
+            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+              properties: 'unproven',
+              observed: 'unproven',
+            })
+          );
+          if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
+          recordsChanged++;
+          return { ...entry, state: scrubbed };
+        })
+      : undefined;
     // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------
     //
     // go-to-k/cdkd#3289 closed the WRITE side: `imports[].exportName`,
@@ -8896,6 +8918,8 @@ export async function scrubStack(
         // Spread conditionally so a state file that never orphaned anything
         // does not GAIN the key by being scrubbed.
         ...(state.orphans !== undefined && { orphans: newOrphans }),
+        // go-to-k/cdkd#5111: written back, as `orphans` is.
+        ...(newSuperseded !== undefined && { supersededResources: newSuperseded }),
         // WRITTEN BACK, not carried — the same shape as `orphans` above and for
         // the same reason (go-to-k/cdkd#3337). Both lists rode `...carriedState`
         // untouched, which was correct while nothing scrubbed them and is a
