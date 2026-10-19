@@ -195,9 +195,10 @@ export async function createWithRollbackRetry(
      * See `RetryOptions.isRetryable` in `./retry.ts`: the argument is the
      * CLASSIFICATION text, which for an error stamped `markRedactedCause` is
      * the joined `.cause` chain rather than `error.message` (issue #2302).
-     * Classify on it; never log or throw it.
+     * Classify on it; never log or throw it. Forward `error` too:
+     * `isRecreateRetryableError` reads its redaction stamp (issue #5088).
      */
-    isRetryable: (classificationText: string) => boolean;
+    isRetryable: (classificationText: string, error: unknown) => boolean;
     interruptedMessage: string;
   }
 ): Promise<ResourceCreateResult> {

@@ -1,5 +1,6 @@
-import { isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
-import { MAX_CAUSE_CHAIN_DEPTH } from './marks.js';
+import { isAwsAuthoredFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
+import { escapeRegExp } from '../../utils/regexp.js';
+import { hasRedactedCause, MAX_CAUSE_CHAIN_DEPTH } from './marks.js';
 import { NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS } from './patterns.js';
 
 /**
@@ -413,12 +414,55 @@ export function isNameCooldownError(message: string): boolean {
 }
 
 /**
+ * An `…AlreadyExists` class as a redacted summary spells it
+ * (`<error.name>. Re-run with --verbose for AWS's own message.`), so
+ * {@link isRecreateRetryableError} can drop it (go-to-k/cdkd#5088).
+ *
+ * The class token is not AWS's message, which is the text a #2319 wrap
+ * withholds and its `cause` chain still carries, so reading it gave a redacted
+ * wrap a verdict that text does not have. Route 53's
+ * `HostedZoneAlreadyExists` ("already been created with the specified caller
+ * reference") is a caller-reference reuse, not a name collision, and was retried
+ * for the full ~64s re-create window. With the token dropped, the verdict comes
+ * from what the classification text still carries: AWS's own message on the
+ * `cause` chain (`retryClassificationText` joins it for a stamped error) and a
+ * provider's {@link relayedNameCollision} sentence, which restates that same
+ * message's verdict.
+ *
+ * Applied only to an error stamped `markRedactedCause`: an unstamped wrap's
+ * classification text is its top-level message alone, so dropping the token
+ * there would leave no withheld text to classify. It assumes a stamped wrap's
+ * summary describes its OWN `cause` (every redacting site on `main` builds it
+ * so); a summary of an unthreaded error would lose its verdict here. The strip
+ * omits `ALREADY_EXISTS_CODE`'s lookbehind on purpose: removing a token can
+ * only remove matches, never create one. Not applied in
+ * {@link isNameCollisionErrorFrom}: its prose arm also requires an AWS-authored
+ * link -- the withheld text itself -- to say "already exists", so there the
+ * token can only make the verdict AGREE with that text (an EventBridge
+ * `ResourceAlreadyExistsException` wrap relays no sentence and is still a
+ * collision), never contradict it.
+ */
+const REDACTED_ALREADY_EXISTS_CLASS = new RegExp(
+  `\\b[A-Za-z0-9]*AlreadyExists(?:Exception|Fault)?(?=\\. ${escapeRegExp(VERBOSE_POINTER)})`,
+  'g'
+);
+
+/**
  * Retry filter for the delete-then-re-create sites: the old name holder was
  * just deleted, so both the late name release ("already exists" from an async
  * delete) and the SQS 60s name cooldown are worth waiting out. Pair with a
  * schedule that covers the full cooldown window (maxRetries 8, delays
  * 2s/4s/8s then capped at 10s ≈ 64s total sleep).
+ *
+ * `message` is `withRetry`'s classification text and `error` the error it was
+ * read from (`RetryOptions.isRetryable` passes both). For an error stamped
+ * `markRedactedCause` the collision half ignores a redacted summary's
+ * `…AlreadyExists` class ({@link REDACTED_ALREADY_EXISTS_CLASS}).
  */
-export function isRecreateRetryableError(message: string): boolean {
-  return isNameCollisionError(message) || isNameCooldownError(message);
+export function isRecreateRetryableError(message: string, error?: unknown): boolean {
+  const collisionText =
+    error !== undefined && hasRedactedCause(error)
+      ? message.replace(REDACTED_ALREADY_EXISTS_CLASS, '')
+      : message;
+  return isNameCollisionError(collisionText) || isNameCooldownError(message);
 }
