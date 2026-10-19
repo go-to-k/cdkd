@@ -33,6 +33,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -65,7 +66,12 @@ import {
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  isTransientServerError,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 
 /**
  * Retry-safety state for `CreateKey`, which has no idempotency token and
@@ -139,6 +145,38 @@ export class KMSProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('KMSProvider');
 
+  /**
+   * The failure wrap every create / update / delete catch builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN (an alias's `AlreadyExistsException` names the
+   * account id in the alias ARN too). AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain (an IAM grant still propagating to `EnableKeyRotation` stays
+   * retryable). An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
+   * the deploy engine masks a thrown message. Both deletes check
+   * `NotFoundException` by type before they wrap, so no "already deleted"
+   * reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::KMS::Key',
@@ -192,13 +230,14 @@ export class KMSProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.createKey(logicalId, resourceType, properties);
+        return this.createKey(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::KMS::Alias':
-        return this.createAlias(logicalId, resourceType, properties);
+        return this.createAlias(logicalId, resourceType, properties, context?.maskSecrets);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -231,9 +270,22 @@ export class KMSProvider implements ResourceProvider {
     );
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.updateKey(logicalId, physicalId, resourceType, properties, _previousProperties);
+        return this.updateKey(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          _previousProperties,
+          context?.maskSecrets
+        );
       case 'AWS::KMS::Alias':
-        return this.updateAlias(logicalId, physicalId, resourceType, properties);
+        return this.updateAlias(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          context?.maskSecrets
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -271,7 +323,8 @@ export class KMSProvider implements ResourceProvider {
   private async createKey(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating KMS Key ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -416,12 +469,17 @@ export class KMSProvider implements ResourceProvider {
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create KMS Key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the key (this create's own, or one an earlier attempt
       // of it minted and this one resumed) is left behind; name it for the journal.
@@ -675,7 +733,8 @@ export class KMSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating KMS Key ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -778,12 +837,17 @@ export class KMSProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update KMS Key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -821,12 +885,17 @@ export class KMSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to schedule deletion for KMS Key ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to schedule deletion for KMS Key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -870,7 +939,8 @@ export class KMSProvider implements ResourceProvider {
   private async createAlias(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating KMS Alias ${logicalId}`);
 
@@ -908,12 +978,17 @@ export class KMSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create KMS Alias ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -922,7 +997,8 @@ export class KMSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating KMS Alias ${logicalId}: ${physicalId}`);
 
@@ -949,12 +1025,17 @@ export class KMSProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update KMS Alias ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -988,12 +1069,17 @@ export class KMSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete KMS Alias ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete KMS Alias ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
