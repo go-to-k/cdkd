@@ -18,6 +18,7 @@ import {
   generateResourceName,
   generateResourceNameWithFallback,
   stackInstanceNameSuffix,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
 const logger = vi.hoisted(() => {
@@ -252,6 +253,59 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(lastSaved().resources['Topic']!.nameGeneration).toBe(1);
   });
 
+  it('a name-adopting replacement is looked up by the generated-name guard at its next-generation name, not probed', async () => {
+    const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const tgName = (g: number) =>
+      withStackScope(
+        { stackName: STACK, stackInstanceId: ID, nameGenerations: new Map([['Tg', g]]) },
+        () => generateResourceNameWithFallback(undefined, 'Tg', { maxLength: 32 })
+      );
+    const arnOf = (n: string) => `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${n}/0123456789abcdef`;
+    const looked: string[] = [];
+    provider['generatedCreateName'] = vi.fn((_t: string, logicalId: string) =>
+      generateResourceNameWithFallback(undefined, logicalId, { maxLength: 32 })
+    );
+    provider['lookupNames'] = vi.fn(async (_t: string, names: readonly string[]) => {
+      looked.push(...names);
+      return new Map();
+    });
+    provider['create'] = vi.fn(async (logicalId: string) => {
+      const n = generateResourceNameWithFallback(undefined, logicalId, { maxLength: 32 });
+      events.push(`create ${n}`);
+      return { physicalId: arnOf(n), attributes: {} };
+    });
+    Object.assign(stateBackend, {
+      loadRollbackJournal: vi.fn(async () => null),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      deleteRollbackJournal: vi.fn(async () => undefined),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
+      listStacks: vi.fn(async () => []),
+      loadRetainedRecord: vi.fn(async () => null),
+      loadCreateTokenLedger: vi.fn(async () => null),
+      saveCreateTokenLedger: vi.fn(async () => undefined),
+    });
+    const tg = (port: number) => ({ Port: port, Protocol: 'HTTP', TargetType: 'ip', VpcId: 'vpc-1' });
+    load(
+      stateOf({
+        Tg: {
+          physicalId: arnOf(tgName(0)),
+          resourceType: TG,
+          properties: tg(80),
+          attributes: {},
+          dependencies: [],
+        },
+      })
+    );
+    await makeEngine().deploy(STACK, {
+      Resources: { Tg: { Type: TG, Properties: tg(8080) } },
+    } as unknown as CloudFormationTemplate);
+    expect(looked).toEqual([tgName(1)]);
+    expect(provider['import']).not.toHaveBeenCalled();
+    expect(events[0]).toBe(`create ${tgName(1)}`);
+    expect(lastSaved().resources['Tg']!.nameGeneration).toBe(1);
+  });
+
   it('a crash re-run derives the SAME next-generation name (a pure function of the record)', async () => {
     const state = stateOf({ Table: tableRecord(genName('Table', 0), 'pk') });
     failCreate.add('Table');
@@ -292,6 +346,25 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     await makeEngine().deploy(STACK, tableTemplate('id'));
     expect(events[0]).toBe(`create ${genName('Table', 2)}`);
     expect(lastSaved().resources['Table']!.nameGeneration).toBe(2);
+  });
+
+  it('a rollback that RE-ADOPTS a retained old resource records the generation too', async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('After');
+    await expect(
+      makeEngine().deploy(STACK, {
+        Resources: {
+          Table: { Type: TABLE, Properties: keySchema('id'), UpdateReplacePolicy: 'Retain' },
+          After: { Type: QUEUE, Properties: {}, DependsOn: ['Table'] },
+        },
+      } as unknown as CloudFormationTemplate)
+    ).rejects.toThrow();
+    // The new copy is Retain-pinned too, so it survives (CloudFormation's
+    // DELETE_SKIPPED): the next replacement must not ask for its name.
+    expect(events).toEqual([`create ${genName('Table', 1)}`, `fail ${genName('After', 0)}`]);
+    const restored = lastSaved().resources['Table']!;
+    expect(restored.physicalId).toBe(genName('Table', 0));
+    expect(restored.nameGenerationHigh).toBe(1);
   });
 
   it('--no-rollback journals the generation on the completed and the failed replacement', async () => {
