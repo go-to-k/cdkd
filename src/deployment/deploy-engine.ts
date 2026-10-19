@@ -106,6 +106,7 @@ import {
   type NoEchoDeps,
 } from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
+import { isSupersededHeld, isSupersededResourceRecord } from './superseded-resources.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1111,7 +1112,10 @@ export class DeployEngine {
     // already-redacted properties as the observed bag's source. That is correct
     // rather than merely tolerable: a record minted by an earlier rollback was
     // already scrubbed when it was written, so the identity return preserves it.
-    const orphans = state.orphans?.map((entry) => {
+    const scrubDroppedRecord = (entry: {
+      logicalId: string;
+      state: ResourceState;
+    }): ResourceState => {
       // Did THIS deploy resolve that logical id, as that same TYPE? Only then
       // do the needles describe this record.
       //
@@ -1124,13 +1128,12 @@ export class DeployEngine {
       const orphanTemplateProps = sameResource
         ? this.secretsRun.perResourceTemplateProps.get(entry.logicalId)
         : undefined;
-      return {
-        ...entry,
+      return (
         // go-to-k/cdkd#4451: a record THIS deploy created and its rollback
         // orphaned carries a bag this deploy wrote, so it gets its masked
         // properties' fingerprints here too, or a later adoption backfills
         // them from whatever template that deploy carries.
-        state: withMaskedPropertyFingerprints(
+        withMaskedPropertyFingerprints(
           // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
           // by today's template while it still names the logical id as that
           // type.
@@ -1158,9 +1161,22 @@ export class DeployEngine {
           sameResource
             ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId)
             : undefined
-        ),
-      };
-    });
+        )
+      );
+    };
+    const orphans = state.orphans?.map((entry) => ({ ...entry, state: scrubDroppedRecord(entry) }));
+    // go-to-k/cdkd#5111: a superseded resource's record is secret-bearing in
+    // exactly the way an orphan's is, and scrubbed the same way. One a record
+    // holds again (a rollback took it back) is not persisted: it is no longer
+    // superseded, and a later deploy must not delete it.
+    const superseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.flatMap((entry) => {
+          // A malformed entry is the reader's to skip, never this writer's to drop.
+          if (!isSupersededResourceRecord(entry)) return [entry];
+          if (isSupersededHeld(entry, state.resources)) return [];
+          return [{ ...entry, state: scrubDroppedRecord(entry) }];
+        })
+      : undefined;
     // ORDER IS LOAD-BEARING, and it is the opposite of how this read when the
     // cross-stack redaction was added (issue
     // [#3289](https://github.com/go-to-k/cdkd/issues/3289), security review).
@@ -1176,14 +1192,25 @@ export class DeployEngine {
     const outputs = redactOutputs(this.maskingDeps(), state.outputs);
     const crossStackReads = this.redactCrossStackReads(state);
     // State schema v12: written from the bag this save persists, per key.
-    const { outputReferenceProvenance: _incoming, ...rest } = state;
+    const {
+      outputReferenceProvenance: _incoming,
+      supersededResources: _superseded,
+      ...rest
+    } = state;
+    // go-to-k/cdkd#5111: written below from the filtered set only.
+    const { supersededResources: _carriedSuperseded, ...lifetime } =
+      stackInstanceIdCarriedFrom(state);
     const outputReferenceProvenance = this.outputReferenceProvenanceFor(state.outputs, outputs);
     return {
       ...rest,
-      ...stackInstanceIdCarriedFrom(state),
+      ...lifetime,
       resources,
       outputs,
       ...(orphans === undefined ? {} : { orphans }),
+      // A malformed (non-array) field is carried verbatim, never dropped here.
+      ...(superseded === undefined
+        ? _superseded !== undefined && { supersededResources: _superseded }
+        : superseded.length > 0 && { supersededResources: superseded }),
       ...crossStackReads,
       ...(outputReferenceProvenance !== undefined && { outputReferenceProvenance }),
     };

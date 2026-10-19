@@ -1,0 +1,200 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import type {
+  ResourceState,
+  StackState,
+  SupersededResourceRecord,
+} from '../../../src/types/state.js';
+import { supersededInUseRetry } from '../../../src/deployment/superseded-resources.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+import type { LockManager } from '../../../src/state/lock-manager.js';
+import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import type { AwsClients } from '../../../src/utils/aws-clients.js';
+
+// go-to-k/cdkd#5111: `cdkd destroy` deletes the superseded resources a
+// replacement left to delete (`StackState.supersededResources`), AFTER the
+// stack's own resources (one of which may still use it), and keeps the state
+// while one of them fails, rather than dropping the only record of a live
+// resource.
+
+const warnSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    setLevel: vi.fn(),
+    debug: debugSpy,
+    info: vi.fn(),
+    warn: warnSpy,
+    error: vi.fn(),
+    child: () => ({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  }),
+}));
+
+// Keep the import graph light: the runner only touches these for the
+// cross-region path, which these tests never exercise.
+vi.mock('../../../src/provisioning/register-providers.js', () => ({
+  loadProviderClasses: vi.fn(async () => ({})),
+  registerAllProviders: vi.fn(),
+}));
+vi.mock('../../../src/provisioning/provider-registry.js', () => ({
+  ProviderRegistry: vi.fn(),
+}));
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  AwsClients: vi.fn(),
+  setAwsClients: vi.fn(),
+  getAwsClients: vi.fn(),
+}));
+
+// Live renderer is TTY plumbing — replace with inert stubs.
+vi.mock('../../../src/utils/live-renderer.js', () => ({
+  getLiveRenderer: () => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+    addTask: vi.fn(),
+    removeTask: vi.fn(),
+    updateTaskLabel: vi.fn(),
+    printAbove: (write: () => void) => write(),
+  }),
+}));
+
+import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+
+const REGION = 'us-east-1';
+
+function res(dependencies: string[] = [], extra: Partial<ResourceState> = {}): ResourceState {
+  return {
+    physicalId: 'phys-id',
+    resourceType: 'AWS::S3::Bucket',
+    properties: {},
+    attributes: {},
+    dependencies,
+    ...extra,
+  };
+}
+
+function makeState(
+  resources: Record<string, ResourceState>,
+  extra: Partial<StackState> = {}
+): StackState {
+  return {
+    version: 8,
+    stackName: 'TestStack',
+    region: REGION,
+    resources,
+    outputs: {},
+    lastModified: 1,
+    ...extra,
+  };
+}
+
+const OLD_TG = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/Tg-gen1/aaa';
+
+const entry: SupersededResourceRecord = {
+  logicalId: 'Tg',
+  supersededAt: 1,
+  state: {
+    physicalId: OLD_TG,
+    resourceType: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+    properties: {},
+    attributes: {},
+  },
+};
+
+describe('runDestroyForStack deletes the superseded resources too (#5111)', () => {
+  const mockSaveState = vi.fn();
+  const mockDeleteState = vi.fn();
+  const mockProviderDelete = vi.fn();
+
+  function makeCtx() {
+    return {
+      stateBackend: {
+        saveState: mockSaveState,
+        deleteState: mockDeleteState,
+        getState: vi.fn(async () => null),
+        listStacks: vi.fn().mockResolvedValue([]),
+      } as unknown as S3StateBackend,
+      lockManager: {
+        acquireLock: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn(),
+      } as unknown as LockManager,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { delete: mockProviderDelete } }),
+      } as unknown as ProviderRegistry,
+      baseAwsClients: {} as AwsClients,
+      baseRegion: REGION,
+      stateBucket: 'test-bucket',
+      skipConfirmation: true,
+    };
+  }
+
+  const retryDefaults = { ...supersededInUseRetry };
+  beforeEach(() => {
+    mockSaveState.mockReset().mockResolvedValue('"etag"');
+    mockDeleteState.mockReset().mockResolvedValue(undefined);
+    mockProviderDelete.mockReset();
+    warnSpy.mockReset();
+    debugSpy.mockReset();
+    supersededInUseRetry.delayMs = 0;
+  });
+  afterEach(() => {
+    Object.assign(supersededInUseRetry, retryDefaults);
+  });
+
+  it("deletes it after the stack's own resources, then the state file", async () => {
+    const order: string[] = [];
+    mockProviderDelete.mockImplementation(async (_logicalId: string, physicalId: string) => {
+      order.push(physicalId);
+    });
+    const state = makeState({ Listener: res([], { physicalId: 'listener-arn' }) }, {
+      supersededResources: [entry],
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(order).toEqual(['listener-arn', OLD_TG]);
+    expect(result.errorCount).toBe(0);
+    expect(result.deletedCount).toBe(2);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the state, and the entry, when its delete fails', async () => {
+    supersededInUseRetry.attempts = 2;
+    mockProviderDelete.mockImplementation(async (_logicalId: string, physicalId: string) => {
+      if (physicalId === OLD_TG) {
+        const error = new Error('Target group is currently in use by a listener or a rule');
+        error.name = 'ResourceInUseException';
+        throw error;
+      }
+    });
+    const state = makeState({ Listener: res([], { physicalId: 'listener-arn' }) }, {
+      supersededResources: [entry],
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(result.errorCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    // The in-use wait, then the failure.
+    expect(mockProviderDelete.mock.calls.filter((c) => c[1] === OLD_TG)).toHaveLength(2);
+    const last = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    expect(Object.keys(last.resources)).toEqual([]);
+    expect(last.supersededResources).toEqual([entry]);
+  });
+
+  it('a record holding ONLY superseded resources is not deleted unacted on', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const state = makeState({}, { supersededResources: [entry] });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockProviderDelete).toHaveBeenCalledTimes(1);
+    expect(mockProviderDelete.mock.calls[0]![1]).toBe(OLD_TG);
+    expect(result.deletedCount).toBe(1);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+});

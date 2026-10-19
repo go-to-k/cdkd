@@ -1,4 +1,5 @@
 import { Command, Option } from 'commander';
+import { holdsSupersededResources } from '../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from './registry-release.js';
 import { recordRetainedForReadoption } from '../../deployment/retained-readoption.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
@@ -1682,7 +1683,9 @@ export async function rollbackCommand(
           journal.segments.length === 0 &&
           oldestInitialDeploy &&
           Object.keys(stateResources).length === 0 &&
-          survivingOrphans.length === 0
+          survivingOrphans.length === 0 &&
+          // go-to-k/cdkd#5111: an old resource still to delete keeps it.
+          !holdsSupersededResources(baseState)
         ) {
           await setup.stateBackend.deleteState(stackName, region);
           // go-to-k/cdkd#4705: the record is gone, so the empty retained.json

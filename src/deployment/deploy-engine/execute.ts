@@ -19,6 +19,8 @@ import {
   writeRollbackJournalSegment,
 } from './rollback.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
+import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { supersededResourcesOf } from '../superseded-resources.js';
 import {
   type DeployEngine,
   type ProvisionCounts,
@@ -202,6 +204,11 @@ export async function executeDeployment(
     () => [...inFlightWrites.values()].map(({ write }) => write)
   );
   engine.replacementRun.deferredReplacedDeletes = new Map();
+  // go-to-k/cdkd#5111: a deferred delete records its old resource here, so the
+  // row's save persists it; the ones an earlier deploy recorded are retried at
+  // the cleanup below.
+  engine.replacementRun.supersededHost = currentState;
+  const carriedSuperseded = supersededResourcesOf(currentState);
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -793,6 +800,8 @@ export async function executeDeployment(
           else delete op.oldResourceMaySurvive;
         }
       }
+      // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
+      await retryCarriedSupersededResources(engine, currentState, carriedSuperseded, newResources);
     }
   } catch (error) {
     warnUnretriedReplacedDeletes(

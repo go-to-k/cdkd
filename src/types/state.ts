@@ -530,6 +530,31 @@ export interface StackState {
   orphans?: StackOrphanRecord[];
 
   /**
+   * Resources a replacement superseded whose delete has not succeeded yet
+   * (go-to-k/cdkd#5111): the old copy of a replaced resource, recorded the
+   * moment its delete is deferred (an in-use target group a listener still
+   * points at, say), in the same save that records the replacement. Without
+   * it, a deploy killed before its end-of-deploy retry left the old resource
+   * in AWS with no record at all.
+   *
+   * A deploy's cleanup retries each entry once the deploy's creates, updates
+   * and deletes are done (a no-change deploy included) and drops it once
+   * deleted; one still refused is kept, with a warning. `cdkd destroy`
+   * deletes them after the stack's own resources, and keeps the state while
+   * one fails. An entry whose physical id and type a record of `resources`
+   * holds is not deleted -- a rollback took it back -- and is dropped.
+   *
+   * Each entry carries the superseded `ResourceState` verbatim, so it is
+   * secret-bearing exactly as {@link orphans} is: `redactStateForPersist`
+   * scrubs it the same way. Additive, so NO schema bump: an older binary
+   * drops the field on its next save, which degrades to the pre-#5111
+   * behaviour (the old resource left untracked). Carried by every writer
+   * through {@link stackInstanceIdCarriedFrom}. Read through
+   * `supersededResourcesOf` (`src/deployment/superseded-resources.ts`).
+   */
+  supersededResources?: SupersededResourceRecord[];
+
+  /**
    * The verdict the last deploy computed for each condition `cdkd diff` reads
    * but cannot evaluate, because its closure reaches a parameter fed a secret
    * `{{resolve:...}}` reference (go-to-k/cdkd#4479). Keyed by condition name.
@@ -654,6 +679,30 @@ export interface StackOrphanRecord {
 
   /** The `ResourceState` the rollback discarded, verbatim. */
   state: ResourceState;
+}
+
+/**
+ * One resource a replacement superseded and has not deleted yet
+ * (go-to-k/cdkd#5111). See {@link StackState.supersededResources}.
+ */
+export interface SupersededResourceRecord {
+  /** The logical id whose replacement superseded it. */
+  logicalId: string;
+
+  /** When its delete was deferred (Unix milliseconds). */
+  supersededAt: number;
+
+  /** The superseded record, verbatim as state held it before the replacement. */
+  state: ResourceState;
+
+  /** The `UpdateReplacePolicy` the replacement's delete ran under. */
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
+
+  /** The final snapshot the replacement's delete was to take (`Snapshot`). */
+  finalSnapshotIdentifier?: string;
+
+  /** The replacement ran under `--force-stateful-recreation`. */
+  forceDataDelete?: true;
 }
 
 /**
@@ -1486,15 +1535,23 @@ export function exportNamesCarriedFrom(
  * (`tests/unit/state/stack-instance-id-carriers.test.ts`).
  */
 export function stackInstanceIdCarriedFrom(
-  previous: Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'> | null | undefined
-): Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations'> {
+  previous:
+    | Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources'>
+    | null
+    | undefined
+): Pick<StackState, 'stackInstanceId' | 'retiredNameGenerations' | 'supersededResources'> {
   // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
   // its id -- a writer that dropped them would hand a re-added resource a
   // name an earlier copy of it held.
+  // go-to-k/cdkd#5111: so do the superseded resources still to delete -- a
+  // writer that dropped them would leave live resources with no record.
   return {
     ...(previous?.stackInstanceId !== undefined && { stackInstanceId: previous.stackInstanceId }),
     ...(previous?.retiredNameGenerations !== undefined && {
       retiredNameGenerations: previous.retiredNameGenerations,
+    }),
+    ...(previous?.supersededResources !== undefined && {
+      supersededResources: previous.supersededResources,
     }),
   };
 }

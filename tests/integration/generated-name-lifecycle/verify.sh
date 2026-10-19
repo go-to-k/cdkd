@@ -175,6 +175,14 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
+  # Again after the destroy: one a listener still used was refused above.
+  for name in "${LEFT_TG_NAMES[@]}"; do
+    arn="$(aws elbv2 describe-target-groups --region "${REGION}" --names "${name}" \
+      --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)"; [ $? -eq 0 ] || arn=""
+    case "${arn}" in
+      arn:*) aws elbv2 delete-target-group --region "${REGION}" --target-group-arn "${arn}" >/dev/null 2>&1 ;;
+    esac
+  done
   for url in "${KEPT_QUEUE_URLS[@]}"; do
     aws sqs delete-queue --region "${REGION}" --queue-url "${url}" >/dev/null 2>&1
   done
@@ -604,9 +612,11 @@ TG_GEN2_NAME="$(expected_name "${STATE_FILE}" "${STACK}" Tg 2 tg)" || fail "D1: 
 # with a new target group, so Tg's port flips too.
 export GNL_ALB_INTERNAL=1 GNL_TG_PORT=9090
 # The killed run's load balancer is in no record until the re-run takes it;
-# its target group likewise.
+# its target group likewise. Generation 1's target group too: its delete is
+# refused while the listener still uses it, and a failed phase must not leave
+# it billing (go-to-k/cdkd#5111).
 LEFT_ALB_NAMES+=("${ALB_GEN1_NAME}")
-LEFT_TG_NAMES+=("${TG_GEN2_NAME}")
+LEFT_TG_NAMES+=("${TG_GEN2_NAME}" "${TG_GEN1_NAME}")
 deploy_and_kill_when "D1" aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}"
 ALB_KILLED_ARN="$(aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}" \
   --query 'LoadBalancers[0].LoadBalancerArn' --output text)"

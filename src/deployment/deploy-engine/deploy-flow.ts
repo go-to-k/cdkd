@@ -1,3 +1,5 @@
+import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { supersededResourcesOf } from '../superseded-resources.js';
 import {
   freshNoEchoParametersWithDeclared,
   noEchoDiffComparison,
@@ -1188,6 +1190,16 @@ export async function doDeployWithPrefetch(
     if (!hasChanges) {
       engine.logger.info('No changes detected. Stack is up to date.');
       startProvenanceCapture();
+      // go-to-k/cdkd#5111: an earlier deploy's superseded resources are
+      // retried by every deploy, an unchanged one included.
+      const supersededChanged = engine.options.dryRun
+        ? false
+        : await retryCarriedSupersededResources(
+            engine,
+            currentState,
+            supersededResourcesOf(currentState),
+            currentState.resources
+          );
 
       // The diff only inspects Resources, so an Outputs-only change (a new
       // Export added because a downstream stack now references this one — its
@@ -1425,6 +1437,7 @@ export async function doDeployWithPrefetch(
           exportSetChanged ||
           skippedOutputsChanged ||
           orphansChanged ||
+          supersededChanged ||
           healedAttributesPending
         ) {
           // A first deploy with nothing to create still writes its record here.

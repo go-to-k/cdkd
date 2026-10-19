@@ -18,7 +18,13 @@ import type {
   ResourceDeleteResult,
   ResourceProvider,
 } from '../../types/resource.js';
-import type { ResourceState } from '../../types/state.js';
+import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
+import {
+  SUPERSEDED_KEPT_REMEDY,
+  addSuperseded,
+  removeSuperseded,
+  retryWhileInUse,
+} from '../superseded-resources.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { green } from '../../utils/colors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -89,6 +95,14 @@ export class ReplacementRunState {
    * `executeDeployment` runs; a delete outside it warns at once.
    */
   deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
+  /**
+   * go-to-k/cdkd#5111: the deploy's live state record, where a deferred
+   * delete's old resource is recorded (`StackState.supersededResources`) so
+   * the row's own save persists it. Set beside `deferredReplacedDeletes`.
+   */
+  supersededHost: Pick<StackState, 'supersededResources'> | undefined = undefined;
+  /** go-to-k/cdkd#5111: the entry each deferred delete recorded, per logical id. */
+  supersededEntries = new Map<string, SupersededResourceRecord>();
   /**
    * Logical ids whose replacement this deploy DELIBERATELY left the old
    * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
@@ -967,7 +981,7 @@ export async function deleteReplacedAfterCreate(
     ? deps.inlinePolicyClaimedFor(oldResourceType, logicalId, deps.deployStateResources())
     : undefined;
   try {
-    deleteResult = await withPrintingSecrets(secrets, () =>
+    const sendDelete = (): Promise<void | ResourceDeleteResult> =>
       deleteProvider.delete(
         logicalId,
         currentResource.physicalId,
@@ -991,7 +1005,12 @@ export async function deleteReplacedAfterCreate(
             secretNameBagFor(deps.secretsRun(), logicalId),
           ]),
         }
-      )
+      );
+    deleteResult = await withPrintingSecrets(secrets, () =>
+      // go-to-k/cdkd#5111: the post-DAG retry waits out an "in use" refusal
+      // whose user this deploy already moved off (a deleted load balancer's
+      // listeners go asynchronously); the first attempt defers instead.
+      isRetry ? retryWhileInUse(sendDelete, () => deps.interrupted()) : sendDelete()
     );
   } catch (deleteError) {
     const deleteMsg = maskSecretsInText(describeAwsFailure(deleteError).detail, secrets);
@@ -1019,6 +1038,22 @@ export async function deleteReplacedAfterCreate(
       deps.logger.info(
         safeMsg`  Could not delete old ${logicalId} (${currentResource.physicalId}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
       );
+      // go-to-k/cdkd#5111: recorded BEFORE the row's save, which persists it:
+      // a deploy killed before the retry below left the old resource in AWS
+      // with no record at all.
+      const host = run.supersededHost;
+      if (host !== undefined) {
+        const entry: SupersededResourceRecord = {
+          logicalId,
+          supersededAt: Date.now(),
+          state: currentResource,
+          ...(updateReplacePolicy !== undefined && { updateReplacePolicy }),
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...(deps.options.forceStatefulRecreation === true && { forceDataDelete: true as const }),
+        };
+        addSuperseded(host, entry);
+        run.supersededEntries.set(logicalId, entry);
+      }
       deferred.set(logicalId, {
         physicalId: currentResource.physicalId,
         resourceType: oldResourceType,
@@ -1048,9 +1083,20 @@ export async function deleteReplacedAfterCreate(
     // `PageNotFound`, or a delete failing on a KMS key or role "not found"
     // while the old resource is alive, would silence the one line telling
     // the user an untracked resource may be left.
+    // go-to-k/cdkd#5111: the retry of a recorded delete keeps the record.
+    const kept = isRetry && run.supersededEntries.has(logicalId);
     deps.logger.warn(
-      safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
+      kept
+        ? safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}. ${SUPERSEDED_KEPT_REMEDY}.`
+        : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
     );
+  }
+  // go-to-k/cdkd#5111: a retry that deleted it, or that the provider skipped
+  // (warned below as untracked), drops the record.
+  const recorded = isRetry ? run.supersededEntries.get(logicalId) : undefined;
+  if (recorded !== undefined && !deleteFailed && run.supersededHost !== undefined) {
+    removeSuperseded(run.supersededHost, recorded);
+    run.supersededEntries.delete(logicalId);
   }
   // Issue #2422.
   reportDeleteGuards(deleteResult, {
@@ -1212,10 +1258,11 @@ export function warnUnretriedReplacedDeletes(
 ): void {
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
+  // go-to-k/cdkd#5111: each is recorded in state, so the next deploy retries it.
   const note =
     why === 'failed'
-      ? 'not retried: the deploy failed first'
-      : 'not retried: the deploy was interrupted';
+      ? 'not retried: the deploy failed first; cdkd keeps it in state, and the next deploy retries the delete'
+      : 'not retried: the deploy was interrupted; cdkd keeps it in state, and the next deploy retries the delete';
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
       deps.logger.warn(

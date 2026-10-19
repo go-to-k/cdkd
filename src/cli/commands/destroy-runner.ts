@@ -145,7 +145,12 @@ import {
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
+  deleteSupersededEntry,
+  supersededResourcesOf,
+} from '../../deployment/superseded-resources.js';
+import {
   createUnionSecretMasker,
+  maskSecretsInText,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 
@@ -977,6 +982,9 @@ async function destroyStackInRegion(
   // deletes state.json with no confirmation at all — in exactly the
   // first-deploy-fails flow that produces this shape.
   const orphanCount = (state.orphans ?? []).length;
+  // go-to-k/cdkd#5111: a replacement's old resource still to delete keeps the
+  // record from being empty, as an orphan does.
+  const supersededCount = supersededResourcesOf(state).length;
   // AT THE TOP OF THE DESTROY, and REFUSE rather than repair (issue #3207).
   //
   // `parseStateBody` validates the root object and the schema version and
@@ -1015,7 +1023,12 @@ async function destroyStackInRegion(
       (message) => logger.info(message)
     );
   }
-  if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
+  if (
+    resourceCount === 0 &&
+    orphanCount === 0 &&
+    supersededCount === 0 &&
+    journaledOrphans.count === 0
+  ) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
     // exactly one interval that is not idle — the start of a concurrent
@@ -1121,7 +1134,11 @@ async function destroyStackInRegion(
       // Same widening as the entry check (issue #2934): a record that gained
       // ONLY orphan entries is still not empty, and deleting it would drop the
       // only trace of live, billing AWS resources.
-      const stillEmpty = !recheck || (recheckResources === 0 && recheckOrphans === 0);
+      const stillEmpty =
+        !recheck ||
+        (recheckResources === 0 &&
+          recheckOrphans === 0 &&
+          supersededResourcesOf(recheck.state).length === 0);
       if (!stillEmpty) {
         // A concurrent writer populated the record between the caller's read
         // and this lock. Deleting now would drop resources cdkd tracks, so
@@ -1226,6 +1243,15 @@ async function destroyStackInRegion(
     // the very banner the y/N answers, while an ESC run in a `resourceType`
     // redraws the lines above it.
     logger.info(`  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`);
+  }
+  // go-to-k/cdkd#5111: deleted after the resources above.
+  if (supersededCount > 0) {
+    logger.info(`\nOld resources a replacement left to delete (${supersededCount}):`);
+    for (const entry of supersededResourcesOf(state)) {
+      logger.info(
+        `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)}), superseded`
+      );
+    }
   }
 
   // When `--remove-protection` is set, surface a count of resources that
@@ -1638,6 +1664,9 @@ async function destroyStackInRegion(
   // authoritative, and any stale snapshot is a superset of what still
   // exists, which a re-run resolves via the idempotent "not found" path.
   const remainingResources: Record<string, ResourceState> = { ...state.resources };
+  // go-to-k/cdkd#5111: the superseded resources not yet deleted; a preserved
+  // state keeps exactly these (a malformed entry is carried, never acted on).
+  let remainingSuperseded = state.supersededResources;
 
   // Issue #1752 (G): the state file a user must repair is NOT always this
   // stack's. A skipped nested-stack row's malformed record lives in the CHILD's
@@ -1761,7 +1790,14 @@ async function destroyStackInRegion(
     // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
     // keep the persisted shape identical to a freshly-deployed stack that
     // has none — the deploy engine omits both keys when empty.
-    const { imports: _imports, outputReads: _outputReads, ...rest } = state;
+    const {
+      imports: _imports,
+      outputReads: _outputReads,
+      supersededResources: _superseded,
+      ...rest
+    } = state;
+    const { supersededResources: _carriedSuperseded, ...lifetime } =
+      stackInstanceIdCarriedFrom(state);
     // go-to-k/cdkd#4150: EXCEPT while a remaining record's secret-derived
     // principal list still needs that producer-region evidence, or a re-run
     // would classify its reference `local` where this run read `ambiguous`.
@@ -1778,7 +1814,7 @@ async function destroyStackInRegion(
     );
     return {
       ...rest,
-      ...stackInstanceIdCarriedFrom(state),
+      ...lifetime,
       // go-to-k/cdkd#5064 phase 2: a partial destroy keeps the record; what it
       // deleted or kept left the stack, so a redeploy re-adding a logical id
       // asks for a name no earlier copy held.
@@ -1786,6 +1822,11 @@ async function destroyStackInRegion(
       ...(keepEvidence && _imports !== undefined && { imports: _imports }),
       ...(keepEvidence && _outputReads !== undefined && { outputReads: _outputReads }),
       resources: { ...remainingResources },
+      // go-to-k/cdkd#5111: what is left of them; none left drops the field.
+      ...(remainingSuperseded !== undefined &&
+        !(Array.isArray(remainingSuperseded) && remainingSuperseded.length === 0) && {
+          supersededResources: remainingSuperseded,
+        }),
       outputs: {},
       // The bag is REWRITTEN (empty), so its export set is known — and empty
       // (issue #2193). Carrying the record's previous set through `...rest`
@@ -2714,6 +2755,68 @@ async function destroyStackInRegion(
       );
 
       await Promise.all(deletePromises);
+    }
+
+    // go-to-k/cdkd#5111: the old copies a replacement left to delete, AFTER the
+    // stack's own resources, any of which may still have used one. A failure
+    // or a skip keeps its entry, and with it the state, for a re-run.
+    for (const entry of supersededResourcesOf(state)) {
+      if (lock.interrupted) break;
+      const { logicalId } = entry;
+      const { physicalId, resourceType } = entry.state;
+      const bag = printingBagOf(logicalId);
+      const outcome = await withPrintingSecrets(bag, () =>
+        withStackRecords(
+          {
+            live: () => Object.entries(remainingResources),
+            survivors: () => Object.entries(remainingResources),
+          },
+          async () => {
+            logger.info(
+              `Deleting ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)} (${displaySafe(maskSecretsInText(physicalId, bag))})...`
+            );
+            try {
+              return await deleteSupersededEntry(entry, {
+                provider: destroyProviderRegistry.getProviderFor({
+                  resourceType,
+                  ...(entry.state.provisionedBy !== undefined && {
+                    provisionedBy: entry.state.provisionedBy,
+                  }),
+                }).provider,
+                region: state.region ?? regionForState,
+                skipFinalSnapshot: ctx.skipFinalSnapshot === true,
+                ...(ctx.stackDestroy === true && { stackDestroy: true }),
+                maskSecrets: createUnionSecretMasker([bag]),
+                stop: () => lock.interrupted,
+              });
+            } catch (error) {
+              return { outcome: 'failed' as const, error };
+            }
+          }
+        )
+      );
+      if (outcome.outcome === 'deleted') {
+        result.deletedCount++;
+        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
+        logger.info(
+          `  ✓ Deleted ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)}`
+        );
+        continue;
+      }
+      if (outcome.outcome === 'skipped') {
+        result.skippedCount++;
+        logger.warn(
+          `  ⚠ ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)} was not deleted ` +
+            `(${displaySafe(outcome.reason)}). State preserved: it stays recorded, and a re-run of the destroy retries it.`
+        );
+        continue;
+      }
+      result.errorCount++;
+      logger.error(
+        `  ✗ Failed to delete ${displaySafe(logicalId)}'s superseded ${displaySafe(resourceType)}: ` +
+          `${displaySafe(maskSecretsInText(describeAwsFailure(outcome.error).detail, bag))}. ` +
+          `State preserved: it stays recorded, and a re-run of the destroy retries it.`
+      );
     }
 
     // Carry the graceful-interrupt outcome (issue #816) into the result so the
