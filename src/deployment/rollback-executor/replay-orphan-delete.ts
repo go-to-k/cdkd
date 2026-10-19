@@ -50,8 +50,9 @@ export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
     // minters.
     delete stateResources[op.logicalId];
     // go-to-k/cdkd#5064: the resource keeps its name in AWS, so the next
-    // create of the logical id asks for the next generation's.
-    noteRolledBackCreate(s, op, record);
+    // create of the logical id asks for the next generation's. A re-run that
+    // finds no record took nothing back.
+    if (record) noteRolledBackCreate(s, op, record);
     // go-to-k/cdkd#4438: the orphaned resource still holds this stack's
     // create token, so the stack's next create of it must not send it again.
     await noteRetainedResource(op.resourceType, op.logicalId);
