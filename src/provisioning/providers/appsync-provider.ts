@@ -122,6 +122,7 @@ import { isSecretDerivedValue } from '../masked-retry-logger.js';
 import {
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 
@@ -664,7 +665,7 @@ export class AppSyncProvider implements ResourceProvider {
       case 'AWS::AppSync::GraphQLApi':
         return this.createGraphQLApi(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::GraphQLSchema':
-        return this.createGraphQLSchema(logicalId, resourceType, properties);
+        return this.createGraphQLSchema(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::DataSource':
         return this.createDataSource(logicalId, resourceType, properties, context);
       case 'AWS::AppSync::Resolver':
@@ -736,7 +737,8 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          maskerOrIdentity(context?.maskSecrets)
         );
       case 'AWS::AppSync::DataSource':
         return this.updateDataSource(
@@ -1161,7 +1163,8 @@ export class AppSyncProvider implements ResourceProvider {
       resourceType,
       logicalId,
       previousProperties['Tags'],
-      properties['Tags']
+      properties['Tags'],
+      maskerOrIdentity(context?.maskSecrets)
     );
 
     // `attributes` is deliberately OMITTED, not `{}`: the deploy engine
@@ -1187,7 +1190,8 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<ResourceUpdateResult> {
     // ApiId is immutable identity — physicalId tracks it. The mutable
     // surface is `Definition` (the SDL body) or its S3-sourced sibling
@@ -1225,7 +1229,8 @@ export class AppSyncProvider implements ResourceProvider {
         newLoc,
         resourceType,
         logicalId,
-        'DefinitionS3Location'
+        'DefinitionS3Location',
+        mask
       );
     } else {
       return { physicalId, wasReplaced: false };
@@ -1240,7 +1245,7 @@ export class AppSyncProvider implements ResourceProvider {
         })
       );
     } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlSchema');
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlSchema', mask);
     }
     return { physicalId, wasReplaced: false };
   }
@@ -1442,7 +1447,8 @@ export class AppSyncProvider implements ResourceProvider {
       logicalId,
       properties,
       previousProperties,
-      true
+      true,
+      mask
     );
 
     try {
@@ -1533,7 +1539,8 @@ export class AppSyncProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
@@ -1548,7 +1555,7 @@ export class AppSyncProvider implements ResourceProvider {
         const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId }));
         arn = resp.graphqlApi?.arn;
       } catch (error) {
-        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi');
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi', mask);
       }
       if (!arn) {
         throw new ProvisioningError(
@@ -1573,7 +1580,14 @@ export class AppSyncProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (untag)');
+        throw this.wrapUpdateError(
+          error,
+          resourceType,
+          logicalId,
+          apiId,
+          'GraphqlApi (untag)',
+          mask
+        );
       }
     }
     if (Object.keys(tagsToAdd).length > 0) {
@@ -1585,7 +1599,7 @@ export class AppSyncProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (tag)');
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (tag)', mask);
       }
     }
   }
@@ -1601,20 +1615,67 @@ export class AppSyncProvider implements ResourceProvider {
     mask: MaskerFn = maskerOrIdentity(undefined)
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    // Stamped exactly when the mask changed AWS's text, so the retry
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to update AppSync ${subType} ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (error instanceof Error && failure.redacted) {
+      return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+    }
+    // A cdkd-authored or transport error, or a non-`Error` throw, keeps its
+    // text masked, stamped exactly when the mask changed it, so the retry
     // classifiers read the unmasked cause (go-to-k/cdkd#2302).
-    return wrapMaskedAwsError(
-      mask,
-      error,
-      (text) =>
-        new ProvisioningError(
-          `Failed to update AppSync ${subType} ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
-    );
+    return wrapMaskedAwsError(mask, error, build);
+  }
+
+  /**
+   * The failure wrap every `create()` / `delete()` catch (and the `*S3Location`
+   * fetch) throws.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319), as in {@link withheldAwsFailure}. A
+   * cdkd-authored or transport error, or a non-`Error` throw, keeps its text
+   * unchanged, as before; the thrown message is masked by the deploy engine.
+   * Every delete checks {@link isNotFoundError} before it wraps, so no
+   * "already deleted" reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+  }
+
+  /**
+   * The wrap for an AWS-authored failure (go-to-k/cdkd#2319): a thrown message
+   * is persisted to `deployments/{runId}.jsonl`, and an
+   * `AccessDeniedException` names the caller's account and assumed-role ARN,
+   * so the message carries only the error class and the `--verbose` pointer.
+   * AWS's own text goes to `debug` through `mask`, and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on
+   * the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}) so a create-first replacement still
+   * recognises a name collision.
+   */
+  private withheldAwsFailure(
+    mask: MaskerFn,
+    detail: string,
+    summary: string,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    this.logger.debug(mask(build(mask(detail)).message));
+    return markRedactedCause(build(`${mask(summary)}${relayedNameCollision(detail)}`));
   }
 
   async delete(
@@ -2242,7 +2303,8 @@ export class AppSyncProvider implements ResourceProvider {
         resourceType,
         logicalId,
         apiId,
-        isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)'
+        isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)',
+        mask
       );
     }
     return narrowed;
@@ -2394,7 +2456,9 @@ export class AppSyncProvider implements ResourceProvider {
     location: unknown,
     resourceType: string,
     logicalId: string,
-    propertyPath: string
+    propertyPath: string,
+    // AWS can echo a template value back; absent means unmasked.
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<string> {
     const { bucket, key } = this.parseS3LocationUrl(
       location,
@@ -2414,13 +2478,18 @@ export class AppSyncProvider implements ResourceProvider {
       body = await resp.Body.transformToString();
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
-      throw new ProvisioningError(
-        `Failed to fetch ${propertyPath} s3://${bucket}/${key} for ${logicalId}: ` +
-          `${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        error instanceof Error ? error : undefined
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to fetch ${propertyPath} s3://${bucket}/${key} for ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
     if (body.length === 0) {
@@ -2450,7 +2519,8 @@ export class AppSyncProvider implements ResourceProvider {
     inlineKey: string,
     s3Key: string,
     resourceType: string,
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<string | undefined> {
     if (inline !== undefined) {
       if (s3Location !== undefined) {
@@ -2462,7 +2532,7 @@ export class AppSyncProvider implements ResourceProvider {
       return inline as string;
     }
     if (s3Location !== undefined) {
-      return this.fetchS3LocationBody(s3Location, resourceType, logicalId, s3Key);
+      return this.fetchS3LocationBody(s3Location, resourceType, logicalId, s3Key, mask);
     }
     return undefined;
   }
@@ -2504,7 +2574,8 @@ export class AppSyncProvider implements ResourceProvider {
     logicalId: string,
     properties: Record<string, unknown>,
     previousProperties?: Record<string, unknown>,
-    forUpdate = false
+    forUpdate = false,
+    mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<void> {
     const effectiveKind =
       (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
@@ -2545,7 +2616,8 @@ export class AppSyncProvider implements ResourceProvider {
       'RequestMappingTemplate',
       'RequestMappingTemplateS3Location',
       resourceType,
-      logicalId
+      logicalId,
+      mask
     );
     if (requestTemplate !== undefined) input.requestMappingTemplate = requestTemplate;
     const responseTemplate = await this.resolveInlineOrS3Template(
@@ -2554,7 +2626,8 @@ export class AppSyncProvider implements ResourceProvider {
       'ResponseMappingTemplate',
       'ResponseMappingTemplateS3Location',
       resourceType,
-      logicalId
+      logicalId,
+      mask
     );
     if (responseTemplate !== undefined) input.responseMappingTemplate = responseTemplate;
     const code = await this.resolveInlineOrS3Template(
@@ -2563,7 +2636,8 @@ export class AppSyncProvider implements ResourceProvider {
       'Code',
       'CodeS3Location',
       resourceType,
-      logicalId
+      logicalId,
+      mask
     );
     if (code !== undefined) input.code = code;
 
@@ -2981,12 +3055,17 @@ export class AppSyncProvider implements ResourceProvider {
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create GraphQL API ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create GraphQL API ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the rollback delete failed, so this API has no state
       // record; name it for the failed-CREATE journal.
@@ -3143,12 +3222,17 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete GraphQL API ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete GraphQL API ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3158,7 +3242,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async createGraphQLSchema(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating GraphQL Schema ${logicalId}`);
 
@@ -3198,7 +3283,8 @@ export class AppSyncProvider implements ResourceProvider {
           definitionS3Location,
           resourceType,
           logicalId,
-          'DefinitionS3Location'
+          'DefinitionS3Location',
+          maskerOrIdentity(context?.maskSecrets)
         );
         await this.getClient().send(
           new StartSchemaCreationCommand({
@@ -3217,12 +3303,17 @@ export class AppSyncProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create GraphQL Schema ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create GraphQL Schema ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -3303,12 +3394,17 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully created DataSource ${logicalId}: ${physicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DataSource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DataSource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
 
@@ -3377,12 +3473,17 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DataSource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DataSource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3448,7 +3549,15 @@ export class AppSyncProvider implements ResourceProvider {
 
       // Shared with updateResolver so create and update cannot diverge
       // (incl. the Kind discriminator gating and the *S3Location fetches).
-      await this.applyResolverConfig(input, resourceType, logicalId, properties);
+      await this.applyResolverConfig(
+        input,
+        resourceType,
+        logicalId,
+        properties,
+        undefined,
+        false,
+        maskerOrIdentity(context?.maskSecrets)
+      );
 
       const response = await this.getClient().send(new CreateResolverCommand(input));
       // Recorded, not consumed, inside the try — see the return below.
@@ -3457,12 +3566,17 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully created Resolver ${logicalId}: ${physicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Resolver ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Resolver ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
 
@@ -3525,12 +3639,17 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Resolver ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Resolver ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3601,12 +3720,17 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully created ApiKey ${logicalId}: ${apiKeyId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create ApiKey ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create ApiKey ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
 
@@ -3760,12 +3884,17 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ApiKey ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete ApiKey ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
