@@ -105,6 +105,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+CHILD_LOCK_KEY="cdkd/${CHILD_STACK}/${REGION}/lock.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CHILD_STATE_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 
@@ -125,6 +126,9 @@ KILLED_PID=""
 KEPT_QUEUE_URLS=()
 # Tables a crash arm leaves outside state; deleted by cleanup, by name.
 LEFT_TABLES=()
+# Load balancers a crash arm can leave outside state; deleted by cleanup, by
+# name, BEFORE the destroy (their network interfaces would hold the VPC).
+LEFT_ALB_NAMES=()
 
 cleanup() {
   rc=$?
@@ -141,7 +145,18 @@ cleanup() {
   [ -n "${KILLED_PID}" ] && kill -9 "${KILLED_PID}" 2>/dev/null
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" >/dev/null 2>&1
+    aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${CHILD_LOCK_KEY}" >/dev/null 2>&1
   fi
+  for name in "${LEFT_ALB_NAMES[@]}"; do
+    arn="$(aws elbv2 describe-load-balancers --region "${REGION}" --names "${name}" \
+      --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)"
+    case "${arn}" in
+      arn:*)
+        aws elbv2 delete-load-balancer --region "${REGION}" --load-balancer-arn "${arn}" >/dev/null 2>&1
+        aws elbv2 wait load-balancers-deleted --region "${REGION}" --load-balancer-arns "${arn}" >/dev/null 2>&1
+        ;;
+    esac
+  done
   if [ -f "${LOCAL_DIST}" ]; then
     AWS_REGION="${REGION}" node "${LOCAL_DIST}" destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force >/dev/null 2>&1
@@ -310,7 +325,9 @@ role_id() { # <role name> — strict
   aws iam get-role --role-name "$1" --query 'Role.RoleId' --output text
 }
 
-assert_table_gone() { # <label> <name>
+assert_table_gone() { # <label> <name> — DeleteTable completes asynchronously
+  aws dynamodb wait table-not-exists --region "${REGION}" --table-name "$2" \
+    || fail "$1: table $2 was still being deleted after the waiter gave up"
   assert_gone "$1: table $2 still exists" \
     aws dynamodb describe-table --region "${REGION}" --table-name "$2"
   pass "$1: table $2 is gone"
@@ -319,10 +336,16 @@ assert_role_gone() { # <label> <name>
   assert_gone "$1: role $2 still exists" aws iam get-role --role-name "$2"
   pass "$1: role $2 is gone"
 }
-assert_queue_gone() { # <label> <name>
-  assert_gone "$1: queue $2 still exists" \
-    aws sqs get-queue-url --region "${REGION}" --queue-name "$2"
-  pass "$1: queue $2 is gone"
+assert_queue_gone() { # <label> <name> — SQS can answer for a deleted queue for up to 60s
+  local i
+  for i in $(seq 1 10); do
+    if gone_probe aws sqs get-queue-url --region "${REGION}" --queue-name "$2"; then
+      pass "$1: queue $2 is gone"
+      return
+    fi
+    sleep 10
+  done
+  fail "$1: queue $2 still exists after 100s"
 }
 assert_tg_gone() { # <label> <name>
   assert_gone "$1: target group $2 still exists" \
@@ -344,8 +367,9 @@ queue_url() { # <name> — strict
   aws sqs get-queue-url --region "${REGION}" --queue-name "$1" --query QueueUrl --output text
 }
 
-release_lock() { # a killed run held the stack lock; release it as an operator would
+release_lock() { # a killed run held the stack lock (and maybe the child's); release them as an operator would
   aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" >/dev/null
+  aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${CHILD_LOCK_KEY}" >/dev/null
 }
 
 # Deploy in the background and SIGKILL it once <probe> succeeds (the next
@@ -467,6 +491,8 @@ echo "==> Phase B1: a fresh deploy mints an id; every name is generation 0's"
 export GNL_EDIT=1 GNL_ALB=1 GNL_NESTED=1 GNL_EXTRA=1
 deploy_local ok "B1 fresh deploy"
 fetch_state "B1"
+# Registered first: Retain keeps it out of every destroy.
+KEPT_QUEUE_URLS+=("$(physical ExtraKeptQ)")
 case "$(state_field '.stackInstanceId // ""')" in
   ????????-????-4???-????-????????????) pass "B1: the record carries a stackInstanceId" ;;
   *) fail "B1: the record carries no well-formed stackInstanceId (value withheld)" ;;
@@ -496,7 +522,6 @@ B1_QUEUE_NAME="$(held_name queue "$(physical Queue)")"
 B1_ROLE="$(physical Role)"
 B1_ROLE_ID="$(role_id "${B1_ROLE}")"
 B1_IDS="$(state_field '[.resources | to_entries[] | "\(.key)=\(.value.physicalId)"] | sort | join(",")')"
-KEPT_QUEUE_URLS+=("$(physical ExtraKeptQ)")
 
 # ===========================================================================
 echo "==> Phase B2: a no-op and an in-place update keep every name"
@@ -559,6 +584,8 @@ ALB_GEN1_NAME="$(expected_name "${STATE_FILE}" "${STACK}" Alb 1 alb)" || fail "D
 VPC_ID="$(aws elbv2 describe-load-balancers --region "${REGION}" --load-balancer-arns "${ALB_GEN0}" \
   --query 'LoadBalancers[0].VpcId' --output text)"
 export GNL_ALB_INTERNAL=1
+# The killed run's load balancer is in no record until the re-run takes it.
+LEFT_ALB_NAMES+=("${ALB_GEN1_NAME}")
 deploy_and_kill_when "D1" aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}"
 ALB_KILLED_ARN="$(aws elbv2 describe-load-balancers --region "${REGION}" --names "${ALB_GEN1_NAME}" \
   --query 'LoadBalancers[0].LoadBalancerArn' --output text)"
@@ -573,6 +600,8 @@ wait_alb_gone "D1" "$(held_name alb "${ALB_GEN0}")"
 assert_eq "D1: exactly one load balancer is left in the VPC (no third)" \
   "$(aws elbv2 describe-load-balancers --region "${REGION}" \
     --query "LoadBalancers[?VpcId=='${VPC_ID}'].LoadBalancerArn" --output text | wc -w | tr -d ' ')" "1"
+# The record names it now: the stack's destroy deletes it.
+LEFT_ALB_NAMES=()
 
 # ===========================================================================
 echo "==> Phase D2: a killed replacement of a non-adopting type: refuse, import, go on"
@@ -672,11 +701,11 @@ echo "==> Phase F2: both re-added under NEW names"
 export GNL_EXTRA=1
 deploy_local ok "F2 re-add"
 fetch_state "F2"
+KEPT_QUEUE_URLS+=("$(physical ExtraKeptQ)")
 assert_named "F2" ExtraQ 1 queue
 assert_named "F2" ExtraKeptQ 1 queue
 assert_eq "F2: ExtraQ records generation 1" "$(generation_of ExtraQ)" "1"
 assert_eq "F2: ExtraKeptQ records generation 1" "$(generation_of ExtraKeptQ)" "1"
-KEPT_QUEUE_URLS+=("$(physical ExtraKeptQ)")
 assert_eq "F2: the kept copy is untouched" \
   "$(held_name queue "$(queue_url "${EXTRA_KEPT_GEN0_NAME}")")" "${EXTRA_KEPT_GEN0_NAME}"
 
@@ -698,12 +727,12 @@ echo "==> Phase F4: the next deploy creates a NEW queue and leaves the orphan al
 # ===========================================================================
 export GNL_FAIL=0
 deploy_local ok "F4 redeploy"
+fetch_state "F4"
+KEPT_QUEUE_URLS+=("$(physical OrphanQ)")
 assert_log_has "F4" "This deploy does not take it back" "adopt it with 'cdkd import'"
 assert_log_has "F4" "adopt it with 'cdkd import'" "This deploy does not take it back"
-fetch_state "F4"
 assert_named "F4" OrphanQ 1 queue
 assert_ne "F4: OrphanQ is a new queue" "$(physical OrphanQ)" "${ORPHAN_GEN0_URL}"
-KEPT_QUEUE_URLS+=("$(physical OrphanQ)")
 assert_eq "F4: the orphan is untouched" \
   "$(held_name queue "$(queue_url "${ORPHAN_GEN0_NAME}")")" "${ORPHAN_GEN0_NAME}"
 
@@ -726,12 +755,32 @@ assert_ne "G: Role's name differs from the earlier lifetime's" "$(physical Role)
 echo "==> Phase H: teardown"
 # ===========================================================================
 G_TABLE="$(physical Table)"
+G_ROLE="$(physical Role)"
+G_FN="$(physical Fn)"
+G_TOPIC="$(physical Topic)"
+G_BUCKET="$(physical Bucket)"
+G_RULE="$(held_name rule "$(physical Rule)")"
+G_TG="$(held_name tg "$(physical Tg)")"
+G_LOG_GROUP="$(physical LogGroup)"
 run_cdkd ok "H destroy" "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "H: state file still exists" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 pass "H: the state file is gone"
 assert_table_gone "H" "${G_TABLE}"
+assert_role_gone "H" "${G_ROLE}"
+assert_gone "H: function ${G_FN} still exists" \
+  aws lambda get-function --region "${REGION}" --function-name "${G_FN}"
+assert_gone "H: topic ${G_TOPIC} still exists" \
+  aws sns get-topic-attributes --region "${REGION}" --topic-arn "${G_TOPIC}"
+assert_gone "H: bucket ${G_BUCKET} still exists" aws s3api head-bucket --bucket "${G_BUCKET}"
+assert_gone "H: rule ${G_RULE} still exists" \
+  aws events describe-rule --region "${REGION}" --name "${G_RULE}"
+assert_tg_gone "H" "${G_TG}"
+G_LOG_GROUPS="$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "${G_LOG_GROUP}" --query 'logGroups[].logGroupName' --output text)"
+assert_eq "H: the log group is gone" "${G_LOG_GROUPS}" ""
+pass "H: every resource of the last lifetime is gone"
 for url in "${KEPT_QUEUE_URLS[@]}"; do
   aws sqs delete-queue --region "${REGION}" --queue-url "${url}" >/dev/null 2>&1 || true
   assert_queue_gone "H (kept by Retain, deleted here)" "$(held_name queue "${url}")"

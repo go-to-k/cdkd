@@ -325,6 +325,9 @@ if [ "$(printf '%s' "${STATE}" | jq -r --arg k "${PARAM_LOGICAL_ID}" '.retiredNa
 fi
 PARAM_SUFFIX_G1="$(state_name_suffix "${PARAM_LOGICAL_ID}" 1)" || exit 1
 PARAM_EXPECTED_G1="${PARAM_NAME%-*}-${PARAM_SUFFIX_G1}"
+# Registered for the cleanup BEFORE the deploy: a deploy that fails after
+# creating it would otherwise leave a Retain parameter holding the canary.
+PARAM_NAME_2="${PARAM_EXPECTED_G1}"
 PARAM_ORPHAN_MODIFIED="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
   --query 'Parameter.LastModifiedDate' --output text)"
 

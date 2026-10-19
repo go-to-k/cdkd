@@ -50,6 +50,9 @@ function held(kind, physicalId) {
       return physicalId.split('/').pop();
     case 'topic':
       return physicalId.split(':').pop();
+    case 'rule':
+      // The EventBridge rule provider records the rule ARN (`rule/<name>`).
+      return physicalId.split('/').pop();
     case 'tg': {
       const m = /:targetgroup\/([^/]+)\//.exec(physicalId);
       return m ? m[1] : '';
