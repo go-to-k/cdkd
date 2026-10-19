@@ -70,6 +70,7 @@ import {
   DELETE_INDEX_WAIT_PROCEED_NOTE,
   TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
 } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::Table';
 const LOGICAL_ID = 'Orders';
@@ -259,10 +260,13 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     // (a settle poll plus a backoff step per attempt) and after 15 sends.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, terminalInUseError);
 
-    await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
-      `Failed to delete DynamoDB table ${LOGICAL_ID}: Attempt to change a resource which is ` +
-        `still in use: Table is being created: ${TABLE_NAME}`
-    );
+    await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the class, never AWS's text, and no index-busy
+      // restatement for a conflict that is not one; AWS's text is the cause.
+      message: `Failed to delete DynamoDB table ${LOGICAL_ID}: ResourceInUseException. ${VERBOSE_POINTER}`,
+      cause: { message: expect.stringContaining('Table is being created') },
+    });
+
     expect(stub.attempts()).toBe(1);
     // ...and no re-arm poll either: a name-keyed classifier would have spent 8
     // settle polls waiting out a condition that never clears.
@@ -276,10 +280,18 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     // real AWS sentence rather than a cdkd-invented timeout message.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, indexBusyError);
 
-    await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
-      `Failed to delete DynamoDB table ${LOGICAL_ID}: Attempt to change a resource which is ` +
-        'still in use: Cannot delete table while indexes are being created, updated, or deleted.'
-    );
+    await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the class plus cdkd's restatement of the condition
+      // in the thrown (persisted) message; AWS's own sentence is the cause.
+      message:
+        `Failed to delete DynamoDB table ${LOGICAL_ID}: ResourceInUseException. ${VERBOSE_POINTER} ` +
+        'AWS reports that a global secondary index is still being created, updated or ' +
+        'deleted; re-running the destroy succeeds once the index is ACTIVE.',
+      cause: {
+        message: expect.stringContaining('Cannot delete table while indexes are being created'),
+      },
+    });
+
     // `TABLE_DELETE_INDEX_BUSY_MAX_RETRIES` retries after the first attempt.
     // Derived from the constant, not from its value: issue #1950 raised THIS
     // type's budget from 8 to 14 (the sibling type kept 8), and a literal 9

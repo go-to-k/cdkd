@@ -62,6 +62,39 @@ import { isThrottlingError } from '../deployment/retryable-errors.js';
 import type { Logger } from '../types/config.js';
 
 /**
+ * `logger` with every message routed through `maskSecrets` (go-to-k/cdkd#2319).
+ *
+ * The delete path hands the loops below a full {@link Logger}, and
+ * `withRetry`'s per-attempt debug line quotes AWS's raw message, which echoes
+ * the table name: a RESOLVED template value, so a secret when the name is
+ * secret-derived. `name` is masked as a VALUE first, so one below the masker's
+ * substring floor is caught too, then the whole line; a string argument is
+ * masked the same way. Identity when `maskSecrets` is absent.
+ */
+export function maskedLogger(
+  logger: Logger,
+  maskSecrets: ((text: string) => string) | undefined,
+  name?: string
+): Logger {
+  if (maskSecrets === undefined) return logger;
+  const maskedName = name === undefined || name === '' ? name : maskSecrets(name);
+  const mask = (text: string): string =>
+    maskSecrets(
+      name === undefined || name === '' || maskedName === name
+        ? text
+        : text.split(name).join(maskedName)
+    );
+  const args = (rest: unknown[]): unknown[] =>
+    rest.map((arg) => (typeof arg === 'string' ? mask(arg) : arg));
+  return {
+    debug: (message, ...rest) => logger.debug(mask(message), ...args(rest)),
+    info: (message, ...rest) => logger.info(mask(message), ...args(rest)),
+    warn: (message, ...rest) => logger.warn(mask(message), ...args(rest)),
+    error: (message, ...rest) => logger.error(mask(message), ...args(rest)),
+  };
+}
+
+/**
  * The GSI states during which AWS refuses another `UpdateTable` or a
  * `DeleteTable` on the table (issue #1521) — a table is ACTIVE while one of
  * its indexes is still transitioning, which is what made the serialized
@@ -105,6 +138,24 @@ export const INDEX_BUSY_DELETE_MESSAGE = /cannot delete table while indexes are 
 
 export function isIndexBusyDeleteError(message: string): boolean {
   return INDEX_BUSY_DELETE_MESSAGE.test(message);
+}
+
+/**
+ * What a DynamoDB delete wrap that withheld AWS's text (go-to-k/cdkd#2319)
+ * restates of it: that a global secondary index was still busy. Once the
+ * index-busy retry gives up, AWS's refusal is the one thing that tells the
+ * operator what to do, and a wrap reduced to `ResourceInUseException` (a class
+ * shared with terminal conflicts) would drop it. Worded in cdkd's own words on
+ * purpose: the `dynamodb-gsi-update` integ greps the destroy log for AWS's
+ * sentence to prove AWS really refused, and a copy here would satisfy it.
+ * Returns a leading space plus the sentence, or `''`. Both DynamoDB
+ * providers' wraps read it, beside the classifier it reuses.
+ */
+export function relayedIndexBusyDelete(withheldText: string): string {
+  return isIndexBusyDeleteError(withheldText)
+    ? ' AWS reports that a global secondary index is still being created, updated or ' +
+        'deleted; re-running the destroy succeeds once the index is ACTIVE.'
+    : '';
 }
 
 /**
@@ -426,8 +477,10 @@ export async function waitForIndexesSettled(opts: {
         // here reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session>
         // is not authorized to perform: dynamodb:DescribeTable ...`, so the
         // default-verbosity line would print the account id, the role name and
-        // the session name — and this warning is wrapped into the persisted
-        // deployment-events store, not just the terminal. Debug is opt-in and
+        // the session name into every terminal and CI log that captured the
+        // run. (A warn line is console-only: `ConsoleLogger` writes to the
+        // console alone, and the deployment-events store records thrown
+        // errors, never log lines.) Debug is opt-in and
         // already the level the throttle arm above uses for the same reason.
         // The control flow is unchanged: both spellings still proceed.
         const errorName = err instanceof Error ? err.name : typeof err;
@@ -558,8 +611,8 @@ export function indexBusyRetryWarning(opts: {
     `will not give up for at least ~${settleFloorMinutes} more minutes while those ` +
     `settle waits run). Nothing is ` +
     `wrong with the table; a large index backfill can outlast this budget, in ` +
-    `which case the destroy fails with AWS's own message and re-running it ` +
-    `succeeds once the index is ACTIVE.`
+    `which case the destroy fails on AWS's refusal (re-run with --verbose for AWS's ` +
+    `own message) and re-running it succeeds once the index is ACTIVE.`
   );
 }
 
@@ -616,9 +669,11 @@ export async function deleteTableWithIndexBusyRetry(opts: {
    * re-arms with a poll whose own cap is the caller's, and the caller shares a
    * per-resource deadline with everything else its `delete()` does — so a
    * budget that is right at the loop can still be wrong for the PATH. When the
-   * caller says stop, the refusal is treated as terminal and AWS's own
-   * sentence — `Cannot delete table while indexes are being ...`, the one thing
-   * here that tells the user what to do — is what propagates. That is the
+   * caller says stop, the refusal is treated as terminal and AWS's refusal —
+   * `Cannot delete table while indexes are being ...`, the one thing here that
+   * tells the user what to do — is what propagates: as the `cause` of the
+   * provider's wrap, whose own message names the class and restates the
+   * condition (go-to-k/cdkd#2319, `relayedIndexBusyDelete`). That is the
    * whole point of stopping ourselves rather than letting the deadline fire:
    * `withResourceDeadline` does NOT cancel, so its generic
    * `ResourceTimeoutError` would both replace this message and leave the loop
