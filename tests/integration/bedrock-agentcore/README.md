@@ -17,7 +17,7 @@ This example demonstrates deploying an Amazon Bedrock AgentCore Runtime using cd
    the template (issue #1160). A CloudFormation A/B cleared each one, the
    lifecycle back to the service defaults 900 / 28800, so the runtime must
    read back that way, in place.
-3. **Phase 3 (destroy)** - both runtimes and the cdkd state file are gone.
+3. **Phase 3 (destroy)** - both runtimes, the user pool and the cdkd state file are gone.
 
 ## Prerequisites
 

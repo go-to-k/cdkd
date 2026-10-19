@@ -57,6 +57,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CODE_RUNTIME_LOGICAL_ID="CodeRuntime71A3EE1C"
 DOCKER_RUNTIME_LOGICAL_ID="DockerRuntime395AC11E"
+AUTH_POOL_LOGICAL_ID="AuthPool6048658F"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -117,7 +118,13 @@ wait_ready() { # usage: wait_ready <runtime-id>
   for _ in $(seq 1 36); do
     status=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" \
       --region "${REGION}" --query status --output text) || return 1
-    [ "${status}" = "READY" ] && return 0
+    case "${status}" in
+      READY) return 0 ;;
+      *FAILED)
+        echo "FAIL: runtime $1 is ${status}: $(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" --region "${REGION}" --query failureReason --output text 2>&1)" >&2
+        exit 1
+        ;;
+    esac
     sleep 5
   done
   echo "FAIL: runtime $1 did not reach READY within 180s (last status '${status}')" >&2
@@ -141,8 +148,9 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
 
 RUNTIME_ID=$(physical_id "${CODE_RUNTIME_LOGICAL_ID}")
 DOCKER_RUNTIME_ID=$(physical_id "${DOCKER_RUNTIME_LOGICAL_ID}")
-if [ -z "${RUNTIME_ID}" ] || [ -z "${DOCKER_RUNTIME_ID}" ]; then
-  echo "FAIL: runtime physical ids missing from state: ${CODE_RUNTIME_LOGICAL_ID}='${RUNTIME_ID}' ${DOCKER_RUNTIME_LOGICAL_ID}='${DOCKER_RUNTIME_ID}'" >&2
+AUTH_POOL_ID=$(physical_id "${AUTH_POOL_LOGICAL_ID}")
+if [ -z "${RUNTIME_ID}" ] || [ -z "${DOCKER_RUNTIME_ID}" ] || [ -z "${AUTH_POOL_ID}" ]; then
+  echo "FAIL: physical ids missing from state: ${CODE_RUNTIME_LOGICAL_ID}='${RUNTIME_ID}' ${DOCKER_RUNTIME_LOGICAL_ID}='${DOCKER_RUNTIME_ID}' ${AUTH_POOL_LOGICAL_ID}='${AUTH_POOL_ID}'" >&2
   exit 1
 fi
 wait_ready "${RUNTIME_ID}"
@@ -200,6 +208,9 @@ for RT in "${RUNTIME_ID}" "${DOCKER_RUNTIME_ID}"; do
   fi
 done
 echo "    OK: both runtimes are gone"
+
+assert_gone "user pool '${AUTH_POOL_ID}' still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${AUTH_POOL_ID}" --region "${REGION}"
+echo "    OK: auth user pool is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import type { ResourceProvider } from '../../../src/types/resource.js';
 
 describe('AgentCoreRuntimeProvider', () => {
   let provider: AgentCoreRuntimeProvider;
@@ -273,6 +274,8 @@ describe('AgentCoreRuntimeProvider', () => {
         previous
       );
       expect(removal.injected).toEqual([]);
+      // No opt-in: the schema's unsent properties would be misreported.
+      expect((provider as ResourceProvider).removalHandledInUpdate).toBeUndefined();
       expect(removal.unhandled).toEqual([]);
       expect(removal.properties).toBe(base);
 
