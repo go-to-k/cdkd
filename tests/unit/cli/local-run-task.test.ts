@@ -9,8 +9,19 @@ describe('createLocalRunTaskCommand', () => {
   // `parsed.opts()` which Commander populates BEFORE invoking the action.
   // Global belt-and-braces against the unhandled-rejection -> Node 24
   // worker leak lives in `tests/setup.ts`.
-  const cmd = createLocalRunTaskCommand();
-  cmd.action(() => {});
+  //
+  // EVERY instance gets the stub, including the fresh ones below. An unstubbed
+  // `parse()` starts the real async handler and returns without awaiting it,
+  // so its `No CDK app specified` console.error lands ~100 ms after the test
+  // ends. When that is after the file's last test, the write races the
+  // worker's RPC teardown, and vitest fails an all-green run with
+  // `Closing rpc while "onUserConsoleLog" was pending` (go-to-k/cdkd#5099).
+  const parseOnlyCommand = (): ReturnType<typeof createLocalRunTaskCommand> => {
+    const command = createLocalRunTaskCommand();
+    command.action(() => {});
+    return command;
+  };
+  const cmd = parseOnlyCommand();
 
   it('registers the run-task subcommand name', () => {
     expect(cmd.name()).toBe('run-task');
@@ -73,19 +84,19 @@ describe('createLocalRunTaskCommand', () => {
   });
 
   it('parses --from-state as fromState=true', () => {
-    const fresh = createLocalRunTaskCommand();
+    const fresh = parseOnlyCommand();
     const parsed = fresh.parse(['TD', '--from-state'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(true);
   });
 
   it('defaults --from-state to false', () => {
-    const fresh = createLocalRunTaskCommand();
+    const fresh = parseOnlyCommand();
     const parsed = fresh.parse(['TD'], { from: 'user' });
     expect(parsed.opts().fromState).toBe(false);
   });
 
   it('parses --stack-region <region> as stackRegion=<region>', () => {
-    const fresh = createLocalRunTaskCommand();
+    const fresh = parseOnlyCommand();
     const parsed = fresh.parse(['TD', '--stack-region', 'us-west-2'], {
       from: 'user',
     });
