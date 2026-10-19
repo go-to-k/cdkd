@@ -24,7 +24,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -534,7 +534,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::WAFv2::WebACL', logicalId);
     // `replayWarn`: the rollback executor's reverse-replacement arm revives
     // the OLD resource from `previousState.properties`, which the user cannot
     // edit from the template — a hard refusal there would leave the resource

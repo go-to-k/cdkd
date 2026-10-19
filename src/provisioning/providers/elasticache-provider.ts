@@ -22,7 +22,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -255,7 +255,7 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     const cacheSubnetGroupName =
       (properties['CacheSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::ElastiCache::SubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(
@@ -433,7 +433,7 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     const cacheClusterId =
       (properties['ClusterName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 40, lowercase: true });
+      generatedNameFor('AWS::ElastiCache::CacheCluster', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
     let clusterCreated = false;

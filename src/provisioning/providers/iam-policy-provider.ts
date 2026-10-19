@@ -17,7 +17,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName, recordedGeneratedNameKept } from '../resource-name.js';
+import { generatedNameFor, recordedGeneratedNameKept } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -318,7 +318,7 @@ export class IAMPolicyProvider implements ResourceProvider {
 
     const policyName =
       (properties['PolicyName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::IAM::Policy', logicalId);
     const policyDocument = properties['PolicyDocument'];
     const targets = readPolicyTargetLists(properties);
     if ('malformed' in targets) {
@@ -549,7 +549,7 @@ export class IAMPolicyProvider implements ResourceProvider {
 
     const derivedPolicyName =
       (properties['PolicyName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::IAM::Policy', logicalId);
     // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
     // the derivation only by the naming scheme keeps it, never a rename.
     const newPolicyName =

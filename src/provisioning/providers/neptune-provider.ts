@@ -21,7 +21,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -348,7 +348,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBSubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(
@@ -505,7 +505,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBCluster', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
@@ -862,7 +862,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBInstance', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;

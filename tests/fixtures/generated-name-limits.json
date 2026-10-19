@@ -1,5 +1,5 @@
 {
-  "_about": "Name-property limits for every FALLBACK_NAME_RULES type (go-to-k/cdkd#5064). schema* fields are copied from AWS's public CloudFormation schema bundle (CloudformationSchema.zip, 2026-10-19); apiMaxLength is the service API's limit where the schema is silent or bounds only an ARN form.",
+  "_about": "Name-property limits for every FALLBACK_NAME_RULES type (go-to-k/cdkd#5095 added the types whose SDK provider alone named them) (go-to-k/cdkd#5064). schema* fields are copied from AWS's public CloudFormation schema bundle (CloudformationSchema.zip, 2026-10-19); apiMaxLength is the service API's limit where the schema is silent or bounds only an ARN form.",
   "types": {
     "AWS::S3::Bucket": {
       "nameProperty": "BucketName",
@@ -96,11 +96,6 @@
       "nameProperty": "Name",
       "apiMaxLength": 64,
       "apiSource": "PutRule Name"
-    },
-    "AWS::Events::EventBus": {
-      "nameProperty": "Name",
-      "apiMaxLength": 256,
-      "apiSource": "CreateEventBus Name"
     },
     "AWS::Kinesis::Stream": {
       "nameProperty": "Name",
@@ -203,6 +198,52 @@
       "nameProperty": "BucketName",
       "schemaMaxLength": 63,
       "schemaPattern": "^[a-z0-9][a-z0-9//.//-]*[a-z0-9]$"
+    },
+    "AWS::CodeCommit::Repository": {
+      "nameProperty": "RepositoryName",
+      "schemaMaxLength": 100
+    },
+    "AWS::RDS::DBProxy": {
+      "nameProperty": "DBProxyName",
+      "schemaMaxLength": 64,
+      "schemaPattern": "[0-z]*"
+    },
+    "AWS::RDS::DBProxyEndpoint": {
+      "nameProperty": "DBProxyEndpointName",
+      "schemaMaxLength": 64,
+      "schemaPattern": "[0-z]*"
+    },
+    "AWS::Scheduler::Schedule": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 64,
+      "schemaPattern": "^[0-9a-zA-Z-_.]+$"
+    },
+    "AWS::AutoScaling::AutoScalingGroup": {
+      "nameProperty": "AutoScalingGroupName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateAutoScalingGroup AutoScalingGroupName"
+    },
+    "AWS::DynamoDB::GlobalTable": {
+      "nameProperty": "TableName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateTable TableName"
+    },
+    "AWS::ECS::TaskDefinition": {
+      "nameProperty": "Family",
+      "apiMaxLength": 255,
+      "apiSource": "RegisterTaskDefinition family"
+    },
+    "AWS::Lambda::NetworkConnector": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 140,
+      "schemaPattern": "^(arn:aws[a-zA-Z-]*:lambda:(eusc-)?[a-z]{2}((-gov)|(-iso([a-z]?)))?-[a-z]+-\\d{1}:\\d{12}:network-connector:[a-zA-Z0-9-_]+(:[1-9][0-9]*)?)|[a-zA-Z0-9_-]{1,64}$",
+      "apiMaxLength": 64,
+      "apiSource": "the schema description: 1 to 64 characters for a name"
+    },
+    "AWS::Pipes::Pipe": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 64,
+      "schemaPattern": "^[\\.\\-_A-Za-z0-9]+$"
     }
   }
 }

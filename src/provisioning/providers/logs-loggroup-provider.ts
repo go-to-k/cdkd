@@ -40,7 +40,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, isAccessDeniedError, lookupEachName, withApiLimit } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
@@ -333,7 +333,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['LogGroupName']) return undefined;
-    return `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+    return generatedNameFor('AWS::Logs::LogGroup', logicalId);
   }
 
   /**

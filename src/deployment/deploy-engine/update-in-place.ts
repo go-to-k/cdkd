@@ -208,7 +208,13 @@ export async function updateInPlace(
       ? withoutGeneratedFallbackName(
           resourceType,
           resolvedProps,
-          preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
+          preparePropertiesForCcApi(
+            engine.providerRegistry,
+            resourceType,
+            resolvedProps,
+            logicalId,
+            'omit'
+          )
         )
       : resolvedProps;
   // The previous side the provider diffs against, with each create-only

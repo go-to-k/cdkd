@@ -53,7 +53,7 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -602,7 +602,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::DynamoDB::GlobalTable', logicalId);
     const keySchema = properties['KeySchema'] as KeySchemaElement[] | undefined;
     const attributeDefinitions = properties['AttributeDefinitions'] as
       | AttributeDefinition[]

@@ -17,7 +17,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -468,7 +468,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     const recordedRuleName = physicalId.split('/').pop() ?? '';
     const declaredRuleName = properties['Name'] as string | undefined;
     const ruleName =
-      declaredRuleName || recordedRuleName || generateResourceName(logicalId, { maxLength: 64 });
+      declaredRuleName || recordedRuleName || generatedNameFor('AWS::Events::Rule', logicalId);
     const newTargets = properties['Targets'] as RuleTarget[] | undefined;
     const oldTargets = previousProperties['Targets'] as RuleTarget[] | undefined;
 
@@ -822,7 +822,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['Name']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 64 });
+    return generatedNameFor('AWS::Events::Rule', logicalId);
   }
 
   /**

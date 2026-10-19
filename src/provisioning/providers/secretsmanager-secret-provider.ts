@@ -26,7 +26,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
@@ -314,7 +314,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g });
+      generatedNameFor('AWS::SecretsManager::Secret', logicalId);
 
     try {
       // Build the secret value from GenerateSecretString or SecretString

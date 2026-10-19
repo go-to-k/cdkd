@@ -21,7 +21,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -503,7 +503,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['StateMachineName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 80 });
+    return generatedNameFor('AWS::StepFunctions::StateMachine', logicalId);
   }
 
   /**

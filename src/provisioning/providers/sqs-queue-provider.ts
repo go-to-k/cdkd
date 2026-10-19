@@ -17,7 +17,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -211,7 +211,7 @@ export class SQSQueueProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['QueueName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 80 });
+    return generatedNameFor('AWS::SQS::Queue', logicalId);
   }
 
   /**
@@ -408,7 +408,7 @@ export class SQSQueueProvider implements ResourceProvider {
       const queueName =
         (properties['QueueName'] as string | undefined) ||
         physicalId.split('/').pop() ||
-        generateResourceName(logicalId, { maxLength: 80 });
+        generatedNameFor('AWS::SQS::Queue', logicalId);
 
       return {
         physicalId,

@@ -953,9 +953,13 @@
     {
       "resourceType": "AWS::CodeCommit::Repository",
       "integs": [
+        "cc-required-name-generation",
         "codecommit"
       ],
       "signals": {
+        "cc-required-name-generation": [
+          "literal"
+        ],
         "codecommit": [
           "literal"
         ]

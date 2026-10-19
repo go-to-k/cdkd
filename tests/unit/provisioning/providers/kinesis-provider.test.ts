@@ -39,6 +39,7 @@ vi.mock('../../../../src/provisioning/resource-name.js', () => ({
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
   stackInstanceNameSuffix: () => '000000000000',
   generateResourceName: vi.fn().mockReturnValue('generated-stream-name'),
+  generatedNameFor: vi.fn().mockReturnValue('generated-stream-name'),
 }));
 
 import {

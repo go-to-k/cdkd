@@ -196,7 +196,7 @@ async create(
 
   const dbSubnetGroupName =
     (properties['DBSubnetGroupName'] as string | undefined) ||
-    generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+    generatedNameFor('AWS::DocDB::DBSubnetGroup', logicalId);
 
   try {
     await this.getCreateClient().send(
@@ -230,8 +230,13 @@ async create(
 
 Five things in this method apply to every provider:
 
-- **The name.** When the template gives no name, `generateResourceName`
-  (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{suffix}`,
+- **The name.** When the template gives no name, `generatedNameFor`
+  (`src/provisioning/resource-name.ts`) names the resource by the type's rule
+  in `FALLBACK_NAME_RULES` (length, characters, case, any prefix). A Cloud
+  Control create fills the name from the same rule, so the resource is named
+  the same on either route; a new type gets a rule there, and the
+  `generated-name-route-parity` and `generated-name-limits` unit tests list it.
+  `generateResourceName` underneath builds `{StackName}-{LogicalId}-{suffix}`,
   where the 12-character suffix comes from the stack's instance id and the
   resource's name generation, and cuts the `{StackName}-{LogicalId}` part to
   fit the service's length limit. A stack deployed before the instance id

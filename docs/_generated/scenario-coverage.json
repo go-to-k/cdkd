@@ -594,6 +594,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-required-name-generation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-to-sdk-reroute",
       "annotated": false,
       "scenarios": []
@@ -3409,6 +3414,7 @@
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",
+    "cc-required-name-generation",
     "cc-to-sdk-reroute",
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",

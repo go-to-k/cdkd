@@ -100,6 +100,27 @@ describe('replacementGeneratedNameMoves', () => {
   });
 });
 
+describe('replacementGeneratedNameMoves for a Cloud Control directory bucket (#5095)', () => {
+  const dir = {
+    oldResourceType: 'AWS::S3Express::DirectoryBucket',
+    newResourceType: 'AWS::S3Express::DirectoryBucket',
+    createdVia: 'cc-api' as const,
+    physicalId: `app-bucket-${stackInstanceNameSuffix(ID, 'Bucket', 0)}--use1-az5--x-s3`,
+  };
+
+  it('moves to the next generation name, zone suffix included, read from the desired LocationName', () => {
+    expect(
+      atNext({ ...dir, logicalId: 'Bucket', desiredProperties: { LocationName: 'use1-az5' } })?.desiredName
+    ).toBe(`app-bucket-${stackInstanceNameSuffix(ID, 'Bucket', 1)}--use1-az5--x-s3`);
+  });
+
+  it('answers undefined, never throws, when LocationName is not a zone id', () => {
+    expect(
+      atNext({ ...dir, logicalId: 'Bucket', desiredProperties: { LocationName: 'us-east-1a' } })
+    ).toBeUndefined();
+  });
+});
+
 describe('generatedReplacementHolderAdvice', () => {
   const base = {
     stackName: 'App',

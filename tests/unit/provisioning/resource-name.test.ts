@@ -304,9 +304,10 @@ describe('resource-name', () => {
 
     it('answers undefined for a type with no rule, including one only the adoption table names', () => {
       expect(fallbackNamePropertyFor('AWS::EFS::FileSystem')).toBeUndefined();
-      // `ADOPTION_ONLY_NAME_PROPERTIES` names it, and nothing generates it.
-      expect(explicitNamePropertyFor('AWS::Scheduler::Schedule')).toBe('Name');
-      expect(fallbackNamePropertyFor('AWS::Scheduler::Schedule')).toBeUndefined();
+      // `ADOPTION_ONLY_NAME_PROPERTIES` names it, and nothing generates it
+      // (its `Name` is required, go-to-k/cdkd#5095).
+      expect(explicitNamePropertyFor('AWS::Events::EventBus')).toBe('Name');
+      expect(fallbackNamePropertyFor('AWS::Events::EventBus')).toBeUndefined();
     });
   });
 

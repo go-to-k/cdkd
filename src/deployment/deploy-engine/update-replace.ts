@@ -784,7 +784,7 @@ export async function updateByReplacement(
         requested: replaceProps,
         // A nameless SDK create: the name the provider mints, trusted
         // only for a type audited to mint cdkd's rule verbatim.
-        generated: applyDefaultNameForFallback(logicalId, resourceType, resolvedProps),
+        generated: applyDefaultNameForFallback(logicalId, resourceType, resolvedProps, 'omit'),
         recorded: currentResource.properties,
         observed: currentResource.observedProperties,
         physicalId: currentResource.physicalId,

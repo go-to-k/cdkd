@@ -221,7 +221,10 @@ function generatedReplacementName(
   const fallbackProperty = fallbackNamePropertyFor(resourceType);
   if (createdVia === 'cc-api' || GENERATED_NAME_VERBATIM.has(resourceType)) {
     if (fallbackProperty === undefined || declared(fallbackProperty)) return undefined;
-    const name = applyDefaultNameForFallback(logicalId, resourceType, {})[fallbackProperty];
+    // `desired` for a directory bucket's zone id; an underivable name proves nothing.
+    const name = applyDefaultNameForFallback(logicalId, resourceType, desired ?? {}, 'omit')[
+      fallbackProperty
+    ];
     return typeof name === 'string' ? { property: fallbackProperty, name } : undefined;
   }
   const rewrite = ownEntry(SENT_NAME_REWRITTEN, resourceType);

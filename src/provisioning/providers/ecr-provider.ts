@@ -24,7 +24,7 @@ import {
 } from '@aws-sdk/client-ecr';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   ECR_AUTO_DELETE_IMAGES_TAG,
@@ -217,7 +217,7 @@ export class ECRProvider implements ResourceProvider {
 
     const repositoryName =
       (properties['RepositoryName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 256 }).toLowerCase();
+      generatedNameFor('AWS::ECR::Repository', logicalId);
 
     // Set once CreateRepository returns: a later failure is an auxiliary
     // call's, not this repository's name collision (#3826).

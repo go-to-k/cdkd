@@ -4,6 +4,7 @@ import {
   applyDefaultNameForFallback,
   fallbackNamePropertyFor,
   fallbackNameRuleTypes,
+  generatedNameFor,
   withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
@@ -60,20 +61,53 @@ describe('generated names fit their name property (#5064)', () => {
     }
   });
 
+  // A directory bucket's name ends with its zone id: the longest kind, a Local
+  // Zone's (go-to-k/cdkd#5095).
+  const ZONE = 'usw2-lax1-az1';
+  const ccProps = (type: string): Record<string, unknown> =>
+    type === 'AWS::S3Express::DirectoryBucket' ? { LocationName: ZONE } : {};
+  // go-to-k/cdkd#5095: on a legacy stack the Cloud Control handler still names these.
+  const LEGACY_CC_UNNAMED = [
+    'AWS::AutoScaling::AutoScalingGroup',
+    'AWS::DynamoDB::GlobalTable',
+    'AWS::ECS::TaskDefinition',
+    'AWS::Lambda::NetworkConnector',
+    'AWS::Pipes::Pipe',
+    'AWS::Scheduler::Schedule',
+  ];
+  const fits = (name: string, limit: Limit): void => {
+    expect(name.length).toBeLessThanOrEqual(limitOf(limit));
+    if (limit.schemaPattern !== undefined) {
+      // `\Z` is the schema's end anchor where ECMAScript has `$`.
+      expect(name).toMatch(new RegExp(limit.schemaPattern.replace(/\\Z/g, '$')));
+    }
+  };
+
   describe.each([
     ['a v13 stack (suffixed)', ID],
     ['a legacy stack', undefined],
   ])('%s', (_label, stackInstanceId) => {
-    it.each(types)('%s', (type, limit) => {
-      const props = withStackScope({ stackName: STACK, stackInstanceId, nameGenerations: new Map() }, () =>
-        applyDefaultNameForFallback(LOGICAL_ID, type, {})
-      );
-      const name = props[limit.nameProperty] as string;
-      expect(name.length).toBeLessThanOrEqual(limitOf(limit));
-      if (limit.schemaPattern !== undefined) {
-        // `\Z` is the schema's end anchor where ECMAScript has `$`.
-        expect(name).toMatch(new RegExp(limit.schemaPattern.replace(/\\Z/g, '$')));
+    const scoped = <T>(fn: () => T): T =>
+      withStackScope({ stackName: STACK, stackInstanceId, nameGenerations: new Map() }, fn);
+
+    it.each(types)('%s, Cloud Control', (type, limit) => {
+      const props = scoped(() => applyDefaultNameForFallback(LOGICAL_ID, type, ccProps(type)));
+      if (stackInstanceId === undefined && LEGACY_CC_UNNAMED.includes(type)) {
+        expect(props).toEqual(ccProps(type));
+        return;
       }
+      fits(props[limit.nameProperty] as string, limit);
+    });
+
+    it.each(types)('%s, SDK provider', (type, limit) => {
+      const name = scoped(() => generatedNameFor(type, LOGICAL_ID, { zoneId: ZONE }));
+      if (stackInstanceId === undefined && type === 'AWS::CodeBuild::Project') {
+        // A legacy stack's project keeps the bare logical id, byte for byte,
+        // however long (go-to-k/cdkd#5095).
+        expect(name).toBe(LOGICAL_ID);
+        return;
+      }
+      fits(name, limit);
     });
   });
 });

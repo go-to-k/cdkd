@@ -16,7 +16,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   planTagDiff,
@@ -172,7 +172,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     }
     const dbProxyEndpointName =
       (properties['DBProxyEndpointName'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::RDS::DBProxyEndpoint', logicalId);
     const vpcSubnetIds = properties['VpcSubnetIds'] as string[] | undefined;
     if (!vpcSubnetIds || vpcSubnetIds.length === 0) {
       throw new ProvisioningError(

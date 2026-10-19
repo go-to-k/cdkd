@@ -50,7 +50,7 @@ import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-cl
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -1905,7 +1905,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::DynamoDB::Table', logicalId);
     const keySchema = properties['KeySchema'] as KeySchemaElement[] | undefined;
     const attributeDefinitions = properties['AttributeDefinitions'] as
       | AttributeDefinition[]

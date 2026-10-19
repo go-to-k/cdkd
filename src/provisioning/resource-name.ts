@@ -662,26 +662,67 @@ export function recordedGeneratedNameKept(input: {
 }
 
 /**
- * Default name generation rules for a Cloud Control CREATE.
+ * How cdkd names one type's resource when the template does not.
  *
- * When an SDK provider falls back to CC API, the resource may need a
- * default name that the SDK provider would have generated. A type with NO
- * SDK provider can need one too, when its Cloud Control create handler fails
- * without a name its schema leaves optional (`AWS::Lambda::CapacityProvider`,
- * issue #3174). This map defines the name property and generation options for
- * each resource type. The name is filled on a create only; the update path
- * takes it back out (`withoutGeneratedFallbackName`).
- *
- * Format: resourceType → { nameProperty, options, postProcess? }
+ * The ONE generator per type (go-to-k/cdkd#5095): the SDK provider calls
+ * {@link generatedNameFor} and a Cloud Control create fills the same name
+ * through {@link applyDefaultNameForFallback}, so a resource gets the same
+ * name on either route. The only differences are `legacy`'s, each kept so
+ * that no stack without an instance id changes a name it already generates.
  */
-const FALLBACK_NAME_RULES: Record<
-  string,
-  {
-    nameProperty: string;
-    options: ResourceNameOptions;
-  }
-> = {
-  'AWS::S3::Bucket': { nameProperty: 'BucketName', options: { maxLength: 63, lowercase: true } },
+interface GeneratedNameRule {
+  nameProperty: string;
+  options: ResourceNameOptions;
+  /** Put before the generated name: a log group's `/cdkd/`, an SSM parameter's `/`. */
+  prefix?: string;
+  /**
+   * A directory bucket: the name ends with the required `--<zone id>--x-s3`,
+   * and `options.maxLength` bounds the whole name.
+   */
+  zoneSuffix?: true;
+  /**
+   * A stack WITHOUT an instance id (a legacy stack) keeps what each route
+   * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
+   */
+  legacy?: {
+    /** The SDK provider sent the bare logical id (`AWS::CodeBuild::Project`). */
+    sdk?: 'logicalId';
+    /**
+     * The Cloud Control create filled nothing (`'none'`: the handler named the
+     * resource), or a name under these options.
+     */
+    cloudControl?: 'none' | ResourceNameOptions;
+  };
+  /**
+   * The entry does not admit its type to orphan adoption
+   * ({@link explicitNamePropertyFor}): a type added for its generated name
+   * alone, never checked against `ADOPTION_REFUSED_TYPES`' three tests.
+   */
+  notAdopted?: true;
+}
+
+/**
+ * The generated-name rule of every type cdkd names (see
+ * {@link GeneratedNameRule}).
+ *
+ * A Cloud Control create fills the name from here, for a type with an SDK
+ * provider (its provider names the resource with the same rule) and for one
+ * without: `AWS::Lambda::CapacityProvider`'s Cloud Control create handler fails
+ * without a name its schema leaves optional (issue #3174). The name is filled
+ * on a create only; the update path takes it back out
+ * (`withoutGeneratedFallbackName`).
+ *
+ * `AWS::Events::EventBus` has no entry: its CloudFormation schema requires
+ * `Name`, so neither route generates one (the SDK provider refuses a missing
+ * name, and Cloud Control refuses it as CloudFormation does).
+ */
+const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
+  // The SDK provider's pattern keeps `.`. A logical id or stack name never
+  // holds one, so the Cloud Control fill names nothing differently.
+  'AWS::S3::Bucket': {
+    nameProperty: 'BucketName',
+    options: { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g },
+  },
   'AWS::SQS::Queue': { nameProperty: 'QueueName', options: { maxLength: 80 } },
   'AWS::SNS::Topic': { nameProperty: 'TopicName', options: { maxLength: 256 } },
   'AWS::Lambda::Function': { nameProperty: 'FunctionName', options: { maxLength: 64 } },
@@ -715,11 +756,16 @@ const FALLBACK_NAME_RULES: Record<
   },
   'AWS::ECS::Cluster': { nameProperty: 'ClusterName', options: { maxLength: 255 } },
   'AWS::ECS::Service': { nameProperty: 'ServiceName', options: { maxLength: 255 } },
-  'AWS::Logs::LogGroup': { nameProperty: 'LogGroupName', options: { maxLength: 512 } },
+  // `/cdkd/` + 506 = 512. A legacy stack's Cloud Control fill had no prefix.
+  'AWS::Logs::LogGroup': {
+    nameProperty: 'LogGroupName',
+    options: { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g },
+    prefix: '/cdkd/',
+    legacy: { cloudControl: { maxLength: 512 } },
+  },
   // PutMetricAlarm: 1-255 characters.
   'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 255 } },
   'AWS::Events::Rule': { nameProperty: 'Name', options: { maxLength: 64 } },
-  'AWS::Events::EventBus': { nameProperty: 'Name', options: { maxLength: 256 } },
   'AWS::Kinesis::Stream': { nameProperty: 'Name', options: { maxLength: 128 } },
   'AWS::StepFunctions::StateMachine': {
     nameProperty: 'StateMachineName',
@@ -729,7 +775,13 @@ const FALLBACK_NAME_RULES: Record<
     nameProperty: 'Name',
     options: { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g },
   },
-  'AWS::SSM::Parameter': { nameProperty: 'Name', options: { maxLength: 2048 } },
+  // A legacy stack's Cloud Control fill had no leading `/` (a valid name too).
+  'AWS::SSM::Parameter': {
+    nameProperty: 'Name',
+    options: { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g },
+    prefix: '/',
+    legacy: { cloudControl: { maxLength: 2048 } },
+  },
   'AWS::Cognito::UserPool': { nameProperty: 'UserPoolName', options: { maxLength: 128 } },
   'AWS::ElastiCache::SubnetGroup': {
     nameProperty: 'CacheSubnetGroupName',
@@ -786,20 +838,151 @@ const FALLBACK_NAME_RULES: Record<
     options: { maxLength: 32 },
   },
   'AWS::WAFv2::WebACL': { nameProperty: 'Name', options: { maxLength: 128 } },
-  // CreateProject: 2-150 characters.
-  'AWS::CodeBuild::Project': { nameProperty: 'Name', options: { maxLength: 150 } },
+  // CreateProject: 2-150 characters. A legacy stack's SDK provider named the
+  // project after the bare logical id; Cloud Control has no handlers for it.
+  'AWS::CodeBuild::Project': {
+    nameProperty: 'Name',
+    options: { maxLength: 150 },
+    legacy: { sdk: 'logicalId' },
+  },
+  // The whole name, zone suffix included, is at most 63 characters. The Cloud
+  // Control create reads the zone id from `LocationName`; without one it is
+  // refused rather than sent a name AWS rejects.
   'AWS::S3Express::DirectoryBucket': {
     nameProperty: 'BucketName',
     options: { maxLength: 63, lowercase: true },
+    zoneSuffix: true,
+  },
+  // go-to-k/cdkd#5095: the SDK provider generated these names and Cloud
+  // Control had no rule. The schema REQUIRES the name of these three, so their
+  // Cloud Control create failed on every stack.
+  'AWS::CodeCommit::Repository': { nameProperty: 'RepositoryName', options: { maxLength: 100 } },
+  'AWS::RDS::DBProxy': { nameProperty: 'DBProxyName', options: { maxLength: 64 } },
+  'AWS::RDS::DBProxyEndpoint': {
+    nameProperty: 'DBProxyEndpointName',
+    options: { maxLength: 64 },
+  },
+  // ...and the handler named these, which a legacy stack keeps.
+  'AWS::Scheduler::Schedule': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::AutoScaling::AutoScalingGroup': {
+    nameProperty: 'AutoScalingGroupName',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::DynamoDB::GlobalTable': {
+    nameProperty: 'TableName',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::ECS::TaskDefinition': {
+    nameProperty: 'Family',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Lambda::NetworkConnector': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Pipes::Pipe': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
   },
 };
+
+/** Input a generated name needs beyond the logical id. */
+export interface GeneratedNameInput {
+  /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
+  zoneId?: string;
+}
+
+/** The current scope is a stack with an instance id (not a legacy stack). */
+function scopeHasStackInstanceId(): boolean {
+  return stackScopeStore.getStore()?.stackInstanceId !== undefined;
+}
+
+/** `rule`'s name for `logicalId`, or `undefined` when a zone suffix has no zone id. */
+function deriveRuleName(
+  rule: GeneratedNameRule,
+  logicalId: string,
+  input: GeneratedNameInput
+): string | undefined {
+  if (rule.zoneSuffix === true) {
+    if (input.zoneId === undefined || input.zoneId === '') return undefined;
+    const suffix = `--${input.zoneId}--x-s3`;
+    const base = generateResourceName(logicalId, {
+      ...rule.options,
+      maxLength: rule.options.maxLength - suffix.length,
+    });
+    return `${base}${suffix}`;
+  }
+  return `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+}
+
+/**
+ * The name an SDK provider generates for an un-named `resourceType` resource
+ * (go-to-k/cdkd#5095): the same name {@link applyDefaultNameForFallback} fills
+ * for a Cloud Control create, except where `legacy` keeps a legacy stack's
+ * SDK name. Throws for a type with no rule, or a directory bucket without
+ * `input.zoneId`: both are cdkd bugs.
+ */
+export function generatedNameFor(
+  resourceType: string,
+  logicalId: string,
+  input: GeneratedNameInput = {}
+): string {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule === undefined) {
+    throw new Error(`cdkd internal error: ${resourceType} has no generated-name rule`);
+  }
+  // Not before the state read: `generateResourceName` refuses that scope.
+  if (
+    rule.legacy?.sdk === 'logicalId' &&
+    !scopeHasStackInstanceId() &&
+    stackScopeStore.getStore()?.beforeStateRead !== true
+  ) {
+    return logicalId;
+  }
+  const name = deriveRuleName(rule, logicalId, input);
+  if (name === undefined) {
+    throw new Error(`cdkd internal error: the generated ${resourceType} name needs a zone id`);
+  }
+  return name;
+}
+
+/**
+ * The zone id a directory bucket's `LocationName` names (`use1-az5`, or a
+ * Local Zone's `usw2-lax1-az1`; a trailing `--x-s3` is accepted, as the SDK
+ * provider accepts it), or `undefined` for anything else, such as an
+ * Availability Zone NAME, which only an EC2 call could turn into an id.
+ */
+function directoryBucketZoneId(properties: Record<string, unknown>): string | undefined {
+  const location = properties['LocationName'];
+  if (typeof location !== 'string') return undefined;
+  const zone = location.replace(/--x-s3$/, '');
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*-az[0-9]+$/.test(zone) ? zone : undefined;
+}
 
 /**
  * Apply default name generation for CC API fallback.
  *
- * When a resource doesn't have an explicit name property set,
- * generates the same default name that the SDK provider would have created.
- * This ensures consistent naming regardless of whether SDK or CC API handles the resource.
+ * When a resource doesn't have an explicit name property set, fills the name
+ * its SDK provider generates ({@link generatedNameFor}, go-to-k/cdkd#5095),
+ * so the resource is named the same on either route. A legacy stack keeps
+ * the Cloud Control name `legacy.cloudControl` records, which may be none.
+ *
+ * A directory bucket whose `LocationName` is not a zone id has no name to
+ * fill: `underivable: 'refuse'` (a create) throws, naming the fix, rather than
+ * send a name AWS rejects; `'omit'` (a caller that only reads the name, or an
+ * update, which takes it back out) returns `properties` unchanged.
  *
  * @param logicalId Logical ID from the template
  * @param resourceType CloudFormation resource type
@@ -809,7 +992,8 @@ const FALLBACK_NAME_RULES: Record<
 export function applyDefaultNameForFallback(
   logicalId: string,
   resourceType: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  underivable: 'refuse' | 'omit' = 'refuse'
 ): Record<string, unknown> {
   const rule = FALLBACK_NAME_RULES[resourceType];
   if (!rule) return properties;
@@ -817,7 +1001,24 @@ export function applyDefaultNameForFallback(
   // If the name property is already set, no need to generate
   if (properties[rule.nameProperty]) return properties;
 
-  const generatedName = generateResourceName(logicalId, rule.options);
+  let generatedName: string | undefined;
+  const legacy = scopeHasStackInstanceId() ? undefined : rule.legacy?.cloudControl;
+  if (legacy === 'none') return properties;
+  if (legacy !== undefined) {
+    generatedName = generateResourceName(logicalId, legacy);
+  } else {
+    const zoneId = rule.zoneSuffix === true ? directoryBucketZoneId(properties) : undefined;
+    generatedName = deriveRuleName(rule, logicalId, zoneId === undefined ? {} : { zoneId });
+  }
+  if (generatedName === undefined) {
+    if (underivable === 'omit') return properties;
+    throw new Error(
+      `${logicalId} (${resourceType}): cdkd cannot generate a ${rule.nameProperty} for the ` +
+        `Cloud Control create. A directory bucket's name must end with --<zone id>--x-s3, and ` +
+        `LocationName is not a zone id such as use1-az5. Set LocationName to the zone id, or ` +
+        `declare ${rule.nameProperty}.`
+    );
+  }
 
   return {
     ...properties,
@@ -900,7 +1101,8 @@ export function withoutGeneratedFallbackName(
  * still prints) rather than a deletion, so the tables may be incomplete in the
  * safe direction only.
  *
- * **An entry here ADMITS a type to adoption.** Before adding one, check the
+ * **An entry here ADMITS a type to adoption**, as does a generated-name rule
+ * not marked `notAdopted`. Before adding one, check the
  * three tests in `ADOPTION_REFUSED_TYPES` (`src/deployment/orphan-adoption.ts`)
  * — create mints a new resource instead of colliding, `update()` refuses, the
  * resulting replacement destroys the retained copy. A type meeting all three
@@ -909,12 +1111,14 @@ export function withoutGeneratedFallbackName(
  * against a future `Family` entry.
  */
 export function explicitNamePropertyFor(resourceType: string): string | undefined {
-  return fallbackNamePropertyFor(resourceType) ?? ADOPTION_ONLY_NAME_PROPERTIES[resourceType];
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule !== undefined && rule.notAdopted !== true) return rule.nameProperty;
+  return ADOPTION_ONLY_NAME_PROPERTIES[resourceType];
 }
 
 /**
  * Name properties known to the ADOPTION guard but not to
- * {@link FALLBACK_NAME_RULES} (issue #2934).
+ * {@link FALLBACK_NAME_RULES} (issue #2934): a name cdkd never generates.
  *
  * A separate table on purpose: `FALLBACK_NAME_RULES` decides what cdkd GENERATES
  * for a Cloud Control create, so adding an entry there changes the name every
@@ -925,9 +1129,7 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * a name", and generates nothing. An entry here still ADMITS its type to
  * adoption exactly as one there does, so it needs the same three-test check.
  *
- * Found by review: the SDK providers for the entries below generate a name
- * themselves. What that costs changed with the inversion described above, so
- * both halves are worth stating. An ABSENT type is refused outright — the
+ * What a missing or wrong entry costs, in either table. An ABSENT type is refused outright — the
  * empty-`nameProperties` arm in `orphan-adoption.ts` runs BEFORE
  * `templateStillDeclares` — costing a missed adoption, with
  * go-to-k/cdkd#2916's diagnosis still printing. A WRONG entry is the live
@@ -948,16 +1150,16 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * `generateResourceName` output, so the by-construction premise this whole
  * guard rests on is false for it and an entry here could never match. It is
  * refused by the adoption pre-pass instead — and the ALLOW-LIST gate is what
- * refuses it: absent from both tables here, it never reaches adoption at all.
+ * refuses it: its generated-name rule is `notAdopted`, so it never reaches
+ * adoption at all.
  * `ADOPTION_REFUSED_TYPES` in `src/deployment/orphan-adoption.ts` carries it as
  * a BELT against a future entry here (named rather than `{@link}`-ed: this
  * module does not import it, so the link would render as dead text).
+ *
+ * `AWS::Events::EventBus` lives here since it lost its generated-name rule
+ * (go-to-k/cdkd#5095: its `Name` is required, so nothing generates it); its
+ * admission to adoption is unchanged.
  */
 const ADOPTION_ONLY_NAME_PROPERTIES: Record<string, string> = {
-  'AWS::AutoScaling::AutoScalingGroup': 'AutoScalingGroupName',
-  'AWS::CodeCommit::Repository': 'RepositoryName',
-  'AWS::DynamoDB::GlobalTable': 'TableName',
-  'AWS::RDS::DBProxy': 'DBProxyName',
-  'AWS::RDS::DBProxyEndpoint': 'DBProxyEndpointName',
-  'AWS::Scheduler::Schedule': 'Name',
+  'AWS::Events::EventBus': 'Name',
 };

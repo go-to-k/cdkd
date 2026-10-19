@@ -187,13 +187,13 @@ export const NO_PHYSICAL_ID_NAME_PROOF: ReadonlySet<string> = new Set(['AWS::Glu
 
 /**
  * Types whose SDK provider mints `applyDefaultNameForFallback`'s name VERBATIM
- * for a nameless create (same maxLength, pattern and case, no prefix or
- * suffix), audited provider by provider. Only for these does the `generated`
- * bag name what the create sent; every other type ignores it, so a wrap the
- * audit did not see (a log group's `/cdkd/<name>`, an SSM parameter's
- * `/<name>`, a directory bucket's `--<az>--x-s3`, an S3 bucket's pattern
- * keeping `.`) can only refuse, never
- * prove a holder. Adding a type is a deliberate edit of the pinned literal.
+ * for a nameless create on every stack, legacy ones included (both read
+ * `generatedNameFor`'s rule, go-to-k/cdkd#5095; none of these has a `legacy`
+ * override). Only for these does the `generated` bag name what the create
+ * sent; every other type ignores it, so a name one route generates
+ * differently (a legacy stack's log group or SSM parameter on Cloud Control)
+ * can only refuse, never prove a holder. Adding a type is a deliberate edit
+ * of the pinned literal.
  * A type in {@link SENT_NAME_REWRITTEN} is never here: its provider derives
  * even an EXPLICIT name, so that table owns its whole name.
  */
