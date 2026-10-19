@@ -627,6 +627,24 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     expect(saved.orphans?.map((o) => o.logicalId)).toEqual(['Kept']);
   });
 
+  // go-to-k/cdkd#5064 phase 2: on a child with an instance id the orphan's
+  // logical id retires, so a re-add asks for a new name; a legacy child retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { Kept: 0 }],
+    [undefined, undefined],
+  ])('retires the minted orphan on a child with id %s: %j', async (stackInstanceId, retired) => {
+    replay.orphanFor.add('Kept');
+    const h = harness({
+      segments: [seg('r', ['Kept'])],
+      state: childState(undefined, stackInstanceId),
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {
     const h = harness({ segments: [seg('r', ['Q'])], divergentBodyRegion: 'eu-west-1' });
 

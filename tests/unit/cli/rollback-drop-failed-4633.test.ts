@@ -20,6 +20,7 @@ import type { RollbackExecutorContext } from '../../../src/deployment/rollback-e
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { RollbackJournal, RollbackJournalSegment } from '../../../src/types/rollback-journal.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { currentNameGeneration } from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
 const STACK_SHOWN = 'stack S (us-east-1)';
@@ -640,6 +641,24 @@ describe('the retry warnings name --drop-failed (go-to-k/cdkd#4633)', () => {
     const text = warned(logger);
     expect(text).toContain('Drop with: cdkd rollback S --stack-region us-east-1 --drop-failed Stuck');
     expect(text).not.toContain('--drop-failed Gone');
+  });
+
+  // go-to-k/cdkd#5064 phase 2: the replay derives names in the stack's lifetime,
+  // a re-added logical id at its retired generation + 1, as its create did.
+  it('replays under the stack retired generations (a re-added id derives at retired + 1)', async () => {
+    let seen: number | undefined;
+    const { ctx } = ctxWith(async (logicalId) => {
+      seen = currentNameGeneration(logicalId);
+    });
+    await deleteJournaledOrphans(
+      { segments: [{ segment: seg([]), ops: [stream('Gone')] as never }], count: 1 },
+      {},
+      'S',
+      '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f',
+      ctx,
+      { retiredNameGenerations: { Gone: 2 } }
+    );
+    expect(seen).toBe(3);
   });
 
   it('says nothing when every delete succeeded, or when the caller prints its own warning', async () => {

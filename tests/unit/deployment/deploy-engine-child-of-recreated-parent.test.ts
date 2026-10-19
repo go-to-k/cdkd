@@ -217,6 +217,19 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     expect(saved('Perm')?.physicalId).toBe('Perm-new');
   });
 
+  // go-to-k/cdkd#5064 phase 2: a child that went with its re-created parent is
+  // re-created under the name it had: its generation does not move.
+  it('on a stack with an instance id, the lost child keeps its name generation', async () => {
+    const state = priorState();
+    state.stackInstanceId = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    state.resources['Perm']!.nameGeneration = 2;
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    await makeEngine().deploy(STACK, template());
+    expect(callsFor(sdk.create, 'Perm')).toHaveLength(1);
+    expect(saved('Perm')?.nameGeneration).toBe(2);
+    expect(saved('Perm')?.nameGenerationHigh).toBeUndefined();
+  });
+
   // go-to-k/cdkd#4604: both arms deleted (or lost) the old resource before
   // the create — the recreated function, and the permission that went with it.
   it('records each resource whose old copy was gone before its create', async () => {

@@ -412,6 +412,32 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(looked).toEqual([tgName(1)]);
   });
 
+  it("the post-rollback save's ETag retry retires the orphan's generation too", async () => {
+    load(stateOf({ Table: tableRecord(genName('Table', 0), 'pk') }));
+    failCreate.add('Fail');
+    let refused = false;
+    stateBackend['saveState']!.mockImplementation(async (_n: string, _r: string, st: StackState) => {
+      if (!refused && st.orphans !== undefined) {
+        refused = true;
+        throw new Error('PreconditionFailed');
+      }
+      return '"etag-new"';
+    });
+    await expect(
+      makeEngine().deploy(STACK, {
+        Resources: {
+          Table: { Type: TABLE, Properties: keySchema('pk') },
+          Kept: { Type: QUEUE, Properties: {}, DeletionPolicy: 'Retain' },
+          Fail: { Type: QUEUE, Properties: {}, DependsOn: ['Kept'] },
+        },
+      } as unknown as CloudFormationTemplate)
+    ).rejects.toThrow();
+    expect(refused).toBe(true);
+    const retried = lastSaved();
+    expect(retried.orphans?.map((o) => o.logicalId)).toEqual(['Kept']);
+    expect(retried.retiredNameGenerations).toEqual({ Kept: 0 });
+  });
+
   it('an in-place update of a name-adopting type is not looked up by the generated-name guard', async () => {
     const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
     provider['generatedCreateName'] = vi.fn((_t: string, logicalId: string) =>
