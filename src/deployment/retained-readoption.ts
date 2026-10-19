@@ -14,8 +14,9 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displayStackName, safeMsg } from '../utils/display-safe.js';
 
 /**
- * go-to-k/cdkd#5064: whether a kept resource holds a cdkd-generated name -- its
- * record carries no template name -- with a physical id.
+ * go-to-k/cdkd#5064: whether a kept resource's record carries no template
+ * name (cdkd generated it, or the type has no name property), with a
+ * physical id.
  */
 function keptUnderGeneratedName(resource: ResourceState): resource is ResourceState & {
   physicalId: string;
@@ -38,10 +39,8 @@ function keptUnderGeneratedName(resource: ResourceState): resource is ResourceSt
 export function keptForRetainedRecord(resource: ResourceState): resource is ResourceState & {
   physicalId: string;
 } {
-  if (keptForReadoption(resource)) return true;
-  return (
-    !replacementCreateAdoptsName(resource.resourceType, 'sdk') && keptUnderGeneratedName(resource)
-  );
+  const adoptableType = replacementCreateAdoptsName(resource.resourceType, 'sdk');
+  return adoptableType ? keptForReadoption(resource) : keptUnderGeneratedName(resource);
 }
 
 /**

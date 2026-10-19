@@ -370,12 +370,15 @@ export async function executeDeployment(
           // stack's to revert, and the record could only say "delete it
           // manually" about the resource that refused it — another owner's.
           const refused = isRefusedBeforeApplying(provisionError, logicalId);
-          // go-to-k/cdkd#5064: a replacement refused on its name made nothing
+          // go-to-k/cdkd#5064: a replacement refused before applying (the
+          // generated-name guard's refusal included) or on its name made nothing
           // under the generation it asked for, so that generation is neither
           // journaled as reached nor raised past: the retry asks for the name
           // the refusal names (and its `cdkd import` advice adopts).
           const attemptedGeneration =
-            change.changeType === 'UPDATE' && !isReplacementNameRefusal(provisionError, logicalId)
+            change.changeType === 'UPDATE' &&
+            !refused &&
+            !isReplacementNameRefusal(provisionError, logicalId)
               ? engine.replacementRun.attemptedNameGeneration.get(logicalId)
               : undefined;
           const statePhysicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;

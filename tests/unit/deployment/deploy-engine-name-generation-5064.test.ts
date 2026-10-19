@@ -306,6 +306,47 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
     expect(lastSaved().resources['Tg']!.nameGeneration).toBe(1);
   });
 
+  it("a replacement the generated-name guard refuses (another holder of its next name) keeps the generation", async () => {
+    const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    const tgName = (g: number) =>
+      withStackScope(
+        { stackName: STACK, stackInstanceId: ID, nameGenerations: new Map([['Tg', g]]) },
+        () => generateResourceNameWithFallback(undefined, 'Tg', { maxLength: 32 })
+      );
+    const arnOf = (n: string) => `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${n}/0123456789abcdef`;
+    provider['generatedCreateName'] = vi.fn((_t: string, logicalId: string) =>
+      generateResourceNameWithFallback(undefined, logicalId, { maxLength: 32 })
+    );
+    // Someone else holds generation 1's name.
+    provider['lookupNames'] = vi.fn(async (_t: string, names: readonly string[]) =>
+      new Map(names.map((n) => [n, `arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/${n}/fedcba9876543210`]))
+    );
+    Object.assign(stateBackend, {
+      loadRollbackJournal: vi.fn(async () => null),
+      rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+      purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+      deleteRollbackJournal: vi.fn(async () => undefined),
+      warmConnections: vi.fn().mockResolvedValue(undefined),
+      listStacks: vi.fn(async () => []),
+      loadRetainedRecord: vi.fn(async () => null),
+      loadCreateTokenLedger: vi.fn(async () => null),
+      saveCreateTokenLedger: vi.fn(async () => undefined),
+    });
+    const tg = (port: number) => ({ Port: port, Protocol: 'HTTP', TargetType: 'ip', VpcId: 'vpc-1' });
+    load(
+      stateOf({
+        Tg: { physicalId: arnOf(tgName(0)), resourceType: TG, properties: tg(80), attributes: {}, dependencies: [] },
+      })
+    );
+    await expect(
+      makeEngine().deploy(STACK, { Resources: { Tg: { Type: TG, Properties: tg(8080) } } } as unknown as CloudFormationTemplate)
+    ).rejects.toThrow();
+    expect(provider['create']).not.toHaveBeenCalled();
+    const saved = lastSaved().resources['Tg']!;
+    expect(saved.physicalId).toBe(arnOf(tgName(0)));
+    expect(saved.nameGenerationHigh).toBeUndefined();
+  });
+
   it('an in-place update of a later generation keeps its fields; the next replacement goes past them', async () => {
     load(
       stateOf({
