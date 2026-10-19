@@ -244,40 +244,41 @@ describe('resource-name', () => {
       expect(result).toBe(props);
     });
 
-    // The two sides of the schema's 140-character cap: a name AT the cap is
-    // kept verbatim, one character over it is cut to exactly the cap.
-    it('keeps a name of exactly 140 characters verbatim', () => {
-      const stack = 'A'.repeat(70);
-      const logicalId = 'B'.repeat(69);
-      expect(`${stack}-${logicalId}`).toHaveLength(140);
+    // The two sides of the service's 64-character cap on a NAME (the schema's
+    // 140 bounds the ARN form; go-to-k/cdkd#5064 measured the refusal): a name
+    // AT the cap is kept verbatim, one character over it is cut to the cap.
+    it('keeps a name of exactly 64 characters verbatim', () => {
+      const stack = 'A'.repeat(32);
+      const logicalId = 'B'.repeat(31);
+      expect(`${stack}-${logicalId}`).toHaveLength(64);
       const result = withStackScope({ stackName: stack, stackInstanceId: undefined }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       expect(result['CapacityProviderName']).toBe(`${stack}-${logicalId}`);
     });
 
-    it('cuts a 141-character name to exactly 140, ending in the hash', () => {
-      const stack = 'A'.repeat(70);
-      const logicalId = 'B'.repeat(70);
+    it('cuts a 65-character name to exactly 64, ending in the hash', () => {
+      const stack = 'A'.repeat(32);
+      const logicalId = 'B'.repeat(32);
       const full = `${stack}-${logicalId}`;
-      expect(full).toHaveLength(141);
+      expect(full).toHaveLength(65);
       const result = withStackScope({ stackName: stack, stackInstanceId: undefined }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       const name = result['CapacityProviderName'] as string;
-      expect(name).toHaveLength(140);
-      // 131 kept characters, a separator, 8 hex characters of hash.
-      expect(name.startsWith(full.slice(0, 131))).toBe(true);
+      expect(name).toHaveLength(64);
+      // 55 kept characters, a separator, 8 hex characters of hash.
+      expect(name.startsWith(full.slice(0, 55))).toBe(true);
       expect(name).toMatch(/-[0-9a-f]{8}$/);
     });
 
-    it('sanitizes a nested child stack name into the schema pattern at 140 characters', () => {
+    it('sanitizes a nested child stack name into the schema pattern at 64 characters', () => {
       // A nested child deploys under `<parent>~<logicalId>`, and `~` is outside
       // both the default allowed set and the schema pattern: unsanitized, the
       // name fails the pattern; sanitized, it reads `Parent-...`.
       const stack = `Parent~${'S'.repeat(120)}`;
       const logicalId = `Provider${'L'.repeat(100)}`;
-      expect(`${stack}-${logicalId}`.length).toBeGreaterThan(140);
+      expect(`${stack}-${logicalId}`.length).toBeGreaterThan(64);
       const result = withStackScope({ stackName: stack, stackInstanceId: undefined }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       const name = result['CapacityProviderName'] as string;
-      expect(name.startsWith(`Parent-${'S'.repeat(120)}-Pro`)).toBe(true);
-      expect(name).toHaveLength(140);
+      expect(name.startsWith(`Parent-${'S'.repeat(48)}`)).toBe(true);
+      expect(name).toHaveLength(64);
       expect(name).toMatch(SCHEMA_NAME);
       expect(name).toMatch(/-[0-9a-f]{8}$/);
     });
