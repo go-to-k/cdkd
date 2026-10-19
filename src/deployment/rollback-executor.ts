@@ -268,6 +268,9 @@ async function replayRollbackUnbound(
   markDeleteFirstBlocked(operations, options.failedOperations);
 
   const { createOps, otherOps } = partitionOps(operations);
+  // go-to-k/cdkd#5096: what this segment created, which the CREATE pass below
+  // deletes -- never a child a same-id parent reversal leaves behind.
+  const createdInSegment = new Set(createOps.map((o) => o.logicalId));
 
   // Step 1: UPDATE/DELETE rollbacks in reverse completion order, except that
   // a standalone inline policy is reversed after an IAM writer sharing its
@@ -288,7 +291,8 @@ async function replayRollbackUnbound(
       options.onOrphan,
       inlinePolicyWriters,
       options.afterOp,
-      options.isInterrupted
+      options.isInterrupted,
+      createdInSegment
     );
   }
 
@@ -311,7 +315,8 @@ async function replayRollbackUnbound(
         options.onOrphan,
         inlinePolicyWriters,
         options.afterOp,
-        options.isInterrupted
+        options.isInterrupted,
+        createdInSegment
       );
     }
   }
@@ -448,7 +453,8 @@ async function replaySingle(
   /** go-to-k/cdkd#4225: the replay's completed writes ({@link replayRollback}). */
   inlinePolicyWriters: RollbackInlinePolicyWriters,
   afterOp?: (logicalId: string) => Promise<void> | void,
-  isInterrupted?: () => boolean
+  isInterrupted?: () => boolean,
+  createdInSegment: ReadonlySet<string> = new Set()
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -502,6 +508,7 @@ async function replaySingle(
     secrets,
     opMasker,
     mask,
+    createdInSegment,
     createRollbackRoute: undefined,
   };
 

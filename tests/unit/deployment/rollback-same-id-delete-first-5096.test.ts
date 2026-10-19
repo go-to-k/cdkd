@@ -182,6 +182,59 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     expect(free.calls).toEqual([`delete ${NAME}`, 'create pk']);
   });
 
+  it('a redaction difference on a key the forward did not change never reads as reversed', () => {
+    // The journal and the state record redact through different paths; one
+    // leaf masked differently must not turn a first run into a silent skip.
+    const forward = { ...keyed('id'), Tags: [{ Key: 't', Value: '***' }] };
+    const recorded = { ...keyed('id'), Tags: [{ Key: 't', Value: '{{resolve:x}}' }] };
+    const o = op({
+      properties: forward,
+      previousState: { ...rec('pk'), properties: { ...keyed('pk'), Tags: forward.Tags } },
+    });
+    expect(classifyRollbackOp(o, { Table: { ...rec('id'), properties: recorded } }, new Set())).toBe(
+      'reverse-replacement'
+    );
+    // Once the changed keys hold the old values, it is done.
+    const restored = { ...keyed('pk'), Tags: recorded.Tags };
+    expect(classifyRollbackOp(o, { Table: { ...rec('pk'), properties: restored } }, new Set())).toBe(
+      'skip-already-done'
+    );
+  });
+
+  it('a child the segment created, or one the user orphans, does not block its parent', async () => {
+    const fnOp = op({ logicalId: 'Fn', resourceType: 'AWS::Lambda::Function' });
+    const perm: ResourceState = {
+      physicalId: 'perm-1',
+      resourceType: 'AWS::Lambda::Permission',
+      properties: { FunctionName: NAME, Action: 'lambda:InvokeFunction' },
+      attributes: {},
+      dependencies: ['Fn'],
+      provisionedBy: 'sdk',
+    };
+    const fnRecord = { ...rec('id'), resourceType: 'AWS::Lambda::Function' };
+    // Created by the same segment: its CREATE pass deletes it afterwards.
+    const created = tableModel();
+    const createdState: Record<string, ResourceState> = { Fn: { ...fnRecord }, Perm: { ...perm } };
+    const createOp: CompletedOperation = {
+      logicalId: 'Perm',
+      changeType: 'CREATE',
+      resourceType: 'AWS::Lambda::Permission',
+      provisionedBy: 'sdk',
+      physicalId: 'perm-1',
+    };
+    const r1 = await replayRollback([fnOp, createOp], createdState, 'X', created.ctx);
+    expect(r1.failures).toBe(0);
+    expect(created.calls).toEqual([`delete ${NAME}`, 'create pk', 'delete perm-1']);
+    // Orphaned by the user.
+    const orphaned = tableModel();
+    const orphanedState: Record<string, ResourceState> = { Fn: { ...fnRecord }, Perm: { ...perm } };
+    const r2 = await replayRollback([fnOp], orphanedState, 'X', orphaned.ctx, {
+      orphanLogicalIds: new Set(['Perm']),
+    });
+    expect(r2.failures).toBe(0);
+    expect(orphaned.calls).toEqual([`delete ${NAME}`, 'create pk']);
+  });
+
   it('a same-id op the engine did not stamp delete-first keeps the in-place revert', () => {
     const inPlace = op({ oldDeletedBeforeCreate: false });
     expect(isReplacementOp(inPlace)).toBe(false);

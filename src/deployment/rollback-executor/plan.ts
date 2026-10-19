@@ -198,16 +198,29 @@ export function sameIdRecreated(op: CompletedOperation): boolean {
 
 /**
  * go-to-k/cdkd#5096: has a same-id re-create already been reversed? The id
- * cannot say, so the record does: it is the forward's no longer once the
- * reversal rewrote it -- to the old properties, or to the bag the replayed
- * create returned (`effectiveProperties`), which equals neither side. Read
- * that way a re-run never deletes the restored resource again. A record that
- * differs from the forward's only in how it was redacted reads as reversed:
- * nothing is deleted, and the record still names what AWS holds.
+ * cannot say, so the record does, read on the top-level properties the
+ * forward CHANGED (the create-only change that forced it among them): the
+ * reversal is done when the record holds the old value of every one. A
+ * replayed create's own bag (`effectiveProperties`) adds or fills other keys
+ * but keeps the requested values of those, and a key both sides redacted the
+ * same way compares equal, so neither a re-run nor a redaction difference on
+ * an unchanged key reads the wrong way. Without a changed key to read, only a
+ * record equal to the old one is done.
  */
 function sameIdReversalDone(op: CompletedOperation, current: ResourceState): boolean {
-  if (deepEqual(current.properties, op.previousState!.properties)) return true;
-  return op.properties !== undefined && !deepEqual(current.properties, op.properties);
+  const before = op.previousState!.properties ?? {};
+  const forward = op.properties;
+  const now = current.properties ?? {};
+  if (forward === undefined) return deepEqual(now, before);
+  // Read by OWN key: a template key spelled like an inherited member
+  // (`constructor`) must not compare as present on a side that lacks it.
+  const own = (bag: Record<string, unknown>, key: string) =>
+    Object.hasOwn(bag, key) ? bag[key] : undefined;
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(forward)])].filter(
+    (key) => !deepEqual(own(before, key), own(forward, key))
+  );
+  if (changed.length === 0) return deepEqual(now, before);
+  return changed.every((key) => deepEqual(own(now, key), own(before, key)));
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {

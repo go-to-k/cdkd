@@ -156,11 +156,12 @@ Such a replacement counts even when the new resource got the SAME physical id
 as the old one (a fixed name): the id cannot tell the two apart, but an
 in-place revert could not undo the create-only change that forced the
 replacement. Whether it has already been reversed is read from the state
-record: it is reversed while the record still holds the deploy's properties.
+record: it is done once every property the deploy changed holds its old value.
 A resource that AWS stores other resources inside (a Lambda function's
 permissions, an SNS topic's subscriptions, an IAM role's inline policies) is
-refused instead when the stack records such a resource depending on it, since
-deleting it again would take that resource too and nothing re-creates it.
+refused instead when the stack records such a resource depending on it (one the
+same deploy created, or one `--orphan` names, does not count), since deleting
+it again would take that resource too and nothing re-creates it.
 Nothing is deleted and the journal is kept; deploy the previous template with
 `cdkd deploy --replace` to restore both, or orphan the resource.
 

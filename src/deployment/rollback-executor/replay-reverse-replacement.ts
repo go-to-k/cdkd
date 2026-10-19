@@ -82,11 +82,15 @@ import { noteRetainedResource } from '../../provisioning/providers/create-token-
  * records no dependencies) refuses the reversal, before anything is deleted.
  */
 function refuseSameIdParentReversal(s: ReplayOpScope): void {
-  const { op, stateResources, ctx } = s;
+  const { op, stateResources, ctx, createdInSegment, orphanLogicalIds } = s;
   const children = Object.entries(stateResources)
     .filter(
       ([logicalId, record]) =>
         logicalId !== op.logicalId &&
+        // A child this segment created is deleted by its CREATE pass, and one
+        // the user orphans is left alone: neither needs restoring.
+        !createdInSegment.has(logicalId) &&
+        !orphanLogicalIds.has(logicalId) &&
         mayBeStoredIn(record.resourceType, op.resourceType) &&
         (!Array.isArray(record.dependencies) || record.dependencies.includes(op.logicalId))
     )
