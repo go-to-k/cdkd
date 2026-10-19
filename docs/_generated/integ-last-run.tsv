@@ -305,8 +305,8 @@ rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c
 replace-squatter-refusal	2026-10-17T05:11:06Z	PASS	70	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 replaced-delete-failed-rollback	2026-10-18T04:10:16Z	PASS	150	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
-replacement-immutable-name	2026-10-14T12:12:31Z	PASS	146	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
-replacement-rename-onto-holder	2026-10-17T05:11:06Z	PASS	611	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
+replacement-immutable-name	2026-10-19T08:12:15Z	PASS	130	verify.sh	rc ok, orph clean; PR #5092 (#5088) 091bc5f99
+replacement-rename-onto-holder	2026-10-19T08:12:15Z	PASS	591	verify.sh	rc ok, orph clean; PR #5092 (#5088) 091bc5f99
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-17T07:24:50Z	PASS	260	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 retain-orphan-secret	2026-10-18T04:24:31Z	PASS	105	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, no versions survive
