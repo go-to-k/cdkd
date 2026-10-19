@@ -81,8 +81,8 @@ without one reads all of them:
   (`retiredNameGenerations`), so its name differs and the list licenses
   nothing; a destroy ends the lifetime, so the redeploy's generated names
   differ too (#5064), never asks for them and warns once, naming
-  `cdkd import`. A destroy, and a deploy that removes a resource, list
-  every kept resource whose name cdkd generated, except a name-adopting
+  `cdkd import`. A destroy, and on such a stack a deploy that removes a
+  resource, list every kept resource whose name cdkd generated, except a name-adopting
   type made through Cloud Control: an entry licenses by type and physical
   id alone, and a type no create adopts licenses nothing. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
