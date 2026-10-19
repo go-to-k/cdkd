@@ -478,6 +478,7 @@ async function diffCommand(
               logger,
             }),
             logger,
+            newScheme: state.stackInstanceId !== undefined,
           })
         )
       );

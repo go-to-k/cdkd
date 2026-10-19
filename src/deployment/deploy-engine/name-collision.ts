@@ -69,6 +69,60 @@ export function replacementNameOrigin(
 }
 
 /**
+ * go-to-k/cdkd#5064 phase 2: what a replacement refusal adds when the name
+ * that collided is the GENERATED one its next name generation asks for. That
+ * name is new to this lifetime of the stack (it hashes the stack's instance
+ * id), so its holder is most likely the new resource an earlier attempt of
+ * this same replacement created before it was interrupted: a re-run derives
+ * the same name again. cdkd does not take a resource over on a name alone, so
+ * the sentence names the two ways out -- adopt it with `cdkd import` (and
+ * delete the resource being replaced by hand), or delete it and re-run.
+ * `''` when the move is not a generated one.
+ */
+export function generatedReplacementHolderAdvice(input: {
+  stackName: string;
+  logicalId: string;
+  change: { desiredName: string; generated?: true } | undefined;
+  /** The resource being replaced, which stays in place. */
+  oldPhysicalId: string;
+  mask: (text: string) => string;
+}): string {
+  if (input.change?.generated !== true) return '';
+  const name = displaySafe(input.mask(input.change.desiredName), { asciiOnly: true });
+  const old = displaySafe(input.mask(input.oldPhysicalId), { asciiOnly: true });
+  const shownName = isInertUnquoted(name) ? name : 'the generated name';
+  const lead =
+    ` The colliding name ${shownName} is the one this replacement generates for its next ` +
+    `name generation, so its holder is most likely the new resource an interrupted earlier ` +
+    `attempt of this replacement created. If it is, `;
+  const tail = `, or delete it and re-run the deploy.`;
+  if (input.stackName.includes('~')) {
+    return (
+      lead +
+      `adopt it through the top-level stack with \`cdkd import\` (then delete ${old} by hand)` +
+      tail
+    );
+  }
+  const adopt = pasteableCommand('cdkd import', [
+    { value: input.stackName, hole: 'stack' },
+    {
+      flag: '--resource',
+      value: `${input.logicalId}=${input.change.desiredName}`,
+      hole: 'logicalId=physicalId',
+    },
+  ]);
+  const command = input.mask(adopt.command) === adopt.command ? adopt.command : undefined;
+  return (
+    lead +
+    (command === undefined
+      ? `adopt it with \`cdkd import\``
+      : `adopt it with \`${command}\` (using its physical id where the type records another)`) +
+    ` and then delete ${old} by hand` +
+    tail
+  );
+}
+
+/**
  * The plain-CREATE sibling of {@link replacementNameOrigin} (issue
  * [#2902](https://github.com/go-to-k/cdkd/issues/2902)).
  *

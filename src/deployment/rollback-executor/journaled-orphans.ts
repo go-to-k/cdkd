@@ -25,6 +25,7 @@ import {
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
 import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
@@ -351,7 +352,7 @@ export async function deleteJournaledOrphans(
     const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
       withPrintingSecrets(printing, () =>
-        withStackScope({ stackName, stackInstanceId }, () =>
+        withStackScope(nameScopeOf(stackName, stackInstanceId, { resources: stateResources }), () =>
           replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
             // A destroy run, not a rollback: its own run events frame these
             // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.

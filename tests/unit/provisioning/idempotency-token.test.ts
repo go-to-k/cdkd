@@ -59,11 +59,11 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
     const before = process.env['AWS_REGION'];
     try {
       process.env['AWS_REGION'] = 'us-east-1';
-      const east = withStackScope({ stackName: 'Stack', stackInstanceId: undefined }, () =>
+      const east = withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       );
       process.env['AWS_REGION'] = 'eu-west-1';
-      const west = withStackScope({ stackName: 'Stack', stackInstanceId: undefined }, () =>
+      const west = withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       );
       // cdkd identifies a resource as {stackName}/{region}/{logicalId}; sharing
@@ -77,10 +77,10 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
   });
 
   it('separates two stacks deployed by one process that share a logical id', () => {
-    const inStackA = withStackScope({ stackName: 'StackA', stackInstanceId: undefined }, () =>
+    const inStackA = withStackScope({ stackName: 'StackA', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
     );
-    const inStackB = withStackScope({ stackName: 'StackB', stackInstanceId: undefined }, () =>
+    const inStackB = withStackScope({ stackName: 'StackB', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
     );
 

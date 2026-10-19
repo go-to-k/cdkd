@@ -309,11 +309,11 @@ describe('FSxFileSystemProvider create', () => {
     });
 
     const provider = newProvider();
-    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
-    await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined }, () =>
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
     );
-    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
 
     const tokens = callsOf(CreateFileSystemCommand).map((c) => c.input['ClientRequestToken']);
     expect(tokens[0]).not.toBe(tokens[1]);
@@ -507,7 +507,7 @@ describe('FSxFileSystemProvider create', () => {
       };
     };
     const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
-      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () => withCreateTokenLedger(ledger, fn));
+      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(ledger, fn));
 
     /** Run 1 sends the create an hour ago and dies before recording it. */
     const interruptedRunOne = async () => {

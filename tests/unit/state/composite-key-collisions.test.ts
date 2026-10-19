@@ -153,10 +153,10 @@ describe('the idempotency-token memo keys on the whole tuple', () => {
     ).toBe(keyOf(b.stack, b.logicalId));
 
     resetIdempotencyTokensForTests();
-    const first = withStackScope({ stackName: a.stack, stackInstanceId: undefined }, () =>
+    const first = withStackScope({ stackName: a.stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 's', logicalId: a.logicalId })
     );
-    const second = withStackScope({ stackName: b.stack, stackInstanceId: undefined }, () =>
+    const second = withStackScope({ stackName: b.stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 's', logicalId: b.logicalId })
     );
     // Under the separator these shared a memo entry, so the second create was
@@ -170,7 +170,7 @@ describe('the idempotency-token memo keys on the whole tuple', () => {
     // above while defeating the idempotency this module exists to provide.
     resetIdempotencyTokensForTests();
     const once = (): string =>
-      withStackScope({ stackName: 'Stack', stackInstanceId: undefined }, () =>
+      withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       ).value;
     expect(once()).toBe(once());

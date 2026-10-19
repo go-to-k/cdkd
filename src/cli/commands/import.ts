@@ -1,4 +1,9 @@
 import { CrossPrefixGuard } from '../../state/stack-registry.js';
+import {
+  nameGenerationCarriedFrom,
+  nameGenerationHighWaterOf,
+  nameGenerationReachedField,
+} from '../../state/name-generation.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { constructPathOf } from '../../analyzer/destructive-changes.js';
@@ -2486,6 +2491,13 @@ export function buildStackState(
     }
     resources[row.logicalId] = {
       physicalId: row.physicalId,
+      // go-to-k/cdkd#5064 phase 2: the name generation describes the resource
+      // a record names, so it is kept only on an UNCHANGED physical id. A
+      // resource adopted in place of another records none, only the highest
+      // generation the replaced record reached; the next replacement goes past
+      // that and any generation whose name the adopted one already carries
+      // (`nextNameGeneration`).
+      ...importedNameGenerationFields(prior, row),
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
@@ -4894,4 +4906,28 @@ export function indexGrandchildTemplatePaths(
 /** `{ constructPath }` when the template declares one, else nothing. */
 function constructPathField(path: string | undefined): { constructPath?: string } {
   return path === undefined ? {} : { constructPath: path };
+}
+
+/**
+ * go-to-k/cdkd#5064 phase 2: the name-generation fields of a record `cdkd
+ * import` rebuilds over `prior`. Kept verbatim on an unchanged physical id; a
+ * resource adopted in place of another records the highest generation the
+ * replaced record reached as its high-water mark. A row the import is
+ * repairing (unreadable, or holding a malformed generation) contributes
+ * nothing: the import is its way out, never a second refusal.
+ */
+function importedNameGenerationFields(
+  prior: ResourceState | null | undefined,
+  row: { logicalId: string; physicalId?: string | undefined }
+): Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'> {
+  if (prior === null || typeof prior !== 'object') return {};
+  try {
+    if (prior.physicalId !== row.physicalId)
+      return nameGenerationReachedField(prior, row.logicalId);
+    // Read first: a malformed value is dropped, not carried into the repair.
+    nameGenerationHighWaterOf(prior, row.logicalId);
+    return nameGenerationCarriedFrom(prior);
+  } catch {
+    return {};
+  }
 }

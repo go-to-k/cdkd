@@ -974,7 +974,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     it("an identifier that is the v13 record's own suffixed name is not taken over", async () => {
       const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
       const suffixedIdentifier = withStackScope(
-        { stackName, stackInstanceId: STACK_INSTANCE_ID },
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
         () => generateResourceName('B', { maxLength: 63, lowercase: true })
       );
       const { engine, provider } = resumingEngine({}, suffixedIdentifier);

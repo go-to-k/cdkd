@@ -1,4 +1,5 @@
 import { withReplayDeletePrinting } from './replay-scope.js';
+import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { ResourceCreateResult, ResourceProvider } from '../../types/resource.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
@@ -503,6 +504,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       logicalId: op.logicalId,
       physicalId: prev.physicalId,
       via: createProvisionedBy,
+      // go-to-k/cdkd#5064 phase 2: the OLD resource's own generation, never
+      // the one the replacement moved the record to.
+      nameGeneration: nameGenerationOf(prev, op.logicalId),
     },
     logger,
     mask,
@@ -1148,9 +1152,12 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // `NoEcho: true` (or a nested stack's masked outputs) would otherwise land
   // in the record in the clear.
   recordNoEchoAttributeValues(createResult, secrets, resolvedPrevProps);
+  // go-to-k/cdkd#5064 phase 2: the old resource comes back at its own name
+  // generation, and the record remembers the one the deleted copy reached, so
+  // the next replacement never asks for that name again.
   stateResources[op.logicalId] = redactRollbackRecord(
     {
-      ...prevRecord,
+      ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),
       physicalId: createResult.physicalId,
       attributes: createResult.attributes ?? {},
       properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),

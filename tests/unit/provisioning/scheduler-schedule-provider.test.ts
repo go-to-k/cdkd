@@ -145,7 +145,7 @@ describe('SchedulerScheduleProvider', () => {
       mockSend.mockResolvedValueOnce({ ScheduleArn: SCHED_ARN });
       const { Name: _drop, ...props } = BASE_PROPS;
 
-      const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, () => provider.create('Sched', TYPE, props));
+      const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('Sched', TYPE, props));
 
       expect(result.physicalId).toContain('MyStack');
       expect(result.physicalId.length).toBeLessThanOrEqual(64);

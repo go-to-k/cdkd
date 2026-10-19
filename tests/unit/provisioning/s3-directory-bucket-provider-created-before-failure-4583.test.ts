@@ -140,7 +140,7 @@ describe('S3DirectoryBucketProvider.create: generated name length (#5064)', () =
     ['a legacy stack', undefined],
   ])('%s: the whole name is at most 63 characters', async (_label, stackInstanceId) => {
     const stackName = `S${'a'.repeat(60)}`;
-    const result = await withStackScope({ stackName, stackInstanceId }, () =>
+    const result = await withStackScope({ stackName, stackInstanceId, nameGenerations: new Map() }, () =>
       new S3DirectoryBucketProvider().create('DirectoryBucket', TYPE, {
         LocationName: 'us-east-1a--x-s3',
       })

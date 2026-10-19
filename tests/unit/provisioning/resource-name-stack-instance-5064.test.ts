@@ -27,9 +27,9 @@ const expectedSuffix = (id: string, name: string): string =>
   createHash('sha256').update(`${id}\u0000${name}`).digest('hex').substring(0, 12);
 
 const legacy = <T>(stackName: string, fn: () => T): T =>
-  withStackScope({ stackName, stackInstanceId: undefined }, fn);
+  withStackScope({ stackName, stackInstanceId: undefined, nameGenerations: new Map() }, fn);
 const v13 = <T>(stackName: string, fn: () => T, id = ID): T =>
-  withStackScope({ stackName, stackInstanceId: id }, fn);
+  withStackScope({ stackName, stackInstanceId: id, nameGenerations: new Map() }, fn);
 
 describe('generateResourceName with a stack instance id (#5064)', () => {
   it('appends the 12-hex suffix of sha256(id NUL name) to {stack}-{logicalId}', () => {
@@ -156,7 +156,11 @@ describe('the stack scope (#5064)', () => {
   });
 
   it('copies the scope object, so a later mutation renames nothing', () => {
-    const scope = { stackName: 'MyStack', stackInstanceId: ID as string | undefined };
+    const scope = {
+      stackName: 'MyStack',
+      stackInstanceId: ID as string | undefined,
+      nameGenerations: new Map<string, number>(),
+    };
     const name = withStackScope(scope, () => {
       scope.stackInstanceId = OTHER_ID;
       return generateResourceName('Queue', { maxLength: 80 });

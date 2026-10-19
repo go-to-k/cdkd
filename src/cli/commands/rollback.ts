@@ -46,6 +46,7 @@ import {
 } from '../../deployment/nested-child-journal.js';
 import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import { nameScopeOf, retiredAfterRollbackOrphans } from '../../state/name-generation.js';
 import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { dropFailedJournalEntry, refuseDropFailedConflicts } from './rollback-drop-failed.js';
@@ -1109,7 +1110,7 @@ export async function rollbackCommand(
           fn: () => Promise<T>
         ): Promise<T> =>
           withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
-            withStackScope({ stackName, stackInstanceId }, () =>
+            withStackScope(nameScopeOf(stackName, stackInstanceId, stateData?.state), () =>
               withCreateTokenLedger(createTokenLedger, fn)
             )
           );
@@ -1321,6 +1322,8 @@ export async function rollbackCommand(
             region,
             resources: { ...stateResources },
             ...orphansAfterRollback(baseState, mintedOrphans),
+            // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
+            ...retiredAfterRollbackOrphans(baseState, mintedOrphans),
             lastModified: Date.now(),
           });
           try {

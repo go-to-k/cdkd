@@ -399,18 +399,39 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     expect(provider.create.mock.calls.map((c) => c[0])).toContain('Q2');
   });
 
-  it('takes back what a destroy here kept, then lets retained.json forget it once the record names it', async () => {
+  it('takes back what a destroy here kept, then lets retained.json forget it once the record names it (legacy stack)', async () => {
     const kept = [
       { logicalId: 'Q2', resourceType: QUEUE, physicalId: urlOf('App-Q2') },
       { logicalId: 'Gone', resourceType: QUEUE, physicalId: urlOf('App-Gone') },
     ];
     const { engine, provider, stateBackend } = buildEngine({
+      records: {},
       holders: { 'App-Q2': urlOf('App-Q2') },
       retained: kept,
     });
     await engine.deploy(STACK, template);
     expect(provider.create.mock.calls.map((c) => c[0])).toContain('Q2');
     expect(stateBackend.saveRetainedResources).toHaveBeenCalledWith(STACK, 'us-east-1', [kept[1]]);
+  });
+
+  it('on a stack with an instance id, nothing that left the stack licenses a holder (go-to-k/cdkd#5064)', async () => {
+    // A first deploy mints an id: what retained.json or the history names is
+    // never taken back implicitly, so a holder of a planned name is refused.
+    const kept = [{ logicalId: 'Q2', resourceType: QUEUE, physicalId: urlOf('App-Q2') }];
+    const viaRetained = buildEngine({ holders: { 'App-Q2': urlOf('App-Q2') }, retained: kept });
+    await expect(viaRetained.engine.deploy(STACK, template)).rejects.toThrow(/Q2/);
+    expect(viaRetained.provider.create.mock.calls.map((c) => c[0])).not.toContain('Q2');
+    const viaHistory = buildEngine({
+      holders: { 'App-Q2': urlOf('App-Q2') },
+      earlierRecords: [
+        {
+          resources: { Q2: { resourceType: QUEUE, physicalId: urlOf('App-Q2'), deletionPolicy: 'Retain' } },
+          writtenAt: 1,
+        },
+      ],
+    });
+    await expect(viaHistory.engine.deploy(STACK, template)).rejects.toThrow(/Q2/);
+    expect(viaHistory.stateBackend.earlierStateResources).not.toHaveBeenCalled();
   });
 
   it('a lookup that FAILS refuses every create it was asked about: nothing is created (fail closed)', async () => {
@@ -469,8 +490,9 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     expect(adoptIntents()).toEqual(['Q1']);
   });
 
-  it("D-6: an older cdkd's kept queue (earlier record version, no retained.json) is taken back", async () => {
+  it("D-6: an older cdkd's kept queue (earlier record version, no retained.json) is taken back (legacy stack)", async () => {
     const { engine, provider } = buildEngine({
+      records: {},
       holders: { 'App-Q2': urlOf('App-Q2') },
       earlierRecords: [
         {
@@ -736,7 +758,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
     const MINTED = '00000000-0000-4000-8000-000000000000';
     const RECORDED = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
     const named = (id: string | undefined, logicalId: string): string =>
-      withStackScope({ stackName: STACK, stackInstanceId: id }, () =>
+      withStackScope({ stackName: STACK, stackInstanceId: id, nameGenerations: new Map() }, () =>
         generateResourceName(logicalId, { maxLength: 80 })
       );
     /** The provider derives as the real SQS one does, and records its scope. */

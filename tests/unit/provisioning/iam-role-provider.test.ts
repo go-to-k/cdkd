@@ -381,7 +381,7 @@ describe('IAMRoleProvider', () => {
     it('refuses a Path-only change as not updatable in place, sending nothing', async () => {
       const doc = { Version: '2012-10-17', Statement: [] };
       // In a stack scope the derived name IS the recorded one: only the Path moves.
-      const error = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, () =>
+      const error = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.update(
           'L',
           'MyStack-L',
@@ -407,7 +407,7 @@ describe('IAMRoleProvider', () => {
       const doc = { Version: '2012-10-17', Statement: [] };
       const REF = '{{resolve:secretsmanager:role-path}}';
       const updateWith = (desired: Record<string, unknown> = {}): Promise<unknown> =>
-        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined }, () =>
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           provider.update(
             'L',
             'MyStack-L',

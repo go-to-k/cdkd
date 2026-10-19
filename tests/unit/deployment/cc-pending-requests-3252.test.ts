@@ -576,7 +576,7 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
   it('#5064: a suffixed generated name is recognized only with the record id in hand', async () => {
     const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
     const suffixedName = withStackScope(
-      { stackName: 'MyStack', stackInstanceId: STACK_INSTANCE_ID },
+      { stackName: 'MyStack', stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
       () => generateResourceName('Thing', { maxLength: 64 })
     );
     ccSchema.fields = ['Id'];

@@ -18,7 +18,7 @@ describe('stackScopedCreateToken', () => {
   });
 
   const token = (stack: string, logicalId = 'MyFs', inputs: unknown[] = ['LUSTRE', ['subnet-1']]) =>
-    withStackScope({ stackName: stack, stackInstanceId: undefined }, () =>
+    withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       stackScopedCreateToken({ logicalId, immutableInputs: inputs, maxLength: 63 })
     );
 
@@ -60,10 +60,10 @@ describe('stackScopedCreateToken', () => {
     const longA = `${'A'.repeat(200)}1`;
     const longB = `${'A'.repeat(200)}2`;
     for (const maxLength of [63, 64]) {
-      const a = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () =>
+      const a = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         stackScopedCreateToken({ logicalId: longA, immutableInputs: [], maxLength })
       );
-      const b = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined }, () =>
+      const b = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         stackScopedCreateToken({ logicalId: longB, immutableInputs: [], maxLength })
       );
       expect(a.length).toBe(maxLength);

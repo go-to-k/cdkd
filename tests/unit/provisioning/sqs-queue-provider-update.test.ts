@@ -168,7 +168,7 @@ describe('SQSQueueProvider.update', () => {
     const legacyUrl = 'https://sqs.us-east-1.amazonaws.com/123456789012/MyStack-Q';
 
     const result = await withStackScope(
-      { stackName: 'MyStack', stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f' },
+      { stackName: 'MyStack', stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', nameGenerations: new Map() },
       () => provider.update('Q', legacyUrl, 'AWS::SQS::Queue', { VisibilityTimeout: 30 }, {})
     );
 

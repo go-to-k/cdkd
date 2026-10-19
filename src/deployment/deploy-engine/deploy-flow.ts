@@ -17,6 +17,7 @@ import { getAccountInfo } from '../intrinsic-function-resolver.js';
 import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import { nameGenerationsOf, nextNameGeneration } from '../../state/name-generation.js';
 import { flushKeptForReadoption } from './delete.js';
 import {
   adoptRollbackOrphans,
@@ -224,10 +225,19 @@ export async function doDeployWithPrefetch(
     // sets it; a `--dry-run` first deploy never has one). A malformed
     // recorded id is refused here, before anything acts.
     stackInstanceIdOf(currentState, displayStackName(stackName));
-    const nameScope = (): StackScope => ({
-      stackName,
-      stackInstanceId: stackInstanceIdOf(currentState, displayStackName(stackName)),
-    });
+    // Phase 2: each logical id's name generation as the record holds it at
+    // the load (a replacement binds the next one around its create). A
+    // malformed generation is refused here too. A first deploy's record is
+    // empty, so every create takes generation 0.
+    const loadedNameGenerations = nameGenerationsOf(currentState);
+    const nameScope = (): StackScope => {
+      const stackInstanceId = stackInstanceIdOf(currentState, displayStackName(stackName));
+      return {
+        stackName,
+        stackInstanceId,
+        nameGenerations: stackInstanceId === undefined ? undefined : loadedNameGenerations,
+      };
+    };
     // A first deploy: its id is resolved once it is going ahead.
     const idArrivesLater =
       (currentStateData === null || currentStateData === undefined) &&
@@ -1655,8 +1665,28 @@ export async function doDeployWithPrefetch(
     // the prompt below), so its lookups start then, before the first create;
     // a stack with a record looks up now, overlapping the checks and prompt.
     const startGeneratedNameGuard = (): void => {
-      engine.generatedNameGuard = withStackScope(nameScope(), () =>
-        GeneratedNameGuard.start(generatedNameGuardInput)
+      const scope = nameScope();
+      const lifetimeId = scope.stackInstanceId;
+      engine.generatedNameGuard = withStackScope(scope, () =>
+        GeneratedNameGuard.start({
+          ...generatedNameGuardInput,
+          ...(lifetimeId !== undefined && {
+            newScheme: true,
+            // Phase 2: a planned replacement of the same type creates under
+            // its next generation's name, checked like a create.
+            replacementGeneration: (change) => {
+              const record = currentState.resources[change.logicalId];
+              if (
+                record === undefined ||
+                record.resourceType !== change.resourceType ||
+                !(change.propertyChanges ?? []).some((pc) => pc.requiresReplacement)
+              ) {
+                return undefined;
+              }
+              return nextNameGeneration(record, change.logicalId, lifetimeId);
+            },
+          }),
+        })
       );
       if (engine.generatedNameGuard !== undefined) {
         engine.logger.debug(

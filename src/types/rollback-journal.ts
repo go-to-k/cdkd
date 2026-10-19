@@ -429,6 +429,19 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
     fail('wasReplaced', o['wasReplaced'], 'a boolean when present');
   }
+  // go-to-k/cdkd#5064 phase 2: COMPUTED by the engine on a replacement; a
+  // rollback raises the restored record's high-water mark to it, so anything
+  // but a non-negative integer would be written into state.
+  if (
+    o['nameGeneration'] !== undefined &&
+    !(
+      typeof o['nameGeneration'] === 'number' &&
+      Number.isSafeInteger(o['nameGeneration']) &&
+      o['nameGeneration'] >= 0
+    )
+  ) {
+    fail('nameGeneration', o['nameGeneration'], 'a non-negative integer when present');
+  }
   // go-to-k/cdkd#4690: COMPUTED by the engine; a truthy non-boolean would
   // delete the live new resource before the re-create.
   if (

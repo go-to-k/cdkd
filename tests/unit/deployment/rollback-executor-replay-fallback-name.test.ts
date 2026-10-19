@@ -141,7 +141,7 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp()], state, STACK, ctx)
     );
 
@@ -170,7 +170,7 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     const newUrl = `https://sqs.us-east-1.amazonaws.com/123456789012/${STACK}-Q`;
     const state: Record<string, ResourceState> = { Q: res({ physicalId: newUrl }) };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([{ ...reverseReplacementOp(), physicalId: newUrl }], state, STACK, ctx)
     );
 
@@ -201,7 +201,7 @@ describe('the fill must NOT fire (#3199)', () => {
     op.previousState!.provisionedBy = 'cc-api';
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () => replayRollback([op], state, STACK, ctx));
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([op], state, STACK, ctx));
 
     expect(result.failures).toBe(0);
     expect(bags[0]).toEqual({});
@@ -215,7 +215,7 @@ describe('the fill must NOT fire (#3199)', () => {
       Q: res({ physicalId: 'new-q', resourceType: UNRULED_TYPE }),
     };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp(UNRULED_TYPE)], state, STACK, ctx)
     );
 
@@ -232,7 +232,7 @@ describe('the fill must NOT fire (#3199)', () => {
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback(
         [reverseReplacementOp(NAMED_TYPE, { QueueName: 'user-chosen' })],
         state,
@@ -261,9 +261,9 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const forward = withStackScope({ stackName: STACK, stackInstanceId: undefined }, () => applyDefaultNameForFallback('Q', NAMED_TYPE, {}));
+    const forward = withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback('Q', NAMED_TYPE, {}));
 
-    await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () => replayRollback([reverseReplacementOp()], state, STACK, ctx));
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([reverseReplacementOp()], state, STACK, ctx));
 
     expect(bags[0]).toEqual(forward);
     // And the prefix is genuinely present, so a regression that dropped the
@@ -287,7 +287,7 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
       Q: res({ physicalId: 'new-q', provisionedBy: 'sdk' }),
     };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () => replayRollback([op], state, STACK, ctx));
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([op], state, STACK, ctx));
 
     expect(result.failures).toBe(0);
     expect(routingInputs[0]).toEqual({
@@ -317,7 +317,7 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined }, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp()], state, STACK, ctx)
     );
 

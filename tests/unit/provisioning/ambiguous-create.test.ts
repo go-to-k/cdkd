@@ -130,10 +130,10 @@ describe('AmbiguousCreateLatch (issue #2080)', () => {
   });
 
   it('keys by stack as well as logical id', () => {
-    withStackScope({ stackName: 'StackA', stackInstanceId: undefined }, () => latch.noteFailure('Res', transient500(), T0));
+    withStackScope({ stackName: 'StackA', stackInstanceId: undefined, nameGenerations: new Map() }, () => latch.noteFailure('Res', transient500(), T0));
 
-    expect(withStackScope({ stackName: 'StackB', stackInstanceId: undefined }, () => latch.take('Res'))).toBeUndefined();
-    expect(withStackScope({ stackName: 'StackA', stackInstanceId: undefined }, () => latch.take('Res'))).toBeDefined();
+    expect(withStackScope({ stackName: 'StackB', stackInstanceId: undefined, nameGenerations: new Map() }, () => latch.take('Res'))).toBeUndefined();
+    expect(withStackScope({ stackName: 'StackA', stackInstanceId: undefined, nameGenerations: new Map() }, () => latch.take('Res'))).toBeDefined();
   });
 
   it('keys by scope: two latches do not share entries', () => {

@@ -1,4 +1,5 @@
 import { updatePartialMessage } from '../update-outcome.js';
+import { guardedReplacementCreate } from './create.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
 import { type DeployEngine, InterruptedError } from '../deploy-engine.js';
 import { printingSecretsFor, registerNoEchoAttributes, secretNameBagFor } from './masking.js';
@@ -30,7 +31,7 @@ import {
   secretNamedAttributesField,
 } from './record-shape.js';
 import { preparePropertiesForCcApi } from './routing.js';
-import { replacementNameOrigin } from './name-collision.js';
+import { generatedReplacementHolderAdvice, replacementNameOrigin } from './name-collision.js';
 import { establishNoEchoEchoFidelity, noEchoPositionSources } from './noecho.js';
 import { bold, gray, green, yellow } from '../../utils/colors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -89,6 +90,7 @@ export async function updateByReplacement(
     updateReplacePolicy,
     updateSecrets,
     lostWithParent,
+    nameGenerationFields,
   }: {
     change: ResourceChange;
     counts: ProvisionCounts | undefined;
@@ -117,6 +119,12 @@ export async function updateByReplacement(
      * old resource went with it, so it is created anew and never deleted.
      */
     lostWithParent?: string | undefined;
+    /**
+     * go-to-k/cdkd#5064 phase 2: the new record's name generation (the next
+     * one, bound around this call by `update.ts`), or the old record's carried
+     * where the generation does not move.
+     */
+    nameGenerationFields: Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'>;
   }
 ): Promise<ResourceOutcomeSignal | void> {
   // go-to-k/cdkd#4682: the resource is still in the template, so a custom
@@ -398,6 +406,9 @@ export async function updateByReplacement(
     }
     createResult = await createFirstThenDeleteOld(engine.replacementRun, engine.replacementDeps(), {
       retainOld,
+      stackName,
+      createdVia: replaceDecision.provisionedBy,
+      resolvedProps,
       logicalId,
       resourceType,
       oldResourceType,
@@ -561,34 +572,45 @@ export async function updateByReplacement(
     // inner loop that is itself 64s — measured at 640s total sleep on
     // a cooldown, inside the 30-minute per-resource deadline. See
     // `NAME_COOLDOWN_INITIAL_DELAY_MS` in retry.ts.
-    createResult = await withRetry(
+    createResult = await guardedReplacementCreate(
+      engine,
+      {
+        logicalId,
+        resourceType,
+        stackName,
+        createdVia: replaceDecision.provisionedBy,
+        resolvedProps,
+      },
       () =>
-        engine.withRetry(
+        withRetry(
           () =>
-            withCurrentResourceSecrets(updateSecrets, () =>
-              replaceProvider.create(logicalId, resourceType, replaceProps, {
-                maskSecrets: createSecretMasker(updateSecrets),
-              })
+            engine.withRetry(
+              () =>
+                withCurrentResourceSecrets(updateSecrets, () =>
+                  replaceProvider.create(logicalId, resourceType, replaceProps, {
+                    maskSecrets: createSecretMasker(updateSecrets),
+                  })
+                ),
+              logicalId,
+              undefined,
+              undefined,
+              replaceProvider
             ),
           logicalId,
-          undefined,
-          undefined,
-          replaceProvider
-        ),
-      logicalId,
-      {
-        maxRetries: 8,
-        initialDelayMs: 2_000,
-        maxDelayMs: 10_000,
-        // Issue #2038, same reason as the --replace fallback above --
-        // and bound to `updateSecrets`, the bag this UPDATE resolved
-        // with and the very one the `createSecretMasker` one statement
-        // up is built from, rather than looked up by logical id.
-        logger: engine.maskingRetryLoggerFor(updateSecrets),
-        isInterrupted: () => engine.interrupted,
-        onInterrupted: () => new InterruptedError(engine.interruptCause ?? 'user'),
-        isRetryable: isRecreateRetryableError,
-      }
+          {
+            maxRetries: 8,
+            initialDelayMs: 2_000,
+            maxDelayMs: 10_000,
+            // Issue #2038, same reason as the --replace fallback above --
+            // and bound to `updateSecrets`, the bag this UPDATE resolved
+            // with and the very one the `createSecretMasker` one statement
+            // up is built from, rather than looked up by logical id.
+            logger: engine.maskingRetryLoggerFor(updateSecrets),
+            isInterrupted: () => engine.interrupted,
+            onInterrupted: () => new InterruptedError(engine.interruptCause ?? 'user'),
+            isRetryable: isRecreateRetryableError,
+          }
+        )
     );
 
     // Issue #1238: under `UpdateReplacePolicy: Retain` the old
@@ -636,17 +658,30 @@ export async function updateByReplacement(
       );
     }
     try {
-      createResult = await engine.withRetry(
+      // go-to-k/cdkd#5064 phase 2: under a new generated name the create is
+      // checked as a plain create is (a name-adopting type's holder lookup).
+      createResult = await guardedReplacementCreate(
+        engine,
+        {
+          logicalId,
+          resourceType,
+          stackName,
+          createdVia: replaceDecision.provisionedBy,
+          resolvedProps,
+        },
         () =>
-          withCurrentResourceSecrets(updateSecrets, () =>
-            replaceProvider.create(logicalId, resourceType, replaceProps, {
-              maskSecrets: createSecretMasker(updateSecrets),
-            })
-          ),
-        logicalId,
-        undefined,
-        undefined,
-        replaceProvider
+          engine.withRetry(
+            () =>
+              withCurrentResourceSecrets(updateSecrets, () =>
+                replaceProvider.create(logicalId, resourceType, replaceProps, {
+                  maskSecrets: createSecretMasker(updateSecrets),
+                })
+              ),
+            logicalId,
+            undefined,
+            undefined,
+            replaceProvider
+          )
       );
     } catch (createError) {
       // The AWS text every refusal below quotes: masked FIRST (the
@@ -788,6 +823,13 @@ export async function updateByReplacement(
                     ` Remove or rename whatever holds that name if it is yours — if ` +
                     `that is the resource being replaced itself, delete it by hand — ` +
                     `then re-run the deploy.`) +
+                generatedReplacementHolderAdvice({
+                  stackName,
+                  logicalId,
+                  change: nameChange,
+                  oldPhysicalId: currentResource.physicalId,
+                  mask: (value) => maskSecretsInText(value, updateSecrets),
+                }) +
                 ` Underlying collision: ${createMsg}`,
               updateSecrets
             ),
@@ -1034,6 +1076,7 @@ export async function updateByReplacement(
   );
   stateResources[logicalId] = {
     physicalId: createResult.physicalId,
+    ...nameGenerationFields,
     resourceType,
     properties: recordedReplacementProperties,
     // #2790: a new physical resource, so its evidence is rebuilt, never carried.
