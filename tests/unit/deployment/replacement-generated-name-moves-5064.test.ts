@@ -1,0 +1,156 @@
+/**
+ * go-to-k/cdkd#5064 phase 2: `replacementGeneratedNameMoves`, the name-change
+ * arm that lets a replacement of an UN-NAMED resource create first, and the
+ * orphan-adoption planner on a stack with an instance id.
+ */
+import { describe, expect, it, vi } from 'vite-plus/test';
+import { replacementGeneratedNameMoves } from '../../../src/deployment/replacement-name-holder.js';
+import { planOrphanAdoption } from '../../../src/deployment/orphan-adoption.js';
+import {
+  stackInstanceNameSuffix,
+  withNameGeneration,
+  withStackScope,
+} from '../../../src/provisioning/resource-name.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackOrphanRecord } from '../../../src/types/state.js';
+
+const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+const v13 = { stackName: 'App', stackInstanceId: ID, nameGenerations: new Map<string, number>() };
+const legacy = { stackName: 'App', stackInstanceId: undefined, nameGenerations: undefined };
+const name = (logicalId: string, g: number) =>
+  `App-${logicalId}-${stackInstanceNameSuffix(ID, logicalId, g)}`;
+
+/** The arm, asked at generation 1 for `logicalId` (as `update.ts` binds it). */
+const atNext = (
+  input: Partial<Parameters<typeof replacementGeneratedNameMoves>[0]> & { logicalId: string },
+  scope: typeof v13 | typeof legacy = v13
+) =>
+  withStackScope(scope, () =>
+    withNameGeneration({ logicalId: input.logicalId, generation: 1 }, () =>
+      replacementGeneratedNameMoves({
+        oldResourceType: 'AWS::DynamoDB::Table',
+        newResourceType: 'AWS::DynamoDB::Table',
+        createdVia: 'sdk',
+        desiredProperties: {},
+        physicalId: name(input.logicalId, 0),
+        ...input,
+      })
+    )
+  );
+
+describe('replacementGeneratedNameMoves', () => {
+  it('a verbatim-generated type moves to the next generation name, marked generated', () => {
+    expect(atNext({ logicalId: 'Table' })).toEqual({
+      property: 'TableName',
+      desiredName: name('Table', 1),
+      heldName: undefined,
+      heldProperty: undefined,
+      physicalId: name('Table', 0),
+      generated: true,
+    });
+  });
+
+  it('a rewriting provider (IAM role) and a derived one (S3 bucket) move too', () => {
+    expect(
+      atNext({
+        logicalId: 'Role',
+        oldResourceType: 'AWS::IAM::Role',
+        newResourceType: 'AWS::IAM::Role',
+        physicalId: name('Role', 0),
+      })?.desiredName
+    ).toBe(name('Role', 1));
+    const bucket = atNext({
+      logicalId: 'Bucket',
+      oldResourceType: 'AWS::S3::Bucket',
+      newResourceType: 'AWS::S3::Bucket',
+      physicalId: name('Bucket', 0).toLowerCase(),
+    });
+    expect(bucket?.desiredName).toBe(name('Bucket', 1).toLowerCase());
+  });
+
+  it('an ARN-shaped old id is read by its name segment (an SNS topic)', () => {
+    expect(
+      atNext({
+        logicalId: 'Topic',
+        oldResourceType: 'AWS::SNS::Topic',
+        newResourceType: 'AWS::SNS::Topic',
+        physicalId: `arn:aws:sns:us-east-1:123456789012:${name('Topic', 1)}`,
+      })
+    ).toBeUndefined();
+  });
+
+  it('answers nothing on a legacy stack, a Type change, a declared name or an unknown type', () => {
+    expect(atNext({ logicalId: 'Table' }, legacy)).toBeUndefined();
+    expect(
+      atNext({ logicalId: 'Table', oldResourceType: 'AWS::DynamoDB::GlobalTable' })
+    ).toBeUndefined();
+    expect(atNext({ logicalId: 'Table', desiredProperties: { TableName: 'mine' } })).toBeUndefined();
+    expect(
+      atNext({
+        logicalId: 'Sg',
+        oldResourceType: 'AWS::EC2::SecurityGroup',
+        newResourceType: 'AWS::EC2::SecurityGroup',
+      })
+    ).toBeUndefined();
+  });
+
+  it('answers nothing when the old resource already holds the name (no move)', () => {
+    expect(atNext({ logicalId: 'Table', physicalId: name('Table', 1) })).toBeUndefined();
+  });
+});
+
+describe('planOrphanAdoption on a stack with an instance id', () => {
+  const record: StackOrphanRecord = {
+    logicalId: 'Kept',
+    orphanedAt: 1,
+    state: {
+      physicalId: name('Kept', 0),
+      resourceType: 'AWS::SQS::Queue',
+      properties: {},
+    },
+  };
+  const template = {
+    Resources: { Kept: { Type: 'AWS::SQS::Queue', Properties: {} } },
+  } as unknown as CloudFormationTemplate;
+  const plan = (newScheme: boolean, managed: string[] = []) => {
+    const provider = { import: vi.fn(async () => ({ physicalId: name('Kept', 0), attributes: {} })) };
+    return {
+      provider,
+      result: planOrphanAdoption({
+        records: [record],
+        managedLogicalIds: new Set(managed),
+        template,
+        stackName: 'App',
+        region: 'us-east-1',
+        getProvider: () => provider as never,
+        nameProperties: () => ['QueueName'],
+        readSiblingClaims: async () => new Set(),
+        logger: { debug: () => undefined },
+        newScheme,
+      }),
+    };
+  };
+
+  it('takes nothing back, reads nothing from AWS, keeps the record and warns naming cdkd import', async () => {
+    const { provider, result } = plan(true);
+    const outcome = await result;
+    expect(outcome.adopted).toEqual({});
+    expect(outcome.remaining).toEqual([record]);
+    expect(outcome.warnings).toHaveLength(1);
+    expect(outcome.warnings[0]).toMatch(/does not take it back.*'cdkd import'/);
+    expect(provider.import).not.toHaveBeenCalled();
+  });
+
+  it('drops the record once its logical id is managed again, silently', async () => {
+    const outcome = await plan(true, ['Kept']).result;
+    expect(outcome.remaining).toEqual([]);
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('a legacy stack still adopts (unchanged)', async () => {
+    const { provider, result } = plan(false);
+    const outcome = await result;
+    expect(Object.keys(outcome.adopted)).toEqual(['Kept']);
+    expect(provider.import).toHaveBeenCalled();
+  });
+});

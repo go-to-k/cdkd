@@ -392,6 +392,27 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     );
   });
 
+  // go-to-k/cdkd#5064 phase 2: a rollback writes it into the restored record's
+  // high-water mark, so only a non-negative integer is read.
+  it('refuses a nameGeneration that is not a non-negative integer, on either op list', () => {
+    for (const [bad, k] of [
+      ['1', 'string'],
+      [-1, 'number'],
+      [1.5, 'number'],
+      [null, 'null'],
+    ] as const) {
+      expect(messageOf(journalWith([{ ...op, nameGeneration: bad }]))).toContain(
+        `segments[0].operations[0].nameGeneration must be a non-negative integer when present (got ${k}).`
+      );
+      expect(messageOf(journalWith([], [{ ...op, nameGeneration: bad }]))).toContain(
+        `segments[0].failedOperations[0].nameGeneration must be a non-negative integer when present (got ${k}).`
+      );
+    }
+    expect(() =>
+      parseRollbackJournal(journalWith([{ ...op, nameGeneration: 3 }]), 'MyStack')
+    ).not.toThrow();
+  });
+
   // go-to-k/cdkd#1710: both select a `--revert-failed` delete arm for a
   // resource no state record holds; a misspelled policy would fall to Delete.
   it('refuses a planted physicalIdRecoveredFromError or deletionPolicy on a failed op', () => {

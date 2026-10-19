@@ -5,6 +5,7 @@ import {
   DeletePolicyCommand,
   DeleteRoleCommand,
   DeleteRolePolicyCommand,
+  GetInstanceProfileCommand,
   PutRolePolicyCommand,
 } from '@aws-sdk/client-iam';
 import { PutRuleCommand } from '@aws-sdk/client-eventbridge';
@@ -49,7 +50,13 @@ import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-pr
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
-import { generateResourceName, withStackScope } from '../../../src/provisioning/resource-name.js';
+import {
+  generateResourceName,
+  withNameGeneration,
+  withStackScope,
+} from '../../../src/provisioning/resource-name.js';
+import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
 
 const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 const STACK = 'MyStack';
@@ -245,5 +252,55 @@ describe('EventBridge rule update keeps a generated name (#5064)', () => {
       )
     );
     expect(sent(PutRuleCommand).map((i) => i['Name'])).toEqual([name]);
+  });
+});
+
+// go-to-k/cdkd#5064 phase 2, defense in depth: an IAM user, group or instance
+// profile `update()` never re-derives its name, so it cannot rename or replace
+// the resource whatever generation the scope holds for it -- a replacement
+// moving the generation happens in the engine, which creates first.
+describe('IAM user / group / instance profile update never replaces (#5064 phase 2)', () => {
+  const atGeneration = <T>(generation: number, fn: () => Promise<T>): Promise<T> =>
+    withStackScope(v13Scope, () => withNameGeneration({ logicalId: 'Principal', generation }, fn));
+
+  it.each([
+    ['AWS::IAM::User', 'UserName', 64],
+    ['AWS::IAM::Group', 'GroupName', 128],
+  ])('%s: a no-op update under the next generation keeps the recorded name', async (type, _prop, max) => {
+    const recorded = suffixed('Principal', max);
+    for (const generation of [0, 1]) {
+      mockSend.mockClear();
+      const result = await atGeneration(generation, () =>
+        new IAMUserGroupProvider().update('Principal', recorded, type, {}, {})
+      );
+      expect(result.physicalId).toBe(recorded);
+      expect(result.wasReplaced ?? false).toBe(false);
+      const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(names.filter((n) => /^(Create|Delete)(User|Group)Command$/.test(n))).toEqual([]);
+    }
+  });
+
+  it('AWS::IAM::InstanceProfile: a no-op update under the next generation keeps the recorded name', async () => {
+    const recorded = suffixed('Principal', 128);
+    mockSend.mockImplementation(async (command: object) =>
+      command instanceof GetInstanceProfileCommand
+        ? { InstanceProfile: { InstanceProfileName: recorded, Roles: [] } }
+        : {}
+    );
+    for (const generation of [0, 1]) {
+      mockSend.mockClear();
+      const result = await atGeneration(generation, () =>
+        new IAMInstanceProfileProvider().update(
+          'Principal',
+          recorded,
+          'AWS::IAM::InstanceProfile',
+          { Roles: [] },
+          { Roles: [] }
+        )
+      );
+      expect(result.physicalId).toBe(recorded);
+      const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(names.filter((n) => /^(Create|Delete)InstanceProfileCommand$/.test(n))).toEqual([]);
+    }
   });
 });

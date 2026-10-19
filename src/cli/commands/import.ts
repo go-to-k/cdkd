@@ -4915,8 +4915,10 @@ function constructPathField(path: string | undefined): { constructPath?: string 
  * replaced record reached as its high-water mark. A row the import is
  * repairing (unreadable, or holding a malformed generation) contributes
  * nothing: the import is its way out, never a second refusal.
+ *
+ * @internal Exported for its unit test.
  */
-function importedNameGenerationFields(
+export function importedNameGenerationFields(
   prior: ResourceState | null | undefined,
   row: { logicalId: string; physicalId?: string | undefined }
 ): Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'> {

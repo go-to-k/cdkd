@@ -502,6 +502,38 @@ describe('resolvePendingCloudControlRequests (#3252)', () => {
       expect.objectContaining({ stackInstanceId: STACK_INSTANCE_ID })
     );
   });
+
+  // go-to-k/cdkd#5064 phase 2: the bound is one past the higher of the op's
+  // generation and the record's high-water mark.
+  it('#5064 phase 2: forwards one past the highest generation the op or the record names', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    for (const [opGeneration, record, through] of [
+      [undefined, undefined, 1],
+      [4, undefined, 5],
+      [1, { physicalId: 'other', nameGeneration: 2, nameGenerationHigh: 6 }, 7],
+    ] as const) {
+      const journal = memoryJournal(
+        journalOf({
+          ...pendingOp('Logs', 't1'),
+          ...(opGeneration !== undefined && { nameGeneration: opGeneration }),
+        })
+      );
+      const identifierUnique = vi.fn().mockResolvedValue(true);
+      await resolvePendingCloudControlRequests({
+        ...base,
+        stackInstanceId: STACK_INSTANCE_ID,
+        identifierUnique,
+        journal,
+        loaded: structuredClone(journal.current()),
+        reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'my-group' } }),
+        logger: logger(),
+        ...(record !== undefined && { stateResources: { Logs: record } }),
+      });
+      expect(identifierUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ nameGenerationsThrough: through })
+      );
+    }
+  });
 });
 
 describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (#3252)', () => {
@@ -604,6 +636,36 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
         stackInstanceId: undefined,
       })
     ).toBe(true);
+  });
+
+  // go-to-k/cdkd#5064 phase 2: a re-added logical id's create derives a later
+  // generation; the journaled op names it, and every generation up to one past
+  // it reads as generated -- NOT unique, the safe answer (the resource is kept).
+  it('#5064 phase 2: a later generation reads as generated up to the bound, unique past it', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const gen3 = withStackScope(
+      {
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+        nameGenerations: new Map([['Thing', 3]]),
+      },
+      () => generateResourceName('Thing', { maxLength: 64 })
+    );
+    ccSchema.fields = ['Id'];
+    ccSchema.readOnly = new Set(['Id']);
+    const ask = (nameGenerationsThrough: number | undefined) =>
+      ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: gen3,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+        nameGenerationsThrough,
+      });
+    expect(await ask(3)).toBe(false);
+    expect(await ask(4)).toBe(false);
+    expect(await ask(2)).toBe(true);
   });
 });
 

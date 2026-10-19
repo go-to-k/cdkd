@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { setStdinIsTty } from '../../../stdin-tty.js';
+import type { StackState } from '../../../../src/types/state.js';
 
 vi.mock('../../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), setLevel: vi.fn(), child: () => l };
@@ -739,6 +740,45 @@ describe('rollbackCommand', () => {
     // Idempotency: the replayed failed-ops are stripped from the journal so a
     // later completed-op failure re-run cannot re-issue the revert.
     expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1', []);
+  });
+
+  // go-to-k/cdkd#5064 phase 2: the failed replacement's create may have made a
+  // resource under the generation it asked for, so the reverted record's
+  // high-water mark is raised to it; without --revert-failed nothing moves.
+  it.each([
+    [true, 2],
+    [false, undefined],
+  ])('--revert-failed %s: the record remembers the generation the failed replacement asked for', async (revertFailed, high) => {
+    const record = { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] };
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: record,
+      attemptedProperties: { a: 2 },
+      nameGeneration: 2,
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 13, stackName: 'S', region: 'us-east-1', resources: { Q: record }, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [failedOp] }],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed });
+    const saved = backend.saveState.mock.calls.map((c) => (c[2] as StackState).resources['Q']);
+    if (high === undefined) {
+      for (const r of saved) expect(r?.nameGenerationHigh).toBeUndefined();
+    } else {
+      expect(saved.at(-1)?.nameGenerationHigh).toBe(high);
+    }
   });
 
   it('--revert-failed on: a failed-op revert failure keeps the segment (exit 2)', async () => {
