@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-rollback-same-id-recreate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Exercises cdkd rollback of a replacement that re-created a resource under the same physical id (#5096) against real AWS",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

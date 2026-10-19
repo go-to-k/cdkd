@@ -351,6 +351,7 @@
         "rollback-nested-cross-region-secret",
         "rollback-replacement-retain",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
@@ -433,6 +434,7 @@
         "rollback-command",
         "rollback-replacement-retain",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "s3-lifecycle",
         "type-change-replacement",
@@ -498,6 +500,7 @@
         "rollback-cross-region-secret",
         "rollback-explicit-name-rewrite",
         "rollback-nested-cross-region-secret",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "s3-analytics-inventory",
         "s3-directory-bucket",
@@ -780,6 +783,7 @@
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
@@ -1159,6 +1163,7 @@
         "rollback-nested-cross-region-secret",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
@@ -1254,7 +1259,8 @@
         "lambda-layer-version-update",
         "loggroup-class-guard",
         "nested-stack-replace-guard",
-        "replace-squatter-refusal"
+        "replace-squatter-refusal",
+        "rollback-same-id-recreate"
       ]
     },
     {
@@ -1591,6 +1597,7 @@
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",

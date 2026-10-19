@@ -1120,6 +1120,7 @@
         "perf-cross-backend-check",
         "remove-protection",
         "rename-refactor",
+        "rollback-same-id-recreate",
         "s3-event-notification",
         "serverless-api",
         "sns-event-source",
@@ -1215,6 +1216,10 @@
           "literal"
         ],
         "rename-refactor": [
+          "l2",
+          "literal"
+        ],
+        "rollback-same-id-recreate": [
           "l2",
           "literal"
         ],
@@ -5917,6 +5922,7 @@
         "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
+        "rollback-same-id-recreate",
         "route53",
         "scheduled-task",
         "secret-derived-immutable-names",
@@ -6020,6 +6026,10 @@
           "literal"
         ],
         "retain-orphan-redeploy": [
+          "literal"
+        ],
+        "rollback-same-id-recreate": [
+          "l2",
           "literal"
         ],
         "route53": [
@@ -6957,6 +6967,7 @@
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
+        "rollback-same-id-recreate",
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
@@ -7150,6 +7161,9 @@
           "l1"
         ],
         "rollback-replay-effective-props": [
+          "l1"
+        ],
+        "rollback-same-id-recreate": [
           "l1"
         ],
         "rollback-sqs-cooldown": [
