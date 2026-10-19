@@ -149,7 +149,7 @@ cleanup() {
   fi
   for name in "${LEFT_ALB_NAMES[@]}"; do
     arn="$(aws elbv2 describe-load-balancers --region "${REGION}" --names "${name}" \
-      --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)"
+      --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)"; [ $? -eq 0 ] || arn=""
     case "${arn}" in
       arn:*)
         aws elbv2 delete-load-balancer --region "${REGION}" --load-balancer-arn "${arn}" >/dev/null 2>&1
