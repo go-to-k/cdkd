@@ -38,6 +38,7 @@ const UPDATE = process.env.CDKD_TEST_UPDATE === 'true';
  * covers: AWS::Lambda::Function
  * covers: AWS::Lambda::Permission
  * covers: AWS::Logs::LogGroup
+ * covers: AWS::ApiGateway::Account
  */
 export class ApigwStageThrottlingStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -58,10 +59,12 @@ export class ApigwStageThrottlingStack extends cdk.Stack {
 
     const api = new apigateway.RestApi(this, 'Api', {
       restApiName: 'cdkd-stage-throttling-api',
-      // Skip CDK's auto-emitted AWS::ApiGateway::Account + its CloudWatch
-      // role — the role is RemovalPolicy.RETAIN by default, so it would
-      // survive destroy and collide (deterministic name) on the next run.
-      cloudWatchRole: false,
+      // Access logging needs the account-level CloudWatch role, so the fixture
+      // sets its own instead of depending on whatever an earlier run left
+      // there. DESTROY, not CDK's RETAIN default: a retained role survives
+      // destroy and collides (deterministic name) on the next run.
+      cloudWatchRole: true,
+      cloudWatchRoleRemovalPolicy: cdk.RemovalPolicy.DESTROY,
       deployOptions: {
         stageName: 'test',
         // AccessLogSetting is SDK-wired since the #609 Stage backfill (it

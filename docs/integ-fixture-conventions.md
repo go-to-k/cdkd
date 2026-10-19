@@ -388,7 +388,11 @@ The lint does not see one more RETAIN default: `apigateway.RestApi` (and
 `AWS::ApiGateway::Account` plus a
 RETAINed CloudWatch role with a deterministic name, so every run leaks the role
 and the next run fails on it with "already exists". Pass `cloudWatchRole: false`
-unless the fixture's subject is that account setting.
+unless the fixture's stage turns on access or execution logging: API Gateway
+then refuses the stage ("CloudWatch Logs role ARN must be set in account
+settings") unless the account points at a live role, so the fixture owns one
+with `cloudWatchRole: true` plus `cloudWatchRoleRemovalPolicy: DESTROY` (an L1
+fixture: an `iam.Role` and a `CfnAccount` the stage depends on).
 
 `tests/unit/scripts/integ-fixture-removal-policy.test.ts` enforces this across
 the fixture tree (classifier: `scripts/check-fixture-removal-policy.ts`), with

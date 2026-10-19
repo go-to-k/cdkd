@@ -144,11 +144,16 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
+        "apigw-stage-props",
         "apigw-stage-throttling",
         "wafv2"
       ],
       "signals": {
         "apigateway": [
+          "literal"
+        ],
+        "apigw-stage-props": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -4463,6 +4468,7 @@
       "integs": [
         "agentcore-tools",
         "apigatewayv2-update-removal",
+        "apigw-stage-props",
         "appsync",
         "batch",
         "cc-api-fallback",
@@ -4568,6 +4574,9 @@
           "l2"
         ],
         "apigatewayv2-update-removal": [
+          "l2"
+        ],
+        "apigw-stage-props": [
           "l2"
         ],
         "appsync": [
