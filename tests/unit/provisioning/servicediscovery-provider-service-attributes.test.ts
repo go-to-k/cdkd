@@ -289,7 +289,8 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       expect(del).toBeDefined();
       expect(del!.input).toEqual({ ServiceId: 'srv-1', Attributes: ['stale'] });
 
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      // GetService (the #1160 read-back) + the three mutation calls.
+      expect(mockSend).toHaveBeenCalledTimes(4);
     });
   });
 });
