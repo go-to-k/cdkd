@@ -9,7 +9,7 @@
 # of the same app asks IAM for the name the kept role still holds.
 #
 # Phases:
-#   A (premise, released @go-to-k/cdkd@0.301.9): deploy, destroy (the role is
+#   A (premise, released @go-to-k/cdkd@0.301.12): deploy, destroy (the role is
 #     kept), redeploy -> FAILS on the IAM name the kept role holds.
 #   B (this build): a fresh deploy, destroy (the role is kept and still exists),
 #     redeploy -> succeeds: the new role's name differs from the kept one, the
@@ -73,7 +73,7 @@ NEW_PREFIX="$(s3_stack_prefix "${NEW_STACK}" "${REGION}")"
 ROLE_ID="ApiCloudWatchRole73EC6FC4"
 
 # The last released cdkd before #5064 when this fixture was written.
-REL_CDKD_VERSION="0.301.9"
+REL_CDKD_VERSION="0.301.12"
 REL_TMPDIR=""
 REL_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"

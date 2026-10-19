@@ -6,7 +6,7 @@ declares an IAM role and an `AWS::ApiGateway::Account`, both
 `DeletionPolicy: Retain` (CDK's default). `cdkd destroy` keeps them in AWS, as
 CloudFormation does.
 
-- **Premise** (released `@go-to-k/cdkd@0.301.9`): the role is named
+- **Premise** (released `@go-to-k/cdkd@0.301.12`): the role is named
   `{stack}-{logicalId}`, so deploy, destroy, redeploy fails: IAM refuses the
   name the kept role still holds.
 - **This build**: a fresh stack names the role `{stack}-{logicalId}-{12 hex}`.
