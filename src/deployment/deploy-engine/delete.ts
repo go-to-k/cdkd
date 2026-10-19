@@ -27,7 +27,7 @@ import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
 import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
-import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js';
+import { KeptForReadoption, keptForRetainedRecord } from '../retained-readoption.js';
 
 /**
  * What {@link provisionDelete} reads from the engine, built at each call site
@@ -106,8 +106,10 @@ export async function provisionDelete(
     // token, so a later create of the logical id must not send it again.
     await noteRetainedResource(resourceType, logicalId);
     // go-to-k/cdkd#4705: and a later deploy that adds it back takes it back
-    // by its generated name rather than refusing that name.
-    if (keptForReadoption(currentResource)) {
+    // by its generated name rather than refusing that name; go-to-k/cdkd#5064:
+    // every kept generated-name resource is recorded, as a destroy records
+    // it, so a later lifetime's first deploy names `cdkd import` for it.
+    if (keptForRetainedRecord(currentResource)) {
       let kept = keptByEngine.get(deps.owner);
       if (kept === undefined) {
         kept = new KeptForReadoption(deps.stateBackend, stackName, deps.stackRegion, deps.logger);

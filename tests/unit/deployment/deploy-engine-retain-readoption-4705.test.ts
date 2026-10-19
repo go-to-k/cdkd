@@ -90,13 +90,13 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
   }
 
   async function remove(
-    rows: Array<{ id: string; type: string; physicalId: string; policy: string; properties?: Record<string, unknown> }>
+    rows: Array<{ id: string; type: string; physicalId: string; policy: string; properties?: Record<string, unknown>; via?: string }>
   ): Promise<void> {
     const e = engine();
     const stateResources: Record<string, unknown> = Object.fromEntries(
       rows.map((r) => [
         r.id,
-        { physicalId: r.physicalId, resourceType: r.type, properties: r.properties ?? {}, attributes: {}, dependencies: [], deletionPolicy: r.policy, provisionedBy: 'sdk' },
+        { physicalId: r.physicalId, resourceType: r.type, properties: r.properties ?? {}, attributes: {}, dependencies: [], deletionPolicy: r.policy, provisionedBy: r.via ?? 'sdk' },
       ])
     );
     (e as unknown as { doDeploy: () => Promise<unknown> }).doDeploy = async () => {
@@ -141,10 +141,18 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
     expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
   });
 
-  it('records nothing for a declared name, a type whose create fails on a taken name, or a Delete removal', async () => {
+  it('records a kept type no create adopts (an IAM role), as a destroy does (go-to-k/cdkd#5064)', async () => {
+    await remove([{ id: 'Role', type: 'AWS::IAM::Role', physicalId: 'r', policy: 'Retain' }]);
+    expect(saved.at(-1)).toEqual([
+      { logicalId: 'Earlier', resourceType: 'AWS::SQS::Queue', physicalId: 'q' },
+      { logicalId: 'Role', resourceType: 'AWS::IAM::Role', physicalId: 'r' },
+    ]);
+  });
+
+  it('records nothing for a declared name, a name-adopting type made through Cloud Control, or a Delete removal', async () => {
     await remove([
       { id: 'Named', type: 'AWS::S3::Bucket', physicalId: 'mine', policy: 'Retain', properties: { BucketName: 'mine' } },
-      { id: 'Role', type: 'AWS::IAM::Role', physicalId: 'r', policy: 'Retain' },
+      { id: 'CcBucket', type: 'AWS::S3::Bucket', physicalId: 'cc', policy: 'Retain', via: 'cc-api' },
       { id: 'Gone', type: 'AWS::S3::Bucket', physicalId: 'g', policy: 'Delete' },
     ]);
     expect(saved).toEqual([]);
