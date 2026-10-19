@@ -2,7 +2,7 @@
 # verify.sh — cdkd state schema v12 -> v13 migration round-trip integ test
 # (issue #5064: the per-stack-instance id).
 #
-# A state file the last v12 binary (@go-to-k/cdkd@0.301.7) wrote holds no
+# A state file the last v12 binary (@go-to-k/cdkd@0.301.12) wrote holds no
 # `stackInstanceId`. The local v13 binary reads it with no user action, and its
 # deploys rewrite it to `version: 13` WITHOUT minting an id: a stack that
 # already has a record stays legacy, and no `stack-instance.json` is ever
@@ -90,7 +90,7 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # The LAST v12-writing cdkd release on npm when this fixture was written.
 # Phase 1 asserts it writes `version: 12` AND no id, so a wrong pin fails
 # loudly instead of quietly testing something else.
-V12_CDKD_VERSION="0.301.7"
+V12_CDKD_VERSION="0.301.12"
 V12_TMPDIR=""
 V12_BIN=""
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
