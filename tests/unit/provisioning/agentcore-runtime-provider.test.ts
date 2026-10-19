@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
+import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 describe('AgentCoreRuntimeProvider', () => {
   let provider: AgentCoreRuntimeProvider;
@@ -231,6 +232,68 @@ describe('AgentCoreRuntimeProvider', () => {
           }
         )
       ).rejects.toThrow('Failed to update BedrockAgentCore Runtime MyRuntime');
+    });
+
+    // Issue #1160: UpdateAgentRuntime is a full replace, and a CloudFormation
+    // A/B (us-east-1) cleared all five removed fields (the lifecycle back to
+    // the service defaults), which is what omitting them does. The pin: a
+    // removed field is never refilled from the previous template, and the
+    // update caller injects and warns about nothing for this type.
+    it('omits every removed field from the full-replace update, as CloudFormation clears them (issue #1160)', async () => {
+      mockSend.mockResolvedValueOnce({ agentRuntimeId: 'runtime-12345', status: 'UPDATING' });
+      const base = {
+        AgentRuntimeName: 'my-runtime',
+        RoleArn: 'arn:aws:iam::123456789012:role/my-role',
+        AgentRuntimeArtifact: {
+          CodeConfiguration: {
+            Code: { S3: { Bucket: 'b', Prefix: 'code.zip' } },
+            Runtime: 'PYTHON_3_12',
+            EntryPoint: ['main.py'],
+          },
+        },
+        NetworkConfiguration: { NetworkMode: 'PUBLIC' },
+      };
+      const previous = {
+        ...base,
+        Description: 'old',
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://example.com/.well-known/openid-configuration',
+            AllowedClients: ['c'],
+          },
+        },
+        ProtocolConfiguration: 'MCP',
+        LifecycleConfiguration: { IdleRuntimeSessionTimeout: 600, MaxLifetime: 3600 },
+        EnvironmentVariables: { K: 'v' },
+      };
+
+      const removal = prepareRemovalForUpdate(
+        provider,
+        'AWS::BedrockAgentCore::Runtime',
+        base,
+        previous
+      );
+      expect(removal.injected).toEqual([]);
+      expect(removal.unhandled).toEqual([]);
+      expect(removal.properties).toBe(base);
+
+      await provider.update(
+        'MyRuntime',
+        'runtime-12345',
+        'AWS::BedrockAgentCore::Runtime',
+        removal.properties,
+        previous,
+        removal.context
+      );
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.constructor.name).toBe('UpdateAgentRuntimeCommand');
+      expect(Object.keys(updateCall.input).sort()).toEqual([
+        'agentRuntimeArtifact',
+        'agentRuntimeId',
+        'networkConfiguration',
+        'roleArn',
+      ]);
     });
   });
 

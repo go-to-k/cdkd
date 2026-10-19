@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd Bedrock AgentCore tools integ (issues #1038 / #1039 / #1058).
+# verify.sh — cdkd Bedrock AgentCore tools integ (issues #1038 / #1039 / #1058 / #1160).
 #
 # Exercises the three AgentCore tool-side SDK Providers:
 #   - AWS::BedrockAgentCore::Browser (adopt-only default singleton)
@@ -11,7 +11,11 @@
 #      (outputs carry their ARNs) and the evaluator exists at TRACE level.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (Description / Level / tags
 #      change). Assert the changes reached AWS in-place: same evaluator id.
-#   3. Destroy; assert the evaluator is gone, the AWS-managed defaults are
+#   3. Re-deploy with CDKD_TEST_REMOVAL=true: Description REMOVED, Level
+#      back to TRACE (#1160). A CloudFormation A/B kept a removed Evaluator
+#      Description, so assert the live one survives, in place; the Level
+#      change proves the redeploy reached UpdateEvaluator.
+#   4. Destroy; assert the evaluator is gone, the AWS-managed defaults are
 #      STILL there (no-op delete must not touch them), and state is removed.
 #
 # Required env vars:
@@ -126,7 +130,7 @@ cleanup
 
 # --- Phase 1: deploy baseline (evaluator at TRACE) ---------------------
 echo "==> Phase 1: deploy AgentCore tools stack"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 EVALUATOR_ID_P1="$(find_evaluator_id)"
@@ -154,7 +158,7 @@ echo "    default browser + code interpreter adopted into state"
 
 # --- Phase 2: in-place UPDATE (Description / Level / tags) -------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (TRACE -> SESSION)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 EVALUATOR_ID_P2="$(find_evaluator_id)"
@@ -177,8 +181,34 @@ if [ "${EVALUATOR_ID_P1}" != "${EVALUATOR_ID_P2}" ]; then
 fi
 echo "    evaluator updated in-place (id unchanged, level ${LEVEL_P2})"
 
-# --- Phase 3: destroy --------------------------------------------------
-echo "==> Phase 3: destroy"
+# --- Phase 3: REMOVAL drops Description (issue #1160) ------------------
+echo "==> Phase 3: re-deploy with CDKD_TEST_REMOVAL=true (Description removed, SESSION -> TRACE)"
+env -u CDKD_TEST_UPDATE CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+EVALUATOR_ID_P3="$(find_evaluator_id)"
+if [ "${EVALUATOR_ID_P3}" != "${EVALUATOR_ID_P1}" ]; then
+  echo "FAIL: evaluator was REPLACED by the removal (${EVALUATOR_ID_P1} -> ${EVALUATOR_ID_P3})" >&2
+  exit 1
+fi
+LEVEL_P3="$(aws bedrock-agentcore-control get-evaluator --evaluator-id "${EVALUATOR_ID_P3}" \
+  --region "${REGION}" --query 'level' --output text)"
+DESC_P3="$(aws bedrock-agentcore-control get-evaluator --evaluator-id "${EVALUATOR_ID_P3}" \
+  --region "${REGION}" --query 'description' --output text)"
+# The Level change is the proof the redeploy reached UpdateEvaluator, so a
+# kept Description below is not a skipped update.
+if [ "${LEVEL_P3}" != "TRACE" ]; then
+  echo "FAIL: expected level TRACE after Phase 3, got ${LEVEL_P3}" >&2
+  exit 1
+fi
+if [ "${DESC_P3}" != "cdkd integ evaluator (updated)" ]; then
+  echo "FAIL: a removed Description must stay as it was, as CloudFormation keeps it (issue #1160); got '${DESC_P3}'" >&2
+  exit 1
+fi
+echo "    evaluator updated in-place (level ${LEVEL_P3}); removed Description kept, as CloudFormation does (issue #1160)"
+
+# --- Phase 4: destroy --------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 LEFTOVER_EVALUATOR="$(find_evaluator_id)"
@@ -203,4 +233,4 @@ echo "    AWS-managed defaults untouched (READY)"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy, all 3 phases passed"
+echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy, all 4 phases passed"
