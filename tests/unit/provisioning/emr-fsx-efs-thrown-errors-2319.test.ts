@@ -211,7 +211,8 @@ type Site = {
   answers?: Record<string, unknown>;
   /** Which send of `command` fails (default: the first). */
   nth?: number;
-  run: () => Promise<unknown>;
+  /** `ctx` is the operation's context, threaded as its last argument. */
+  run: (ctx?: { maskSecrets: (text: string) => string }) => Promise<unknown>;
 };
 
 function sites(): Site[] {
@@ -228,7 +229,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:RunJobFlow',
       prefix: 'Failed to create EMR Cluster Res: ',
-      run: () => cluster.create('Res', CLUSTER, { ...CLUSTER_PROPS }),
+      run: (ctx) => cluster.create('Res', CLUSTER, { ...CLUSTER_PROPS }, ctx),
     },
     {
       site: 'EMR update Cluster',
@@ -236,14 +237,13 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:ModifyCluster',
       prefix: 'Failed to update EMR Cluster Res: ',
-      run: () =>
+      run: (ctx) =>
         cluster.update(
           'Res',
           CLUSTER_ID,
           CLUSTER,
           { ...CLUSTER_PROPS, StepConcurrencyLevel: 2 },
-          { ...CLUSTER_PROPS, StepConcurrencyLevel: 1 }
-        ),
+          { ...CLUSTER_PROPS, StepConcurrencyLevel: 1 }, ctx),
     },
     {
       site: 'EMR delete Cluster describe',
@@ -251,7 +251,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:DescribeCluster',
       prefix: 'Failed to describe EMR Cluster Res before deletion: ',
-      run: () => cluster.delete('Res', CLUSTER_ID, CLUSTER),
+      run: (ctx) => cluster.delete('Res', CLUSTER_ID, CLUSTER, undefined, ctx),
     },
     {
       site: 'EMR delete Cluster terminate',
@@ -260,7 +260,7 @@ function sites(): Site[] {
       action: 'elasticmapreduce:TerminateJobFlows',
       prefix: 'Failed to terminate EMR Cluster Res: ',
       answers: { DescribeClusterCommand: RUNNING_CLUSTER },
-      run: () => cluster.delete('Res', CLUSTER_ID, CLUSTER),
+      run: (ctx) => cluster.delete('Res', CLUSTER_ID, CLUSTER, undefined, ctx),
     },
     {
       site: 'EMR delete Cluster termination poll',
@@ -270,7 +270,7 @@ function sites(): Site[] {
       prefix: `Failed to poll EMR Cluster ${CLUSTER_ID} termination: `,
       answers: { DescribeClusterCommand: RUNNING_CLUSTER },
       nth: 2,
-      run: () => cluster.delete('Res', CLUSTER_ID, CLUSTER),
+      run: (ctx) => cluster.delete('Res', CLUSTER_ID, CLUSTER, undefined, ctx),
     },
     {
       site: 'EMR create InstanceGroupConfig',
@@ -278,7 +278,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:AddInstanceGroups',
       prefix: 'Failed to add EMR instance group Res: ',
-      run: () => group.create('Res', GROUP, { ...GROUP_PROPS }),
+      run: (ctx) => group.create('Res', GROUP, { ...GROUP_PROPS }, ctx),
     },
     {
       site: 'EMR update InstanceGroupConfig',
@@ -286,8 +286,8 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:ModifyInstanceGroups',
       prefix: 'Failed to update EMR instance group Res: ',
-      run: () =>
-        group.update('Res', 'ig-ABC123', GROUP, { ...GROUP_PROPS, InstanceCount: 2 }, GROUP_PROPS),
+      run: (ctx) =>
+        group.update('Res', 'ig-ABC123', GROUP, { ...GROUP_PROPS, InstanceCount: 2 }, GROUP_PROPS, ctx),
     },
     {
       site: 'EMR create InstanceFleetConfig',
@@ -295,7 +295,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:AddInstanceFleet',
       prefix: 'Failed to add EMR instance fleet Res: ',
-      run: () => fleet.create('Res', FLEET, { ...FLEET_PROPS }),
+      run: (ctx) => fleet.create('Res', FLEET, { ...FLEET_PROPS }, ctx),
     },
     {
       site: 'EMR update InstanceFleetConfig',
@@ -303,14 +303,13 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticmapreduce:ModifyInstanceFleet',
       prefix: 'Failed to update EMR instance fleet Res: ',
-      run: () =>
+      run: (ctx) =>
         fleet.update(
           'Res',
           'if-ABC123',
           FLEET,
           { ...FLEET_PROPS, TargetOnDemandCapacity: 2 },
-          FLEET_PROPS
-        ),
+          FLEET_PROPS, ctx),
     },
     {
       site: 'FSx create FileSystem',
@@ -318,7 +317,7 @@ function sites(): Site[] {
       name: 'AccessDenied',
       action: 'fsx:CreateFileSystem',
       prefix: 'Failed to create FSx FileSystem Res: ',
-      run: () => fsx.create('Res', FSX, { ...FSX_PROPS }),
+      run: (ctx) => fsx.create('Res', FSX, { ...FSX_PROPS }, ctx),
     },
     {
       site: 'FSx update FileSystem',
@@ -327,8 +326,8 @@ function sites(): Site[] {
       action: 'fsx:UpdateFileSystem',
       prefix: 'Failed to update FSx FileSystem Res: ',
       answers: { DescribeFileSystemsCommand: AVAILABLE_FS },
-      run: () =>
-        fsx.update('Res', FS_ID, FSX, { ...FSX_PROPS, StorageCapacity: 2400 }, { ...FSX_PROPS }),
+      run: (ctx) =>
+        fsx.update('Res', FS_ID, FSX, { ...FSX_PROPS, StorageCapacity: 2400 }, { ...FSX_PROPS }, ctx),
     },
     {
       site: 'FSx delete FileSystem',
@@ -337,7 +336,7 @@ function sites(): Site[] {
       action: 'fsx:DeleteFileSystem',
       prefix: 'Failed to delete FSx FileSystem Res: ',
       answers: { DescribeFileSystemsCommand: AVAILABLE_FS },
-      run: () => fsx.delete('Res', FS_ID, FSX),
+      run: (ctx) => fsx.delete('Res', FS_ID, FSX, undefined, ctx),
     },
     {
       site: 'FSx delete FileSystem deletion poll',
@@ -346,7 +345,7 @@ function sites(): Site[] {
       action: 'fsx:DescribeFileSystems',
       prefix: `Failed to poll FSx FileSystem ${FS_ID} deletion: `,
       answers: { DescribeFileSystemsCommand: AVAILABLE_FS },
-      run: () => fsx.delete('Res', FS_ID, FSX),
+      run: (ctx) => fsx.delete('Res', FS_ID, FSX, undefined, ctx),
     },
     {
       site: 'EFS create FileSystem',
@@ -354,7 +353,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:CreateFileSystem',
       prefix: 'Failed to create EFS FileSystem Res: ',
-      run: () => efs.create('Res', 'AWS::EFS::FileSystem', {}),
+      run: (ctx) => efs.create('Res', 'AWS::EFS::FileSystem', {}, ctx),
     },
     {
       site: 'EFS update FileSystem',
@@ -362,14 +361,13 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:UpdateFileSystem',
       prefix: 'Failed to update EFS FileSystem Res: ',
-      run: () =>
+      run: (ctx) =>
         efs.update(
           'Res',
           FS_ID,
           'AWS::EFS::FileSystem',
           { ThroughputMode: 'elastic' },
-          { ThroughputMode: 'bursting' }
-        ),
+          { ThroughputMode: 'bursting' }, ctx),
     },
     {
       site: 'EFS delete FileSystem',
@@ -377,7 +375,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:DeleteFileSystem',
       prefix: 'Failed to delete EFS FileSystem Res: ',
-      run: () => efs.delete('Res', FS_ID, 'AWS::EFS::FileSystem'),
+      run: (ctx) => efs.delete('Res', FS_ID, 'AWS::EFS::FileSystem', undefined, ctx),
     },
     {
       site: 'EFS create MountTarget',
@@ -385,11 +383,11 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:CreateMountTarget',
       prefix: 'Failed to create EFS MountTarget Res: ',
-      run: () =>
+      run: (ctx) =>
         efs.create('Res', 'AWS::EFS::MountTarget', {
           FileSystemId: FS_ID,
           SubnetId: 'subnet-0123456789abcdef0',
-        }),
+        }, ctx),
     },
     {
       site: 'EFS update MountTarget',
@@ -397,10 +395,10 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:ModifyMountTargetSecurityGroups',
       prefix: 'Failed to update EFS MountTarget Res: ',
-      run: () =>
+      run: (ctx) =>
         efs.update('Res', 'fsmt-0123456789abcdef0', 'AWS::EFS::MountTarget', {
           SecurityGroups: ['sg-1'],
-        }, {}),
+        }, {}, ctx),
     },
     {
       site: 'EFS delete MountTarget',
@@ -408,7 +406,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:DeleteMountTarget',
       prefix: 'Failed to delete EFS MountTarget Res: ',
-      run: () => efs.delete('Res', 'fsmt-0123456789abcdef0', 'AWS::EFS::MountTarget'),
+      run: (ctx) => efs.delete('Res', 'fsmt-0123456789abcdef0', 'AWS::EFS::MountTarget', undefined, ctx),
     },
     {
       site: 'EFS create AccessPoint',
@@ -416,7 +414,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:CreateAccessPoint',
       prefix: 'Failed to create EFS AccessPoint Res: ',
-      run: () => efs.create('Res', 'AWS::EFS::AccessPoint', { FileSystemId: FS_ID }),
+      run: (ctx) => efs.create('Res', 'AWS::EFS::AccessPoint', { FileSystemId: FS_ID }, ctx),
     },
     {
       site: 'EFS delete AccessPoint',
@@ -424,7 +422,7 @@ function sites(): Site[] {
       name: 'AccessDeniedException',
       action: 'elasticfilesystem:DeleteAccessPoint',
       prefix: 'Failed to delete EFS AccessPoint Res: ',
-      run: () => efs.delete('Res', 'fsap-0123456789abcdef0', 'AWS::EFS::AccessPoint'),
+      run: (ctx) => efs.delete('Res', 'fsap-0123456789abcdef0', 'AWS::EFS::AccessPoint', undefined, ctx),
     },
   ];
 }
@@ -466,6 +464,35 @@ describe('EMR / FSx / EFS thrown wraps keep the caller identity out (go-to-k/cdk
       expect(debugged()).toContain(`${prefix}User: ${CALLER_ARN} is not authorized`);
     });
 
+    it("masks AWS's text on the debug line through the operation's own maskSecrets", async () => {
+      const original = awsError(
+        'ValidationException',
+        "Value 'emr-fsx-efs-secret' at 'request' failed to satisfy constraint"
+      );
+      failOn(command, original, answers, nth);
+      const failure = await thrown(run({ maskSecrets: MASK }));
+
+      expect(failure.message).toContain(`${prefix}ValidationException. ${VERBOSE_POINTER}`);
+      expect(failure.message).not.toContain('emr-fsx-efs-secret');
+      expect(debugged()).toContain("Value '***' at 'request' failed to satisfy constraint");
+      expect(debugged()).not.toContain('emr-fsx-efs-secret');
+    });
+
+    it('restates an "already exists" so a name collision is still recognised', async () => {
+      const original = awsError(
+        'ValidationException',
+        `A resource named Res already exists in account ${CALLER_ACCOUNT}`
+      );
+      failOn(command, original, answers, nth);
+      const failure = await thrown(run());
+
+      expect(failure.message).toContain(
+        `${prefix}ValidationException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+      );
+      expect(failure.message).not.toContain(CALLER_ACCOUNT);
+      expect(isNameCollisionErrorFrom(failure, 'Res')).toBe(true);
+    });
+
     it('keeps a cdkd-authored or transport failure verbatim, unstamped', async () => {
       const original = new Error('connect ECONNREFUSED 10.0.0.1:443');
       failOn(command, original, answers, nth);
@@ -490,6 +517,22 @@ describe('EMR / FSx / EFS thrown wraps keep the caller identity out (go-to-k/cdk
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
+
+  describe.each(sites().filter(({ site }) => site.startsWith('EFS delete')))(
+    '$site',
+    ({ command, prefix, run }) => {
+      it("masks a non-AWS error's text in the message through DeleteContext.maskSecrets", async () => {
+        failOn(command, new Error("socket to 'emr-fsx-efs-secret' closed"));
+        const failure = await thrown(run({ maskSecrets: MASK }));
+
+        expect(failure.message).toContain(`${prefix}socket to '***' closed`);
+        expect(failure.message).not.toContain('emr-fsx-efs-secret');
+        expect(failure.message).not.toContain(VERBOSE_POINTER);
+        // The mask changed the text, so the wrap is stamped (#4244).
+        expect(hasRedactedCause(failure)).toBe(true);
+      });
+    }
+  );
 
   it('restates an "already exists" so a name collision is still recognised', async () => {
     const original = awsError(
