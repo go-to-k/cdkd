@@ -22,9 +22,10 @@ CloudFormation does.
 
 The API Gateway account setting (`cloudwatchRoleArn`) is ONE per account and
 region. Do not run this fixture beside another that sets it
-(`apigw-stage-props`, `apigw-stage-throttling`, or a second run of this one):
-each overwrites the other's setting, and this teardown restores the value it
-read at its own start. Its IAM roles are listed by the stack names
+(`apigateway`, `apigw-stage-props`, `apigw-stage-throttling`, `wafv2`, or a
+second run of this one): each overwrites the other's setting, and this
+teardown restores the value it read at its own start (or unsets it, when the
+role that value names no longer exists: API Gateway refuses a missing role). Its IAM roles are listed by the stack names
 `CdkdApigwCwRoleRel-` / `CdkdApigwCwRoleNew-`, so a peer run of this fixture
 on the same account loses its roles too.
 
