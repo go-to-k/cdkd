@@ -95,17 +95,20 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 # cdkd GENERATES for a nameless topic / log group:
 # `<stack>-<logicalId>-<12 hex>` (go-to-k/cdkd#5064: the stack instance suffix,
 # the log group under `/cdkd/`). The suffix cannot be predicted, so step 1 reads
-# the topic's from state (`resolve_equalbags_names`) and DERIVES the log group's
-# from it: both types hash the same stack instance id and logical id, so they
-# carry the SAME suffix. Step 5 cross-checks that derivation against the log
-# group state records, so a change to it fails loudly here instead of turning
-# the leak checks below into probes of a name nothing uses.
+# the topic's from state (`resolve_equalbags_names`). A Type change is a
+# replacement, so the log group takes the NEXT name generation (a rolled-back
+# attempt's generation is never reused): each v2 world derives its name from the
+# record's `nameGeneration` and state.json's stackInstanceId
+# (`equalbags_log_group_at`), checks the record against it, and remembers it in
+# EQUALBAGS_LOG_GROUPS, so every leak check below probes a name cdkd used.
 SUBJECT_PARAM="/cdkd-integ/${STACK}/subject"
 SUBJECT_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:${STACK}-subject"
 OVERLAP_NAME="/cdkd-integ/${STACK}/overlap" # parameter in v1, log group in v2
 EQUALBAGS_PREFIX="${STACK}-EqualBags-"
 EQUALBAGS_TOPIC_ARN=""
 EQUALBAGS_LOG_GROUP=""
+# Every generation's log group name a v2 world held, for the leak checks.
+EQUALBAGS_LOG_GROUPS=()
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 
 LOG_DIR="$(mktemp -d)"
@@ -120,6 +123,35 @@ state_field() { # usage: state_field <logicalId> <field>
   local body
   body="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)" || return 1
   jq -r --arg id "$1" --arg f "$2" '.resources[$id][$f] // "MISSING"' <<<"${body}"
+}
+
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being state.json's
+# stackInstanceId. Read from S3 into node's stdin: the id is never printed.
+state_name_suffix() { # usage: state_name_suffix <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$1" "$2"
+}
+
+# EqualBags' log group name at name generation <g>.
+equalbags_log_group_at() { # usage: equalbags_log_group_at <generation>
+  local suffix
+  suffix="$(state_name_suffix EqualBags "$1")" || return 1
+  [ -n "${suffix}" ] || return 1
+  printf '%s' "/cdkd/${EQUALBAGS_PREFIX}${suffix}"
 }
 
 # Echo the number of resources state records.
@@ -172,11 +204,28 @@ assert_v1_world() { # usage: assert_v1_world <step>
     echo "[verify] FAIL (${step}): Overlap's v2 log group ${OVERLAP_NAME} exists in the v1 world"
     exit 1
   fi
-  lg="$(log_group_state "${EQUALBAGS_LOG_GROUP}")"
-  if [ "${lg}" != "absent" ]; then
-    echo "[verify] FAIL (${step}): EqualBags' v2 log group ${EQUALBAGS_LOG_GROUP} exists in the v1 world"
-    exit 1
-  fi
+  # Every generation a v2 attempt reached (the restored record's high-water
+  # mark), and every name a v2 world held, must be gone.
+  local high g name
+  high="$(state_field EqualBags nameGenerationHigh)" || exit 1
+  [ "${high}" = "MISSING" ] && high=0
+  g=1
+  while [ "${g}" -le "${high}" ]; do
+    name="$(equalbags_log_group_at "${g}")" || { echo "[verify] FAIL (${step}): could not derive EqualBags' generation-${g} name"; exit 1; }
+    lg="$(log_group_state "${name}")"
+    if [ "${lg}" != "absent" ]; then
+      echo "[verify] FAIL (${step}): EqualBags' generation-${g} log group ${name} exists in the v1 world"
+      exit 1
+    fi
+    g=$((g + 1))
+  done
+  for name in ${EQUALBAGS_LOG_GROUPS[@]+"${EQUALBAGS_LOG_GROUPS[@]}"}; do
+    lg="$(log_group_state "${name}")"
+    if [ "${lg}" != "absent" ]; then
+      echo "[verify] FAIL (${step}): EqualBags' v2 log group ${name} exists in the v1 world"
+      exit 1
+    fi
+  done
   require_state_field "${step}" Subject resourceType AWS::SSM::Parameter
   require_state_field "${step}" Subject physicalId "${SUBJECT_PARAM}"
   require_state_field "${step}" Overlap resourceType AWS::SSM::Parameter
@@ -214,6 +263,18 @@ assert_v2_world() { # usage: assert_v2_world <step>
   # group must EXIST, read from AWS.
   assert_gone "(${step}) EqualBags' OLD topic ${EQUALBAGS_TOPIC_ARN} still exists — the Type change was swallowed" \
     aws sns get-topic-attributes --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}"
+  # The replacement's generation, from the record; its name is derived, never read.
+  local gen
+  gen="$(state_field EqualBags nameGeneration)" || exit 1
+  case "${gen}" in
+    [1-9] | [1-9][0-9]) ;;
+    *) echo "[verify] FAIL (${step}): EqualBags records nameGeneration '${gen}', expected the replacement's (>= 1)"; exit 1 ;;
+  esac
+  EQUALBAGS_LOG_GROUP="$(equalbags_log_group_at "${gen}")" || { echo "[verify] FAIL (${step}): could not derive EqualBags' generation-${gen} name"; exit 1; }
+  case " ${EQUALBAGS_LOG_GROUPS[*]-} " in
+    *" ${EQUALBAGS_LOG_GROUP} "*) ;;
+    *) EQUALBAGS_LOG_GROUPS+=("${EQUALBAGS_LOG_GROUP}") ;;
+  esac
   lg="$(log_group_state "${EQUALBAGS_LOG_GROUP}")"
   if [ "${lg}" != "present" ]; then
     echo "[verify] FAIL (${step}): EqualBags' new log group ${EQUALBAGS_LOG_GROUP} does not exist — the Type change was swallowed"
@@ -239,7 +300,6 @@ resolve_equalbags_names() {
     exit 1
   fi
   EQUALBAGS_TOPIC_ARN="${arn}"
-  EQUALBAGS_LOG_GROUP="/cdkd/${name}"
 }
 
 # --- Teardown ---------------------------------------------------------------
@@ -496,7 +556,7 @@ assert_gone "EqualBags' topic ${EQUALBAGS_TOPIC_ARN} still exists after destroy"
   aws sns get-topic-attributes --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}"
 assert_gone "FailingQueue ${FAILING_QUEUE_NAME} still exists after destroy" \
   aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"
-for lg_name in "${OVERLAP_NAME}" "${EQUALBAGS_LOG_GROUP}"; do
+for lg_name in "${OVERLAP_NAME}" ${EQUALBAGS_LOG_GROUPS[@]+"${EQUALBAGS_LOG_GROUPS[@]}"}; do
   LG_AFTER="$(log_group_state "${lg_name}")"
   if [ "${LG_AFTER}" != "absent" ]; then
     echo "[verify] FAIL (step 7a): log group ${lg_name} still exists after destroy"
