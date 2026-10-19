@@ -11,8 +11,8 @@ its `<ref>` names the branch or worktree the lane agent will create.
 a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
-Post now (§4's `<ref>` above) — a claim that waits for the branch lands after
-the first edit. Such lanes are SERIAL (§3):
+Post now (the IN-PLACE `<ref>` above) — a claim that waits for the branch
+lands after the first edit. Such lanes are SERIAL (§3):
 claim the top one or the whole set, every lane after the first QUEUED.
 
 ```bash

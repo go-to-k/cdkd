@@ -214,7 +214,7 @@ git fetch origin \
 ```
 
 **This step runs LAST, not per-lane**:
-§10-d branches in this tree.
+§10-d still creates its retro branch in this tree.
 
 ### Release the claims
 

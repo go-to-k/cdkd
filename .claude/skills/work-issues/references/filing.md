@@ -98,7 +98,7 @@ state of the lane ("the files are cold"). Check it before writing EITHER value,
 the held-file query above once per file the fix edits: one whose needed lines
 an open PR this session did not open holds (triage.md §2) is `next` (a), naming
 THAT PR (#3959). A PR of THIS run is not external input: `now`, queued behind
-that lane, said in the lane report. A defect the lane's OWN diff introduced is
+that lane; say so in the lane report. A defect the lane's OWN diff introduced is
 not filed: it blocks that PR (fix it there, or merge a shared fix first; #5092).
 
 The `<issue-slug>` is per FINDING (lanes share `/tmp`), the `&&` stops a failed
