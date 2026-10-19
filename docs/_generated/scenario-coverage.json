@@ -425,6 +425,13 @@
       "scenarios": []
     },
     {
+      "name": "apigw-cloudwatch-role-redeploy",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain"
+      ]
+    },
+    {
       "name": "apigw-gateway-response",
       "annotated": true,
       "scenarios": []
@@ -2784,6 +2791,7 @@
       "scenario": "deletion-policy-retain",
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
       "fixtures": [
+        "apigw-cloudwatch-role-redeploy",
         "deletion-policy-retain",
         "generated-name-lifecycle"
       ]

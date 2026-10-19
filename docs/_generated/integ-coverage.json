@@ -144,6 +144,7 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "wafv2"
@@ -151,6 +152,9 @@
       "signals": {
         "apigateway": [
           "l1",
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -189,6 +193,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -198,6 +203,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -217,6 +225,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -226,6 +235,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -264,6 +276,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -273,6 +286,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -4546,6 +4562,7 @@
         "agentcore-tools",
         "apigateway",
         "apigatewayv2-update-removal",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "appsync",
         "batch",
@@ -4657,6 +4674,9 @@
         ],
         "apigatewayv2-update-removal": [
           "l2"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
+          "literal"
         ],
         "apigw-stage-props": [
           "l2"
