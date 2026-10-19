@@ -106,9 +106,28 @@ delete_role() { # <role name> — best effort: its managed and inline policies, 
     aws iam delete-role --role-name "$1" >/dev/null 2>&1
     true )
 }
-restore_account() { # puts the account's cloudwatchRoleArn back to PREFLIGHT_ARN
+# What the account is restored to: PREFLIGHT_ARN while its role still exists,
+# else unset. API Gateway checks the role on update-account, and another
+# fixture that set the account may have deleted its role since; an empty value
+# is what cdkd's own Account delete sends (apigateway-provider.ts).
+restore_target() { # prints the value — strict
+  local role
+  case "${PREFLIGHT_ARN}" in
+    "") printf '\n'; return 0 ;;
+    arn:*:role/*) role="${PREFLIGHT_ARN##*/}" ;;
+    *) printf '\n'; return 0 ;;
+  esac
+  if gone_probe aws iam get-role --role-name "${role}"; then
+    printf '\n'
+  else
+    printf '%s\n' "${PREFLIGHT_ARN}"
+  fi
+}
+restore_account() { # puts the account's cloudwatchRoleArn back to restore_target
+  local target
+  target="$(restore_target)" || return 1
   aws apigateway update-account --region "${REGION}" --patch-operations \
-    "[{\"op\":\"replace\",\"path\":\"/cloudwatchRoleArn\",\"value\":\"${PREFLIGHT_ARN}\"}]" >/dev/null
+    "[{\"op\":\"replace\",\"path\":\"/cloudwatchRoleArn\",\"value\":\"${target}\"}]" >/dev/null
 }
 
 cleanup() {
@@ -282,7 +301,9 @@ destroy_stack ok "A2 released destroy" "${REL_BIN}" "${REL_STACK}"
 assert_role_exists "A2 (DeletionPolicy: Retain)" "${A_ROLE}"
 deploy_stack fail "A3 released redeploy" "${REL_BIN}" "${REL_STACK}"
 assert_log_has "A3: the role's create collides with the kept role" "${A_ROLE}" "already exists"
-if ! grep -qiE 'EntityAlreadyExists|already exists' "${DEPLOY_LOG}"; then
+# One line must carry both: a failure of another resource whose log also
+# prints the role name is not the premise.
+if ! grep -F -- "${A_ROLE}" "${DEPLOY_LOG}" | grep -qiE 'EntityAlreadyExists|already exists'; then
   tail -60 "${DEPLOY_LOG}" >&2
   fail "A3: the failure is not the IAM name collision"
 fi
@@ -323,9 +344,10 @@ assert_eq "B3: the account points at the new role" "${B_ARN2##*/}" "${B_ROLE2}"
 destroy_stack ok "B4 destroy" "${LOCAL_DIST}" "${NEW_STACK}"
 
 echo "==> Phase C: teardown"
+C_TARGET="$(restore_target)" || fail "C: could not read whether the preflight role still exists"
 restore_account || fail "C: could not restore the account's cloudwatchRoleArn"
 C_ARN="$(account_role_arn)" || fail "C: could not read the API Gateway account"
-assert_eq "C: the account's cloudwatchRoleArn is back to its preflight value" "${C_ARN}" "${PREFLIGHT_ARN}"
+assert_eq "C: the account's cloudwatchRoleArn is back to its preflight value (unset when that role is gone)" "${C_ARN}" "${C_TARGET}"
 for role in "${A_ROLE}" "${B_ROLE1}" "${B_ROLE2}"; do
   delete_role "${role}"
   assert_gone "C: kept role ${role} survived its delete" aws iam get-role --role-name "${role}"
