@@ -382,6 +382,14 @@ A props object passed as a same-file variable is resolved through the variable;
 a spread (`{ ...base }`) does **not** count — restate the policy visibly. L1
 `Cfn*` constructs are out of scope because their template default is `Delete`.
 
+The lint does not see one more RETAIN default: `apigateway.RestApi` (and
+`SpecRestApi` / `LambdaRestApi`), unless `cdk.json` sets
+`@aws-cdk/aws-apigateway:disableCloudWatchRole`, emits an
+`AWS::ApiGateway::Account` plus a
+RETAINed CloudWatch role with a deterministic name, so every run leaks the role
+and the next run fails on it with "already exists". Pass `cloudWatchRole: false`
+unless the fixture's subject is that account setting.
+
 `tests/unit/scripts/integ-fixture-removal-policy.test.ts` enforces this across
 the fixture tree (classifier: `scripts/check-fixture-removal-policy.ts`), with
 coverage floors per constructor-reference shape and per construct kind so a
@@ -557,6 +565,29 @@ comparator — it canonicalizes tag lists and resource-id/ARN arrays on both
 sides for the same reason. The same caveat applies too: a list whose order
 carries meaning (DNS resolver lists, preference orders) must NOT be sorted,
 because sorting would hide a real regression rather than reveal one.
+
+## Re-read a value the run just wrote
+
+Many AWS read APIs are eventually consistent right after a write: a route
+`DescribeRouteTables` does not list yet, an SQS attribute still at its old
+value, a freshly assumed role's credentials refused. A single read straight
+after the deploy that wrote it fails a correct run. Poll until the expected
+value appears or a bounded deadline passes, then assert:
+
+```bash
+GOT=""
+for _ in 1 2 3 4 5 6; do
+  GOT="$(aws ec2 describe-route-tables ... --output text)"
+  [ "$GOT" = "$WANT" ] && break
+  sleep 5
+done
+[ "$GOT" = "$WANT" ] || { echo "FAIL: route target '$GOT', expected '$WANT'"; exit 1; }
+```
+
+Size the deadline to what the service documents (SQS: up to 60 s for an
+attribute change). The loop exits only on the EXPECTED value, so a wrong value
+still fails, just later. A read whose subject is that the value has NOT
+changed must not loop — it would wait out the deadline on every passing run.
 
 ## `state destroy` must pass `--state-bucket`
 

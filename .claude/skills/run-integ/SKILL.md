@@ -122,7 +122,9 @@ verify, clean up.
    completion). Shell watchdog, firing made visible. A SET runs this whole block
    per fixture, in a background subshell `cd`'d into it with its own `T`, stdout
    to a per-fixture file that gets `echo "$T $VPID $LOG"` right after the spawn;
-   stop one with `kill -9 -- -<its VPID>` (the gate refuses `pkill -f`):
+   stop one with `kill -TERM -- -<its VPID>` so its trap cleans up, `-9` only
+   once it ignores TERM (the gate refuses `pkill -f`); a set halting on a FAIL
+   lets the RUNNING fixture finish instead of stopping it:
 
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell
