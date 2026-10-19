@@ -134,8 +134,9 @@ cleanup() {
   rc=$?
   set +eu
   echo "==> cleanup (rc=${rc})"
+  # The fixture's ONE stack name, exactly: an empty or other value refuses.
   case "${STACK}" in
-    CdkdGenNameLife?*) ;;
+    CdkdGenNameLife) ;;
     *)
       echo "WARN: teardown sweep refused -- STACK='${STACK}' is outside this fixture's scope" >&2
       set -eu
