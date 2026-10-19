@@ -401,6 +401,15 @@ describe("a Glue connection's nested name on the Cloud Control route (#5095)", (
     // A declared name is kept, by identity.
     const declared = { ConnectionInput: { ...input, Name: 'mine' } };
     expect(withoutGeneratedFallbackName(TYPE, declared, declared)).toBe(declared);
+    // No container on either side: nothing was filled, nothing to take out.
+    for (const [resolvedBag, preparedBag] of [
+      [{}, {}],
+      [{ ConnectionInput: 'x' }, { ConnectionInput: 'x' }],
+      [{}, { ConnectionInput: { ...input, Name: 'n' } }],
+      [{ ConnectionInput: input }, {}],
+    ] as const) {
+      expect(withoutGeneratedFallbackName(TYPE, resolvedBag, preparedBag)).toBe(preparedBag);
+    }
   });
 });
 

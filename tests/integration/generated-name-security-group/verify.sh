@@ -99,7 +99,15 @@ cleanup() {
   done
   for vpc in $(fixture_vpcs); do
     case "${vpc}" in
-      vpc-?*) aws ec2 delete-vpc --vpc-id "${vpc}" --region "${REGION}" >/dev/null 2>&1 || true ;;
+      vpc-?*)
+        # Any non-default group left in this fixture's VPC (a pre-fix run's
+        # bare `Group` too), or the VPC delete fails.
+        for gid in $(aws ec2 describe-security-groups --region "${REGION}" \
+          --filters "Name=vpc-id,Values=${vpc}" \
+          --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null); do
+          case "${gid}" in sg-?*) aws ec2 delete-security-group --group-id "${gid}" --region "${REGION}" >/dev/null 2>&1 || true ;; esac
+        done
+        aws ec2 delete-vpc --vpc-id "${vpc}" --region "${REGION}" >/dev/null 2>&1 || true ;;
     esac
   done
   if [ -n "${STATE_BUCKET:-}" ]; then

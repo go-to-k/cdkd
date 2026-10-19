@@ -242,7 +242,7 @@ than a zone id such as `use1-az5`, the create is refused; set `LocationName`
 to the zone id or declare `BucketName`.
 
 A generated security group name never starts with `sg-`, which EC2 refuses:
-for a stack whose name starts with `sg-`, the hyphen is dropped.
+for a stack whose name starts with `sg-` in any case, the hyphen is dropped.
 
 ## Related
 

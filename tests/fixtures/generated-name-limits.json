@@ -206,12 +206,14 @@
     "AWS::RDS::DBProxy": {
       "nameProperty": "DBProxyName",
       "schemaMaxLength": 64,
-      "schemaPattern": "[0-z]*"
+      "schemaPattern": "[0-z]*",
+      "schemaPatternUnanchored": "The registry's [0-z]* omits '-', which the RDS API accepts (letters, digits and hyphens): matched unanchored, as a character the name must contain"
     },
     "AWS::RDS::DBProxyEndpoint": {
       "nameProperty": "DBProxyEndpointName",
       "schemaMaxLength": 64,
-      "schemaPattern": "[0-z]*"
+      "schemaPattern": "[0-z]*",
+      "schemaPatternUnanchored": "The registry's [0-z]* omits '-', which the RDS API accepts (letters, digits and hyphens): matched unanchored, as a character the name must contain"
     },
     "AWS::Scheduler::Schedule": {
       "nameProperty": "Name",

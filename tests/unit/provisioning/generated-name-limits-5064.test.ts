@@ -25,6 +25,8 @@ interface Limit {
   apiMaxLength?: number;
   /** A prefix the API refuses a name to start with (a security group's `sg-`). */
   apiForbiddenPrefix?: string;
+  /** Why `schemaPattern` is matched unanchored: the registry's pattern is narrower than the API. */
+  schemaPatternUnanchored?: string;
 }
 const fixture = JSON.parse(
   readFileSync(new URL('../../fixtures/generated-name-limits.json', import.meta.url), 'utf8')
@@ -107,7 +109,12 @@ describe('generated names fit their name property (#5064)', () => {
     }
     if (limit.schemaPattern !== undefined) {
       // `\Z` is the schema's end anchor where ECMAScript has `$`.
-      expect(name).toMatch(new RegExp(limit.schemaPattern.replace(/\\Z/g, '$')));
+      // Anchored: an unanchored schema pattern (Firehose's) would match any
+      // name holding one valid character.
+      const pattern = limit.schemaPattern.replace(/\\Z/g, '$');
+      expect(name).toMatch(
+        new RegExp(limit.schemaPatternUnanchored === undefined ? `^(?:${pattern})$` : pattern)
+      );
     }
   };
 
@@ -147,5 +154,15 @@ describe('generated names fit their name property (#5064)', () => {
     expect(sdk).toMatch(new RegExp(`^${stackName.slice(0, 2)}app-Group-[0-9a-f]{12}$`));
     expect(scoped(() => applyDefaultNameForFallback('Group', type, {}))['GroupName']).toBe(sdk);
     fits(sdk, fixture.types[type]!);
+  });
+
+  it('a security group of a 128-character sg- stack: cut to 255, then the hyphen dropped', () => {
+    const stackName = `sg-${'a'.repeat(125)}`;
+    const name = withStackScope({ stackName, stackInstanceId: ID, nameGenerations: new Map() }, () =>
+      generatedNameFor('AWS::EC2::SecurityGroup', LOGICAL_ID)
+    );
+    expect(name).toMatch(/^sga+-ResourceX+-[0-9a-f]{12}$/);
+    expect(name.length).toBe(254);
+    fits(name, fixture.types['AWS::EC2::SecurityGroup']!);
   });
 });
