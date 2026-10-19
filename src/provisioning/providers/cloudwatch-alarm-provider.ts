@@ -662,7 +662,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['AlarmName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 256 });
+    return generateResourceName(logicalId, { maxLength: 255 });
   }
 
   /**

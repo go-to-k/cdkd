@@ -346,11 +346,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     // Directory bucket names must follow: {name}--{az-id}--x-s3
     let bucketName = properties['BucketName'] as string | undefined;
     if (!bucketName) {
+      // The WHOLE name is at most 63 characters (go-to-k/cdkd#5064: a cut to
+      // 64 before the suffix made every long name invalid).
+      const suffix = `--${azId}--x-s3`;
       const baseName = generateResourceName(logicalId, {
-        maxLength: 64,
+        maxLength: 63 - suffix.length,
         lowercase: true,
       });
-      bucketName = `${baseName}--${azId}--x-s3`;
+      bucketName = `${baseName}${suffix}`;
     }
 
     // Tags ride the create call itself (`CreateBucketConfiguration.Tags`,

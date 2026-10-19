@@ -566,12 +566,14 @@ const FALLBACK_NAME_RULES: Record<
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },
   // No SDK provider — Cloud Control only. The schema does not require the
   // name, yet a create without one fails with `Resource Handler Internal
-  // Failure` (issue #3174). Schema: maxLength 140, `[a-zA-Z0-9-_]+`; the
-  // default `allowedPattern` emits a subset of that.
+  // Failure` (issue #3174). The schema's maxLength 140 is the ARN form's; the
+  // service refuses a NAME over 64 (measured, go-to-k/cdkd#5064). The default
+  // `allowedPattern` emits a subset of `[a-zA-Z0-9-_]+`.
   'AWS::Lambda::CapacityProvider': {
     nameProperty: 'CapacityProviderName',
-    options: { maxLength: 140 },
+    options: { maxLength: 64 },
   },
+
   'AWS::IAM::Role': { nameProperty: 'RoleName', options: { maxLength: 64 } },
   'AWS::IAM::Policy': { nameProperty: 'PolicyName', options: { maxLength: 64 } },
   'AWS::IAM::ManagedPolicy': {
@@ -592,7 +594,8 @@ const FALLBACK_NAME_RULES: Record<
   'AWS::ECS::Cluster': { nameProperty: 'ClusterName', options: { maxLength: 255 } },
   'AWS::ECS::Service': { nameProperty: 'ServiceName', options: { maxLength: 255 } },
   'AWS::Logs::LogGroup': { nameProperty: 'LogGroupName', options: { maxLength: 512 } },
-  'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 256 } },
+  // PutMetricAlarm: 1-255 characters.
+  'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 255 } },
   'AWS::Events::Rule': { nameProperty: 'Name', options: { maxLength: 64 } },
   'AWS::Events::EventBus': { nameProperty: 'Name', options: { maxLength: 256 } },
   'AWS::Kinesis::Stream': { nameProperty: 'Name', options: { maxLength: 128 } },
@@ -661,7 +664,8 @@ const FALLBACK_NAME_RULES: Record<
     options: { maxLength: 32 },
   },
   'AWS::WAFv2::WebACL': { nameProperty: 'Name', options: { maxLength: 128 } },
-  'AWS::CodeBuild::Project': { nameProperty: 'Name', options: { maxLength: 255 } },
+  // CreateProject: 2-150 characters.
+  'AWS::CodeBuild::Project': { nameProperty: 'Name', options: { maxLength: 150 } },
   'AWS::S3Express::DirectoryBucket': {
     nameProperty: 'BucketName',
     options: { maxLength: 63, lowercase: true },
