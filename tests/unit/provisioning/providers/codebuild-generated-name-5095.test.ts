@@ -32,6 +32,7 @@ import {
   applyDefaultNameForFallback,
   stackInstanceNameSuffix,
   withStackScope,
+  withStackScopeBeforeStateRead,
 } from '../../../../src/provisioning/resource-name.js';
 
 /**
@@ -78,6 +79,15 @@ describe('CodeBuildProvider generated name (#5095)', () => {
     await withStackScope(scope, () => provider.create('Build', TYPE, PROPS));
     expect(sentName()).toBe(`MyStack-Build-${stackInstanceNameSuffix(ID, 'Build', 1)}`);
     expect(sentName()).toBe(withStackScope(scope, () => applyDefaultNameForFallback('Build', TYPE, {}))['Name']);
+  });
+
+  it('before the state read, a legacy-shaped scope refuses rather than send the bare logical id', async () => {
+    // The scope carries no id because the record is not read yet, not because
+    // the stack is legacy: the generated name must not be derived there.
+    await expect(
+      withStackScopeBeforeStateRead('MyStack', () => provider.create('Build', TYPE, PROPS))
+    ).rejects.toThrow(/derived before the state record/);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('a declared name is sent as declared', async () => {

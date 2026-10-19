@@ -1012,11 +1012,14 @@ export function applyDefaultNameForFallback(
   }
   if (generatedName === undefined) {
     if (underivable === 'omit') return properties;
+    const location =
+      properties['LocationName'] === undefined
+        ? 'the resource declares no LocationName'
+        : 'its LocationName is not a zone id such as use1-az5';
     throw new Error(
       `${logicalId} (${resourceType}): cdkd cannot generate a ${rule.nameProperty} for the ` +
         `Cloud Control create. A directory bucket's name must end with --<zone id>--x-s3, and ` +
-        `LocationName is not a zone id such as use1-az5. Set LocationName to the zone id, or ` +
-        `declare ${rule.nameProperty}.`
+        `${location}. Set LocationName to the zone id, or declare ${rule.nameProperty}.`
     );
   }
 

@@ -333,3 +333,36 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     expect(state['Q']?.properties).not.toHaveProperty('QueueName');
   });
 });
+
+describe('the holder proof never throws for a name only Cloud Control needs (#5095)', () => {
+  it('an SDK-routed directory bucket with an AZ-name LocationName reaches the reverse-replacement refusal', async () => {
+    const TYPE = 'AWS::S3Express::DirectoryBucket';
+    const create = vi.fn(async () => {
+      throw awsSdkError(COLLISION_MESSAGE);
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del }, 'sdk');
+    const state: Record<string, ResourceState> = {
+      Q: res({ physicalId: 'new-q', resourceType: TYPE }),
+    };
+    const warn = vi.mocked(silentLogger.warn);
+    warn.mockClear();
+
+    const result = await withStackScope(
+      { stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() },
+      () =>
+        replayRollback(
+          [reverseReplacementOp(TYPE, { LocationName: 'us-east-1a' })],
+          state,
+          STACK,
+          ctx
+        )
+    );
+
+    expect(result.failures).toBe(1);
+    expect(del).not.toHaveBeenCalled();
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toMatch(/Cannot reverse the replacement of/);
+    expect(text).not.toMatch(/cannot generate a BucketName/);
+  });
+});

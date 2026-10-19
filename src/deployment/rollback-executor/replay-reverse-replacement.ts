@@ -821,7 +821,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           requested: replayCreateProps(),
           generated:
             typeof op.logicalId === 'string'
-              ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
+              ? // `'omit'`: a name only a Cloud Control create needs must not
+                // throw here, where the create may have gone to the SDK.
+                applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps, 'omit')
               : undefined,
           // A provider that REWRITES even an explicit name derives it in this
           // async scope (stack name, prefix flag), so the helper derives it

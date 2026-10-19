@@ -313,6 +313,15 @@ describe('a directory bucket on the Cloud Control route (#5095)', () => {
     expect(v13(() => applyDefaultNameForFallback('Bucket', TYPE, props, 'omit'))).toBe(props);
   });
 
+  it('the refusal says which: no LocationName, or one that is not a zone id', () => {
+    expect(() => v13(() => applyDefaultNameForFallback('Bucket', TYPE, {}))).toThrow(
+      /the resource declares no LocationName\./
+    );
+    expect(() => v13(() => applyDefaultNameForFallback('Bucket', TYPE, { LocationName: 'us-east-1a' }))).toThrow(
+      /its LocationName is not a zone id such as use1-az5\./
+    );
+  });
+
   it('a declared name is kept, whatever LocationName holds', () => {
     const props = { LocationName: 'us-east-1a', BucketName: 'mine--use1-az5--x-s3' };
     expect(v13(() => applyDefaultNameForFallback('Bucket', TYPE, props))).toBe(props);
@@ -331,6 +340,26 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
     // A budget's name is nested (`Budget.BudgetName`) and the type has no
     // Cloud Control route in cdkd, so it has no rule.
     expect(own).toEqual(['budgets-budget-provider.ts']);
+  });
+
+  it("each generatedNameFor call is the fallback of its own type's name property", () => {
+    // A file serving several types (RDS, Neptune, DocDB, ElastiCache, ECS)
+    // could swap two calls' types and keep every type called: the nearest
+    // `properties['X']` read before each call must be that type's property.
+    // CodeBuild reads its `Name` inside `mapProperties` (its provider test pins it).
+    const mismatched: string[] = [];
+    let checked = 0;
+    for (const f of files) {
+      const src = readFileSync(join(dir, f), 'utf-8');
+      for (const m of src.matchAll(/generatedNameFor\(\s*'([^']+)'/g)) {
+        if (m[1] === 'AWS::CodeBuild::Project') continue;
+        const reads = [...src.slice(Math.max(0, m.index - 400), m.index).matchAll(/properties\['(\w+)'\]/g)];
+        checked++;
+        if (reads.at(-1)?.[1] !== fallbackNamePropertyFor(m[1]!)) mismatched.push(`${f}: ${m[1]}`);
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(40);
+    expect(mismatched).toEqual([]);
   });
 
   it('each generatedNameFor call names a rule type, and each SDK-named type is called', () => {

@@ -103,9 +103,10 @@ state_field() { # usage: state_field <jq path>
 # generation past 0. The id is read from the raw record and never printed.
 expected_name() { # usage: expected_name -- from state's id and the record's generation
   local id generation
-  id="$(state_field '.stackInstanceId // ""')"
+  id="$(state_field '.stackInstanceId // ""')" || return 1
   [ -n "${id}" ] || { echo "FAIL: the stack's record carries no stackInstanceId" >&2; return 1; }
-  generation="$(state_field ".resources.${LOGICAL}.nameGeneration // 0")"
+  generation="$(state_field ".resources.${LOGICAL}.nameGeneration // 0")" || return 1
+  [ -n "${generation}" ] || { echo "FAIL: ${LOGICAL}'s nameGeneration could not be read" >&2; return 1; }
   ID="${id}" node -e '
     const [stack, logical, max, generation] = process.argv.slice(1);
     const hash = require("crypto").createHash("sha256")
@@ -133,7 +134,8 @@ RECORDED="$(state_field ".resources.${LOGICAL}.physicalId // \"\"")"
   echo "FAIL: phase 1: the SDK provider named the repository '${RECORDED}', not '${SDK_NAME}'" >&2
   exit 1
 }
-repo_id "${SDK_NAME}" >/dev/null || { echo "FAIL: phase 1: no repository named '${SDK_NAME}'" >&2; exit 1; }
+SDK_REPO_ID="$(repo_id "${SDK_NAME}")" || { echo "FAIL: phase 1: no repository named '${SDK_NAME}'" >&2; exit 1; }
+[ -n "${SDK_REPO_ID}" ] || { echo "FAIL: phase 1: empty repository id for '${SDK_NAME}'" >&2; exit 1; }
 echo "    OK: the SDK provider created ${SDK_NAME}"
 
 echo "==> Phase 2: --recreate-via-cc-api ${LOGICAL} (the Cloud Control create of an un-named repository)"
@@ -158,6 +160,11 @@ CC_REPO_ID="$(repo_id "${CC_NAME}")" || {
 }
 [ "${CC_REPO_ID}" = "${CC_PHYSICAL}" ] || {
   echo "FAIL: phase 2: state records repository id '${CC_PHYSICAL}', but '${CC_NAME}' is '${CC_REPO_ID}'" >&2
+  exit 1
+}
+# A NEW repository: phase 1's surviving under an unchanged name would match too.
+[ "${CC_REPO_ID}" != "${SDK_REPO_ID}" ] || {
+  echo "FAIL: phase 2: '${CC_NAME}' is still phase 1's repository (${SDK_REPO_ID}); Cloud Control created nothing" >&2
   exit 1
 }
 if [ "${CC_NAME}" != "${SDK_NAME}" ]; then
