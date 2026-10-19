@@ -204,14 +204,22 @@ export function sameIdRecreated(op: CompletedOperation): boolean {
  * replayed create's own bag (`effectiveProperties`) adds or fills other keys
  * but keeps the requested values of those, and a key both sides redacted the
  * same way compares equal, so neither a re-run nor a redaction difference on
- * an unchanged key reads the wrong way. Without a changed key to read, only a
- * record equal to the old one is done.
+ * an unchanged key reads the wrong way.
+ *
+ * Without a changed key to read (no journaled forward bag, or every key the
+ * forward changed is a secret both bags mask the same way) the record cannot
+ * tell a reversed op from a pending one: `'undecidable'`, which the
+ * reverse-replacement arm refuses before any write
+ * ({@link sameIdReversalUndecidable}) rather than skip or delete again.
  */
-function sameIdReversalDone(op: CompletedOperation, current: ResourceState): boolean {
+function sameIdReversalDone(
+  op: CompletedOperation,
+  current: ResourceState
+): boolean | 'undecidable' {
   const before = op.previousState!.properties ?? {};
   const forward = op.properties;
   const now = current.properties ?? {};
-  if (forward === undefined) return deepEqual(now, before);
+  if (forward === undefined) return 'undecidable';
   // Read by OWN key: a template key spelled like an inherited member
   // (`constructor`) must not compare as present on a side that lacks it.
   const own = (bag: Record<string, unknown>, key: string) =>
@@ -219,8 +227,25 @@ function sameIdReversalDone(op: CompletedOperation, current: ResourceState): boo
   const changed = [...new Set([...Object.keys(before), ...Object.keys(forward)])].filter(
     (key) => !deepEqual(own(before, key), own(forward, key))
   );
-  if (changed.length === 0) return deepEqual(now, before);
+  if (changed.length === 0) return 'undecidable';
   return changed.every((key) => deepEqual(own(now, key), own(before, key)));
+}
+
+/**
+ * go-to-k/cdkd#5096: a same-id re-create whose record cannot say whether its
+ * reversal already ran ({@link sameIdReversalDone}). Reversing it again would
+ * delete the restored resource; skipping it would leave the new one under the
+ * old record. Neither is safe, so the arm refuses.
+ */
+export function sameIdReversalUndecidable(
+  op: CompletedOperation,
+  current: ResourceState | undefined
+): boolean {
+  return (
+    sameIdRecreated(op) &&
+    current !== undefined &&
+    sameIdReversalDone(op, current) === 'undecidable'
+  );
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {
@@ -309,7 +334,8 @@ export function classifyRollbackOp(
       sameTypeAsOld &&
       // go-to-k/cdkd#5096: under a same-id re-create the id is no evidence:
       // the record says whether the reversal ran.
-      (!sameIdRecreated(op) || sameIdReversalDone(op, current)) &&
+      // An undecidable one is not done: the reverse arm refuses it.
+      (!sameIdRecreated(op) || sameIdReversalDone(op, current) === true) &&
       // Issue #3892: the equal id may be the NEW resource (a Glue table in
       // another database); it is the old one only when its record says so.
       !equalIdNamesDifferentResources({

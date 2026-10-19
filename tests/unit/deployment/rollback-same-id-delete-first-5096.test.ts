@@ -16,6 +16,7 @@ import {
 import {
   classifyRollbackOp,
   isReplacementOp,
+  sameIdReversalUndecidable,
 } from '../../../src/deployment/rollback-executor/plan.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -233,6 +234,49 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     });
     expect(r2.failures).toBe(0);
     expect(orphaned.calls).toEqual([`delete ${NAME}`, 'create pk']);
+  });
+
+  it('refuses, before any write, when the record cannot say whether the reversal ran', async () => {
+    // The only key the deploy changed is a secret both bags mask the same
+    // way: a pending op and a reversed one leave the same record.
+    const masked = { ...keyed('pk'), SSESpecification: { KMSMasterKeyId: '***' } };
+    const secretOnly = op({ properties: masked, previousState: { ...rec('pk'), properties: masked } });
+    const unjournaled = op({ properties: undefined });
+    for (const [o, record] of [
+      [secretOnly, { ...rec('pk'), properties: masked }],
+      [unjournaled, rec('id')],
+    ] as const) {
+      // Not read as already reversed...
+      expect(classifyRollbackOp(o, { Table: record }, new Set())).toBe('reverse-replacement');
+      const m = tableModel();
+      const state: Record<string, ResourceState> = { Table: { ...record } };
+      const result = await replayRollback([o], state, 'X', m.ctx);
+      // ...nor reversed again: refused, nothing deleted, the record untouched.
+      expect(result.failures).toBe(1);
+      expect(m.calls).toEqual([]);
+      expect(state['Table']).toEqual(record);
+      const error = vi.mocked(m.ctx.logger.warn).mock.calls.flat().join('\n');
+      expect(error).toMatch(/Cannot reverse the replacement of .*Table/);
+      expect(error).toContain('cannot tell whether an earlier rollback already reversed it');
+      expect(error).toContain('cdkd deploy --replace');
+      expect(error).toContain('--orphan Table');
+    }
+    // A visible change beside the masked one decides it, both ways.
+    const decidable = op({
+      properties: { ...keyed('id'), SSESpecification: masked.SSESpecification },
+      previousState: { ...rec('pk'), properties: masked },
+    });
+    const pending = { ...rec('id'), properties: decidable.properties! };
+    expect(sameIdReversalUndecidable(decidable, pending)).toBe(false);
+    expect(classifyRollbackOp(decidable, { Table: pending }, new Set())).toBe(
+      'reverse-replacement'
+    );
+    expect(
+      classifyRollbackOp(decidable, { Table: { ...rec('pk'), properties: masked } }, new Set())
+    ).toBe('skip-already-done');
+    expect(sameIdReversalUndecidable(secretOnly, { ...rec('pk'), properties: masked })).toBe(true);
+    // Not a same-id re-create: never undecidable.
+    expect(sameIdReversalUndecidable(op({ oldDeletedBeforeCreate: false, properties: undefined }), rec('id'))).toBe(false);
   });
 
   it('a same-id op the engine did not stamp delete-first keeps the in-place revert', () => {

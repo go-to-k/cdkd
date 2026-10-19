@@ -33,6 +33,7 @@ import {
   deleteFirstBlocker,
   resolveReplacementOldType,
   sameIdRecreated,
+  sameIdReversalUndecidable,
   unroutableReplacementError,
 } from './plan.js';
 import { mayBeStoredIn } from '../child-of-recreated-parent.js';
@@ -121,6 +122,39 @@ function refuseSameIdParentReversal(s: ReplayOpScope): void {
   );
 }
 
+/**
+ * go-to-k/cdkd#5096: a same-id re-create whose record cannot say whether a
+ * prior run already reversed it ({@link sameIdReversalUndecidable}): every key
+ * the forward changed is masked the same way on both sides, or the journal
+ * holds no forward bag. Reversing it again deletes what may be the restored
+ * resource, and skipping it may leave the new one under the old record, so
+ * it refuses before anything is deleted.
+ */
+function refuseUndecidableSameIdReversal(s: ReplayOpScope): void {
+  const { op, stateResources, ctx } = s;
+  if (!sameIdReversalUndecidable(op, stateResources[op.logicalId])) return;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  throw ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(op.resourceType)}): ` +
+          `the deploy deleted it and re-created it under the same physical id, and its state ` +
+          `record cannot tell whether an earlier rollback already reversed it (the properties the ` +
+          `deploy changed are redacted the same way in both records, or were not journaled). Nothing was deleted. ` +
+          `The journal is kept: fix forward by deploying the previous version of the template ` +
+          `with cdkd deploy --replace` +
+          (remedy.offered
+            ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
+              `re-running with the command below.`
+            : '.') +
+          `${remedy.clause}${remedy.line}`,
+        'ROLLBACK_SAME_ID_UNDECIDABLE'
+      )
+    )
+  );
+}
+
 /** `replaySingle`'s 'reverse-replacement' arm (#4426). */
 export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> {
   const {
@@ -154,7 +188,10 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     throw unroutableReplacementError(op, oldTypeRouting.reason, ctx);
   }
   const oldType = oldTypeRouting.oldType;
-  if (sameIdRecreated(op)) refuseSameIdParentReversal(s);
+  if (sameIdRecreated(op)) {
+    refuseUndecidableSameIdReversal(s);
+    refuseSameIdParentReversal(s);
+  }
   // go-to-k/cdkd#2631: the deploy's delete of the old resource was not
   // confirmed, so it may still exist. Read AWS first: re-creating a live one
   // duplicates it (auto-named) or collides with it (named).

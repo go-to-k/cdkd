@@ -1085,7 +1085,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // delete the deploy did not confirm when the read cannot tell.
     // A seventh since go-to-k/cdkd#5096: a same-id parent whose reversal would
     // take a recorded child with it.
-    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(7);
+    // An eighth: a same-id re-create whose record cannot say it was reversed.
+    expect((src.match(/ownRemedyError\(\s*markNonRetryable\(\s*new CdkdError\(/g) ?? []).length).toBe(8);
     expect(src).not.toMatch(/OWN_REMEDY_LINE_CODES|\.has\(error\.code\)/);
     // `msg` used to be classified RAW and rendered wrapped. Since issue #3208
     // it is not classified at all: the collision decision moved to the ERROR
@@ -1231,7 +1232,8 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // Five since go-to-k/cdkd#4690's collision-route refusal; six since
     // go-to-k/cdkd#2631's unproven-survivor refusal.
     // Seven since go-to-k/cdkd#5096's same-id parent refusal.
-    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(7);
+    // Eight since its undecidable-reversal refusal.
+    expect((src.match(/\borphanRemedy\(op\.logicalId, /g) ?? []).length).toBe(8);
     // The fence sees its input: the wrapped form must be present in numbers.
     // Lowered from 40 by go-to-k/cdkd#4214, which moved the refusal renders
     // beside a command onto describing helpers.
