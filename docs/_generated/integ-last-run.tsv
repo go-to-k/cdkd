@@ -160,7 +160,7 @@ iam-managed-policy	2026-10-16T09:35:29Z	PASS	60	verify.sh	rc ok, orph clean (#33
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-10-15T19:36:36Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 iam-propagation-stress	2026-10-11T09:33:22Z	PASS	135	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-iam-recreate-reattach	2026-10-07T06:43:47Z	PASS	211	verify.sh	rc ok, orph clean (#4639)
+iam-recreate-reattach	2026-10-19T00:03:06Z	PASS	220	verify.sh	rc ok, orph clean (#5078 @336e8f4)
 iam-role-fix-forward-orphan	2026-10-15T23:44:38Z	PASS	110	verify.sh	rc ok, orph clean; us-east-1 own state bucket; PR #4981 CreateRole carries tags; src-revert proof fails the tag assertion
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-16T16:36:24Z	PASS	120	verify.sh	PR #5012 (#5004) re-run on 5c17a4e7a (post-rebase, comment-only commits); rc ok, orph clean; MaxSessionDuration retained, Description reset

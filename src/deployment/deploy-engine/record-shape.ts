@@ -9,7 +9,11 @@ import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { markLeafCertifiedBag, markSameGenerationBag } from '../secret-redaction.js';
+import {
+  carryRedactionMarks,
+  markLeafCertifiedBag,
+  markSameGenerationBag,
+} from '../secret-redaction.js';
 import { markWrittenFromDeployedTemplate } from '../masked-property-fingerprints.js';
 import type { DeployEngineOptions } from './options.js';
 
@@ -81,6 +85,23 @@ export function extractAllDependencies(
   const parameterNames = new Set(Object.keys(template?.Parameters ?? {}));
   const deps = [...parser.extractDependencies(resource)].filter((dep) => !parameterNames.has(dep));
   return deps.length > 0 ? deps : undefined;
+}
+
+/**
+ * `rebuilt`, a spread copy of a record's `properties` that only drops elements
+ * of the record's own lists (a lost attachment), with the REDACTION marks
+ * `original` carries (`carryRedactionMarks`, go-to-k/cdkd#5076): a spread
+ * drops every mark, so without them the copy persists under the `unproven`
+ * claim, where a 1-3 character embedded secret stays in plaintext. Never
+ * mints a mark `original` lacks.
+ *
+ * NOT the written-from-deployed-template mark: a trimmed holder list no longer
+ * equals today's rendering, and the save would stamp today's template
+ * fingerprint on it (`withMaskedPropertyFingerprints`), so a masked holder key
+ * could read as unchanged and the next deploy skip the re-attach.
+ */
+export function withPropertiesMarksOf<T extends object>(original: unknown, rebuilt: T): T {
+  return carryRedactionMarks(original, rebuilt);
 }
 
 /**
