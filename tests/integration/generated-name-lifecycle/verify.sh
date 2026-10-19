@@ -510,8 +510,9 @@ assert_named "B1" TargetGroupWithAVeryLongLogicalIdPastTheCap 0 tg
 assert_named "B1" Alb 0 alb
 assert_named "B1" ExtraQ 0 queue
 assert_named "B1" ExtraKeptQ 0 queue
+LONG_TG_NAME="$(held_name tg "$(physical TargetGroupWithAVeryLongLogicalIdPastTheCap)")"
 assert_eq "B1: the long logical id's name fits ELBv2's 32-character cap" \
-  "$([ "$(held_name tg "$(physical TargetGroupWithAVeryLongLogicalIdPastTheCap)" | wc -c)" -le 33 ] && echo yes)" "yes"
+  "$([ "${#LONG_TG_NAME}" -le 32 ] && echo yes)" "yes"
 fetch_child_state "B1"
 CHILD_WANT="$(expected_name "${CHILD_STATE_FILE}" "${CHILD_STACK}" ChildRole 0 role)" || fail "B1: child name"
 assert_eq "B1: the nested child's ChildRole holds its own lifetime's generation-0 name" \
