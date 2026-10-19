@@ -2140,16 +2140,30 @@ export class S3StateBackend {
       return minted;
     } catch (error) {
       if (error instanceof StateError) throw error;
-      // The SDK's own text can carry the raw key: name the stack through
-      // `stackRef` instead.
-      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
-      throw new StateError(
-        `Failed to read or write the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
-          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
-          'Nothing was created; re-run once the state bucket can be written.',
-        normalized
-      );
+      throw this.stackInstanceSiblingError(stackName, region, error, 'write');
     }
+  }
+
+  /**
+   * The refusal for a sibling read (`read`) or a first write's read-or-write
+   * (`write`) that failed in S3. The SDK's own text can carry the raw key, so
+   * the stack is named through `stackRef`, and never the id.
+   */
+  private stackInstanceSiblingError(
+    stackName: string,
+    region: string,
+    error: unknown,
+    access: 'read' | 'write'
+  ): StateError {
+    const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
+    return new StateError(
+      `Failed to ${access === 'write' ? 'read or write' : 'read'} the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+        `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
+        (access === 'write'
+          ? 'Nothing was created; re-run once the state bucket can be written.'
+          : 'Nothing was changed; re-run once the state bucket can be read.'),
+      normalized
+    );
   }
 
   /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
@@ -2192,13 +2206,7 @@ export class S3StateBackend {
       );
     } catch (error) {
       if (error instanceof StateError) throw error;
-      const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
-      throw new StateError(
-        `Failed to read the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
-          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${errorDetail(normalized)}. ` +
-          'Nothing was changed; re-run once the state bucket can be read.',
-        normalized
-      );
+      throw this.stackInstanceSiblingError(stackName, region, error, 'read');
     }
   }
 
