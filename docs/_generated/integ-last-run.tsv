@@ -280,7 +280,7 @@ orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness r
 output-never-resolved-diff	2026-10-16T21:07:57Z	PASS	186	verify.sh	rc ok, orph clean (OutputsRunState refactor #5021)
 outputs-only-export	2026-10-18T13:38:55Z	PASS	130	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; rc 0, all 13 checks passed, destroy 0 errors
 parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-partial-create-handback	2026-10-11T09:33:22Z	PASS	426	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+partial-create-handback	2026-10-19T11:35:13Z	PASS	415	verify.sh	PR #5097 (#5096) e9ef080c3 regression check; rc 0, destroy clean, orph clean
 perf-cross-backend-check	2026-10-11T09:33:22Z	PASS	1523	verify.sh	PR #4720 (#4705) c53f78f arms 1/2/4 vs 6728bcdc: single/redeploy/teardown no diff; destroy --all -6.60s; adopt deploy +0.42s
 pipes-fix-forward-orphan	2026-10-15T19:34:21Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
@@ -300,7 +300,7 @@ redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) 
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-18T18:32:28Z	PASS	2091	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 remove-protection-compensation	2026-10-18T14:09:14Z	PASS	250	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
-remove-protection-journaled-orphan	2026-10-18T04:10:16Z	PASS	682	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
+remove-protection-journaled-orphan	2026-10-19T11:27:52Z	PASS	657	verify.sh	PR #5097 (#5096) e9ef080c3 regression check; own state-prefix cdkd-rpjo-1792408588-73809; rc 0, all 4 stacks destroyed 0 errors, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-17T05:11:06Z	PASS	70	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
 replaced-delete-failed-rollback	2026-10-18T04:10:16Z	PASS	150	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
@@ -317,8 +317,9 @@ rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, or
 rollback-failure-injection	2026-10-17T13:29:07Z	PASS	356	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 rollback-nested-cross-region-secret	2026-10-18T20:07:28Z	PASS	537	verify.sh	PR #5062 f0655a21a7; rc ok, orph clean both regions (us-east-1 + us-west-2)
 rollback-replacement-retain	2026-10-17T10:48:50Z	PASS	70	verify.sh	rc ok (solo rerun after a batch-script wave-placement race), orph clean (rollback refactor #5027)
-rollback-replay-cc-generated-name	2026-10-17T10:48:50Z	PASS	170	verify.sh	rc ok, orph clean (rollback refactor #5027)
-rollback-replay-effective-props	2026-10-18T22:06:31Z	PASS	248	verify.sh	rc ok, orph clean, intentional phase-3 fail arm OK (PR 5074)
+rollback-replay-cc-generated-name	2026-10-19T11:12:01Z	PASS	169	verify.sh	PR #5097 (#5096) e9ef080c3 regression check; rc 0, destroy clean, orph clean
+rollback-replay-effective-props	2026-10-19T11:16:17Z	PASS	228	verify.sh	PR #5097 (#5096) e9ef080c3 regression check; rc 0, destroy clean, orph clean
+rollback-same-id-recreate	2026-10-19T11:08:40Z	PASS	184	verify.sh	PR #5097 (#5096) e9ef080c3; new fixture; phase A restores key pk after same-id delete-first replacement rollback, phase B refuses (same-id parent) then remedy restores; rc 0, destroy clean, orph clean
 rollback-sqs-cooldown	2026-10-17T10:48:50Z	PASS	171	verify.sh	rc ok, orph clean (rollback refactor #5027)
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

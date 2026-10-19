@@ -4,6 +4,7 @@ import { equalIdNamesDifferentResources } from '../type-change-guard.js';
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { SECRET_MASK } from '../secret-redaction.js';
 import {
   type OldTypeSources,
   nonEmptyString,
@@ -161,6 +162,13 @@ export function isReplacementOp(op: CompletedOperation): boolean {
     // go-to-k/cdkd#4615: a changed id is a replacement unless the provider
     // said it updated in place.
     ((op.previousState.physicalId !== op.physicalId && op.wasReplaced !== false) ||
+      // go-to-k/cdkd#5096: the forward deleted the old resource and created
+      // the new one under the SAME physical id (`--replace` delete-first, a
+      // fixed-name `--recreate-via-*`, the update-not-supported fallback): the
+      // live resource is the new one, so an in-place revert -- which cannot
+      // change a create-only property -- would leave it while the record
+      // claims the old one. The replacement is reversed instead.
+      sameIdRecreated(op) ||
       isTypeChangeOp(op) ||
       // Issue #3892: an equal id can still be two resources (a Glue table
       // whose id is placed by DatabaseName), and an in-place revert of such
@@ -171,6 +179,94 @@ export function isReplacementOp(op: CompletedOperation): boolean {
         oldProperties: op.previousState.properties,
         newProperties: op.properties,
       }))
+  );
+}
+
+/**
+ * go-to-k/cdkd#5096: an UPDATE whose forward deleted the old resource first
+ * and re-created it under the same physical id. Only the engine's own stamp
+ * says so (`oldDeletedBeforeCreate`); an in-place update the provider
+ * reported as such (`wasReplaced: false`) is not one.
+ */
+export function sameIdRecreated(op: CompletedOperation): boolean {
+  return (
+    op.oldDeletedBeforeCreate === true &&
+    op.wasReplaced !== false &&
+    op.physicalId !== undefined &&
+    op.previousState?.physicalId === op.physicalId
+  );
+}
+
+/**
+ * go-to-k/cdkd#5096: has a same-id re-create already been reversed? The id
+ * cannot say, so the record does, read on the top-level properties the
+ * forward CHANGED (the create-only change that forced it among them): the
+ * reversal is done when the record holds the old value of every one. A
+ * replayed create's own bag (`effectiveProperties`) adds or fills other keys
+ * but keeps the requested values of those, and a key both sides redacted the
+ * same way compares equal, so neither a re-run nor a redaction difference on
+ * an unchanged key reads the wrong way.
+ *
+ * Without a changed key to read (no journaled forward bag, or equal bags
+ * holding the mask, behind which the change may hide) the record cannot
+ * tell a reversed op from a pending one: `'undecidable'`, which the
+ * reverse-replacement arm refuses before any write
+ * ({@link sameIdReversalUndecidable}) rather than skip or delete again.
+ */
+function sameIdReversalDone(
+  op: CompletedOperation,
+  current: ResourceState
+): boolean | 'undecidable' {
+  const before = op.previousState!.properties ?? {};
+  const forward = op.properties;
+  const now = current.properties ?? {};
+  if (forward === undefined) return 'undecidable';
+  // Read by OWN key: a template key spelled like an inherited member
+  // (`constructor`) must not compare as present on a side that lacks it.
+  const own = (bag: Record<string, unknown>, key: string) =>
+    Object.hasOwn(bag, key) ? bag[key] : undefined;
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(forward)])].filter(
+    (key) => !deepEqual(own(before, key), own(forward, key))
+  );
+  if (changed.length === 0) {
+    // Equal bags with nothing redacted: the forward changed no property (a
+    // child re-created with its re-created parent), so reversing it again
+    // leaves what the reversal would: read it as done. A redacted leaf may
+    // hide the change, which the record then cannot show.
+    return holdsRedactedLeaf(before) ? 'undecidable' : deepEqual(now, before);
+  }
+  return changed.every((key) => deepEqual(own(now, key), own(before, key)));
+}
+
+/**
+ * go-to-k/cdkd#5096: does a recorded bag hold the redaction mask, behind which
+ * a changed secret (a `NoEcho` value) is invisible? Not a `{{resolve:...}}`
+ * reference: the diff compares its text, so an unchanged reference forced no
+ * replacement, and the replay re-resolves it, so reversing again changes
+ * nothing. The mask may be part of a value.
+ */
+function holdsRedactedLeaf(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(SECRET_MASK);
+  }
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some(holdsRedactedLeaf);
+}
+
+/**
+ * go-to-k/cdkd#5096: a same-id re-create whose record cannot say whether its
+ * reversal already ran ({@link sameIdReversalDone}). Reversing it again would
+ * delete the restored resource; skipping it would leave the new one under the
+ * old record. Neither is safe, so the arm refuses.
+ */
+export function sameIdReversalUndecidable(
+  op: CompletedOperation,
+  current: ResourceState | undefined
+): boolean {
+  return (
+    sameIdRecreated(op) &&
+    current !== undefined &&
+    sameIdReversalDone(op, current) === 'undecidable'
   );
 }
 
@@ -258,6 +354,10 @@ export function classifyRollbackOp(
     if (
       current.physicalId === op.previousState!.physicalId &&
       sameTypeAsOld &&
+      // go-to-k/cdkd#5096: under a same-id re-create the id is no evidence:
+      // the record says whether the reversal ran.
+      // An undecidable one is not done: the reverse arm refuses it.
+      (!sameIdRecreated(op) || sameIdReversalDone(op, current) === true) &&
       // Issue #3892: the equal id may be the NEW resource (a Glue table in
       // another database); it is the old one only when its record says so.
       !equalIdNamesDifferentResources({

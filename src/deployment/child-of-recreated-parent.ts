@@ -198,6 +198,18 @@ export function survivesParent(resourceType: string): boolean {
   );
 }
 
+/**
+ * go-to-k/cdkd#5096: may AWS store a `childType` resource inside (or attach it
+ * to) a `parentType` resource, so that deleting the parent takes it, or its
+ * attachment, too? Every mode counts: a `reattach` child survives but loses
+ * the attachment.
+ */
+export function mayBeStoredIn(childType: string, parentType: string): boolean {
+  if (!Object.hasOwn(CHILD_STORED_IN_PARENT, childType)) return false;
+  const entry = CHILD_STORED_IN_PARENT[childType]!;
+  return entry.properties.some((property) => typesFor(entry, property).includes(parentType));
+}
+
 /** The child types, for the test that pins the list. */
 export function childStoredInParentTypes(): readonly string[] {
   return Object.keys(CHILD_STORED_IN_PARENT).sort();

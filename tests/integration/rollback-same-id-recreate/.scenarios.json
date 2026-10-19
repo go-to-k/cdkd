@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "rollback-reverse-replacement-same-physical-id"
+  ]
+}

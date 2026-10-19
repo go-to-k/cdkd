@@ -36,6 +36,8 @@ export interface ReplayOpScope {
   readonly secrets: RecordedSecretValues;
   readonly opMasker: OpMasker;
   readonly mask: OpMasker['mask'];
+  /** go-to-k/cdkd#5096: the logical ids this segment CREATED (its CREATE pass deletes them). */
+  readonly createdInSegment: ReadonlySet<string>;
   /**
    * The route a CREATE-rollback arm resolved (issue #1366), read by
    * `replaySingle`'s shared catch for its ROLLBACK_RESOURCE_FAILED event.

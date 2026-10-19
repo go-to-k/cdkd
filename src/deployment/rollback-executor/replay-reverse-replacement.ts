@@ -32,8 +32,11 @@ import { redactRollbackRecord } from './replay-secrets.js';
 import {
   deleteFirstBlocker,
   resolveReplacementOldType,
+  sameIdRecreated,
+  sameIdReversalUndecidable,
   unroutableReplacementError,
 } from './plan.js';
+import { mayBeStoredIn } from '../child-of-recreated-parent.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
@@ -70,6 +73,89 @@ import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js
 import { probeReplacedSurvivor } from './replaced-survivor.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 
+/**
+ * go-to-k/cdkd#5096: reversing a same-id re-create deletes the resource again,
+ * and with it whatever AWS stores inside it (a function's permissions, a
+ * topic's subscriptions, a role's inline policies). Those children are
+ * reversed BEFORE their parent (reverse completion order) and nothing
+ * re-creates them after it, so their records would claim resources AWS no
+ * longer has. A record of such a child type that depends on this resource (or
+ * records no dependencies) refuses the reversal, before anything is deleted.
+ */
+function refuseSameIdParentReversal(s: ReplayOpScope): void {
+  const { op, stateResources, ctx, createdInSegment, orphanLogicalIds } = s;
+  const children = Object.entries(stateResources)
+    .filter(
+      ([logicalId, record]) =>
+        logicalId !== op.logicalId &&
+        // A child this segment created is deleted by its CREATE pass, and one
+        // the user orphans is left alone: neither needs restoring.
+        !createdInSegment.has(logicalId) &&
+        !orphanLogicalIds.has(logicalId) &&
+        mayBeStoredIn(record.resourceType, op.resourceType) &&
+        (!Array.isArray(record.dependencies) || record.dependencies.includes(op.logicalId))
+    )
+    .map(([logicalId]) => logicalId)
+    .sort();
+  if (children.length === 0) return;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  const shown = children.slice(0, 5).map(refusalLogicalId).join(', ');
+  const more = children.length > 5 ? ` and ${children.length - 5} more` : '';
+  throw ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(op.resourceType)}): ` +
+          `the deploy deleted it and re-created it under the same physical id, so reversing it ` +
+          `deletes it again, and with it what AWS stores inside it (${shown}${more}), which this ` +
+          `rollback does not re-create. Nothing was deleted. The journal is kept: fix forward ` +
+          `by deploying the previous version of the template with cdkd deploy --replace, which ` +
+          `re-creates both` +
+          (remedy.offered
+            ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
+              `re-running with the command below.`
+            : '.') +
+          `${remedy.clause}${remedy.line}`,
+        'ROLLBACK_SAME_ID_PARENT'
+      )
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#5096: a same-id re-create whose record cannot say whether a
+ * prior run already reversed it ({@link sameIdReversalUndecidable}): its bags
+ * read the same before and after and hold the mask, or the journal holds no
+ * forward bag. Reversing it again deletes what may be the restored
+ * resource, and skipping it may leave the new one under the old record, so
+ * it refuses before anything is deleted.
+ */
+function refuseUndecidableSameIdReversal(s: ReplayOpScope): void {
+  const { op, stateResources, ctx } = s;
+  if (!sameIdReversalUndecidable(op, stateResources[op.logicalId])) return;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  throw ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(op.resourceType)}): ` +
+          `the deploy deleted it and re-created it under the same physical id, and its state ` +
+          `record cannot tell whether an earlier rollback already reversed it (its recorded ` +
+          `properties read the same before and after the deploy and hold a redacted value, which ` +
+          `may hide what changed, or the deploy's properties were not journaled). Nothing was deleted. ` +
+          `The journal is kept: fix forward by deploying the previous version of the template ` +
+          `with cdkd deploy --replace` +
+          (remedy.offered
+            ? `, or leave this resource as it is and let the rest of the rollback proceed by ` +
+              `re-running with the command below.`
+            : '.') +
+          `${remedy.clause}${remedy.line}`,
+        'ROLLBACK_SAME_ID_UNDECIDABLE'
+      )
+    )
+  );
+}
+
 /** `replaySingle`'s 'reverse-replacement' arm (#4426). */
 export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> {
   const {
@@ -103,6 +189,10 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     throw unroutableReplacementError(op, oldTypeRouting.reason, ctx);
   }
   const oldType = oldTypeRouting.oldType;
+  if (sameIdRecreated(op)) {
+    refuseUndecidableSameIdReversal(s);
+    refuseSameIdParentReversal(s);
+  }
   // go-to-k/cdkd#2631: the deploy's delete of the old resource was not
   // confirmed, so it may still exist. Read AWS first: re-creating a live one
   // duplicates it (auto-named) or collides with it (named).

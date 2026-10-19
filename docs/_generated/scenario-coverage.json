@@ -321,6 +321,10 @@
       "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0."
     },
     {
+      "tag": "rollback-reverse-replacement-same-physical-id",
+      "description": "`cdkd rollback` of a replacement that deleted the old resource first and re-created it under the SAME physical id (a fixed-name resource under `cdkd deploy --replace`), issue #5096. The id cannot tell old from new, so the op used to be reverted in place, which cannot change a create-only property: the rollback printed success and wrote the old record while AWS kept the new resource. verify.sh changes a fixed-name DynamoDB table's key under --replace --force-stateful-recreation --no-rollback with a failing sibling, then asserts `cdkd rollback --force` restores the old key on the LIVE table (describe-table) and in state; and changes a fixed-name log group's class the same way, asserting the rollback REFUSES it before deleting anything (reversing it would delete the log stream stored inside it), keeps the journal, and that the named remedy (`cdkd deploy --replace` of the previous template) completes."
+    },
+    {
       "tag": "s3-asset-deploy",
       "description": "File/ZIP asset publishing during `cdkd deploy`: a multi-file local directory is zipped + uploaded to the CDK bootstrap asset bucket by `FileAssetPublisher` (content-addressed, skip-if-exists), the Lambda `Code.S3Bucket`/`Code.S3Key` ref is wired to the uploaded object (CodeSize proves it is NOT inline), AND a generic `s3_assets.Asset` upload is read back at runtime via cdkd-resolved bucket/key env vars. Bootstrap-bucket asset objects persist by design across destroy."
     },
@@ -2204,6 +2208,13 @@
       ]
     },
     {
+      "name": "rollback-same-id-recreate",
+      "annotated": true,
+      "scenarios": [
+        "rollback-reverse-replacement-same-physical-id"
+      ]
+    },
+    {
       "name": "rollback-sqs-cooldown",
       "annotated": true,
       "scenarios": [
@@ -3231,6 +3242,13 @@
       "description": "`cdkd rollback` reverse-replacement re-create through the SQS same-name ~60s deletion cooldown (issue #1206): a custom-named queue rename-replacement (create-only QueueName, --force-stateful-recreation) plus an injected failing resource under --no-rollback is reverted immediately — the reverse-replacement's initial re-create must hit `QueueDeletedRecently`, retry through the window (asserted via the --verbose retry lines), restore the old-named queue, delete the new one, and exit 0.",
       "fixtures": [
         "rollback-sqs-cooldown"
+      ]
+    },
+    {
+      "scenario": "rollback-reverse-replacement-same-physical-id",
+      "description": "`cdkd rollback` of a replacement that deleted the old resource first and re-created it under the SAME physical id (a fixed-name resource under `cdkd deploy --replace`), issue #5096. The id cannot tell old from new, so the op used to be reverted in place, which cannot change a create-only property: the rollback printed success and wrote the old record while AWS kept the new resource. verify.sh changes a fixed-name DynamoDB table's key under --replace --force-stateful-recreation --no-rollback with a failing sibling, then asserts `cdkd rollback --force` restores the old key on the LIVE table (describe-table) and in state; and changes a fixed-name log group's class the same way, asserting the rollback REFUSES it before deleting anything (reversing it would delete the log stream stored inside it), keeps the journal, and that the named remedy (`cdkd deploy --replace` of the previous template) completes.",
+      "fixtures": [
+        "rollback-same-id-recreate"
       ]
     },
     {

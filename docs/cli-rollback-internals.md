@@ -152,6 +152,23 @@ back under the id they name, so deleting the new copy first could lose it. The
 rollback says so in a warning and does not delete the new resource to free a
 name either, so if the re-create fails, the new resource is kept.
 
+Such a replacement counts even when the new resource got the SAME physical id
+as the old one (a fixed name): the id cannot tell the two apart, but an
+in-place revert could not undo the create-only change that forced the
+replacement. Whether it has already been reversed is read from the state
+record: it is done once every property the deploy changed holds its old value.
+When the record cannot say (every property the deploy changed is a secret
+redacted the same way before and after, or the journal holds no properties for
+the deploy), the rollback refuses that resource rather than skip it or delete
+it again.
+A resource that AWS stores other resources inside (a Lambda function's
+permissions, an SNS topic's subscriptions, an IAM role's inline policies) is
+refused instead when the stack records such a resource depending on it (one the
+same deploy created, or one `--orphan` names, does not count), since deleting
+it again would take that resource too and nothing re-creates it.
+Nothing is deleted and the journal is kept; deploy the previous template with
+`cdkd deploy --replace` to restore both, or orphan the resource.
+
 What counts as a replacement is what the provider reported. An update applied
 in place is reverted in place even when it changed the physical id, as an SQS
 `QueuePolicy` update does when its first queue changes and an SNS `TopicPolicy`
