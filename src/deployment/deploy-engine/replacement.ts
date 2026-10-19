@@ -876,7 +876,14 @@ export async function createFirstThenDeleteOld(
               logicalId,
               change: input.change,
               oldPhysicalId: currentResource.physicalId,
-              mask: maskName,
+              // The printing bag too: the old name can be secret-derived.
+              mask: (text: string) =>
+                maskName(
+                  maskSecretsInText(
+                    text,
+                    unionOfSecretBags([secrets, printingSecretsFor(deps.secretsRun(), logicalId)])
+                  )
+                ),
             })
         ),
         'NAMED_REPLACEMENT_COLLISION',
