@@ -2041,6 +2041,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "object spread in updateIntegration()",
         "withRemovalDefaults(...) in updateAuthorizer()"
       ]
     },
