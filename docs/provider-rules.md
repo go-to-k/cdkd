@@ -1563,7 +1563,7 @@ Checklist when writing or reviewing an `update()`:
   (#1160) measured the rest: Authorizer `IdentitySource` is CLEARED (declared
   in `removalDefaults` as `[]`), Integration `IntegrationSubtype` removal FAILS
   unless the update also declares an `IntegrationUri` (so cdkd refuses it), and
-  every other optional property is KEPT. The map keys
+  every other property that re-audit listed is KEPT. The map keys
   above are still cleared by `cdkd drift --revert` (`desiredFromAwsReadback`),
   which must remove a console-added key.
   Also real CloudFormation A/B, go-to-k/cdkd#5004: SQS `SqsManagedSseEnabled` /

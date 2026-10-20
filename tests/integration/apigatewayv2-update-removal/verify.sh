@@ -512,10 +512,11 @@ TTL="$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')"
 # #5004: CloudFormation KEEPS AuthorizerResultTtlInSeconds on removal.
 if [ "${TTL}" != "300" ]; then echo "FAIL: Authorizer TTL not RETAINED at 300 (got '${TTL}')" >&2; exit 1; fi
 # Issue #1160 (real CloudFormation A/B): CloudFormation CLEARS a removed
-# IdentitySource, so cdkd sends `[]` and AWS reads back none. A pre-fix cdkd
-# sent nothing and the header stayed. `None` only: an empty read is a probe error.
-CLEAR_IS="$(auth_field "${AID}" "${CLEAR_AUTH_ID}" 'IdentitySource')"
-if [ "${CLEAR_IS}" != "None" ]; then
+# IdentitySource, so cdkd sends `[]` and AWS reads back none (absent in the
+# A/B; an empty list counts too). A pre-fix cdkd sent nothing and the header
+# stayed. `0` only: an empty read is a probe error, never "cleared".
+CLEAR_IS="$(auth_field "${AID}" "${CLEAR_AUTH_ID}" 'length(IdentitySource || `[]`)')"
+if [ "${CLEAR_IS}" != "0" ]; then
   echo "FAIL: ClearAuthorizer IdentitySource not cleared on removal (got '${CLEAR_IS}'; issue #1160: CloudFormation clears it)" >&2
   exit 1
 fi

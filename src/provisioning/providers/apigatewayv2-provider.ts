@@ -67,6 +67,7 @@ import {
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { withRemovalDefaults } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -2564,9 +2565,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // probe, same A/B). Removed in an update that also declares an
     // IntegrationUri, it succeeds and the integration becomes URI-based. So a
     // deploy refuses the first shape before any call, and for the second sends
-    // the update WITHOUT the live subtype. A rollback replay (`replayingState`)
-    // cannot edit its state record, so it keeps the live subtype and warns.
-    // `cdkd drift --revert` names no removed property, so it keeps the fallback.
+    // the update WITHOUT the live subtype (and with the declared URI, even when
+    // it equals the previous one). A rollback replay (`replayingState`) whose
+    // record declares an IntegrationUri restores that URI-based shape the same
+    // way; one whose record has no URI cannot be edited by the user, so it keeps
+    // the live subtype and warns. `cdkd drift --revert` names no removed
+    // property, so it keeps the fallback.
     const subtypeRemoved =
       context?.removedProperties !== undefined
         ? context.removedProperties.has('IntegrationSubtype')
@@ -2576,7 +2580,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // stays live is recorded, or the next deploy's previous side loses it and
     // a later update would send no subtype (AWS refuses that).
     let effectiveProperties: Record<string, unknown> | undefined;
-    if (subtypeRemoved && context?.replayingState !== true) {
+    if (
+      subtypeRemoved &&
+      (context?.replayingState !== true || properties['IntegrationUri'] != null)
+    ) {
       if (properties['IntegrationUri'] == null) {
         throw markNonRetryable(
           new ProvisioningError(
@@ -2587,6 +2594,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           )
         );
       }
+      input.IntegrationUri = properties['IntegrationUri'] as string;
       changed = true;
     } else if (input.IntegrationSubtype === undefined) {
       const liveSubtype =
@@ -2597,23 +2605,6 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         log.warn(
           safeMsg`${logicalId} (${resourceType}): the state being restored does not declare IntegrationSubtype; the rollback keeps the integration's current subtype, because AWS refuses a service integration without it.`
         );
-      }
-    }
-    // ...and a call carrying the subtype must ALSO carry the full parameter
-    // mapping: AWS re-validates the operation's required parameters on every
-    // UpdateIntegration. Direct probe on an EventBridge-PutEvents integration
-    // (#1160 A/B): `Description` + `IntegrationSubtype` fails with "requires
-    // enabling passthrough, or defining all of the following parameters in the
-    // parameter mapping: [Detail, DetailType, Source]", while the same call
-    // with the full RequestParameters succeeds. RequestParameters above is
-    // sent only when it changed, so fill it from the declared map, or from
-    // the previous one when the template removed it (CloudFormation KEEPS a
-    // removed map, so the previous values are the live ones).
-    if (input.IntegrationSubtype !== undefined && input.RequestParameters === undefined) {
-      const liveParameters =
-        properties['RequestParameters'] ?? previousProperties['RequestParameters'];
-      if (liveParameters != null) {
-        input.RequestParameters = liveParameters as Record<string, string>;
       }
     }
     if (
@@ -2658,6 +2649,16 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       this.warnTlsConfigIgnoredIfPublic(logicalId, properties, log);
       input.TlsConfig = properties['TlsConfig'] as TlsConfigInput;
       changed = true;
+    }
+    if (changed && input.IntegrationSubtype !== undefined) {
+      input.RequestParameters = this.serviceIntegrationParameters(
+        logicalId,
+        physicalId,
+        resourceType,
+        input.RequestParameters ??
+          (properties['RequestParameters'] as Record<string, string> | undefined),
+        previousProperties['RequestParameters']
+      );
     }
 
     if (!changed) {
@@ -3107,6 +3108,61 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * The `RequestParameters` an `UpdateIntegration` carrying `IntegrationSubtype`
+   * must send: AWS re-validates the service operation's required parameter
+   * mapping against the REQUEST on every such call. Direct probe on an
+   * EventBridge-PutEvents integration (#1160 A/B): `Description` + subtype
+   * fails with "requires enabling passthrough, or defining all of the
+   * following parameters in the parameter mapping: [Detail, DetailType,
+   * Source]", and so does subtype + `{ Source }` alone; the full map succeeds.
+   *
+   * So the map sent is the previous one overlaid with what this update sends
+   * (or declares). A key the template dropped is carried from the previous
+   * side: CloudFormation KEEPS a dropped key (#5004), so that is the live value.
+   *
+   * The previous side is a STATE record, where a secret leaf is stored as its
+   * `{{resolve:...}}` reference or the `***` mask, never the plaintext. Sending
+   * one would overwrite the live mapping with the stand-in, so a carried leaf
+   * that is one REFUSES instead, naming only the keys. This holds on a rollback
+   * replay too: AWS refuses the call without that key anyway.
+   */
+  private serviceIntegrationParameters(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    sent: Record<string, string> | undefined,
+    previous: unknown
+  ): Record<string, string> | undefined {
+    const carried: Record<string, unknown> = {};
+    if (previous != null && typeof previous === 'object' && !Array.isArray(previous)) {
+      for (const [key, value] of Object.entries(previous as Record<string, unknown>)) {
+        if (sent === undefined || !Object.prototype.hasOwnProperty.call(sent, key)) {
+          carried[key] = value;
+        }
+      }
+    }
+    const redacted = Object.keys(carried).filter((key) => {
+      const value = carried[key];
+      return (
+        typeof value === 'string' &&
+        (dynamicReferenceTokens(value).length > 0 || value === SECRET_MASK)
+      );
+    });
+    if (redacted.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): this update must re-send the service integration's RequestParameters (AWS re-validates the full mapping beside IntegrationSubtype), but the recorded value of ${redacted.join(', ')} is a redacted secret reference that cdkd cannot send. Declare every RequestParameters key in the template. The integration was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const merged = { ...(carried as Record<string, string>), ...(sent ?? {}) };
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
 
   /**
    * Resolve an optional update field so that a property REMOVED from the

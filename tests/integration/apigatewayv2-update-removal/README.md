@@ -69,7 +69,8 @@ perfectly green deploy.
 
 The ten `AWS::ApiGatewayV2::Integration` properties are asserted on CREATE
 (phase 1) and on UPDATE (phase 2). A real CloudFormation A/B (#1160) showed
-CloudFormation KEEPS each of them on removal except `IntegrationSubtype`, so
+CloudFormation KEEPS each of them on removal except `IntegrationSubtype`
+(`ConnectionType` was measured on a VPC_LINK integration only), so
 phase 2b removes the four WebSocket `MOCK` fields and asserts their phase 2
 values survive.
 
