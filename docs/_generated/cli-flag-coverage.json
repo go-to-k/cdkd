@@ -1712,6 +1712,7 @@
         "dynamodb-gsi-update",
         "ec2-instance-fanout",
         "elasticache-replicationgroup-getatt",
+        "eventsourcemapping-race",
         "export",
         "export-nested-stack",
         "iam-managed-policy",

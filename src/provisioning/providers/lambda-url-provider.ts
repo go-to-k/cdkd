@@ -13,7 +13,11 @@ import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
@@ -62,7 +66,8 @@ export class LambdaUrlProvider implements ResourceProvider {
   }
 
   /**
-   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * The masked sinks ONE `create()` / `update()` / `delete()` logs and
+   * refuses through
    * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
    * over the context's masker, extended by `withDerivedNameMasks` with `pairs`
    * -- each `[template value, name derived from it]`. The physical id is the
@@ -78,19 +83,36 @@ export class LambdaUrlProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2177): AWS quotes a rejected request value back. The
-   * `cause` stays unmasked, and a message the mask changed is stamped so the
-   * retry classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A
-   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
-   * wrap.
+   * The `create()` / `update()` / `delete()` failure wrap. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text, which can quote a rejected
+   * request value back, goes to `debug` through `log`, masked both raw and as
+   * the finished line (issue #2177). The wrap is stamped `markRedactedCause`,
+   * so retry classification reads the withheld text on the `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps the masked pass-through of the
+   * shared `wrapMaskedAwsError`, which stamps when the mask changed the text
+   * (the #4244 class); a non-`Error` throw keeps its masked text, unstamped.
+   * The delete checks `ResourceNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
   private wrapMaskedError(
-    mask: MaskerFn,
+    log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(log.mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    return markRedactedCause(
+      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   /**
@@ -196,7 +218,7 @@ export class LambdaUrlProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -447,7 +469,7 @@ export class LambdaUrlProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -468,16 +490,22 @@ export class LambdaUrlProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting Lambda URL ${logicalId}: ${physicalId}`);
+    // The recorded function ARN can be a resolved secret, and AWS may quote
+    // the function back by its bare name.
+    const log = this.operationSinks(context?.maskSecrets, [
+      [properties?.['TargetFunctionArn'], physicalId],
+      [properties?.['TargetFunctionArn'], lambdaFunctionNameForMask(physicalId)],
+    ]);
+    log.debug(`Deleting Lambda URL ${logicalId}: ${physicalId}`);
 
     try {
       await this.lambdaClient.send(
         new DeleteFunctionUrlConfigCommand({ FunctionName: physicalId })
       );
-      this.logger.debug(`Successfully deleted Lambda URL ${logicalId}`);
+      log.debug(`Successfully deleted Lambda URL ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.lambdaClient.config.region();
@@ -488,16 +516,21 @@ export class LambdaUrlProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`Lambda URL ${physicalId} does not exist, skipping deletion`);
+        log.debug(`Lambda URL ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Lambda URL ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda URL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

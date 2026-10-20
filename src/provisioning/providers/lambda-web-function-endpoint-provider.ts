@@ -19,6 +19,8 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { definedAttributes } from '../attribute-map.js';
 import { coerceCfnInteger } from '../config-shape.js';
 import type {
@@ -191,11 +193,21 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
         input.functionName!,
         input.endpointName!,
         logicalId,
-        'create'
+        resourceType,
+        'create',
+        undefined,
+        context?.maskSecrets
       );
       return { physicalId: createdArn, attributes: buildAttributes(settled) };
     } catch (error) {
-      const thrown = this.wrapError('create', logicalId, resourceType, undefined, error);
+      const thrown = this.wrapError(
+        'create',
+        logicalId,
+        resourceType,
+        undefined,
+        error,
+        context?.maskSecrets
+      );
       // The endpoint exists once CreateWebFunctionEndpoint returned its ARN;
       // name it for --revert-failed (go-to-k/cdkd#4583).
       if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
@@ -289,12 +301,22 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
         parts.functionArn,
         parts.childId,
         logicalId,
+        resourceType,
         'update',
-        input.revisionWeights
+        input.revisionWeights,
+        context?.maskSecrets,
+        physicalId
       );
       return { physicalId, wasReplaced: false, attributes: buildAttributes(settled) };
     } catch (error) {
-      throw this.wrapError('update', logicalId, resourceType, physicalId, error);
+      throw this.wrapError(
+        'update',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
     }
   }
 
@@ -341,7 +363,14 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
       }
       await this.waitForGone(parts.functionArn, parts.childId, logicalId);
     } catch (error) {
-      throw this.wrapError('delete', logicalId, resourceType, physicalId, error);
+      throw this.wrapError(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
     }
   }
 
@@ -516,8 +545,13 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
     functionName: string,
     endpointName: string,
     logicalId: string,
+    resourceType: string,
     operation: 'create' | 'update',
-    sentWeights?: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }>
+    sentWeights:
+      | ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }>
+      | undefined,
+    mask: ((text: string) => string) | undefined,
+    physicalId?: string
   ): Promise<GetWebFunctionEndpointResponse> {
     for (let attempt = 1; attempt <= LAMBDA_WEB_MAX_POLL_ATTEMPTS; attempt++) {
       let resp: GetWebFunctionEndpointResponse;
@@ -537,13 +571,31 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
         throw error;
       }
       if (resp.state === 'Failed') {
-        throw new Error(
-          `Lambda web function endpoint ${logicalIdShown(logicalId)} entered Failed: ${resp.stateReason ?? 'no reason given'}`
+        throw this.wrapStatusReasonError(
+          mask,
+          { message: resp.stateReason },
+          (text, cause) =>
+            new ProvisioningError(
+              `Lambda web function endpoint ${logicalIdShown(logicalId)} entered Failed: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
       if (resp.updateStatus === 'Failed') {
-        throw new Error(
-          `Lambda web function endpoint ${logicalIdShown(logicalId)} ${operation} failed: ${resp.updateStatusReason ?? 'no reason given'}`
+        throw this.wrapStatusReasonError(
+          mask,
+          { message: resp.updateStatusReason },
+          (text, cause) =>
+            new ProvisioningError(
+              `Lambda web function endpoint ${logicalIdShown(logicalId)} ${operation} failed: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
         );
       }
       if (
@@ -581,22 +633,70 @@ export class LambdaWebFunctionEndpointProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * The error a FAILED state read off a successful Get throws
+   * (go-to-k/cdkd#2319). AWS's reason reaches the same persisted sink as a
+   * caught failure and can name the account, so the message carries only the
+   * `--verbose` pointer instead ({@link describeAwsStatusReason}). The
+   * reason goes to `debug` through the operation's masker, and becomes the
+   * `cause` the wrap is stamped `markRedactedCause` over, so the retry
+   * classifiers still read it as they read the message before. No reason keeps
+   * cdkd's fallback text.
+   *
+   * `build` runs twice, so it must stay a side-effect-free constructor call
+   * threading `cause`.
+   */
+  private wrapStatusReasonError(
+    mask: ((text: string) => string) | undefined,
+    reason: { code?: string | undefined; message?: string | undefined },
+    build: (text: string, cause: Error | undefined) => ProvisioningError
+  ): ProvisioningError {
+    const text = describeAwsStatusReason(reason, 'no reason given');
+    if (!text.redacted) return build(text.detail, undefined);
+    const m = mask ?? ((value: string) => value);
+    const cause = new Error(text.detail);
+    this.logger.debug(m(build(m(text.detail), cause).message));
+    return markRedactedCause(build(m(text.summary), cause));
+  }
+
+  /**
+   * The failure wrap every create / update / delete catch builds. A
+   * `ProvisioningError` raised deeper passes through untouched.
+   *
+   * An AWS-authored failure reaches the message as its CLASS plus the
+   * `--verbose` pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
+   * the deploy engine masks a thrown message. The delete checks
+   * `ResourceNotFoundException` by type before it wraps.
+   */
   private wrapError(
     operation: string,
     logicalId: string,
     resourceType: string,
     physicalId: string | undefined,
-    error: unknown
+    error: unknown,
+    mask: ((text: string) => string) | undefined
   ): ProvisioningError {
     if (error instanceof ProvisioningError) return error;
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `Failed to ${operation} Lambda web function endpoint ${logicalIdShown(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to ${operation} Lambda web function endpoint ${logicalIdShown(logicalId)}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 }
 
