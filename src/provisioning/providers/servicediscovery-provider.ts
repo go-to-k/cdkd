@@ -109,15 +109,17 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
 /**
  * Whether a RESOLVED desired value is the one the state record holds, for
  * {@link ServiceDiscoveryProvider}'s Service change planning (issue #1160).
- * The record is REDACTED: a secret dynamic reference stays its
- * `{{resolve:...}}` token and a `NoEcho` value is `***`, while the desired
+ * The record is REDACTED: a dynamic reference may stay its
+ * `{{resolve:...}}` token (any kind, not only a secret one) and a `NoEcho`
+ * value is `***`, while the desired
  * bag carries the plaintext. Such a recorded leaf cannot be compared, so it
  * counts as CHANGED: a wildcard would silently drop a real template change
  * (one secret reference swapped for another), and sending the declared value
  * again is harmless. Every other leaf is compared deep and strict.
  *
  * Known divergence from CloudFormation, which compares TEMPLATES: an
- * unchanged secret- or NoEcho-sourced `Description` with a
+ * unchanged `Description` recorded as any dynamic reference
+ * (`{{resolve:...}}`) or a NoEcho `***`, with a
  * `HealthCheckConfig` removed beside it sends the declared model and clears
  * the health check (a removed `DnsConfig` beside it is refused), where
  * CloudFormation keeps it. go-to-k/cdkd#5112 tracks passing the as-written
