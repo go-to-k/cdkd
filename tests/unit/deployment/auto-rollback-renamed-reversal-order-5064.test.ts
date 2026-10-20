@@ -87,7 +87,7 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     roles = new Set([OLD_ROLE]);
   });
 
-  function buildEngine(): DeployEngine {
+  function buildEngine(options: { newRoleDeleteFails?: boolean } = {}): DeployEngine {
     const provider = {
       create: vi.fn(async (logicalId: string, _type: string, props: Record<string, unknown>) => {
         calls.push(`create ${logicalId}`);
@@ -107,6 +107,9 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
       ),
       delete: vi.fn(async (logicalId: string, physicalId: string) => {
         calls.push(`delete ${logicalId} ${physicalId}`);
+        if (options.newRoleDeleteFails === true && physicalId === NEW_ROLE) {
+          throw new Error('DeleteConflict: Cannot delete entity, must detach all policies first.');
+        }
         roles.delete(physicalId);
       }),
       getAttribute: vi.fn(),
@@ -188,10 +191,11 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
         Fail: { Type: 'AWS::SQS::Queue', Properties: {} },
       },
     } as CloudFormationTemplate;
+    const saveState = vi.fn().mockResolvedValue('etag-1');
     const engine = new DeployEngine(
       {
         getState: vi.fn().mockResolvedValue({ state, etag: 'etag-0' }),
-        saveState: vi.fn().mockResolvedValue('etag-1'),
+        saveState,
         appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
         deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
       } as never,
@@ -230,7 +234,7 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
         patchEntry: vi.fn().mockResolvedValue(undefined),
       } as never
     );
-    return Object.assign(engine, { template });
+    return Object.assign(engine, { template, saveState });
   }
 
   it('E2: re-creates the old role, reverts both policies onto it, then deletes the new role', async () => {
@@ -256,5 +260,36 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     ]);
     expect(warned.filter((w) => w.includes('cannot be found'))).toEqual([]);
     expect([...roles]).toEqual([OLD_ROLE]);
+  });
+
+  // Review N4: the automatic rollback's one save records a new copy its
+  // deferred delete could not remove, as `cdkd rollback` does, so the next
+  // deploy deletes it instead of leaving it untracked.
+  it('a new role the rollback could not delete stays recorded as superseded', async () => {
+    const engine = buildEngine({ newRoleDeleteFails: true });
+    const { template, saveState } = engine as unknown as {
+      template: CloudFormationTemplate;
+      saveState: ReturnType<typeof vi.fn>;
+    };
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+
+    expect(calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Role']!.physicalId).toBe(OLD_ROLE);
+    expect(saved.supersededResources?.map((e) => [e.logicalId, e.state.physicalId])).toEqual([
+      ['Role', NEW_ROLE],
+    ]);
+    expect(warned.some((w) => w.includes('next `cdkd deploy`'))).toBe(true);
+  });
+
+  it('a new role the rollback deleted is not recorded', async () => {
+    const engine = buildEngine();
+    const { template, saveState } = engine as unknown as {
+      template: CloudFormationTemplate;
+      saveState: ReturnType<typeof vi.fn>;
+    };
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.supersededResources).toBeUndefined();
   });
 });

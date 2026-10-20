@@ -65,9 +65,13 @@ export interface ReplayOpScope {
  * `onSuperseded` BEFORE `afterOp` saves the old record, and to
  * `onSupersededSettled` once the delete ran: a run killed in between leaves it
  * in `StackState.supersededResources` (#5111), which the next deploy deletes.
+ *
+ * `keep` is handed only when the new resource IS so recorded: the replay calls
+ * it INSTEAD of `finish` when a resource that still uses the new copy did not
+ * revert, or on an interrupt, and the entry stays for the next deploy.
  */
 export interface ReplayDeferral {
-  defer(finish: () => Promise<void>): void;
+  defer(finish: () => Promise<void>, keep?: (reason: string) => void): void;
   onSuperseded?: ((entry: SupersededResourceRecord) => void) | undefined;
   onSupersededSettled?: ((entry: SupersededResourceRecord) => void) | undefined;
 }

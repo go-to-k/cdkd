@@ -1387,6 +1387,33 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     });
     return survivorReason === undefined;
   };
+  /**
+   * The new resource stays: it is recorded as superseded, so the next deploy
+   * deletes it (`ReplayDeferral.keep`). A survivor event names it.
+   */
+  const keep = (reason: string): void => {
+    logger.warn(
+      mask(
+        `  Rollback: old ${safe(op.logicalId)} re-created, but the new resource ` +
+          `(${displaySafe(mask(current.physicalId))}) was not deleted: ${reason}. ` +
+          `${SUPERSEDED_KEPT_REMEDY}.`
+      )
+    );
+    result.warnings++;
+    ctx.recordEvent?.({
+      eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+      stackName,
+      operation: 'UPDATE',
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      physicalId: current.physicalId,
+      reason: mask(
+        `The old resource was re-created; the new one (${current.physicalId}) was not deleted: ` +
+          `${reason}. ${SUPERSEDED_KEPT_REMEDY}.`
+      ),
+    });
+  };
   if (deferral !== undefined) {
     logger.info(
       safeMsg`  Rollback: old ${safe(op.logicalId)} re-created first; the new resource ` +
@@ -1448,7 +1475,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         deferral.onSupersededSettled?.(superseded);
         await afterOp?.(op.logicalId);
       }
-    });
+    }, recordSuperseded ? keep : undefined);
     return;
   }
   await finish();

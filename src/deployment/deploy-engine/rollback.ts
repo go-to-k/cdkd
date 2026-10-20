@@ -8,7 +8,12 @@ import { getCdkdVersion } from '../../state/deployment-events-store.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
-import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  StackState,
+  SupersededResourceRecord,
+} from '../../types/state.js';
 import {
   asIsMessage,
   displayIdent,
@@ -44,6 +49,7 @@ import {
   replayRollback,
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import { addSuperseded, removeSuperseded } from '../superseded-resources.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
   completedReplayEntries,
@@ -442,6 +448,12 @@ export async function performRollback(
   /** go-to-k/cdkd#5064: the CREATEs it took back, whose generations retire. */
   rolledBackCreates: RolledBackCreate[];
   /**
+   * go-to-k/cdkd#5064: the new copies a renamed reversal left in AWS (a
+   * deferred delete that failed, or one kept for a dependent that did not
+   * revert), which the caller's post-rollback save records as superseded.
+   */
+  superseded: SupersededResourceRecord[];
+  /**
    * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
    * failure, no skip), with the grandchildren each completed. A row the
    * replay skipped never reached the provider, so it is not among them.
@@ -511,6 +523,9 @@ export async function performRollback(
   };
   // go-to-k/cdkd#4225: one record of completed writes across both replays.
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
+  // go-to-k/cdkd#5064: a renamed reversal's new copy still to delete; the one
+  // save on this path is the caller's, which records what is left here.
+  const supersededHost: Pick<StackState, 'supersededResources'> = {};
   // Issue #3754: a nested-stack row reverted here replays its child's
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
@@ -550,6 +565,8 @@ export async function performRollback(
           replayRollback(completedOperations, stateResources, stackName, ctx, {
             inlinePolicyWriters,
             failedOperations,
+            onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+            onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
           })
       ),
       run: scope,
@@ -571,6 +588,7 @@ export async function performRollback(
     skipped: result.skipped + (failed?.skipped ?? 0),
     orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
     rolledBackCreates: [...(failed?.rolledBackCreates ?? []), ...result.rolledBackCreates],
+    superseded: supersededHost.supersededResources ?? [],
     settledNested: run.settled,
     remainingFailedOps: failedOperations.filter((_, i) => !handled.has(i)),
   };

@@ -243,8 +243,10 @@ async function replayRollbackUnbound(
     /**
      * go-to-k/cdkd#5064: a new resource no record holds until its deferred
      * delete runs ({@link ReplayDeferral}): the caller keeps it in
-     * `supersededResources` across every save in between. A caller without
-     * saves (`performRollback`) passes none.
+     * `supersededResources` across every save in between, and records what is
+     * left in its final save. With these, a new copy a dependent still uses
+     * (its revert failed) or an interrupt left pending is kept there rather
+     * than deleted under that dependent.
      */
     onSuperseded?: (entry: SupersededResourceRecord) => void;
     onSupersededSettled?: (entry: SupersededResourceRecord) => void;
@@ -316,12 +318,23 @@ async function replayRollbackUnbound(
   });
   // Every op replayed so far, ahead of its slot or at it: none runs twice.
   const started = new Set<CompletedOperation>();
-  const pendingNewDeletes = new Map<CompletedOperation, () => Promise<void>>();
+  const pendingNewDeletes = new Map<
+    CompletedOperation,
+    { finish: () => Promise<void>; keep: ((reason: string) => void) | undefined }
+  >();
+  // The ops whose revert failed: a pending new copy one of them names is
+  // still in use by it.
+  const failedOps = new Set<CompletedOperation>();
+  const usedByFailedRevert = (target: CompletedOperation): boolean =>
+    [...failedOps].some(
+      (failed) => failed !== target && revertReferences(failed, stateResources).has(target.logicalId)
+    );
   // The physical ids those pending deletes are to remove: still live, so a
   // reversal whose old id is one of them waits for its slot.
   const pendingNewIds = new Set<string>();
-  const runOp = (op: CompletedOperation, deferral?: ReplayDeferral) =>
-    replaySingle(
+  const runOp = async (op: CompletedOperation, deferral?: ReplayDeferral): Promise<void> => {
+    const failuresBefore = result.failures;
+    await replaySingle(
       op,
       stateResources,
       stackName,
@@ -337,6 +350,8 @@ async function replayRollbackUnbound(
       options.onRolledBackCreate,
       deferral
     );
+    if (result.failures > failuresBefore) failedOps.add(op);
+  };
   const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
     for (const target of [...refs].map((id) => stepOneIds.get(id))) {
       if (target === undefined || started.has(target)) continue;
@@ -367,10 +382,14 @@ async function replayRollbackUnbound(
       if (options.isInterrupted?.()) return;
       const newId = stateResources[target.logicalId]?.physicalId;
       await runOp(target, {
-        defer: (finish) => {
-          pendingNewDeletes.set(target, async () => {
-            await finish();
-            if (typeof newId === 'string') pendingNewIds.delete(newId);
+        defer: (finish, keep) => {
+          pendingNewDeletes.set(target, {
+            finish: async () => {
+              await finish();
+              if (typeof newId === 'string') pendingNewIds.delete(newId);
+            },
+            // Kept, it stays live: its id stays pending for later reversals.
+            keep,
           });
           if (typeof newId === 'string') pendingNewIds.add(newId);
         },
@@ -390,9 +409,13 @@ async function replayRollbackUnbound(
       break;
     }
     if (started.has(op)) {
-      const finish = pendingNewDeletes.get(op);
+      const pending = pendingNewDeletes.get(op);
       pendingNewDeletes.delete(op);
-      await finish?.();
+      if (pending?.keep !== undefined && usedByFailedRevert(op)) {
+        pending.keep('a resource that references it did not revert');
+      } else {
+        await pending?.finish();
+      }
       continue;
     }
     started.add(op);
@@ -400,9 +423,14 @@ async function replayRollbackUnbound(
   }
   // Interrupted with a new copy still pending: its old resource is back and
   // its record says so, so a re-run reads the op as done and would never
-  // delete it. Deleted now; an op left unreverted that still names it reverts
-  // to the old one on that re-run.
-  for (const finish of pendingNewDeletes.values()) await finish();
+  // delete it. Recorded as superseded, it is kept for the next deploy, which
+  // deletes it after the ops left unreverted move off it; otherwise deleted
+  // now, and an op left unreverted that still names it reverts to the old one
+  // on that re-run.
+  for (const pending of pendingNewDeletes.values()) {
+    if (pending.keep !== undefined) pending.keep('the rollback was interrupted');
+    else await pending.finish();
+  }
   pendingNewDeletes.clear();
 
   // Step 2: CREATE rollbacks (deletions) in dependency-aware order.

@@ -23,6 +23,7 @@ import { retryCarriedSupersededResources } from './superseded-retry.js';
 import {
   isSupersededHeldBySameType,
   removeSuperseded,
+  supersededAfterRollback,
   supersededResourcesOf,
 } from '../superseded-resources.js';
 import {
@@ -41,6 +42,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   type StackOrphanRecord,
   type StackState,
+  type SupersededResourceRecord,
   exportNamesCarriedFrom,
   stackInstanceIdCarriedFrom,
   orphansAfterRollback,
@@ -1068,6 +1070,8 @@ export async function executeDeployment(
     // go-to-k/cdkd#5064: the CREATEs that rollback took back; each logical
     // id's generation retires, so the next create asks for a new name.
     let rollbackCreates: RolledBackCreate[] = [];
+    // go-to-k/cdkd#5064: the new copies the rollback left in AWS to delete.
+    let rollbackSuperseded: SupersededResourceRecord[] = [];
     // The nested rows the automatic rollback actually reverted (issue
     // #3754): only their children's pending segments are settled with it.
     let rollbackSettledNested: SettledNestedRows = new Map();
@@ -1202,6 +1206,7 @@ export async function executeDeployment(
       // and neither can see `rollbackResult`.
       rollbackOrphans = rollbackResult.orphaned;
       rollbackCreates = rollbackResult.rolledBackCreates;
+      rollbackSuperseded = rollbackResult.superseded;
       rollbackSettledNested = rollbackResult.settledNested;
       rollbackRemainingFailedOps = rollbackResult.remainingFailedOps;
     }
@@ -1220,6 +1225,8 @@ export async function executeDeployment(
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
         ...stackInstanceIdCarriedFrom(currentState),
+        // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
+        ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
         // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
         // and a CREATE it took back is named anew by the next create.
         ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
@@ -1282,6 +1289,7 @@ export async function executeDeployment(
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansAfterRollback(currentState, rollbackOrphans),
           ...stackInstanceIdCarriedFrom(currentState),
+          ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
           ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the

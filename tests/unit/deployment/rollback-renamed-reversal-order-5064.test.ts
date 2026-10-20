@@ -343,7 +343,13 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     expect(result.failures).toBe(1);
   });
 
-  it('an interrupt after the early re-create still deletes the new resource', async () => {
+  // A caller that records superseded resources (`cdkd rollback`, the automatic
+  // rollback) keeps the new copy there instead of deleting it while the
+  // dependents still on it have not reverted: the next deploy deletes it once
+  // they moved off it. One that cannot record still deletes it, as before.
+  const recording = () => ({ onSuperseded: vi.fn(), onSupersededSettled: vi.fn() });
+
+  it('an interrupt after the early re-create deletes the new resource unless it is recorded', async () => {
     const m = iamModel();
     let interrupted = false;
     m.provider.create.mockImplementation(async () => {
@@ -357,13 +363,33 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     });
     expect(result.interrupted).toBe(true);
     expect(m.calls).toEqual(['create Role', `delete Role ${NEW_ROLE}`]);
+
+    m.calls.length = 0;
+    m.roles.add(NEW_ROLE);
+    m.roles.delete(OLD_ROLE);
+    interrupted = false;
+    const r = recording();
+    const kept = await replayRollback(e1Ops(), e1State(), 'App', m.ctx, {
+      isInterrupted: () => interrupted,
+      ...r,
+    });
+    expect(kept.interrupted).toBe(true);
+    expect(m.calls).toEqual(['create Role']);
+    expect(m.roles.has(NEW_ROLE)).toBe(true);
+    expect(r.onSuperseded).toHaveBeenCalledTimes(1);
+    expect(r.onSupersededSettled).not.toHaveBeenCalled();
+    expect(m.warns.some((w) => w.includes('the rollback was interrupted'))).toBe(true);
   });
 
-  it('a second replay after a partial failure completes cleanly', async () => {
-    // The first run's Managed revert fails once; the new role is still deleted
-    // at its slot. The re-run reads Role as reverted and reverts Managed.
+  it.each([
+    ['a caller that cannot record it: deleted at its slot', false],
+    ['a caller that records it: kept for the next deploy', true],
+  ])('a second replay after a partial failure completes cleanly (%s)', async (_label, records) => {
+    // The first run's Managed revert fails once, so Managed still uses the new
+    // role. The re-run reads Role as reverted and reverts Managed.
     const m = iamModel();
     const state = e1State();
+    const r = recording();
     let failOnce = true;
     m.provider.update.mockImplementation(
       async (logicalId: string, physicalId: string, _t: string, props: Record<string, unknown>) => {
@@ -378,15 +404,55 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
         return { physicalId, wasReplaced: false };
       }
     );
-    const first = await replayRollback(e1Ops(), state, 'App', m.ctx);
+    const first = await replayRollback(e1Ops(), state, 'App', m.ctx, records ? r : {});
     expect(first.failures).toBe(1);
-    expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+    if (records) {
+      expect(m.calls.some((c) => c.startsWith('delete'))).toBe(false);
+      expect(m.roles.has(NEW_ROLE)).toBe(true);
+      expect(r.onSuperseded).toHaveBeenCalledTimes(1);
+      expect(r.onSupersededSettled).not.toHaveBeenCalled();
+      expect(m.warns.some((w) => w.includes('a resource that references it did not revert'))).toBe(true);
+    } else {
+      expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+    }
 
     m.calls.length = 0;
     const second = await replayRollback(e1Ops(), state, 'App', m.ctx);
     expect(second.failures).toBe(0);
     expect(m.calls).toEqual(['update Managed']);
     expect(state['Managed']!.properties['Roles']).toEqual([OLD_ROLE]);
+  });
+
+  it('a failed revert that does not use the new copy still lets it be deleted', async () => {
+    const m = iamModel();
+    const state = e1State();
+    state['Queue'] = record('https://sqs/q', QUEUE, { V: 2 }, []);
+    const ops = [
+      ...e1Ops(),
+      {
+        logicalId: 'Queue',
+        changeType: 'UPDATE' as const,
+        resourceType: QUEUE,
+        provisionedBy: 'sdk' as const,
+        physicalId: 'https://sqs/q',
+        previousState: record('https://sqs/q', QUEUE, { V: 1 }, []),
+      },
+    ];
+    m.provider.update.mockImplementation(
+      async (logicalId: string, physicalId: string, _t: string, props: Record<string, unknown>) => {
+        m.calls.push(`update ${logicalId}`);
+        if (logicalId === 'Queue') throw new Error('queue update rejected');
+        for (const role of (props['Roles'] as string[]) ?? []) {
+          if (!m.roles.has(role)) throw new Error(`The role with name ${role} cannot be found.`);
+        }
+        return { physicalId, wasReplaced: false };
+      }
+    );
+    const r = recording();
+    const result = await replayRollback(ops, state, 'App', m.ctx, r);
+    expect(result.failures).toBe(1);
+    expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+    expect(r.onSupersededSettled).toHaveBeenCalledTimes(1);
   });
 
   it("re-runs over the pre-fix run's leftovers (role re-created, dependents still on the deleted new one)", async () => {
