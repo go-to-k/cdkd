@@ -170,7 +170,7 @@ fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; unta
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
-generated-name-lifecycle	2026-10-20T02:22:36Z	FAIL	681	verify.sh	FAIL D1 assert_tg_gone: gen1 TG still present right after replacement deploy (reproducible x2); AWS confirmed clean after cleanup trap
+generated-name-lifecycle	2026-10-20T07:24:38Z	FAIL	603	verify.sh	D1 now PASS (CT confirms waited-out in-use refusal on both gen0+gen1 TG before delete, #5111); re-run hit NEW FAIL D2: generation record stuck at '' not '2' after refused replacement; AWS confirmed clean after cleanup trap x2
 generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
@@ -338,7 +338,7 @@ replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR 
 replacement-immutable-name	2026-10-19T08:12:15Z	PASS	130	verify.sh	rc ok, orph clean; PR #5092 (#5088) 091bc5f99
 replacement-rename-onto-holder	2026-10-20T06:29:59Z	PASS	626	verify.sh	deploy+destroy clean, 0 orphans
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
-retain-orphan-redeploy	2026-10-20T06:29:25Z	FAIL	200	verify.sh	FAIL 11b: kept-resources warning says 2 not 1 (AdoptedRole+KeptTopic); reproducible x2, deterministic string assert; manually cleaned 2 stray retained resources each run
+retain-orphan-redeploy	2026-10-20T07:33:57Z	FAIL	190	verify.sh	11b FAIL is a fixture-harness locale sort bug, not cdkd: jq sort (byte order) vs bash sort under en_US.UTF-8 (collation) order the same 2-item set role,topic vs topic,role; reproduced x2 identically; LC_ALL=C sort matches jq; retained.json content (role+topic, count 2) is correct per #5064. AWS confirmed clean after cleanup trap x2
 retain-orphan-secret	2026-10-20T06:27:45Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
 rollback-command	2026-10-20T02:53:54Z	PASS	1017	verify.sh	deploy+destroy clean, 0 orphans
 rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
@@ -369,7 +369,7 @@ scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re
 scheduler-custom-group	2026-10-16T09:35:29Z	PASS	106	verify.sh	rc ok, orph clean (#3341 slice 4997)
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
-schema-v12-to-v13-migration	2026-10-20T06:31:53Z	PASS	175	verify.sh	deploy+destroy clean, 0 orphans
+schema-v12-to-v13-migration	2026-10-20T07:37:59Z	PASS	175	verify.sh	deploy+destroy clean, 0 orphans, re-run on da41a7d37 head
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
