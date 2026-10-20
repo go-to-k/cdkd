@@ -694,8 +694,10 @@ ADOPT_RETAINED="$(aws s3 cp "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/${REGION}/
   echo "FAIL: phase 11's destroy wrote no retained.json for ${ADOPT_STACK}"
   exit 1
 }
-KEPT_IDS="$(jq -r '[.resources[]?.physicalId] | sort | join(",")' <<<"${ADOPT_RETAINED}")"
-WANT_IDS="$(printf '%s\n%s\n' "${ADOPT_ROLE_NAME}" "${KEPT_TOPIC_ARN}" | sort | paste -sd, -)"
+# Both sides through the same byte-order sort: jq's codepoint order and a
+# locale-aware `sort` disagree on mixed case (a role name vs an ARN).
+KEPT_IDS="$(jq -r '.resources[]?.physicalId' <<<"${ADOPT_RETAINED}" | LC_ALL=C sort | paste -sd, -)"
+WANT_IDS="$(printf '%s\n%s\n' "${ADOPT_ROLE_NAME}" "${KEPT_TOPIC_ARN}" | LC_ALL=C sort | paste -sd, -)"
 if [ -z "${ADOPT_ROLE_NAME}" ] || [ -z "${KEPT_TOPIC_ARN}" ] || [ "${KEPT_IDS}" != "${WANT_IDS}" ]; then
   echo "FAIL: retained.json lists '${KEPT_IDS}', expected the kept role and topic '${WANT_IDS}'"
   exit 1
