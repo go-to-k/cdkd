@@ -232,6 +232,23 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2; exit 1
 fi
 
+# Precondition: WsStage declares AccessLogSettings, which API Gateway accepts
+# only when the REGION's API Gateway account has a CloudWatch Logs role
+# (`cloudwatchRoleArn`). Without one, phase 1 fails with an opaque
+# BadRequestException. This fixture never sets the account role itself: it is
+# a region-wide setting other stacks may own.
+if ! APIGW_CW_ROLE="$(aws apigateway get-account --region "${REGION}" \
+  --query cloudwatchRoleArn --output text 2>&1)"; then
+  echo "FAIL: precheck could not read the API Gateway account in ${REGION}: ${APIGW_CW_ROLE}" >&2
+  exit 1
+fi
+case "${APIGW_CW_ROLE}" in
+  '' | None)
+    echo "FAIL: precondition: the API Gateway account in ${REGION} has no cloudwatchRoleArn, so the WebSocket stage's AccessLogSettings would be rejected. Set an account CloudWatch Logs role first, e.g. the dedicated cdkd-integ-apigw-cloudwatch-logs role: aws apigateway update-account --region ${REGION} --patch-operations op=replace,path=/cloudwatchRoleArn,value=<role arn>" >&2
+    exit 1
+    ;;
+esac
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then npm install; fi
 

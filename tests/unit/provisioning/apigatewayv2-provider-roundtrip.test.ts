@@ -640,6 +640,9 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations, so a test that sets one with
+    // mockImplementation would leak it into the next test on a failed assertion.
+    mockSend.mockReset();
     provider = new ApiGatewayV2Provider();
   });
 
@@ -1421,7 +1424,6 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     );
     expect(updateIntegrationInput()).toBeUndefined();
     expect(quiet.effectiveProperties).toEqual(SERVICE_INTEGRATION);
-    mockSend.mockReset();
   });
 
   it('Integration: the revert-failed arm (subtype only in the FAILED attempt, never applied) neither records, warns nor sends it', async () => {
@@ -1463,7 +1465,6 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
       Description: 'orig',
     });
     expect(result.effectiveProperties).toBeUndefined();
-    mockSend.mockReset();
   });
 
   it('Integration: a Description-only change on a service integration re-sends the subtype WITH the full RequestParameters', async () => {

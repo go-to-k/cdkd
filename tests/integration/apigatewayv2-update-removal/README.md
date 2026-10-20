@@ -25,6 +25,14 @@ re-deploys under `CDKD_TEST_UPDATE=true` with those fields removed:
 | Route | OperationName | RETAINED |
 | Stage | StageVariables | RETAINED |
 
+**Precondition:** the region's API Gateway account must have a CloudWatch
+Logs role (`aws apigateway get-account --query cloudwatchRoleArn`), because the
+WebSocket stage declares `AccessLogSettings`; without it phase 1 fails with an
+opaque `BadRequestException`. `verify.sh` checks this first and fails fast. The
+fixture never sets the account role itself (it is region-wide); set one, e.g.
+the dedicated `cdkd-integ-apigw-cloudwatch-logs` role, with
+`aws apigateway update-account --patch-operations op=replace,path=/cloudwatchRoleArn,value=<role arn>`.
+
 Run: `/run-integ apigatewayv2-update-removal` (deploy -> UPDATE -> destroy +
 orphan check). The RESET rows without a live arm here (Stage `AutoDeploy`, Route
 `AuthorizationScopes`) are covered by the unit tests in
