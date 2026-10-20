@@ -24,7 +24,11 @@
 #      (update() never sent the block before issue #3851) and drift is clean.
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true too: the block leaves the
 #      template. Assert the schema registry is gone from AWS while provisioned
-#      mode and batchSize 20 (the retained siblings) stay.
+#      mode, batchSize 20 and the LoggingConfig (the retained siblings) stay.
+#   2c. Re-deploy with CDKD_TEST_ESM_DEFAULTS=true too: batchSize, the poller
+#      config and the LoggingConfig leave the template. Assert AWS reset them
+#      as CloudFormation does: BatchSize 100, no poller config, no LoggingConfig
+#      (issue #1160).
 #   3. Destroy + assert the function, the ESM and the state file are gone.
 #
 # Required env vars:
@@ -136,7 +140,7 @@ esm_brokers() {
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy (self-managed Kafka ESM; create FAILED outright before #1384)"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_ESM_DEFAULTS node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P1="$(esm_uuid)"
@@ -213,7 +217,7 @@ wait_settled() {
 }
 echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
-env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_ESM_DEFAULTS CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P2="$(esm_uuid)"
@@ -247,6 +251,15 @@ if [ "${SR_URI_P2}" != "https://schema-registry.cdkd-integ.example.com" ] || [ "
 fi
 echo "    OK: the added schema registry reached AWS"
 
+# The LoggingConfig this phase ADDED, the baseline Phase 2c removes (#1160).
+LOG_P2="$(esm_json | jq -r '.LoggingConfig.SystemLogLevel // ""')"
+if [ "${LOG_P2}" != "WARN" ]; then
+  echo "FAIL: after update, LoggingConfig.SystemLogLevel='${LOG_P2}', expected 'WARN'" >&2
+  esm_json >&2
+  exit 1
+fi
+echo "    OK: the added LoggingConfig reached AWS"
+
 # Belt-and-braces only, for the reason Phase 1.5 gives: the baseline is the
 # readback captured by this same deploy. The AWS assertions above are the proof.
 DRIFT_RC=0
@@ -263,7 +276,7 @@ echo "    OK: no drift after the update"
 # --- Phase 2b: remove the schema registry -------------------------------
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (the schema registry leaves the template)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
-CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_ESM_DEFAULTS CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
 if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
@@ -277,11 +290,31 @@ if [ "${SR_P3}" != '"ABSENT"' ]; then
   echo "FAIL: after removing it from the template, AWS still holds SchemaRegistryConfig=${SR_P3} (issue #3851)" >&2
   exit 1
 fi
-if [ "${MIN_POLLERS_P3}" != "1" ] || [ "${BATCH_P3}" != "20" ]; then
-  echo "FAIL: the retained siblings changed on the removal (MinimumPollers='${MIN_POLLERS_P3}', BatchSize='${BATCH_P3}')" >&2
+LOG_P3="$(esm_json | jq -r '.LoggingConfig.SystemLogLevel // ""')"
+if [ "${MIN_POLLERS_P3}" != "1" ] || [ "${BATCH_P3}" != "20" ] || [ "${LOG_P3}" != "WARN" ]; then
+  echo "FAIL: the retained siblings changed on the removal (MinimumPollers='${MIN_POLLERS_P3}', BatchSize='${BATCH_P3}', SystemLogLevel='${LOG_P3}')" >&2
   exit 1
 fi
-echo "    OK: the schema registry was removed; provisioned mode and batchSize 20 stayed"
+echo "    OK: the schema registry was removed; provisioned mode, batchSize 20 and the LoggingConfig stayed"
+
+# --- Phase 2c: remove batchSize, the poller config and the LoggingConfig -----
+echo "==> Phase 2c: re-deploy with CDKD_TEST_ESM_DEFAULTS=true (batchSize, poller config and LoggingConfig leave the template)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
+  echo "FAIL: ESM was REPLACED on the Phase 2c removal, expected an in-place update" >&2
+  exit 1
+fi
+ESM_P4="$(esm_json)"
+BATCH_P4="$(printf '%s' "${ESM_P4}" | jq -r '.BatchSize')"
+PPC_P4="$(printf '%s' "${ESM_P4}" | jq -c '.ProvisionedPollerConfig // "ABSENT"')"
+LOG_P4="$(printf '%s' "${ESM_P4}" | jq -c '.LoggingConfig // "ABSENT"')"
+if [ "${BATCH_P4}" != "100" ] || [ "${PPC_P4}" != '"ABSENT"' ] || [ "${LOG_P4}" != '"ABSENT"' ]; then
+  echo "FAIL: after removing them from the template, AWS holds BatchSize='${BATCH_P4}' ProvisionedPollerConfig=${PPC_P4} LoggingConfig=${LOG_P4}; CloudFormation resets them to 100 / absent / absent (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: BatchSize reset to 100; the poller config and the LoggingConfig were cleared"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

@@ -668,7 +668,9 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(getUpdateInput()['MaximumBatchingWindowInSeconds']).toBeUndefined();
     });
 
-    it('does NOT clear LoggingConfig / ProvisionedPollerConfig / BatchSize on removal (no documented sentinel)', async () => {
+    // Issue #1160: the values below are what CloudFormation sent on the same
+    // removal (CFn A/B, CloudTrail read of its UpdateEventSourceMapping).
+    it('restores BatchSize 10 on an SQS removal and leaves ProvisionedPollerConfig, as CloudFormation does', async () => {
       await provider.update(
         'L',
         UUID,
@@ -677,16 +679,115 @@ describe('LambdaEventSourceMappingProvider', () => {
         {
           FunctionName: 'fn',
           EventSourceArn: SQS_ARN,
-          BatchSize: 10,
-          LoggingConfig: { Level: 'INFO' },
-          ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 5 },
+          BatchSize: 5,
+          LoggingConfig: { SystemLogLevel: 'DEBUG' },
+          ProvisionedPollerConfig: { MinimumPollers: 2, MaximumPollers: 5 },
         }
       );
 
       const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(10);
+      expect(input['ProvisionedPollerConfig']).toBeUndefined();
+      expect(input['LoggingConfig']).toBeUndefined();
+    });
+
+    it('restores BatchSize 100 and clears LoggingConfig / ProvisionedPollerConfig with {} on a Kafka removal', async () => {
+      const kafka = {
+        FunctionName: 'fn',
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b:9092'] } },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+        ...kafka,
+        BatchSize: 50,
+        MaximumBatchingWindowInSeconds: 3,
+        LoggingConfig: { SystemLogLevel: 'DEBUG' },
+        ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 3 },
+      });
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(100);
+      expect(input['LoggingConfig']).toEqual({});
+      expect(input['ProvisionedPollerConfig']).toEqual({});
+      // CloudFormation keeps a Kafka mapping's batching window (500 ms default
+      // is unrepresentable), and so does cdkd.
+      expect(input['MaximumBatchingWindowInSeconds']).toBeUndefined();
+    });
+
+    it.each([
+      ['DynamoDB', 'arn:aws:dynamodb:us-east-1:123:table/t/stream/2026-01-01T00:00:00.000'],
+      ['Kinesis', 'arn:aws:kinesis:us-east-1:123:stream/s'],
+      ['MSK', KAFKA_ARN],
+      ['MQ', 'arn:aws:mq:us-east-1:123:broker:b:b-1234'],
+    ])('restores BatchSize 100 on a %s removal', async (_kind, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BatchSize: 7 }
+      );
+
+      expect(getUpdateInput()['BatchSize']).toBe(100);
+    });
+
+    it('restores BatchSize 100 on a DocumentDB removal', async () => {
+      const docdb = {
+        FunctionName: 'fn',
+        EventSourceArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+        DocumentDBEventSourceConfig: { DatabaseName: 'db' },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', docdb, {
+        ...docdb,
+        BatchSize: 7,
+      });
+
+      expect(getUpdateInput()['BatchSize']).toBe(100);
+    });
+
+    it('sends no BatchSize for a removal on a source it cannot classify', async () => {
+      const arn = 'arn:aws:example:us-east-1:123:thing/t';
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        { FunctionName: 'fn', EventSourceArn: arn, BatchSize: 7 }
+      );
+
+      expect(getUpdateInput()['BatchSize']).toBeUndefined();
+    });
+
+    it('sends no LoggingConfig / ProvisionedPollerConfig / BatchSize reset when a Kafka mapping never set them', async () => {
+      const kafka = { FunctionName: 'fn', EventSourceArn: KAFKA_ARN, Enabled: true };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+        ...kafka,
+        Enabled: false,
+      });
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBeUndefined();
       expect(input['LoggingConfig']).toBeUndefined();
       expect(input['ProvisionedPollerConfig']).toBeUndefined();
-      expect(input['BatchSize']).toBeUndefined();
+    });
+
+    it('forwards a still-declared Kafka LoggingConfig / ProvisionedPollerConfig / BatchSize verbatim', async () => {
+      const kafka = {
+        FunctionName: 'fn',
+        EventSourceArn: KAFKA_ARN,
+        BatchSize: 20,
+        LoggingConfig: { SystemLogLevel: 'WARN' },
+        ProvisionedPollerConfig: { MinimumPollers: 1, MaximumPollers: 2 },
+      };
+      await provider.update('L', UUID, 'AWS::Lambda::EventSourceMapping', kafka, {
+        ...kafka,
+        BatchSize: 50,
+        LoggingConfig: { SystemLogLevel: 'DEBUG' },
+      });
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(20);
+      expect(input['LoggingConfig']).toEqual({ SystemLogLevel: 'WARN' });
+      expect(input['ProvisionedPollerConfig']).toEqual({ MinimumPollers: 1, MaximumPollers: 2 });
     });
 
     it('does NOT send any clear sentinel when the property is unchanged (still present)', async () => {

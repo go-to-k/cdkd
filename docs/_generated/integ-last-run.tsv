@@ -199,7 +199,7 @@ lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 rem
 lambda-destinations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 lambda-durable-replacement	2026-10-14T12:12:31Z	PASS	130	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
-lambda-esm-self-managed-kafka	2026-09-27T12:27:25Z	PASS	120	verify.sh	rc ok, orph clean; schema-registry add + removal phases (#3861)
+lambda-esm-self-managed-kafka	2026-10-20T12:43:49Z	PASS	140	verify.sh	issue #1160 Phase 2c BatchSize/PollerConfig/LoggingConfig reset, destroy clean
 lambda-event-invoke-config-update	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 lambda-fix-forward-orphan	2026-10-15T19:32:06Z	PASS	145	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 lambda-layer-version-update	2026-10-16T08:48:48Z	PASS	90	verify.sh	rc ok, orph clean (#3341 slice 4996)
@@ -364,7 +364,7 @@ sns-sqs-event	2026-10-16T16:36:24Z	PASS	270	verify.sh	PR #5012 (#5004) re-run on
 sns-subscription-filter	2026-10-13T05:13:33Z	PASS	335	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95, re-run on b9a821718 after #4842)
 sns-subscription-update	2026-10-13T11:42:44Z	PASS	135	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
-sqs-esm-max-concurrency	2026-10-20T05:07:15Z	PASS	75	verify.sh	rc ok, orph clean; #5105
+sqs-esm-max-concurrency	2026-10-20T12:43:49Z	PASS	80	verify.sh	issue #1160 BatchSize reset to 10, destroy clean
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 stack-copy-create-tokens	2026-10-11T09:33:22Z	PASS	2034	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stack-lock-renewal	2026-10-13T02:41:29Z	PASS	416	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
