@@ -88,11 +88,12 @@ verify, clean up.
    **A fixture whose assertion runs through the journaled-orphan settle,
    `cdkd rollback` or `cdkd destroy` reads EVERY stack's record under its state
    prefix, and fails closed on one it cannot read**, such as a peer session's
-   newer-schema record. Give such a run its own bucket:
-   `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
+   newer-schema record. Pick them by grep, not by judgement — `grep -l
+   rollback-journal` over the set's `verify.sh` names the settle readers
+   (`fsx-lustre` ran on the shared bucket and failed, #5104). Give each its own
+   bucket: `cdkd bootstrap --state-bucket <unique> --no-assets`, pass
    `STATE_BUCKET=<unique>`, then after step 6 delete it, every version and
-   delete marker with it, via `cls3 -b <unique> -r <region> -f` (`.mise.toml`
-   pins it; far faster than a `list-object-versions` loop). A set's buckets in
+   delete marker with it, via `cls3 -b <unique> -r <region> -f`. A set's buckets in
    one region go in ONE call, deleted in parallel: `cls3 -b <b1> -b <b2> -r
    <region> -f -c`. A fixture already deploying under its own `--state-prefix`
    (`remove-protection-journaled-orphan`) is immune.

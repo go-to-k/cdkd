@@ -20,7 +20,8 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger blocks until EVERY run ends and reports ONCE. Size it for ONE context
+ledger blocks until EVERY run ends and reports ONCE; its brief, like a lane's,
+bans attribution lines in the ledger commit (#5104). Size it for ONE context
 (§8-d probe alone, then fixture batches), each run's fixture, PID, log,
 state prefix appended to `<scratch>/integ-<PR>.live` at launch for a finisher.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
