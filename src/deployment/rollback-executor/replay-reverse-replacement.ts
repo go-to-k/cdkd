@@ -1406,7 +1406,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       operation: 'UPDATE',
       logicalId: op.logicalId,
       resourceType: op.resourceType,
-      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      // The survivor's layer, as `finish`'s survivor event names it.
+      ...(current.provisionedBy && { provisionedBy: current.provisionedBy }),
       physicalId: current.physicalId,
       reason: mask(
         `The old resource was re-created; the new one (${current.physicalId}) was not deleted: ` +

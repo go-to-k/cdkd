@@ -20,6 +20,10 @@ import {
 } from './rollback.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { secretNameBagFor } from './masking.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { unionOfSecretBags } from '../secret-redaction.js';
+import { orphanRecordsPrintingBag } from '../secret-name-needles.js';
 import {
   isSupersededHeldBySameType,
   removeSuperseded,
@@ -1329,6 +1333,23 @@ export async function executeDeployment(
         engine.logger.warn(
           safeMsg`Failed to save state after rollback: ${asIsMessage(describeAwsFailure(retryError).detail)}`
         );
+        // go-to-k/cdkd#5064: the rollback said these stay in state; that save
+        // is the one that failed, so name them. An id can spell a
+        // secret-derived name (#3869): printed under each entry's bags.
+        for (const entry of rollbackSuperseded) {
+          withPrintingSecrets(
+            unionOfSecretBags([
+              secretNameBagFor(engine.secretsRun, entry.logicalId),
+              orphanRecordsPrintingBag([entry]),
+            ]),
+            () =>
+              engine.logger.warn(
+                safeMsg`  ${entry.logicalId}'s new ${entry.state.resourceType} ` +
+                  safeMsg`(${entry.state.physicalId}) the rollback left to delete is NOT recorded: ` +
+                  'delete it manually.'
+              )
+          );
+        }
       }
     }
 

@@ -322,8 +322,8 @@ async function replayRollbackUnbound(
     CompletedOperation,
     { finish: () => Promise<void>; keep: ((reason: string) => void) | undefined }
   >();
-  // The ops whose revert failed: a pending new copy one of them names is
-  // still in use by it.
+  // The ops whose revert failed or was skipped: a pending new copy one of
+  // them names is still in use by it.
   const failedOps = new Set<CompletedOperation>();
   const usedByFailedRevert = (target: CompletedOperation): boolean =>
     [...failedOps].some(
@@ -335,6 +335,7 @@ async function replayRollbackUnbound(
   const pendingNewIds = new Set<string>();
   const runOp = async (op: CompletedOperation, deferral?: ReplayDeferral): Promise<void> => {
     const failuresBefore = result.failures;
+    const skippedBefore = result.skipped;
     await replaySingle(
       op,
       stateResources,
@@ -351,7 +352,7 @@ async function replayRollbackUnbound(
       options.onRolledBackCreate,
       deferral
     );
-    if (result.failures > failuresBefore) failedOps.add(op);
+    if (result.failures > failuresBefore || result.skipped > skippedBefore) failedOps.add(op);
   };
   const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
     for (const target of [...refs].map((id) => stepOneIds.get(id))) {

@@ -423,6 +423,18 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     expect(state['Managed']!.properties['Roles']).toEqual([OLD_ROLE]);
   });
 
+  it('a dependent whose revert was SKIPPED still uses the new copy: kept, when recorded', async () => {
+    const m = iamModel();
+    const state = e1State();
+    // An unaddressable record: its revert is skipped, never sent.
+    state['Managed'] = { ...state['Managed']!, physicalId: '' };
+    const r = recording();
+    const result = await replayRollback(e1Ops(), state, 'App', m.ctx, r);
+    expect(result.skipped).toBe(1);
+    expect(m.calls.some((c) => c.startsWith('delete'))).toBe(false);
+    expect(r.onSupersededSettled).not.toHaveBeenCalled();
+  });
+
   it('a failed revert that does not use the new copy still lets it be deleted', async () => {
     const m = iamModel();
     const state = e1State();

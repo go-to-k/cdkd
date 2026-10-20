@@ -292,4 +292,21 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     const saved = saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.supersededResources).toBeUndefined();
   });
+
+  it('names a new role it could not delete when the post-rollback save fails too', async () => {
+    const engine = buildEngine({ newRoleDeleteFails: true });
+    const { template, saveState } = engine as unknown as {
+      template: CloudFormationTemplate;
+      saveState: ReturnType<typeof vi.fn>;
+    };
+    // Every save after the rollback's delete attempt fails.
+    saveState.mockImplementation(async () => {
+      if (calls.includes(`delete Role ${NEW_ROLE}`)) throw new Error('save refused');
+      return 'etag-1';
+    });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+    expect(
+      warned.some((w) => w.includes(NEW_ROLE) && w.includes('is NOT recorded'))
+    ).toBe(true);
+  });
 });
