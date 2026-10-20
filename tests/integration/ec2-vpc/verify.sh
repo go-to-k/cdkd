@@ -8,7 +8,11 @@
 # changes only the attribute it is sent. The same deploy changes the NACL
 # entry AllowHTTPIn's action and CIDR, asserted to be one in-place
 # ReplaceNetworkAclEntry with no DeleteNetworkAclEntry / CreateNetworkAclEntry
-# (the SDK call log, issue #5070). Then destroys clean.
+# (the SDK call log, issue #5070). It also drops `VPCs` whole from a private
+# hosted zone: CloudFormation keeps every association (A/B, us-east-1), so
+# cdkd must send no DisassociateVPCFromHostedZone, keep the zone on the VPC,
+# and print one warning naming the kept associations (issue #1160). Then
+# destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -74,9 +78,10 @@ cleanup() {
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
-  # Phase 2's SDK call log, left behind when a run fails before it is read.
+  # Phase 2's SDK call log and deploy log, left behind when a run fails
+  # before they are read.
   if [ -n "${P2_CALLS_DIR:-}" ]; then
-    rm -f "${P2_CALLS_DIR}/calls.jsonl"
+    rm -f "${P2_CALLS_DIR}/calls.jsonl" "${P2_CALLS_DIR}/deploy.log"
     rmdir "${P2_CALLS_DIR}" 2>/dev/null
   fi
   set -eu
@@ -158,6 +163,24 @@ if [ "${MAIN_DNS}" != "True/True" ] || [ "${OFF_DNS}" != "False/False" ]; then
 fi
 echo "    OK: baseline DNS hostnames/support True/True and False/False"
 
+# Issue #1160 baseline: the private zone is associated with the main VPC
+# only, so an association still there after the removal is the keep.
+zone_vpcs() { # usage: zone_vpcs <zone-id> -> sorted VPC ids, space-separated
+  aws route53 get-hosted-zone --id "$1" --query 'VPCs[].VPCId' --output text | tr '\t' '\n' | sort | tr '\n' ' ' | sed 's/ $//'
+}
+ZONE_ID=$(physical_id PrivateZone)
+ZONE_ID="${ZONE_ID##*/}"
+if [ -z "${ZONE_ID}" ]; then
+  echo "FAIL: PrivateZone physical id missing from state" >&2
+  exit 1
+fi
+P1_ZONE_VPCS=$(zone_vpcs "${ZONE_ID}")
+if [ "${P1_ZONE_VPCS}" != "${MAIN_VPC}" ]; then
+  echo "FAIL: private zone ${ZONE_ID} after create is associated with '${P1_ZONE_VPCS}', expected '${MAIN_VPC}'" >&2
+  exit 1
+fi
+echo "    OK: baseline private zone ${ZONE_ID} is associated with ${MAIN_VPC}"
+
 # Issue #5070 baseline: the entry allows 0.0.0.0/0 first, so deny and
 # 10.0.0.0/8 afterwards are the Phase 2 update's doing.
 ENTRY_ID=$(nacl_entry_id)
@@ -174,15 +197,18 @@ fi
 echo "    OK: baseline NACL entry ${ENTRY_ID} allows 0.0.0.0/0"
 
 # --- Phase 2: REMOVAL drops both DNS attributes (issue #1160) ---------
-echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs; change the NACL entry)"
+echo "==> Phase 2: removal (drop EnableDnsHostnames, EnableDnsSupport from both VPCs; change the NACL entry; drop the private zone's VPCs)"
 # A private directory, so nothing can pre-place the path cdkd appends to; the
 # file starts absent, so its existence below proves the log took effect.
 P2_CALLS_DIR="$(mktemp -d -t cdkd-ec2-vpc-p2-calls.XXXXXX)"
 P2_CALLS="${P2_CALLS_DIR}/calls.jsonl"
+# The deploy's own output too, for the issue #1160 warning (pipefail keeps
+# the deploy's exit code).
+P2_LOG="${P2_CALLS_DIR}/deploy.log"
 CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes 2>&1 | tee "${P2_LOG}"
 
 RM_MAIN_VPC=$(physical_id Vpc8378EB38)
 RM_OFF_VPC=$(physical_id DnsOffVpc)
@@ -207,8 +233,8 @@ if [ ! -s "${P2_CALLS}" ]; then
   exit 1
 fi
 # Summed over every line (one per cdkd process); 0 when the command is absent.
-p2_calls() { # <command name>
-  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts["EC2Client."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1"
+p2_calls() { # <command name> [client name, default EC2Client]
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts[process.argv[3]+"."+process.argv[2]]??0}process.stdout.write(String(n))' "${P2_CALLS}" "$1" "${2:-EC2Client}"
 }
 P2_REPLACE="$(p2_calls ReplaceNetworkAclEntryCommand)"
 P2_DELETE="$(p2_calls DeleteNetworkAclEntryCommand)"
@@ -219,7 +245,37 @@ if [ "${P2_REPLACE}" != "1" ] || [ "${P2_DELETE}" != "0" ] || [ "${P2_CREATE}" !
   cat "${P2_CALLS}" >&2
   exit 1
 fi
-rm -f "${P2_CALLS}"
+
+# Issue #1160: `VPCs` dropped whole from the private zone. CloudFormation
+# keeps every association, so cdkd sends no DisassociateVPCFromHostedZone and
+# names the kept associations in one warning. The UpdateHostedZoneComment
+# count is the positive control: the zone update ran and was logged.
+P2_R53_COMMENT="$(p2_calls UpdateHostedZoneCommentCommand Route53Client)"
+P2_R53_DISASSOC="$(p2_calls DisassociateVPCFromHostedZoneCommand Route53Client)"
+echo "    Phase 2 Route 53 calls: UpdateHostedZoneComment=${P2_R53_COMMENT} DisassociateVPCFromHostedZone=${P2_R53_DISASSOC}"
+if [ "${P2_R53_COMMENT}" = "0" ]; then
+  echo "FAIL: the private zone update was not logged (UpdateHostedZoneComment=0), so the Disassociate count below proves nothing" >&2
+  cat "${P2_CALLS}" >&2
+  exit 1
+fi
+if [ "${P2_R53_DISASSOC}" != "0" ]; then
+  echo "FAIL: a VPCs removal sent DisassociateVPCFromHostedZone; CloudFormation keeps every association (issue #1160)" >&2
+  cat "${P2_CALLS}" >&2
+  exit 1
+fi
+P2_ZONE_VPCS=$(zone_vpcs "${ZONE_ID}")
+if [ "${P2_ZONE_VPCS}" != "${MAIN_VPC}" ]; then
+  echo "FAIL: private zone ${ZONE_ID} is associated with '${P2_ZONE_VPCS}' after the VPCs removal, expected '${MAIN_VPC}' kept, as CloudFormation keeps it (issue #1160)" >&2
+  exit 1
+fi
+P2_KEPT_WARN=$(grep -cF 'PrivateZone (AWS::Route53::HostedZone): VPCs was removed from the template, and the zone keeps its current VPC associations' "${P2_LOG}" || true)
+if [ "${P2_KEPT_WARN}" != "1" ]; then
+  echo "FAIL: expected exactly one warning naming the kept VPC associations of PrivateZone (issue #1160), found ${P2_KEPT_WARN}" >&2
+  exit 1
+fi
+echo "    OK: VPCs removal kept ${MAIN_VPC} on the private zone, sent no Disassociate, and warned once (issue #1160)"
+
+rm -f "${P2_CALLS}" "${P2_LOG}"
 rmdir "${P2_CALLS_DIR}"
 
 P2_ENTRY_ID=$(nacl_entry_id)
@@ -250,9 +306,11 @@ env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "VPC '${MAIN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${MAIN_VPC}" --region "${REGION}"
 assert_gone "VPC '${OFF_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${OFF_VPC}" --region "${REGION}"
 echo "    OK: both VPCs are gone"
+assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
+echo "    OK: the private hosted zone is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + clean destroy)"

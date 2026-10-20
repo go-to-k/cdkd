@@ -6237,9 +6237,14 @@
     {
       "resourceType": "AWS::Route53::HostedZone",
       "integs": [
+        "ec2-vpc",
         "route53"
       ],
       "signals": {
+        "ec2-vpc": [
+          "l1",
+          "literal"
+        ],
         "route53": [
           "l2"
         ]

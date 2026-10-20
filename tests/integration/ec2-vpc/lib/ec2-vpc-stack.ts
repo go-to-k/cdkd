@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 
 /**
  * EC2/VPC example stack
@@ -16,12 +17,14 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - Launch Template
  * - Removal of the VPC DNS attributes (CDKD_TEST_REMOVAL, issue #1160)
  * - An in-place NACL entry rule change in the same deploy (issue #5070)
+ * - A private hosted zone whose `VPCs` the removal phase drops (issue #1160)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
  * Note: No EC2 instances are created to avoid costs.
  * This stack only provisions networking resources (VPC, Subnet, Security Group, NACL, EIP, VPC Endpoint, Launch Template).
  *
  * covers: AWS::EC2::NetworkAclEntry
+ * covers: AWS::Route53::HostedZone
  * covers: AWS::EC2::SubnetNetworkAclAssociation
  */
 export class Ec2VpcStack extends cdk.Stack {
@@ -59,6 +62,15 @@ export class Ec2VpcStack extends cdk.Stack {
     const dnsOffVpc = new ec2.CfnVPC(this, 'DnsOffVpc', {
       cidrBlock: '10.1.0.0/16',
       ...(isRemoval ? {} : { enableDnsHostnames: false, enableDnsSupport: false }),
+    });
+
+    // Issue #1160: a private hosted zone on the main VPC. The removal phase
+    // drops `VPCs` whole. CloudFormation keeps every association (A/B,
+    // us-east-1), so cdkd sends no DisassociateVPCFromHostedZone and warns
+    // instead. The zone stays private on the VPC until destroy.
+    const privateZone = new route53.CfnHostedZone(this, 'PrivateZone', {
+      name: 'cdkd-test-ec2-vpc.internal',
+      ...(isRemoval ? {} : { vpcs: [{ vpcId: vpc.vpcId, vpcRegion: this.region }] }),
     });
 
     // Create Security Group with HTTP ingress rule
@@ -148,6 +160,11 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DnsOffVpcId', {
       value: dnsOffVpc.ref,
       description: 'DNS-support-off VPC ID (issue #1160 removal phase)',
+    });
+
+    new cdk.CfnOutput(this, 'PrivateZoneId', {
+      value: privateZone.ref,
+      description: 'Private hosted zone ID (issue #1160 removal phase)',
     });
 
     new cdk.CfnOutput(this, 'SecurityGroupId', {

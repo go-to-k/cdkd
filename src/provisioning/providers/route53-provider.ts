@@ -252,6 +252,24 @@ function templateZoneVisibility(properties: Record<string, unknown>): boolean | 
   return attachesAVpc ? true : undefined;
 }
 
+/**
+ * Issue #1160: a `VPCs` REMOVED whole from the template, or emptied to `[]`,
+ * is not applied. CloudFormation does the same (CFn A/B us-east-1
+ * 2026-10-20: a private zone with one VPC and one with two, each updated to
+ * drop `VPCs`, kept every association, and the two-VPC zone updated again to
+ * `VPCs: []` kept both; no update failed). Route 53 also cannot make a private
+ * zone public, and refuses to disassociate its last VPC, so no reset exists.
+ * {@link Route53Provider.syncVPCAssociations} returns early on either shape,
+ * and `updateHostedZone` names the kept associations in one warning.
+ */
+const VPCS_KEPT_ON_REMOVAL_NOTE =
+  'A private hosted zone stays private and keeps at least one VPC; to change its associations, declare the VPCs you want and deploy.';
+
+/** True when a desired `VPCs` value declares no VPC: absent, null or `[]`. */
+function declaresNoVpcs(vpcs: unknown): boolean {
+  return vpcs == null || (Array.isArray(vpcs) && vpcs.length === 0);
+}
+
 /** `text` closed as a sentence, for a wrap that continues after it. */
 function sentence(text: string): string {
   return text.endsWith('.') ? text : `${text}.`;
@@ -480,7 +498,8 @@ export class Route53Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context
         );
       case 'AWS::Route53::RecordSet':
         return this.updateRecordSet(
@@ -887,7 +906,8 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
@@ -918,9 +938,9 @@ export class Route53Provider implements ResourceProvider {
       // absent desired block from "nothing to do" into a REMOVAL.
       await this.applyQueryLoggingConfig(physicalId, properties, logicalId, previousProperties);
 
-      // Note: VPC associations on update are complex (need to diff current vs desired).
-      // For now, we handle VPCs that need to be added. Full diff requires GetHostedZone
-      // to compare current VPCs, which we'll do here.
+      // Associates added VPCs and disassociates dropped ones. A `VPCs` removed
+      // whole (or emptied) changes nothing, as in CloudFormation, and is named
+      // by the warning below (VPCS_KEPT_ON_REMOVAL_NOTE).
       await this.syncVPCAssociations(physicalId, properties, logicalId);
 
       // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
@@ -953,6 +973,22 @@ export class Route53Provider implements ResourceProvider {
       const nameServers = getResponse.DelegationSet?.NameServers ?? [];
 
       this.logger.debug(`Successfully updated hosted zone ${logicalId}`);
+
+      // Issue #1160: named only after the update SUCCEEDED. Not on
+      // `drift --revert`: its previous side is an AWS readback, so a VPCs
+      // missing from the desired side was never removed from a template.
+      if (
+        context?.desiredFromAwsReadback !== true &&
+        declaresNoVpcs(properties['VPCs']) &&
+        Array.isArray(previousProperties['VPCs']) &&
+        previousProperties['VPCs'].length > 0
+      ) {
+        this.logger.warn(
+          context?.replayingState
+            ? safeMsg`${logicalId} (AWS::Route53::HostedZone): VPCs is absent from the state being restored, so the rollback leaves the zone's VPC associations in place. ${VPCS_KEPT_ON_REMOVAL_NOTE}`
+            : safeMsg`${logicalId} (AWS::Route53::HostedZone): VPCs was removed from the template, and the zone keeps its current VPC associations, as CloudFormation leaves them. ${VPCS_KEPT_ON_REMOVAL_NOTE}`
+        );
+      }
 
       return {
         physicalId,
@@ -2233,6 +2269,8 @@ export class Route53Provider implements ResourceProvider {
   /**
    * Sync VPC associations for a private hosted zone during update.
    * Compares current VPC associations with desired ones and adds/removes as needed.
+   * An absent or empty desired `VPCs` returns early, keeping every association,
+   * as CloudFormation does (see {@link VPCS_KEPT_ON_REMOVAL_NOTE}).
    */
   private async syncVPCAssociations(
     zoneId: string,
