@@ -78,8 +78,6 @@ custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph c
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-17T02:35:06Z	PASS	1378	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
 custom-resource-provider	2026-10-20T14:12:10Z	PASS	692	verify.sh	rc ok (PASS banner, 26 deleted 0 errors), orph clean (#2319 PR #5126)
-custom-resource-resolved-secret	2026-10-13T11:42:44Z	PASS	355	verify.sh	PR #4862 (#2007) 594d838ab; rc ok, destroy 0 errors, orph clean, own state bucket
-custom-resource-provider	2026-10-16T08:15:12Z	PASS	386	verify.sh	rc ok, orph clean (#3341 slice 4995)
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -128,16 +126,11 @@ ecs-service-update-props	2026-10-16T13:06:56Z	PASS	150	verify.sh	PR #5014 (#5004
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-20T03:13:30Z	PASS	200	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
-elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
-elbv2-same-name-replacement	2026-10-17T17:48:47Z	PASS	100	verify.sh	PR #5034 (#1160) 842d0d385; rc 0, destroy 12 deleted 0 errors, orph clean
-emr-cluster	2026-10-20T15:35:16Z	PASS	1331	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
-elbv2-same-name-replacement	2026-10-19T00:44:43Z	PASS	83	verify.sh	issue #5064 PR #5075 final head ec9ebe1f3; rc 0, destroy 12 deleted 0 errors, orph clean
 elasticache-replicationgroup-getatt	2026-10-20T06:12:52Z	PASS	726	verify.sh	deploy+destroy clean, 0 orphans
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
-emr-cluster	2026-10-20T03:13:30Z	PASS	1491	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
+emr-cluster	2026-10-20T15:35:16Z	PASS	1331	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
 emr-instance-configs	2026-10-20T03:13:30Z	PASS	1060	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
 emr-instance-fleets	2026-10-20T15:59:02Z	PASS	1415	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
-emr-instance-fleets	2026-10-20T03:13:30Z	PASS	1402	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-10-20T06:05:13Z	PASS	105	verify.sh	deploy+destroy clean, 0 orphans
 eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
