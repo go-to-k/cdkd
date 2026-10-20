@@ -208,6 +208,18 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
 
     try {
+      // A full replace: a field left out here is CLEARED on AWS, which is how a
+      // property removed from the template is reset, as CloudFormation does
+      // (issue #1160). A CloudFormation A/B (us-east-1) cleared a removed
+      // Description / AuthorizerConfiguration / ProtocolConfiguration /
+      // EnvironmentVariables and put a removed LifecycleConfiguration back to
+      // the service defaults (900 / 28800), exactly what this call leaves when
+      // it omits them; so no `removalDefaults` apply. Never fill an absent
+      // field from `previousProperties`. No `removalHandledInUpdate` opt-in:
+      // the schema's RequestHeaderConfiguration / FilesystemConfigurations /
+      // CapacityProviderConfiguration / PlatformVersion are never sent here,
+      // and a full replace drops what it omits, so the caller's "left in
+      // place" warning would most likely misreport their removal.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const input: Record<string, any> = {
         agentRuntimeId: physicalId,

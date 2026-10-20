@@ -79,6 +79,7 @@ import {
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { withRemovalDefaults } from '../update-removal.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { collectOrphanIds, reportPossibleOrphans } from './orphan-report.js';
@@ -248,6 +249,18 @@ export class ApiGatewayProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160: a `CloudWatchRoleArn` REMOVED from the template is cleared,
+   * as CloudFormation clears it (measured by a CFn A/B in us-east-1).
+   * `UpdateAccount` is a PATCH, so with no operation for the removed key the
+   * role ARN would stay set on the region's account. `''` is the clear value
+   * `deleteAccount` sends; `updateAccountWithRetry` forwards it verbatim as
+   * `replace /cloudwatchRoleArn ''`.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    ['AWS::ApiGateway::Account', new Map<string, unknown>([['CloudWatchRoleArn', '']])],
+  ]);
+
   /** Maximum number of retries for IAM propagation delays */
   private static readonly MAX_IAM_RETRIES = 3;
   /** Delay between IAM propagation retries (ms) - exponential backoff */
@@ -382,8 +395,9 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update a resource. `context` is read for its masker only (issue #2177);
-   * see `create()`.
+   * Update a resource. `context` is read for its masker (issue #2177; see
+   * `create()`) and, on the Account arm, for `removedProperties` via
+   * `withRemovalDefaults` (issue #1160).
    */
   async update(
     logicalId: string,
@@ -396,6 +410,13 @@ export class ApiGatewayProvider implements ResourceProvider {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
+        properties = withRemovalDefaults(
+          this.removalDefaults,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
         return this.updateAccount(logicalId, physicalId, resourceType, properties, log);
       case 'AWS::ApiGateway::Authorizer':
         return this.updateAuthorizer(
@@ -673,8 +694,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   ): Promise<void> {
     // Use `!== undefined` rather than a truthy gate so that an explicit
     // empty string `''` (the cdkd-state representation of "no
-    // CloudWatchRole configured", produced by readCurrentStateAccount
-    // and by deleteAccount) reaches AWS as a legitimate
+    // CloudWatchRole configured", produced by readCurrentStateAccount,
+    // by deleteAccount, and by `removalDefaults` for a removed property) reaches AWS as a legitimate
     // `replace /cloudwatchRoleArn ''` patch operation. A truthy gate
     // would silently drop `''` and produce an empty patchOperations
     // list, so `cdkd drift --revert` would succeed with no actual

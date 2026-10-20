@@ -150,6 +150,7 @@
       ],
       "signals": {
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-stage-props": [
@@ -945,6 +946,7 @@
       "integs": [
         "api-cognito",
         "appsync",
+        "bedrock-agentcore",
         "cc-write-only-create-only",
         "cognito",
         "cognito-custom-attribute-add",
@@ -963,6 +965,9 @@
         ],
         "appsync": [
           "l1"
+        ],
+        "bedrock-agentcore": [
+          "l2"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -4472,6 +4477,7 @@
       "resourceType": "AWS::IAM::Role",
       "integs": [
         "agentcore-tools",
+        "apigateway",
         "apigatewayv2-update-removal",
         "apigw-stage-props",
         "appsync",
@@ -4576,6 +4582,9 @@
       ],
       "signals": {
         "agentcore-tools": [
+          "l2"
+        ],
+        "apigateway": [
           "l2"
         ],
         "apigatewayv2-update-removal": [
