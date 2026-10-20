@@ -478,6 +478,18 @@ export async function replaceDeleteFirstAndRecreate(
   }
   deps.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
   run.oldDeletedBeforeCreate.add(logicalId);
+  // go-to-k/cdkd#5131: a type whose delete returns while AWS still holds the
+  // name (a DynamoDB table, DELETING) waits here, where the delete is known to
+  // be this run's own; no other path pays it.
+  await oldDeleteProvider.waitForNameReleased?.(
+    logicalId,
+    currentResource.physicalId,
+    oldResourceType,
+    {
+      isInterrupted: () => deps.userInterrupted(),
+      maskSecrets: (text) => maskSecretsInText(text, secrets),
+    }
+  );
   deps.logger.info(safeMsg`  Re-creating ${logicalId}...`);
   try {
     // Some providers return from delete() before the name is

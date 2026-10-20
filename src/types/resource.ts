@@ -1112,6 +1112,22 @@ export interface ResourceProvider {
   disableOuterRetry?: boolean;
 
   /**
+   * go-to-k/cdkd#5131: wait, bounded, until a resource this provider just
+   * deleted no longer holds its name, for a type whose `delete()` returns
+   * while AWS still holds it (a DynamoDB table stays `DELETING`). Called ONLY
+   * by a replacement that deleted the resource itself and re-creates it under
+   * the same name -- never by a destroy or an ordinary deploy, which pay no
+   * wait. Never throws: an exhausted or interrupted wait returns, and the
+   * re-create then fails (or is interrupted) as it would have.
+   */
+  waitForNameReleased?(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
+  ): Promise<void>;
+
+  /**
    * Self-reported minimum wall-clock timeout (ms) the provider needs in
    * order to complete `create` / `update` / `delete` against AWS in the
    * worst case.

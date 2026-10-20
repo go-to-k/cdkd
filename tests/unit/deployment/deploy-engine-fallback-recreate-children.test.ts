@@ -453,4 +453,26 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     expect(callsFor(sdk.delete, 'Fn')).toHaveLength(1);
     expect(attempts).toBe(2);
   }, 30_000);
+
+  // go-to-k/cdkd#5131: the old copy's delete returns while AWS may still hold
+  // its name; its provider's name-release wait runs before the re-create.
+  it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
+    const order: string[] = [];
+    const del = sdk.delete.getMockImplementation();
+    sdk.delete.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('delete');
+      return del?.(...args);
+    });
+    const create = sdk.create.getMockImplementation()!;
+    sdk.create.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('create');
+      return create(...args);
+    });
+    (sdk as Record<string, unknown>)['waitForNameReleased'] = vi.fn(async (id: string) => {
+      order.push(`wait ${id}`);
+    });
+    await makeEngine().deploy(STACK, changedTemplate());
+    expect(order).toEqual(['delete', 'wait Fn', 'create']);
+  });
 });
+

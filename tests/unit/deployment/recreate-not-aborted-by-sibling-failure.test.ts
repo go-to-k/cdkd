@@ -212,4 +212,56 @@ describe('a delete-first re-create is not aborted by a sibling failure (A5)', ()
     await expect(recreate()).resolves.toMatchObject({ physicalId: NAME });
     expect(attempts).toBe(2);
   }, 30_000);
+
+  // go-to-k/cdkd#5131: DynamoDB keeps the name while the deleted table is
+  // DELETING, and the create's refusal (ResourceInUseException, its AWS text
+  // withheld) is deliberately not retryable. The provider's name-release wait
+  // runs between this run's own delete and the re-create.
+  describe('a table whose delete returns before its name is released (#5131)', () => {
+    const nameStillHeld = (): Error =>
+      new Error(`Failed to create DynamoDB table Table: ResourceInUseException.`);
+    let released: boolean;
+    beforeEach(() => {
+      released = false;
+      vi.mocked(provider.create).mockImplementation(async () => {
+        if (!released) throw nameStillHeld();
+        return { physicalId: NAME, attributes: {} };
+      });
+    });
+
+    it('waits for the name, then re-creates the table in one attempt', async () => {
+      const order: string[] = [];
+      vi.mocked(provider.delete).mockImplementation(async () => {
+        order.push('delete');
+      });
+      provider.waitForNameReleased = vi.fn(async (_id, physicalId, type, ctx) => {
+        order.push(`wait ${physicalId} ${type} interrupted=${ctx.isInterrupted()}`);
+        released = true;
+      });
+      await expect(recreate()).resolves.toMatchObject({ physicalId: NAME });
+      expect(order).toEqual(['delete', `wait ${NAME} ${TABLE} interrupted=false`]);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("the wait ends on the user's interrupt only", async () => {
+      let seen: (() => boolean) | undefined;
+      provider.waitForNameReleased = vi.fn(async (_id, _p, _t, ctx) => {
+        seen = ctx.isInterrupted;
+        released = true;
+      });
+      await recreate();
+      engine.interrupted = true;
+      engine.interruptCause = 'sibling-failure';
+      expect(seen!()).toBe(false);
+      engine.userInterrupted = true;
+      expect(seen!()).toBe(true);
+    });
+
+    it('a name never released fails the re-create with the existing message', async () => {
+      provider.waitForNameReleased = vi.fn(async () => undefined);
+      await expect(recreate()).rejects.toThrow(/already deleted the old resource/);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+    });
+  });
 });
+

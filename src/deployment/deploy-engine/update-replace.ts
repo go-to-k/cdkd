@@ -551,6 +551,17 @@ export async function updateByReplacement(
       }
       engine.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
       engine.replacementRun.oldDeletedBeforeCreate.add(logicalId);
+      // go-to-k/cdkd#5131: as the --replace fallback, for a type whose delete
+      // returns while AWS still holds the name.
+      await oldDeleteProvider.waitForNameReleased?.(
+        logicalId,
+        currentResource.physicalId,
+        oldResourceType,
+        {
+          isInterrupted: () => engine.userInterrupted,
+          maskSecrets: createSecretMasker(updateSecrets),
+        }
+      );
     }
 
     engine.logger.info(safeMsg`  Creating new ${logicalId}...`);

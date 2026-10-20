@@ -495,4 +495,26 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     await expect(engine.deploy(STACK, template())).rejects.toThrow();
     expect(attempts).toBe(2);
   }, 30_000);
+
+  // go-to-k/cdkd#5131: the old copy's delete returns while AWS may still hold
+  // its name; its provider's name-release wait runs before the re-create.
+  it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
+    const order: string[] = [];
+    const del = sdk.delete.getMockImplementation();
+    sdk.delete.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('delete');
+      return del?.(...args);
+    });
+    const create = cc.create.getMockImplementation()!;
+    cc.create.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('create');
+      return create(...args);
+    });
+    (sdk as Record<string, unknown>)['waitForNameReleased'] = vi.fn(async (id: string) => {
+      order.push(`wait ${id}`);
+    });
+    await makeEngine().deploy(STACK, template());
+    expect(order).toEqual(['delete', 'wait Fn', 'create']);
+  });
 });
+

@@ -639,6 +639,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // interrupted re-run doesn't chase a deleted physical id.
     delete stateResources[op.logicalId];
     await afterOp?.(op.logicalId);
+    // go-to-k/cdkd#5131: the old resource is re-created under the name this
+    // delete frees; a type whose delete returns while AWS still holds it waits.
+    await deleteNewFirstRoute.provider.waitForNameReleased?.(
+      op.logicalId,
+      current.physicalId,
+      current.resourceType,
+      { isInterrupted: () => isInterrupted?.() === true, maskSecrets: mask }
+    );
   };
 
   // Re-creates the old resource once the new one is gone.

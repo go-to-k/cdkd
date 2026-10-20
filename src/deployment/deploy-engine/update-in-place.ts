@@ -832,6 +832,17 @@ export async function updateInPlace(
             );
           }
           engine.replacementRun.oldDeletedBeforeCreate.add(logicalId);
+          // go-to-k/cdkd#5131: as the --replace fallback, for a type whose
+          // delete returns while AWS still holds the name.
+          await updateProvider.waitForNameReleased?.(
+            logicalId,
+            currentResource.physicalId,
+            resourceType,
+            {
+              isInterrupted: () => engine.userInterrupted,
+              maskSecrets: createSecretMasker(updateSecrets),
+            }
+          );
         }
         // Set only on the retain arm; drives the `partial` outcome below.
         let retainedSurvivorReason: string | undefined;

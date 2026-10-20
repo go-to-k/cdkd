@@ -102,6 +102,7 @@ import {
   relayedIndexBusyDelete,
   waitForIndexesSettled,
 } from '../dynamodb-index-busy-delete.js';
+import { TABLE_GONE_WAIT_ATTEMPTS } from './dynamodb-globaltable-provider.js';
 import {
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
@@ -1698,6 +1699,17 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
   // `maskLeafValue(...)`; the signature is identical to `maskDeep`'s.
   return maskDeep(value, maskSecrets);
 }
+
+/**
+ * go-to-k/cdkd#5131: {@link DynamoDBTableProvider.waitForNameReleased}'s
+ * bound -- the GlobalTable gone-wait's poll count and interval
+ * (`TABLE_GONE_WAIT_ATTEMPTS`, `INDEX_SETTLE_POLL_INTERVAL_MS`). Mutable for
+ * tests only.
+ */
+export const tableNameReleaseWait = {
+  maxPolls: TABLE_GONE_WAIT_ATTEMPTS,
+  intervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
+};
 
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
@@ -3809,6 +3821,42 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * exit; the {@link ProtectionFlipRecord} — not the position of the catch — is
    * what decides whether there is anything to undo.
    */
+  /**
+   * go-to-k/cdkd#5131: `DeleteTable` returns with the table `DELETING`, and
+   * DynamoDB keeps the name until it is gone, so a same-name re-create right
+   * after cdkd's own delete fails `ResourceInUseException`. Polls
+   * `DescribeTable` until `ResourceNotFoundException`, as the GlobalTable
+   * provider's gone-wait does, within its poll budget. Only the replacement
+   * that deleted the table asks; `delete()` itself still returns at once.
+   */
+  async waitForNameReleased(
+    logicalId: string,
+    physicalId: string,
+    _resourceType: string,
+    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
+  ): Promise<void> {
+    const mask = context.maskSecrets ?? ((text: string) => text);
+    for (let poll = 0; poll < tableNameReleaseWait.maxPolls; poll++) {
+      if (context.isInterrupted()) return;
+      try {
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return;
+        // Not the answer this wait is for: the re-create reports what is wrong.
+        this.logger.debug(
+          mask(
+            `DynamoDB table ${logicalId}: name-release check failed: ${describeAwsFailure(error).detail}`
+          )
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, tableNameReleaseWait.intervalMs));
+    }
+    this.logger.debug(
+      mask(`DynamoDB table ${logicalId} (${physicalId}) still held its name after the wait`)
+    );
+  }
+
   async delete(
     logicalId: string,
     physicalId: string,
