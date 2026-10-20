@@ -248,6 +248,96 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     expect(result.failures).toBe(0);
   });
 
+  it("a reversal run ahead first re-creates the renamed reversal ITS old resource names", async () => {
+    // Perm (old) names Fn (old), which names Role (old); Perm reverts first.
+    const FN = 'AWS::Lambda::Function';
+    const PERM = 'AWS::Lambda::Permission';
+    const m = iamModel();
+    const fns = new Set<string>(['fn-new']);
+    m.provider.create.mockImplementation(async (logicalId: string) => {
+      m.calls.push(`create ${logicalId}`);
+      if (logicalId === 'Role') m.roles.add(OLD_ROLE);
+      if (logicalId === 'Fn') {
+        if (!m.roles.has(OLD_ROLE)) throw new Error('role not found');
+        fns.add('fn-old');
+      }
+      return { physicalId: logicalId === 'Role' ? OLD_ROLE : 'fn-old', attributes: {} };
+    });
+    m.provider.update.mockImplementation(
+      async (logicalId: string, physicalId: string, _t: string, props: Record<string, unknown>) => {
+        m.calls.push(`update ${logicalId}`);
+        if (!fns.has(String(props['FunctionName']))) throw new Error('function not found');
+        return { physicalId, wasReplaced: false };
+      }
+    );
+    const state: Record<string, ResourceState> = {
+      Role: roleRecord(NEW_ROLE),
+      Fn: record('fn-new', FN, { Role: NEW_ROLE }, ['Role']),
+      Perm: record('perm', PERM, { FunctionName: 'fn-new' }, ['Fn']),
+    };
+    const ops: CompletedOperation[] = [
+      e1Ops()[0]!,
+      {
+        logicalId: 'Fn',
+        changeType: 'UPDATE',
+        resourceType: FN,
+        provisionedBy: 'sdk',
+        physicalId: 'fn-new',
+        previousState: record('fn-old', FN, { Role: OLD_ROLE }, ['Role']),
+        oldResourceRetained: false,
+      },
+      {
+        logicalId: 'Perm',
+        changeType: 'UPDATE',
+        resourceType: PERM,
+        provisionedBy: 'sdk',
+        physicalId: 'perm',
+        previousState: record('perm', PERM, { FunctionName: 'fn-old' }, ['Fn']),
+      },
+    ];
+    const result = await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual([
+      'create Role',
+      'create Fn',
+      'update Perm',
+      'delete Fn fn-new',
+      `delete Role ${NEW_ROLE}`,
+    ]);
+    expect(result.failures).toBe(0);
+  });
+
+  it('a reversal that failed at its own slot is not run again ahead of a later op', async () => {
+    // Role completed LAST, so it runs first and its re-create fails; the queue
+    // after it records no dependencies, which may name anything.
+    const m = iamModel();
+    m.provider.create.mockImplementation(async () => {
+      m.calls.push('create Role');
+      throw new Error('create rejected');
+    });
+    m.provider.update.mockImplementation(async (logicalId: string, physicalId: string) => {
+      m.calls.push(`update ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    });
+    const state: Record<string, ResourceState> = {
+      Role: roleRecord(NEW_ROLE),
+      Queue: record('https://sqs/q', QUEUE, { VisibilityTimeout: 60 }, null),
+    };
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Queue',
+        changeType: 'UPDATE',
+        resourceType: QUEUE,
+        provisionedBy: 'sdk',
+        physicalId: 'https://sqs/q',
+        previousState: record('https://sqs/q', QUEUE, { VisibilityTimeout: 30 }, null),
+      },
+      e1Ops()[0]!,
+    ];
+    const result = await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['create Role', 'update Queue']);
+    expect(result.failures).toBe(1);
+  });
+
   it('an interrupt after the early re-create still deletes the new resource', async () => {
     const m = iamModel();
     let interrupted = false;
