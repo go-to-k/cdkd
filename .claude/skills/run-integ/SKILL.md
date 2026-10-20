@@ -141,6 +141,8 @@ verify, clean up.
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
    # FIRE also reaches verify's `node` child. `>>`: cleanup output after a FIRE
    # must not overwrite WATCHDOG_FIRED. Before a re-run, `ps -g <old VPID>` is rc=1.
+   # The env: a profile's `cli_auto_prompt`/pager otherwise hangs a bad `aws` call.
+   AWS_PAGER= AWS_CLI_AUTO_PROMPT=off \
    perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh >> "$LOG" 2>&1 &
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog (orphaned `sleep`,
