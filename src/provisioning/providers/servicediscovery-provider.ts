@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   ServiceDiscoveryClient,
   CreateHttpNamespaceCommand,
@@ -176,8 +177,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     ['AWS::ServiceDiscovery::PublicDnsNamespace', new Set(['Name', 'Tags', 'Properties'])],
     // Name / NamespaceId / Type / HealthCheckCustomConfig are create-only;
     // Tags and ServiceAttributes are diffed. A removed Description /
-    // DnsConfig / HealthCheckConfig is KEPT, as CloudFormation keeps it —
-    // see keepUndeclaredServiceFields.
+    // DnsConfig / HealthCheckConfig follows CloudFormation — kept on its own,
+    // cleared (or, for DnsConfig, refused) beside a Description /
+    // HealthCheckConfig change; see planServiceChange.
     [
       'AWS::ServiceDiscovery::Service',
       new Set([
@@ -1265,11 +1267,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * The `ServiceChange` body REPLACES rather than merges: an omitted
    * `Description` or `HealthCheckConfig` is cleared, and an omitted
    * `DnsConfig` is refused on a DNS service (`Service dns config cannot be
-   * null`). A property the template does not declare is therefore filled
-   * from `GetService` before the call ({@link keepUndeclaredServiceFields}),
-   * which is also how CloudFormation treats a REMOVED one (issue #1160).
-   * `cdkd drift --revert` passes the full AWS-current snapshot as
-   * `properties`, so the round-trip is value-preserving.
+   * null`). WHEN to send it, and with what, follows CloudFormation
+   * ({@link planServiceChange}, issue #1160). `cdkd drift --revert` passes
+   * the full AWS-current snapshot as both bags with the drifted keys
+   * overlaid, so only a drifted field reads as a change.
    */
   private async updateService(
     logicalId: string,
@@ -1285,21 +1286,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    const serviceChange: ServiceChange = {};
-
-    if (properties['Description'] !== undefined) {
-      serviceChange.Description = properties['Description'] as string;
-    }
-
-    const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
-    if (dnsConfig?.DnsRecords !== undefined) {
-      const change: DnsConfigChange = { DnsRecords: dnsConfig.DnsRecords };
-      serviceChange.DnsConfig = change;
-    }
-
-    if (properties['HealthCheckConfig'] !== undefined) {
-      serviceChange.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
-    }
+    const servicePlan = this.planServiceChange(properties, previousProperties);
+    const serviceChange = servicePlan?.change ?? {};
 
     // ServiceAttributes is NOT part of the `ServiceChange` body — it is
     // mutated via its own `UpdateServiceAttributes` (upsert) /
@@ -1316,7 +1304,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
     const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !Object.hasOwn(newAttrs, k));
 
-    const hasServiceChange = Object.keys(serviceChange).length > 0;
+    const hasServiceChange = servicePlan !== undefined;
     const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;
     const hasAttrRemove = removedAttrKeys.length > 0;
 
@@ -1341,7 +1329,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     let knownArn: string | undefined;
     try {
       if (hasServiceChange) {
-        knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
+        if (servicePlan.keepRemovedFromLive) {
+          knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
+        }
         const response = await client.send(
           new UpdateServiceCommand({
             Id: physicalId,
@@ -1471,35 +1461,78 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   }
 
   /**
-   * Fill each `ServiceChange` field the template does not declare with the
-   * service's live value, so the replace-style `UpdateService` keeps it.
+   * Decide whether `UpdateService` is sent and what it carries, following
+   * CloudFormation (issue #1160; live A/Bs in us-east-1, go-to-k/cdkd#1160
+   * issuecomment-6272137682 and issuecomment-6281592365):
    *
-   * CloudFormation parity (issue #1160, live A/B 2026-10-20 in us-east-1): a
-   * `Description`, `DnsConfig` or `HealthCheckConfig` REMOVED from the
-   * template is KEPT on the service — CloudFormation issues no
-   * `UpdateService` for it. Sending the change without the field would clear
-   * the first and third and is refused for the second, so the live value is
-   * echoed instead. `DnsConfig` echoes only `DnsRecords`, the one part
-   * `DnsConfigChange` carries. No `GetService` is spent when every field is
-   * declared. Returns the service ARN when it read one.
+   * - A DECLARED `Description` or `HealthCheckConfig` differing from the
+   *   previous template: CloudFormation sends the declared model as it is, so
+   *   a removed `Description` / `HealthCheckConfig` in the same update is
+   *   CLEARED and a removed `DnsConfig` is REFUSED by AWS (`Service dns
+   *   config cannot be null`). cdkd sends the same body.
+   * - Only `DnsConfig.DnsRecords` differing (a TTL, say): CloudFormation
+   *   sends nothing, so the record change is DROPPED and any removed field is
+   *   kept. cdkd DIVERGES deliberately and applies the record change, but
+   *   keeps a removed `Description` / `HealthCheckConfig` from the live
+   *   service ({@link keepUndeclaredServiceFields}), so their final state
+   *   still matches CloudFormation.
+   * - Nothing declared differing (a removal on its own, or a change only to
+   *   `ServiceAttributes` / `Tags`): no `UpdateService`, every removed field
+   *   is kept — as CloudFormation.
+   *
+   * Returns `undefined` when no `UpdateService` is due.
+   */
+  private planServiceChange(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
+    const declaredDiffers = (key: string): boolean =>
+      properties[key] !== undefined && !isDeepStrictEqual(properties[key], previousProperties[key]);
+    const records = (bag: Record<string, unknown>): unknown =>
+      (bag['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
+
+    const change: ServiceChange = {};
+    if (properties['Description'] !== undefined) {
+      change.Description = properties['Description'] as string;
+    }
+    const desiredRecords = records(properties) as DnsConfig['DnsRecords'];
+    if (desiredRecords !== undefined) {
+      const dnsChange: DnsConfigChange = { DnsRecords: desiredRecords };
+      change.DnsConfig = dnsChange;
+    }
+    if (properties['HealthCheckConfig'] !== undefined) {
+      change.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
+    }
+
+    if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
+      return { change, keepRemovedFromLive: false };
+    }
+    if (
+      desiredRecords !== undefined &&
+      !isDeepStrictEqual(desiredRecords, records(previousProperties))
+    ) {
+      return { change, keepRemovedFromLive: true };
+    }
+    return undefined;
+  }
+
+  /**
+   * The DnsRecords-only arm of {@link planServiceChange}: fill a
+   * `Description` / `HealthCheckConfig` the template does not declare with
+   * the service's live value, so the replace-style `UpdateService` keeps it,
+   * as CloudFormation (which sends nothing there) does. Returns the service
+   * ARN when it read one.
    */
   private async keepUndeclaredServiceFields(
     physicalId: string,
     serviceChange: ServiceChange
   ): Promise<string | undefined> {
-    if (
-      serviceChange.Description !== undefined &&
-      serviceChange.DnsConfig !== undefined &&
-      serviceChange.HealthCheckConfig !== undefined
-    ) {
+    if (serviceChange.Description !== undefined && serviceChange.HealthCheckConfig !== undefined) {
       return undefined;
     }
     const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
     if (serviceChange.Description === undefined && live?.Description !== undefined) {
       serviceChange.Description = live.Description;
-    }
-    if (serviceChange.DnsConfig === undefined && live?.DnsConfig?.DnsRecords !== undefined) {
-      serviceChange.DnsConfig = { DnsRecords: live.DnsConfig.DnsRecords };
     }
     if (serviceChange.HealthCheckConfig === undefined && live?.HealthCheckConfig !== undefined) {
       serviceChange.HealthCheckConfig = live.HealthCheckConfig;

@@ -19,6 +19,7 @@ import {
   GetServiceCommand,
   ListNamespacesCommand,
   TagResourceCommand,
+  UpdateServiceAttributesCommand,
   UpdateServiceCommand,
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
@@ -156,14 +157,16 @@ describe('ServiceDiscoveryProvider — update', () => {
   );
 });
 
-// Issue #1160: CloudFormation KEEPS a Description / DnsConfig /
-// HealthCheckConfig removed from the template (live A/B 2026-10-20), while
-// UpdateService REPLACES its ServiceChange body — so the update echoes the
-// live value for every field the template no longer declares.
-describe('ServiceDiscoveryProvider — Service removal keeps the live value (#1160)', () => {
+// Issue #1160: a Description / DnsConfig / HealthCheckConfig removed from the
+// template follows CloudFormation (live A/Bs, go-to-k/cdkd#1160
+// issuecomment-6272137682 and issuecomment-6281592365): kept on its own;
+// cleared (DnsConfig: refused by AWS) beside a Description / HealthCheckConfig
+// change; kept beside a DnsRecords-only change, which cdkd applies although
+// CloudFormation drops it.
+describe('ServiceDiscoveryProvider — Service property removal follows CloudFormation (#1160)', () => {
   let provider: ServiceDiscoveryProvider;
   const LIVE_HC = { Type: 'HTTP', ResourcePath: '/live', FailureThreshold: 4 };
-  const LIVE_RECORDS = [{ Type: 'A', TTL: 300 }];
+  const LIVE_ARN = 'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-1';
   const FULL = {
     Name: 'svc',
     NamespaceId: 'ns-abc',
@@ -171,6 +174,7 @@ describe('ServiceDiscoveryProvider — Service removal keeps the live value (#11
     DnsConfig: { RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: 120 }] },
     HealthCheckConfig: { Type: 'HTTP', ResourcePath: '/health', FailureThreshold: 3 },
   };
+  const TYPE = 'AWS::ServiceDiscovery::Service';
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -180,71 +184,116 @@ describe('ServiceDiscoveryProvider — Service removal keeps the live value (#11
         return {
           Service: {
             Id: 'srv-1',
+            Arn: LIVE_ARN,
             Description: 'live-desc',
-            DnsConfig: { NamespaceId: 'ns-abc', RoutingPolicy: 'WEIGHTED', DnsRecords: LIVE_RECORDS },
+            DnsConfig: { NamespaceId: 'ns-abc', RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: 120 }] },
             HealthCheckConfig: LIVE_HC,
           },
         };
       }
       if (cmd instanceof UpdateServiceCommand) return { OperationId: 'op-1' };
       if (cmd instanceof GetOperationCommand) return { Operation: { Status: 'SUCCESS' } };
-      throw new Error(`unexpected command ${(cmd as object).constructor.name}`);
+      return {};
     });
   });
 
+  const updateCall = () => mockSend.mock.calls.find(([c]) => c instanceof UpdateServiceCommand);
   const sentChange = () => {
-    const call = mockSend.mock.calls.find(([c]) => c instanceof UpdateServiceCommand);
+    const call = updateCall();
     expect(call).toBeDefined();
     return (call![0] as UpdateServiceCommand).input.Service!;
   };
-  const without = (key: keyof typeof FULL) => {
-    const copy: Record<string, unknown> = { ...FULL };
-    delete copy[key];
+  const getServiceCalls = () => mockSend.mock.calls.filter(([c]) => c instanceof GetServiceCommand).length;
+  /** FULL minus `drop`, with `patch` merged over it. */
+  const desired = (drop: (keyof typeof FULL)[], patch: Record<string, unknown> = {}) => {
+    const copy: Record<string, unknown> = { ...FULL, ...patch };
+    for (const key of drop) delete copy[key];
     return copy;
   };
+  const ttl = (n: number) => ({ RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: n }] });
 
-  it('a removed Description is sent as its live value, not omitted (which clears it)', async () => {
-    await provider.update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('Description'), FULL);
+  it.each([['Description'], ['HealthCheckConfig'], ['DnsConfig']] as const)(
+    'removal-only (%s): no UpdateService, so the live value is kept',
+    async (key) => {
+      await provider.update('Svc', 'srv-1', TYPE, desired([key]), FULL);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('(a) Description removed + DnsRecords TTL changed: TTL is sent and the live Description kept', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, desired(['Description'], { DnsConfig: ttl(240) }), FULL);
     const change = sentChange();
+    expect(change.DnsConfig).toEqual({ DnsRecords: [{ Type: 'A', TTL: 240 }] });
     expect(change.Description).toBe('live-desc');
-    expect(change.DnsConfig).toEqual({ DnsRecords: FULL.DnsConfig.DnsRecords });
     expect(change.HealthCheckConfig).toEqual(FULL.HealthCheckConfig);
   });
 
-  it('a removed HealthCheckConfig is sent as its live value, not omitted (which deletes it)', async () => {
-    await provider.update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('HealthCheckConfig'), FULL);
+  it('DnsRecords-only change with HealthCheckConfig removed keeps the live HealthCheckConfig', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, desired(['HealthCheckConfig'], { DnsConfig: ttl(240) }), FULL);
     const change = sentChange();
     expect(change.HealthCheckConfig).toEqual(LIVE_HC);
     expect(change.Description).toBe('template-desc');
   });
 
-  it('a removed DnsConfig is sent as the live DnsRecords, not omitted (which AWS refuses)', async () => {
-    await provider.update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('DnsConfig'), FULL);
-    const change = sentChange();
-    // DnsConfigChange carries DnsRecords only; RoutingPolicy / NamespaceId are not echoed.
-    expect(change.DnsConfig).toEqual({ DnsRecords: LIVE_RECORDS });
-    expect(change.HealthCheckConfig).toEqual(FULL.HealthCheckConfig);
-  });
-
-  it('spends no GetService when every ServiceChange field is declared', async () => {
-    await provider.update(
-      'Svc',
-      'srv-1',
-      'AWS::ServiceDiscovery::Service',
-      { ...FULL, Description: 'changed' },
-      FULL
-    );
-    expect(sentChange().Description).toBe('changed');
-    expect(mockSend.mock.calls.some(([c]) => c instanceof GetServiceCommand)).toBe(false);
-  });
-
-  it('a live service without the field echoes nothing for it', async () => {
-    mockSend.mockImplementationOnce(async () => ({
-      Service: { Id: 'srv-1', DnsConfig: { DnsRecords: LIVE_RECORDS } },
-    }));
-    await provider.update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('Description'), FULL);
+  it("(a'') Description removed + HealthCheckConfig changed: the Description is cleared (omitted), no read-back", async () => {
+    const hc = { Type: 'HTTP', ResourcePath: '/health', FailureThreshold: 2 };
+    await provider.update('Svc', 'srv-1', TYPE, desired(['Description'], { HealthCheckConfig: hc }), FULL);
     const change = sentChange();
     expect(Object.hasOwn(change, 'Description')).toBe(false);
+    expect(change.HealthCheckConfig).toEqual(hc);
+    expect(getServiceCalls()).toBe(0);
+  });
+
+  it('(b) HealthCheckConfig removed + Description changed: the HealthCheckConfig is cleared (omitted)', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, desired(['HealthCheckConfig'], { Description: 'changed' }), FULL);
+    const change = sentChange();
+    expect(change.Description).toBe('changed');
+    expect(Object.hasOwn(change, 'HealthCheckConfig')).toBe(false);
+    expect(change.DnsConfig).toEqual({ DnsRecords: FULL.DnsConfig.DnsRecords });
+    expect(getServiceCalls()).toBe(0);
+  });
+
+  it('(c) DnsConfig removed + Description changed: sent without DnsConfig, and the AWS refusal surfaces', async () => {
+    const refusal = Object.assign(new Error('Service dns config cannot be null'), { name: 'InvalidInput' });
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) throw refusal;
+      return {};
+    });
+    const err = await provider
+      .update('Svc', 'srv-1', TYPE, desired(['DnsConfig'], { Description: 'changed' }), FULL)
+      .catch((e: unknown) => e);
+    const change = (updateCall()![0] as UpdateServiceCommand).input.Service!;
+    expect(Object.hasOwn(change, 'DnsConfig')).toBe(false);
+    expect(change.Description).toBe('changed');
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect((err as ProvisioningError).message).toContain('Service dns config cannot be null');
+    expect(getServiceCalls()).toBe(0);
+  });
+
+  it('(d) HTTP service: Description removed + ServiceAttributes changed sends no UpdateService', async () => {
+    const prev = { Name: 'svc', NamespaceId: 'ns-http', Description: 'template-desc', ServiceAttributes: { k: 'v1' } };
+    await provider.update('Svc', 'srv-1', TYPE, { Name: 'svc', NamespaceId: 'ns-http', ServiceAttributes: { k: 'v2' } }, prev);
+    expect(updateCall()).toBeUndefined();
+    expect(mockSend.mock.calls.some(([c]) => c instanceof UpdateServiceAttributesCommand)).toBe(true);
+  });
+
+  it('a declared but unchanged bag sends no UpdateService (a Tags-only change)', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, desired([], { Tags: [{ Key: 'k', Value: 'v' }] }), FULL);
+    expect(updateCall()).toBeUndefined();
+    const tag = mockSend.mock.calls.find(([c]) => c instanceof TagResourceCommand);
+    expect((tag![0] as TagResourceCommand).input.ResourceARN).toBe(LIVE_ARN);
+  });
+
+  it('the DnsRecords-only arm spends no GetService when Description and HealthCheckConfig are both declared', async () => {
+    await provider.update('Svc', 'srv-1', TYPE, desired([], { DnsConfig: ttl(240) }), FULL);
+    expect(sentChange().Description).toBe('template-desc');
+    expect(getServiceCalls()).toBe(0);
+  });
+
+  it('a live service without the removed field echoes nothing for it on the DnsRecords-only arm', async () => {
+    mockSend.mockImplementationOnce(async () => ({ Service: { Id: 'srv-1' } }));
+    await provider.update('Svc', 'srv-1', TYPE, desired(['Description'], { DnsConfig: ttl(240) }), FULL);
+    expect(Object.hasOwn(sentChange(), 'Description')).toBe(false);
   });
 
   it('a failed GetService read-back sends no UpdateService and throws a wrapped error carrying the cause', async () => {
@@ -253,52 +302,31 @@ describe('ServiceDiscoveryProvider — Service removal keeps the live value (#11
       throw boom;
     });
     const err = await provider
-      .update('Svc', 'srv-1', 'AWS::ServiceDiscovery::Service', without('Description'), FULL)
+      .update('Svc', 'srv-1', TYPE, desired(['Description'], { DnsConfig: ttl(240) }), FULL)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ProvisioningError);
     expect((err as ProvisioningError).message).toContain('Failed to update service discovery service Svc');
     expect((err as ProvisioningError).cause).toBe(boom);
-    expect(mockSend.mock.calls.some(([c]) => c instanceof UpdateServiceCommand)).toBe(false);
+    expect(updateCall()).toBeUndefined();
   });
 
-  it('a Tags change reuses the read-back ARN instead of a second GetService', async () => {
-    mockSend.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof GetServiceCommand) {
-        return { Service: { Id: 'srv-1', Arn: 'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-1' } };
-      }
-      if (cmd instanceof UpdateServiceCommand) return {};
-      return {};
-    });
+  it('a Tags change on the DnsRecords-only arm reuses the read-back ARN instead of a second GetService', async () => {
     await provider.update(
       'Svc',
       'srv-1',
-      'AWS::ServiceDiscovery::Service',
-      { ...without('Description'), Tags: [{ Key: 'k', Value: 'v' }] },
+      TYPE,
+      desired(['Description'], { DnsConfig: ttl(240), Tags: [{ Key: 'k', Value: 'v' }] }),
       FULL
     );
-    expect(mockSend.mock.calls.filter(([c]) => c instanceof GetServiceCommand)).toHaveLength(1);
+    expect(getServiceCalls()).toBe(1);
     const tag = mockSend.mock.calls.find(([c]) => c instanceof TagResourceCommand);
-    expect((tag![0] as TagResourceCommand).input.ResourceARN).toBe(
-      'arn:aws:servicediscovery:us-east-1:111111111111:service/srv-1'
-    );
-  });
-
-  it('an HTTP service whose only field was the removed Description makes no call (kept)', async () => {
-    const prev = { Name: 'svc', NamespaceId: 'ns-http', Description: 'template-desc' };
-    await provider.update(
-      'Svc',
-      'srv-1',
-      'AWS::ServiceDiscovery::Service',
-      { Name: 'svc', NamespaceId: 'ns-http' },
-      prev
-    );
-    expect(mockSend).not.toHaveBeenCalled();
+    expect((tag![0] as TagResourceCommand).input.ResourceARN).toBe(LIVE_ARN);
   });
 
   it('declares every handled Service property removal-handled, so no unhandled-removal warning fires', () => {
-    const handled = provider.handledProperties.get('AWS::ServiceDiscovery::Service')!;
-    const declared = provider.removalHandledInUpdate.get('AWS::ServiceDiscovery::Service')!;
+    const handled = provider.handledProperties.get(TYPE)!;
+    const declared = provider.removalHandledInUpdate.get(TYPE)!;
     expect([...handled].filter((k) => !declared.has(k))).toEqual([]);
-    expect(provider.removalDefaults.has('AWS::ServiceDiscovery::Service')).toBe(false);
+    expect(provider.removalDefaults.has(TYPE)).toBe(false);
   });
 });

@@ -249,9 +249,6 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       // update() call: UpdateService (ServiceChange body) then
       // UpdateServiceAttributes (upsert) then DeleteServiceAttributes (remove).
       mockSend
-        // GetService — the undeclared DnsConfig / HealthCheckConfig are read
-        // back to be kept (#1160); this HTTP-style service has neither.
-        .mockResolvedValueOnce({ Service: { Id: 'srv-1' } })
         .mockResolvedValueOnce({}) // UpdateService — no OperationId, polling skipped
         .mockResolvedValueOnce({}) // UpdateServiceAttributes
         .mockResolvedValueOnce({}); // DeleteServiceAttributes
@@ -289,8 +286,7 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       expect(del).toBeDefined();
       expect(del!.input).toEqual({ ServiceId: 'srv-1', Attributes: ['stale'] });
 
-      // GetService (the #1160 read-back) + the three mutation calls.
-      expect(mockSend).toHaveBeenCalledTimes(4);
+      expect(mockSend).toHaveBeenCalledTimes(3);
     });
   });
 });
