@@ -7,6 +7,7 @@ import {
   UpdateAuthorizerCommand,
   DeleteCorsConfigurationCommand,
   DeleteRouteRequestParameterCommand,
+  GetIntegrationCommand,
 } from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
@@ -1253,7 +1254,7 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
           SERVICE_INTEGRATION,
           context
         )
-      ).rejects.toThrow(/IntegrationSubtype was removed from the template, and CloudFormation fails that update/);
+      ).rejects.toThrow(/the previous deploy recorded IntegrationSubtype and this template does not declare it\. CloudFormation fails that update/);
     }
     expect(mockSend).not.toHaveBeenCalled();
   });
@@ -1383,12 +1384,14 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('Integration: a rollback replay without IntegrationSubtype keeps the live subtype and warns', async () => {
-    mockSend.mockResolvedValueOnce({});
+  it('Integration: a rollback replay without IntegrationSubtype keeps the LIVE subtype (read from AWS), warns and records it', async () => {
     const { IntegrationSubtype: _dropped, ...withoutSubtype } = SERVICE_INTEGRATION;
     const warn = vi.mocked(getLogger().child('ApiGatewayV2Provider').warn);
     warn.mockClear();
     const replay = { removedProperties: new Set(['IntegrationSubtype']), replayingState: true };
+    mockSend.mockImplementation(async (cmd: unknown) =>
+      cmd instanceof GetIntegrationCommand ? { IntegrationSubtype: 'EventBridge-PutEvents' } : {}
+    );
     const result = await provider.update(
       'IntLogical',
       'int-1',
@@ -1416,8 +1419,51 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
       SERVICE_INTEGRATION,
       replay
     );
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(updateIntegrationInput()).toBeUndefined();
     expect(quiet.effectiveProperties).toEqual(SERVICE_INTEGRATION);
+    mockSend.mockReset();
+  });
+
+  it('Integration: the revert-failed arm (subtype only in the FAILED attempt, never applied) neither records, warns nor sends it', async () => {
+    // A MOCK integration with no URI and no subtype; a failed deploy tried to
+    // add IntegrationSubtype and AWS rejected it. The rollback's previous side
+    // is that attempted bag. AWS reports no subtype, so nothing is kept.
+    const original = { ApiId: API_ID, IntegrationType: 'MOCK', Description: 'orig' };
+    const attempted = { ...original, IntegrationSubtype: 'EventBridge-PutEvents' };
+    const replay = { removedProperties: new Set(['IntegrationSubtype']), replayingState: true };
+    const warn = vi.mocked(getLogger().child('ApiGatewayV2Provider').warn);
+    warn.mockClear();
+    mockSend.mockImplementation(async (cmd: unknown) =>
+      cmd instanceof GetIntegrationCommand ? { IntegrationType: 'MOCK' } : {}
+    );
+    const quiet = await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      original,
+      attempted,
+      replay
+    );
+    expect(updateIntegrationInput()).toBeUndefined();
+    expect(quiet.effectiveProperties).toBeUndefined();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('keeps the integration'))).toBe(false);
+    // With another field to restore, the update goes out WITHOUT the subtype.
+    mockSend.mockClear();
+    const result = await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      original,
+      { ...attempted, Description: 'failed' },
+      replay
+    );
+    expect(updateIntegrationInput()).toEqual({
+      ApiId: API_ID,
+      IntegrationId: 'int-1',
+      Description: 'orig',
+    });
+    expect(result.effectiveProperties).toBeUndefined();
+    mockSend.mockReset();
   });
 
   it('Integration: a Description-only change on a service integration re-sends the subtype WITH the full RequestParameters', async () => {

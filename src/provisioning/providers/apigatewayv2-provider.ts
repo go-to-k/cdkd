@@ -2587,7 +2587,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (properties['IntegrationUri'] == null) {
         throw markNonRetryable(
           new ProvisioningError(
-            safeMsg`${logicalId} (${resourceType}): IntegrationSubtype was removed from the template, and CloudFormation fails that update (AWS refuses a service integration without its subtype: Invalid integration URI specified). Keep IntegrationSubtype declared, or declare an IntegrationUri to turn this into a URI-based integration. The integration was not updated.`,
+            safeMsg`${logicalId} (${resourceType}): the previous deploy recorded IntegrationSubtype and this template does not declare it. CloudFormation fails that update (AWS refuses a service integration without its subtype: Invalid integration URI specified). Keep IntegrationSubtype declared, or declare an IntegrationUri to turn this into a URI-based integration. The integration was not updated.`,
             resourceType,
             logicalId,
             physicalId
@@ -2596,16 +2596,45 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       }
       input.IntegrationUri = properties['IntegrationUri'] as string;
       changed = true;
-    } else if (input.IntegrationSubtype === undefined) {
-      const liveSubtype =
-        properties['IntegrationSubtype'] ?? previousProperties['IntegrationSubtype'];
-      if (liveSubtype !== undefined) input.IntegrationSubtype = liveSubtype as string;
-      if (subtypeRemoved && liveSubtype !== undefined) {
+    } else if (subtypeRemoved) {
+      // A rollback replay whose record has neither the subtype nor a URI. The
+      // PREVIOUS bag is not proof the subtype is live: on the revert-failed arm
+      // it is the FAILED attempt's bag, which never applied, and the context
+      // does not tell the two arms apart. So AWS is asked: only a subtype the
+      // integration really has is re-sent, recorded and warned about.
+      let liveSubtype: string | undefined;
+      try {
+        liveSubtype = (
+          await this.getClient().send(
+            new GetIntegrationCommand({ ApiId: apiId, IntegrationId: physicalId })
+          )
+        ).IntegrationSubtype;
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapMaskedError(
+          log,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to read API Gateway V2 Integration ${logicalId} before restoring it: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+      if (liveSubtype) {
+        input.IntegrationSubtype = liveSubtype;
         effectiveProperties = { ...properties, IntegrationSubtype: liveSubtype };
         log.warn(
           safeMsg`${logicalId} (${resourceType}): the state being restored does not declare IntegrationSubtype; the rollback keeps the integration's current subtype, because AWS refuses a service integration without it.`
         );
       }
+    } else if (input.IntegrationSubtype === undefined) {
+      const liveSubtype =
+        properties['IntegrationSubtype'] ?? previousProperties['IntegrationSubtype'];
+      if (liveSubtype !== undefined) input.IntegrationSubtype = liveSubtype as string;
     }
     if (
       properties['PassthroughBehavior'] != null &&

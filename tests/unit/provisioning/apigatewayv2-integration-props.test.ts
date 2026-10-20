@@ -341,7 +341,9 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
       });
     });
 
-    it('sources the re-sent IntegrationSubtype from the PREVIOUS side on a rollback replay that drops it', async () => {
+    it('sources the re-sent IntegrationSubtype from the LIVE integration on a rollback replay that drops it', async () => {
+      // GetIntegration (the live read), then UpdateIntegration.
+      mockSend.mockResolvedValueOnce({ IntegrationSubtype: 'EventBridge-PutEvents' });
       mockSend.mockResolvedValueOnce({});
 
       // The constraint is about the LIVE integration, which stays a service
@@ -363,7 +365,7 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
         { removedProperties: new Set(['IntegrationSubtype']), replayingState: true }
       );
 
-      expect(mockSend.mock.calls[0]?.[0].input).toMatchObject({
+      expect(mockSend.mock.calls[1]?.[0].input).toMatchObject({
         IntegrationSubtype: 'EventBridge-PutEvents',
       });
     });

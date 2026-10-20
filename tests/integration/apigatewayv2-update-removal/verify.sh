@@ -696,7 +696,7 @@ if [ "${P2C_RC}" -eq 0 ]; then
   exit 1
 fi
 case "${P2C_OUT}" in
-  *"IntegrationSubtype was removed from the template, and CloudFormation fails that update"*) ;;
+  *"the previous deploy recorded IntegrationSubtype and this template does not declare it. CloudFormation fails that update"*) ;;
   *)
     echo "FAIL: Phase 2c deploy failed (rc=${P2C_RC}) without the IntegrationSubtype refusal" >&2
     exit 1
