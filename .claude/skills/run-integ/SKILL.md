@@ -206,6 +206,8 @@ verify, clean up.
    - S3 state orphans: `cls3 -b <bucket> -r <region> -k cdkd/<StackName>/`,
      which also purges the versions `aws s3 rm` would leave readable
      (or `cdkd state orphan '<StackName>'`, which also handles the lock key).
+     A record this binary cannot read (a newer schema) is a PEER's, never an
+     orphan: STOP and report, delete nothing (#5116 purged one, every version).
    - Other types: infer delete order from CFn dependency rules (children before
      parents). Always pass `--region`. Re-run step 6 after cleanup.
 

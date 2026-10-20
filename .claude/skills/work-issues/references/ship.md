@@ -21,7 +21,8 @@ can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
 ledger blocks until EVERY run ends and reports ONCE; its brief, like a lane's,
-bans attribution lines in the ledger commit (#5104). Size it for ONE context
+bans attribution lines in the ledger commit (#5104); a state record it cannot
+read is a STOP, never a purge (`/run-integ` step 7). Size it for ONE context
 (§8-d probe alone, then fixture batches), each run's fixture, PID, log,
 state prefix appended to `<scratch>/integ-<PR>.live` at launch for a finisher.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
@@ -76,9 +77,10 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
                          # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
 ```
 
-- **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
-  commit ITS output. Upstream whole only clears the conflict: it lacks this
-  lane's inputs, so regenerate before the push (go-to-k/cdkd#4460).
+- **A GENERATED file is REGENERATED, never hand-merged nor trusted when git
+  merged it CLEANLY** (`handled-property-wiring.json` came out inconsistent):
+  take upstream's copy whole, re-run the generator, commit ITS output before
+  the push (go-to-k/cdkd#4460).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
