@@ -403,3 +403,20 @@ describe('cdkd import and the name generation', () => {
     expect(importedNameGenerationFields(broken, { logicalId: 'Queue', physicalId: broken.physicalId })).toEqual({});
   });
 });
+
+describe('the D2 sequence: a refused crash re-run, `cdkd import`, the next replacement (generated-name-lifecycle)', () => {
+  it('takes generation 3: past the replaced record (1) and the generation the imported resource holds (2)', async () => {
+    const { importedNameGenerationFields } = await import('../../../src/cli/commands/import.js');
+    // The refusal raised nothing; the import carried the replaced record's reach.
+    const imported = importedNameGenerationFields(
+      { physicalId: 'gen1-table', resourceType: 'AWS::DynamoDB::Table', properties: {}, nameGeneration: 1 },
+      { logicalId: 'Table', physicalId: `MyStack-Table-${stackInstanceNameSuffix(ID, 'Table', 2)}` }
+    );
+    expect(imported).toEqual({ nameGenerationHigh: 1 });
+    const record = {
+      ...imported,
+      physicalId: `MyStack-Table-${stackInstanceNameSuffix(ID, 'Table', 2)}`,
+    };
+    expect(nextNameGeneration(record, 'Table', ID)).toBe(3);
+  });
+});
