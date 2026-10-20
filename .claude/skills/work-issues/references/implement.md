@@ -132,8 +132,8 @@ parser and fails CLOSED on anything unmodelled.
 You may fan out **one subagent per lane** (disjoint files): give each its
 tree, allowed files, "do NOT touch other lanes' files; STOP and report
 if the fix needs a forbidden one or meets a design branch (options plus what
-CFn does, never a lenient pick of its own; #5107, #5109)", and **the REPORT SHAPE — the FINAL report IS
-the deliverable**, since a lane's tool output never reaches you. **Name the
+CFn does, never a lenient pick of its own; #5107, #5109)", and **the REPORT
+SHAPE — the FINAL report IS the deliverable**, since a lane's tool output never reaches you. **Name the
 parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on to its next step unless the
 parent SAYS stop.
