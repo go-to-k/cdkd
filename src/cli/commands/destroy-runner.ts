@@ -2868,10 +2868,13 @@ async function destroyStackInRegion(
       result.skippedCount += unreadableSuperseded;
       // The summary's skip hints name this record (`state show` / `state orphan`).
       skippedStateTargets.add(stackName);
+      const one = unreadableSuperseded === 1;
       logger.warn(
-        `  ⚠ ${unreadableSuperseded} superseded resource entr${unreadableSuperseded === 1 ? 'y' : 'ies'} ` +
-          `in state could not be read, so nothing was deleted for ${unreadableSuperseded === 1 ? 'it' : 'them'}. ` +
-          'State preserved: it may name a resource still in AWS.'
+        safeMsg`  ⚠ ${unreadableSuperseded} superseded resource ` +
+          (one ? 'entry' : 'entries') +
+          ' in state could not be read, so nothing was deleted for ' +
+          (one ? 'it' : 'them') +
+          '. State preserved: it may name a resource still in AWS.'
       );
     }
 

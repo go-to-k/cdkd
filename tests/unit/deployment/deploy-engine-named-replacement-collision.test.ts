@@ -404,12 +404,15 @@ describe('DeployEngine — custom-named replacement collision', () => {
     const fields = engine as unknown as {
       interrupted: boolean;
       interruptCause: 'user' | 'sibling-failure' | null;
+      userInterrupted: boolean;
     };
     vi.mocked(provider.create).mockImplementation(async () => {
       callOrder.push('create');
       if (callOrder.filter((c) => c === 'create').length === 1) throw alreadyExists();
+      // What the SIGINT handler sets (go-to-k/cdkd#5118).
       fields.interrupted = true;
       fields.interruptCause = 'user';
+      fields.userInterrupted = true;
       throw alreadyExists();
     });
 
