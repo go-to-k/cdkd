@@ -25,6 +25,11 @@ Minimal EC2 Instance deployment example for cdkd.
   `network-same-resource-probe.mjs` against the stack's resources, a throwaway VPC / subnet /
   security group it creates, the default VPC and never-existed ids, then the settle's delete
   of the throwaways and the reads once they are gone
+- Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
+  `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
+  As in CloudFormation, detailed monitoring is turned off and the other two keep their values.
+  Phase 1e also drops `DisableApiTermination` (`CDKD_TEST_DAT=remove`). CloudFormation fails that
+  update, so cdkd refuses it before any AWS call. Phase 1f declares `false` and Phase 1g declares `true` again; both are applied.
 
 ## Deploy
 

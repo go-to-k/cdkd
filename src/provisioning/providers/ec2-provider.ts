@@ -941,6 +941,13 @@ export class EC2Provider implements ResourceProvider {
         ['EnableDnsSupport', true],
       ]),
     ],
+    // Issue #1160: a CloudFormation update that removes `Monitoring` turns
+    // detailed monitoring off (real A/B, us-east-1: `Monitoring.State`
+    // `enabled` -> `disabled`). `updateInstanceSecurityProps` diffs it against
+    // the previous template, so the injected `false` calls UnmonitorInstances
+    // only when monitoring was on. The other Instance properties that
+    // `update()` modifies in place get no reset (see that method).
+    ['AWS::EC2::Instance', new Map<string, unknown>([['Monitoring', false]])],
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
@@ -1450,7 +1457,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::NetworkAclEntry':
         return this.updateNetworkAclEntry(
@@ -6356,7 +6364,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     // Most EC2 Instance property changes require replacement.
     // Immutable properties (ImageId, SubnetId, KeyName) are handled by
@@ -6372,6 +6381,15 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // Issue #1160: before any call too, so a refusal applies nothing.
+    this.guardTerminationProtectionRemoval(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
 
     try {
       await this.applyTagDiff(
@@ -6419,6 +6437,57 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
+   * Issue #1160: a `DisableApiTermination` the previous template declared and
+   * the desired one omits. CloudFormation FAILS that update, from `true` or
+   * from `false`, with or without other changes in it, and rolls the whole
+   * update back ("No attributes specified": its handler sends an empty
+   * ModifyInstanceAttribute). An explicit `true` <-> `false` change is applied.
+   * Real A/B, us-east-1: go-to-k/cdkd#1160 issuecomment-6281778130. So a
+   * forward deploy REFUSES the removal before any AWS call, and the refusal
+   * names the remedy CloudFormation accepts: keep the property and declare
+   * `false`.
+   *
+   * A rollback revert arm (`replayingState`) is undoing a failed deploy that
+   * ADDED the property. The user cannot edit a state record, so a refusal there
+   * would only strand the rollback. Instead it keeps the live value, and warns
+   * when that value was declared `true`. `cdkd drift --revert` names no removed
+   * property (`removedProperties` is empty; its previous side is an AWS
+   * readback), so neither arm fires there. A direct call with no context falls
+   * back to comparing the two bags.
+   */
+  private guardTerminationProtectionRemoval(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    const removed =
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has('DisableApiTermination')
+        : previousProperties['DisableApiTermination'] !== undefined &&
+          properties['DisableApiTermination'] === undefined;
+    if (!removed) return;
+    if (context?.replayingState === true) {
+      if (this.coerceBool(previousProperties['DisableApiTermination']) === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored does not declare DisableApiTermination; the rollback leaves termination protection at its current AWS value. Set DisableApiTermination to false to turn termination protection off.`
+        );
+      }
+      return;
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${logicalId} (${resourceType}): DisableApiTermination was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared, and set it to false to turn termination protection off. The instance was not updated.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
    * Apply in-place modifications for four of the five security-focused
    * backfill props (#609). Each is diffed against `previousProperties` so a
    * no-drift round-trip (`update(state, state)`) issues zero mutating calls
@@ -6430,6 +6499,14 @@ export class EC2Provider implements ResourceProvider {
    *   - CreditSpecification   -> ModifyInstanceCreditSpecification
    * EbsOptimized is NOT here: it can only be changed on a STOPPED instance, so
    * an EbsOptimized change is routed to replacement (see ReplacementRules).
+   *
+   * Removal (issue #1160, real CloudFormation A/B in us-east-1): CloudFormation
+   * resets a removed `Monitoring` to off, which arrives here as the `false`
+   * from `removalDefaults`. It KEEPS a removed `MetadataOptions` and a removed
+   * `CreditSpecification` (`HttpTokens: required` / hop limit 3 and
+   * `CPUCredits: standard` stayed), so a removed one sends nothing. A removed
+   * `DisableApiTermination` never reaches this method: see
+   * `guardTerminationProtectionRemoval`.
    */
   private async updateInstanceSecurityProps(
     physicalId: string,
