@@ -699,18 +699,22 @@ export async function runDestroyForStack(
   });
   try {
     const awsScope = { region: stackRegion, clients: scopeClients };
-    const registry = new ProviderRegistry();
     const nestedContext = getCurrentNestedStackContext();
-    const destroyInScope = (): Promise<DestroyRunnerResult> =>
-      destroyStackInRegion(stackName, state, ctx, { clients: scopeClients, registry });
-    return await runInStackAwsScope(awsScope, () =>
-      nestedContext === undefined
+    return await runInStackAwsScope(awsScope, () => {
+      // Constructed INSIDE the scope (go-to-k/cdkd#5115): the registry's own
+      // constructor builds its Cloud Control and custom-resource fallbacks,
+      // which capture `getAwsClients()` there. Outside it they took the CLI
+      // region's clients, and every Cloud Control-routed delete was refused.
+      const registry = new ProviderRegistry();
+      const destroyInScope = (): Promise<DestroyRunnerResult> =>
+        destroyStackInRegion(stackName, state, ctx, { clients: scopeClients, registry });
+      return nestedContext === undefined
         ? destroyInScope()
         : withNestedStackContext(
             { ...nestedContext, providerRegistry: registry, awsClients: scopeClients },
             destroyInScope
-          )
-    );
+          );
+    });
   } finally {
     // After `destroyStackInRegion` restored the process-global clients, so no
     // later consumer reaches a destroyed client (issue #2161).

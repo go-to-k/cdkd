@@ -2248,6 +2248,7 @@
     "--layer-name",
     "--lb-port",
     "--lifecycle-configuration",
+    "--limit",
     "--listener-arn",
     "--listener-arns",
     "--load-balancer-arn",

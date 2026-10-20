@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # verify.sh -- `cdkd destroy` and `cdkd state destroy` of a stack recorded in a
 # region other than the CLI's, whose nested child holds a named resource
-# (issue [#4941](https://github.com/go-to-k/cdkd/issues/4941)).
+# (issue [#4941](https://github.com/go-to-k/cdkd/issues/4941)), and whose
+# parent holds a Cloud Control-routed resource
+# (issue [#5115](https://github.com/go-to-k/cdkd/issues/5115)).
 #
 # THE DEFECT. The caller builds its provider registry in the CLI's region and
 # hands that registry, with its CLI-region clients, to the nested-stack
@@ -18,14 +20,21 @@
 # the child's stream in us-west-2 is gone. Before the fix the sentinel was
 # deleted and the us-west-2 stream survived; the destroy itself exited 0.
 #
+# #5115. The parent's REST API is routed through Cloud Control, whose provider
+# the registry builds in its constructor. A registry built before entering the
+# stack's AWS scope held a us-east-1 client, the region check refused the
+# delete, and `cdkd destroy` / `cdkd state destroy` exited non-zero with the
+# API left in us-west-2. Each arm asserts the exit code and the API gone.
+#
 # PHASES
 #   0. Refuse if a stream of that name is already in us-east-1 (it is not
 #      this run's), then create the sentinel there and wait for it.
 #   D1. Deploy (in us-west-2).
-#   D2. PREMISE: the child's stream is in us-west-2, the parent and child
-#       state records are under us-west-2.
+#   D2. PREMISE: the child's stream and the parent's REST API are in
+#       us-west-2, the parent and child state records are under us-west-2.
 #   D3. ARM D: `cdkd destroy` with AWS_REGION=us-east-1: exit 0, the sentinel
-#       is ACTIVE, the us-west-2 stream is gone, both records are gone.
+#       is ACTIVE, the us-west-2 stream and REST API are gone, both records
+#       are gone.
 #   S1. Deploy again.
 #   S2. ARM S: `cdkd state destroy` with AWS_REGION=us-east-1: the same checks.
 #   R1. Deploy again.
@@ -107,6 +116,9 @@ CHILD_STACK="${STACK}~Child"
 REGION="us-west-2"
 CLI_REGION="us-east-1"
 STREAM_NAME="${STACK}-child-stream"
+API_NAME="${STACK}-api"
+# The REST API's id, read after each deploy.
+API_ID=""
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CHILD_STATE_KEY="cdkd/${CHILD_STACK}/${REGION}/state.json"
 
@@ -124,7 +136,7 @@ WORK_DIR=""
 # Set once Phase 0 created the sentinel; gates its deletion in cleanup.
 SENTINEL_CREATED=0
 
-echo "=== destroy of a cross-region nested stack (issue #4941) ==="
+echo "=== destroy of a cross-region nested stack (issues #4941, #5115) ==="
 echo "Stack:        ${STACK} (${REGION})"
 echo "CLI region:   ${CLI_REGION}"
 echo "Stream name:  ${STREAM_NAME}"
@@ -142,6 +154,12 @@ delete_stream() { # usage: delete_stream <region>
   )
 }
 
+# The ids of every REST API named ${API_NAME} in a region, space-separated.
+api_ids_by_name() { # usage: api_ids_by_name <region>
+  aws apigateway get-rest-apis --region "$1" --limit 500 \
+    --query "items[?name=='${API_NAME}'].id" --output text
+}
+
 cleanup() {
   (
     set +eu
@@ -156,6 +174,11 @@ cleanup() {
     # and the sentinel only once THIS run created it: before that, a stream of
     # that name in ${CLI_REGION} is not the fixture's.
     delete_stream "${REGION}"
+    # A destroy refused by the region check (#5115) leaves the REST API.
+    for id in $(api_ids_by_name "${REGION}" 2>/dev/null); do
+      [ "${id}" = "None" ] && continue
+      aws apigateway delete-rest-api --rest-api-id "${id}" --region "${REGION}" >/dev/null 2>&1
+    done
     if [ "${SENTINEL_CREATED}" = "1" ]; then
       delete_stream "${CLI_REGION}"
     fi
@@ -209,11 +232,13 @@ assert_destroyed_in_stack_region() { # usage: assert_destroyed_in_stack_region <
     echo "FAIL: ${arm}: the child's stream ${STREAM_NAME} in ${REGION} is ${child} after the destroy (want GONE or DELETING) (issue #4941)" >&2
     exit 1
   fi
+  assert_gone "${arm}: the parent's REST API ${API_ID} in ${REGION} (issue #5115) still exists after the destroy" \
+    aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"
   assert_gone "${arm}: the parent state ${STATE_KEY} still exists after the destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
   assert_gone "${arm}: the child state ${CHILD_STATE_KEY} still exists after the destroy" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}"
-  echo "PASS: ${arm}: sentinel in ${CLI_REGION} ACTIVE, child stream in ${REGION} ${child}, both records gone"
+  echo "PASS: ${arm}: sentinel in ${CLI_REGION} ACTIVE, child stream in ${REGION} ${child}, REST API gone, both records gone"
   # The next deploy re-creates the same name in ${REGION}.
   aws kinesis wait stream-not-exists --stream-name "${STREAM_NAME}" --region "${REGION}"
 }
@@ -231,7 +256,19 @@ deploy_and_check_premise() { # usage: deploy_and_check_premise <phase>
     echo "FAIL: $1: the child's stream in ${REGION} is ${child} after the deploy (want ACTIVE)" >&2
     exit 1
   fi
-  echo "PASS: $1: deployed; the child's stream is ACTIVE in ${REGION}"
+  # Exactly one, so the gone-probe after the destroy is never handed an empty
+  # or stale id.
+  API_ID="$(api_ids_by_name "${REGION}")" || {
+    echo "FAIL: $1: REST API lookup undetermined (get-rest-apis in ${REGION} failed)" >&2
+    exit 1
+  }
+  case "${API_ID}" in
+    "" | None | *[[:space:]]*)
+      echo "FAIL: $1: want exactly one REST API named ${API_NAME} in ${REGION} after the deploy, got: '${API_ID}'" >&2
+      exit 1
+      ;;
+  esac
+  echo "PASS: $1: deployed; the child's stream is ACTIVE and the REST API ${API_ID} exists in ${REGION}"
 }
 
 # ---------------------------------------------------------------------------
@@ -298,4 +335,4 @@ R_RC=$?
 set -e
 assert_destroyed_in_stack_region "R2 (the state subcommand with --region)" "${R_RC}" "${WORK_DIR}/state-destroy-region.log"
 
-echo "[verify] PASS — destroy and state destroy (with and without --region) of a cross-region nested stack deleted the child's stream in ${REGION} and left the same-named stream in ${CLI_REGION} alone (issue #4941)"
+echo "[verify] PASS — destroy and state destroy (with and without --region) of a cross-region nested stack deleted the child's stream and the parent's Cloud Control-routed REST API in ${REGION} and left the same-named stream in ${CLI_REGION} alone (issues #4941, #5115)"
