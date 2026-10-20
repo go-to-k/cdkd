@@ -36,9 +36,10 @@ EMR clusters).
    still issues the call and its unit tests cover the mapping.)
 2b. **Removal** (`CDKD_TEST_REMOVAL=true`, issue #1160): `StepConcurrencyLevel`
    is dropped from the template while a `removal` tag is added. `ModifyCluster`
-   keeps a field it is not sent and cdkd sends no reset, so the phase asserts
-   the deploy warns naming the removed property (with no CloudFormation-reset
-   claim), the live value stays `5`, and the companion tag landed. Phase 2
+   keeps a field it is not sent and cdkd sends no reset, as CloudFormation
+   leaves it (CFn A/B on issue #1160), so the phase asserts the deploy warns
+   naming the removed property and saying CloudFormation keeps it too, the live
+   value stays `5`, and the companion tag landed. Phase 2
    is the negative control: it changes the property and must not warn.
 3. **Import round-trip** (issue #1090, follow-up to PR #1080 which added
    the provider's `import()` / `readCurrentState()`). `cdkd orphan

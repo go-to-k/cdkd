@@ -126,9 +126,9 @@ efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 de
 efs-standalone	2026-10-20T03:13:30Z	PASS	200	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
 elasticache-replicationgroup-getatt	2026-10-03T06:06:22Z	PASS	806	verify.sh	rc ok, orph clean (#4497)
 elbv2-same-name-replacement	2026-10-17T17:48:47Z	PASS	100	verify.sh	PR #5034 (#1160) 842d0d385; rc 0, destroy 12 deleted 0 errors, orph clean
-emr-cluster	2026-10-20T03:13:30Z	PASS	1491	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
+emr-cluster	2026-10-20T15:35:16Z	PASS	1331	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
 emr-instance-configs	2026-10-20T03:13:30Z	PASS	1060	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
-emr-instance-fleets	2026-10-20T03:13:30Z	PASS	1402	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
+emr-instance-fleets	2026-10-20T15:59:02Z	PASS	1415	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
 event-driven	2026-07-26T18:36:31Z	PASS	42	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 eventbridge	2026-10-18T14:34:21Z	PASS	91	verify.sh	rc ok, orph clean; #5044 EventBus provider re-run
 eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean

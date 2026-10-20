@@ -41,9 +41,10 @@ import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-han
 /**
  * Issue #1160: removing `ResizeSpecifications` or `InstanceTypeConfigs` from
  * the template used to send a `ModifyInstanceFleet` without the field, which
- * AWS treats as "no change", and say nothing. cdkd sends no reset (neither has
- * a constant one, and CloudFormation's behavior is unmeasured) and warns once,
- * without claiming a CloudFormation reset. A removed capacity is sent as 0.
+ * AWS treats as "no change", and say nothing. cdkd sends no reset, because
+ * CloudFormation keeps both too (CFn A/B us-east-1 2026-10-20, recorded on the
+ * issue), and warns once, saying CloudFormation leaves them. A removed
+ * capacity is sent as 0.
  */
 
 const RESOURCE_TYPE = 'AWS::EMR::InstanceFleetConfig';
@@ -112,7 +113,7 @@ describe('EMRInstanceFleetConfigProvider update: removal (#1160)', () => {
     ['ResizeSpecifications', { ...BASE_PROPS, InstanceTypeConfigs: ITC }],
     ['InstanceTypeConfigs', { ...BASE_PROPS, ResizeSpecifications: RESIZE }],
   ] as const)(
-    'sends nothing for a %s removal alone and warns once without a CloudFormation-reset claim',
+    'sends nothing for a %s removal alone and warns once, saying CloudFormation keeps it',
     async (key, desired) => {
       const result = await newProvider().update(
         'Fleet',
@@ -131,10 +132,9 @@ describe('EMRInstanceFleetConfigProvider update: removal (#1160)', () => {
       expect(warnings()).toHaveLength(1);
       const line = warnings()[0]!;
       expect(line).toContain(
-        `Fleet (AWS::EMR::InstanceFleetConfig): property ${key} was removed from the template`
+        `Fleet (AWS::EMR::InstanceFleetConfig): property ${key} was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyInstanceFleet keeps a setting it is not sent.`
       );
-      expect(line).toContain('ModifyInstanceFleet keeps a setting it is not sent');
-      expect(line).not.toContain('CloudFormation');
+      expect(line).not.toContain('reset');
       // Key names only: no removed value reaches the line.
       expect(line).not.toContain('m5.xlarge');
       expect(line).not.toContain('20');
@@ -145,7 +145,7 @@ describe('EMRInstanceFleetConfigProvider update: removal (#1160)', () => {
     await newProvider().update('Fleet', FLEET_ID, RESOURCE_TYPE, { ...BASE_PROPS }, PREV);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties ResizeSpecifications, InstanceTypeConfigs were removed from the template'
+      'properties ResizeSpecifications, InstanceTypeConfigs were removed from the template and keep their current AWS value, as CloudFormation leaves them;'
     );
   });
 
@@ -300,6 +300,8 @@ describe('EMRInstanceFleetConfigProvider update: removal (#1160)', () => {
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain('absent from the state being restored');
     expect(warnings()[0]).not.toContain('removed from the template');
+    // The CFn A/B covered template removals, not a rollback revert.
+    expect(warnings()[0]).not.toContain('CloudFormation');
   });
 
   it('still refuses the removal of a create-only property', async () => {

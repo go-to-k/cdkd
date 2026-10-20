@@ -28,7 +28,7 @@
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): the TASK fleet's
 #      ResizeSpecifications is DROPPED from the template while its
 #      TargetOnDemandCapacity goes 2 -> 1. Assert the deploy succeeds and warns
-#      naming the removed property (with no CloudFormation-reset claim), the
+#      naming the removed property and saying CloudFormation keeps it too, the
 #      live On-Demand resize timeout stays 25 (cdkd sends no reset), and the
 #      companion resize landed.
 #   3. Destroy + assert the cluster is TERMINATED (it bills per instance-hour,
@@ -96,11 +96,11 @@ RESIZE_TIMEOUT="25"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed property; the sentinel is an independent substring of the same line,
 # so a reworded warning fails loudly instead of reading as "not fired".
-REMOVAL_NEEDLE="(AWS::EMR::InstanceFleetConfig): property ResizeSpecifications was removed from the template"
+REMOVAL_NEEDLE="(AWS::EMR::InstanceFleetConfig): property ResizeSpecifications was removed from the template and keeps its current AWS value, as CloudFormation leaves it"
 REMOVAL_SENTINEL="ModifyInstanceFleet keeps a setting it is not sent"
 # The shared caller's line for a removal no provider handles. It claims a
-# CloudFormation reset, which is unmeasured for this property, so it must not
-# name the fleet.
+# CloudFormation reset, which CloudFormation does not do for this property
+# (CFn A/B on issue #1160), so it must not name the fleet.
 SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
 # Deploy logs, streamed through `tee` and read back for the greps; removed by
 # cleanup on every exit path.
@@ -462,9 +462,10 @@ echo "    resize reached AWS (ProvisionedOnDemandCapacity 2)"
 # --- Phase 2b: removal of ResizeSpecifications (issue #1160) ------------
 # ResizeSpecifications leaves the TASK fleet's template while its live
 # On-Demand timeout is 25 (asserted in Phase 1). ModifyInstanceFleet keeps a
-# field it is not sent and cdkd sends no reset, so: the deploy succeeds, the
-# timeout STAYS 25, and the deploy names the removal in a warning (pre-fix it
-# was dropped silently). TargetOnDemandCapacity goes 2 -> 1 in the same
+# field it is not sent and cdkd sends no reset, as CloudFormation leaves it
+# (CFn A/B on issue #1160), so: the deploy succeeds, the timeout STAYS 25, and
+# the deploy names the removal in a warning that says CloudFormation keeps it
+# too. TargetOnDemandCapacity goes 2 -> 1 in the same
 # deploy, so ModifyInstanceFleet demonstrably fires beside the removal.
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (ResizeSpecifications dropped, TASK fleet 2 -> 1)"
 PHASE2B_LOG="$(mktemp)"

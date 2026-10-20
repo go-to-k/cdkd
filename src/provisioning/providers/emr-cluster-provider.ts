@@ -135,19 +135,20 @@ const MUTABLE_TOP_LEVEL_PROPS = new Set<string>([
 /**
  * Mutable properties whose REMOVAL from the template cdkd leaves in place
  * (issue #1160). `ModifyCluster` keeps a `StepConcurrencyLevel` it is not
- * sent, and cdkd sends no reset: CloudFormation documents a default of 1, but
- * whether its (unpublished) handler issues that reset on a removal is
- * unmeasured, and where CloudFormation does not reset, a reset is the bug.
- * `update()` names the removal in its own warning rather than the shared
- * caller's, whose line claims a CloudFormation reset.
+ * sent, and cdkd sends no reset, because CloudFormation keeps it too despite
+ * its documented default of 1 (CFn A/B us-east-1 2026-10-20: a removal from 5,
+ * alone and beside a Tags change, left the live value 5, and no update
+ * failed). `update()` names the removal in its own warning rather than the
+ * shared caller's, whose line claims a CloudFormation reset.
  */
 const LEFT_IN_PLACE_ON_REMOVAL = ['StepConcurrencyLevel'] as const;
 
 /**
  * The ONE warning line for {@link LEFT_IN_PLACE_ON_REMOVAL} removals. Names
- * are template-borne, so they go through `safeMsg`. A rollback revert restores
- * an earlier state record, so there the property is one the failed deploy
- * ADDED, and the line says that instead.
+ * are template-borne, so they go through `safeMsg`. The deploy line says
+ * CloudFormation keeps the value too (the CFn A/B above). A rollback revert
+ * restores an earlier state record, so there the property is one the failed
+ * deploy ADDED, and the line says that instead.
  */
 const leftInPlaceWarning = (
   logicalId: string,
@@ -159,7 +160,7 @@ const leftInPlaceWarning = (
   const verb = one ? 'is' : 'are';
   return caller === 'rollback'
     ? safeMsg`${logicalId} (AWS::EMR::Cluster): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; ModifyCluster keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (AWS::EMR::Cluster): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyCluster keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+    : safeMsg`${logicalId} (AWS::EMR::Cluster): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyCluster keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
 };
 
 const toNumber = (v: unknown): number | undefined => {
@@ -418,7 +419,8 @@ export class EMRClusterProvider implements ResourceProvider {
         // Removed through RemoveManagedScalingPolicy / RemoveAutoTerminationPolicy.
         'ManagedScalingPolicy',
         'AutoTerminationPolicy',
-        // Left in place and named in update()'s own warning (no reset).
+        // Left in place, as CloudFormation leaves it (CFn A/B 2026-10-20),
+        // and named in update()'s own warning (no reset).
         ...LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
@@ -944,7 +946,8 @@ export class EMRClusterProvider implements ResourceProvider {
 
     // Issue #1160: a LEFT_IN_PLACE_ON_REMOVAL property removed from the
     // desired side has nothing to send — ModifyCluster keeps a field it is not
-    // sent, and cdkd sends no reset. Counting it as a change only issued a
+    // sent, and cdkd sends no reset, as CloudFormation leaves it
+    // (LEFT_IN_PLACE_ON_REMOVAL). Counting it as a change only issued a
     // ModifyCluster carrying no update field. Named once, and only after the
     // update SUCCEEDED (the shared caller's warning has the same timing): a
     // retried attempt would repeat it. Not on `drift --revert`: its previous
