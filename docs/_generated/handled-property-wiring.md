@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1174** (**1172** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **38**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -63,6 +63,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `IAMRoleProvider` (iam-role-provider.ts) | `object spread in update()`, `withRemovalDefaults(...) in update()` |
 | `IAMUserGroupProvider` (iam-user-group-provider.ts) | `computed key in derivedNamePairs()` |
 | `KinesisStreamProvider` (kinesis-provider.ts) | `object spread in canonicalizeDesiredProperties()`, `object spread in effectiveMetricsProperties()` |
+| `KMSProvider` (kms-provider.ts) | `withRemovalDefaults(...) in updateKey()` |
 | `LambdaEventInvokeConfigProvider` (lambda-event-invoke-config-provider.ts) | `computed key in update()`, `object spread in canonicalizeDriftProperties()` |
 | `LambdaEventSourceMappingProvider` (lambda-eventsource-provider.ts) | `computed key in applyUpdate()` |
 | `LambdaFunctionProvider` (lambda-function-provider.ts) | `walk(...) in jsonEscapedPairs()`, `withRemovalDefaults(...) in update()` |
