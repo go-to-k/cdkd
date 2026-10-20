@@ -26,7 +26,7 @@ asset-bootstrap	2026-10-05T08:20:47Z	PASS	151	verify.sh	rc ok, orph clean; eu-we
 asset-migration	2026-10-11T09:33:22Z	PASS	641	verify.sh	PR #4720 (#4705) final c53f78f; rc 0 in eu-west-1, 0 orphans
 aws-custom-resource	2026-10-04T02:52:14Z	PASS	86	verify.sh	rc ok, orph clean (#1730)
 backup	2026-10-15T02:06:45Z	PASS	95	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
-basic	2026-10-20T11:00:00Z	PASS	90	standard	#5064 head re-run on 2f77a8d84, clean, orph clean
+basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destroy clean, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-10-19T17:48:11Z	PASS	95	verify.sh	rc ok, orph clean; #1160 removed Runtime fields cleared, lifecycle 900/28800
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
@@ -150,7 +150,7 @@ fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; unta
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
-generated-name-lifecycle	2026-10-20T10:03:46Z	PASS	1030	verify.sh	#5064 head re-run on 2f77a8d84 (7 commits past 280528675); E1/E2 role-rollback bug now fixed; A5/D1/D2/E1/E2/F1-F4/G all pass; orph clean
+generated-name-lifecycle	2026-10-20T19:58:09Z	PASS	1040	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
 generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
@@ -214,7 +214,7 @@ lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph 
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
-lambda-web-function-revision-replace	2026-10-20T09:33:18Z	PASS	461	verify.sh	#5064 head re-run, clean; deploy phases 28s/28s/10s
+lambda-web-function-revision-replace	2026-10-20T19:58:09Z	PASS	452	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
 launchtemplate-asg-inplace	2026-10-16T11:22:53Z	PASS	330	verify.sh	rc ok, orph clean, #5004 keep-on-removal
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
@@ -323,7 +323,7 @@ rollback-nested-cross-region-secret	2026-10-18T20:07:28Z	PASS	537	verify.sh	PR #
 rollback-replacement-retain	2026-10-17T10:48:50Z	PASS	70	verify.sh	rc ok (solo rerun after a batch-script wave-placement race), orph clean (rollback refactor #5027)
 rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
-rollback-same-id-recreate	2026-10-20T10:33:57Z	PASS	184	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
+rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 rollback-sqs-cooldown	2026-10-17T10:48:50Z	PASS	171	verify.sh	rc ok, orph clean (rollback refactor #5027)
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -384,7 +384,7 @@ stream-delete-redeploy	2026-10-15T23:44:38Z	PASS	226	verify.sh	rc ok, orph clean
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 tags-propagation	2026-10-19T00:17:40Z	PASS	201	verify.sh	rc ok, orph clean (#5077)
 throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-type-change-replacement	2026-10-20T10:58:10Z	PASS	234	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
+type-change-replacement	2026-10-20T19:58:09Z	PASS	210	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
