@@ -475,8 +475,13 @@ describe('renamed reversals that stay at their slot (review of go-to-k/cdkd#5064
       C: record('q-C', QUEUE, { V: 2 }, ['A']),
     };
     const ops = [topicOp('A', 'x', 'y'), topicOp('B', 'y', 'z'), inPlaceOp('C', ['A'])];
-    const result = await replayRollback(ops, state, 'App', m.ctx);
+    const events: Array<Record<string, unknown>> = [];
+    const ctx = { ...m.ctx, recordEvent: (e: Record<string, unknown>) => events.push(e) } as RollbackExecutorContext;
+    const result = await replayRollback(ops, state, 'App', ctx);
     expect(m.calls).toEqual(['create A', 'update C', 'create B', 'delete B z']);
+    expect(
+      events.some((e) => e['logicalId'] === 'A' && String(e['reason']).includes('now holds its physical id'))
+    ).toBe(true);
     expect(state['B']!.physicalId).toBe('y');
     expect(m.warns.some((w) => w.includes('now holds its physical id'))).toBe(true);
     expect(result.warnings).toBe(1);

@@ -1407,6 +1407,18 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
               `physical id. Check it with cdkd drift.`
           );
           result.warnings++;
+          ctx.recordEvent?.({
+            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            stackName,
+            operation: 'UPDATE',
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            reason: mask(
+              `The old resource was re-created; the new one (${current.physicalId}) was not ` +
+                `deleted because a record of this stack now holds its physical id.`
+            ),
+          });
           gone = true;
         } else {
           gone = await finish();
