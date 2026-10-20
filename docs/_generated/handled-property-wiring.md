@@ -74,7 +74,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `S3BucketProvider` (s3-bucket-provider.ts) | `computed key in applyAllSubConfigsForCreate()`, `computed key in applySubConfigDiffs()`, `computed key in canonicalizeItemList()`, `computed key in versioningOrLoggingRefusal()`, `hasCdkAutoDeleteTag(...) in delete()`, `hasObjectLock(...) in applySubConfigDiffs()`, `object spread in applyEffectiveOverrides()`, `object spread in canonicalizeItemList()`, `S3BucketProvider.applyEffectiveOverrides(...) in create()`, `S3BucketProvider.applyEffectiveOverrides(...) in update()`, `S3BucketProvider.versioningOrLoggingRefusal(...) in update()`, `this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(...) in create()`, `this.maskedView(sinks).update(...) in update()`, `this.noWriteProbe().applySubConfigDiffs(...) in update()` |
 | `S3DirectoryBucketProvider` (s3-directory-bucket-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `SecretsManagerSecretProvider` (secretsmanager-secret-provider.ts) | `object spread in retainPreviousGenerateBlock()` |
-| `ServiceDiscoveryProvider` (servicediscovery-provider.ts) | `withRemovalDefaults(...) in update()` |
+| `ServiceDiscoveryProvider` (servicediscovery-provider.ts) | `computed key in planServiceChange()`, `withRemovalDefaults(...) in update()` |
 | `SNSTopicProvider` (sns-topic-provider.ts) | `computed key in applyUpdate()` |
 
 ## Full classification

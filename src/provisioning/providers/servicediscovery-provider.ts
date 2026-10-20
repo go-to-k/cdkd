@@ -1488,14 +1488,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
     const declaredDiffers = (key: string): boolean =>
       properties[key] !== undefined && !isDeepStrictEqual(properties[key], previousProperties[key]);
-    const records = (bag: Record<string, unknown>): unknown =>
-      (bag['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
 
     const change: ServiceChange = {};
     if (properties['Description'] !== undefined) {
       change.Description = properties['Description'] as string;
     }
-    const desiredRecords = records(properties) as DnsConfig['DnsRecords'];
+    const desiredRecords = (properties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
+    const previousRecords = (previousProperties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
     if (desiredRecords !== undefined) {
       const dnsChange: DnsConfigChange = { DnsRecords: desiredRecords };
       change.DnsConfig = dnsChange;
@@ -1507,10 +1506,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
       return { change, keepRemovedFromLive: false };
     }
-    if (
-      desiredRecords !== undefined &&
-      !isDeepStrictEqual(desiredRecords, records(previousProperties))
-    ) {
+    if (desiredRecords !== undefined && !isDeepStrictEqual(desiredRecords, previousRecords)) {
       return { change, keepRemovedFromLive: true };
     }
     return undefined;
