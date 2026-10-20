@@ -50,6 +50,12 @@
 # never-existed ids, then the settle's delete of the throwaways and the reads
 # once they are gone (see the phase's own comment).
 #
+# Phases 1d-1g are the issue #1160 removal arms: Monitoring removed is turned
+# off and MetadataOptions / CreditSpecification removed are kept (1d); a
+# removed DisableApiTermination is REFUSED before any call (1e); an explicit
+# `false` is applied (1f), and `true` again (1g, for the destroy arm). See the
+# phases' comment.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -787,6 +793,14 @@ if [ "${ACTUAL_HTTP_TOKENS}" != "required" ]; then
   exit 1
 fi
 echo "    OK: MetadataOptions.HttpTokens == required on AWS (IMDSv2 enforced; MetadataOptions silent-drop CLOSED by #609)"
+# HttpPutResponseHopLimit: the fixture sets 3, NOT the AL2023 default (2), so
+# the issue #1160 removal phase can tell CloudFormation's KEEP from a reset.
+ACTUAL_HOP_LIMIT=$(echo "${INSTANCE}" | jq -r '.MetadataOptions.HttpPutResponseHopLimit // "null"')
+if [ "${ACTUAL_HOP_LIMIT}" != "3" ]; then
+  echo "FAIL: MetadataOptions.HttpPutResponseHopLimit is '${ACTUAL_HOP_LIMIT}', expected 3 (MetadataOptions silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: MetadataOptions.HttpPutResponseHopLimit == 3 on AWS"
 
 # DisableApiTermination: not on DescribeInstances — needs the dedicated
 # DescribeInstanceAttribute call. A silent-drop leaves it false.
@@ -801,20 +815,18 @@ if [ "${ACTUAL_DISABLE_TERM}" != "True" ] && [ "${ACTUAL_DISABLE_TERM}" != "true
 fi
 echo "    OK: DisableApiTermination == ${ACTUAL_DISABLE_TERM} on AWS (DisableApiTermination silent-drop CLOSED by #609)"
 
-# CreditSpecification: T-family burstable mode. The fixture sets
-# 'unlimited'; the t3 default is 'unlimited' too in many accounts, so this
-# is a weaker signal than the others, but a hard silent-drop (the create
-# payload omitting CreditSpecification entirely) is still caught by the
-# value reaching AWS via the dedicated API.
+# CreditSpecification: T-family burstable mode. The fixture sets 'standard',
+# which is NOT the t3 default ('unlimited'), so a silent-drop reads as
+# 'unlimited'.
 ACTUAL_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications \
   --instance-ids "${INSTANCE_ID}" \
   --region "${REGION}" \
   --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
-if [ "${ACTUAL_CPU_CREDITS}" != "unlimited" ]; then
-  echo "FAIL: CreditSpecification.CpuCredits is '${ACTUAL_CPU_CREDITS}', expected unlimited (CreditSpecification silent-drop NOT closed)" >&2
+if [ "${ACTUAL_CPU_CREDITS}" != "standard" ]; then
+  echo "FAIL: CreditSpecification.CpuCredits is '${ACTUAL_CPU_CREDITS}', expected standard (CreditSpecification silent-drop NOT closed)" >&2
   exit 1
 fi
-echo "    OK: CreditSpecification.CpuCredits == unlimited on AWS (CreditSpecification silent-drop CLOSED by #609)"
+echo "    OK: CreditSpecification.CpuCredits == standard on AWS (CreditSpecification silent-drop CLOSED by #609)"
 
 # AvailabilityZone (#1276): the CFn property maps to RunInstances'
 # `Placement.AvailabilityZone`. Compare AWS against the value cdkd recorded in
@@ -1101,6 +1113,153 @@ run_net_probe gone 9
 rm -f "${NET_IDS_FILE}"
 echo "    OK: isSameResource and the settle's delete for VPC / Subnet / SecurityGroup against live resources (issue #4606)"
 
+# --- Phases 1d-1g: REMOVAL of the in-place security props (issue #1160) ----
+# CloudFormation A/B (go-to-k/cdkd#1160 issuecomment-6281778130): a removed
+# Monitoring is turned OFF; a removed MetadataOptions / CreditSpecification is
+# KEPT; a removed DisableApiTermination FAILS the whole update (from true or
+# false), while an explicit true <-> false change is applied.
+#
+# Reads poll: `describe-instance-attribute disableApiTermination` returns a
+# change only 1.5 to 2 minutes later, so every changed read waits up to 3 min.
+
+# Run one removal-phase deploy, its output captured into the named variable
+# and echoed. `$1` = variable name, `$2` = expected outcome (ok|fail), rest =
+# env assignments for the deploy.
+removal_deploy() {
+  local var="$1" want="$2"; shift 2
+  local dir log rc
+  # A private directory, so nothing can pre-place the log path.
+  dir="$(mktemp -d -t cdkd-ec2-instance-1160.XXXXXX)"
+  log="${dir}/deploy.log"
+  set +e
+  env "$@" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes >"${log}" 2>&1
+  rc=$?
+  set -e
+  printf -v "${var}" '%s' "$(cat "${log}")"
+  rm -rf "${dir}"
+  printf '%s\n' "${!var}"
+  if [ "${want}" = ok ] && [ "${rc}" -ne 0 ]; then
+    echo "FAIL: issue #1160 -- the deploy with $* failed (rc=${rc}, log above)" >&2
+    exit 1
+  fi
+  if [ "${want}" = fail ] && [ "${rc}" -eq 0 ]; then
+    echo "FAIL: issue #1160 -- the deploy with $* succeeded; removing DisableApiTermination must be refused, as CloudFormation fails that update" >&2
+    exit 1
+  fi
+}
+
+# Poll a command until its output equals one of the wanted values (12 x 15s).
+# `$1` = description, `$2` = space-separated wanted values, rest = command.
+POLLED=""
+poll_until() {
+  local what="$1" want="$2"; shift 2
+  local _ w
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    # A transient read failure (throttling) keeps polling instead of ending
+    # the run under `set -e` with no FAIL line.
+    POLLED=$("$@" 2>/dev/null) || POLLED="<read error>"
+    for w in ${want}; do [ "${POLLED}" = "${w}" ] && return 0; done
+    sleep 15
+  done
+  echo "FAIL: issue #1160 -- ${what} is '${POLLED}' after 3 minutes; expected one of: ${want}" >&2
+  exit 1
+}
+read_dat() {
+  aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute disableApiTermination \
+    --region "${REGION}" --query 'DisableApiTermination.Value' --output text
+}
+read_monitoring() {
+  aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].Monitoring.State' --output text
+}
+recorded_props() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+    | jq -r --arg id "${INSTANCE_ID}" '[.resources | to_entries[] | select(.value.physicalId == $id) | .value.properties | keys[] | select(. == "DisableApiTermination" or . == "MetadataOptions" or . == "Monitoring" or . == "CreditSpecification")] | join(",")'
+}
+
+# Phase 1d: MetadataOptions / Monitoring / CreditSpecification removed,
+# DisableApiTermination still declared true. Before #1160 the update sent
+# nothing for Monitoring, so it stayed `enabled`.
+echo "==> Phase 1d: removal (drop MetadataOptions / Monitoring / CreditSpecification; issue #1160)"
+removal_deploy P1D_OUTPUT ok CDKD_TEST_REMOVAL=true
+RM_INSTANCE_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.InstanceId // ""')
+if [ "${RM_INSTANCE_ID}" != "${INSTANCE_ID}" ]; then
+  echo "FAIL: issue #1160 -- the removal replaced the instance ('${INSTANCE_ID}' -> '${RM_INSTANCE_ID}'); these properties update in place" >&2
+  exit 1
+fi
+# The template no longer declares them, so state must not either (an injected
+# reset value recorded in state would read as removed again on every deploy).
+RM_RECORDED=$(recorded_props)
+if [ "${RM_RECORDED}" != "DisableApiTermination" ]; then
+  echo "FAIL: issue #1160 -- state records '${RM_RECORDED}' for ${INSTANCE_ID}; expected only DisableApiTermination" >&2
+  exit 1
+fi
+poll_until "Monitoring.State after a removed Monitoring (CloudFormation turns it off)" "disabled disabling" read_monitoring
+echo "    OK: removed Monitoring reset: Monitoring.State == ${POLLED} (issue #1160)"
+# Kept, as CloudFormation keeps them (controls: a reset of either is the bug).
+# Both values are NON-default (AL2023 hop limit 2, t3 credits `unlimited`), so
+# a reset fails these. HttpTokens `required` is the AL2023 default and proves
+# nothing here. They are read after the Monitoring poll above, which already
+# waited for the update to show.
+RM_HOP_LIMIT=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].MetadataOptions.HttpPutResponseHopLimit' --output text)
+if [ "${RM_HOP_LIMIT}" != "3" ]; then
+  echo "FAIL: issue #1160 -- a removed MetadataOptions changed HttpPutResponseHopLimit to '${RM_HOP_LIMIT}'; CloudFormation keeps it (3)" >&2
+  exit 1
+fi
+RM_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
+if [ "${RM_CPU_CREDITS}" != "standard" ]; then
+  echo "FAIL: issue #1160 -- a removed CreditSpecification changed CpuCredits to '${RM_CPU_CREDITS}'; CloudFormation keeps it (standard)" >&2
+  exit 1
+fi
+echo "    OK: removed MetadataOptions / CreditSpecification kept (hop limit 3 / standard) (issue #1160)"
+
+# Phase 1e: DisableApiTermination removed, plus a marker tag in the SAME
+# update. CloudFormation fails the whole update, so cdkd refuses it before any
+# AWS call: the tag must not land and protection must stay on. Before #1160
+# this deploy succeeded (the removal sent nothing) and the tag landed.
+echo "==> Phase 1e: removing DisableApiTermination is refused (issue #1160)"
+removal_deploy P1E_OUTPUT fail CDKD_TEST_REMOVAL=true CDKD_TEST_DAT=remove
+if ! grep -qF "DisableApiTermination was removed from the template, and CloudFormation fails that update for an existing instance" <<<"${P1E_OUTPUT}"; then
+  echo "FAIL: issue #1160 -- the refused deploy did not print the DisableApiTermination refusal" >&2
+  exit 1
+fi
+P1E_TAG=$(aws ec2 describe-tags --region "${REGION}" \
+  --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=Cdkd1160Refused" \
+  --query 'length(Tags)' --output text)
+if [ "${P1E_TAG}" != "0" ]; then
+  echo "FAIL: issue #1160 -- the refused update still applied its tag change (Cdkd1160Refused count ${P1E_TAG}); the refusal must come before any call" >&2
+  exit 1
+fi
+P1E_DAT=$(read_dat)
+if [ "${P1E_DAT}" != "True" ]; then
+  echo "FAIL: issue #1160 -- termination protection is '${P1E_DAT}' after the refused removal; it must stay True" >&2
+  exit 1
+fi
+if [ "$(recorded_props)" != "DisableApiTermination" ]; then
+  echo "FAIL: issue #1160 -- the refused deploy changed the state record's DisableApiTermination entry" >&2
+  exit 1
+fi
+echo "    OK: removal refused before any call: no tag, protection still True, state unchanged (issue #1160)"
+
+# Phase 1f: the remedy the refusal names -- declare it false. Applied, as in
+# CloudFormation; destroy then needs no flip (it still passes the flag).
+echo "==> Phase 1f: DisableApiTermination declared false (issue #1160)"
+removal_deploy P1F_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_DAT=false
+poll_until "termination protection after DisableApiTermination: false" "False" read_dat
+echo "    OK: explicit DisableApiTermination false applied (issue #1160)"
+
+# Phase 1g: declare it true again, so Phase 2's destroy still exercises the
+# --remove-protection flip of a protected instance (the #609 destroy arm).
+echo "==> Phase 1g: DisableApiTermination declared true again (issue #1160)"
+removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true
+poll_until "termination protection after DisableApiTermination: true" "True" read_dat
+echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
+
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -1169,4 +1328,4 @@ else
 fi
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity reads) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity reads + #1160 removal) ==="

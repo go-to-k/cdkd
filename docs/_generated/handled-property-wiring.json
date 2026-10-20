@@ -6595,6 +6595,7 @@
             "applyUpdate",
             "create",
             "createInstance",
+            "guardTerminationProtectionRemoval",
             "update",
             "updateInstance",
             "updateInstanceSecurityProps"
