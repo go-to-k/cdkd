@@ -28,7 +28,12 @@ cdkd's raw-CFn template path.
    (`TRACE` -> `SESSION`) / an added tag are applied via an in-place
    `UpdateEvaluator` + `TagResource`; the evaluator id must NOT change
    (`EvaluatorName` is the only createOnly property and stays fixed).
-3. **Phase 3 (destroy)** — the evaluator is deleted; the AWS-managed default
+3. **Phase 3 (REMOVAL, `CDKD_TEST_REMOVAL=true`)** — `Description` is removed
+   from the template and Level goes back to `TRACE` (issue #1160). A
+   CloudFormation A/B kept a removed Evaluator `Description`, so the live one
+   must survive, in place; the Level change proves the redeploy reached
+   `UpdateEvaluator`.
+4. **Phase 4 (destroy)** — the evaluator is deleted; the AWS-managed default
    browser / code interpreter still exist (`READY`) — the adopt-only providers'
    no-op delete must never touch them; the cdkd state file is removed.
 

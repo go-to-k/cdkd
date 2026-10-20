@@ -102,6 +102,34 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every handled
+   * property, each removal handled by `update()`, so the shared caller warns
+   * about none. `UpdateEvaluator` keeps an omitted field (merge semantics),
+   * and a CloudFormation A/B (us-east-1) showed CloudFormation KEEPS a removed
+   * Description and KmsKeyArn too (same evaluator, `UPDATE_COMPLETE`, both
+   * values still set), so omitting them matches CloudFormation and no
+   * `removalDefaults` apply.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::BedrockAgentCore::Evaluator',
+      new Set<string>([
+        // Create-only: a removal replaces.
+        'EvaluatorName',
+        // Required by the schema: a valid template cannot remove them.
+        'EvaluatorConfig',
+        'Level',
+        // Omitted from the merge-semantics UpdateEvaluator, which keeps them,
+        // as CloudFormation does.
+        'Description',
+        'KmsKeyArn',
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.client = awsClients.bedrockAgentCoreControl;
@@ -222,6 +250,8 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       const input: Record<string, any> = {
         evaluatorId: evaluatorIdFromArn(physicalId),
       };
+      // An absent field is KEPT by UpdateEvaluator, and CloudFormation keeps a
+      // removed Description / KmsKeyArn too (issue #1160 A/B): no clear here.
       if (properties['Description'] !== undefined) {
         input['description'] = properties['Description'];
       }

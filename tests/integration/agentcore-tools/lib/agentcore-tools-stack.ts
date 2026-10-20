@@ -28,12 +28,17 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * (CDKD_TEST_UPDATE=true) must be an in-place `UpdateEvaluator` (new
  * Description + Level + an added tag; the evaluator id must NOT change —
  * EvaluatorName is the type's only createOnly property and stays fixed).
+ * Phase 3 (CDKD_TEST_REMOVAL=true) REMOVES Description and moves Level back
+ * to TRACE (issue #1160): a CloudFormation A/B (us-east-1) KEPT a removed
+ * Evaluator Description, so the live one must survive, while the Level
+ * change proves the redeploy reached `UpdateEvaluator`.
  */
 export class AgentcoreToolsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
     // Adopt-only singletons: the AWS-managed default tools.
     const browser = new cdk.CfnResource(this, 'DefaultBrowser', {
@@ -65,8 +70,13 @@ export class AgentcoreToolsStack extends cdk.Stack {
       type: 'AWS::BedrockAgentCore::Evaluator',
       properties: {
         EvaluatorName: 'cdkd_integ_agentcore_evaluator',
-        Description: isUpdate ? 'cdkd integ evaluator (updated)' : 'cdkd integ evaluator',
-        Level: isUpdate ? 'SESSION' : 'TRACE',
+        // Absent under CDKD_TEST_REMOVAL: CDK drops an undefined property.
+        Description: isRemoval
+          ? undefined
+          : isUpdate
+            ? 'cdkd integ evaluator (updated)'
+            : 'cdkd integ evaluator',
+        Level: isUpdate && !isRemoval ? 'SESSION' : 'TRACE',
         EvaluatorConfig: {
           CodeBased: {
             LambdaConfig: {
@@ -75,8 +85,9 @@ export class AgentcoreToolsStack extends cdk.Stack {
             },
           },
         },
-        Tags: isUpdate
-          ? [
+        Tags:
+          isUpdate || isRemoval
+            ? [
               { Key: 'cdkd-integ', Value: 'agentcore-tools' },
               { Key: 'phase', Value: 'update' },
             ]
