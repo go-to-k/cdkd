@@ -25,11 +25,13 @@ import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/re
 const STACK = 'MyStack';
 const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
 const ZONE = 'use1-az5';
+const ZONE_SUFFIX = `--${ZONE}--x-s3`;
 // CloudFormation logical ids are alphanumeric; the long one is truncated.
 const IDS = ['Resource', `Resource${'X'.repeat(300)}`];
 
+// As production opens a legacy stack's scope: no instance id, so no generations.
 const legacy = <T>(fn: () => T): T =>
-  withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, fn);
+  withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: undefined }, fn);
 const v13 = <T>(fn: () => T, generation = 0): T =>
   withStackScope(
     {
@@ -60,14 +62,15 @@ const rewritten = reverseReplacementRewrittenNameTypes();
 const CC_ONLY = ['AWS::Lambda::CapacityProvider'];
 
 /**
- * The SDK providers' name expressions before go-to-k/cdkd#5095, transcribed:
- * a legacy stack's SDK names must not move by one byte.
+ * The SDK providers' name expressions before go-to-k/cdkd#5064 / #5095,
+ * transcribed from the providers at 7a0217eb6: a legacy stack's SDK names must
+ * not move by one byte, except past a limit {@link SDK_LOWERED} names.
  */
 const gen = (options: ResourceNameOptions) => (id: string) => generateResourceName(id, options);
 const SECRET_LIKE = /[^a-zA-Z0-9-/_]/g;
 const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::AutoScaling::AutoScalingGroup': gen({ maxLength: 255 }),
-  'AWS::CloudWatch::Alarm': gen({ maxLength: 255 }),
+  'AWS::CloudWatch::Alarm': gen({ maxLength: 256 }),
   'AWS::CloudTrail::Trail': (id) => id,
   'AWS::CodeBuild::Project': (id) => id,
   'AWS::CodeCommit::Repository': gen({ maxLength: 100 }),
@@ -107,10 +110,8 @@ const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::RDS::DBProxyEndpoint': gen({ maxLength: 64 }),
   'AWS::RDS::DBSubnetGroup': gen({ maxLength: 255, lowercase: true }),
   'AWS::S3::Bucket': gen({ maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g }),
-  'AWS::S3Express::DirectoryBucket': (id) => {
-    const suffix = `--${ZONE}--x-s3`;
-    return `${generateResourceName(id, { maxLength: 63 - suffix.length, lowercase: true })}${suffix}`;
-  },
+  'AWS::S3Express::DirectoryBucket': (id) =>
+    `${generateResourceName(id, { maxLength: 64, lowercase: true })}${ZONE_SUFFIX}`,
   'AWS::Scheduler::Schedule': gen({ maxLength: 64 }),
   'AWS::SecretsManager::Secret': gen({ maxLength: 512, allowedPattern: SECRET_LIKE }),
   'AWS::SNS::Topic': gen({ maxLength: 256 }),
@@ -121,14 +122,14 @@ const OLD_SDK: Record<string, (id: string) => string> = {
   'AWS::WAFv2::WebACL': gen({ maxLength: 128 }),
 };
 
-/** `FALLBACK_NAME_RULES` before go-to-k/cdkd#5095, transcribed. */
+/** `FALLBACK_NAME_RULES` at 7a0217eb6 (before go-to-k/cdkd#5064 / #5095), transcribed. */
 const OLD_CC: Record<string, ResourceNameOptions> = {
   'AWS::S3::Bucket': { maxLength: 63, lowercase: true },
   'AWS::SQS::Queue': { maxLength: 80 },
   'AWS::SNS::Topic': { maxLength: 256 },
   'AWS::Lambda::Function': { maxLength: 64 },
   'AWS::Lambda::LayerVersion': { maxLength: 64 },
-  'AWS::Lambda::CapacityProvider': { maxLength: 64 },
+  'AWS::Lambda::CapacityProvider': { maxLength: 140 },
   'AWS::IAM::Role': { maxLength: 64 },
   'AWS::IAM::Policy': { maxLength: 64 },
   'AWS::IAM::ManagedPolicy': { maxLength: 128 },
@@ -140,7 +141,7 @@ const OLD_CC: Record<string, ResourceNameOptions> = {
   'AWS::ECS::Cluster': { maxLength: 255 },
   'AWS::ECS::Service': { maxLength: 255 },
   'AWS::Logs::LogGroup': { maxLength: 512 },
-  'AWS::CloudWatch::Alarm': { maxLength: 255 },
+  'AWS::CloudWatch::Alarm': { maxLength: 256 },
   'AWS::Events::Rule': { maxLength: 64 },
   'AWS::Kinesis::Stream': { maxLength: 128 },
   'AWS::StepFunctions::StateMachine': { maxLength: 80 },
@@ -161,7 +162,7 @@ const OLD_CC: Record<string, ResourceNameOptions> = {
   'AWS::ElasticLoadBalancingV2::LoadBalancer': { maxLength: 32 },
   'AWS::ElasticLoadBalancingV2::TargetGroup': { maxLength: 32 },
   'AWS::WAFv2::WebACL': { maxLength: 128 },
-  'AWS::CodeBuild::Project': { maxLength: 150 },
+  'AWS::CodeBuild::Project': { maxLength: 255 },
   'AWS::Events::EventBus': { maxLength: 256 },
   'AWS::S3Express::DirectoryBucket': { maxLength: 63, lowercase: true },
 };
@@ -189,6 +190,30 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
 };
 
 const sdkGeneratedTypes = Object.keys(OLD_SDK);
+
+/**
+ * The rows whose limit go-to-k/cdkd#5064 lowered to the service's own: a long
+ * stack name used to produce a name AWS refuses. `parts` is the length of
+ * `{stackName}-{logicalId}` up to which the old and new names agree, `max` the
+ * service's limit on the whole name (a directory bucket's includes its zone
+ * suffix, so the two differ there).
+ */
+type Lowered = Record<string, { parts: number; max: number }>;
+const SDK_LOWERED: Lowered = {
+  'AWS::CloudWatch::Alarm': { parts: 255, max: 255 },
+  'AWS::S3Express::DirectoryBucket': { parts: 63 - ZONE_SUFFIX.length, max: 63 },
+};
+const CC_LOWERED: Lowered = {
+  'AWS::CloudWatch::Alarm': { parts: 255, max: 255 },
+  'AWS::CodeBuild::Project': { parts: 150, max: 150 },
+  'AWS::Lambda::CapacityProvider': { parts: 64, max: 64 },
+};
+/** A logical id whose `{stackName}-{logicalId}` is `length` characters. */
+const idOfFullLength = (length: number): string =>
+  `Resource${'X'.repeat(length - `${STACK}-Resource`.length)}`;
+/** Below a lowered limit only: past it the names part on purpose (tested apart). */
+const idsBelow = (lowered: Lowered, type: string): string[] =>
+  type in lowered ? ['Resource', idOfFullLength(lowered[type]!.parts)] : IDS;
 
 describe('the SDK and Cloud Control routes generate the same name (#5095)', () => {
   it('every rule type is named by its SDK provider through the rule, or has no SDK provider', () => {
@@ -243,7 +268,7 @@ describe("a legacy stack's names do not move (#5095)", () => {
   it.each(sdkGeneratedTypes)('the SDK provider: %s', (type) => {
     // The SDK provider's own pattern kept `_`, `.` and `/`: not CloudFormation
     // logical ids, but byte-identical anyway.
-    for (const id of [...IDS, 'Lg_A.b/C']) {
+    for (const id of [...idsBelow(SDK_LOWERED, type), 'Lg_A.b/C']) {
       expect(legacy(() => sdkName(type, id)), `${type} ${id}`).toBe(legacy(() => OLD_SDK[type]!(id)));
     }
   });
@@ -254,13 +279,28 @@ describe("a legacy stack's names do not move (#5095)", () => {
   it.each(Object.keys(OLD_CC).filter((t) => !CHANGED_CC.includes(t)))(
     'the Cloud Control fill: %s',
     (type) => {
-      for (const id of IDS) {
+      for (const id of idsBelow(CC_LOWERED, type)) {
         expect(legacy(() => ccName(type, id)), `${type} ${id}`).toBe(
           legacy(() => generateResourceName(id, OLD_CC[type]!))
         );
       }
     }
   );
+
+  // One character past where they part: the old name broke the service's
+  // limit, the new one fits it.
+  it.each([
+    ...Object.entries(SDK_LOWERED).map(([type, l]) => ['the SDK provider', type, l] as const),
+    ...Object.entries(CC_LOWERED).map(([type, l]) => ['the Cloud Control fill', type, l] as const),
+  ])('%s: %s now fits the limit it used to break', (route, type, { parts, max }) => {
+    const id = idOfFullLength(parts + 1);
+    const [now, before] =
+      route === 'the SDK provider'
+        ? [legacy(() => sdkName(type, id)), legacy(() => OLD_SDK[type]!(id))]
+        : [legacy(() => ccName(type, id)) as string, legacy(() => generateResourceName(id, OLD_CC[type]!))];
+    expect(before.length, before).toBeGreaterThan(max);
+    expect(now.length, now).toBeLessThanOrEqual(max);
+  });
 
   it('changes only where the create failed: the required names and the directory bucket', () => {
     for (const type of ['AWS::CodeCommit::Repository', 'AWS::RDS::DBProxy', 'AWS::RDS::DBProxyEndpoint']) {
