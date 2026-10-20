@@ -21,8 +21,8 @@
 #      call and its unit tests cover the mapping.)
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): StepConcurrencyLevel
 #      is DROPPED from the template while a `removal` tag is added. Assert the
-#      deploy succeeds and warns naming the removed property (with no
-#      CloudFormation-reset claim), the live StepConcurrencyLevel stays 5 (cdkd
+#      deploy succeeds and warns naming the removed property and saying
+#      CloudFormation keeps it too, the live StepConcurrencyLevel stays 5 (cdkd
 #      sends no reset), and the companion tag landed.
 #   3. Import round-trip (issue #1090, follow-up to PR #1080 which added the
 #      provider's `import()` / `readCurrentState()`): drop ONLY the cluster
@@ -106,11 +106,11 @@ CLEANUP_TAG_VALUE="emr-cluster"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed property; the sentinel is an independent substring of the same line,
 # so a reworded warning fails loudly instead of reading as "not fired".
-REMOVAL_NEEDLE="(AWS::EMR::Cluster): property StepConcurrencyLevel was removed from the template"
+REMOVAL_NEEDLE="(AWS::EMR::Cluster): property StepConcurrencyLevel was removed from the template and keeps its current AWS value, as CloudFormation leaves it"
 REMOVAL_SENTINEL="ModifyCluster keeps a setting it is not sent"
 # The shared caller's line for a removal no provider handles. It claims a
-# CloudFormation reset, which is unmeasured for this property, so it must not
-# name the cluster.
+# CloudFormation reset, which CloudFormation does not do for this property
+# (CFn A/B on issue #1160), so it must not name the cluster.
 SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
 # Deploy logs, streamed through `tee` and read back for the greps; removed by
 # cleanup on every exit path.
@@ -640,8 +640,9 @@ echo "    update reached AWS (StepConcurrencyLevel 5, AutoTerminationPolicy Idle
 # --- Phase 2b: removal of StepConcurrencyLevel (issue #1160) ------------
 # StepConcurrencyLevel leaves the template while its live value is 5 (asserted
 # in Phase 2; AWS's default is 1). ModifyCluster keeps a field it is not sent
-# and cdkd sends no reset, so: the deploy succeeds, the value STAYS 5, and the
-# deploy names the removal in a warning (pre-fix it was dropped silently). A
+# and cdkd sends no reset, as CloudFormation leaves it (CFn A/B on issue
+# #1160), so: the deploy succeeds, the value STAYS 5, and the deploy names the
+# removal in a warning that says CloudFormation keeps it too. A
 # `removal` tag is ADDED in the same deploy, so the update demonstrably runs
 # beside the removal. Phase 3 below still holds: it reads StepConcurrencyLevel
 # 5 and env=changed from the live cluster, and ignores the extra tag.

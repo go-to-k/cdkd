@@ -93,21 +93,24 @@ const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSO
 /**
  * Mutable properties whose REMOVAL from the template cdkd leaves in place
  * (issue #1160). `ModifyInstanceFleet` keeps a field it is not sent, and
- * neither has a constant reset: a fleet provisions nothing without instance
- * types, and
- * the resize specification's defaults are per-strategy AWS choices, not a
- * value CloudFormation documents. Whether CloudFormation's (unpublished)
- * handler does anything on such a removal is unmeasured. `update()` names the
- * removal in its own warning rather than the shared caller's, whose line
- * claims a CloudFormation reset.
+ * cdkd sends no reset, because CloudFormation keeps both too (CFn A/B
+ * us-east-1 2026-10-20 on a running TASK fleet: `ResizeSpecifications`
+ * removed alone and beside an `InstanceTypeConfigs` change, and
+ * `InstanceTypeConfigs` removed alone, each left the live value in place, and
+ * no update failed). Neither has a constant reset anyway: a fleet provisions
+ * nothing without instance types, and the resize specification's defaults
+ * are per-strategy AWS choices. `update()` names the removal in its own
+ * warning rather than the shared caller's, whose line claims a CloudFormation
+ * reset.
  */
 const LEFT_IN_PLACE_ON_REMOVAL = ['ResizeSpecifications', 'InstanceTypeConfigs'] as const;
 
 /**
  * The ONE warning line for {@link LEFT_IN_PLACE_ON_REMOVAL} removals. Names
- * are template-borne, so they go through `safeMsg`. A rollback revert restores
- * an earlier state record, so there the property is one the failed deploy
- * ADDED, and the line says that instead.
+ * are template-borne, so they go through `safeMsg`. The deploy line says
+ * CloudFormation keeps the value too (the CFn A/B above). A rollback revert
+ * restores an earlier state record, so there the property is one the failed
+ * deploy ADDED, and the line says that instead.
  */
 const leftInPlaceWarning = (
   logicalId: string,
@@ -119,7 +122,7 @@ const leftInPlaceWarning = (
   const verb = one ? 'is' : 'are';
   return caller === 'rollback'
     ? safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; ModifyInstanceFleet keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyInstanceFleet keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+    : safeMsg`${logicalId} (AWS::EMR::InstanceFleetConfig): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyInstanceFleet keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
 };
 
 /**
@@ -296,7 +299,8 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
         // Sent as 0: ModifyInstanceFleet needs both capacities.
         'TargetOnDemandCapacity',
         'TargetSpotCapacity',
-        // Left in place and named in update()'s own warning (no reset).
+        // Left in place, as CloudFormation leaves them (CFn A/B 2026-10-20),
+        // and named in update()'s own warning (no reset).
         ...LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
@@ -555,7 +559,8 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
 
     // Issue #1160: a LEFT_IN_PLACE_ON_REMOVAL property removed from the
     // desired side has nothing to send — ModifyInstanceFleet keeps a field it
-    // is not sent, and cdkd sends no reset. Counting it as a change only
+    // is not sent, and cdkd sends no reset, as CloudFormation leaves it
+    // (LEFT_IN_PLACE_ON_REMOVAL). Counting it as a change only
     // issued a ModifyInstanceFleet (and a resize wait) changing nothing. Named
     // once, and only after the update SUCCEEDED (the shared caller's warning
     // has the same timing): a retried attempt would repeat it. Not on

@@ -53,9 +53,10 @@ import type { Construct } from 'constructs';
  *
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - ResizeSpecifications is DROPPED from the TASK fleet. ModifyInstanceFleet
- *     keeps a field it is not sent and cdkd sends no reset, so the live
- *     timeout must stay 25 and the deploy must name the removal in a warning
- *     instead of dropping it silently.
+ *     keeps a field it is not sent and cdkd sends no reset, as CloudFormation
+ *     leaves it (CFn A/B on #1160), so the live timeout must stay 25 and the
+ *     deploy must name the removal in a warning instead of dropping it
+ *     silently.
  *   - TargetOnDemandCapacity goes 2 -> 1 in the same deploy, a companion
  *     change proving ModifyInstanceFleet fired with the removal beside it.
  *

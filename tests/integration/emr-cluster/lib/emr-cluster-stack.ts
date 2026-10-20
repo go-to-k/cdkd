@@ -33,9 +33,9 @@ import type { Construct } from 'constructs';
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - StepConcurrencyLevel is DROPPED from the template (live value 5, set by
  *     the UPDATE phase; AWS's default is 1). ModifyCluster keeps a field it is
- *     not sent and cdkd sends no reset, so the value must stay 5 and the
- *     deploy must name the removal in a warning instead of dropping it
- *     silently.
+ *     not sent and cdkd sends no reset, as CloudFormation leaves it (CFn A/B
+ *     on #1160), so the value must stay 5 and the deploy must name the
+ *     removal in a warning instead of dropping it silently.
  *   - A `removal` tag is ADDED in the same deploy, a companion change proving
  *     the update ran with the removal beside it.
  *

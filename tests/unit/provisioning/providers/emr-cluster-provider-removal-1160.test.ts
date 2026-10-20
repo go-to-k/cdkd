@@ -45,9 +45,9 @@ import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-han
 /**
  * Issue #1160: removing `StepConcurrencyLevel` from the template used to send
  * a `ModifyCluster` carrying no update field, which AWS treats as "no change",
- * and say nothing. cdkd sends no reset (CloudFormation's behavior on the
- * removal is unmeasured) and warns once, without claiming a CloudFormation
- * reset.
+ * and say nothing. cdkd sends no reset, because CloudFormation keeps the
+ * value too (CFn A/B us-east-1 2026-10-20, recorded on the issue), and warns
+ * once, saying CloudFormation leaves it.
  */
 
 const RESOURCE_TYPE = 'AWS::EMR::Cluster';
@@ -89,7 +89,7 @@ describe('EMRClusterProvider update: StepConcurrencyLevel removal (#1160)', () =
     );
   });
 
-  it('sends nothing for a removal alone and warns once, naming the key without a CloudFormation-reset claim', async () => {
+  it('sends nothing for a removal alone and warns once, naming the key and saying CloudFormation keeps it', async () => {
     const result = await newProvider().update(
       'MyCluster',
       CLUSTER_ID,
@@ -102,9 +102,10 @@ describe('EMRClusterProvider update: StepConcurrencyLevel removal (#1160)', () =
     expect(mockSend).not.toHaveBeenCalled();
     expect(warnings()).toHaveLength(1);
     const line = warnings()[0]!;
-    expect(line).toContain('MyCluster (AWS::EMR::Cluster): property StepConcurrencyLevel was removed');
-    expect(line).toContain('ModifyCluster keeps a setting it is not sent');
-    expect(line).not.toContain('CloudFormation');
+    expect(line).toContain(
+      'MyCluster (AWS::EMR::Cluster): property StepConcurrencyLevel was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyCluster keeps a setting it is not sent.'
+    );
+    expect(line).not.toContain('reset');
     // Key names only: the removed value never reaches the line.
     expect(line).not.toContain('5');
   });
@@ -221,6 +222,8 @@ describe('EMRClusterProvider update: StepConcurrencyLevel removal (#1160)', () =
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain('absent from the state being restored');
     expect(warnings()[0]).not.toContain('removed from the template');
+    // The CFn A/B covered template removals, not a rollback revert.
+    expect(warnings()[0]).not.toContain('CloudFormation');
   });
 
   it('sends a removed VisibleToAllUsers as false, CloudFormation\'s documented default, without warning', async () => {
