@@ -458,12 +458,12 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
   // its name; its provider's name-release wait runs before the re-create.
   it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
     const order: string[] = [];
-    const del = sdk.delete.getMockImplementation();
+    const del = sdk.delete.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
     sdk.delete.mockImplementation(async (...args: unknown[]) => {
       if (args[0] === 'Fn') order.push('delete');
       return del?.(...args);
     });
-    const create = sdk.create.getMockImplementation()!;
+    const create = sdk.create.getMockImplementation() as (...a: unknown[]) => unknown;
     sdk.create.mockImplementation(async (...args: unknown[]) => {
       if (args[0] === 'Fn') order.push('create');
       return create(...args);

@@ -500,12 +500,12 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
   // its name; its provider's name-release wait runs before the re-create.
   it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
     const order: string[] = [];
-    const del = sdk.delete.getMockImplementation();
+    const del = sdk.delete.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
     sdk.delete.mockImplementation(async (...args: unknown[]) => {
       if (args[0] === 'Fn') order.push('delete');
       return del?.(...args);
     });
-    const create = cc.create.getMockImplementation()!;
+    const create = cc.create.getMockImplementation() as (...a: unknown[]) => unknown;
     cc.create.mockImplementation(async (...args: unknown[]) => {
       if (args[0] === 'Fn') order.push('create');
       return create(...args);
