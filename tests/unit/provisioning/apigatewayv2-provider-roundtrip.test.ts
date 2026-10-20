@@ -1367,15 +1367,19 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     expect(updateIntegrationInput()!['RequestParameters']).toEqual(EVENTS_PARAMS);
   });
 
-  it('Integration: a removed RequestParameters with nothing else changed sends nothing (no refusal on a no-op)', async () => {
-    const { RequestParameters: _rp, ...withoutParams } = SERVICE_INTEGRATION;
-    await provider.update(
-      'IntLogical',
-      'int-1',
-      'AWS::ApiGatewayV2::Integration',
-      withoutParams,
-      { ...SERVICE_INTEGRATION, RequestParameters: { ...EVENTS_PARAMS, Detail: '***' } }
-    );
+  it('Integration: a replay whose unchanged map holds a stand-in, with nothing else changed, sends nothing and does not refuse', async () => {
+    // The stand-in check runs only when an update is actually sent.
+    const record = { ...SERVICE_INTEGRATION, RequestParameters: { ...EVENTS_PARAMS, Detail: '***' } };
+    await expect(
+      provider.update(
+        'IntLogical',
+        'int-1',
+        'AWS::ApiGatewayV2::Integration',
+        record,
+        structuredClone(record),
+        { removedProperties: new Set(), replayingState: true }
+      )
+    ).resolves.toBeDefined();
     expect(mockSend).not.toHaveBeenCalled();
   });
 
