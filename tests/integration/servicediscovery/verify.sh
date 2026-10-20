@@ -248,8 +248,8 @@ echo "    OK: Description cleared beside the HealthCheckConfig change; DnsConfig
 # --- Phase 4 (refused): DnsConfig removed beside a Description change ---
 # CloudFormation's update fails here with AWS's own refusal; cdkd must too.
 echo "==> Phase 4: drop ${REFUSED_NAME}'s DnsConfig beside a Description change (expected refusal)"
+# Read by cleanup() too, which removes it on an early exit.
 P4_LOG_DIR="$(mktemp -d -t cdkd-svcdisc-p4.XXXXXX)"
-# shellcheck disable=SC2034 # read by cleanup() on an early exit
 P4_LOG="${P4_LOG_DIR}/deploy.log"
 P4_RC=0
 deploy_phase refused > "${P4_LOG}" 2>&1 || P4_RC=$?
