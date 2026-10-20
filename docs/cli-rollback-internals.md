@@ -134,11 +134,22 @@ journaled pre-deploy state, and the new resource is deleted unless its own
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+On a stack with an instance id, a resource the template does not name is
+re-created under the generated name its OLD record held (that record's name
+generation), not the next-generation name the replacement created, so the two
+copies do not collide on a generated name. The restored record keeps its own
+generation and records the generation the replacement reached as
+`nameGenerationHigh`, read from the journal's `nameGeneration` on the completed
+or failed operation, so the next replacement moves past both names.
+`--revert-failed` raises it the same way. A journal written by an older cdkd
+carries no generation and leaves the record as it was.
+
 A replacement that deleted the old resource BEFORE creating the new one
 (`--recreate-via-cc-api`, `--recreate-via-sdk-provider`, the update-unsupported
 fallback, `--replace`'s delete-first fallback, or a resource lost with a parent
 that was re-created under the same id) is reversed in that order
-too: the new resource is deleted first, then the old one is re-created. So a
+too (on a stack with an instance id, the first three create first for a
+resource cdkd names, since its next-generation name is free): the new resource is deleted first, then the old one is re-created. So a
 port or name that only one of them can hold, such as an ELBv2 listener's port,
 does not collide. If that delete fails or is skipped, state keeps naming the
 new resource and the journal is kept. If the re-create then fails, the resource

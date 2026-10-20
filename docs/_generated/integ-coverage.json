@@ -144,6 +144,7 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "wafv2"
@@ -151,6 +152,9 @@
       "signals": {
         "apigateway": [
           "l1",
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -189,6 +193,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -198,6 +203,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -217,6 +225,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -226,6 +235,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -264,6 +276,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
         "apigw-stage-throttling"
@@ -273,6 +286,9 @@
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -673,6 +689,7 @@
         "custom-resource-resolved-secret",
         "destroy-nested-cross-region",
         "export-nested-stack",
+        "generated-name-lifecycle",
         "import-nested-stack",
         "list-parameters",
         "nested-stack",
@@ -702,6 +719,9 @@
           "literal"
         ],
         "export-nested-stack": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "import-nested-stack": [
@@ -933,9 +953,13 @@
     {
       "resourceType": "AWS::CodeCommit::Repository",
       "integs": [
+        "cc-required-name-generation",
         "codecommit"
       ],
       "signals": {
+        "cc-required-name-generation": [
+          "literal"
+        ],
         "codecommit": [
           "literal"
         ]
@@ -1114,6 +1138,7 @@
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-attribute-readback",
         "import-heal-prefix-record",
@@ -1186,6 +1211,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l2"
@@ -1334,6 +1363,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1458,6 +1488,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -1564,6 +1597,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1678,6 +1712,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -1813,6 +1850,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -1936,6 +1974,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -2043,6 +2084,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2167,6 +2209,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2263,6 +2308,7 @@
         "emr-instance-fleets",
         "export",
         "fsx-lustre",
+        "generated-name-security-group",
         "lambda-capacity-provider-default-name",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2350,6 +2396,10 @@
         ],
         "fsx-lustre": [
           "l2",
+          "literal"
+        ],
+        "generated-name-security-group": [
+          "l1",
           "literal"
         ],
         "lambda-capacity-provider-default-name": [
@@ -2484,6 +2534,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -2609,6 +2660,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-attribute-readback-final": [
@@ -2751,6 +2805,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -2867,6 +2922,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2969,6 +3027,8 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
+        "generated-name-security-group",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
@@ -3110,6 +3170,13 @@
           "l2",
           "literal"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
+        "generated-name-security-group": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -3249,6 +3316,7 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
@@ -3371,6 +3439,9 @@
           "l2"
         ],
         "fsx-windows": [
+          "l2"
+        ],
+        "generated-name-lifecycle": [
           "l2"
         ],
         "import-migrate-vpc": [
@@ -3886,6 +3957,7 @@
       "integs": [
         "alb",
         "deletion-ordering-complex",
+        "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state"
@@ -3895,6 +3967,9 @@
           "literal"
         ],
         "deletion-ordering-complex": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "local-engine-role-identity": [
@@ -3917,6 +3992,7 @@
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3946,6 +4022,10 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "import-attribute-readback-network": [
           "l1"
@@ -3991,6 +4071,7 @@
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
@@ -4012,6 +4093,9 @@
         ],
         "elbv2-same-name-replacement": [
           "l1",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "import-attribute-readback-network": [
@@ -4077,6 +4161,7 @@
         "eventbridge",
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
@@ -4098,6 +4183,10 @@
           "l2"
         ],
         "eventbridge-input-transformer": [
+          "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "l2",
           "literal"
         ],
@@ -4375,6 +4464,7 @@
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
+        "generated-name-lifecycle",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4385,6 +4475,9 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "generated-name-lifecycle": [
+          "literal"
+        ],
         "iam-managed-policy": [
           "literal"
         ],
@@ -4421,6 +4514,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "export",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-recreate-reattach",
@@ -4440,6 +4534,9 @@
         ],
         "export": [
           "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "getstackoutput-crossregion": [
@@ -4479,6 +4576,7 @@
         "agentcore-tools",
         "apigateway",
         "apigatewayv2-update-removal",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "appsync",
         "batch",
@@ -4507,6 +4605,7 @@
         "eventbridge-scheduler",
         "export",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -4589,6 +4688,9 @@
         ],
         "apigatewayv2-update-removal": [
           "l2"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
+          "literal"
         ],
         "apigw-stage-props": [
           "l2"
@@ -4682,6 +4784,10 @@
           "literal"
         ],
         "gc-custom-asset-names": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
           "literal"
         ],
         "glue-update-hardening": [
@@ -5262,6 +5368,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -5468,6 +5575,10 @@
           "l2"
         ],
         "gc-custom-asset-names": [
+          "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "l2",
           "literal"
         ],
@@ -5920,6 +6031,7 @@
         "ecs-service-update-props",
         "fallback-recreate-children",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "local-start-alb-from-state",
         "log-pipeline",
@@ -5995,6 +6107,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l1"
@@ -6287,6 +6403,7 @@
         "event-driven",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-value-strong-ref",
         "infra-security",
@@ -6391,6 +6508,10 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l2"
@@ -6677,6 +6798,7 @@
         "eventbridge-pipes",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "import-attribute-readback",
         "importvalue-chain",
@@ -6771,6 +6893,10 @@
         "full-stack-demo": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
         "iam-propagation-stress": [
           "l2"
         ],
@@ -6827,6 +6953,7 @@
           "literal"
         ],
         "retain-orphan-redeploy": [
+          "l1",
           "literal"
         ],
         "s3-lifecycle": [
@@ -6952,6 +7079,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
@@ -7077,6 +7205,11 @@
         ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l1",
+          "l2",
+          "literal"
         ],
         "getstackoutput-crossregion": [
           "l1"
@@ -7351,6 +7484,7 @@
         "s3-tables",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
+        "schema-v12-to-v13-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -7680,6 +7814,9 @@
           "l1"
         ],
         "schema-v11-to-v12-migration": [
+          "l1"
+        ],
+        "schema-v12-to-v13-migration": [
           "l1"
         ],
         "schema-v5-to-v6-migration": [

@@ -358,6 +358,7 @@ describe('the success settle with RDSProvider: a reused identifier is not delete
       logger,
     } as unknown as RollbackExecutorContext;
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
         reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

@@ -146,6 +146,7 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -4427,7 +4428,10 @@ export class GlueJobProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Job ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095: a stack with an instance id generates the name; a
+    // legacy stack keeps the bare logical id.
+    const name =
+      (properties['Name'] as string | undefined) ?? generatedNameFor('AWS::Glue::Job', logicalId);
     const role = properties['Role'] as string | undefined;
     const command = properties['Command'] as Record<string, unknown> | undefined;
     if (!role) {
@@ -5075,7 +5079,10 @@ export class GlueCrawlerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Crawler ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Crawler', logicalId);
     const role = properties['Role'] as string | undefined;
     const targets = properties['Targets'] as Record<string, unknown> | undefined;
     if (!role) {
@@ -5638,7 +5645,10 @@ export class GlueConnectionProvider implements ResourceProvider {
         logicalId
       );
     }
-    const name = (connectionInput['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (connectionInput['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Connection', logicalId);
     const catalogId = properties['CatalogId'] as string | undefined;
     try {
       await this.getCreateClient().send(
@@ -6069,7 +6079,10 @@ export class GlueTriggerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Trigger ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Trigger', logicalId);
     const type = properties['Type'] as string | undefined;
     const actions = properties['Actions'] as TriggerAction[] | undefined;
     if (!type) {

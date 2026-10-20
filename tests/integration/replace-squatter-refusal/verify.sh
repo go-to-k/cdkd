@@ -10,18 +10,26 @@
 # again. Now the old resource must hold the name the create actually SENT.
 #
 # Phases (one ECR repository, `Repo`; see the stack for the env knobs):
-#   A. Deploy nameless: cdkd generates the name G (captured from state).
+#   A. Deploy nameless: cdkd generates the name G (captured from state) at name
+#      generation 0. On a new stack G carries the stack instance suffix
+#      (go-to-k/cdkd#5064); the run checks it against the suffix it derives
+#      from state.json's stackInstanceId, which phase C's derivation relies on.
 #   B. REPO_NAME=N deploy: a replacement to the explicit name N; G is deleted.
-#   C. THE ARM. Create a squatter repository under G out of band, then deploy
-#      nameless again with --replace. The create sends G and collides with the
-#      squatter. The deploy must FAIL naming G, delete NOTHING (N keeps its
-#      createdAt, the squatter survives, state still records N). Before the
-#      fix N was deleted.
+#      A replacement moves the record to the next name generation (1).
+#   C. THE ARM. A nameless deploy is a replacement of N whose create sends the
+#      name of the NEXT generation, G' (go-to-k/cdkd#5064 phase 2: derived from
+#      the stack instance id, the logical id and max(nameGeneration,
+#      nameGenerationHigh) + 1, read from state). Create a squatter repository
+#      under G' out of band, then deploy nameless — plain, then with --replace.
+#      Each create sends G' and collides with the squatter. Each deploy must
+#      FAIL naming G' as the next-generation name, and delete NOTHING (N keeps
+#      its createdAt, the squatter survives, state still records N at the same
+#      generation). Before the #3979 fix --replace deleted N.
 #   D. NEGATIVE CONTROL. Remove the squatter, then REPO_NAME=N REPO_KMS=true
 #      deploy --replace: a replacement KEEPING the name, whose create collides
 #      with N itself. N provably holds it, so delete-first must still run and
 #      the deploy succeed (N re-created with KMS encryption).
-#   E. Destroy; N, G and the state file are gone.
+#   E. Destroy; N, G, G' and the state file are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -69,10 +77,15 @@ export AWS_REGION="${REGION}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 NAMED_REPO="cdkd-integ-rsq-named"
-# What cdkd generates for the nameless `Repo` of this stack: the name every
-# phase's squatter and sweep use. Phase A asserts the live name EQUALS it, so a
-# drift in the generation fails loudly instead of aiming the squatter elsewhere.
-GENERATED_REPO="$(printf '%s' "${STACK}-Repo" | tr '[:upper:]' '[:lower:]')"
+# What cdkd generates for the nameless `Repo` of this stack starts with this
+# prefix and ends with the 12-hex stack instance suffix (go-to-k/cdkd#5064).
+# The full name G is read from state in phase A (set below); phase C derives
+# the next generation's name G' from it. Phase A asserts G's SHAPE and its
+# suffix, so a drift in the generation fails loudly instead of aiming the
+# squatter elsewhere.
+GENERATED_PREFIX="$(printf '%s' "${STACK}-Repo-" | tr '[:upper:]' '[:lower:]')"
+GENERATED_REPO=""
+SQUATTER_REPO=""
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rsq.XXXXXX")"
@@ -110,6 +123,38 @@ state_repo_id() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Repo.physicalId'
 }
 
+# The record's name generation (absent = 0) and the generation its next
+# replacement creates at: max(nameGeneration, nameGenerationHigh) + 1
+# (go-to-k/cdkd#5064 phase 2).
+state_repo_generation() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Repo.nameGeneration // 0'
+}
+state_repo_next_generation() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r '[.resources.Repo.nameGeneration // 0, .resources.Repo.nameGenerationHigh // 0] | max + 1'
+}
+
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being state.json's
+# stackInstanceId. Read from S3 into node's stdin: the id is never printed.
+state_name_suffix() { # usage: state_name_suffix <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$1" "$2"
+}
+
 cleanup() {
   rc=$?
   echo "[verify] cleanup (rc=${rc})"
@@ -118,7 +163,8 @@ cleanup() {
   node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
     --region "${REGION}" --yes >/dev/null 2>&1 || true
   delete_repo_best_effort "${NAMED_REPO}"
-  delete_repo_best_effort "${GENERATED_REPO}"
+  [ -n "${GENERATED_REPO}" ] && delete_repo_best_effort "${GENERATED_REPO}"
+  [ -n "${SQUATTER_REPO}" ] && delete_repo_best_effort "${SQUATTER_REPO}"
   aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/${LOCK_KEY}" >/dev/null 2>&1 || true
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
@@ -130,13 +176,21 @@ cleanup() {
 # A leftover repository (an interrupted run, or a CONCURRENT one) would turn
 # phase C into a false collision. Checked BEFORE the trap is armed, so a
 # refusal here never sweeps what it refused to touch.
-for name in "${NAMED_REPO}" "${GENERATED_REPO}"; do
-  if ! gone_probe aws ecr describe-repositories --repository-names "${name}" --region "${REGION}"; then
-    echo "[verify] FAIL: repository ${name} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
-    rm -rf "${LOG_DIR}"
-    exit 1
-  fi
-done
+if ! gone_probe aws ecr describe-repositories --repository-names "${NAMED_REPO}" --region "${REGION}"; then
+  echo "[verify] FAIL: repository ${NAMED_REPO} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
+  rm -rf "${LOG_DIR}"
+  exit 1
+fi
+# The generated name is unknown before phase A: refuse on any repository
+# under its prefix (a leftover of an earlier lifetime of this stack).
+LEFTOVER_GENERATED="$(aws ecr describe-repositories --region "${REGION}" \
+  --query "repositories[?starts_with(repositoryName, '${GENERATED_PREFIX}')].repositoryName" \
+  --output text)"
+if [ -n "${LEFTOVER_GENERATED}" ] && [ "${LEFTOVER_GENERATED}" != "None" ]; then
+  echo "[verify] FAIL: repository ${LEFTOVER_GENERATED} already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
+  rm -rf "${LOG_DIR}"
+  exit 1
+fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
   echo "[verify] FAIL: s3://${STATE_BUCKET}/${STATE_KEY} already exists before the run — nothing was touched" >&2
   rm -rf "${LOG_DIR}"
@@ -168,11 +222,23 @@ echo "[verify] phase A: deploy ${STACK} with no repository name"
 deploy "${LOG_DIR}/a.log" '' '' \
   || { sed 's/^/  /' "${LOG_DIR}/a.log"; echo "[verify] FAIL: phase A deploy failed" >&2; exit 1; }
 A_ID="$(state_repo_id)"
-if [ "${A_ID}" != "${GENERATED_REPO}" ]; then
-  echo "[verify] FAIL: state records Repo as '${A_ID}', expected the generated '${GENERATED_REPO}'" >&2
+if ! printf '%s' "${A_ID}" | grep -qE "^${GENERATED_PREFIX}[0-9a-f]{12}\$"; then
+  echo "[verify] FAIL: state records Repo as '${A_ID}', expected a generated '${GENERATED_PREFIX}<12 hex>'" >&2
   exit 1
 fi
+GENERATED_REPO="${A_ID}"
 repo_created_at "${GENERATED_REPO}" >/dev/null
+# The derivation phase C aims its squatter with must reproduce the name cdkd
+# minted at generation 0; a mismatch here is the derivation, not the arm.
+A_SUFFIX="$(state_name_suffix Repo 0)"
+if [ "${GENERATED_REPO}" != "${GENERATED_PREFIX}${A_SUFFIX}" ]; then
+  echo "[verify] FAIL: ${GENERATED_REPO} does not end in the generation-0 suffix derived from state.json's stackInstanceId (got ${A_SUFFIX}) — the go-to-k/cdkd#5064 suffix derivation drifted" >&2
+  exit 1
+fi
+if [ "$(state_repo_generation)" != "0" ]; then
+  echo "[verify] FAIL: the first create recorded a name generation other than 0" >&2
+  exit 1
+fi
 echo "[verify] phase A ok: ${GENERATED_REPO} deployed"
 
 # ---------------------------------------------------------------------------
@@ -187,60 +253,106 @@ if [ "$(state_repo_id)" != "${NAMED_REPO}" ]; then
 fi
 assert_gone "the old generated repository ${GENERATED_REPO} survived the phase B replacement" \
   aws ecr describe-repositories --repository-names "${GENERATED_REPO}" --region "${REGION}"
+if [ "$(state_repo_generation)" != "1" ]; then
+  echo "[verify] FAIL: the phase B replacement did not move Repo's record to name generation 1 (go-to-k/cdkd#5064 phase 2)" >&2
+  exit 1
+fi
 echo "[verify] phase B ok: ${NAMED_REPO} is the stack's repository, ${GENERATED_REPO} deleted"
 
 # ---------------------------------------------------------------------------
-# PHASE C: THE ARM — a squatter on the generated name
+# PHASE C: THE ARM — a squatter on the next generation's generated name
 # ---------------------------------------------------------------------------
-echo "[verify] phase C: squatter ${GENERATED_REPO} out of band, then a nameless deploy --replace (expect REFUSAL)"
+C_GENERATION="$(state_repo_next_generation)"
+C_SUFFIX="$(state_name_suffix Repo "${C_GENERATION}")"
+SQUATTER_REPO="${GENERATED_PREFIX}${C_SUFFIX}"
+if [ "${SQUATTER_REPO}" = "${GENERATED_REPO}" ]; then
+  echo "[verify] FAIL: generation ${C_GENERATION}'s name equals generation 0's (${GENERATED_REPO}) — the derivation is wrong" >&2
+  exit 1
+fi
+if ! gone_probe aws ecr describe-repositories --repository-names "${SQUATTER_REPO}" --region "${REGION}"; then
+  echo "[verify] FAIL: ${SQUATTER_REPO} exists before phase C planted it" >&2
+  exit 1
+fi
+echo "[verify] phase C: squatter ${SQUATTER_REPO} (name generation ${C_GENERATION}) out of band, then a nameless deploy, plain and with --replace (expect REFUSAL)"
 NAMED_CREATED_AT="$(repo_created_at "${NAMED_REPO}")"
-aws ecr create-repository --repository-name "${GENERATED_REPO}" --region "${REGION}" >/dev/null
-SQUATTER_CREATED_AT="$(repo_created_at "${GENERATED_REPO}")"
+aws ecr create-repository --repository-name "${SQUATTER_REPO}" --region "${REGION}" >/dev/null
+SQUATTER_CREATED_AT="$(repo_created_at "${SQUATTER_REPO}")"
+
+# The parsed markers name the SENT name — the holder diagnosis and the
+# next-generation advice; the sentinel is each refusal's own closing clause,
+# independent of both. Sentinel without marker = the wording drifted or a
+# different name was sent — never read as "no refusal".
+C_MARKER="the cdkd naming rule generates RepositoryName \"${SQUATTER_REPO}\""
+C_ADVICE="The colliding name ${SQUATTER_REPO} is the one this replacement generates for its next name generation"
+assert_squatter_refusal() { # usage: assert_squatter_refusal <log> <rc> <sentinel> <what>
+  local log="$1" rc="$2" sentinel="$3" what="$4"
+  if [ "${rc}" -eq 0 ]; then
+    echo "[verify] FAIL: ${what} SUCCEEDED over a squatter on ${SQUATTER_REPO}" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "${sentinel}" "${log}"; then
+    echo "[verify] FAIL: ${what} exited ${rc} without the #3979 holder refusal (output above)" >&2
+    exit 1
+  fi
+  if ! grep -F -- "${sentinel}" "${log}" | grep -F -- "${C_MARKER}" | grep -qF -- "${C_ADVICE}"; then
+    echo "[verify] FAIL: the refusal of ${what} is present but does not name the sent ${SQUATTER_REPO} as the next-generation name (wording drifted, or a different name was sent):" >&2
+    grep -F -- "${sentinel}" "${log}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  if grep -qF 'deleting old Repo' "${log}"; then
+    echo "[verify] FAIL: the delete-first engaged for the squatter's collision (${what})" >&2
+    exit 1
+  fi
+  local named_at squatter_at generation next
+  named_at="$(repo_created_at "${NAMED_REPO}")" || return 1
+  if [ "${named_at}" != "${NAMED_CREATED_AT}" ]; then
+    echo "[verify] FAIL: ${NAMED_REPO} was deleted or re-created by the refused ${what}" >&2
+    exit 1
+  fi
+  squatter_at="$(repo_created_at "${SQUATTER_REPO}")" || return 1
+  if [ "${squatter_at}" != "${SQUATTER_CREATED_AT}" ]; then
+    echo "[verify] FAIL: the squatter ${SQUATTER_REPO} was deleted or re-created by the refused ${what}" >&2
+    exit 1
+  fi
+  if [ "$(state_repo_id)" != "${NAMED_REPO}" ]; then
+    echo "[verify] FAIL: state no longer records Repo as ${NAMED_REPO} after the refused ${what}" >&2
+    exit 1
+  fi
+  generation="$(state_repo_generation)" || return 1
+  next="$(state_repo_next_generation)" || return 1
+  if [ "${generation}" != "1" ] || [ "${next}" != "${C_GENERATION}" ]; then
+    echo "[verify] FAIL: the refused ${what} moved Repo's name generation (now ${generation}, next ${next}; expected 1, next ${C_GENERATION})" >&2
+    exit 1
+  fi
+}
+
+# C1: no flag. The replacement creates first under the new name and refuses
+# on the collision — no --replace is needed for a nameless replacement now,
+# and none could help, since the old repository never held this name.
 set +e
-deploy "${LOG_DIR}/c.log" '' '' --replace --force-stateful-recreation
-C_RC=$?
+deploy "${LOG_DIR}/c1.log" '' '' --force-stateful-recreation
+C1_RC=$?
 set -e
-sed 's/^/  /' "${LOG_DIR}/c.log" || true
-if [ "${C_RC}" -eq 0 ]; then
-  echo "[verify] FAIL: deploy --replace SUCCEEDED over a squatter on ${GENERATED_REPO}" >&2
-  exit 1
-fi
-# The parsed marker names the SENT name; the sentinel is the refusal's own
-# closing clause, independent of it. Sentinel without marker = the wording
-# drifted or a different name was sent — never read as "no refusal".
-C_SENTINEL="--replace was NOT applied and nothing was deleted"
-C_MARKER="the cdkd naming rule generates RepositoryName \"${GENERATED_REPO}\""
-if ! grep -qF -- "${C_SENTINEL}" "${LOG_DIR}/c.log"; then
-  echo "[verify] FAIL: deploy --replace exited ${C_RC} without the #3979 holder refusal (output above)" >&2
-  exit 1
-fi
-if ! grep -F -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | grep -qF -- "${C_MARKER}"; then
-  echo "[verify] FAIL: the refusal is present but does not name the sent ${GENERATED_REPO} (wording drifted, or a different name was sent):" >&2
-  grep -F -- "${C_SENTINEL}" "${LOG_DIR}/c.log" | sed 's/^/  /' >&2
-  exit 1
-fi
-if grep -qF 'deleting old Repo' "${LOG_DIR}/c.log"; then
-  echo "[verify] FAIL: the --replace delete-first engaged for the squatter's collision" >&2
-  exit 1
-fi
-C_NAMED_AT="$(repo_created_at "${NAMED_REPO}")"
-if [ "${C_NAMED_AT}" != "${NAMED_CREATED_AT}" ]; then
-  echo "[verify] FAIL: ${NAMED_REPO} was deleted or re-created by the refused deploy" >&2
-  exit 1
-fi
-C_SQUATTER_AT="$(repo_created_at "${GENERATED_REPO}")"
-if [ "${C_SQUATTER_AT}" != "${SQUATTER_CREATED_AT}" ]; then
-  echo "[verify] FAIL: the squatter ${GENERATED_REPO} was deleted or re-created by the refused deploy" >&2
-  exit 1
-fi
-if [ "$(state_repo_id)" != "${NAMED_REPO}" ]; then
-  echo "[verify] FAIL: state no longer records Repo as ${NAMED_REPO} after the refused deploy" >&2
-  exit 1
-fi
-aws ecr delete-repository --repository-name "${GENERATED_REPO}" --force --region "${REGION}" >/dev/null
-assert_gone "the squatter ${GENERATED_REPO} survived its own delete" \
-  aws ecr describe-repositories --repository-names "${GENERATED_REPO}" --region "${REGION}"
-echo "[verify] phase C ok: refused naming ${GENERATED_REPO}, ${NAMED_REPO} and the squatter untouched"
+sed 's/^/  /' "${LOG_DIR}/c1.log" || true
+assert_squatter_refusal "${LOG_DIR}/c1.log" "${C1_RC}" \
+  "Nothing was deleted, and \`cdkd deploy --replace\` would refuse the same way rather than delete it." \
+  "the plain nameless deploy"
+
+# C2: --replace. It cannot prove the old repository holds the next
+# generation's name, so it deletes nothing either.
+set +e
+deploy "${LOG_DIR}/c2.log" '' '' --replace --force-stateful-recreation
+C2_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/c2.log" || true
+assert_squatter_refusal "${LOG_DIR}/c2.log" "${C2_RC}" \
+  "--replace was NOT applied and nothing was deleted" \
+  "the nameless deploy --replace"
+
+aws ecr delete-repository --repository-name "${SQUATTER_REPO}" --force --region "${REGION}" >/dev/null
+assert_gone "the squatter ${SQUATTER_REPO} survived its own delete" \
+  aws ecr describe-repositories --repository-names "${SQUATTER_REPO}" --region "${REGION}"
+echo "[verify] phase C ok: both deploys refused naming ${SQUATTER_REPO}, ${NAMED_REPO} and the squatter untouched"
 
 # ---------------------------------------------------------------------------
 # PHASE D: NEGATIVE CONTROL — a same-name replacement still deletes first
@@ -275,10 +387,12 @@ assert_gone "repository ${NAMED_REPO} still exists after destroy" \
   aws ecr describe-repositories --repository-names "${NAMED_REPO}" --region "${REGION}"
 assert_gone "repository ${GENERATED_REPO} still exists after destroy" \
   aws ecr describe-repositories --repository-names "${GENERATED_REPO}" --region "${REGION}"
+assert_gone "repository ${SQUATTER_REPO} still exists after destroy" \
+  aws ecr describe-repositories --repository-names "${SQUATTER_REPO}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1 || true
 
 rm -rf "${LOG_DIR}"
 trap - EXIT INT TERM
-echo "[verify] PASS — deploy --replace refused a squatter's collision and kept the genuine same-name delete-first"
+echo "[verify] PASS — a nameless replacement (plain and --replace) refused a squatter on its next-generation name, and --replace kept the genuine same-name delete-first"

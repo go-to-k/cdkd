@@ -1,4 +1,10 @@
 import { Command, Option } from 'commander';
+import {
+  addSuperseded,
+  holdsSupersededResources,
+  removeSuperseded,
+  supersededAfterRollback,
+} from '../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from './registry-release.js';
 import { recordRetainedForReadoption } from '../../deployment/retained-readoption.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
@@ -44,7 +50,13 @@ import {
   withNestedRevertRun,
   type NestedRevertRun,
 } from '../../deployment/nested-child-journal.js';
-import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import {
+  nameScopeOf,
+  retiredAfterRollback,
+  type RolledBackCreate,
+} from '../../state/name-generation.js';
 import { resolveSkipPrefix } from '../config-loader.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { dropFailedJournalEntry, refuseDropFailedConflicts } from './rollback-drop-failed.js';
@@ -88,7 +100,9 @@ import {
   type ResourceState,
   type StackState,
   orphansAfterRollback,
+  stackInstanceIdCarriedFrom,
   type StackOrphanRecord,
+  type SupersededResourceRecord,
   type LockInfo,
 } from '../../types/state.js';
 import { splitImportedOps, type ImportedResourceMark } from '../../types/rollback-journal.js';
@@ -97,6 +111,7 @@ import { isLockInfoExpired } from '../../state/lock-manager.js';
 import {
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
@@ -878,6 +893,10 @@ export async function rollbackCommand(
         // loadRollbackJournal → parseRollbackJournal; it propagates as a hard
         // error telling the user to upgrade cdkd.
         const stateData = await setup.stateBackend.getState(stackName, region);
+        // go-to-k/cdkd#5064: the replay re-derives names in the lifetime the
+        // record names. No record (a first deploy that saved nothing) leaves
+        // only creates to delete, which derive no name.
+        const stackInstanceId = stackInstanceIdOf(stateData?.state, displayStackName(stackName));
         let journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
         // go-to-k/cdkd#3252: settle the Cloud Control CREATEs a failed deploy
         // stopped waiting for before the journal is planned: one that made its
@@ -893,6 +912,13 @@ export async function rollbackCommand(
             command: 'rollback',
             logger,
             stateResources: stateData?.state.resources,
+            // No record yet (a first deploy that saved nothing): its id is
+            // only in the write-ahead sibling, read without minting so a
+            // generated name the abandoned create made reads as a name.
+            stackInstanceId:
+              stateData === null
+                ? () => setup.stateBackend.readStackInstanceSibling(stackName, region)
+                : stackInstanceId,
           })
         ) {
           journal = await setup.stateBackend.loadRollbackJournal(stackName, region);
@@ -1037,6 +1063,12 @@ export async function rollbackCommand(
         // it is read inside the state literal rather than captured, so each save
         // persists the set as it stands at that moment.
         const mintedOrphans: StackOrphanRecord[] = [];
+        // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
+        // it stands (as `mintedOrphans`), so each retires its generation.
+        const rolledBackCreates: RolledBackCreate[] = [];
+        // go-to-k/cdkd#5064: the new resources a renamed reversal's deferred
+        // delete has yet to remove, kept in every save meanwhile.
+        const supersededHost: { supersededResources?: SupersededResourceRecord[] } = {};
         const orphanLogicalIds = new Set(options.orphan ?? []);
 
         // Informational role-arn note (issue #1183): the newest segment recorded
@@ -1095,13 +1127,15 @@ export async function rollbackCommand(
         // go-to-k/cdkd#4438: the stack's create-token ledger, so the replay's
         // re-creates send the stack's tokens and a Retain it honours rotates them.
         const createTokenLedger = ledgerForStack(setup.stateBackend, stackName, region);
-        /** The async scope a segment replays in: its stack name and its prefix flag. */
+        /** The async scope a segment replays in: its stack (name and lifetime) and its prefix flag. */
         const inSegmentScope = <T>(
           segment: { skipPrefix?: boolean },
           fn: () => Promise<T>
         ): Promise<T> =>
           withSkipPrefix(segment.skipPrefix ?? legacySkipPrefix(), () =>
-            withStackName(stackName, () => withCreateTokenLedger(createTokenLedger, fn))
+            withStackScope(nameScopeOf(stackName, stackInstanceId, stateData?.state), () =>
+              withCreateTokenLedger(createTokenLedger, fn)
+            )
           );
 
         // 5. Plan — newest-first, one block per segment.
@@ -1306,10 +1340,14 @@ export async function rollbackCommand(
           const { skippedOutputs: _droppedByRollback, ...carriedState } = baseState;
           const next = (): StackState => ({
             ...carriedState,
+            ...stackInstanceIdCarriedFrom(baseState),
+            ...supersededAfterRollback(baseState, supersededHost),
             version: STATE_SCHEMA_VERSION_CURRENT,
             region,
             resources: { ...stateResources },
             ...orphansAfterRollback(baseState, mintedOrphans),
+            // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
+            ...retiredAfterRollback(baseState, mintedOrphans, rolledBackCreates),
             lastModified: Date.now(),
           });
           try {
@@ -1485,6 +1523,7 @@ export async function rollbackCommand(
                               // returns is absent from every intermediate save
                               // (issue #2934).
                               onOrphan: (record) => mintedOrphans.push(record),
+                              onRolledBackCreate: (create) => rolledBackCreates.push(create),
                               inlinePolicyWriters,
                             })
                         )
@@ -1582,8 +1621,11 @@ export async function rollbackCommand(
                           // on return would be missing from every intermediate save
                           // — and a crash there loses it for good (issue #2934).
                           onOrphan: (record) => mintedOrphans.push(record),
+                          onRolledBackCreate: (create) => rolledBackCreates.push(create),
                           inlinePolicyWriters,
                           failedOperations: failedForGuard,
+                          onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+                          onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
                         })
                     );
                     return {
@@ -1653,7 +1695,9 @@ export async function rollbackCommand(
           journal.segments.length === 0 &&
           oldestInitialDeploy &&
           Object.keys(stateResources).length === 0 &&
-          survivingOrphans.length === 0
+          survivingOrphans.length === 0 &&
+          // go-to-k/cdkd#5111: an old resource still to delete keeps it.
+          !holdsSupersededResources(baseState)
         ) {
           await setup.stateBackend.deleteState(stackName, region);
           // go-to-k/cdkd#4705: the record is gone, so the empty retained.json

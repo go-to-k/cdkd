@@ -7,7 +7,7 @@ import {
   derivesPatternBName,
   generateResourceNameWithFallback,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/replacement-name-holder.js';
 
@@ -21,7 +21,7 @@ import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/re
  */
 
 const STACK = 'MyStack';
-const inStack = <T>(fn: () => T): T => withStackName(STACK, fn);
+const inStack = <T>(fn: () => T): T => withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, fn);
 
 /** The expression each Pattern B provider evaluates for an explicit name. */
 function generate(type: string, declared: string): string {

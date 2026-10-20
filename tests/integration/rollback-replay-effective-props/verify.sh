@@ -347,13 +347,17 @@ cleanup() {
   done
 
   # The failing queue never reaches ACTIVE, but sweep by name in case a retry
-  # of the phase left one behind.
-  local q_url
-  q_url="$(aws sqs get-queue-url --queue-name "${STACK}-FailQueue" --query QueueUrl --output text 2>/dev/null)"
-  if [ -n "${q_url}" ] && [ "${q_url}" != "None" ]; then
+  # of the phase left one behind. `FailQueue` (lib/*.ts) has no `queueName`, so
+  # cdkd generates it; a native prefix listing (not an exact-name
+  # `get-queue-url`) survives go-to-k/cdkd#5064 adding a suffix cdkd does not
+  # predict ahead of time.
+  local q_urls q_url
+  q_urls="$(aws sqs list-queues --queue-name-prefix "${STACK}-FailQueue" --query 'QueueUrls' --output text 2>/dev/null)"
+  for q_url in ${q_urls}; do
+    [ "${q_url}" = "None" ] && continue
     echo "[verify] cleanup: deleting leftover queue ${q_url}"
     aws sqs delete-queue --queue-url "${q_url}" >/dev/null 2>&1
-  fi
+  done
 
   # State + the events sidecar this fixture's failed run writes.
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/" --recursive >/dev/null 2>&1

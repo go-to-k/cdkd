@@ -62,7 +62,7 @@ import {
   resetUserPoolCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/cognito-provider.js';
 import { withRetry } from '../../../src/deployment/retry.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 /** The shape `isTransientServerError` / `isAmbiguousOutcomeError` classify (issue #2026). */
 const transient500 = (): Error =>
@@ -224,7 +224,7 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
     props: Record<string, unknown> = {},
     options: { sleep?: (ms: number) => Promise<void>; maskSecrets?: (t: string) => string } = {}
   ) =>
-    withStackName(STACK, () =>
+    withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       withRetry(
         () =>
           provider.create(
@@ -362,12 +362,12 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
   it('does not name a same-named pool created AFTER the ambiguous attempt ended', async () => {
     aws.failNext.set('CreateUserPoolCommand', [transient500()]);
     await expect(
-      withStackName(STACK, () => provider.create('Pool', 'AWS::Cognito::UserPool', {}))
+      withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('Pool', 'AWS::Cognito::UserPool', {}))
     ).rejects.toThrow();
     vi.setSystemTime(Date.now() + 60_000);
     aws.seed({ Id: 'us-east-1_otherProcess', Name: `${STACK}-Pool` });
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pool', 'AWS::Cognito::UserPool', {})
     );
 
@@ -377,7 +377,7 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
   });
 
   it('does not name a pool this process already recorded', async () => {
-    const first = await withStackName(STACK, () =>
+    const first = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pool', 'AWS::Cognito::UserPool', {})
     );
     aws.failNext.set('CreateUserPoolCommand', [transient500()]);
@@ -533,7 +533,7 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
     const replayLine = (): string | undefined =>
       warnLines().find((l) => l.includes('succeeded only after the AWS SDK sent it again'));
     const createOnce = (props: Record<string, unknown> = {}) =>
-      withStackName(STACK, () => provider.create('Pool', 'AWS::Cognito::UserPool', props));
+      withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('Pool', 'AWS::Cognito::UserPool', props));
 
     it('names the pool the first attempt left, never the one the create returned; nothing adopted or deleted', async () => {
       aws.nextCreateAttempts = 2;
@@ -559,7 +559,7 @@ describe('CognitoUserPoolProvider CreateUserPool retry safety (issue #2080, dete
     it('a single-attempt create, or one with no $metadata, sends no lookup', async () => {
       aws.nextCreateAttempts = 1;
       await createOnce();
-      await withStackName(STACK, () => provider.create('Other', 'AWS::Cognito::UserPool', {}));
+      await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('Other', 'AWS::Cognito::UserPool', {}));
 
       expect(aws.calls).toEqual(['CreateUserPoolCommand', 'CreateUserPoolCommand']);
       expect(warnLines()).toEqual([]);

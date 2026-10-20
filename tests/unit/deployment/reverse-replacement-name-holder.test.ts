@@ -16,7 +16,7 @@ import {
 } from '../../../src/deployment/replacement-name-holder.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 type Input = Parameters<typeof reverseReplacementNewHoldsName>[0];
 
@@ -614,16 +614,16 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
     });
 
   it('outside withSkipPrefix the SENT name is prefixed, so a new role holding the recorded one is not proven', () => {
-    // `cdkd rollback` enters withStackName but not withSkipPrefix.
-    const r = withStackName('Stk', () => refusal(role({ physicalId: 'my-role' })));
+    // `cdkd rollback` enters withStackScope but not withSkipPrefix.
+    const r = withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => refusal(role({ physicalId: 'my-role' })));
     expect(r.known).toBe(false);
     expect(r.diagnosis).toContain('RoleName "my-role", which its provider sends as "Stk-my-role"');
-    expect(withStackName('Stk', () => role({ physicalId: 'Stk-my-role' }))).toEqual({ holds: true });
+    expect(withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => role({ physicalId: 'Stk-my-role' }))).toEqual({ holds: true });
   });
 
   it('under withSkipPrefix the sent name is the declared one', () => {
     expect(
-      withSkipPrefix(true, () => withStackName('Stk', () => role({ physicalId: 'my-role' })))
+      withSkipPrefix(true, () => withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => role({ physicalId: 'my-role' })))
     ).toEqual({ holds: true });
   });
 
@@ -662,25 +662,25 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
       ['AWS::IAM::InstanceProfile', 'InstanceProfileName', 'Stk-MyRole'],
     ] as const) {
       const base = { oldResourceType: type, newResourceType: type, requested: {}, recorded: {} };
-      expect(withStackName('Stk', () => ask({ ...base, logicalId: 'MyRole', physicalId: id }))).toEqual({
+      expect(withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => ask({ ...base, logicalId: 'MyRole', physicalId: id }))).toEqual({
         holds: true,
       });
-      const other = refusal(withStackName('Stk', () => ask({ ...base, logicalId: 'MyRole', physicalId: 'x' })));
+      const other = refusal(withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => ask({ ...base, logicalId: 'MyRole', physicalId: 'x' })));
       expect(other.diagnosis).toContain(`its provider generates ${property} "Stk-MyRole" here`);
-      const noId = refusal(withStackName('Stk', () => ask({ ...base, logicalId: 7, physicalId: id })));
+      const noId = refusal(withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => ask({ ...base, logicalId: 7, physicalId: id })));
       expect(noId.diagnosis).toContain('cannot derive the name its provider generates');
     }
   });
 
   it('on the Cloud Control route the bag IS what was sent, proven only by the new id', () => {
-    expect(withStackName('Stk', () => role({ createdVia: 'cc-api', physicalId: 'my-role' }))).toEqual({
+    expect(withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () => role({ createdVia: 'cc-api', physicalId: 'my-role' }))).toEqual({
       holds: true,
     });
     // The NEW resource may have been made by the SDK provider (a replacement
     // routes afresh): its record keeps the template value while AWS holds the
     // rewritten name, so an equal recorded name must not prove it.
     const sdkMadeRole = refusal(
-      withStackName('Stk', () =>
+      withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         role({
           createdVia: 'cc-api',
           requested: { RoleName: 'my_role' },
@@ -692,7 +692,7 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
     expect(sdkMadeRole.known).toBe(false);
     const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
     const sdkMadeTg = refusal(
-      withStackName('Stk', () =>
+      withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         ask({
           oldResourceType: TG,
           newResourceType: TG,
@@ -720,7 +720,7 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
   it('a managed policy ARN with a path names the policy through its last segment', () => {
     const MP = 'AWS::IAM::ManagedPolicy';
     expect(
-      withStackName('Stk', () =>
+      withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         ask({
           oldResourceType: MP,
           newResourceType: MP,
@@ -736,7 +736,7 @@ describe('a provider that rewrites the name it sends (review M1, #4018)', () => 
   it('a secret-derived declared name is never followed by its rewritten spelling', () => {
     const secret = 'tok_SECRET';
     const r = refusal(
-      withStackName('Stk', () =>
+      withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         role({
           requested: { RoleName: secret },
           physicalId: 'x',

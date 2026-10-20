@@ -28,7 +28,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceNameWithFallback } from '../resource-name.js';
+import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { withRemovalDefaults } from '../update-removal.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -452,7 +452,22 @@ export class IAMRoleProvider implements ResourceProvider {
           `'cdkd drift --accept' records the live one; only a deploy renames the role.`
       );
     }
-    const newRoleName = revertKeepsName ? physicalId : derivedRoleName;
+    // go-to-k/cdkd#5064: an un-named role whose recorded name differs from the
+    // derivation only by the naming scheme keeps it, never a replacement.
+    const generatedNameKept = recordedGeneratedNameKept({
+      recorded: physicalId,
+      derived: derivedRoleName,
+      declaredName: properties['RoleName'],
+      previousDeclaredName: previousProperties['RoleName'],
+      logicalId,
+      options: { maxLength: 64 },
+    });
+    if (generatedNameKept) {
+      log.debug(
+        `IAM role ${logicalId}: keeping its generated name ${v(physicalId)} (the template names no role)`
+      );
+    }
+    const newRoleName = revertKeepsName || generatedNameKept ? physicalId : derivedRoleName;
 
     // Check if immutable properties changed (requires replacement)
     // RoleName and Path are immutable - cannot be changed after creation

@@ -46,8 +46,17 @@
  *    replays each op exactly once).
  */
 
-import { withReplayDeletePrinting } from './rollback-executor/replay-scope.js';
-import type { ResourceState, StackOrphanRecord } from '../types/state.js';
+import {
+  nameGenerationOf,
+  withNameGenerationReached,
+  type RolledBackCreate,
+} from '../state/name-generation.js';
+import {
+  noteRolledBackCreate,
+  withReplayDeletePrinting,
+  type ReplayDeferral,
+} from './rollback-executor/replay-scope.js';
+import type { ResourceState, StackOrphanRecord, SupersededResourceRecord } from '../types/state.js';
 import {
   createSecretMasker,
   carryLogOnlyValues,
@@ -83,6 +92,8 @@ import {
   recordUnderIdIsNotOwn,
   recheckMismatchedFailedCreate,
   markDeleteFirstBlocked,
+  renamedReverseReplacement,
+  revertReferences,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -210,6 +221,12 @@ async function replayRollbackUnbound(
      */
     onOrphan?: (record: StackOrphanRecord) => void;
     /**
+     * go-to-k/cdkd#5064: called the moment a CREATE's record leaves (deleted,
+     * or left in AWS), BEFORE `afterOp` saves, for the reason `onOrphan` is:
+     * every save from then on retires its generation (`retiredAfterRollback`).
+     */
+    onRolledBackCreate?: (create: RolledBackCreate) => void;
+    /**
      * go-to-k/cdkd#4225: the completed writes an `AWS::IAM::Policy` revert or
      * delete, or a role / group / user revert, asks about before removing an
      * inline policy name. A caller that
@@ -223,6 +240,16 @@ async function replayRollbackUnbound(
      * delete-first guard (`markDeleteFirstBlocked`). Absent counts none.
      */
     failedOperations?: readonly FailedOperation[] | undefined;
+    /**
+     * go-to-k/cdkd#5064: a new resource no record holds until its deferred
+     * delete runs ({@link ReplayDeferral}): the caller keeps it in
+     * `supersededResources` across every save in between, and records what is
+     * left in its final save. With these, a new copy a dependent still uses
+     * (its revert failed) or an interrupt left pending is kept there rather
+     * than deleted under that dependent.
+     */
+    onSuperseded?: (entry: SupersededResourceRecord) => void;
+    onSupersededSettled?: (entry: SupersededResourceRecord) => void;
   } = {}
 ): Promise<RollbackReplayResult> {
   const orphanLogicalIds = options.orphanLogicalIds ?? new Set<string>();
@@ -233,6 +260,7 @@ async function replayRollbackUnbound(
     skipped: 0,
     interrupted: false,
     orphaned: [],
+    rolledBackCreates: [],
   };
 
   if (operations.length === 0) {
@@ -275,11 +303,39 @@ async function replayRollbackUnbound(
   // Step 1: UPDATE/DELETE rollbacks in reverse completion order, except that
   // a standalone inline policy is reversed after an IAM writer sharing its
   // name on its principal (go-to-k/cdkd#4821).
-  for (const op of orderInlinePolicyReversals([...otherOps].reverse(), stateResources)) {
-    if (options.isInterrupted?.()) {
-      result.interrupted = true;
-      break;
-    }
+  //
+  // go-to-k/cdkd#5064: and except that a renamed reverse-replacement
+  // (`renamedReverseReplacement`) re-creates its old resource BEFORE the first
+  // op whose revert may name it, which reverse completion order runs first;
+  // its new copy is deleted at its own slot, once those ops have moved off it.
+  // The re-create of one it depends on runs before its own.
+  const stepOne = orderInlinePolicyReversals([...otherOps].reverse(), stateResources);
+  const stepOneIds = new Map<string, CompletedOperation>();
+  const stepOneIndex = new Map<CompletedOperation, number>();
+  stepOne.forEach((op, at) => {
+    if (!stepOneIds.has(op.logicalId)) stepOneIds.set(op.logicalId, op);
+    stepOneIndex.set(op, at);
+  });
+  // Every op replayed so far, ahead of its slot or at it: none runs twice.
+  const started = new Set<CompletedOperation>();
+  const pendingNewDeletes = new Map<
+    CompletedOperation,
+    { finish: () => Promise<void>; keep: ((reason: string) => void) | undefined }
+  >();
+  // The ops whose revert failed or was skipped: a pending new copy one of
+  // them names is still in use by it.
+  const failedOps = new Set<CompletedOperation>();
+  const usedByFailedRevert = (target: CompletedOperation): boolean =>
+    [...failedOps].some(
+      (failed) =>
+        failed !== target && revertReferences(failed, stateResources).has(target.logicalId)
+    );
+  // The physical ids those pending deletes are to remove: still live, so a
+  // reversal whose old id is one of them waits for its slot.
+  const pendingNewIds = new Set<string>();
+  const runOp = async (op: CompletedOperation, deferral?: ReplayDeferral): Promise<void> => {
+    const failuresBefore = result.failures;
+    const skippedBefore = result.skipped;
     await replaySingle(
       op,
       stateResources,
@@ -292,9 +348,92 @@ async function replayRollbackUnbound(
       inlinePolicyWriters,
       options.afterOp,
       options.isInterrupted,
-      createdInSegment
+      createdInSegment,
+      options.onRolledBackCreate,
+      deferral
     );
+    if (result.failures > failuresBefore || result.skipped > skippedBefore) failedOps.add(op);
+  };
+  const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
+    for (const target of [...refs].map((id) => stepOneIds.get(id))) {
+      if (target === undefined || started.has(target)) continue;
+      if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds, pendingNewIds)) {
+        continue;
+      }
+      // Its own old record names an op still to revert BEFORE its slot that is
+      // not a renamed reversal: re-created now, it would read that op's NEW
+      // values. It keeps its slot, after that op. One reverting after its slot
+      // ran after the re-create before too.
+      const ownRefs = revertReferences(target, stateResources);
+      if (
+        [...ownRefs].some((id) => {
+          const named = stepOneIds.get(id);
+          return (
+            named !== undefined &&
+            !started.has(named) &&
+            stepOneIndex.get(named)! < stepOneIndex.get(target)! &&
+            !renamedReverseReplacement(named, stateResources, orphanLogicalIds, pendingNewIds)
+          );
+        })
+      ) {
+        continue;
+      }
+      if (options.isInterrupted?.()) return;
+      started.add(target);
+      await recreateAhead(ownRefs);
+      if (options.isInterrupted?.()) return;
+      const newId = stateResources[target.logicalId]?.physicalId;
+      await runOp(target, {
+        defer: (finish, keep) => {
+          pendingNewDeletes.set(target, {
+            finish: async () => {
+              await finish();
+              if (typeof newId === 'string') pendingNewIds.delete(newId);
+            },
+            // Kept, it stays live: its id stays pending for later reversals.
+            keep,
+          });
+          if (typeof newId === 'string') pendingNewIds.add(newId);
+        },
+        onSuperseded: options.onSuperseded,
+        onSupersededSettled: options.onSupersededSettled,
+      });
+    }
+  };
+  for (const op of stepOne) {
+    if (options.isInterrupted?.()) {
+      result.interrupted = true;
+      break;
+    }
+    if (!started.has(op)) await recreateAhead(revertReferences(op, stateResources));
+    if (options.isInterrupted?.()) {
+      result.interrupted = true;
+      break;
+    }
+    if (started.has(op)) {
+      const pending = pendingNewDeletes.get(op);
+      pendingNewDeletes.delete(op);
+      if (pending?.keep !== undefined && usedByFailedRevert(op)) {
+        pending.keep('a resource that references it did not revert');
+      } else {
+        await pending?.finish();
+      }
+      continue;
+    }
+    started.add(op);
+    await runOp(op);
   }
+  // Interrupted with a new copy still pending: its old resource is back and
+  // its record says so, so a re-run reads the op as done and would never
+  // delete it. Recorded as superseded, it is kept for the next deploy, which
+  // deletes it after the ops left unreverted move off it; otherwise deleted
+  // now, and an op left unreverted that still names it reverts to the old one
+  // on that re-run.
+  for (const pending of pendingNewDeletes.values()) {
+    if (pending.keep !== undefined) pending.keep('the rollback was interrupted');
+    else await pending.finish();
+  }
+  pendingNewDeletes.clear();
 
   // Step 2: CREATE rollbacks (deletions) in dependency-aware order.
   if (!result.interrupted && createOps.length > 0) {
@@ -316,7 +455,8 @@ async function replayRollbackUnbound(
         inlinePolicyWriters,
         options.afterOp,
         options.isInterrupted,
-        createdInSegment
+        createdInSegment,
+        options.onRolledBackCreate
       );
     }
   }
@@ -454,7 +594,10 @@ async function replaySingle(
   inlinePolicyWriters: RollbackInlinePolicyWriters,
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean,
-  createdInSegment: ReadonlySet<string> = new Set()
+  createdInSegment: ReadonlySet<string> = new Set(),
+  onRolledBackCreate?: (create: RolledBackCreate) => void,
+  /** go-to-k/cdkd#5064: see {@link ReplayDeferral}. */
+  deferral?: ReplayDeferral
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -500,6 +643,7 @@ async function replaySingle(
     orphanLogicalIds,
     result,
     onOrphan,
+    onRolledBackCreate,
     inlinePolicyWriters,
     afterOp,
     isInterrupted,
@@ -510,6 +654,7 @@ async function replaySingle(
     mask,
     createdInSegment,
     createRollbackRoute: undefined,
+    deferral,
   };
 
   // go-to-k/cdkd#4408: the op completed when it replaced or dropped the
@@ -674,6 +819,12 @@ async function replayFailedOperationsUnbound(
      */
     onOrphan?: (record: StackOrphanRecord) => void;
     /**
+     * go-to-k/cdkd#5064: called the moment a CREATE's record leaves (deleted,
+     * or left in AWS), BEFORE `afterOp` saves, for the reason `onOrphan` is:
+     * every save from then on retires its generation (`retiredAfterRollback`).
+     */
+    onRolledBackCreate?: (create: RolledBackCreate) => void;
+    /**
      * Emit the ROLLBACK_STARTED / ROLLBACK_FINISHED envelope around the
      * failed-op replay. The command passes true for a failed-only segment
      * (zero completed ops), where `replayRollback` returns early without
@@ -698,9 +849,11 @@ async function replayFailedOperationsUnbound(
     remainingFailedOps: [],
     skippedOps: [],
     orphaned: [],
+    rolledBackCreates: [],
     leftInPlace: 0,
   };
   const { logger } = ctx;
+  const rolledBack = { result, onRolledBackCreate: options.onRolledBackCreate };
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
   // concrete secret for the failed-op provider replay (GHSA fix).
   const resolver = new ReplayResolvers(ctx.region);
@@ -909,7 +1062,11 @@ async function replayFailedOperationsUnbound(
             result.orphaned.push(orphaned);
             options.onOrphan?.(orphaned);
           }
-          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) {
+            delete stateResources[op.logicalId];
+            // go-to-k/cdkd#5064: the kept resource holds its name in AWS.
+            noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+          }
           // go-to-k/cdkd#4438: as on the `orphan-retain` arm.
           await noteRetainedResource(op.resourceType, op.logicalId);
           logger.info(
@@ -988,7 +1145,10 @@ async function replayFailedOperationsUnbound(
               logger.info(
                 safeMsg`  Rollback: partially-created ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) is already gone — nothing to delete`
               );
-              if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+              if (!recordUnderIdIsNotOwn(op, stateResources)) {
+                delete stateResources[op.logicalId];
+                noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+              }
               await options.afterOp?.(op.logicalId);
               ctx.recordEvent?.({
                 eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1177,7 +1337,11 @@ async function replayFailedOperationsUnbound(
             result.warnings++;
             result.leftInPlace++;
           }
-          if (!recordUnderIdIsNotOwn(op, stateResources)) delete stateResources[op.logicalId];
+          if (!recordUnderIdIsNotOwn(op, stateResources)) {
+            delete stateResources[op.logicalId];
+            // go-to-k/cdkd#5064: the next create asks for a new name.
+            noteRolledBackCreate(rolledBack, op, failedCreateRecord);
+          }
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1334,6 +1498,7 @@ async function replayFailedOperationsUnbound(
               logicalId: op.logicalId,
               physicalId: current.physicalId,
               via: revertVia,
+              nameGeneration: nameGenerationOf(current, op.logicalId),
             },
             logger,
             mask,
@@ -1388,7 +1553,13 @@ async function replayFailedOperationsUnbound(
           }
           stateResources[op.logicalId] = maskRestoredNoEchoRecord(
             redactRollbackRecord(
-              recordAfterRollbackUpdate(prev, revertFailedResult),
+              // go-to-k/cdkd#5064 phase 2: the failed replacement's create may
+              // have made a resource under the generation it asked for.
+              withNameGenerationReached(
+                recordAfterRollbackUpdate(prev, revertFailedResult),
+                op.logicalId,
+                op.nameGeneration
+              ),
               secrets,
               prev.properties,
               prev.attributes

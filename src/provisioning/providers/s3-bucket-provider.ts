@@ -95,7 +95,7 @@ import {
   requireConfigString,
   type ConfigStringOptions,
 } from '../config-shape.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   maskDeep,
@@ -9119,11 +9119,7 @@ export class S3BucketProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['BucketName']) return undefined;
-    return generateResourceName(logicalId, {
-      maxLength: 63,
-      lowercase: true,
-      allowedPattern: /[^a-z0-9.-]/g,
-    });
+    return generatedNameFor('AWS::S3::Bucket', logicalId);
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

@@ -17,7 +17,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { lookupEachName } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -459,9 +459,16 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
+    // go-to-k/cdkd#5064: `PutRule` is an upsert by name, so a re-derived name
+    // that differs from the recorded rule's would CREATE a second rule: by the
+    // naming scheme (a v13 stack holding a legacy name), or outside the stack's
+    // scope (`drift --revert`). A rule's `Name` is create-only, so an update
+    // never renames one: a rule the template does not name keeps the name its
+    // ARN (`rule/[<bus>/]<name>`) carries.
+    const recordedRuleName = physicalId.split('/').pop() ?? '';
+    const declaredRuleName = properties['Name'] as string | undefined;
     const ruleName =
-      (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      declaredRuleName || recordedRuleName || generatedNameFor('AWS::Events::Rule', logicalId);
     const newTargets = properties['Targets'] as RuleTarget[] | undefined;
     const oldTargets = previousProperties['Targets'] as RuleTarget[] | undefined;
 
@@ -815,7 +822,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['Name']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 64 });
+    return generatedNameFor('AWS::Events::Rule', logicalId);
   }
 
   /**

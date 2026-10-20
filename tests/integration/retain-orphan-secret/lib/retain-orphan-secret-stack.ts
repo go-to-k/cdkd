@@ -36,11 +36,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *
  * ## Why `AWS::SSM::Parameter`
  *
- * Four properties have to hold at once: its `Value` accepts a dynamic
+ * Three properties have to hold at once: its `Value` accepts a dynamic
  * reference, so plaintext genuinely reaches `properties`; `RemovalPolicy.RETAIN`
- * is honoured, so the rollback ORPHANS it and mints a record; its provider
- * implements `import()`, so the redeploy's ADOPTION path runs too; and it costs
- * nothing.
+ * is honoured, so the rollback ORPHANS it and mints a record; and it costs
+ * nothing. (#2934's redeploy ADOPTED the orphan through the provider's
+ * `import()`; on a stack with a stack instance id, go-to-k/cdkd#5064, it
+ * creates a new parameter under the next name generation's name instead, and
+ * carries the orphan record — both re-persisted, both measured.)
  *
  * Two modes, driven by `CDKD_TEST_SECRET_ORPHAN`:
  *
@@ -48,7 +50,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     out of range. `addDependency` makes the parameter exist BEFORE the queue
  *     fails; without it the DAG may fail the queue first, nothing is orphaned,
  *     and the run passes having measured nothing.
- *   - `fixed` — the same parameter, queue repaired. The redeploy that adopts.
+ *   - `fixed` — the same parameter, queue repaired. The redeploy that creates
+ *     a new parameter beside the orphan.
  */
 export class RetainOrphanSecretStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

@@ -86,8 +86,17 @@ type is refused with `STATEFUL_REPLACE_BLOCKED`. See
 ## Same-name replacement: delete-first ordering
 
 Creating the new resource first cannot work when it needs a physical name the
-old resource still holds. The deploy then fails with one of two codes, and
-both messages name `--replace`:
+old resource still holds. That happens for a name your template declares, and
+for a name cdkd generates on a stack first deployed before generated names
+carried a suffix. On any other stack, a resource your template does not name
+gets the next generated name when it is replaced, so it never needs the old
+one's name: cdkd creates first with no flag, and `--recreate-via-*` and the
+fallback after a rejected update create first too. A collision on that new
+name is covered in
+[A replacement refused on its new name](import.md#a-replacement-refused-on-its-new-name).
+
+When the name is shared, the deploy fails with one of two codes, and both
+messages name `--replace`:
 
 | Code | What happened |
 | --- | --- |

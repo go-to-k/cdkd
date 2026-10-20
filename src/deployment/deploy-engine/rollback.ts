@@ -1,12 +1,19 @@
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { withoutPendingRequest } from '../cc-pending-requests.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
 import { namingSecretsFor, printingSecretsFor } from './masking.js';
 import { explicitNamePropertyFor, getCurrentSkipPrefix } from '../../provisioning/resource-name.js';
 import { getCdkdVersion } from '../../state/deployment-events-store.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { RollbackJournalSegment } from '../../types/rollback-journal.js';
-import type { ResourceState, StackOrphanRecord, StackState } from '../../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  StackState,
+  SupersededResourceRecord,
+} from '../../types/state.js';
 import {
   asIsMessage,
   displayIdent,
@@ -42,6 +49,7 @@ import {
   replayRollback,
 } from '../rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
+import { addSuperseded, removeSuperseded } from '../superseded-resources.js';
 import { withPrintingSecrets } from '../resource-secrets-scope.js';
 import {
   completedReplayEntries,
@@ -104,6 +112,7 @@ export interface RollbackDeps {
   resetResumedCreates: () => void;
   absentJournalVersionPurge: () => DeployEngine['absentJournalVersionPurge'];
   interrupted: () => DeployEngine['interrupted'];
+  userInterrupted: () => DeployEngine['userInterrupted'];
   noEchoDeps: () => NoEchoDeps;
   recordEvent: DeployEngine['recordEvent'];
   crossStackReadKeyNormalizer: DeployEngine['crossStackReadKeyNormalizer'];
@@ -286,6 +295,7 @@ export async function adoptRollbackOrphans(
         logger: deps.logger,
       }),
       logger: { debug: (m) => deps.logger.debug(m) },
+      newScheme: currentState.stackInstanceId !== undefined,
     })
   );
 
@@ -300,6 +310,7 @@ export async function adoptRollbackOrphans(
   // needle only over-masks. The thrown refusal too: it names the id and
   // carries no command, and the logical id beside it is what the user acts on.
   for (const notice of plan.notices) deps.logger.info(maskSecretsInText(notice, named));
+  for (const warning of plan.warnings) deps.logger.warn(maskSecretsInText(warning, named));
 
   // go-to-k/cdkd#4801: for the journal's keep, what state held for each
   // adopted id. Installed BEFORE the refusal below, so a refused run never
@@ -434,7 +445,20 @@ export async function performRollback(
    * row is not settled).
    */
   skipped: number;
+  /**
+   * The user's Ctrl-C stopped the replay part-way: the caller keeps the
+   * journal segment, which `cdkd rollback` resumes.
+   */
+  interrupted: boolean;
   orphaned: StackOrphanRecord[];
+  /** go-to-k/cdkd#5064: the CREATEs it took back, whose generations retire. */
+  rolledBackCreates: RolledBackCreate[];
+  /**
+   * go-to-k/cdkd#5064: the new copies a renamed reversal left in AWS (a
+   * deferred delete that failed, or one kept for a dependent that did not
+   * revert), which the caller's post-rollback save records as superseded.
+   */
+  superseded: SupersededResourceRecord[];
   /**
    * Issue #3754: the nested-stack rows whose child replay COMPLETED (no
    * failure, no skip), with the grandchildren each completed. A row the
@@ -505,6 +529,9 @@ export async function performRollback(
   };
   // go-to-k/cdkd#4225: one record of completed writes across both replays.
   const inlinePolicyWriters = new RollbackInlinePolicyWriters();
+  // go-to-k/cdkd#5064: a renamed reversal's new copy still to delete; the one
+  // save on this path is the caller's, which records what is left here.
+  const supersededHost: Pick<StackState, 'supersededResources'> = {};
   // Issue #3754: a nested-stack row reverted here replays its child's
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
@@ -544,6 +571,12 @@ export async function performRollback(
           replayRollback(completedOperations, stateResources, stackName, ctx, {
             inlinePolicyWriters,
             failedOperations,
+            // Only the user's Ctrl-C (go-to-k/cdkd#5118): the sibling failure
+            // that started this rollback holds the engine's other flag. It
+            // also ends a name-release wait or a re-create retry here.
+            isInterrupted: () => deps.userInterrupted(),
+            onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+            onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
           })
       ),
       run: scope,
@@ -563,7 +596,10 @@ export async function performRollback(
     // which the executor does not count; the scope does.
     warnings: result.warnings + run.warnings + (failed?.warnings ?? 0),
     skipped: result.skipped + (failed?.skipped ?? 0),
+    interrupted: result.interrupted,
     orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
+    rolledBackCreates: [...(failed?.rolledBackCreates ?? []), ...result.rolledBackCreates],
+    superseded: supersededHost.supersededResources ?? [],
     settledNested: run.settled,
     remainingFailedOps: failedOperations.filter((_, i) => !handled.has(i)),
   };
@@ -679,9 +715,11 @@ export async function settleJournalAfterSuccess(
       const own = await settleJournaledOrphansOnSuccess({
         stateBackend: deps.stateBackend,
         stackName,
+        stackInstanceId: stackInstanceIdOf(previousState, displayStackName(stackName)),
         region: deps.stackRegion,
         stateResources: finalResources,
         rollbackOrphans: previousState.orphans,
+        retiredNameGenerations: previousState.retiredNameGenerations,
         newerOperations: completedOperations,
         ...(deployRunId !== undefined && { deployRunId }),
         foreignHolder: foreignHolderFor({ stackName, region: deps.stackRegion }),
@@ -718,9 +756,12 @@ export async function settleJournalAfterSuccess(
         const settled = await settleJournaledOrphansOnSuccess({
           stateBackend: deps.stateBackend,
           stackName: child,
+          // go-to-k/cdkd#5064: the child's own lifetime.
+          stackInstanceId: stackInstanceIdOf(childState, displayStackName(child)),
           region: deps.stackRegion,
           stateResources: childState?.resources,
           rollbackOrphans: childState?.orphans,
+          retiredNameGenerations: childState?.retiredNameGenerations,
           // The child's own success appended its completed ops as a
           // `nested-pending-parent` segment of this run (`deployRunId`).
           newerOperations: [],

@@ -163,6 +163,12 @@ because its `DeletionPolicy` is `Retain`. The next deploy takes the existing
 resource back into state and does not create a second one. That is why the
 line is an update and not a create.
 
+Only a stack first deployed before generated names carried a suffix adopts a
+rollback orphan this way. On any other stack, nothing that left the stack is
+taken back implicitly, as in CloudFormation: the row stays a create, the deploy
+warns about the kept resource, and
+[`cdkd import`](import.md) adopts it if you want it back.
+
 When the adopted resource needs no property change, it has no line of its
 own. The totals name it instead:
 

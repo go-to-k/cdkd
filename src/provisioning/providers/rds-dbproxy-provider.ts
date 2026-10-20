@@ -16,7 +16,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   planTagDiff,
@@ -187,7 +187,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     );
     const dbProxyName =
       (properties['DBProxyName'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::RDS::DBProxy', logicalId);
     const engineFamily = properties['EngineFamily'] as EngineFamily | undefined;
     if (!engineFamily) {
       throw new ProvisioningError(

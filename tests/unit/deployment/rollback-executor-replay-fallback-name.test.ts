@@ -33,7 +33,7 @@ import {
 import type { ResourceState } from '../../../src/types/state.js';
 import {
   applyDefaultNameForFallback,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 
@@ -141,7 +141,7 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp()], state, STACK, ctx)
     );
 
@@ -170,7 +170,7 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     const newUrl = `https://sqs.us-east-1.amazonaws.com/123456789012/${STACK}-Q`;
     const state: Record<string, ResourceState> = { Q: res({ physicalId: newUrl }) };
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([{ ...reverseReplacementOp(), physicalId: newUrl }], state, STACK, ctx)
     );
 
@@ -201,7 +201,7 @@ describe('the fill must NOT fire (#3199)', () => {
     op.previousState!.provisionedBy = 'cc-api';
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackName(STACK, () => replayRollback([op], state, STACK, ctx));
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([op], state, STACK, ctx));
 
     expect(result.failures).toBe(0);
     expect(bags[0]).toEqual({});
@@ -215,7 +215,7 @@ describe('the fill must NOT fire (#3199)', () => {
       Q: res({ physicalId: 'new-q', resourceType: UNRULED_TYPE }),
     };
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp(UNRULED_TYPE)], state, STACK, ctx)
     );
 
@@ -232,7 +232,7 @@ describe('the fill must NOT fire (#3199)', () => {
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback(
         [reverseReplacementOp(NAMED_TYPE, { QueueName: 'user-chosen' })],
         state,
@@ -249,7 +249,7 @@ describe('the fill must NOT fire (#3199)', () => {
 describe('the properties that make the fill CORRECT, not merely present (#3199)', () => {
   it('the replayed name is byte-identical to what the forward create would mint', async () => {
     // Not a restatement of the first case's literal. Both rollback entry points
-    // bind `withStackName` (`cli/commands/rollback.ts` for the standalone
+    // bind `withStackScope` (`cli/commands/rollback.ts` for the standalone
     // command, `deploy-engine.ts` around `doDeploy` for the in-process one), so
     // the replay resolves the SAME AsyncLocalStorage-scoped stack name the
     // forward create did. Were that scope absent, the fill would mint an
@@ -261,13 +261,13 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const forward = withStackName(STACK, () => applyDefaultNameForFallback('Q', NAMED_TYPE, {}));
+    const forward = withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback('Q', NAMED_TYPE, {}));
 
-    await withStackName(STACK, () => replayRollback([reverseReplacementOp()], state, STACK, ctx));
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([reverseReplacementOp()], state, STACK, ctx));
 
     expect(bags[0]).toEqual(forward);
     // And the prefix is genuinely present, so a regression that dropped the
-    // `withStackName` scope on BOTH sides cannot satisfy the equality above.
+    // `withStackScope` scope on BOTH sides cannot satisfy the equality above.
     expect(bags[0]?.['QueueName']).toBe(`${STACK}-Q`);
   });
 
@@ -287,7 +287,7 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
       Q: res({ physicalId: 'new-q', provisionedBy: 'sdk' }),
     };
 
-    const result = await withStackName(STACK, () => replayRollback([op], state, STACK, ctx));
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([op], state, STACK, ctx));
 
     expect(result.failures).toBe(0);
     expect(routingInputs[0]).toEqual({
@@ -317,7 +317,7 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     const { ctx } = makeCtx({ create, delete: del });
     const state: Record<string, ResourceState> = { Q: res({ physicalId: 'new-q' }) };
 
-    const result = await withStackName(STACK, () =>
+    const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([reverseReplacementOp()], state, STACK, ctx)
     );
 
@@ -331,5 +331,38 @@ describe('the properties that make the fill CORRECT, not merely present (#3199)'
     expect(result.failures).toBe(0);
     expect(state['Q']?.properties).toEqual({});
     expect(state['Q']?.properties).not.toHaveProperty('QueueName');
+  });
+});
+
+describe('the holder proof never throws for a name only Cloud Control needs (#5095)', () => {
+  it('an SDK-routed directory bucket with an AZ-name LocationName reaches the reverse-replacement refusal', async () => {
+    const TYPE = 'AWS::S3Express::DirectoryBucket';
+    const create = vi.fn(async () => {
+      throw awsSdkError(COLLISION_MESSAGE);
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del }, 'sdk');
+    const state: Record<string, ResourceState> = {
+      Q: res({ physicalId: 'new-q', resourceType: TYPE }),
+    };
+    const warn = vi.mocked(silentLogger.warn);
+    warn.mockClear();
+
+    const result = await withStackScope(
+      { stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() },
+      () =>
+        replayRollback(
+          [reverseReplacementOp(TYPE, { LocationName: 'us-east-1a' })],
+          state,
+          STACK,
+          ctx
+        )
+    );
+
+    expect(result.failures).toBe(1);
+    expect(del).not.toHaveBeenCalled();
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toMatch(/Cannot reverse the replacement of/);
+    expect(text).not.toMatch(/cannot generate a BucketName/);
   });
 });

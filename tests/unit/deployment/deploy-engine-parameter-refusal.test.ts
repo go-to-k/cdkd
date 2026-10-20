@@ -875,7 +875,7 @@ describe('DeployEngine - an unverifiable-parameter baseline refusal (issue #3462
       const adopted = loaded.state.resources['Fn']!;
       delete loaded.state.resources['Fn'];
       loaded.state.orphans = [{ logicalId: 'Fn', orphanedAt: 1, state: adopted }];
-      orphanPlanOverride.plan = { adopted: { Fn: adopted }, remaining: [], notices: [], refusals: [] };
+      orphanPlanOverride.plan = { adopted: { Fn: adopted }, remaining: [], notices: [], refusals: [], warnings: [] };
       await makeEngine({ captureObservedState: true }).deploy(stackName, template);
       expectKeptAndStamped();
     });

@@ -26,7 +26,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -448,7 +448,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::RDS::DBSubnetGroup', logicalId);
 
     try {
       const created = await this.getCreateClient().send(
@@ -649,7 +649,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::RDS::DBCluster', logicalId);
 
     // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
     // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -1195,7 +1195,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::RDS::DBInstance', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;

@@ -1,3 +1,8 @@
+import {
+  currentNameGeneration,
+  getCurrentStackInstanceId,
+} from '../../provisioning/resource-name.js';
+import { nameGenerationField } from '../../state/name-generation.js';
 import { isDeepStrictEqual } from 'node:util';
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import type { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
@@ -333,6 +338,11 @@ export async function provisionCreate(
   );
   stateResources[logicalId] = {
     physicalId: result.physicalId,
+    // go-to-k/cdkd#5064 phase 2: the generation this create's name was
+    // derived at -- past a retired one for a re-added logical id, else 0
+    // (written as nothing). Never on a legacy stack.
+    ...(getCurrentStackInstanceId() !== undefined &&
+      nameGenerationField(currentNameGeneration(logicalId) ?? 0)),
     resourceType,
     properties: recordedProperties,
     // #2790: the evidence that a kept create-only key never reached AWS.
@@ -402,6 +412,48 @@ export async function provisionCreate(
     safeMsg`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`
   );
   return;
+}
+
+/**
+ * go-to-k/cdkd#5064 phase 2: a replacement's create of its new resource, which
+ * on a stack with an instance id asks for the NEXT generation's generated name
+ * (bound by the caller): checked by the generated-name guard as a plain create
+ * is ({@link refuseUnlicensedGeneratedName}), and its outcome noted so the
+ * deploy's end keeps the intent of a create whose outcome is unknown. A create
+ * the guard was not asked about runs as before.
+ */
+export async function guardedReplacementCreate<T>(
+  engine: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
+    /**
+     * The create keeps the old record's generation (a resource that went with
+     * its re-created parent): the guard planned the NEXT one's name, which this
+     * create does not send, so it is not asked.
+     */
+    keepsName?: boolean;
+  },
+  create: () => Promise<T>
+): Promise<T> {
+  const guard = engine.generatedNameGuard;
+  if (input.keepsName === true || guard?.candidate(input.logicalId) === undefined) {
+    return create();
+  }
+  await refuseUnlicensedGeneratedName(engine, input);
+  guard.noteSent(input.logicalId);
+  let result: T;
+  try {
+    result = await create();
+  } catch (error) {
+    guard.noteFailed(input.logicalId, error);
+    throw error;
+  }
+  guard.noteReturned(input.logicalId);
+  return result;
 }
 
 /**

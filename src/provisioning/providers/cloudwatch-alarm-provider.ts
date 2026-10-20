@@ -16,7 +16,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -662,7 +662,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['AlarmName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 256 });
+    return generatedNameFor('AWS::CloudWatch::Alarm', logicalId);
   }
 
   /**

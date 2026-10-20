@@ -18,7 +18,14 @@ import type {
   ResourceDeleteResult,
   ResourceProvider,
 } from '../../types/resource.js';
-import type { ResourceState } from '../../types/state.js';
+import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
+import {
+  SUPERSEDED_KEPT_REMEDY,
+  addSuperseded,
+  canRecordSuperseded,
+  removeSuperseded,
+  retryWhileInUse,
+} from '../superseded-resources.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { green } from '../../utils/colors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -44,10 +51,12 @@ import {
   replacementRequestsDifferentName,
   maskRewrittenSentName,
   replacementSentNameMoves,
+  replacementGeneratedNameMoves,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
 import { withStackRecords } from '../stack-records-scope.js';
+import { generatedReplacementHolderAdvice } from './name-collision.js';
 import {
   isNameCollisionErrorFrom,
   isRecreateRetryableError,
@@ -87,6 +96,14 @@ export class ReplacementRunState {
    * `executeDeployment` runs; a delete outside it warns at once.
    */
   deferredReplacedDeletes: Map<string, DeferredReplacedDelete> | undefined = undefined;
+  /**
+   * go-to-k/cdkd#5111: the deploy's live state record, where a deferred
+   * delete's old resource is recorded (`StackState.supersededResources`) so
+   * the row's own save persists it. Set beside `deferredReplacedDeletes`.
+   */
+  supersededHost: Pick<StackState, 'supersededResources'> | undefined = undefined;
+  /** go-to-k/cdkd#5111: the entry each deferred delete recorded, per logical id. */
+  supersededEntries = new Map<string, SupersededResourceRecord>();
   /**
    * Logical ids whose replacement this deploy DELIBERATELY left the old
    * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
@@ -179,6 +196,16 @@ export class ReplacementRunState {
    * settling the failed UPDATE as a no-op. Cleared per `deploy()`.
    */
   oldDeletedBeforeCreate = new Set<string>();
+
+  /**
+   * go-to-k/cdkd#5064 phase 2: per logical id this deploy REPLACED (or tried
+   * to) on a stack with an instance id, the name generation its new resource
+   * was created at. Journaled on the op that failed (`FailedOperation.
+   * nameGeneration`), so `cdkd rollback --revert-failed` raises the restored
+   * record's high-water mark past a copy the failed create may have made.
+   * Cleared per `deploy()`.
+   */
+  attemptedNameGeneration = new Map<string, number>();
 }
 
 /**
@@ -199,10 +226,27 @@ export interface ReplacementDeps {
   deployStateResources: () => DeployEngine['deployStateResources'];
   interrupted: () => DeployEngine['interrupted'];
   interruptCause: () => DeployEngine['interruptCause'];
+  userInterrupted: () => DeployEngine['userInterrupted'];
   withRetry: DeployEngine['withRetry'];
   maskingRetryLoggerFor: DeployEngine['maskingRetryLoggerFor'];
   inlinePolicyClaimedFor: DeployEngine['inlinePolicyClaimedFor'];
   recordEvent: DeployEngine['recordEvent'];
+  /**
+   * go-to-k/cdkd#5064 phase 2: run a replacement's create through the
+   * generated-name guard (`guardedReplacementCreate`, `create.ts`).
+   */
+  guardedReplacementCreate: <T>(
+    input: {
+      logicalId: string;
+      resourceType: string;
+      stackName: string;
+      createdVia: ProvisionedBy | undefined;
+      resolvedProps: Record<string, unknown>;
+    },
+    create: () => Promise<T>
+  ) => Promise<T>;
+  /** Does the generated-name guard check `logicalId`'s create (its replacement included)? */
+  generatedNameGuarded: (logicalId: string) => boolean;
 }
 
 /**
@@ -434,6 +478,18 @@ export async function replaceDeleteFirstAndRecreate(
   }
   deps.logger.info(safeMsg`  ${green('✓')} Old resource deleted`);
   run.oldDeletedBeforeCreate.add(logicalId);
+  // go-to-k/cdkd#5131: a type whose delete returns while AWS still holds the
+  // name (a DynamoDB table, DELETING) waits here, where the delete is known to
+  // be this run's own; no other path pays it.
+  await oldDeleteProvider.waitForNameReleased?.(
+    logicalId,
+    currentResource.physicalId,
+    oldResourceType,
+    {
+      isInterrupted: () => deps.userInterrupted(),
+      maskSecrets: (text) => maskSecretsInText(text, secrets),
+    }
+  );
   deps.logger.info(safeMsg`  Re-creating ${logicalId}...`);
   try {
     // Some providers return from delete() before the name is
@@ -460,7 +516,9 @@ export async function replaceDeleteFirstAndRecreate(
           logicalId,
           undefined,
           undefined,
-          replaceProvider
+          replaceProvider,
+          // The old resource is gone: only the user's interrupt stops it.
+          true
         ),
       logicalId,
       {
@@ -472,8 +530,11 @@ export async function replaceDeleteFirstAndRecreate(
         // parameter above), not looked up by logical id -- see
         // `DeployEngine.maskingRetryLoggerFor`.
         logger: deps.maskingRetryLoggerFor(secrets),
-        isInterrupted: () => deps.interrupted(),
-        onInterrupted: () => new InterruptedError(deps.interruptCause() ?? 'user'),
+        // The old resource is already deleted: only the user's interrupt
+        // stops this re-create. A sibling's failure (which sets the same
+        // flag) left the stack with neither copy (generated-name-lifecycle A5).
+        isInterrupted: () => deps.userInterrupted(),
+        onInterrupted: () => new InterruptedError('user'),
         isRetryable: isRecreateRetryableError,
       }
     );
@@ -598,6 +659,14 @@ export async function checkedReplacementNameChange(
   // different name unless the type folds case.
   const adopts = replacementCreateAdoptsName(resourceType, input.createdVia);
   const typeChanged = input.oldResourceType !== resourceType;
+  const generatedMove = replacementGeneratedNameMoves({
+    oldResourceType: input.oldResourceType,
+    newResourceType: resourceType,
+    createdVia: input.createdVia,
+    desiredProperties: input.desiredProperties,
+    physicalId: currentResource.physicalId,
+    logicalId,
+  });
   const change =
     replacementRequestsDifferentName(question) ??
     (adopts || replacementOrderIsCaseSensitive(resourceType)
@@ -612,8 +681,14 @@ export async function checkedReplacementNameChange(
       physicalId: currentResource.physicalId,
       logicalId,
     }) ??
-    (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined);
+    (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined) ??
+    // go-to-k/cdkd#5064 phase 2: a generated name at the next generation.
+    generatedMove;
   if (change === undefined) return undefined;
+  // That move is checked by the generated-name guard when it planned the
+  // replacement (a lookup at plan time, the intent in the ledger so a crash
+  // re-run takes its own resource back); the probe below covers the rest.
+  if (change === generatedMove && deps.generatedNameGuarded(logicalId)) return change;
   const probe = replacementNameProbe({
     resourceType,
     createdVia: input.createdVia,
@@ -757,6 +832,10 @@ export async function createFirstThenDeleteOld(
     retainOld?: boolean;
     /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
     noEchoDeleteValues?: NoEchoDeleteValues | undefined;
+    /** go-to-k/cdkd#5064 phase 2: what the generated-name guard reads. */
+    stackName: string;
+    createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
   }
 ): Promise<ResourceCreateResult> {
   const { logicalId, resourceType, currentResource, secrets } = input;
@@ -787,17 +866,27 @@ export async function createFirstThenDeleteOld(
   );
   let createResult: ResourceCreateResult;
   try {
-    createResult = await deps.withRetry(
+    createResult = await deps.guardedReplacementCreate(
+      {
+        logicalId,
+        resourceType,
+        stackName: input.stackName,
+        createdVia: input.createdVia,
+        resolvedProps: input.resolvedProps,
+      },
       () =>
-        withCurrentResourceSecrets(secrets, () =>
-          input.createProvider.create(logicalId, resourceType, input.createProps, {
-            maskSecrets: createSecretMasker(secrets),
-          })
-        ),
-      logicalId,
-      undefined,
-      undefined,
-      input.createProvider
+        deps.withRetry(
+          () =>
+            withCurrentResourceSecrets(secrets, () =>
+              input.createProvider.create(logicalId, resourceType, input.createProps, {
+                maskSecrets: createSecretMasker(secrets),
+              })
+            ),
+          logicalId,
+          undefined,
+          undefined,
+          input.createProvider
+        )
     );
   } catch (createError) {
     // The old resource is untouched: a raw failure is the whole story.
@@ -814,7 +903,21 @@ export async function createFirstThenDeleteOld(
             `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
             (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
             `. Choose a name no other resource holds, or delete the resource holding it if it ` +
-            `is yours.`
+            `is yours.` +
+            generatedReplacementHolderAdvice({
+              stackName: input.stackName,
+              logicalId,
+              change: input.change,
+              oldPhysicalId: currentResource.physicalId,
+              // The printing bag too: the old name can be secret-derived.
+              mask: (text: string) =>
+                maskName(
+                  maskSecretsInText(
+                    text,
+                    unionOfSecretBags([secrets, printingSecretsFor(deps.secretsRun(), logicalId)])
+                  )
+                ),
+            })
         ),
         'NAMED_REPLACEMENT_COLLISION',
         createError instanceof Error ? createError : undefined
@@ -897,7 +1000,7 @@ export async function deleteReplacedAfterCreate(
     ? deps.inlinePolicyClaimedFor(oldResourceType, logicalId, deps.deployStateResources())
     : undefined;
   try {
-    deleteResult = await withPrintingSecrets(secrets, () =>
+    const sendDelete = (): Promise<void | ResourceDeleteResult> =>
       deleteProvider.delete(
         logicalId,
         currentResource.physicalId,
@@ -921,7 +1024,12 @@ export async function deleteReplacedAfterCreate(
             secretNameBagFor(deps.secretsRun(), logicalId),
           ]),
         }
-      )
+      );
+    deleteResult = await withPrintingSecrets(secrets, () =>
+      // go-to-k/cdkd#5111: the post-DAG retry waits out an "in use" refusal
+      // whose user this deploy already moved off (a deleted load balancer's
+      // listeners go asynchronously); the first attempt defers instead.
+      isRetry ? retryWhileInUse(sendDelete, () => deps.interrupted()) : sendDelete()
     );
   } catch (deleteError) {
     const deleteMsg = maskSecretsInText(describeAwsFailure(deleteError).detail, secrets);
@@ -949,6 +1057,32 @@ export async function deleteReplacedAfterCreate(
       deps.logger.info(
         safeMsg`  Could not delete old ${logicalId} (${currentResource.physicalId}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
       );
+      // go-to-k/cdkd#5111: recorded BEFORE the row's save, which persists it:
+      // a deploy killed before the retry below left the old resource in AWS
+      // with no record at all.
+      const host = run.supersededHost;
+      if (
+        host !== undefined &&
+        canRecordSuperseded(currentResource, { noEchoDeleteValues, inlinePolicyClaimed }) &&
+        // Never an id ANOTHER record of this deploy holds: a later run would
+        // delete that live resource. (This row's own record still names the
+        // old id until the row completes; an equal new id refused above.)
+        !Object.entries(deps.deployStateResources()).some(
+          ([id, record]) => id !== logicalId && record?.physicalId === currentResource.physicalId
+        )
+      ) {
+        const entry: SupersededResourceRecord = {
+          logicalId,
+          supersededAt: Date.now(),
+          state: currentResource,
+          ...(updateReplacePolicy !== undefined && { updateReplacePolicy }),
+          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...(deps.options.forceStatefulRecreation === true && { forceDataDelete: true as const }),
+          ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
+        };
+        addSuperseded(host, entry);
+        run.supersededEntries.set(logicalId, entry);
+      }
       deferred.set(logicalId, {
         physicalId: currentResource.physicalId,
         resourceType: oldResourceType,
@@ -978,9 +1112,20 @@ export async function deleteReplacedAfterCreate(
     // `PageNotFound`, or a delete failing on a KMS key or role "not found"
     // while the old resource is alive, would silence the one line telling
     // the user an untracked resource may be left.
+    // go-to-k/cdkd#5111: the retry of a recorded delete keeps the record.
+    const kept = isRetry && run.supersededEntries.has(logicalId);
     deps.logger.warn(
-      safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
+      kept
+        ? safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}. ${SUPERSEDED_KEPT_REMEDY}.`
+        : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
     );
+  }
+  // go-to-k/cdkd#5111: a retry that deleted it, or that the provider skipped
+  // (warned below as untracked), drops the record.
+  const recorded = isRetry ? run.supersededEntries.get(logicalId) : undefined;
+  if (recorded !== undefined && !deleteFailed && run.supersededHost !== undefined) {
+    removeSuperseded(run.supersededHost, recorded);
+    run.supersededEntries.delete(logicalId);
   }
   // Issue #2422.
   reportDeleteGuards(deleteResult, {
@@ -1142,14 +1287,17 @@ export function warnUnretriedReplacedDeletes(
 ): void {
   const deferred = run.deferredReplacedDeletes;
   run.deferredReplacedDeletes = undefined;
-  const note =
-    why === 'failed'
-      ? 'not retried: the deploy failed first'
-      : 'not retried: the deploy was interrupted';
+  const cause = why === 'failed' ? 'the deploy failed first' : 'the deploy was interrupted';
+  // go-to-k/cdkd#5111: a recorded one stays in state for the next deploy; one
+  // `canRecordSuperseded` kept in memory only is no longer tracked.
+  const noteFor = (logicalId: string): string =>
+    run.supersededEntries.has(logicalId)
+      ? `not retried: ${cause}; cdkd keeps it in state, and the next deploy retries the delete`
+      : `not retried: ${cause}; it is no longer tracked in state, so delete it manually`;
   for (const [logicalId, entry] of deferred ?? []) {
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
       deps.logger.warn(
-        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${note})`
+        safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
       )
     );
   }

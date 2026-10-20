@@ -47,7 +47,7 @@ import { displacedPhysicalIdShown } from './nested-child-journal.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { getPrimaryIdentifierFields } from '../provisioning/cc-import-identifier.js';
 import { getTopLevelReadOnlyProperties } from '../provisioning/read-only-properties.js';
-import { looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
+import { isNameGeneration, looksLikeCdkdGeneratedName } from '../provisioning/resource-name.js';
 import type { Logger } from '../types/config.js';
 
 /** The two Cloud Control provider methods the resolver needs. */
@@ -114,7 +114,22 @@ export async function resolvePendingCloudControlRequests(params: {
    * before the journal was cleared) is dropped, never turned into an orphan
    * of a resource state owns.
    */
-  stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
+  stateResources?:
+    | Readonly<
+        Record<
+          string,
+          { physicalId?: unknown; nameGeneration?: unknown; nameGenerationHigh?: unknown }
+        >
+      >
+    | undefined;
+  /**
+   * The stack's instance id (go-to-k/cdkd#5064), from its record: an
+   * identifier segment carrying the suffix it derives is a NAME, never an
+   * AWS-minted id. `undefined` for a legacy record. A function for a stack
+   * with no record yet (a first deploy's write-ahead id): called at most once,
+   * and only when a settle compares an identifier.
+   */
+  stackInstanceId: StackInstanceIdSource;
   /**
    * Deploy only: offered each CREATE that completed. Answering `true` keeps
    * the request in the journal for the deploy to RESUME — its CREATE of the
@@ -187,7 +202,15 @@ async function settlePending(
     region: string;
     command: string;
     logger: Logger;
-    stateResources?: Readonly<Record<string, { physicalId?: unknown }>> | undefined;
+    stateResources?:
+      | Readonly<
+          Record<
+            string,
+            { physicalId?: unknown; nameGeneration?: unknown; nameGenerationHigh?: unknown }
+          >
+        >
+      | undefined;
+    stackInstanceId: StackInstanceIdSource;
     resume?: (op: FailedOperation, identifier: string) => boolean;
     identifierUnique?: IdentifierUniqueness;
   },
@@ -197,6 +220,10 @@ async function settlePending(
   const reader = params.reader();
   const isUnique = params.identifierUnique ?? ccIdentifierIsUnique;
   const stackShown = displayStackName(stackName);
+  const source = params.stackInstanceId;
+  let resolvedId: Promise<string | undefined> | undefined;
+  const stackInstanceId = (): Promise<string | undefined> =>
+    (resolvedId ??= typeof source === 'function' ? source() : Promise.resolve(source));
   const settlements = new Map<string, Settlement>();
   const unresolved: string[] = [];
   for (const [token, op] of pending) {
@@ -237,6 +264,11 @@ async function settlePending(
           attemptedProperties: op.attemptedProperties,
           logicalId: op.logicalId,
           stackName,
+          stackInstanceId: await stackInstanceId(),
+          // go-to-k/cdkd#5064 phase 2: one past the highest generation the op
+          // or the record names. Too many only reads a name as generated, the
+          // safe answer here (not unique: the resource is kept).
+          nameGenerationsThrough: generationsThrough(op, held),
         });
         const ended =
           outcome.status === 'succeeded'
@@ -356,6 +388,12 @@ function holdsSecretReference(properties: unknown): boolean {
   return carriesSecretMask(properties) || JSON.stringify(properties).includes('{{resolve:');
 }
 
+/**
+ * Where a settle reads the stack instance id from: the record's value, or,
+ * for a stack with no record yet, a read of its write-ahead sibling.
+ */
+export type StackInstanceIdSource = string | undefined | (() => Promise<string | undefined>);
+
 /** Decides whether a Cloud Control identifier is unique (see {@link ccIdentifierIsUnique}). */
 export type IdentifierUniqueness = (args: {
   resourceType: string;
@@ -363,6 +401,12 @@ export type IdentifierUniqueness = (args: {
   attemptedProperties: Record<string, unknown> | undefined;
   logicalId: string;
   stackName: string;
+  stackInstanceId: string | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2: every name generation the identifier may carry
+   * a generated name of, 0 through this one. Absent: the scope's default.
+   */
+  nameGenerationsThrough?: number | undefined;
 }) => Promise<boolean>;
 
 /**
@@ -384,6 +428,8 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
   attemptedProperties,
   logicalId,
   stackName,
+  stackInstanceId,
+  nameGenerationsThrough,
 }) => {
   // No bag: nothing to tell a name from an AWS-minted id by.
   if (attemptedProperties === undefined || holdsSecretReference(attemptedProperties)) return false;
@@ -407,10 +453,36 @@ export const ccIdentifierIsUnique: IdentifierUniqueness = async ({
   return parts.some((part, i) => {
     if (part === '' || !readOnly.has(fields[i]!)) return false;
     return !nameSegments(part).some(
-      (segment) => sent.has(segment) || looksLikeCdkdGeneratedName(segment, logicalId, stackName)
+      (segment) =>
+        sent.has(segment) ||
+        looksLikeCdkdGeneratedName(
+          segment,
+          logicalId,
+          stackName,
+          stackInstanceId,
+          nameGenerationsThrough === undefined ? undefined : { through: nameGenerationsThrough }
+        )
     );
   });
 };
+
+/**
+ * The highest name generation an abandoned create's identifier may carry a
+ * generated name of: one past the op's own (absent = 0) and the record's
+ * high-water mark. A malformed value counts as 0 plus the record's: any doubt
+ * only widens what reads as generated.
+ */
+function generationsThrough(
+  op: { nameGeneration?: unknown },
+  held: { nameGeneration?: unknown; nameGenerationHigh?: unknown } | undefined
+): number {
+  const own = isNameGeneration(op.nameGeneration) ? op.nameGeneration : 0;
+  let recorded = 0;
+  for (const value of [held?.nameGeneration, held?.nameGenerationHigh]) {
+    if (isNameGeneration(value)) recorded = Math.max(recorded, value);
+  }
+  return Math.max(own, recorded) + 1;
+}
 
 /**
  * A value's comparable pieces, lowercased: the whole value and its `:` / `/`

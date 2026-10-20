@@ -289,7 +289,7 @@ implementation. Three details are worth copying:
     `--recreate-via-*` destroy-then-create, the `--replace` delete-first
     fallback, the update-failure replacement, and `createFirstThenDeleteOld`,
     which `--recreate-via-*` and the update-failure replacement take for a
-    renamed resource) are driven by freshly resolved
+    renamed resource, or a generated name moving to its next generation) are driven by freshly resolved
     TEMPLATE properties and never set `replayingState`, so the refusal stands
     where the user can actually act on it. (They DO pass a context — every
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
@@ -1220,8 +1220,7 @@ deliberately do NOT use `acquireIdempotencyToken`: those APIs bind the token to
 the resource for its LIFETIME, so a deterministic hash of the immutable create
 inputs is right there (it also lets the new file system coexist with the old one
 during a replacement). Derive it with `stackScopedCreateToken`, which also
-hashes the stack name and region, and refuses to run outside a `withStackName`
-scope: without them, two copies of one stack in an account sent the same token,
+hashes the stack name and region, and refuses to run outside a `withStackScope`: without them, two copies of one stack in an account sent the same token,
 and FSx and CloudFront handed the second stack the first one's resource (#4428).
 Take it through `reserveStackCreateToken`
 (`src/provisioning/providers/create-token-ledger.ts`), which folds in the

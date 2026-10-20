@@ -40,7 +40,7 @@ import {
   observeThenDisableInstanceApiTermination,
   reEnableInstanceApiTermination,
 } from '../ec2-termination-protection.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -831,7 +831,7 @@ export class ASGProvider implements ResourceProvider {
 
     const groupName =
       (properties['AutoScalingGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::AutoScaling::AutoScalingGroup', logicalId);
 
     // ONE masked sink for this method's own lines (issue #1997).
     const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);

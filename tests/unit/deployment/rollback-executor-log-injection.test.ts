@@ -1067,9 +1067,10 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     // still sanitized. Both call sites, and both arms, are pinned by shape.
     expect((src.match(wrapped) ?? []).length).toBe(2);
     // Since issue #4037 both call sites reach it through `maskedFailureText`,
-    // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408).
+    // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408)
+    // and a deferred new-resource delete's (go-to-k/cdkd#5064).
     expect((src.match(/^\s+(?:rollbackError|revertError),\n\s+mask\n\s+\)/gm) ?? []).length).toBe(2);
-    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(3);
+    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(4);
     expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(describeAwsFailure(error).detail);');
     expect(src).toContain('.map((line) => displaySafe(line))');

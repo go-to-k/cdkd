@@ -367,15 +367,13 @@ describe('DeployEngine — custom-named replacement collision', () => {
     expect(callOrder).toEqual(['create', 'delete', 'create', 'create']);
   }, 15_000);
 
-  it('stops the delete-first re-create retry on a sibling-failure interrupt, and the thrown cause says so (not "user")', async () => {
-    // The re-create's retry loop (`replaceDeleteFirstAndRecreate`'s outer
-    // `withRetry`) checks `isInterrupted()` between attempts, not before the
-    // FIRST one — so the re-create attempt still runs once, but a second one
-    // must never fire once the engine is interrupted. The mock flips
-    // `engine.interrupted` / `engine.interruptCause` ITSELF, right before
-    // throwing the re-create's retryable collision, to simulate a SIBLING
-    // resource's failure racing this one's retry — exactly what
-    // `DeployEngine.replacementDeps()`'s live getters are for.
+  it('keeps the delete-first re-create retrying through a sibling-failure interrupt: the old resource is already gone (go-to-k/cdkd#5111, A5)', async () => {
+    // The mock flips `engine.interrupted` / `engine.interruptCause` ITSELF,
+    // right before the re-create's retryable collision, to simulate a SIBLING
+    // resource's failure racing this one's retry. Aborting there (the #968
+    // behavior) left the stack with neither copy: generated-name-lifecycle A5
+    // lost its DynamoDB table exactly this way. Only the user's interrupt
+    // stops it now (the next case).
     const engine = makeEngine({ replace: true });
     const fields = engine as unknown as {
       interrupted: boolean;
@@ -383,18 +381,38 @@ describe('DeployEngine — custom-named replacement collision', () => {
     };
     vi.mocked(provider.create).mockImplementation(async () => {
       callOrder.push('create');
-      if (callOrder.filter((c) => c === 'create').length === 1) {
-        // The create-first attempt: collides, triggering the delete-first
-        // fallback under --replace.
+      const creates = callOrder.filter((c) => c === 'create').length;
+      if (creates === 1) throw alreadyExists();
+      if (creates === 2) {
+        fields.interrupted = true;
+        fields.interruptCause = 'sibling-failure';
         throw alreadyExists();
       }
-      // The re-create's first (and, if the retry is wired correctly, ONLY)
-      // attempt: another retryable collision, but the engine is ALREADY
-      // interrupted by the time this throws — the shape an interleaved
-      // sibling failure takes, set by the failing resource's own code path,
-      // never by this retry loop.
+      return { physicalId: 'my-named-resource', attributes: {} };
+    });
+
+    await invokeProvision(engine);
+
+    expect(callOrder).toEqual(['create', 'delete', 'create', 'create']);
+  }, 15_000);
+
+  it('stops the delete-first re-create retry on the user\'s interrupt, and the thrown cause says so', async () => {
+    // The retry checks `isInterrupted()` between attempts, through
+    // `replacementDeps()`'s LIVE getters (a value captured when the deps were
+    // built would never see the flip below).
+    const engine = makeEngine({ replace: true });
+    const fields = engine as unknown as {
+      interrupted: boolean;
+      interruptCause: 'user' | 'sibling-failure' | null;
+      userInterrupted: boolean;
+    };
+    vi.mocked(provider.create).mockImplementation(async () => {
+      callOrder.push('create');
+      if (callOrder.filter((c) => c === 'create').length === 1) throw alreadyExists();
+      // What the SIGINT handler sets (go-to-k/cdkd#5118).
       fields.interrupted = true;
-      fields.interruptCause = 'sibling-failure';
+      fields.interruptCause = 'user';
+      fields.userInterrupted = true;
       throw alreadyExists();
     });
 
@@ -403,18 +421,9 @@ describe('DeployEngine — custom-named replacement collision', () => {
       (e) => e as Error & { cause?: Error & { cause?: Error } }
     );
 
-    // Exactly one create before the delete (the collision) and exactly one
-    // after it (the re-create's first and only attempt) — the retry stopped
-    // on the interrupt rather than spending its ~64s collision-retry budget.
     expect(callOrder).toEqual(['create', 'delete', 'create']);
     expect(err).not.toBeNull();
-    // `InterruptedError`'s message is keyed on the CAUSE: 'user' renders
-    // "interrupted by user (Ctrl+C)", anything else (here 'sibling-failure')
-    // renders "aborted after another resource failed". Asserting the message
-    // is what proves the engine's `interruptCause` getter — not a value
-    // captured once when `replacementDeps()` was built — reached the retry.
-    expect(err!.cause?.cause?.message).toBe('Deployment aborted after another resource failed');
-    expect(err!.cause?.cause?.message).not.toMatch(/interrupted by user/);
+    expect(err!.cause?.cause?.message).toMatch(/interrupted by user/);
   }, 15_000);
 
   it('reports that the old resource is already gone when the re-create ultimately fails', async () => {

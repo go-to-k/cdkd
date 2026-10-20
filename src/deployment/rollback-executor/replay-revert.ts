@@ -1,4 +1,5 @@
 import { withReplayDeletePrinting } from './replay-scope.js';
+import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -305,7 +306,9 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
       }
     );
   }
-  stateResources[op.logicalId] = prev;
+  // go-to-k/cdkd#5064 phase 2: the copy this re-adopt drops held the
+  // generation the replacement reached, so the next one goes past it.
+  stateResources[op.logicalId] = withNameGenerationReached(prev, op.logicalId, op.nameGeneration);
   logger.info(`  Rollback: ${safe(op.logicalId)} restored to the ${oldKind} old resource`);
   await afterOp?.(op.logicalId);
   // The SURVIVOR's routing layer, which is NOT the op's. Follow-up to
@@ -570,6 +573,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       logicalId: op.logicalId,
       physicalId: current.physicalId,
       via: revertVia,
+      nameGeneration: nameGenerationOf(current, op.logicalId),
     },
     logger,
     mask,

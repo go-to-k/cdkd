@@ -502,6 +502,51 @@ describe('cdkd scrub - orphan records (go-to-k/cdkd#2943)', () => {
     expect(written.orphans![0]!.state.properties['Value']).toBe(SECRET_EXPR);
   });
 
+  it('WRITES BACK a scrubbed superseded record too (go-to-k/cdkd#5111)', async () => {
+    const state = stateWithOrphan(SECRET_PLAINTEXT, {
+      Fn: {
+        physicalId: 'my-fn',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { Environment: { Variables: { SECRET: SECRET_PLAINTEXT } } },
+      },
+    });
+    delete state.orphans;
+    state.supersededResources = [
+      {
+        logicalId: 'Param',
+        supersededAt: 1,
+        state: {
+          physicalId: 'MyStack-Param-old',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: { Value: SECRET_PLAINTEXT },
+        },
+      },
+    ];
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-1' });
+
+    await scrubStack(
+      {
+        stackName: 'MyStack',
+        template: {
+          Resources: {
+            Fn: {
+              Type: 'AWS::Lambda::Function',
+              Properties: { Environment: { Variables: { SECRET: SECRET_EXPR } } },
+            },
+          },
+          Outputs: {},
+        } as CloudFormationTemplate,
+      } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger }
+    );
+
+    const written = stateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(written.supersededResources![0]!.state.properties['Value']).toBe(SECRET_EXPR);
+  });
+
   it('does not GIVE a record-free state an orphans key', async () => {
     stateBackend.getState.mockResolvedValue({ state: makeLeakyState(), etag: 'etag-1' });
 

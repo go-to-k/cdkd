@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
@@ -14,9 +15,12 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * Both properties are load-bearing and neither is incidental:
  *
  *   - No `roleName`, so `generateResourceName` derives
- *     `{stackName}-{logicalId}` with no random component. A template-named
- *     resource would not exercise the diagnosis at all, because the advice
- *     deliberately refuses a name cdkd did not derive.
+ *     `{stackName}-{logicalId}-{12 hex}`, the suffix hashing the stack
+ *     instance id, the logical id and the name generation (go-to-k/cdkd#5064).
+ *     A template-named resource would not exercise the diagnosis at all,
+ *     because the advice deliberately refuses a name cdkd did not derive.
+ *     Since the orphan's generation is retired, the redeploy derives the NEXT
+ *     generation's name; verify.sh plants a holder on that name.
  *   - `AWS::IAM::Role`, because it answers a duplicate name with
  *     `EntityAlreadyExists`. Several types do NOT: `AWS::S3::Bucket`,
  *     `AWS::Logs::LogGroup` and `AWS::SNS::Topic` silently ADOPT an existing
@@ -50,11 +54,13 @@ export class RetainOrphanRedeployStack extends cdk.Stack {
  * The ADOPTION arm (issue #2934).
  *
  * The arm above manufactures its orphan with `cdkd state orphan`, which drops
- * the state record and writes NO orphan record — so it exercises the
- * go-to-k/cdkd#2916 diagnosis, which is still the fallback when cdkd holds no
- * evidence. This one produces the orphan the way a USER does, and that
- * difference is the whole point: only a real rollback mints the record the
- * adoption reads.
+ * the state record and writes NO orphan record, and exercises the
+ * go-to-k/cdkd#2916 diagnosis. This one produces the orphan the way a USER
+ * does: only a real rollback mints the orphan record. #2934 adopted that
+ * record's resource back; on a stack with a stack instance id
+ * (go-to-k/cdkd#5064) the rollback retires its name generation instead, so the
+ * redeploy creates a new role under the next generation's name and warns
+ * that the orphan is not taken back.
  *
  * Two modes, driven by `CDKD_TEST_ADOPT`:
  *
@@ -65,11 +71,19 @@ export class RetainOrphanRedeployStack extends cdk.Stack {
  *     guarantees — without it the DAG may fail the queue first and the role is
  *     never created, so the run would pass while proving nothing.
  *   - `fixed` — the same role, queue repaired. This is the redeploy that must
- *     succeed by ADOPTING the orphaned role rather than colliding with it.
+ *     succeed by creating a NEW role beside the orphaned one rather than
+ *     colliding with it or taking it back.
  *
  * The role carries RETAIN here (the arm above uses DESTROY) because that is
  * the policy under test: it is what makes the rollback orphan rather than
  * delete. The fixture's teardown deletes it by name, so it does not leak.
+ *
+ * `fixed` also declares `KeptTopic`, an un-named RETAIN topic (go-to-k/cdkd#5064).
+ * The destroy records it and the RETAIN role in the stack's `retained.json`
+ * (every kept resource under a generated name). The redeploy after that destroy is a new
+ * stack lifetime: verify.sh asserts it creates a NEW topic under a new name
+ * rather than taking the kept one back, and warns once naming `cdkd import`.
+ * Absent from `fail`, so the rollback still orphans exactly one resource.
  */
 export class RetainOrphanAdoptStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -79,7 +93,7 @@ export class RetainOrphanAdoptStack extends cdk.Stack {
 
     const role = new iam.Role(this, 'AdoptedRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-      description: 'Retain resource the rollback orphans and the next deploy re-adopts',
+      description: 'Retain resource the rollback orphans and the next deploy leaves alone',
     });
     role.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
 
@@ -91,6 +105,11 @@ export class RetainOrphanAdoptStack extends cdk.Stack {
     // Ordering, not decoration: the role must EXIST before the queue fails, or
     // the rollback has nothing to orphan and the fixture asserts nothing.
     queue.node.addDependency(role);
+
+    if (mode === 'fixed') {
+      const kept = new sns.CfnTopic(this, 'KeptTopic', {});
+      kept.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    }
 
     new cdk.CfnOutput(this, 'AdoptedRoleName', { value: role.roleName });
   }

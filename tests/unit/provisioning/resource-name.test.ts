@@ -6,25 +6,24 @@ import {
   generateResourceName,
   generateResourceNameWithFallback,
   getCurrentSkipPrefix,
-  setCurrentStackName,
   withoutGeneratedFallbackName,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
 describe('resource-name', () => {
   describe('generateResourceName (no stack name set)', () => {
     it('returns the raw name when no stack name is in scope', () => {
-      // Outside any withStackName/setCurrentStackName scope.
+      // Outside any withStackScope.
       const result = generateResourceName('MyResource', { maxLength: 64 });
 
       expect(result).toBe('MyResource');
     });
   });
 
-  describe('withStackName', () => {
+  describe('withStackScope', () => {
     it('prefixes the generated name with the scoped stack name', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('MyRole', { maxLength: 64 })
       );
 
@@ -32,7 +31,7 @@ describe('resource-name', () => {
     });
 
     it('does not leak the stack name outside the callback', () => {
-      withStackName('Inner', () => generateResourceName('X', { maxLength: 64 }));
+      withStackScope({ stackName: 'Inner', stackInstanceId: undefined, nameGenerations: new Map() }, () => generateResourceName('X', { maxLength: 64 }));
       // After the callback returns, the store is back to whatever was set
       // outside (here: nothing).
       const after = generateResourceName('X', { maxLength: 64 });
@@ -43,11 +42,11 @@ describe('resource-name', () => {
     it('isolates concurrent calls (the regression PR #74 fixes)', async () => {
       // Reproduce the production bug: two parallel deploys, each with its
       // own stack name, must not see each other's value. Before the
-      // AsyncLocalStorage refactor, the second `setCurrentStackName` call
+      // AsyncLocalStorage refactor, the second stack-name setter call
       // would clobber the first via a module-global, causing the first
       // stack's resources to be created with the second stack's prefix.
       const work = (stackName: string, delay: number) =>
-        withStackName(stackName, async () => {
+        withStackScope({ stackName: stackName, stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           // Yield once before reading the store, simulating the AWS-call
           // gap during which a concurrent deploy could have clobbered
           // the global in the old implementation.
@@ -67,20 +66,20 @@ describe('resource-name', () => {
     });
 
     it('truncates over-long names with a deterministic hash suffix', () => {
-      const result = withStackName('A'.repeat(40), () =>
+      const result = withStackScope({ stackName: 'A'.repeat(40), stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('B'.repeat(40), { maxLength: 64 })
       );
 
       expect(result.length).toBeLessThanOrEqual(64);
       // Same inputs → same output (hash is over the full pre-truncation name)
-      const result2 = withStackName('A'.repeat(40), () =>
+      const result2 = withStackScope({ stackName: 'A'.repeat(40), stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('B'.repeat(40), { maxLength: 64 })
       );
       expect(result).toBe(result2);
     });
 
     it('forces lowercase when option set (S3 bucket case)', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('MyBucket', { maxLength: 63, lowercase: true })
       );
 
@@ -94,14 +93,14 @@ describe('resource-name', () => {
       // `RoleName: 'my-role'` deployed by cdkd still gets the stack
       // name prefix unless the user opts in via
       // --no-prefix-user-supplied-names.
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('my-role', { maxLength: 64, userSupplied: true })
       );
       expect(result).toBe('MyStack-my-role');
     });
 
     it('skips the prefix on user-supplied names when withSkipPrefix(true) is active', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           generateResourceName('my-role', { maxLength: 64, userSupplied: true })
         )
@@ -113,7 +112,7 @@ describe('resource-name', () => {
       // The flag only affects user-supplied names. Auto-generated names
       // (where the user did NOT declare a physical name) need the prefix
       // for cross-stack uniqueness regardless of the flag.
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           generateResourceName('MyLogicalId', { maxLength: 64 /* userSupplied default false */ })
         )
@@ -122,7 +121,7 @@ describe('resource-name', () => {
     });
 
     it('still prefixes when withSkipPrefix(false) is active (the opt-out / default-off case)', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(false, () =>
           generateResourceName('my-role', { maxLength: 64, userSupplied: true })
         )
@@ -130,7 +129,7 @@ describe('resource-name', () => {
       expect(result).toBe('MyStack-my-role');
     });
 
-    it('flag has no effect outside withStackName scope (the no-stack-name path is unchanged)', () => {
+    it('flag has no effect outside withStackScope scope (the no-stack-name path is unchanged)', () => {
       const result = withSkipPrefix(true, () =>
         generateResourceName('my-role', { maxLength: 64, userSupplied: true })
       );
@@ -139,7 +138,7 @@ describe('resource-name', () => {
 
     it('does not leak the skip-prefix flag outside the callback', () => {
       withSkipPrefix(true, () => generateResourceName('x', { maxLength: 64, userSupplied: true }));
-      const after = withStackName('MyStack', () =>
+      const after = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceName('my-role', { maxLength: 64, userSupplied: true })
       );
       expect(after).toBe('MyStack-my-role');
@@ -147,7 +146,7 @@ describe('resource-name', () => {
 
     it('isolates concurrent withSkipPrefix scopes', async () => {
       const work = async (stackName: string, skip: boolean, delay: number) =>
-        withStackName(stackName, () =>
+        withStackScope({ stackName: stackName, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           withSkipPrefix(skip, async () => {
             await new Promise((resolve) => setTimeout(resolve, delay));
             return generateResourceName('my-role', { maxLength: 64, userSupplied: true });
@@ -179,7 +178,7 @@ describe('resource-name', () => {
 
   describe('generateResourceNameWithFallback', () => {
     it('uses the user-supplied name with userSupplied: true', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           generateResourceNameWithFallback('my-role', 'CRRole', { maxLength: 64 })
         )
@@ -188,7 +187,7 @@ describe('resource-name', () => {
     });
 
     it('falls back to the logical id and keeps the prefix', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           generateResourceNameWithFallback(undefined, 'CRRole', { maxLength: 64 })
         )
@@ -197,37 +196,18 @@ describe('resource-name', () => {
     });
 
     it('treats empty-string user names as missing and uses the logical id', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         generateResourceNameWithFallback('', 'CRRole', { maxLength: 64 })
       );
       expect(result).toBe('MyStack-CRRole');
     });
 
     it('prefixes the user-supplied name when the flag is off (pre-PR behavior)', () => {
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         // No withSkipPrefix scope → flag defaults to false → prefix applied.
         generateResourceNameWithFallback('my-role', 'CRRole', { maxLength: 64 })
       );
       expect(result).toBe('MyStack-my-role');
-    });
-  });
-
-  describe('setCurrentStackName (deprecated, AsyncLocalStorage-backed)', () => {
-    it('also isolates concurrent calls thanks to enterWith semantics', async () => {
-      // The deprecated setter now uses `enterWith` rather than mutating a
-      // module-global. Each Promise has its own async resource, so two
-      // concurrent deploys that call `setCurrentStackName(...)` at their
-      // top do not collide.
-      const work = async (stackName: string, delay: number) => {
-        setCurrentStackName(stackName);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        return generateResourceName('MyRole', { maxLength: 64 });
-      };
-
-      const [a, b] = await Promise.all([work('StackA', 25), work('StackB', 5)]);
-
-      expect(a).toBe('StackA-MyRole');
-      expect(b).toBe('StackB-MyRole');
     });
   });
 
@@ -241,7 +221,7 @@ describe('resource-name', () => {
 
     it('fills CapacityProviderName from the stack name and logical id when absent', () => {
       const props = { VpcConfig: { SubnetIds: ['subnet-1'] } };
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         applyDefaultNameForFallback('Provider2281708E', TYPE, props)
       );
       expect(result).toEqual({
@@ -258,46 +238,47 @@ describe('resource-name', () => {
       // deleted -- passing for the opposite reason to the one it asserts.
       expect(fallbackNamePropertyFor(TYPE)).toBe('CapacityProviderName');
       const props = { CapacityProviderName: 'my-provider' };
-      const result = withStackName('MyStack', () =>
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         applyDefaultNameForFallback('Provider2281708E', TYPE, props)
       );
       expect(result).toBe(props);
     });
 
-    // The two sides of the schema's 140-character cap: a name AT the cap is
-    // kept verbatim, one character over it is cut to exactly the cap.
-    it('keeps a name of exactly 140 characters verbatim', () => {
-      const stack = 'A'.repeat(70);
-      const logicalId = 'B'.repeat(69);
-      expect(`${stack}-${logicalId}`).toHaveLength(140);
-      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+    // The two sides of the service's 64-character cap on a NAME (the schema's
+    // 140 bounds the ARN form; go-to-k/cdkd#5064 measured the refusal): a name
+    // AT the cap is kept verbatim, one character over it is cut to the cap.
+    it('keeps a name of exactly 64 characters verbatim', () => {
+      const stack = 'A'.repeat(32);
+      const logicalId = 'B'.repeat(31);
+      expect(`${stack}-${logicalId}`).toHaveLength(64);
+      const result = withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       expect(result['CapacityProviderName']).toBe(`${stack}-${logicalId}`);
     });
 
-    it('cuts a 141-character name to exactly 140, ending in the hash', () => {
-      const stack = 'A'.repeat(70);
-      const logicalId = 'B'.repeat(70);
+    it('cuts a 65-character name to exactly 64, ending in the hash', () => {
+      const stack = 'A'.repeat(32);
+      const logicalId = 'B'.repeat(32);
       const full = `${stack}-${logicalId}`;
-      expect(full).toHaveLength(141);
-      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+      expect(full).toHaveLength(65);
+      const result = withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       const name = result['CapacityProviderName'] as string;
-      expect(name).toHaveLength(140);
-      // 131 kept characters, a separator, 8 hex characters of hash.
-      expect(name.startsWith(full.slice(0, 131))).toBe(true);
+      expect(name).toHaveLength(64);
+      // 55 kept characters, a separator, 8 hex characters of hash.
+      expect(name.startsWith(full.slice(0, 55))).toBe(true);
       expect(name).toMatch(/-[0-9a-f]{8}$/);
     });
 
-    it('sanitizes a nested child stack name into the schema pattern at 140 characters', () => {
+    it('sanitizes a nested child stack name into the schema pattern at 64 characters', () => {
       // A nested child deploys under `<parent>~<logicalId>`, and `~` is outside
       // both the default allowed set and the schema pattern: unsanitized, the
       // name fails the pattern; sanitized, it reads `Parent-...`.
       const stack = `Parent~${'S'.repeat(120)}`;
       const logicalId = `Provider${'L'.repeat(100)}`;
-      expect(`${stack}-${logicalId}`.length).toBeGreaterThan(140);
-      const result = withStackName(stack, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
+      expect(`${stack}-${logicalId}`.length).toBeGreaterThan(64);
+      const result = withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback(logicalId, TYPE, {}));
       const name = result['CapacityProviderName'] as string;
-      expect(name.startsWith(`Parent-${'S'.repeat(120)}-Pro`)).toBe(true);
-      expect(name).toHaveLength(140);
+      expect(name.startsWith(`Parent-${'S'.repeat(48)}`)).toBe(true);
+      expect(name).toHaveLength(64);
       expect(name).toMatch(SCHEMA_NAME);
       expect(name).toMatch(/-[0-9a-f]{8}$/);
     });
@@ -317,15 +298,16 @@ describe('resource-name', () => {
       ['AWS::S3::Bucket', 'BucketName'],
     ])('%s answers %s, the property applyDefaultNameForFallback fills', (type, property) => {
       expect(fallbackNamePropertyFor(type)).toBe(property);
-      const filled = withStackName('MyStack', () => applyDefaultNameForFallback('Res', type, {}));
+      const filled = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback('Res', type, {}));
       expect(Object.keys(filled)).toEqual([property]);
     });
 
     it('answers undefined for a type with no rule, including one only the adoption table names', () => {
       expect(fallbackNamePropertyFor('AWS::EFS::FileSystem')).toBeUndefined();
-      // `ADOPTION_ONLY_NAME_PROPERTIES` names it, and nothing generates it.
-      expect(explicitNamePropertyFor('AWS::Scheduler::Schedule')).toBe('Name');
-      expect(fallbackNamePropertyFor('AWS::Scheduler::Schedule')).toBeUndefined();
+      // `ADOPTION_ONLY_NAME_PROPERTIES` names it, and nothing generates it
+      // (its `Name` is required, go-to-k/cdkd#5095).
+      expect(explicitNamePropertyFor('AWS::Events::EventBus')).toBe('Name');
+      expect(fallbackNamePropertyFor('AWS::Events::EventBus')).toBeUndefined();
     });
   });
 
@@ -353,7 +335,7 @@ describe('resource-name', () => {
 
     it('gives an empty template name back, since the fill generates over it too', () => {
       const resolved = { CapacityProviderName: '' };
-      const prepared = withStackName('MyStack', () =>
+      const prepared = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         applyDefaultNameForFallback('Provider', TYPE, resolved)
       );
       // Premise: the fill really did generate over the empty string.

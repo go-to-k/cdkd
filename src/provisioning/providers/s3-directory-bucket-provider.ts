@@ -24,7 +24,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { displayIdent, displaySafe } from '../../utils/display-safe.js';
@@ -346,11 +346,12 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     // Directory bucket names must follow: {name}--{az-id}--x-s3
     let bucketName = properties['BucketName'] as string | undefined;
     if (!bucketName) {
-      const baseName = generateResourceName(logicalId, {
-        maxLength: 64,
-        lowercase: true,
+      // The WHOLE name is at most 63 characters (go-to-k/cdkd#5064: a cut to
+      // 64 before the suffix made every long name invalid). The rule Cloud
+      // Control fills too (go-to-k/cdkd#5095).
+      bucketName = generatedNameFor('AWS::S3Express::DirectoryBucket', logicalId, {
+        zoneId: azId,
       });
-      bucketName = `${baseName}--${azId}--x-s3`;
     }
 
     // Tags ride the create call itself (`CreateBucketConfiguration.Tags`,

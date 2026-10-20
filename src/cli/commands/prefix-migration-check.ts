@@ -8,7 +8,7 @@ import {
   PATTERN_B_RESOURCE_TYPES,
   generateResourceName,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../../provisioning/resource-name.js';
 import type { StackState } from '../../types/state.js';
 
@@ -127,12 +127,15 @@ export function findPendingPrefixRenames(
     //                 never fired.
     //   - newName:    post-v0.94 form (`withSkipPrefix(true)` drops the prefix
     //                 on a user-supplied name) — what the next deploy targets.
-    const legacyName = withStackName(stackName, () =>
+    // Declared names only (`userSupplied: true`), which the stack instance id
+    // never enters (go-to-k/cdkd#5064): no id is needed in the scope.
+    const scope = { stackName, stackInstanceId: undefined, nameGenerations: undefined };
+    const legacyName = withStackScope(scope, () =>
       withSkipPrefix(false, () =>
         generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
       )
     );
-    const newName = withStackName(stackName, () =>
+    const newName = withStackScope(scope, () =>
       withSkipPrefix(true, () =>
         generateResourceName(userSuppliedName, { ...nameOptions, userSupplied: true })
       )

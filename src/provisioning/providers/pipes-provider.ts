@@ -28,7 +28,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -545,8 +545,7 @@ export class PipesPipeProvider implements ResourceProvider {
     // Pipe names: 1-64 chars of [.\-_A-Za-z0-9]. generateResourceName's
     // stack-prefixed output keeps to that charset and `maxLength` caps it.
     const name =
-      (properties['Name'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      (properties['Name'] as string | undefined) ?? generatedNameFor('AWS::Pipes::Pipe', logicalId);
     const tags = desiredTagMap(properties['Tags'], logicalId);
     this.logger.debug(mask(`Creating Pipe ${logicalId}: ${name}`));
 

@@ -14,7 +14,8 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isSensitiveAttributeName } from '../utils/stringify.js';
 import { isCustomResourceType } from '../provisioning/custom-resource-secure-references.js';
 import { injectiveKey } from '../state/record-keys.js';
-import { isReadableBag } from '../types/state.js';
+import { isReadableBag, stackInstanceIdCarriedFrom } from '../types/state.js';
+import { retiredNameGenerationsAfter } from '../state/name-generation.js';
 import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
 
 /**
@@ -740,6 +741,18 @@ export async function rewriteResourceReferences(
   return {
     state: {
       ...carriedState,
+      ...stackInstanceIdCarriedFrom(state),
+      // go-to-k/cdkd#5064 phase 2: an orphaned record left the stack, so a
+      // later create of its logical id asks for a name it never held.
+      ...retiredNameGenerationsAfter(
+        state,
+        orphanLogicalIds
+          .map((logicalId) => ({ logicalId, record: orphans[logicalId] }))
+          .filter(
+            (entry): entry is { logicalId: string; record: ResourceState } =>
+              entry.record !== null && typeof entry.record === 'object'
+          )
+      ),
       resources: newResources,
       outputs: newOutputs,
       lastModified: Date.now(),

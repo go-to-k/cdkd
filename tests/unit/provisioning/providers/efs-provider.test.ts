@@ -57,7 +57,7 @@ import { EFSProvider } from '../../../../src/provisioning/providers/efs-provider
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);

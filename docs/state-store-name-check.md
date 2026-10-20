@@ -44,25 +44,38 @@ and a create through Cloud Control refuses an existing name.
 A name your template declares is not looked up. Declaring a name is choosing
 it.
 
+A replacement is checked too. When a change replaces a resource of these
+types, the new resource gets the next generated name (see
+[cdkd import](import.md#a-replacement-refused-on-its-new-name)), and cdkd looks
+that name up before the deploy starts, just as for a create.
+
 ## When a taken name is allowed
 
 The create goes ahead when this stack's own records show that the existing
 resource belongs to it. cdkd looks in these places:
 
 - **The state record.** The resource is in the stack's record, under any
-  logical ID, or among the resources a rollback left in AWS.
+  logical ID. On a stack first deployed before generated names carried a
+  suffix, also among the resources a rollback left in AWS.
 - **The rollback journal.** A failed deploy of this stack created the
   resource and recorded its physical ID.
 - **The create-token ledger** (`create-tokens.json`). The deploy writes the
   names it is about to create before it sends the creates. A re-run after a
   crash finds the name there and takes the resource back.
-- **`retained.json`.** The stack let go of the resource but kept it in AWS
+- **`retained.json`** (only on a stack first deployed before generated names
+  carried a suffix). The stack let go of the resource but kept it in AWS
   (`RemovalPolicy.RETAIN`), in a destroy or in a deploy that removed it from
-  the template. The next deploy under the same prefix that creates it again
-  takes it back.
-- **The stack's history**, only when the stack has no `retained.json` because
-  an older cdkd destroyed it last. cdkd reads earlier versions of the record
-  and the deployment events for a resource that was kept.
+  the template. A later deploy that creates it again takes it back.
+- **The stack's history**, on the same stacks, and only when the stack has no
+  `retained.json` because an older cdkd destroyed it last. cdkd reads earlier
+  versions of the record and the deployment events for a resource that was
+  kept.
+
+On every other stack, nothing that left the stack is taken back on its own,
+as in CloudFormation. A logical ID added again after its resource left gets a
+new generated name, and a redeploy after a destroy is a new lifetime whose
+generated names differ, so neither asks for the kept name. Adopt a kept
+resource with `cdkd import`.
 
 For a type that reports a creation time, the time must also fit. A resource
 created after this stack let go of the name belongs to someone else.
@@ -98,9 +111,11 @@ What to do depends on whose resource it is:
 ### After `cdkd state orphan`
 
 `cdkd state orphan` removes the record and empties `retained.json`, so nothing
-this stack records names its resources any more. A redeploy under the same
-prefix that would create one of them again is refused, and `cdkd import`
-adopts it.
+this stack records names its resources any more. A redeploy is a new lifetime
+of the stack: it creates new resources under new generated names beside the
+orphaned ones. A name the template declares (or a stack whose record predates
+generated-name suffixes) collides instead, and that create is refused;
+`cdkd import` adopts the orphaned resource.
 
 This is deliberate. Orphaning is how you hand a record over, and cdkd does not
 take the resources back on its own.

@@ -58,7 +58,7 @@ import {
   markNonRetryable,
   markRedactedCause,
 } from '../../deployment/retryable-errors.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
@@ -717,7 +717,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     const functionName =
       (properties['FunctionName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Lambda::Function', logicalId);
     // Issue #2177: every create() line and refusal goes through this one sink
     // set. A provider's own logger reaches no engine mask.
     const log = lambdaOperationSinks(

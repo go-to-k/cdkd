@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { setStdinIsTty } from '../../../stdin-tty.js';
+import type { StackState } from '../../../../src/types/state.js';
 
 vi.mock('../../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), setLevel: vi.fn(), child: () => l };
@@ -60,7 +61,12 @@ vi.mock('../../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../../src/provisioning/resource-name.js', () => ({
-  withStackName: (_name: string, fn: () => unknown) => fn(),
+  // go-to-k/cdkd#5064 phase 2: a replay binds the record's name generation.
+  withNameGeneration: (_binding: unknown, fn: () => unknown) => fn(),
+  isNameGeneration: (value: unknown) =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
+  stackInstanceNameSuffix: () => '000000000000',
+  withStackScope: (_name: string, fn: () => unknown) => fn(),
   withSkipPrefix: (_skip: boolean, fn: () => unknown) => fn(),
   getCurrentSkipPrefix: () => true,
   // The rollback masker reads the type's name property (issue #4037).
@@ -736,6 +742,45 @@ describe('rollbackCommand', () => {
     expect(backend.setRollbackJournalFailedOperations).toHaveBeenCalledWith('S', 'us-east-1', []);
   });
 
+  // go-to-k/cdkd#5064 phase 2: the failed replacement's create may have made a
+  // resource under the generation it asked for, so the reverted record's
+  // high-water mark is raised to it; without --revert-failed nothing moves.
+  it.each([
+    [true, 2],
+    [false, undefined],
+  ])('--revert-failed %s: the record remembers the generation the failed replacement asked for', async (revertFailed, high) => {
+    const record = { physicalId: 'phys-Q', resourceType: 'AWS::SQS::Queue', properties: { a: 1 }, attributes: {}, dependencies: [] };
+    const failedOp = {
+      logicalId: 'Q',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SQS::Queue',
+      physicalId: 'phys-Q',
+      previousState: record,
+      attemptedProperties: { a: 2 },
+      nameGeneration: 2,
+    };
+    const backend = installSetup({
+      listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+      getState: vi.fn().mockResolvedValue({
+        state: { version: 13, stackName: 'S', region: 'us-east-1', resources: { Q: record }, outputs: {}, lastModified: 1 },
+        etag: 'e0',
+      }),
+      loadRollbackJournal: vi.fn().mockResolvedValue({
+        journalVersion: 1,
+        stackName: 'S',
+        region: 'us-east-1',
+        segments: [{ timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [], failedOperations: [failedOp] }],
+      }),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed });
+    const saved = backend.saveState.mock.calls.map((c) => (c[2] as StackState).resources['Q']);
+    if (high === undefined) {
+      for (const r of saved) expect(r?.nameGenerationHigh).toBeUndefined();
+    } else {
+      expect(saved.at(-1)?.nameGenerationHigh).toBe(high);
+    }
+  });
+
   it('--revert-failed on: a failed-op revert failure keeps the segment (exit 2)', async () => {
     replayProvider.update.mockClear();
     replayProvider.update.mockRejectedValueOnce(new Error('revert boom'));
@@ -1313,8 +1358,8 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
 
   function installFailedCreateStack(
     resourceType: string,
-    deletionPolicy: 'Snapshot' | 'Retain',
-    opts: { initialDeploy?: boolean } = {}
+    deletionPolicy: 'Snapshot' | 'Retain' | 'Delete',
+    opts: { initialDeploy?: boolean; stackInstanceId?: string; nameGeneration?: number } = {}
   ): FakeBackend {
     const failedOp = {
       logicalId: 'D',
@@ -1340,9 +1385,11 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
               dependencies: [],
               deletionPolicy,
               provisionedBy: 'sdk',
+              ...(opts.nameGeneration !== undefined && { nameGeneration: opts.nameGeneration }),
             },
           },
           outputs: {},
+          ...(opts.stackInstanceId !== undefined && { stackInstanceId: opts.stackInstanceId }),
           lastModified: 1,
         },
         etag: 'e0',
@@ -1386,6 +1433,59 @@ describe('rollbackCommand — DeletionPolicy on a failed CREATE (#1362)', () => 
     installFailedCreateStack('AWS::EC2::Volume', 'Retain');
     await rollbackCommand('S', { ...baseOpts, revertFailed: true });
     expect(replayProvider.delete).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5064 phase 2: on a stack with an instance id the logical id
+  // retires at the orphan's generation, so a re-add asks for a new name.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { D: 0 }],
+    [undefined, undefined],
+  ])('Retain on a stack with id %s: retiredNameGenerations %j', async (stackInstanceId, retired) => {
+    const backend = installFailedCreateStack('AWS::EC2::Volume', 'Retain', {
+      ...(stackInstanceId !== undefined && { stackInstanceId }),
+    });
+    await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+    const saved = backend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
+  // go-to-k/cdkd#5064: a CREATE `--revert-failed` deletes retires its
+  // generation, so the next create asks for a new name; legacy retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', undefined, { D: 0 }],
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', 2, { D: 2 }],
+    [undefined, undefined, undefined],
+  ])(
+    'a deleted failed CREATE on a stack with id %s (generation %s): retiredNameGenerations %j',
+    async (stackInstanceId, nameGeneration, retired) => {
+      const backend = installFailedCreateStack('AWS::EC2::Volume', 'Delete', {
+        ...(stackInstanceId !== undefined && { stackInstanceId }),
+        ...(nameGeneration !== undefined && { nameGeneration }),
+      });
+      await rollbackCommand('S', { ...baseOpts, revertFailed: true });
+      expect(replayProvider.delete).toHaveBeenCalledOnce();
+      // Every save once the record left carries it (the per-op save included).
+      for (const call of backend.saveState.mock.calls) {
+        const saved = call[2] as StackState;
+        if (saved.resources['D'] === undefined) expect(saved.retiredNameGenerations).toEqual(retired);
+      }
+      const last = backend.saveState.mock.calls.at(-1)![2] as StackState;
+      expect(last.resources['D']).toBeUndefined();
+      expect(last.retiredNameGenerations).toEqual(retired);
+    }
+  );
+
+  it('a completed CREATE the replay deletes retires its generation (go-to-k/cdkd#5064)', async () => {
+    const backend = installOneCreateSegment();
+    const loaded = (await (backend.getState as () => Promise<unknown>)()) as { state: StackState };
+    loaded.state.stackInstanceId = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    loaded.state.resources['Bucket']!.nameGeneration = 1;
+    backend.getState.mockResolvedValue(loaded);
+    await rollbackCommand('S', { ...baseOpts });
+    expect(replayProvider.delete).toHaveBeenCalledOnce();
+    const last = backend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(last.resources['Bucket']).toBeUndefined();
+    expect(last.retiredNameGenerations).toEqual({ Bucket: 1 });
   });
 
   it('Retain: the resource left in AWS is RECORDED in the saved state (#2934)', async () => {

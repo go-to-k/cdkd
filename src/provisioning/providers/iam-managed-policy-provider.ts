@@ -26,7 +26,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceNameWithFallback } from '../resource-name.js';
+import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
@@ -405,7 +405,22 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           `deploy renames the policy.`
       );
     }
-    const newPolicyName = revertKeepsName ? oldPolicyName : derivedPolicyName;
+    // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
+    // the derivation only by the naming scheme keeps it, never a replacement.
+    const generatedNameKept = recordedGeneratedNameKept({
+      recorded: oldPolicyName,
+      derived: derivedPolicyName,
+      declaredName: properties['ManagedPolicyName'],
+      previousDeclaredName: previousProperties['ManagedPolicyName'],
+      logicalId,
+      options: { maxLength: 128 },
+    });
+    if (generatedNameKept) {
+      log.debug(
+        `IAM managed policy ${logicalId}: keeping its generated name ${v(oldPolicyName)} (the template names no policy)`
+      );
+    }
+    const newPolicyName = revertKeepsName || generatedNameKept ? oldPolicyName : derivedPolicyName;
     // BOTH sides before any call (go-to-k/cdkd#3906). The previous side is the
     // state record, and a rollback revert or `drift --revert` replays this
     // method with a recorded bag as the DESIRED side: a string there was

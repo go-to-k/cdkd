@@ -162,9 +162,11 @@ If a resource exists in AWS without a state record, adopt it with
 :::
 
 Copy a resource's exact name from AWS and do not construct it yourself. A
-name cdkd generates is `<StackName>-<LogicalId>` only when that fits the
-type's length limit. Otherwise cdkd truncates the name and appends `-` plus 8
-hex characters.
+name cdkd generates is `<StackName>-<LogicalId>-` plus 12 hex characters that
+come from the stack's lifetime, with the first part cut to fit the type's
+length limit. A stack first deployed before that suffix existed keeps
+`<StackName>-<LogicalId>`, truncated with `-` plus 8 hex characters when too
+long.
 
 A `--resource` import adds to the existing state. It needs no `--force` as
 long as the resource is not in state yet.
@@ -181,8 +183,8 @@ cdkd deploy MyStack
 When a deploy rolls back, a resource with `DeletionPolicy: Retain` stays in
 AWS and its state record is dropped. CloudFormation does the same. With cdkd,
 the next deploy then fails with an already-exists error. The names cdkd
-generates have no random part, so the next deploy asks for exactly the name
-the retained resource still holds. Re-running does not clear the error.
+generates do not change during a stack's lifetime, so the next deploy asks for
+exactly the name the retained resource still holds. Re-running does not clear the error.
 
 When the colliding name is one cdkd generated, the failure is followed by a
 message that ends with the adoption command on its own line:

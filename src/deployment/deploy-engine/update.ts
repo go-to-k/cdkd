@@ -4,6 +4,8 @@ import { resolveDynamicReferences } from '../intrinsic-resolver/dynamic-refs.js'
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import { peekRoutingForLabel, recreateDirectionFor } from './routing.js';
 import { updateByReplacement } from './update-replace.js';
+import { getCurrentStackInstanceId, withNameGeneration } from '../../provisioning/resource-name.js';
+import { replacementNameGeneration } from '../../state/name-generation.js';
 import { updateInPlace } from './update-in-place.js';
 import {
   noteSecretNamedRecord,
@@ -1773,8 +1775,24 @@ export async function provisionUpdate(
     return outcome;
   };
   if (needsReplacement) {
-    return markRestored(
-      await updateByReplacement(engine, {
+    // go-to-k/cdkd#5064 phase 2: on a stack with an instance id the new
+    // resource is created at the NEXT name generation, so a name cdkd
+    // generates for it differs from the old resource's and the create runs
+    // first. Bound around the whole replacement (its name check, create and
+    // holder proof); the old resource's delete names it by physical id. Not
+    // for a resource that went with its parent: the old copy is gone, and the
+    // re-create keeps its name.
+    const { generation: nextGeneration, fields: nameGenerationFields } = replacementNameGeneration(
+      currentResource,
+      logicalId,
+      getCurrentStackInstanceId(),
+      lostWithParent !== undefined
+    );
+    if (nextGeneration !== undefined) {
+      engine.replacementRun.attemptedNameGeneration.set(logicalId, nextGeneration);
+    }
+    const replace = (): ReturnType<typeof updateByReplacement> =>
+      updateByReplacement(engine, {
         change,
         counts,
         currentProps,
@@ -1797,7 +1815,12 @@ export async function provisionUpdate(
         updateReplacePolicy,
         updateSecrets,
         lostWithParent,
-      })
+        nameGenerationFields,
+      });
+    return markRestored(
+      await (nextGeneration === undefined
+        ? replace()
+        : withNameGeneration({ logicalId, generation: nextGeneration }, replace))
     );
   }
   // go-to-k/cdkd#4749: the plan refused every ServiceToken change it could

@@ -22,7 +22,7 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -415,7 +415,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     // CodeCommit allows [A-Za-z0-9._-]{1,100}.
     const repositoryName =
       (properties['RepositoryName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 100 });
+      generatedNameFor('AWS::CodeCommit::Repository', logicalId);
 
     // go-to-k/cdkd#3989: refused before CreateRepository, so a malformed list
     // never creates a repository missing the triggers or tags it declares.

@@ -39,6 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { SQSQueueProvider } from '../../../src/provisioning/providers/sqs-queue-provider.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 const QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/my-queue';
 
@@ -155,6 +156,23 @@ describe('SQSQueueProvider.update', () => {
 
     expect(result.attributes?.['Arn']).toBe('arn:aws:sqs:us-east-1:0:q');
     expect(mockSend.mock.calls.some((c) => c[0] instanceof GetQueueAttributesCommand)).toBe(true);
+  });
+
+  // go-to-k/cdkd#5064: an un-named queue's `QueueName` is the URL tail the
+  // recorded physicalId already carries, never a re-derivation via
+  // `generateResourceName` — a v13 stack's LEGACY-named queue (imported
+  // before the per-stack-instance suffix existed) would not reproduce.
+  it("#5064: QueueName in the returned attributes is the physicalId's URL tail, not a re-derivation", async () => {
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+    const legacyUrl = 'https://sqs.us-east-1.amazonaws.com/123456789012/MyStack-Q';
+
+    const result = await withStackScope(
+      { stackName: 'MyStack', stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', nameGenerations: new Map() },
+      () => provider.update('Q', legacyUrl, 'AWS::SQS::Queue', { VisibilityTimeout: 30 }, {})
+    );
+
+    expect(result.attributes?.['QueueName']).toBe('MyStack-Q');
   });
 
   it('sends a RedriveAllowPolicy object as a JSON string on create', async () => {

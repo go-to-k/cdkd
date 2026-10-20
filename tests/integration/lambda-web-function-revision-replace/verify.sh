@@ -24,6 +24,11 @@
 # (`RegionalEndpoints.<region>.ScalingConfig.MaxEnvironments`, into a second
 # parameter), and records the whole map (`attrRegionalEndpoints`), which is
 # compared with what AWS reports.
+#
+# Both released binaries run before this build's first deploy (phase 1c): this build
+# writes state schema v13 (go-to-k/cdkd#5064), which no earlier release reads.
+# Phases 3 and 3b replace the revision three more times on the SDK route, each
+# leaving exactly one revision behind the same two endpoints.
 
 set -euo pipefail
 
@@ -359,6 +364,8 @@ PREFIX_TMPDIR="$(mktemp -d)"
 install_release "${PREFIX_TMPDIR}" "${PREFIX_CDKD_VERSION}"
 PREFIX_BIN="${PREFIX_TMPDIR}/node_modules/@go-to-k/cdkd/dist/cli.js"
 
+# Every phase that runs a released binary comes FIRST: this build writes state
+# schema v13 (go-to-k/cdkd#5064), which no earlier release reads.
 echo "==> Phase 1: deploy v1 with the previous release (Cloud Control)"
 V1="$(upload_code v1)"
 OUT="$(deploy "${V1}" "${OLD_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 1 deploy" >&2; exit 1; }
@@ -370,73 +377,37 @@ REP1="$(record RegionalEndpoint '.physicalId')"
 assert_serves v1
 assert_regional_getatt 'phase 1'
 
-echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
-V2="$(upload_code v2)"
-T0="$(date +%s)"
-OUT="$(deploy "${V2}")" || { echo "${OUT}"; echo "FAIL: phase 2 deploy" >&2; exit 1; }
-echo "${OUT}"
-echo "    phase 2 deploy took $(($(date +%s) - T0)) s"
-assert_replaced 'phase 2' "${OUT}" "${REV1}"
-REV2="$(assert_one_revision 'phase 2' | tail -1)"
-[ "${REV2}" = "${REV1}" ] && { echo "FAIL: the remaining revision is the OLD one (${REV1})" >&2; exit 1; }
-assert_gone "old revision ${REV1} still exists" \
-  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV1}" --region "${REGION}"
-echo "    OK: old revision ${REV1} is gone"
-assert_route 'phase 2' sdk
-# The witness that the SDK provider addresses the endpoint Cloud Control
-# created (provisioning-sticky-routing.md): the update kept the AWS-minted ARN.
-EP2="$(record Endpoint '.physicalId')"
-if [ "${EP2}" != "${EP1}" ]; then
-  echo "FAIL: the endpoint was recreated on the route change (${EP1} -> ${EP2})" >&2
-  exit 1
-fi
-echo "    OK: endpoint ${EP1} kept across the route change"
-REP2="$(record RegionalEndpoint '.physicalId')"
-if [ "${REP2}" != "${REP1}" ]; then
-  echo "FAIL: the PerRegion endpoint was recreated on the route change (${REP1} -> ${REP2})" >&2
-  exit 1
-fi
-assert_serves v2
-# The SDK update rewrote the endpoint's record in this run, so only the
-# provider's own attributes can answer the GetAtt (no stale-record heal).
-assert_regional_getatt 'phase 2'
-
-echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
-V3="$(upload_code v3)"
-T0="$(date +%s)"
-OUT="$(deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 3 deploy" >&2; exit 1; }
-echo "${OUT}"
-echo "    phase 3 deploy took $(($(date +%s) - T0)) s"
-assert_replaced 'phase 3' "${OUT}" "${REV2}"
-REV3="$(assert_one_revision 'phase 3' | tail -1)"
-[ "${REV3}" = "${REV2}" ] && { echo "FAIL: the remaining revision is the OLD one (${REV2})" >&2; exit 1; }
-assert_gone "old revision ${REV2} still exists" \
-  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV2}" --region "${REGION}"
-echo "    OK: old revision ${REV2} is gone"
-assert_route 'phase 3' sdk
-assert_serves v3
-assert_regional_getatt 'phase 3'
-
-echo "==> Phase 3b: rename the PerRegion endpoint with ${PREFIX_CDKD_VERSION} (a record created without the #4978 attributes)"
+echo "==> Phase 1b: rename the PerRegion endpoint with ${PREFIX_CDKD_VERSION} (a record created without the #4978 attributes)"
 # A rename replaces the endpoint, so the release before the fix CREATES its
-# record; an update would keep the attributes this build already recorded.
+# record; an update would keep the attributes an earlier deploy recorded. The
+# code is unchanged, so the revision and the other endpoint are not touched
+# and stay on Cloud Control for phase 2's move.
 export REGIONAL_ENDPOINT_NAME="regional2"
-OUT="$(deploy "${V3}" "${PREFIX_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 3b deploy" >&2; exit 1; }
+OUT="$(deploy "${V1}" "${PREFIX_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 1b deploy" >&2; exit 1; }
 echo "${OUT}"
-REP3="$(record RegionalEndpoint '.physicalId')"
-case "${REP3}" in
+REP1B="$(record RegionalEndpoint '.physicalId')"
+case "${REP1B}" in
   */endpoint/regional2) ;;
-  *) echo "FAIL: phase 3b: the PerRegion endpoint record is ${REP3}, expected the renamed endpoint/regional2" >&2; exit 1 ;;
+  *) echo "FAIL: phase 1b: the PerRegion endpoint record is ${REP1B}, expected the renamed endpoint/regional2" >&2; exit 1 ;;
 esac
 assert_gone "old PerRegion endpoint ${REP1} still exists after the rename" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP1}" --region "${REGION}"
-# Sentinel: the release before the fix serves the ARN, or phase 3c would pass
+for id in Revision Endpoint; do
+  GOT="$(record "${id}" '.provisionedBy')"
+  if [ "${GOT}" != "cc-api" ]; then
+    echo "FAIL: phase 1b: ${id} is recorded provisionedBy=${GOT}; phase 2 would no longer exercise the cc-api -> sdk move" >&2
+    exit 1
+  fi
+done
+echo "    OK: Revision and Endpoint still recorded provisionedBy=cc-api"
+echo "    (${PREFIX_CDKD_VERSION} recorded the renamed PerRegion endpoint provisionedBy=$(record RegionalEndpoint '.provisionedBy'))"
+# Sentinel: the release before the fix serves the ARN, or phase 1c would pass
 # without the record lacking the attribute it heals.
 GOT="$(param_value)"
 case "${GOT}" in
   arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the GetAtt to the endpoint ARN (the #4978 bug)" ;;
   *)
-    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises the heal" >&2
+    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the GetAtt to '${GOT}', not the ARN -- phase 1c no longer exercises the heal" >&2
     exit 1
     ;;
 esac
@@ -444,36 +415,118 @@ GOT="$(param_value "${MAX_ENVS_PARAM}")"
 case "${GOT}" in
   arn:aws:lambda:*) echo "    OK: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to the endpoint ARN (the #4992 bug)" ;;
   *)
-    echo "FAIL: phase 3b: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to '${GOT}', not the ARN -- phase 3c no longer exercises its heal" >&2
+    echo "FAIL: phase 1b: ${PREFIX_CDKD_VERSION} resolved the ScalingConfig.MaxEnvironments GetAtt to '${GOT}', not the ARN -- phase 1c no longer exercises its heal" >&2
     exit 1
     ;;
 esac
 HAS_MAP="$(record RegionalEndpoint '.attributes | has("RegionalEndpoints")')"
 if [ "${HAS_MAP}" != "false" ]; then
-  echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the RegionalEndpoints map (${HAS_MAP})" >&2
+  echo "FAIL: phase 1b: the ${PREFIX_CDKD_VERSION} record already carries the RegionalEndpoints map (${HAS_MAP})" >&2
   exit 1
 fi
 HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
 if [ "${HAS_KEY}" != "false" ]; then
-  echo "FAIL: phase 3b: the ${PREFIX_CDKD_VERSION} record already carries the regional DomainName (${HAS_KEY})" >&2
+  echo "FAIL: phase 1b: the ${PREFIX_CDKD_VERSION} record already carries the regional DomainName (${HAS_KEY})" >&2
   exit 1
 fi
 
-echo "==> Phase 3c: deploy v3 again with this build (heals the ${PREFIX_CDKD_VERSION} record)"
-OUT="$(deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 3c deploy" >&2; exit 1; }
+echo "==> Phase 1c: deploy v1 again with this build, no change (heals the ${PREFIX_CDKD_VERSION} record)"
+# Nothing changes, so no provider rewrites the PerRegion endpoint's record:
+# only the heal can answer the GetAtt. Its first write of this stack (v13).
+OUT="$(deploy "${V1}")" || { echo "${OUT}"; echo "FAIL: phase 1c deploy" >&2; exit 1; }
 echo "${OUT}"
-assert_regional_getatt 'phase 3c'
-HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
-if [ "${HAS_KEY}" != "true" ]; then
-  echo "FAIL: phase 3c: the healed regional DomainName was not saved to the record (${HAS_KEY})" >&2
+# Stripped into a variable first: `grep -q` exiting on a match would give the
+# feeding `sed` SIGPIPE, and `pipefail` would turn the match into a miss.
+OUT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${OUT}")"
+if grep -qE 'RegionalEndpoint \(AWS::Lambda::WebFunctionEndpoint\) (updated|replaced|created)' <<<"${OUT_PLAIN}"; then
+  echo "FAIL: phase 1c: the deploy wrote the PerRegion endpoint, so its record no longer needs the heal" >&2
   exit 1
 fi
-echo "    OK: phase 3c: the healed attribute was saved to the record"
+assert_regional_getatt 'phase 1c'
+HAS_KEY="$(record RegionalEndpoint ".attributes | has(\"RegionalEndpoints.${SECONDARY_REGION}.DomainName\")")"
+if [ "${HAS_KEY}" != "true" ]; then
+  echo "FAIL: phase 1c: the healed regional DomainName was not saved to the record (${HAS_KEY})" >&2
+  exit 1
+fi
+echo "    OK: phase 1c: the healed attribute was saved to the record"
+for id in Revision Endpoint; do
+  GOT="$(record "${id}" '.provisionedBy')"
+  if [ "${GOT}" != "cc-api" ]; then
+    echo "FAIL: phase 1c: the no-change deploy moved ${id} to provisionedBy=${GOT}; phase 2 would no longer exercise the cc-api -> sdk move" >&2
+    exit 1
+  fi
+done
+echo "    OK: Revision and Endpoint still recorded provisionedBy=cc-api"
+assert_serves v1
+
+# The revision replacement every later code change must repeat: replaced, the
+# inline delete refused and retried, exactly one revision left, the old one
+# gone, the endpoints not recreated. Prints the remaining revision.
+replace_revision() { # usage: replace_revision <phase> <marker> <old-revision>
+  local version out t0 rev
+  # `|| exit 1` on each capture: `set -e` does not reach inside `$( )`.
+  version="$(upload_code "$2")" || exit 1
+  [ -n "${version}" ] || { echo "FAIL: $1: the code upload returned no version id" >&2; exit 1; }
+  t0="$(date +%s)"
+  out="$(deploy "${version}")" || { echo "${out}" >&2; echo "FAIL: $1 deploy" >&2; exit 1; }
+  echo "${out}" >&2
+  echo "    $1 deploy took $(($(date +%s) - t0)) s" >&2
+  assert_replaced "$1" "${out}" "$3"
+  rev="$(assert_one_revision "$1" | tail -1)" || exit 1
+  [ -n "${rev}" ] || { echo "FAIL: $1: no remaining revision was read" >&2; exit 1; }
+  [ "${rev}" = "$3" ] && { echo "FAIL: $1: the remaining revision is the OLD one ($3)" >&2; exit 1; }
+  assert_gone "$1: old revision $3 still exists" \
+    aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "$3" --region "${REGION}"
+  echo "    OK: $1: old revision $3 is gone" >&2
+  printf '%s\n%s\n' "${version}" "${rev}"
+}
+
+# The endpoints keep their ARN (their physical id) across a code change.
+assert_endpoints_kept() { # usage: assert_endpoints_kept <phase>
+  local ep rep
+  ep="$(record Endpoint '.physicalId')" || return 1
+  rep="$(record RegionalEndpoint '.physicalId')" || return 1
+  if [ "${ep}" != "${EP1}" ] || [ "${rep}" != "${REP1B}" ]; then
+    echo "FAIL: $1: an endpoint was recreated (${EP1} -> ${ep}, ${REP1B} -> ${rep})" >&2
+    exit 1
+  fi
+  echo "    OK: $1: endpoints ${EP1} and ${REP1B} kept"
+}
+
+echo "==> Phase 2: deploy v2 with this build (replaces the revision, leaves Cloud Control)"
+R="$(replace_revision 'phase 2' v2 "${REV1}")"
+REV2="$(sed -n 2p <<<"${R}")"
+assert_route 'phase 2' sdk
+# The witness that the SDK provider addresses the endpoint Cloud Control
+# created (provisioning-sticky-routing.md): the update kept the AWS-minted ARN.
+assert_endpoints_kept 'phase 2'
+assert_serves v2
+assert_regional_getatt 'phase 2'
+
+echo "==> Phase 3: deploy v3 with this build (SDK to SDK)"
+R="$(replace_revision 'phase 3' v3 "${REV2}")"
+REV3="$(sed -n 2p <<<"${R}")"
+assert_route 'phase 3' sdk
+assert_endpoints_kept 'phase 3'
 assert_serves v3
+assert_regional_getatt 'phase 3'
+
+echo "==> Phase 3b: two more code changes with this build (one revision each time, endpoints kept)"
+R="$(replace_revision 'phase 3b (v4)' v4 "${REV3}")"
+REV4="$(sed -n 2p <<<"${R}")"
+assert_endpoints_kept 'phase 3b (v4)'
+assert_serves v4
+R="$(replace_revision 'phase 3b (v5)' v5 "${REV4}")"
+V_LAST="$(sed -n 1p <<<"${R}")"
+REV_LAST="$(sed -n 2p <<<"${R}")"
+assert_route 'phase 3b' sdk
+assert_endpoints_kept 'phase 3b (v5)'
+assert_serves v5
+assert_regional_getatt 'phase 3b'
 
 echo "==> Phase 4: rename the endpoint (SDK create of the new one, SDK delete of the old one)"
 T0="$(date +%s)"
-OUT="$(ENDPOINT_NAME=live deploy "${V3}")" || { echo "${OUT}"; echo "FAIL: phase 4 deploy" >&2; exit 1; }
+OUT="$(ENDPOINT_NAME=live deploy "${V_LAST}")" || { echo "${OUT}"; echo "FAIL: phase 4 deploy" >&2; exit 1; }
 echo "${OUT}"
 echo "    phase 4 deploy took $(($(date +%s) - T0)) s"
 EP4="$(record Endpoint '.physicalId')"
@@ -485,10 +538,10 @@ assert_gone "old endpoint ${EP1} still exists after the rename" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${EP1}" --region "${REGION}"
 echo "    OK: old endpoint ${EP1} is gone"
 assert_route 'phase 4' sdk
-assert_serves v3
+assert_serves v5
 
 echo "==> Phase 5: cdkd drift reports no drift on the SDK-recorded revision and endpoint"
-DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
+DRIFT_OUT="$(ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V_LAST}" \
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
   echo "${DRIFT_OUT}"
   echo "FAIL: cdkd drift reported drift (or failed) right after a deploy" >&2
@@ -498,24 +551,25 @@ echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare (unsupported or
 # skipped), so require every resource of the stack to have been compared: the
 # role, the function, the revision, the two endpoints and the two parameters.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(7 resources checked, 0 unsupported)'; then
+DRIFT_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}")"
+if ! grep -qF '(7 resources checked, 0 unsupported)' <<<"${DRIFT_PLAIN}"; then
   echo "FAIL: drift did not compare all 7 resources -- expected '(7 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
 echo "    OK: no drift, all 7 resources compared"
 
 echo "==> Destroy"
-ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V3}" \
+ENDPOINT_NAME=live CODE_BUCKET="${CODE_BUCKET}" CODE_KEY="${CODE_KEY}" CODE_VERSION="${V_LAST}" \
   node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "web function ${FN_NAME} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunction --identifier "${FN_ARN}" --region "${REGION}"
 assert_gone "endpoint ${EP4} still exists after destroy" \
   aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${EP4}" --region "${REGION}"
-assert_gone "PerRegion endpoint ${REP3} still exists after destroy" \
-  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP3}" --region "${REGION}"
-assert_gone "revision ${REV3} still exists after destroy" \
-  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV3}" --region "${REGION}"
+assert_gone "PerRegion endpoint ${REP1B} still exists after destroy" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionEndpoint --identifier "${REP1B}" --region "${REGION}"
+assert_gone "revision ${REV_LAST} still exists after destroy" \
+  aws cloudcontrol get-resource --type-name AWS::Lambda::WebFunctionRevision --identifier "${REV_LAST}" --region "${REGION}"
 for p in "${PARAM_NAME}" "${MAX_ENVS_PARAM}"; do
   assert_gone "parameter ${p} still exists after destroy" aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
@@ -523,4 +577,4 @@ assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --ro
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: web function, endpoints, revisions, parameter, role and state gone"
 echo ""
-echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926), and a PerRegion endpoint's RegionalEndpoints.<region>.DomainName resolves and heals (#4978), as do a path through an object member and the whole map (#4992)"
+echo "[verify] PASS — lambda-web-function-revision-replace: the replaced revision is deleted once the endpoint moves (#4900), revisions / endpoints recorded on Cloud Control move to their SDK providers (#4926), and a PerRegion endpoint's RegionalEndpoints.<region>.DomainName resolves and heals (#4978), as do a path through an object member and the whole map (#4992); two more code changes each leave one revision behind the same endpoints"

@@ -245,6 +245,41 @@ describe('a --recreate-via-* target with no template change is recreated (#2651)
     expect(result.unchanged).toBe(1);
   });
 
+  it('--recreate-via-cc-api: a sibling failure during the re-create\'s late name release does not abort it -- the old one is gone (go-to-k/cdkd#5111)', async () => {
+    const template = arrange('sdk');
+    const engine = makeEngine({ viaCcApi: [TARGET] });
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    const release = new Error(`Function already exist: ${PROPS.FunctionName}`);
+    release.name = 'ResourceConflictException';
+    cc.create.mockImplementationOnce(async () => {
+      fields.interrupted = true;
+      fields.interruptCause = 'sibling-failure';
+      throw release;
+    });
+
+    await engine.deploy(STACK_NAME, template).catch(() => undefined);
+
+    expect(sdk.delete).toHaveBeenCalledTimes(1);
+    expect(cc.create).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
+  it('--recreate-via-cc-api: nor does it abort the inner transient retry (a throttle) (go-to-k/cdkd#5111)', async () => {
+    const template = arrange('sdk');
+    const engine = makeEngine({ viaCcApi: [TARGET] });
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    const throttle = new Error('Rate exceeded');
+    throttle.name = 'ThrottlingException';
+    cc.create.mockImplementationOnce(async () => {
+      fields.interrupted = true;
+      fields.interruptCause = 'sibling-failure';
+      throw throttle;
+    });
+
+    await engine.deploy(STACK_NAME, template).catch(() => undefined);
+
+    expect(cc.create).toHaveBeenCalledTimes(2);
+  }, 30_000);
+
   it('--recreate-via-sdk-provider: a NO_CHANGE target is destroyed on Cloud Control and created on its SDK provider', async () => {
     const template = arrange('cc-api');
     await makeEngine({ viaSdkProvider: [TARGET] }).deploy(STACK_NAME, template);

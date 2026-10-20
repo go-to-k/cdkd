@@ -163,8 +163,10 @@ Then run the destroy again.
 
 A successful destroy removes the marker with the record. A resource the
 destroy keeps (`RemovalPolicy.RETAIN`) is listed in `retained.json` beside
-the record's key, so the next deploy under the same prefix takes it back and
-does not refuse its name. `cdkd state orphan` empties that list.
+the record's key. The next deploy starts a new lifetime of the stack, whose
+generated names differ, so it creates new resources beside the kept ones (as
+CloudFormation does) and warns once, naming `cdkd import` for adopting them.
+`cdkd state orphan` empties that list.
 
 If S3 denies access to the marker, the destroy warns and falls back to
 listing the bucket's prefixes.

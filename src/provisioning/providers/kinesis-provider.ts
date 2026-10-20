@@ -27,7 +27,7 @@ import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -406,7 +406,7 @@ export class KinesisStreamProvider implements ResourceProvider {
 
     const streamName =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::Kinesis::Stream', logicalId);
 
     // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
     // Refusing from inside it would throw AFTER `CreateStream` already ran,

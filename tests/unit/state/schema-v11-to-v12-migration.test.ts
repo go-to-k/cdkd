@@ -148,12 +148,11 @@ describe('State schema v12 — referenceProvenance / outputReferenceProvenance (
     });
   };
 
-  it('v12 is the current version, and every version 1..12 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(12);
+  it('v12 is current or older, and every version 1..12 is readable', () => {
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(12);
     for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
       expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
     }
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(13);
   });
 
   it('reads a verbatim v11 document unchanged, both fields absent, and writes nothing on read', async () => {
@@ -208,16 +207,17 @@ describe('State schema v12 — referenceProvenance / outputReferenceProvenance (
     expect(isKnownTokenFreeState(state)).toBe(false);
   });
 
-  it('refuses version 13 with the "Upgrade cdkd" error, as a v11 binary refuses 12', async () => {
-    serve(JSON.stringify({ version: 13, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 }));
+  it('refuses a version past the current one with the "Upgrade cdkd" error, as a v11 binary refuses 12', async () => {
+    const next = STATE_SCHEMA_VERSION_CURRENT + 1;
+    serve(JSON.stringify({ version: next, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 }));
     const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
     expect(caught).toBeInstanceOf(StateError);
-    expect((caught as Error).message).toMatch(/Unsupported state schema version 13/);
+    expect((caught as Error).message).toMatch(new RegExp(`Unsupported state schema version ${next}`));
     expect((caught as Error).message).toMatch(/1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12/);
     expect((caught as Error).message).toMatch(/Upgrade cdkd/);
   });
 
-  it('saves a v12 document with the fields intact', async () => {
+  it('saves a v12 document (stamped current) with the fields intact', async () => {
     client.send.mockResolvedValueOnce({ ETag: '"new"' });
     const v12 = JSON.parse(V11_SECRET_BEARING) as StackState;
     v12.resources['Queue']!.referenceProvenance = {
@@ -230,7 +230,7 @@ describe('State schema v12 — referenceProvenance / outputReferenceProvenance (
     const body = JSON.parse(
       String((put![0] as { input: { Body: string } }).input.Body)
     ) as StackState;
-    expect(body.version).toBe(12);
+    expect(body.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
     expect(body.resources['Queue']!.referenceProvenance).toEqual(
       v12.resources['Queue']!.referenceProvenance
     );

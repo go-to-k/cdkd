@@ -136,7 +136,7 @@ const tokenKey = (
   // `{stackName}/{region}/{logicalId}`, and this map is process-global, so one
   // process deploying the same stack to two regions (`cdkd deploy --all`) would
   // otherwise hand both creates the same token and have the second answered
-  // with the first region's resource. Both are absent outside a `withStackName`
+  // with the first region's resource. Both are absent outside a `withStackScope`
   // scope / an unset AWS_REGION, which only unit tests hit.
   // `maxLength` and `charset` are part of the KEY, not just of the derivation:
   // the memo returns the first value minted for a key verbatim, so two call
@@ -287,10 +287,10 @@ export function stackScopedCreateToken(options: StackScopedCreateTokenOptions): 
   // No stack in scope means the token would be shared by EVERY stack's copy of
   // this logical id -- the very collision this function exists to prevent --
   // so refuse rather than derive it. Every production create runs inside a
-  // `withStackName` scope; only a unit test may opt out, explicitly.
+  // `withStackScope`; only a unit test may opt out, explicitly.
   if (stackName === undefined && !unscopedCreateTokensAllowed) {
     throw new Error(
-      `cdkd internal error: a create token for ${logicalId} was requested outside a stack scope (withStackName), so it cannot be scoped to its stack`
+      `cdkd internal error: a create token for ${logicalId} was requested outside a stack scope (withStackScope), so it cannot be scoped to its stack`
     );
   }
   const digest = createHash('sha256')

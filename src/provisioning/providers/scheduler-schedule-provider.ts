@@ -15,7 +15,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -389,7 +389,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     // stack-prefixed output satisfies both.
     const name =
       (properties['Name'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Scheduler::Schedule', logicalId);
     const groupName = this.groupNameOf(properties);
 
     this.logger.debug(

@@ -295,6 +295,53 @@ describe('state --json subcommands keep stdout to the payload (issue #2280)', ()
     expect(stdout).not.toContain(ASSUMED_LINE);
   });
 
+  // go-to-k/cdkd#5064: the stack instance id never reaches output a user may
+  // paste; its PRESENCE (not a legacy stack) still shows.
+  describe('state show --json withholds the stack instance id', () => {
+    const id = '5e4d3c2b-1a09-4f8e-9d7c-6b5a4f3e2d1c';
+    beforeEach(() => {
+      mockGetState.mockResolvedValue({
+        state: {
+          version: 13,
+          stackName: 'TestStack',
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          stackInstanceId: id,
+          lastModified: 0,
+        },
+        etag: '"etag-1"',
+      });
+    });
+    const expectWithheld = ({ stdout, stderr, error }: Streams): void => {
+      expect(error).toBeUndefined();
+      const payload = JSON.parse(stdout) as { state: { stackInstanceId?: string } };
+      expect(payload.state.stackInstanceId).toBe('<withheld>');
+      expect(stdout).not.toContain(id);
+      expect(stderr).not.toContain(id);
+    };
+
+    it('for one record', async () => {
+      expectWithheld(
+        await runState(['show', 'TestStack', '--json', '--verbose', '--state-bucket', 'b'])
+      );
+    });
+
+    it('for a --show-nested tree', async () => {
+      expectWithheld(
+        await runState([
+          'show',
+          'TestStack',
+          '--json',
+          '--verbose',
+          '--show-nested',
+          '--state-bucket',
+          'b',
+        ])
+      );
+    });
+  });
+
   it('state info --json --verbose --role-arn does the same', async () => {
     mockResolveWithSource.mockResolvedValue({ bucket: 'test-bucket', source: 'cli-flag' });
     mockS3Send.mockImplementation(async (command) => {

@@ -264,8 +264,8 @@ cdkd state orphan MyStack --stack-region us-east-1 --resource MyTable1234ABCD
 Use `cdkd state orphan --resource` when the construct is already gone from the
 app. Only `cdkd orphan` accepts `--dry-run`. Without `--resource`,
 `cdkd state orphan MyStack` drops the whole stack record. Do not do that to a
-stack with other live resources, because the next deploy re-creates or collides
-with all of them. [Orphan Instead of Destroy](orphan-vs-destroy.md) compares the
+stack with other live resources, because the next deploy re-creates all of them
+(under new generated names, or colliding where a name is declared). [Orphan Instead of Destroy](orphan-vs-destroy.md) compares the
 commands.
 
 ### The resource exists in AWS but is missing from state
@@ -338,8 +338,9 @@ been published.
 
 The same stack name and region is recorded under another `--state-prefix` of
 the state bucket. A stack name is one deployment per account and region, as
-in CloudFormation. Two deployments of one name share every generated resource
-name, so each can delete the other's resources.
+in CloudFormation. Two deployments of one name share every declared resource
+name (and every generated one, for a stack first deployed before generated
+names carried a suffix), so each can delete the other's resources.
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
 explains the rule.
 

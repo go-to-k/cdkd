@@ -918,7 +918,7 @@ async function deployCommand(
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
       // `generateResourceName(name, { userSupplied: true })` call inside
       // the provider chain sees the resolved flag via AsyncLocalStorage.
-      // The inner `withStackName(...)` lives in DeployEngine.deploy; the
+      // The inner `withStackScope(...)` lives in DeployEngine.deploy; the
       // two stores are independent so order does not matter, but
       // outer-skipPrefix / inner-stackName keeps the call-site readable.
       return withSkipPrefix(skipPrefix, () => runStackInner(stackInfo));

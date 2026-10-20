@@ -27,7 +27,7 @@ import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { definedAttributes } from '../attribute-map.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   CreateContext,
@@ -121,7 +121,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     const name =
       typeof properties['Name'] === 'string' && properties['Name'] !== ''
         ? properties['Name']
-        : generateResourceName(logicalId, { maxLength: 64 });
+        : generatedNameFor('AWS::Lambda::NetworkConnector', logicalId);
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, undefined);
     // Memoised per logical id for the deploy, so the engine's own retry of a
     // create whose response was lost resends the SAME token and gets the same

@@ -78,6 +78,30 @@ describe('rewriteResourceReferences', () => {
     expect('skippedOutputs' in result.state).toBe(false);
   });
 
+  // go-to-k/cdkd#5064 phase 2: an orphaned record left the stack, so a later
+  // create of its logical id must ask for a name it never held.
+  it('retires each orphaned record at its generation on a stack with an instance id, never on a legacy one', async () => {
+    const resources = (): StackState['resources'] => ({
+      Bucket: {
+        physicalId: 'b-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        nameGeneration: 2,
+        nameGenerationHigh: 4,
+      },
+      Other: { physicalId: 'o-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
+    });
+    const v13 = {
+      ...baseState(resources()),
+      stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f',
+      retiredNameGenerations: { Gone: 1 },
+    };
+    const result = await rewriteResourceReferences(v13, ['Bucket'], fakeRegistry());
+    expect(result.state.retiredNameGenerations).toEqual({ Gone: 1, Bucket: 4 });
+    const legacy = await rewriteResourceReferences(baseState(resources()), ['Bucket'], fakeRegistry());
+    expect('retiredNameGenerations' in legacy.state).toBe(false);
+  });
+
   it('rewrites a {Ref: orphan} into the orphan physicalId', async () => {
     const state = baseState({
       Bucket: { physicalId: 'b-phys', resourceType: 'AWS::S3::Bucket', properties: {} },

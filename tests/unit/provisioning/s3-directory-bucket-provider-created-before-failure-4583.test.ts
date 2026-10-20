@@ -59,6 +59,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3DirectoryBucketProvider } from '../../../src/provisioning/providers/s3-directory-bucket-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 const TYPE = 'AWS::S3Express::DirectoryBucket';
 const BUCKET_NAME = 'my-bucket--use1-az1--x-s3';
@@ -119,5 +120,32 @@ describe('S3DirectoryBucketProvider create leaves no bucket behind a failure (#4
     const error = await createError({ ...PROPS, DataRedundancy: 42 });
     expect(mockS3Send).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'Bucket', TYPE)).toBeUndefined();
+  });
+});
+
+// go-to-k/cdkd#5064: a generated directory-bucket name, its `--<az-id>--x-s3`
+// suffix included, fits S3's 63-character limit for any stack name.
+describe('S3DirectoryBucketProvider.create: generated name length (#5064)', () => {
+  beforeEach(() => {
+    mockS3Send.mockReset();
+    mockStsSend.mockReset();
+    mockEc2Send.mockReset();
+    mockEc2Send.mockResolvedValue({ AvailabilityZones: [{ ZoneId: 'use1-az4' }] });
+    mockStsSend.mockResolvedValue({ Account: '123456789012' });
+    mockS3Send.mockResolvedValue({});
+  });
+
+  it.each([
+    ['a v13 stack', '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f'],
+    ['a legacy stack', undefined],
+  ])('%s: the whole name is at most 63 characters', async (_label, stackInstanceId) => {
+    const stackName = `S${'a'.repeat(60)}`;
+    const result = await withStackScope({ stackName, stackInstanceId, nameGenerations: new Map() }, () =>
+      new S3DirectoryBucketProvider().create('DirectoryBucket', TYPE, {
+        LocationName: 'us-east-1a--x-s3',
+      })
+    );
+    expect(result.physicalId).toMatch(/--use1-az4--x-s3$/);
+    expect(result.physicalId.length).toBeLessThanOrEqual(63);
   });
 });

@@ -5,7 +5,11 @@ import {
   settleJournalAfterCleanRollback,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
+import {
+  withSkipPrefix,
+  withStackScope,
+  generateResourceName,
+} from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
@@ -147,6 +151,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         opts.currentEtag === undefined ? null : { state: currentState, etag: opts.currentEtag }
       ),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       // go-to-k/cdkd#4600: the bucket-wide ownership scan before an orphan delete.
       listStacks: vi.fn().mockResolvedValue([]),
       ...journal,
@@ -956,6 +963,81 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         physicalId: `${stackName}-B`,
         physicalIdRecoveredFromError: true,
       });
+    });
+
+    // go-to-k/cdkd#5064: the deploy derives the planned name in the RECORD's
+    // own stack instance scope (`deploy-flow.ts`'s `nameScope()`), and must
+    // forward that SAME id to `resolvePendingCloudControlRequests` so the
+    // identifier-uniqueness check recognises a v13-suffixed name as cdkd's
+    // own, exactly as it recognises the legacy `{stackName}-{logicalId}` form
+    // above.
+    it("an identifier that is the v13 record's own suffixed name is not taken over", async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      (
+        engine as unknown as { stateBackend: { getState: ReturnType<typeof vi.fn> } }
+      ).stateBackend.getState.mockResolvedValue({
+        state: {
+          version: 13,
+          stackName,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: Date.now(),
+          stackInstanceId: STACK_INSTANCE_ID,
+        },
+        etag: 'e0',
+      });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#5064: a first deploy re-run after a crash has no record;
+    // its id is only in the write-ahead sibling, read WITHOUT minting, so the
+    // earlier attempt's suffixed name still reads as a name.
+    it('with no record yet, the write-ahead id makes a suffixed name read as generated', async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      const backend = (
+        engine as unknown as {
+          stateBackend: {
+            getState: ReturnType<typeof vi.fn>;
+            readStackInstanceSibling?: ReturnType<typeof vi.fn>;
+            stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
+          };
+        }
+      ).stateBackend;
+      backend.getState.mockResolvedValue(null);
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(STACK_INSTANCE_ID);
+      backend.stackInstanceIdForFirstWrite.mockResolvedValue(STACK_INSTANCE_ID);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).toHaveBeenCalledTimes(1);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const settled = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(settled).toMatchObject({ physicalId: suffixedIdentifier });
+      expect(settled).not.toHaveProperty('createdIdentifierUnique');
+    });
+
+    it('a deploy with a record never reads the write-ahead sibling', async () => {
+      const { engine } = resumingEngine({});
+      const backend = (
+        engine as unknown as { stateBackend: { readStackInstanceSibling?: ReturnType<typeof vi.fn> } }
+      ).stateBackend;
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(undefined);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).not.toHaveBeenCalled();
     });
 
     it.each([

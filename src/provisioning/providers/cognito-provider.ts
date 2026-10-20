@@ -49,7 +49,7 @@ import {
   markNonRetryable,
 } from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -1868,7 +1868,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
     const poolName =
       (properties['UserPoolName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::Cognito::UserPool', logicalId);
 
     // The shape guard for `MfaConfiguration` (issue #1925 item 2). A declared
     // `null` / `[]` / `{Ref: ...}` used to slip past the `as UserPoolMfaType`

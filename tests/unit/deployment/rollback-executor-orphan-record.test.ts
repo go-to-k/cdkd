@@ -35,6 +35,20 @@ vi.mock('../../../src/provisioning/providers/create-token-ledger.js', async () =
 });
 beforeEach(() => {
   noteRetained.mockClear();
+  identity.gone = false;
+});
+
+// go-to-k/cdkd#5064: lets a case reach the failed-CREATE arm that finds a
+// journaled orphan already gone in AWS.
+const identity = vi.hoisted(() => ({ gone: false }));
+vi.mock('../../../src/deployment/rollback-executor/orphan-identity.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/rollback-executor/orphan-identity.js')>();
+  return {
+    ...actual,
+    createdResourceStillThere: (...args: Parameters<typeof actual.createdResourceStillThere>) =>
+      identity.gone ? Promise.resolve('gone' as const) : actual.createdResourceStillThere(...args),
+  };
 });
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
@@ -323,6 +337,145 @@ describe('the failed-in-flight CREATE arm records too (#2934)', () => {
     // the go-to-k/cdkd#2916 diagnosis as its answer, which is why the diagnosis
     // is kept rather than removed.
     expect(result.orphaned).toEqual([]);
+  });
+});
+
+describe('a CREATE taken back reaches the caller BEFORE the per-op save (go-to-k/cdkd#5064)', () => {
+  it.each([
+    ['delete', res({ physicalId: 'cdkd-sandbox-KeptRole', nameGeneration: 2 }), undefined],
+    ['Retain', res({ physicalId: 'cdkd-sandbox-KeptRole', deletionPolicy: 'Retain', nameGeneration: 2 }), undefined],
+    ['--orphan', res({ physicalId: 'cdkd-sandbox-KeptRole', nameGeneration: 2 }), new Set(['KeptRole'])],
+  ])('a completed CREATE (%s) reports its record before `afterOp`', async (_arm, record, orphanLogicalIds) => {
+    const { ctx } = makeCtx();
+    const state: Record<string, ResourceState> = { KeptRole: record };
+    const order: string[] = [];
+    const result = await replayRollback([createOp()], state, 'MyStack', ctx, {
+      ...(orphanLogicalIds && { orphanLogicalIds }),
+      onRolledBackCreate: (create) => {
+        order.push(`rolledBack ${create.logicalId}`);
+        expect(create.record).toBe(record);
+      },
+      afterOp: () => {
+        order.push('afterOp');
+      },
+    });
+    expect(state['KeptRole']).toBeUndefined();
+    expect(order).toEqual(['rolledBack KeptRole', 'afterOp']);
+    expect(result.rolledBackCreates.map((c) => c.logicalId)).toEqual(['KeptRole']);
+  });
+
+  it('a failed CREATE deleted or kept by Retain reports before `afterOp`, with its op generation', async () => {
+    for (const deletionPolicy of [undefined, 'Retain'] as const) {
+      const { ctx } = makeCtx();
+      const record = res({
+        physicalId: 'cdkd-sandbox-PartialRole',
+        ...(deletionPolicy && { deletionPolicy }),
+      });
+      const state: Record<string, ResourceState> = { PartialRole: record };
+      const order: string[] = [];
+      const result = await replayFailedOperations(
+        [
+          {
+            logicalId: 'PartialRole',
+            changeType: 'CREATE',
+            resourceType: 'AWS::IAM::Role',
+            physicalId: 'cdkd-sandbox-PartialRole',
+            nameGeneration: 3,
+          } as FailedOperation,
+        ],
+        state,
+        'MyStack',
+        ctx,
+        {
+          onRolledBackCreate: () => order.push('rolledBack'),
+          afterOp: () => {
+            order.push('afterOp');
+          },
+        }
+      );
+      expect(order).toEqual(['rolledBack', 'afterOp']);
+      expect(result.rolledBackCreates).toEqual([
+        { logicalId: 'PartialRole', record, nameGeneration: 3 },
+      ]);
+    }
+  });
+
+  it('a journaled orphan found already gone reports before `afterOp`, with its op generation', async () => {
+    identity.gone = true;
+    const { ctx, del } = makeCtx();
+    ctx.foreignHolder = async () => undefined;
+    const order: string[] = [];
+    const result = await replayFailedOperations(
+      [
+        {
+          logicalId: 'Lost',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SQS::Queue',
+          physicalId: 'https://sqs/1/MyStack-Lost-abc',
+          physicalIdRecoveredFromError: true,
+          nameGeneration: 3,
+        } as FailedOperation,
+      ],
+      {},
+      'MyStack',
+      ctx,
+      {
+        onRolledBackCreate: () => order.push('rolledBack'),
+        afterOp: () => {
+          order.push('afterOp');
+        },
+      }
+    );
+    expect(del).not.toHaveBeenCalled();
+    expect(order).toEqual(['rolledBack', 'afterOp']);
+    expect(result.rolledBackCreates).toEqual([
+      { logicalId: 'Lost', record: undefined, nameGeneration: 3 },
+    ]);
+  });
+
+  it('a delete that fails, or a re-run whose record is gone, reports nothing', async () => {
+    const failing = makeCtx(
+      vi.fn(async () => {
+        throw new Error('AccessDenied');
+      })
+    );
+    const kept: Record<string, ResourceState> = { KeptRole: res({ physicalId: 'cdkd-sandbox-KeptRole' }) };
+    const completed = await replayRollback([createOp()], kept, 'MyStack', failing.ctx);
+    expect(completed.failures).toBe(1);
+    expect(kept['KeptRole']).toBeDefined();
+    expect(completed.rolledBackCreates).toEqual([]);
+
+    const partial: Record<string, ResourceState> = {
+      PartialRole: res({ physicalId: 'cdkd-sandbox-PartialRole' }),
+    };
+    const failed = await replayFailedOperations(
+      [
+        {
+          logicalId: 'PartialRole',
+          changeType: 'CREATE',
+          resourceType: 'AWS::IAM::Role',
+          physicalId: 'cdkd-sandbox-PartialRole',
+        } as FailedOperation,
+      ],
+      partial,
+      'MyStack',
+      makeCtx(
+        vi.fn(async () => {
+          throw new Error('AccessDenied');
+        })
+      ).ctx
+    );
+    expect(failed.failures).toBe(1);
+    expect(failed.rolledBackCreates).toEqual([]);
+
+    // A re-run, the record gone already: neither the delete arm nor `--orphan`.
+    for (const orphanLogicalIds of [undefined, new Set(['KeptRole'])]) {
+      const { ctx } = makeCtx();
+      const result = await replayRollback([createOp()], {}, 'MyStack', ctx, {
+        ...(orphanLogicalIds && { orphanLogicalIds }),
+      });
+      expect(result.rolledBackCreates).toEqual([]);
+    }
   });
 });
 

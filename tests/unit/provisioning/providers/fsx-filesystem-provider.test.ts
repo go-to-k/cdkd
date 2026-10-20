@@ -58,7 +58,7 @@ import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
 } from '../../../../src/deployment/retryable-errors.js';
-import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../../src/provisioning/resource-name.js';
 import { recordServerClockForTests } from '../../../../src/provisioning/providers/server-clock.js';
 import {
   CreateTokenLedger,
@@ -67,7 +67,7 @@ import {
 import type { CreateTokenLedgerDoc } from '../../../../src/state/create-token-ledger.js';
 import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -309,11 +309,11 @@ describe('FSxFileSystemProvider create', () => {
     });
 
     const provider = newProvider();
-    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
-    await withStackName('StagingStack', () =>
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
     );
-    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
 
     const tokens = callsOf(CreateFileSystemCommand).map((c) => c.input['ClientRequestToken']);
     expect(tokens[0]).not.toBe(tokens[1]);
@@ -507,7 +507,7 @@ describe('FSxFileSystemProvider create', () => {
       };
     };
     const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
-      withStackName('DevStack', () => withCreateTokenLedger(ledger, fn));
+      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(ledger, fn));
 
     /** Run 1 sends the create an hour ago and dies before recording it. */
     const interruptedRunOne = async () => {

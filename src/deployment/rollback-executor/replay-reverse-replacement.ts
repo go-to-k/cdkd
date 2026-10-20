@@ -1,4 +1,5 @@
 import { withReplayDeletePrinting } from './replay-scope.js';
+import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import type { ResourceCreateResult, ResourceProvider } from '../../types/resource.js';
 import { equalIdNamesSameResource } from '../type-change-guard.js';
@@ -59,6 +60,8 @@ import {
   describedPhysicalIdPointer,
   collisionLine,
   shownLogicalId,
+  maskedFailureText,
+  maskedRollbackEventError,
   recordRollbackSkip,
   rollbackCannotAddress,
   skipUnaddressableReplay,
@@ -68,6 +71,12 @@ import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.j
 import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import type { SupersededResourceRecord } from '../../types/state.js';
+import {
+  canRecordSuperseded,
+  supersededHolderOf,
+  SUPERSEDED_KEPT_REMEDY,
+} from '../superseded-resources.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { probeReplacedSurvivor } from './replaced-survivor.js';
@@ -503,6 +512,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       logicalId: op.logicalId,
       physicalId: prev.physicalId,
       via: createProvisionedBy,
+      // go-to-k/cdkd#5064 phase 2: the OLD resource's own generation, never
+      // the one the replacement moved the record to.
+      nameGeneration: nameGenerationOf(prev, op.logicalId),
     },
     logger,
     mask,
@@ -627,6 +639,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // interrupted re-run doesn't chase a deleted physical id.
     delete stateResources[op.logicalId];
     await afterOp?.(op.logicalId);
+    // go-to-k/cdkd#5131: the old resource is re-created under the name this
+    // delete frees; a type whose delete returns while AWS still holds it waits.
+    await deleteNewFirstRoute.provider.waitForNameReleased?.(
+      op.logicalId,
+      current.physicalId,
+      current.resourceType,
+      { isInterrupted: () => isInterrupted?.() === true, maskSecrets: mask }
+    );
   };
 
   // Re-creates the old resource once the new one is gone.
@@ -817,7 +837,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           requested: replayCreateProps(),
           generated:
             typeof op.logicalId === 'string'
-              ? applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps)
+              ? // `'omit'`: a name only a Cloud Control create needs must not
+                // throw here, where the create may have gone to the SDK.
+                applyDefaultNameForFallback(op.logicalId, oldType, resolvedPrevProps, 'omit')
               : undefined,
           // A provider that REWRITES even an explicit name derives it in this
           // async scope (stack name, prefix flag), so the helper derives it
@@ -1148,9 +1170,12 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // `NoEcho: true` (or a nested stack's masked outputs) would otherwise land
   // in the record in the clear.
   recordNoEchoAttributeValues(createResult, secrets, resolvedPrevProps);
+  // go-to-k/cdkd#5064 phase 2: the old resource comes back at its own name
+  // generation, and the record remembers the one the deleted copy reached, so
+  // the next replacement never asks for that name again.
   stateResources[op.logicalId] = redactRollbackRecord(
     {
-      ...prevRecord,
+      ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),
       physicalId: createResult.physicalId,
       attributes: createResult.attributes ?? {},
       properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
@@ -1176,157 +1201,296 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       createProvisionedBy
     );
   }
+  // go-to-k/cdkd#5064: a delete deferred past this save leaves the new
+  // resource in no record until it runs, so it is reported as superseded
+  // first; a run killed in between leaves it for the next deploy to delete.
+  const deferral =
+    s.deferral !== undefined &&
+    !deletedNewFirst &&
+    !adoptedLiveNewResource &&
+    !rollbackRetainsNewResource(current)
+      ? s.deferral
+      : undefined;
+  const supersededFinalSnapshot = rollbackFinalSnapshotId(
+    op.resourceType,
+    current,
+    op.provisionedBy
+  );
+  const supersededPolicy = current.updateReplacePolicy;
+  const superseded: SupersededResourceRecord = {
+    logicalId: op.logicalId,
+    supersededAt: Date.now(),
+    state: current,
+    ...((supersededPolicy === 'Delete' ||
+      supersededPolicy === 'Snapshot' ||
+      supersededPolicy === 'RetainExceptOnCreate') && { updateReplacePolicy: supersededPolicy }),
+    ...(supersededFinalSnapshot !== undefined && {
+      finalSnapshotIdentifier: supersededFinalSnapshot,
+    }),
+  };
+  // Only what a later run can delete with the context this one has
+  // (`canRecordSuperseded`); a principal's delete reads no inline-policy
+  // claim, so a role qualifies. Anything else keeps the in-memory deferral.
+  const recordSuperseded = deferral?.onSuperseded !== undefined && canRecordSuperseded(current, {});
+  if (recordSuperseded) deferral?.onSuperseded?.(superseded);
   await afterOp?.(op.logicalId);
 
-  // Survivor record for this arm's retain branch -- see the twin binding
-  // in `reverse-replacement-readopt` above for why the EVENT, not the
-  // warn, is what the user is left with.
-  let survivorReason: string | undefined;
-  // go-to-k/cdkd#4628: the record's id may be unaddressable here.
-  const survivorId = retainedSurvivorId(current, op);
-  if (!deletedNewFirst && !adoptedLiveNewResource && rollbackRetainsNewResource(current)) {
-    // Issue #2598: the ordinary create-first path — the old resource is
-    // already re-created and state already points at it, so honouring
-    // `UpdateReplacePolicy: Retain` on the new copy costs nothing and
-    // completes the revert. This site's existing policy for a delete it
-    // does not perform is warn-and-count (see the `catch` below and the
-    // `adoptedLiveNewResource` arm above), and a retained copy is the
-    // same user-visible outcome: a live resource cdkd no longer tracks.
-    const survivorMessages = retainedSurvivorMessages(
-      op.logicalId,
-      op.resourceType,
-      survivorId ?? 'no recorded id',
-      `State records the re-created old resource ` +
-        `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`,
-      mask
-    );
-    logger.warn(survivorMessages.warn);
-    survivorReason = survivorMessages.reason;
-    result.warnings++;
-    // go-to-k/cdkd#4438: the retained copy still holds this stack's create
-    // token, so the stack's next create of the logical id must not send it.
-    await noteRetainedResource(op.resourceType, op.logicalId);
-  } else if (!deletedNewFirst && !adoptedLiveNewResource) {
-    try {
-      const finalSnapshotIdentifier = rollbackFinalSnapshotId(
+  // The delete of the new resource and the closing line and event. A
+  // renamed reversal run ahead of the ops reverting to the old name hands
+  // it to the replay instead, which runs it at this op's own slot, after
+  // those ops moved off the new resource (go-to-k/cdkd#5064).
+  /** Returns whether the new resource is gone (deleted, not kept). */
+  const finish = async (): Promise<boolean> => {
+    // Survivor record for this arm's retain branch -- see the twin binding
+    // in `reverse-replacement-readopt` above for why the EVENT, not the
+    // warn, is what the user is left with.
+    let survivorReason: string | undefined;
+    // go-to-k/cdkd#4628: the record's id may be unaddressable here.
+    const survivorId = retainedSurvivorId(current, op);
+    if (!deletedNewFirst && !adoptedLiveNewResource && rollbackRetainsNewResource(current)) {
+      // Issue #2598: the ordinary create-first path — the old resource is
+      // already re-created and state already points at it, so honouring
+      // `UpdateReplacePolicy: Retain` on the new copy costs nothing and
+      // completes the revert. This site's existing policy for a delete it
+      // does not perform is warn-and-count (see the `catch` below and the
+      // `adoptedLiveNewResource` arm above), and a retained copy is the
+      // same user-visible outcome: a live resource cdkd no longer tracks.
+      const survivorMessages = retainedSurvivorMessages(
+        op.logicalId,
         op.resourceType,
-        current,
-        op.provisionedBy
+        survivorId ?? 'no recorded id',
+        `State records the re-created old resource ` +
+          `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`,
+        mask
       );
-      const deleteNewAfterRecreateRoute = resolveNewDeleteRoute();
-      const deleteNewAfterRecreate = await withReplayDeletePrinting(s, () =>
-        deleteNewAfterRecreateRoute.provider.delete(
+      logger.warn(survivorMessages.warn);
+      survivorReason = survivorMessages.reason;
+      result.warnings++;
+      // go-to-k/cdkd#4438: the retained copy still holds this stack's create
+      // token, so the stack's next create of the logical id must not send it.
+      await noteRetainedResource(op.resourceType, op.logicalId);
+    } else if (!deletedNewFirst && !adoptedLiveNewResource) {
+      try {
+        const finalSnapshotIdentifier = rollbackFinalSnapshotId(
+          op.resourceType,
+          current,
+          op.provisionedBy
+        );
+        const deleteNewAfterRecreateRoute = resolveNewDeleteRoute();
+        const deleteNewAfterRecreate = await withReplayDeletePrinting(s, () =>
+          deleteNewAfterRecreateRoute.provider.delete(
+            op.logicalId,
+            current.physicalId,
+            op.resourceType,
+            current.properties,
+            {
+              expectedRegion: ctx.region,
+              ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
+              ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+              deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+              recordedAttributes: current.attributes,
+              // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+              recordedNoEchoLeaves: current.noEchoLeaves,
+              // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
+              maskSecrets: mask,
+            }
+          )
+        );
+        // Issue #1762: the old resource is already re-created and state
+        // already points at it, so the site's existing policy for a
+        // FAILED delete applies to a skip too — warn, count it, and tell
+        // the user the new resource is now untracked. Thrown into that
+        // same catch so the two outcomes cannot drift apart.
+        throwIfDeleteSkipped(
+          deleteNewAfterRecreate,
           op.logicalId,
           current.physicalId,
-          op.resourceType,
-          current.properties,
-          {
-            expectedRegion: ctx.region,
-            ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
-            ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-            deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-            recordedAttributes: current.attributes,
-            // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-            recordedNoEchoLeaves: current.noEchoLeaves,
-            // go-to-k/cdkd#2007: the op's mask, the failed deploy's bag included.
-            maskSecrets: mask,
-          }
-        )
-      );
-      // Issue #1762: the old resource is already re-created and state
-      // already points at it, so the site's existing policy for a
-      // FAILED delete applies to a skip too — warn, count it, and tell
-      // the user the new resource is now untracked. Thrown into that
-      // same catch so the two outcomes cannot drift apart.
-      throwIfDeleteSkipped(
-        deleteNewAfterRecreate,
-        op.logicalId,
-        current.physicalId,
-        'while deleting the new resource after re-creating the old one',
-        newDeleteGuardScope(deleteNewAfterRecreateRoute.provisionedBy)
-      );
-    } catch (deleteError) {
-      // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved
-      // this op's secrets to plaintext, so the AWS message is masked with
-      // the op's masker like every other site on the path. The delete's
-      // own bag is the state record (redacted), but a provider is free to
-      // echo the properties it was re-created with, so masking here is
-      // not speculative; and the new resource's id is masked even when
-      // nothing was resolved, if its name is a secret reference (#4037).
-      logger.warn(
-        mask(
-          `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
-            `(${displaySafe(mask(current.physicalId))}) failed: ` +
-            `${displaySafe(describeAwsFailure(deleteError).detail)}. ` +
-            `Delete it manually — it is no longer tracked in state.`
-        )
-      );
-      // Same class as the `Retain` arm above, and the reason this
-      // binding is not named for `Retain` (security review): state
-      // already points at the re-created OLD resource, the new copy is
-      // alive, and cdkd no longer tracks it -- an orphan by outcome
-      // rather than by policy. Until this was set the event emitted with
-      // the binding still `undefined`, so `cdkd events` showed a clean
-      // SUCCEEDED naming nothing and the id died with the terminal.
-      //
-      // NOT masked here: the event site below runs the op's `mask`
-      // over this binding, exactly as it does for the `Retain` arms.
-      // Masking twice is a no-op but reads as though one of the two were
-      // load-bearing.
-      survivorReason =
-        `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
-        `deleted after the old resource was re-created: ` +
-        `${describeAwsFailure(deleteError).detail}. ` +
-        `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`;
-      result.warnings++;
+          'while deleting the new resource after re-creating the old one',
+          newDeleteGuardScope(deleteNewAfterRecreateRoute.provisionedBy)
+        );
+      } catch (deleteError) {
+        // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved
+        // this op's secrets to plaintext, so the AWS message is masked with
+        // the op's masker like every other site on the path. The delete's
+        // own bag is the state record (redacted), but a provider is free to
+        // echo the properties it was re-created with, so masking here is
+        // not speculative; and the new resource's id is masked even when
+        // nothing was resolved, if its name is a secret reference (#4037).
+        logger.warn(
+          mask(
+            `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
+              `(${displaySafe(mask(current.physicalId))}) failed: ` +
+              `${displaySafe(describeAwsFailure(deleteError).detail)}. ` +
+              (recordSuperseded
+                ? `${SUPERSEDED_KEPT_REMEDY}.`
+                : `Delete it manually — it is no longer tracked in state.`)
+          )
+        );
+        // Same class as the `Retain` arm above, and the reason this
+        // binding is not named for `Retain` (security review): state
+        // already points at the re-created OLD resource, the new copy is
+        // alive, and cdkd no longer tracks it -- an orphan by outcome
+        // rather than by policy. Until this was set the event emitted with
+        // the binding still `undefined`, so `cdkd events` showed a clean
+        // SUCCEEDED naming nothing and the id died with the terminal.
+        //
+        // NOT masked here: the event site below runs the op's `mask`
+        // over this binding, exactly as it does for the `Retain` arms.
+        // Masking twice is a no-op but reads as though one of the two were
+        // load-bearing.
+        survivorReason =
+          `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
+          `deleted after the old resource was re-created: ` +
+          `${describeAwsFailure(deleteError).detail}. ` +
+          (recordSuperseded
+            ? `It is live and still billing; ${SUPERSEDED_KEPT_REMEDY}.`
+            : `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`);
+        result.warnings++;
+      }
     }
-  }
-  // Issue #4037: the re-created id is the OLD name's spelling, which the
-  // literal mask misses when a rewriting provider derived it.
-  const recreatedId = displaySafe(mask(String(createResult.physicalId)));
-  logger.info(
-    mask(
-      adoptedLiveNewResource
-        ? `  Rollback: ${safe(op.logicalId)} adopted the live resource (${recreatedId}) ` +
-            `— replacement NOT fully reversed (name-idempotent Create API)`
-        : `  Rollback: ${safe(op.logicalId)} replacement reversed (old resource re-created as ` +
-            `${recreatedId})`
-    )
-  );
-  // The SURVIVOR's layer, same reasoning as the readopt twin above --
-  // including why there is no `?? op.provisionedBy`: the unconditional
-  // spread below already covers a record that carries no layer.
-  const survivorProvisionedBy = current.provisionedBy;
-  ctx.recordEvent?.({
-    eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
-    stackName,
-    operation: 'UPDATE',
-    logicalId: op.logicalId,
-    resourceType: op.resourceType,
-    ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-    // Gated on the retain branch for the same reason as the twin above:
-    // on every other path through this arm the new copy was DELETED, and
-    // naming it here would point a cleanup pass at a dead id. The layer
-    // is gated with them -- on those paths the event describes the OP,
-    // whose own layer is the right one to report.
-    ...(survivorReason !== undefined && {
-      ...(survivorId !== undefined && { physicalId: survivorId }),
-      reason: mask(survivorReason),
-      ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
-    }),
-    // go-to-k/cdkd#3338: the replacement was NOT fully reversed, which the
-    // warn above is otherwise the only trace of. No `physicalId`: the live
-    // resource is the one state now records, so nothing is untracked.
-    ...(adoptedLiveNewResource && {
+    // Issue #4037: the re-created id is the OLD name's spelling, which the
+    // literal mask misses when a rewriting provider derived it.
+    const recreatedId = displaySafe(mask(String(createResult.physicalId)));
+    logger.info(
+      mask(
+        adoptedLiveNewResource
+          ? `  Rollback: ${safe(op.logicalId)} adopted the live resource (${recreatedId}) ` +
+              `— replacement NOT fully reversed (name-idempotent Create API)`
+          : `  Rollback: ${safe(op.logicalId)} replacement reversed (old resource re-created as ` +
+              `${recreatedId})`
+      )
+    );
+    // The SURVIVOR's layer, same reasoning as the readopt twin above --
+    // including why there is no `?? op.provisionedBy`: the unconditional
+    // spread below already covers a record that carries no layer.
+    const survivorProvisionedBy = current.provisionedBy;
+    ctx.recordEvent?.({
+      eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+      stackName,
+      operation: 'UPDATE',
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+      // Gated on the retain branch for the same reason as the twin above:
+      // on every other path through this arm the new copy was DELETED, and
+      // naming it here would point a cleanup pass at a dead id. The layer
+      // is gated with them -- on those paths the event describes the OP,
+      // whose own layer is the right one to report.
+      ...(survivorReason !== undefined && {
+        ...(survivorId !== undefined && { physicalId: survivorId }),
+        reason: mask(survivorReason),
+        ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
+      }),
+      // go-to-k/cdkd#3338: the replacement was NOT fully reversed, which the
+      // warn above is otherwise the only trace of. No `physicalId`: the live
+      // resource is the one state now records, so nothing is untracked.
+      ...(adoptedLiveNewResource && {
+        reason: mask(
+          `The re-create returned the live new resource instead of re-creating the old one ` +
+            `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
+            `the old resource's original properties may not have been re-applied. Inspect it ` +
+            `with \`cdkd drift\` and run \`cdkd deploy\` to reconcile.`
+        ),
+      }),
+    });
+    return survivorReason === undefined;
+  };
+  /**
+   * The new resource stays: it is recorded as superseded, so the next deploy
+   * deletes it (`ReplayDeferral.keep`). A survivor event names it.
+   */
+  const keep = (reason: string): void => {
+    logger.warn(
+      mask(
+        `  Rollback: old ${safe(op.logicalId)} re-created, but the new resource ` +
+          `(${displaySafe(mask(current.physicalId))}) was not deleted: ${reason}. ` +
+          `${SUPERSEDED_KEPT_REMEDY}.`
+      )
+    );
+    result.warnings++;
+    ctx.recordEvent?.({
+      eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+      stackName,
+      operation: 'UPDATE',
+      logicalId: op.logicalId,
+      resourceType: op.resourceType,
+      // The survivor's layer, as `finish`'s survivor event names it.
+      ...(current.provisionedBy && { provisionedBy: current.provisionedBy }),
+      physicalId: current.physicalId,
       reason: mask(
-        `The re-create returned the live new resource instead of re-creating the old one ` +
-          `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
-          `the old resource's original properties may not have been re-applied. Inspect it ` +
-          `with \`cdkd drift\` and run \`cdkd deploy\` to reconcile.`
+        `The old resource was re-created; the new one (${current.physicalId}) was not deleted: ` +
+          `${reason}. ${SUPERSEDED_KEPT_REMEDY}.`
       ),
-    }),
-  });
-  return;
+    });
+  };
+  if (deferral !== undefined) {
+    logger.info(
+      safeMsg`  Rollback: old ${safe(op.logicalId)} re-created first; the new resource ` +
+        safeMsg`(${mask(current.physicalId)}) is deleted once the resources that reference it ` +
+        `are reverted`
+    );
+    deferral.defer(
+      async () => {
+        let gone = false;
+        try {
+          // A record took the new resource's id while its delete waited (a
+          // reversal that re-created that id, or a name-idempotent create that
+          // returned it): cdkd never deletes an id a record names.
+          const holder = supersededHolderOf(superseded, stateResources);
+          if (holder !== undefined) {
+            logger.warn(
+              safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} ` +
+                safeMsg`(${mask(current.physicalId)}): a record of this stack now holds its ` +
+                `physical id. Check it with cdkd drift.`
+            );
+            result.warnings++;
+            ctx.recordEvent?.({
+              eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+              stackName,
+              operation: 'UPDATE',
+              logicalId: op.logicalId,
+              resourceType: op.resourceType,
+              ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+              reason: mask(
+                `The old resource was re-created; the new one (${current.physicalId}) was not ` +
+                  `deleted because a record of this stack now holds its physical id.`
+              ),
+            });
+            gone = true;
+          } else {
+            gone = await finish();
+          }
+        } catch (finishError) {
+          logger.warn(
+            maskedFailureText(
+              `  Rollback failed for ${shownLogicalId(op.logicalId)} (UPDATE): `,
+              finishError,
+              mask
+            )
+          );
+          result.failures++;
+          ctx.recordEvent?.({
+            eventType: 'ROLLBACK_RESOURCE_FAILED',
+            stackName,
+            operation: op.changeType,
+            logicalId: op.logicalId,
+            resourceType: op.resourceType,
+            ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            error: maskedRollbackEventError(finishError, mask),
+          });
+        }
+        // Gone, or held by a record: the entry goes, with a save. A delete that
+        // failed keeps it, so the next deploy retries it (#5111).
+        if (recordSuperseded && gone) {
+          deferral.onSupersededSettled?.(superseded);
+          await afterOp?.(op.logicalId);
+        }
+      },
+      recordSuperseded ? keep : undefined
+    );
+    return;
+  }
+  await finish();
 }
 
 /** What {@link deleteMarkedRecreate} needs from the reverse-replacement arm. */

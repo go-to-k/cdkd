@@ -74,7 +74,7 @@ export function journalCanOwnResources(journal: { segments?: unknown } | null): 
  * Anything not shaped as cdkd writes it proves nothing and counts as a holder.
  */
 export function recordCanOwnResources(
-  record: { resources?: unknown; orphans?: unknown },
+  record: { resources?: unknown; orphans?: unknown; supersededResources?: unknown },
   journal: { segments?: unknown } | null
 ): boolean {
   const resources = record.resources;
@@ -85,6 +85,10 @@ export function recordCanOwnResources(
   // a command goes on to act on; this one is only classified).
   const orphans = record.orphans;
   if (orphans !== undefined && (!Array.isArray(orphans) || orphans.length > 0)) return true;
+  // go-to-k/cdkd#5111: a replacement's old resource still to delete.
+  const superseded = record.supersededResources;
+  if (superseded !== undefined && (!Array.isArray(superseded) || superseded.length > 0))
+    return true;
   if (journal === null) return false;
   const segments = journal.segments;
   if (!Array.isArray(segments)) return true;

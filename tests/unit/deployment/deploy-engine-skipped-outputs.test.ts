@@ -211,6 +211,9 @@ function buildEngine(opts: {
       .fn()
       .mockResolvedValue(opts.priorState ? { state: opts.priorState, etag: 'etag-0' } : null),
     saveState: vi.fn().mockResolvedValue('etag-next'),
+    stackInstanceIdForFirstWrite: vi
+      .fn()
+      .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
   };
   const lockManager = {
     acquireLockWithRetry: vi.fn().mockResolvedValue(true),

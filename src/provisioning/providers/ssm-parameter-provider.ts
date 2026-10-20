@@ -27,7 +27,7 @@ import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js'
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   normalizeAwsTagsToCfn,
   remedyLogicalId,
@@ -367,7 +367,7 @@ export class SSMParameterProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      `/${generateResourceName(logicalId, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+      generatedNameFor('AWS::SSM::Parameter', logicalId);
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
 

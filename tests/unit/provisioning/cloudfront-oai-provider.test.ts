@@ -31,14 +31,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CloudFrontOAIProvider } from '../../../src/provisioning/providers/cloudfront-oai-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
   CreateTokenLedger,
   withCreateTokenLedger,
 } from '../../../src/provisioning/providers/create-token-ledger.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -100,9 +100,9 @@ describe('CloudFrontOAIProvider', () => {
         CloudFrontOriginAccessIdentityConfig: { Comment: 'Allows CloudFront to reach the bucket' },
       };
       const type = 'AWS::CloudFront::CloudFrontOriginAccessIdentity';
-      await withStackName('DevStack', () => provider.create('MyOAI', type, props));
-      await withStackName('StagingStack', () => provider.create('MyOAI', type, props));
-      await withStackName('DevStack', () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props));
 
       const refs = mockSend.mock.calls.map(
         ([cmd]) => cmd.input.CloudFrontOriginAccessIdentityConfig.CallerReference
@@ -126,9 +126,9 @@ describe('CloudFrontOAIProvider', () => {
           },
         });
       const deploy = (l: CreateTokenLedger) =>
-        withStackName('DevStack', () => withCreateTokenLedger(l, () => provider.create('MyOAI', type, props)));
+        withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(l, () => provider.create('MyOAI', type, props)));
 
-      await withStackName('DevStack', () => provider.create('MyOAI', type, props)); // no ledger
+      await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyOAI', type, props)); // no ledger
       await deploy(ledger());
       expect(Object.keys(JSON.parse(body!).sent)).toEqual(['MyOAI']);
       body = undefined; // the record and its ledger deleted: a destroy

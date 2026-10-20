@@ -158,6 +158,7 @@ describe('the success settle counts a delete that left part in place (go-to-k/cd
       };
       const ctx = ctxWith(del);
       const out = await settleJournaledOrphansOnSuccess({
+        stackInstanceId: undefined,
         stateBackend: stateBackend as never,
         stackName: 'S',
         region: 'us-east-1',
@@ -187,6 +188,7 @@ describe('the success settle counts a delete that left part in place (go-to-k/cd
     const own = { physicalId: 'q1', resourceType: TYPE, properties: {}, attributes: { 'cdkd:WrittenQueues': 'q1' }, dependencies: [] };
     const untouched = { ...own, physicalId: 'q9' };
     await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => ({
           journalVersion: 1,

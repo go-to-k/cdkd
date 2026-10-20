@@ -1,6 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import type { GeneratedNameGuard } from './generated-name-guard.js';
-import { withStackName } from '../provisioning/resource-name.js';
+import { withStackScopeBeforeStateRead } from '../provisioning/resource-name.js';
 import {
   ledgerForStack,
   withCreateTokenLedger,
@@ -49,6 +49,7 @@ import {
   type StateOutputReadEntry,
   type ResourceState,
   type ResourceChange,
+  stackInstanceIdCarriedFrom,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -92,6 +93,7 @@ import {
 import { AttributeHealer } from './deploy-engine/attribute-healer.js';
 import type { DeleteDeps } from './deploy-engine/delete.js';
 import { doDeployWithPrefetch } from './deploy-engine/deploy-flow.js';
+import { guardedReplacementCreate } from './deploy-engine/create.js';
 import {
   buildResolverContext,
   type ResolverContextDeps,
@@ -104,6 +106,11 @@ import {
   type NoEchoDeps,
 } from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
+import {
+  isSupersededHeldBySameType,
+  isSupersededResourceRecord,
+  withoutSuperseded,
+} from './superseded-resources.js';
 export {
   DEFAULT_RESOURCE_TIMEOUT_MS,
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -411,6 +418,14 @@ export class DeployEngine {
    */
   /** @internal */
   interruptCause: InterruptCause | null = null;
+  /**
+   * Set by the SIGINT handler whatever `interruptCause` already holds: a
+   * sibling's failure claims the cause first, and a Ctrl-C after it must still
+   * stop the work only the user may stop (a re-create whose old resource is
+   * gone, go-to-k/cdkd#5118).
+   */
+  /** @internal */
+  userInterrupted = false;
 
   /**
    * The journal-key version purge a deploy starts when it finds no rollback
@@ -830,10 +845,14 @@ export class DeployEngine {
       deployStateResources: () => this.deployStateResources,
       interrupted: () => this.interrupted,
       interruptCause: () => this.interruptCause,
+      userInterrupted: () => this.userInterrupted,
       withRetry: (...args) => this.withRetry(...args),
       maskingRetryLoggerFor: (...args) => this.maskingRetryLoggerFor(...args),
       inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
       recordEvent: (...args) => this.recordEvent(...args),
+      guardedReplacementCreate: (input, create) => guardedReplacementCreate(this, input, create),
+      generatedNameGuarded: (logicalId) =>
+        this.generatedNameGuard?.candidate(logicalId) !== undefined,
     };
   }
 
@@ -923,6 +942,7 @@ export class DeployEngine {
       },
       absentJournalVersionPurge: () => this.absentJournalVersionPurge,
       interrupted: () => this.interrupted,
+      userInterrupted: () => this.userInterrupted,
       noEchoDeps: () => this.noEchoDeps(),
       recordEvent: (...args) => this.recordEvent(...args),
       crossStackReadKeyNormalizer: (...args) => this.crossStackReadKeyNormalizer(...args),
@@ -991,12 +1011,15 @@ export class DeployEngine {
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
-    // background.
+    // background. go-to-k/cdkd#5064: the stack's instance id is in its state
+    // record, which `doDeployWithPrefetch` reads under the lock and then opens
+    // the id-bearing `withStackScope` for everything that names a resource;
+    // until then a generated name is refused rather than derived without it.
     // go-to-k/cdkd#4438: the stack's create-token ledger, which the EFS, FSx
     // and CloudFront OAI providers fold into their lifetime-bound create
     // tokens (`src/provisioning/providers/create-token-ledger.ts`).
     const ledger = ledgerForStack(this.stateBackend, stackName, this.stackRegion);
-    return withStackName(stackName, () =>
+    return withStackScopeBeforeStateRead(stackName, () =>
       this.options.dryRun
         ? this.doDeploy(stackName, template)
         : withCreateTokenLedger(ledger, () => this.doDeploy(stackName, template))
@@ -1103,7 +1126,12 @@ export class DeployEngine {
     // already-redacted properties as the observed bag's source. That is correct
     // rather than merely tolerable: a record minted by an earlier rollback was
     // already scrubbed when it was written, so the identity return preserves it.
-    const orphans = state.orphans?.map((entry) => {
+    const orphanEntries = state.orphans;
+    // go-to-k/cdkd#5111: shared with `supersededResources` below.
+    const scrubDroppedRecord = (entry: {
+      logicalId: string;
+      state: ResourceState;
+    }): ResourceState => {
       // Did THIS deploy resolve that logical id, as that same TYPE? Only then
       // do the needles describe this record.
       //
@@ -1116,13 +1144,12 @@ export class DeployEngine {
       const orphanTemplateProps = sameResource
         ? this.secretsRun.perResourceTemplateProps.get(entry.logicalId)
         : undefined;
-      return {
-        ...entry,
+      return (
         // go-to-k/cdkd#4451: a record THIS deploy created and its rollback
         // orphaned carries a bag this deploy wrote, so it gets its masked
         // properties' fingerprints here too, or a later adoption backfills
         // them from whatever template that deploy carries.
-        state: withMaskedPropertyFingerprints(
+        withMaskedPropertyFingerprints(
           // go-to-k/cdkd#4043 (review M4): the `NoEcho` arms too, positioned
           // by today's template while it still names the logical id as that
           // type.
@@ -1150,9 +1177,22 @@ export class DeployEngine {
           sameResource
             ? this.secretsRun.perResourceInputFingerprints.get(entry.logicalId)
             : undefined
-        ),
-      };
-    });
+        )
+      );
+    };
+    const orphans = orphanEntries?.map((entry) => ({ ...entry, state: scrubDroppedRecord(entry) }));
+    // go-to-k/cdkd#5111: a superseded resource's record is secret-bearing in
+    // exactly the way an orphan's is, and scrubbed the same way. One a record
+    // holds again (a rollback took it back) is not persisted: it is no longer
+    // superseded, and a later deploy must not delete it.
+    const superseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.flatMap((entry) => {
+          // A malformed entry is the reader's to skip, never this writer's to drop.
+          if (!isSupersededResourceRecord(entry)) return [entry];
+          if (isSupersededHeldBySameType(entry, state.resources)) return [];
+          return [{ ...entry, state: scrubDroppedRecord(entry) }];
+        })
+      : undefined;
     // ORDER IS LOAD-BEARING, and it is the opposite of how this read when the
     // cross-stack redaction was added (issue
     // [#3289](https://github.com/go-to-k/cdkd/issues/3289), security review).
@@ -1168,13 +1208,24 @@ export class DeployEngine {
     const outputs = redactOutputs(this.maskingDeps(), state.outputs);
     const crossStackReads = this.redactCrossStackReads(state);
     // State schema v12: written from the bag this save persists, per key.
-    const { outputReferenceProvenance: _incoming, ...rest } = state;
+    const {
+      outputReferenceProvenance: _incoming,
+      supersededResources: _superseded,
+      ...rest
+    } = state;
+    // go-to-k/cdkd#5111: written below from the filtered set only.
     const outputReferenceProvenance = this.outputReferenceProvenanceFor(state.outputs, outputs);
     return {
       ...rest,
+      // go-to-k/cdkd#5111: `supersededResources` is written below, filtered.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(state)),
       resources,
       outputs,
       ...(orphans === undefined ? {} : { orphans }),
+      // A malformed (non-array) field is carried verbatim, never dropped here.
+      ...(superseded === undefined
+        ? _superseded !== undefined && { supersededResources: _superseded }
+        : superseded.length > 0 && { supersededResources: superseded }),
       ...crossStackReads,
       ...(outputReferenceProvenance !== undefined && { outputReferenceProvenance }),
     };
@@ -1417,6 +1468,7 @@ export class DeployEngine {
     const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
     return {
       ...redacted,
+      ...stackInstanceIdCarriedFrom(redacted),
       parentStack,
       parentLogicalId,
       parentRegion,
@@ -1612,7 +1664,13 @@ export class DeployEngine {
     logicalId: string,
     maxRetries?: number,
     initialDelayMs?: number,
-    provider?: ResourceProvider
+    provider?: ResourceProvider,
+    /**
+     * go-to-k/cdkd#5118: only the user's interrupt stops this retry, never a
+     * sibling's failure -- set by a re-create whose old resource is already
+     * deleted, where an abort leaves neither copy.
+     */
+    interruptOnlyByUser?: boolean
   ): Promise<T> {
     if (provider?.disableOuterRetry) {
       // Single-shot — provider handles transient errors internally.
@@ -1622,8 +1680,11 @@ export class DeployEngine {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),
       logger: this.maskingRetryLogger(logicalId),
-      isInterrupted: () => this.interrupted,
-      onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+      isInterrupted: () => (interruptOnlyByUser === true ? this.userInterrupted : this.interrupted),
+      onInterrupted: () =>
+        new InterruptedError(
+          interruptOnlyByUser === true ? 'user' : (this.interruptCause ?? 'user')
+        ),
     });
   }
 

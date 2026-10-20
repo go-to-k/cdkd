@@ -65,6 +65,7 @@ import {
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isInUseRefusal } from '../../../src/deployment/superseded-resources.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
@@ -313,9 +314,10 @@ describe('LambdaWebFunctionRevisionProvider', () => {
         ],
       ])
     );
-    await expect(provider.delete('Rev', REV_ARN, REV_TYPE)).rejects.toThrow(
-      `ConflictException. ${VERBOSE_POINTER}`
-    );
+    const failure = await provider.delete('Rev', REV_ARN, REV_TYPE).catch((e: unknown) => e);
+    expect((failure as Error).message).toContain(`ConflictException. ${VERBOSE_POINTER}`);
+    // What the end-of-deploy retry of a replaced revision waits out (#5111).
+    expect(isInUseRefusal(failure)).toBe(true);
   });
 
   it('delete refuses a recorded id that is not a revision ARN, without a call', async () => {

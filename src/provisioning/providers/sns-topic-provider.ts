@@ -22,7 +22,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
@@ -1053,7 +1053,7 @@ export class SNSTopicProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['TopicName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 256 });
+    return generatedNameFor('AWS::SNS::Topic', logicalId);
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

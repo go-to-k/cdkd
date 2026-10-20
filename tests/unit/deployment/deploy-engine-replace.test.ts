@@ -29,7 +29,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -205,7 +205,7 @@ describe('DeployEngine — --replace wire-through', () => {
     // classifies it against `${stackName}-${logicalId}` — the default is a
     // name no derivation produces, so it takes the user-supplied branch, and a
     // test wanting the GENERATED branch passes the derived form inside a
-    // `withStackName` scope.
+    // `withStackScope` scope.
     physicalId = 'old-pid'
     // Returns the state record map the engine wrote into, so a test can assert
     // what the deploy PERSISTED (which physical id survived, which template
@@ -899,12 +899,12 @@ describe('DeployEngine — --replace wire-through', () => {
       });
 
       it('the COLLISION refusal says GENERATED for a name cdkd derived, and never claims the user supplied it', async () => {
-        // Inside a `withStackName` scope, which is what the classifier reads —
+        // Inside a `withStackScope` scope, which is what the classifier reads —
         // without it every case takes the unresolvable branch and this one
         // would pass for the wrong reason.
         rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
         collideOnCreate();
-        const err = await withStackName(STACK, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',
@@ -950,7 +950,7 @@ describe('DeployEngine — --replace wire-through', () => {
           // here is the derived one.
           return { physicalId: GENERATED_PID, attributes: {} };
         });
-        const err = await withStackName(STACK, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',

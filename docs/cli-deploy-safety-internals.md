@@ -261,7 +261,10 @@ or renamed, keeping its name), the error names that id: give the new resource
 another name, or deploy that id's removal first. A log group declared
 explicitly that something else already created — for example a Lambda
 function's `/aws/lambda/<name>` group, created on its first invocation — is
-refused the same way. A create under a name cdkd generates is not looked up.
+refused the same way. A create under a name cdkd generates is not looked up
+here; the [name check](state-store-name-check.md) looks it up before the
+deploy starts, and on a stack with a `stackInstanceId` that check also covers
+a replacement's new resource at its next-generation name.
 An ELBv2 load balancer or target group is looked up under the name the create
 sends, which carries the stack-name prefix under `--prefix-user-supplied-names`.
 
@@ -275,7 +278,7 @@ checks that the old resource holds the name the create actually sent:
 | The create sent | Shown to be the old resource's when |
 | --- | --- |
 | An explicit name from the template | State records that name for the old resource, or its physical id names it |
-| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict |
+| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict, and only on a stack without a `stackInstanceId`: on one with it, the replacement asks for the next name generation, which the old resource never held, so nothing is deleted |
 | A name the provider rewrites (IAM, ELBv2 prefix the stack name) | The old resource's physical id names the rewritten name this deploy sends |
 | A type cdkd has no name property for (Cloud Control only) | Both were created through Cloud Control, the create sent the old physical id itself as a `...Name` / `...Identifier` property, and every such property it sent matches the old resource's |
 

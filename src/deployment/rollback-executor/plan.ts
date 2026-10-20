@@ -1041,6 +1041,69 @@ export function planRollback(
   });
 }
 
+/**
+ * go-to-k/cdkd#5064: a reverse-replacement whose old resource comes back under
+ * a DIFFERENT physical id than the new one holds (a generated name at the next
+ * generation, or any other renamed replacement), re-created first and its new
+ * copy deleted afterwards. The replay runs its re-create AHEAD of the ops that
+ * revert to the old id, which reverse completion order puts first: reverted
+ * before the old resource exists, they name one AWS does not have. A same-id
+ * re-create (go-to-k/cdkd#5096), a delete-first reversal and one whose old
+ * resource may survive keep their slot.
+ */
+export function renamedReverseReplacement(
+  op: CompletedOperation,
+  stateResources: Record<string, ResourceState>,
+  orphanLogicalIds: Set<string>,
+  /** The new copies of reversals run ahead whose deferred delete is pending: holders too. */
+  pendingNewIds: ReadonlySet<string> = new Set()
+): boolean {
+  if (op.changeType !== 'UPDATE') return false;
+  if (op.oldDeletedBeforeCreate === true || op.oldResourceMaySurvive !== undefined) return false;
+  const current = Object.hasOwn(stateResources, op.logicalId)
+    ? stateResources[op.logicalId]
+    : undefined;
+  const oldId = op.previousState?.physicalId;
+  if (typeof oldId !== 'string' || typeof current?.physicalId !== 'string') return false;
+  if (current.physicalId === oldId) return false;
+  if (pendingNewIds.has(oldId)) return false;
+  // Another record holds the old id (a name handed down a chain of renames,
+  // whose holder reverts later): re-created early, it would collide with, or
+  // a name-idempotent create would return, that live resource.
+  const oldType = op.previousState?.resourceType ?? op.resourceType;
+  for (const [logicalId, other] of Object.entries(stateResources)) {
+    if (logicalId === op.logicalId || typeof other?.physicalId !== 'string') continue;
+    if (
+      other.physicalId === oldId ||
+      (other.resourceType === oldType && samePhysicalId(oldType, other.physicalId, oldId))
+    ) {
+      return false;
+    }
+  }
+  return classifyRollbackOp(op, stateResources, orphanLogicalIds) === 'reverse-replacement';
+}
+
+/**
+ * go-to-k/cdkd#5064: the logical ids a step-1 op's revert may name: what its
+ * old record and its current one list as dependencies. A record listing none
+ * names none: the op keeps its slot, as before, rather than pull every
+ * renamed reversal ahead of an order another rule chose (#4821).
+ */
+export function revertReferences(
+  op: CompletedOperation,
+  stateResources: Record<string, ResourceState>
+): ReadonlySet<string> {
+  const current = Object.hasOwn(stateResources, op.logicalId)
+    ? stateResources[op.logicalId]
+    : undefined;
+  const refs = new Set<string>();
+  for (const record of [op.previousState, current]) {
+    if (!Array.isArray(record?.dependencies)) continue;
+    for (const id of record.dependencies) if (typeof id === 'string') refs.add(id);
+  }
+  return refs;
+}
+
 export function partitionOps(operations: CompletedOperation[]): {
   createOps: CompletedOperation[];
   otherOps: CompletedOperation[];

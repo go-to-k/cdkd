@@ -502,10 +502,11 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
     // The legacy probe reads the region-less legacy key: a body naming no
     // region belongs to every region, so the sweep runs.
     c.queue('GetObjectCommand', lockBody({ version: 1, stackName: STACK, resources: {} }));
-    // Deletes: the create-token ledger (#4438, first), state.json, the legacy
-    // key, then the rollback journal.
+    // Deletes: the create-token ledger (#4438, first), the stack-instance
+    // sibling (#5064), state.json, the legacy key, then the rollback journal.
     c.queue(
       'DeleteObjectCommand',
+      () => ({}),
       () => ({}),
       () => ({}),
       () => ({}),
@@ -521,11 +522,12 @@ describe('S3StateBackend renders a hostile stack name, region and error flattene
 
   it('deleteState and deleteLegacyState refusals', async () => {
     const c = makeClient();
-    // The create-token ledger delete (#4438, first) succeeds, state.json
-    // fails, the journal sweep (#1183) succeeds; then deleteLegacyState's
-    // delete fails.
+    // The create-token ledger delete (#4438, first) and the stack-instance
+    // sibling delete (#5064) succeed, state.json fails, the journal sweep
+    // (#1183) succeeds; then deleteLegacyState's delete fails.
     c.queue(
       'DeleteObjectCommand',
+      () => ({}),
       () => ({}),
       fail(s3err('InternalError', 500)),
       () => ({}),

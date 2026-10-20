@@ -47,7 +47,14 @@ describe('performRollback counts only its own skips (go-to-k/cdkd#3338)', () => 
     replayRollback.mockImplementation(async () => {
       // What a nested row's child revert reports back through the scope.
       getNestedRevertRun()!.warnings += 2;
-      return { failures: 0, warnings: 0, skipped: 0, interrupted: false, orphaned: [] };
+      return {
+        failures: 0,
+        warnings: 0,
+        skipped: 0,
+        interrupted: false,
+        orphaned: [],
+        rolledBackCreates: [],
+      };
     });
     const result = await performRollback(engine(), [], {}, 'S', previousState);
     expect(replayRollback).toHaveBeenCalled();
@@ -61,6 +68,7 @@ describe('performRollback counts only its own skips (go-to-k/cdkd#3338)', () => 
       skipped: 1,
       interrupted: false,
       orphaned: [],
+      rolledBackCreates: [],
     });
     const result = await performRollback(engine(), [], {}, 'S', previousState);
     expect(result).toMatchObject({ warnings: 1, skipped: 1 });

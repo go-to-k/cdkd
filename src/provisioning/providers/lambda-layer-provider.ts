@@ -15,7 +15,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -248,7 +248,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     const layerName =
       (properties['LayerName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Lambda::LayerVersion', logicalId);
     // Built per call; never cached on the provider, which serves concurrent
     // resources. A generated name is not secret-derived, so the pair adds a
     // needle only when the template's `LayerName` is.

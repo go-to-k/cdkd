@@ -50,7 +50,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EFSProvider } from '../../../../src/provisioning/providers/efs-provider.js';
-import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../../src/provisioning/resource-name.js';
 import { recordServerClockForTests } from '../../../../src/provisioning/providers/server-clock.js';
 import {
   isMarkedNonRetryable,
@@ -71,7 +71,7 @@ import {
   type CreateTokenLedgerDoc,
 } from '../../../../src/state/create-token-ledger.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -140,11 +140,11 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
   it('differs between two stacks declaring the same logical id with the same inputs, and is stable within one', async () => {
     const props = { Encrypted: true, PerformanceMode: 'generalPurpose' };
     answerCreate('fs-dev');
-    await withStackName('DevStack', () => provider.create('SharedFs', TYPE, props));
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('SharedFs', TYPE, props));
     answerCreate('fs-staging');
-    await withStackName('StagingStack', () => provider.create('SharedFs', TYPE, props));
+    await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('SharedFs', TYPE, props));
     answerCreate('fs-dev-again');
-    await withStackName('DevStack', () => provider.create('SharedFs', TYPE, props));
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('SharedFs', TYPE, props));
 
     const [dev, staging, devAgain] = creationTokens();
     expect(dev).not.toBe(staging);
@@ -350,14 +350,14 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
   it('does not let an ambiguous attempt in ANOTHER stack make this stack adopt', async () => {
     mockSend.mockRejectedValueOnce(serverError());
     await expect(
-      withStackName('DevStack', () => provider.create('MyFs', TYPE, {}))
+      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', TYPE, {}))
     ).rejects.toThrow();
 
     mockSend
       .mockRejectedValueOnce(alreadyExists())
       .mockResolvedValueOnce(holder('available', new Date()));
     await expect(
-      withStackName('StagingStack', () => provider.create('MyFs', TYPE, {}))
+      withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', TYPE, {}))
     ).rejects.toThrow(/NOT recorded in cdkd state/);
   });
   describe('the creation-time gate, under a faked clock', () => {
@@ -575,7 +575,7 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
       };
     };
     const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
-      withStackName('DevStack', () => withCreateTokenLedger(ledger, fn));
+      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(ledger, fn));
 
     it('adopts the file system an earlier run made when that run died before recording it', async () => {
       // Run 1 created the file system an hour ago; the CREATE returned, and the
@@ -660,7 +660,7 @@ describe('EFS file-system CreationToken (go-to-k/cdkd#4428)', () => {
       const store = ledgerOver(null);
       mockSend.mockResolvedValueOnce({ FileSystems: [{ FileSystemId: 'fs-left0000' }] });
       answerCreate('fs-new');
-      const base = withStackName('DevStack', () =>
+      const base = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         stackScopedCreateToken({
           logicalId: 'MyFs',
           immutableInputs: [undefined, undefined, undefined, undefined],

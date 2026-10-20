@@ -40,6 +40,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -217,12 +218,15 @@ export class CodeBuildProvider implements ResourceProvider {
     };
   }
 
-  /** Declared return type for the same excess-property reason as {@link mapSource}. */
+  /**
+   * Declared return type for the same excess-property reason as {@link mapSource}.
+   * `undeclaredName` names a project the template does not name; called only then.
+   */
   private mapProperties(
-    logicalId: string,
+    undeclaredName: () => string,
     properties: Record<string, unknown>
   ): CreateProjectCommandInput {
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    const name = (properties['Name'] as string | undefined) ?? undeclaredName();
     const source = properties['Source'] as Record<string, unknown> | undefined;
     const environment = properties['Environment'] as Record<string, unknown> | undefined;
     // Class 2 sanitize (docs/provider-rules.md#readcurrentstate-for-drift-detection): readCurrentState
@@ -468,7 +472,13 @@ export class CodeBuildProvider implements ResourceProvider {
     this.logger.debug(`Creating CodeBuild Project ${logicalId}`);
 
     try {
-      const input = this.mapProperties(logicalId, properties);
+      // go-to-k/cdkd#5095: an un-named project gets the generated name a
+      // stack with an instance id gives every type; a legacy stack keeps the
+      // bare logical id it always sent.
+      const input = this.mapProperties(
+        () => generatedNameFor('AWS::CodeBuild::Project', logicalId),
+        properties
+      );
 
       const result = await this.getCreateClient().send(new CreateProjectCommand(input));
 
@@ -518,8 +528,9 @@ export class CodeBuildProvider implements ResourceProvider {
     );
 
     try {
-      const input = this.mapProperties(logicalId, properties);
-      // Ensure the update targets the existing project
+      // The update addresses the recorded project, never a derived name: a
+      // project keeps the name it was created under, whichever scheme that was.
+      const input = this.mapProperties(() => physicalId, properties);
       input.name = physicalId;
 
       // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a

@@ -68,6 +68,12 @@ export interface OrphanAdoptionOutcome {
    * present, blocking nothing, and invisible.
    */
   notices: string[];
+  /**
+   * go-to-k/cdkd#5064: on a stack with an instance id, one line per record
+   * the template declares again but this deploy does NOT take back (only
+   * `cdkd import` does), printed as a warning.
+   */
+  warnings: string[];
 }
 
 /** Reads the physical ids every OTHER stack's state already claims. */
@@ -79,8 +85,8 @@ export type SiblingClaimReader = () => Promise<ReadonlySet<string>>;
  *
  * In that shape the name this deploy would generate equals the recorded
  * `physicalId` BY CONSTRUCTION — `generateResourceName` is deterministic over
- * exactly (stack name, logical id), truncation included, with no random
- * component. That matters because the engine cannot DERIVE the name to compare:
+ * exactly (stack name, stack instance id, logical id), truncation included,
+ * and a rollback orphan is of the same lifetime as the deploy adopting it. That matters because the engine cannot DERIVE the name to compare:
  * the per-type `ResourceNameOptions` live in the providers, and
  * `looksLikeCdkdGeneratedName`'s own doc records that the engine does not know
  * which type maps to which.
@@ -200,14 +206,40 @@ export async function planOrphanAdoption(params: {
   nameProperties: (resourceType: string) => readonly string[];
   readSiblingClaims: SiblingClaimReader;
   logger: { debug: (m: string) => void };
+  /**
+   * go-to-k/cdkd#5064: the stack has a `stackInstanceId`. What a rollback
+   * left in AWS is then never taken back implicitly, as CloudFormation never
+   * takes back a resource that left a stack: its logical id retired at the
+   * orphan's generation (`retiredAfterRollback`), so a create of it
+   * asks for a new name and leaves the orphan alone. Nothing is read from AWS;
+   * a record is dropped once its logical id is managed again, kept otherwise.
+   */
+  newScheme?: boolean;
 }): Promise<OrphanAdoptionOutcome> {
   const outcome: OrphanAdoptionOutcome = {
     adopted: {},
     remaining: [],
     refusals: [],
     notices: [],
+    warnings: [],
   };
   if (params.records.length === 0) return outcome;
+  if (params.newScheme === true) {
+    for (const record of params.records) {
+      if (params.managedLogicalIds.has(record.logicalId)) continue;
+      outcome.remaining.push(record);
+      const declared = params.template.Resources?.[record.logicalId];
+      if (declared?.Type !== record.state.resourceType) continue;
+      outcome.warnings.push(
+        `${displayIdent(record.logicalId)} (${displayIdent(record.state.resourceType)}) was ` +
+          `left in AWS by an earlier rollback as ${displaySafe(record.state.physicalId)} ` +
+          '(DeletionPolicy: Retain). This deploy does not take it back: it creates a new ' +
+          'resource under a new name, as CloudFormation does. To manage the kept resource ' +
+          "again, adopt it with 'cdkd import'."
+      );
+    }
+    return outcome;
+  }
 
   // Read once, and only when at least one record exists — the normal deploy
   // path (no records) must add no AWS calls at all. Lazily, because a record

@@ -204,6 +204,7 @@ import {
 import { awaitInFlightSibling, getStackRecords } from '../../deployment/stack-records-scope.js';
 import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 import { withRemovalDefaults } from '../update-removal.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
@@ -4284,7 +4285,11 @@ export class EC2Provider implements ResourceProvider {
         (TagSpecifications) =>
           createClient.send(
             new CreateSecurityGroupCommand({
-              GroupName: (properties['GroupName'] as string) ?? logicalId,
+              // go-to-k/cdkd#5095: unique per VPC, so a stack with an
+              // instance id generates it; a legacy stack keeps the logical id.
+              GroupName:
+                (properties['GroupName'] as string) ??
+                generatedNameFor('AWS::EC2::SecurityGroup', logicalId),
               Description: groupDescription,
               VpcId: (properties['VpcId'] as string) ?? undefined,
               ...(TagSpecifications && { TagSpecifications }),

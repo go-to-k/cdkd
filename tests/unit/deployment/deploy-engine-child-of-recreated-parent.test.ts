@@ -217,6 +217,19 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     expect(saved('Perm')?.physicalId).toBe('Perm-new');
   });
 
+  // go-to-k/cdkd#5064 phase 2: a child that went with its re-created parent is
+  // re-created under the name it had: its generation does not move.
+  it('on a stack with an instance id, the lost child keeps its name generation', async () => {
+    const state = priorState();
+    state.stackInstanceId = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    state.resources['Perm']!.nameGeneration = 2;
+    stateBackend.getState.mockResolvedValue({ state, etag: 'etag-old' });
+    await makeEngine().deploy(STACK, template());
+    expect(callsFor(sdk.create, 'Perm')).toHaveLength(1);
+    expect(saved('Perm')?.nameGeneration).toBe(2);
+    expect(saved('Perm')?.nameGenerationHigh).toBeUndefined();
+  });
+
   // go-to-k/cdkd#4604: both arms deleted (or lost) the old resource before
   // the create — the recreated function, and the permission that went with it.
   it('records each resource whose old copy was gone before its create', async () => {
@@ -435,4 +448,73 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     expect(deleted).toHaveLength(1);
     expect(deleted[0]![1]).toBe(PERMISSION_ID);
   });
+
+  // go-to-k/cdkd#5118: once the old copy is gone only the user's interrupt
+  // stops a re-create. A sibling's failure claims `interruptCause` first, as
+  // `execute.ts` does (`??=`).
+  function siblingFails(engine: DeployEngine): void {
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    fields.interrupted = true;
+    fields.interruptCause ??= 'sibling-failure';
+  }
+  const throttle = (): Error =>
+    Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+
+  it("the lost child's re-create is not aborted by a sibling's failure (review S2)", async () => {
+    const engine = makeEngine();
+    let attempts = 0;
+    sdk.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Perm') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) {
+        siblingFails(engine);
+        return Promise.reject(throttle());
+      }
+      return Promise.resolve({ physicalId: 'Perm-new', attributes: {} });
+    });
+    await engine.deploy(STACK, template()).catch(() => undefined);
+    expect(attempts).toBe(2);
+  }, 30_000);
+
+  it('a Ctrl-C after a sibling has failed stops the delete-first re-create (review S1, the real SIGINT handler)', async () => {
+    const engine = makeEngine();
+    const before = new Set(process.listeners('SIGINT'));
+    let attempts = 0;
+    cc.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Fn') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) siblingFails(engine);
+      else if (attempts === 2) {
+        const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
+        expect(registered, 'deploy() registered no SIGINT listener').toHaveLength(1);
+        (registered[0] as () => void)();
+      } else return Promise.resolve({ physicalId: 'my-fn', attributes: {} });
+      // The late name release of the just-deleted function.
+      return Promise.reject(new Error('Function already exists: my-fn'));
+    });
+    await expect(engine.deploy(STACK, template())).rejects.toThrow();
+    expect(attempts).toBe(2);
+  }, 30_000);
+
+  // go-to-k/cdkd#5131: the old copy's delete returns while AWS may still hold
+  // its name; its provider's name-release wait runs before the re-create.
+  it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
+    const order: string[] = [];
+    const del = sdk.delete.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
+    sdk.delete.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('delete');
+      return del?.(...args);
+    });
+    const create = cc.create.getMockImplementation() as (...a: unknown[]) => unknown;
+    cc.create.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('create');
+      return create(...args);
+    });
+    (sdk as Record<string, unknown>)['waitForNameReleased'] = vi.fn(async (id: string) => {
+      order.push(`wait ${id}`);
+    });
+    await makeEngine().deploy(STACK, template());
+    expect(order).toEqual(['delete', 'wait Fn', 'create']);
+  });
 });
+

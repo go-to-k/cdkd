@@ -1,4 +1,8 @@
 import { hasNoCloudControlHandlers } from '../../provisioning/unsupported-types.js';
+import {
+  currentNameGeneration,
+  getCurrentStackInstanceId,
+} from '../../provisioning/resource-name.js';
 import { ccBrokenReason } from '../../provisioning/provider-registry.js';
 import {
   lostChildActions,
@@ -15,6 +19,17 @@ import {
   writeRollbackJournalSegment,
 } from './rollback.js';
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
+import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { secretNameBagFor } from './masking.js';
+import { withPrintingSecrets } from '../resource-secrets-scope.js';
+import { unionOfSecretBags } from '../secret-redaction.js';
+import { orphanRecordsPrintingBag } from '../secret-name-needles.js';
+import {
+  isSupersededHeldBySameType,
+  removeSuperseded,
+  supersededAfterRollback,
+  supersededResourcesOf,
+} from '../superseded-resources.js';
 import {
   type DeployEngine,
   type ProvisionCounts,
@@ -31,7 +46,9 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   type StackOrphanRecord,
   type StackState,
+  type SupersededResourceRecord,
   exportNamesCarriedFrom,
+  stackInstanceIdCarriedFrom,
   orphansAfterRollback,
   orphansCarriedFrom,
   skippedOutputsCarriedFrom,
@@ -48,6 +65,7 @@ import { withSharedDrainBudget } from '../drain-budget.js';
 import type { SettledNestedRows } from '../nested-child-journal.js';
 import type { CompletedOperation, FailedOperation } from '../rollback-executor.js';
 import { isRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import { isReplacementNameRefusal } from './name-collision.js';
 import { abandonedRequestOf } from '../../provisioning/wait-abandoned.js';
 import {
   createdBeforeFailure,
@@ -57,6 +75,12 @@ import { orphanNeedsIdentity, readResourceIdentity } from '../rollback-executor/
 import { deployStackRecordsView, type InFlightWrite } from '../stack-records-scope.js';
 import { resolveOutputs } from './outputs.js';
 import { provisionResource } from './provision.js';
+import {
+  retiredAfterRollback,
+  type RolledBackCreate,
+  retiredNameGenerationsAfter,
+  withNameGenerationReached,
+} from '../../state/name-generation.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -133,6 +157,7 @@ export async function executeDeployment(
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansCarriedFrom(currentState),
+          ...stackInstanceIdCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -189,6 +214,17 @@ export async function executeDeployment(
     () => [...inFlightWrites.values()].map(({ write }) => write)
   );
   engine.replacementRun.deferredReplacedDeletes = new Map();
+  // go-to-k/cdkd#5111: a deferred delete records its old resource here, so the
+  // row's save persists it; the ones an earlier deploy recorded are retried at
+  // the cleanup below.
+  engine.replacementRun.supersededHost = currentState;
+  const carriedSuperseded = supersededResourcesOf(currentState).filter((entry) => {
+    // One a record holds again (`cdkd rollback` took it back) leaves the live
+    // record too, so no later recording duplicates it.
+    if (!isSupersededHeldBySameType(entry, currentState.resources)) return true;
+    removeSuperseded(currentState, entry);
+    return false;
+  });
 
   try {
     // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
@@ -357,6 +393,17 @@ export async function executeDeployment(
           // stack's to revert, and the record could only say "delete it
           // manually" about the resource that refused it — another owner's.
           const refused = isRefusedBeforeApplying(provisionError, logicalId);
+          // go-to-k/cdkd#5064: a replacement refused before applying (the
+          // generated-name guard's refusal included) or on its name made nothing
+          // under the generation it asked for, so that generation is neither
+          // journaled as reached nor raised past: the retry asks for the name
+          // the refusal names (and its `cdkd import` advice adopts).
+          const attemptedGeneration =
+            change.changeType === 'UPDATE' &&
+            !refused &&
+            !isReplacementNameRefusal(provisionError, logicalId)
+              ? engine.replacementRun.attemptedNameGeneration.get(logicalId)
+              : undefined;
           const statePhysicalId = newResources[logicalId]?.physicalId ?? previousState?.physicalId;
           if (refused && change.changeType === 'CREATE' && statePhysicalId === undefined) {
             throw provisionError;
@@ -463,6 +510,17 @@ export async function executeDeployment(
               engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) && {
                 oldDeletedBeforeCreate: true,
               }),
+            // go-to-k/cdkd#5064 phase 2: the generation the failed replacement
+            // asked for, which `--revert-failed` records as reached; on a
+            // CREATE, the one its name was derived at, which the settle of an
+            // abandoned Cloud Control create recognizes that name by.
+            ...(attemptedGeneration !== undefined && {
+              nameGeneration: attemptedGeneration,
+            }),
+            ...(change.changeType === 'CREATE' &&
+              getCurrentStackInstanceId() !== undefined && {
+                nameGeneration: currentNameGeneration(logicalId) ?? 0,
+              }),
             ...(orphanedBy !== undefined && {
               replacementOrphaned: engine.replacementRun.oldDeletedBeforeCreate.has(logicalId)
                 ? ('delete-first' as const)
@@ -473,6 +531,19 @@ export async function executeDeployment(
             }),
           };
           failedOperations.push(failedOp);
+          // go-to-k/cdkd#5064 phase 2: the failed replacement's create may have
+          // made a resource under the generation it asked for. The record moves
+          // past it however the failure is then rolled back (or left), so no
+          // retry asks for that name again. A killed deploy never reaches here:
+          // its re-run derives the same generation and meets its own resource.
+          const heldNow = newResources[logicalId];
+          if (attemptedGeneration !== undefined && heldNow !== undefined) {
+            newResources[logicalId] = withNameGenerationReached(
+              heldNow,
+              logicalId,
+              attemptedGeneration
+            );
+          }
           let replacementOrphanOp: FailedOperation | undefined;
           if (orphanedBy !== undefined) {
             replacementOrphanOp = {
@@ -592,6 +663,13 @@ export async function executeDeployment(
             previousState !== undefined && {
               previousResourceType: previousState.resourceType,
             }),
+          // go-to-k/cdkd#5064 phase 2: a replacement that moved the record to a
+          // new name generation; a rollback records it as reached.
+          ...(change.changeType === 'UPDATE' &&
+            engine.replacementRun.attemptedNameGeneration.has(logicalId) &&
+            newResources[logicalId]?.nameGeneration !== undefined && {
+              nameGeneration: newResources[logicalId]!.nameGeneration,
+            }),
         });
 
         saveStateAfterResource(logicalId);
@@ -689,6 +767,16 @@ export async function executeDeployment(
               provisionedBy: previousState?.provisionedBy,
               previousState,
             });
+            // go-to-k/cdkd#5064 phase 2: the record left the stack (deleted, or
+            // kept under Retain), so a later create of its logical id asks for
+            // the next generation's name -- never one this copy held. Every save
+            // carries the field through `stackInstanceIdCarriedFrom`.
+            if (previousState !== undefined && newResources[logicalId] === undefined) {
+              Object.assign(
+                currentState,
+                retiredNameGenerationsAfter(currentState, [{ logicalId, record: previousState }])
+              );
+            }
 
             saveStateAfterResource(logicalId);
           },
@@ -728,6 +816,23 @@ export async function executeDeployment(
           else delete op.oldResourceMaySurvive;
         }
       }
+      // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
+      // go-to-k/cdkd#5111: a deploy that deleted or replaced anything may have
+      // just removed what used a carried entry (a deleted load balancer's
+      // listeners go asynchronously), so it waits out an "in use" refusal as
+      // its own retry does; any other deploy sends once.
+      const releasedSomething =
+        deleteChanges.size > 0 ||
+        completedOperations.some(
+          (op) =>
+            op.changeType === 'UPDATE' &&
+            op.previousState !== undefined &&
+            op.physicalId !== undefined &&
+            op.physicalId !== op.previousState.physicalId
+        );
+      await retryCarriedSupersededResources(engine, currentState, carriedSuperseded, newResources, {
+        waitInUse: releasedSomething,
+      });
     }
   } catch (error) {
     warnUnretriedReplacedDeletes(
@@ -923,6 +1028,7 @@ export async function executeDeployment(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansCarriedFrom(currentState),
+        ...stackInstanceIdCarriedFrom(currentState),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -965,6 +1071,11 @@ export async function executeDeployment(
     // spread nothing and a stack that never orphaned keeps a byte-identical
     // record.
     let rollbackOrphans: StackOrphanRecord[] = [];
+    // go-to-k/cdkd#5064: the CREATEs that rollback took back; each logical
+    // id's generation retires, so the next create asks for a new name.
+    let rollbackCreates: RolledBackCreate[] = [];
+    // go-to-k/cdkd#5064: the new copies the rollback left in AWS to delete.
+    let rollbackSuperseded: SupersededResourceRecord[] = [];
     // The nested rows the automatic rollback actually reverted (issue
     // #3754): only their children's pending segments are settled with it.
     let rollbackSettledNested: SettledNestedRows = new Map();
@@ -1061,7 +1172,30 @@ export async function executeDeployment(
       // A survivor warning (a retained new copy) is not a skip: its op WAS
       // reverted, and its event names the survivor.
       autoRollbackClean =
-        autoRollbackJournaled && rollbackResult.failures === 0 && rollbackResult.skipped === 0;
+        autoRollbackJournaled &&
+        rollbackResult.failures === 0 &&
+        rollbackResult.skipped === 0 &&
+        // A Ctrl-C left ops unreverted: the segment stays for `cdkd rollback`.
+        !rollbackResult.interrupted;
+      if (
+        rollbackResult.interrupted &&
+        rollbackResult.failures === 0 &&
+        rollbackResult.skipped === 0
+      ) {
+        // go-to-k/cdkd#5118: the user's Ctrl-C stopped the replay part-way.
+        // A nested child is recovered through its top-level stack. A failed
+        // journal write already warned that nothing was kept.
+        const remedy = autoRollbackJournaled
+          ? recoveryHint(
+              engine.rollbackDeps(),
+              'The rollback journal keeps them; finish the rollback with: ' +
+                pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+            )
+          : '';
+        engine.logger.warn(
+          safeMsg`The automatic rollback was interrupted before it reverted every operation. ${remedy}`
+        );
+      }
       if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
         // The kept segment also keeps the failed op's record, which the next
         // deploy's generic note (a plain `cdkd rollback`, which discards it)
@@ -1098,6 +1232,8 @@ export async function executeDeployment(
       // (issue #2934) — the post-rollback save and its ETag-mismatch retry —
       // and neither can see `rollbackResult`.
       rollbackOrphans = rollbackResult.orphaned;
+      rollbackCreates = rollbackResult.rolledBackCreates;
+      rollbackSuperseded = rollbackResult.superseded;
       rollbackSettledNested = rollbackResult.settledNested;
       rollbackRemainingFailedOps = rollbackResult.remainingFailedOps;
     }
@@ -1115,6 +1251,12 @@ export async function executeDeployment(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
+        ...stackInstanceIdCarriedFrom(currentState),
+        // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
+        ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+        // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
+        // and a CREATE it took back is named anew by the next create.
+        ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the
         // snapshot alone left a failed deploy's persisted record denying a
@@ -1173,6 +1315,9 @@ export async function executeDeployment(
           ...exportNamesCarriedFrom(currentState),
           ...skippedOutputsCarriedFrom(currentState),
           ...orphansAfterRollback(currentState, rollbackOrphans),
+          ...stackInstanceIdCarriedFrom(currentState),
+          ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+          ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -1211,6 +1356,23 @@ export async function executeDeployment(
         engine.logger.warn(
           safeMsg`Failed to save state after rollback: ${asIsMessage(describeAwsFailure(retryError).detail)}`
         );
+        // go-to-k/cdkd#5064: the rollback said these stay in state; that save
+        // is the one that failed, so name them. An id can spell a
+        // secret-derived name (#3869): printed under each entry's bags.
+        for (const entry of rollbackSuperseded) {
+          withPrintingSecrets(
+            unionOfSecretBags([
+              secretNameBagFor(engine.secretsRun, entry.logicalId),
+              orphanRecordsPrintingBag([entry]),
+            ]),
+            () =>
+              engine.logger.warn(
+                safeMsg`  ${entry.logicalId}'s new ${entry.state.resourceType} ` +
+                  safeMsg`(${entry.state.physicalId}) the rollback left to delete is NOT recorded: ` +
+                  'delete it manually.'
+              )
+          );
+        }
       }
     }
 
@@ -1312,6 +1474,7 @@ export async function executeDeployment(
       stackName: currentState.stackName,
       resources: newResources,
       ...orphansCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(currentState),
       outputs,
       // Always written, `[]` included: on this path the bag was re-resolved,
       // so the set is KNOWN (issue #2193). Absent would read as "not known".
@@ -1372,6 +1535,7 @@ export async function persistStateAfterOutputFailure(
     ...exportNamesCarriedFrom(currentState),
     ...skippedOutputsCarriedFrom(currentState),
     ...orphansCarriedFrom(currentState),
+    ...stackInstanceIdCarriedFrom(currentState),
     // Issue #2057: the UNION, like every other non-success save. This one
     // used to write `[...engine.recordedImports]` WHOLESALE, copying the
     // SUCCESS path's shape onto a path that is not one — provisioning

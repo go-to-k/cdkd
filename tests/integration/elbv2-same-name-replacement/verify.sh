@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # verify.sh — real-AWS net for issue #3208: `cdkd deploy --replace` must
-# COMPLETE a same-name replacement of a cdkd-named ELBv2 target group.
+# COMPLETE a same-name replacement of a named ELBv2 target group.
 #
 # THE CLAIM UNDER TEST
 #
@@ -32,13 +32,21 @@
 #
 # WHY THE NAME MUST STAY THE SAME
 #
-# The collision IS the test. The target group is UNNAMED in the template, so
-# cdkd mints `<stackName>-<logicalId>` from inputs that do not change between
-# phases — the replacement therefore asks AWS for a name the old target group
-# still holds. Declaring a `Name` and CHANGING it would replace the target group
-# under a DIFFERENT name: nothing collides, the fallback is never reached, and
-# the run passes identically with and without the fix. That is a vacuous test,
-# and the pre-flight below refuses the template that would produce it.
+# The collision IS the test. The target group DECLARES a `Name`
+# (`TG_DECLARED_NAME`, fresh per run) that no phase changes, so the
+# replacement asks AWS for a name the old target group still holds.
+#
+# It was first written UNNAMED, which collided the same way while cdkd minted
+# the same `<stackName>-<logicalId>-<suffix>` again. Since go-to-k/cdkd#5064
+# phase 2 a replacement of an un-named resource on a stack with a stack
+# instance id creates at the NEXT name generation — a new name, created first —
+# so nothing collides, the fallback is never reached, and the run would pass
+# identically with and without the fix. A declared name keeps the same-name
+# collision; CHANGING it between phases would be the same vacuous test, and the
+# pre-flight below refuses a template that does not carry exactly this name.
+# Fresh per run so a target group an interrupted run left behind cannot
+# collide with phase 1's create. cdkd sends a declared ELBv2 name verbatim
+# (`--prefix-user-supplied-names` is off by default); phase 1 asserts that.
 #
 # WHY `Port`
 #
@@ -66,9 +74,9 @@
 # PHASES
 #
 #   1. deploy                       -> exactly one target group in the fixture
-#                                      VPC, carrying the `<stack>-` prefix cdkd
-#                                      minted, on Port 8080. Its name is
-#                                      captured as TG_NAME and its ARN as ARN_1.
+#                                      VPC, named exactly TG_DECLARED_NAME, on
+#                                      Port 8080. Its name is captured as
+#                                      TG_NAME and its ARN as ARN_1.
 #   2. TG_PORT=8081 deploy --replace
 #                                   -> THE ARM. Must SUCCEED. Before the fix it
 #                                      failed at the forward replacement with
@@ -163,14 +171,13 @@ export AWS_REGION="${REGION}"
 STACK="CdkdElbv2SameName"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
-# The name cdkd mints for the UNNAMED target group:
-# `generateResourceNameWithFallback(undefined, 'Tg', { maxLength: 32 })` ->
-# `${STACK}-Tg`, 20 characters, under the type's 32-character cap — so
-# `generateResourceName` never takes its truncate-plus-hash branch and the
-# prefix assertions below compare against the plain `${STACK}-`. Used by the
-# teardown sweep, which must be able to name the target group before any phase
-# has read one back.
-GENERATED_TG_NAME="${STACK}-Tg"
+# The target group's DECLARED name (see the header), read by the stack from
+# the environment on every synth this script runs, destroy included. 17 + 5 +
+# 8 = 30 characters of [A-Za-z0-9-], under ELBv2's 32-character cap, so cdkd's
+# sanitize-and-truncate leaves it as it is. The teardown sweep deletes it by
+# the captured name, and the by-VPC pass sees it whatever its name.
+TG_RUN_ID="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+export TG_DECLARED_NAME="${STACK}-run-${TG_RUN_ID}"
 
 PORT_1=8080   # the template's default; also asserted live in phase 1
 PORT_2=8081   # what TG_PORT carries into phase 2's replacement
@@ -229,7 +236,7 @@ tgs_in_vpc() { # echoes the fixture VPC's target group NAMES, whitespace-separat
 # `elbv2 describe-target-groups` is a listing, and a listing taken moments after
 # a create or a delete can lag. A lagging read here does not just flake — it
 # prints a message that ACCUSES THE FIX ("the replacement did not reuse the
-# generated name"), which is the anti-pattern `.claude/rules/testing.md` names.
+# declared name"), which is the anti-pattern `.claude/rules/testing.md` names.
 #
 # This retries until the listing equals the EXPECTED NAME LIST. It settles on
 # the NAMES and not on a COUNT, and the difference matters: a listing still
@@ -301,17 +308,21 @@ sweep_orphans() {
       ;;
   esac
 
-  # 1. The target group cdkd names deterministically. Looked up BY NAME, which
-  #    is the only handle available before any phase has read an ARN back.
-  #    `delete-target-group` takes an ARN only, so the name has to be resolved
-  #    first; the read is silenced and its emptiness checked, which is the
-  #    best-effort-cleanup shape rather than a leak assertion.
-  local tg_arn
-  tg_arn="$(aws elbv2 describe-target-groups --names "${GENERATED_TG_NAME}" --region "${REGION}" \
-    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
-  if [ -n "${tg_arn}" ] && [ "${tg_arn}" != "None" ]; then
-    echo "[verify]   deleting orphan target group ${GENERATED_TG_NAME}"
-    aws elbv2 delete-target-group --target-group-arn "${tg_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+  # 1. The target group by name: the one phase 1 captured, else this run's
+  #    declared name (a phase 1 that died after the create but before the VPC
+  #    id was read leaves pass 2 nothing to scope by). `delete-target-group`
+  #    takes an ARN only, so the name has to be resolved first; the read is
+  #    silenced and its emptiness checked, which is the best-effort-cleanup
+  #    shape rather than a leak assertion. Skipped on an empty name:
+  #    `--names ""` can hang.
+  local tg_arn tg_name="${TG_NAME:-${TG_DECLARED_NAME:-}}"
+  if [ -n "${tg_name}" ]; then
+    tg_arn="$(aws elbv2 describe-target-groups --names "${tg_name}" --region "${REGION}" \
+      --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
+    if [ -n "${tg_arn}" ] && [ "${tg_arn}" != "None" ]; then
+      echo "[verify]   deleting orphan target group ${tg_name}"
+      aws elbv2 delete-target-group --target-group-arn "${tg_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+    fi
   fi
 
   # 2. EVERY target group in the fixture VPC. This is the only pass that can
@@ -394,14 +405,16 @@ LOGICAL_ID=$(jq -r '.Resources | to_entries[]
   | select(.value.Type == "AWS::ElasticLoadBalancingV2::TargetGroup") | .key' "${TEMPLATE}" | head -1)
 [ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::ElasticLoadBalancingV2::TargetGroup in ${TEMPLATE}" >&2; exit 1; }
 
-# THE FIXTURE MUST CONTAIN THE FEATURE UNDER TEST. A template that grew a `Name`
-# here would replace the target group under a name of the user's choosing, which
-# COLLIDES WITH NOTHING — the `--replace` delete-first fallback would never be
-# reached and phase 2 would pass identically with and without the #3208 fix.
-# Fail here rather than run a vacuous test.
-jq -e --arg k "${LOGICAL_ID}" \
-  '(.Resources[$k].Properties // {}) | has("Name") | not' "${TEMPLATE}" >/dev/null \
-  || { echo "FAIL: ${LOGICAL_ID} declares a Name in ${TEMPLATE}. This fixture only exercises #3208 while the target group is UNNAMED — a named one is replaced under a DIFFERENT name and never collides." >&2; exit 1; }
+# THE FIXTURE MUST CONTAIN THE FEATURE UNDER TEST. A template whose target
+# group is UNNAMED (or named anything but the declared name every phase keeps)
+# would replace it under a DIFFERENT name — on a stack with a stack instance id
+# an un-named one moves to its next name generation (go-to-k/cdkd#5064 phase
+# 2) — which COLLIDES WITH NOTHING: the `--replace` delete-first fallback would
+# never be reached and phase 2 would pass identically with and without the
+# #3208 fix. Fail here rather than run a vacuous test.
+jq -e --arg k "${LOGICAL_ID}" --arg n "${TG_DECLARED_NAME}" \
+  '(.Resources[$k].Properties // {}).Name == $n' "${TEMPLATE}" >/dev/null \
+  || { echo "FAIL: ${LOGICAL_ID} does not declare Name '${TG_DECLARED_NAME}' in ${TEMPLATE}. This fixture only exercises #3208 while the target group keeps one declared name — an un-named one is replaced under its next-generation name and never collides." >&2; exit 1; }
 
 # The other half of the same guard: phase 2 must change a CREATE-ONLY property,
 # or there is no replacement at all. `Port` is create-only for this type; this
@@ -409,10 +422,10 @@ jq -e --arg k "${LOGICAL_ID}" \
 # value phase 1 then asserts live.
 TEMPLATE_PORT=$(jq -r --arg k "${LOGICAL_ID}" '.Resources[$k].Properties.Port // ""' "${TEMPLATE}")
 [ "${TEMPLATE_PORT}" = "${PORT_1}" ] || { echo "FAIL: ${LOGICAL_ID} synthesizes Port '${TEMPLATE_PORT}' with TG_PORT unset, expected ${PORT_1}. The TG_PORT seam has drifted and phase 2 would not be changing what this script thinks it is." >&2; exit 1; }
-echo "[verify] resource under test: ${LOGICAL_ID} (unnamed in the template, Port ${TEMPLATE_PORT})"
+echo "[verify] resource under test: ${LOGICAL_ID} (Name ${TG_DECLARED_NAME} in the template, Port ${TEMPLATE_PORT})"
 
 # ---------------------------------------------------------------------------
-# PHASE 1: deploy — cdkd mints the name
+# PHASE 1: deploy — the declared name
 # ---------------------------------------------------------------------------
 echo "[verify] phase 1: cdkd deploy ${STACK} (no seams — Port ${PORT_1})"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -432,13 +445,11 @@ N_1=$(count_words "${TGS_1}")
 [ "${N_1}" = "1" ] || { echo "FAIL: expected exactly 1 target group in ${VPC_ID} after phase 1, found ${N_1}: ${TGS_1}" >&2; exit 1; }
 TG_NAME="${TGS_1}"
 
-# cdkd GENERATED the name — that is the premise the collision rests on. A
-# user-named target group would be replaced under whatever the user chose.
-case "${TG_NAME}" in
-  "${STACK}-"*) : ;;
-  *) echo "FAIL: the target group name '${TG_NAME}' does not carry the '${STACK}-' prefix, so cdkd did not generate it. #3208's collision only occurs because both deploys mint the SAME name from the stack name and logical id." >&2; exit 1 ;;
-esac
-[ "${TG_NAME}" = "${GENERATED_TG_NAME}" ] || { echo "FAIL: cdkd minted '${TG_NAME}' but this script's teardown sweep looks for '${GENERATED_TG_NAME}'. A name the sweep cannot predict is a name it cannot clean up." >&2; exit 1; }
+# The target group holds the DECLARED name verbatim — that is the premise the
+# collision rests on: phase 2's replacement sends the same name again. A
+# prefixed or generated name would mean cdkd sends something else, and the
+# replacement would not be the same-name one #3208 is about.
+[ "${TG_NAME}" = "${TG_DECLARED_NAME}" ] || { echo "FAIL: the target group is named '${TG_NAME}', not the declared '${TG_DECLARED_NAME}'. #3208's collision only occurs because both deploys send the SAME declared name." >&2; exit 1; }
 
 ARN_1=$(capture aws elbv2 describe-target-groups --names "${TG_NAME}" --region "${REGION}" \
   --query 'TargetGroups[0].TargetGroupArn' --output text)
@@ -460,7 +471,8 @@ echo "[verify] phase 1 ok: '${TG_NAME}' in ${VPC_ID} on port ${LIVE_PORT_1} (${A
 # PHASE 2: THE ARM — TG_PORT=8081 deploy --replace
 # ---------------------------------------------------------------------------
 # `Port` is create-only, so this is a REPLACEMENT, and the target group is
-# unnamed, so the new one must carry the SAME name the old one still holds. The
+# declares one unchanging name, so the new one must carry the SAME name the old
+# one still holds. The
 # create-first attempt therefore collides with
 # `DuplicateTargetGroupNameException`, and only `--replace`'s delete-first
 # fallback can finish the deploy — which it can only do if that exception is
@@ -533,9 +545,9 @@ POST_TGS=$(tgs_in_vpc_settled "${TG_NAME}")
 N_POST=$(count_words "${POST_TGS}")
 [ "${N_POST}" = "1" ] || { echo "FAIL: expected exactly 1 target group in ${VPC_ID} after the replacement, found ${N_POST}: ${POST_TGS}. More than one means the old target group was not deleted; zero means the replacement's re-create never landed." >&2; exit 1; }
 
-# 3c. The replacement REUSED the generated name. That is what makes this a
+# 3c. The replacement REUSED the declared name. That is what makes this a
 #     same-name replacement and therefore what made it collide at all.
-[ "${POST_TGS}" = "${TG_NAME}" ] || { echo "FAIL: the target group in ${VPC_ID} is now named '${POST_TGS}', not '${TG_NAME}'. The replacement did not reuse cdkd's generated name, so this run exercised an ordinary rename and never reached #3208's collision." >&2; exit 1; }
+[ "${POST_TGS}" = "${TG_NAME}" ] || { echo "FAIL: the target group in ${VPC_ID} is now named '${POST_TGS}', not '${TG_NAME}'. The replacement did not reuse the declared name, so this run exercised an ordinary rename and never reached #3208's collision." >&2; exit 1; }
 
 # 3d. The replacement actually applied the new create-only value.
 LIVE_PORT_2=$(capture aws elbv2 describe-target-groups --target-group-arns "${ARN_2}" --region "${REGION}" \
@@ -563,10 +575,10 @@ ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 
 assert_gone "target group ${ARN_2} survived destroy" \
   aws elbv2 describe-target-groups --target-group-arns "${ARN_2}" --region "${REGION}"
 
-# By NAME: nothing holds the generated name any more. Distinct from the ARN
+# By NAME: nothing holds the declared name any more. Distinct from the ARN
 # probe — a replacement-shaped leak would free the ARN while keeping the name
 # occupied, and an occupied name is exactly what wedges the next run.
-assert_gone "the generated name ${TG_NAME} is still taken after destroy" \
+assert_gone "the declared name ${TG_NAME} is still taken after destroy" \
   aws elbv2 describe-target-groups --names "${TG_NAME}" --region "${REGION}"
 
 # Zero left in the VPC, which the name-scoped and ARN-scoped probes above cannot

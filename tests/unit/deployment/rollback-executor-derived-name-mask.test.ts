@@ -77,7 +77,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { finalSnapshotDelays } from '../../../src/provisioning/final-snapshot.js';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -164,7 +164,7 @@ function replacement(
 
 /** The replay in the scope a segment recorded with the prefix KEPT gets. */
 function replayKept<T>(fn: () => Promise<T>): Promise<T> {
-  return withSkipPrefix(false, () => withStackName(STACK, fn));
+  return withSkipPrefix(false, () => withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, fn));
 }
 
 beforeEach(() => {
@@ -507,7 +507,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
       const state = { R: role(KEPT, 'renamed') };
 
       const result = await withSkipPrefix(true, () =>
-        withStackName(STACK, () => replayFailedOperations([op], state, STACK, ctx))
+        withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayFailedOperations([op], state, STACK, ctx))
       );
 
       expect(result.failures).toBe(1);
@@ -768,7 +768,7 @@ describe('a secret-derived physical id never reaches the rollback log (#4037)', 
     } as FailedOperation;
 
     await withSkipPrefix(true, () =>
-      withStackName(STACK, () =>
+      withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         replayFailedOperations([op], { R: role(KEPT, 'renamed') }, STACK, ctx)
       )
     );
@@ -1598,7 +1598,7 @@ describe('the live-resource warning names no shell-active value (go-to-k/cdkd#42
         const { ctx, lines } = makeCtx({ create, delete: vi.fn() });
         const { op, state } = replacement('old-role', 'same-name', 'live-role', 'same-name');
         await withSkipPrefix(false, () =>
-          withStackName(stack, () => replayRollback([op], state, stack, { ...ctx, region }))
+          withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () => replayRollback([op], state, stack, { ...ctx, region }))
         );
         const message = lines.find((l) => l.includes('the re-create returned the LIVE new'));
         expect(message, label).toBeDefined();

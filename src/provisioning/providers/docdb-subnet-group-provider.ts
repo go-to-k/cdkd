@@ -8,7 +8,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -112,7 +112,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::DocDB::DBSubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(

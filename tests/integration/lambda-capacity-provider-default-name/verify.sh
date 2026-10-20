@@ -15,7 +15,8 @@
 #   1. Deploy a VPC, a capacity provider with NO name and a function attached
 #      to it with `publishToLatestPublished`, and a second unnamed provider
 #      (`SpareProvider`) with nothing attached. Assert: state records both
-#      providers under their generated `<stack>-<logicalId>` names on the Cloud
+#      providers under their generated `<stack>-<logicalId>-<suffix>` names
+#      (go-to-k/cdkd#5064: the 12-hex stack instance suffix) on the Cloud
 #      Control route, AWS reports them `Active`, the function's
 #      CapacityProviderConfig points at the first, and the ProviderArn output
 #      agrees. The deploy runs with `--verbose` so the log shows whether the
@@ -100,14 +101,32 @@ STACK="CdkdLmiCapacityProviderExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
-# Every name here is what cdkd derives, `<stack>-<logicalId>`, well under the
-# 140-character cap, so no hash suffix -- except SPARE_REWIRED, which is the
-# out-of-band name phase 2b deliberately makes DIFFERENT. `cleanup` reaches all
-# of them by name even when the state record is gone.
-PROVIDER_NAME="${STACK}-Provider2281708E"
-SPARE_GENERATED="${STACK}-SpareProvider8B33A338"
+# The generated names are `<stack>-<logicalId>-<12 hex>` (go-to-k/cdkd#5064):
+# the suffix derives from the stack instance id, so they are READ FROM STATE
+# after phase 1 (`resolve_generated_names`) and asserted against their shape,
+# never predicted. Both caps are 64 (a provider's NAME is refused over 64,
+# whatever the schema's 140 for the ARN form), so `<stack>-<logicalId>` is cut
+# to 51 characters before the suffix where it is longer (the spare's is 52). SPARE_REWIRED is the
+# out-of-band name phase 2b deliberately makes DIFFERENT, known up front.
+# `cleanup` resolves the generated ones from state when phase 1 never did, and
+# skips an empty one.
+PROVIDER_LOGICAL="Provider2281708E"
+SPARE_LOGICAL="SpareProvider8B33A338"
+FUNCTION_LOGICAL="Handler886CB40B"
+PROVIDER_NAME=""
+SPARE_GENERATED=""
 SPARE_REWIRED="${STACK}-rewired-spare"
-FUNCTION_NAME="${STACK}-Handler886CB40B"
+FUNCTION_NAME=""
+# Best-effort: fill the generated names from the state record, if there is one.
+resolve_generated_names() { ( set +eu
+  aws s3 cp "s3://${STATE_BUCKET:-}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null \
+    | python3 -c "
+import json, sys
+r = json.load(sys.stdin).get('resources', {})
+for k in sys.argv[1:]:
+    print((r.get(k) or {}).get('physicalId') or '')
+" "${PROVIDER_LOGICAL}" "${SPARE_LOGICAL}" "${FUNCTION_LOGICAL}" 2>/dev/null
+) }
 DIFF_LOG="${TMPDIR:-/tmp}/cdkd-3174-diff.$$.log"
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-3174-deploy.$$.log"
 
@@ -188,15 +207,21 @@ cleanup() {
   # no state record until phase 2b rewrites it, and the generated one leaves
   # state at that point, so either can still reference the operator role,
   # security group and subnets `state destroy` is about to delete.
+  if [ -z "${PROVIDER_NAME}" ]; then
+    { read -r PROVIDER_NAME; read -r SPARE_GENERATED_FROM_STATE; read -r FUNCTION_NAME; } \
+      < <(resolve_generated_names)
+    # Only the generated spare: after phase 2b the record names SPARE_REWIRED.
+    case "${SPARE_GENERATED_FROM_STATE}" in "${STACK}-${SPARE_LOGICAL}-"*) SPARE_GENERATED="${SPARE_GENERATED_FROM_STATE}" ;; esac
+  fi
   delete_provider "${SPARE_REWIRED}"
-  delete_provider "${SPARE_GENERATED}"
+  [ -n "${SPARE_GENERATED}" ] && delete_provider "${SPARE_GENERATED}"
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   # The function before its provider: deleting it deletes every version, which
   # frees the provider it runs on.
-  aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
-  delete_provider "${PROVIDER_NAME}"
+  [ -n "${FUNCTION_NAME}" ] && { aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true; }
+  [ -n "${PROVIDER_NAME}" ] && delete_provider "${PROVIDER_NAME}"
   case "${STACK}" in
     CdkdLmi?*)
       for lg in $(aws logs describe-log-groups --region "${REGION}" \
@@ -349,14 +374,25 @@ VPC_ID="$(read_state "s['resources']['Vpc8378EB38']['physicalId']")"
 OPERATOR_ROLE="$(read_state "s['resources'].get('ProviderOperatorRoleDF614C31', {}).get('physicalId', '')")"
 SPARE_OPERATOR_ROLE="$(read_state "s['resources'].get('SpareProviderOperatorRole6345D27C', {}).get('physicalId', '')")"
 
-[ "${STATE_PROVIDER_ID}" = "${PROVIDER_NAME}" ] ||
-  { echo "FAIL: capacity provider physicalId '${STATE_PROVIDER_ID}' != generated name '${PROVIDER_NAME}'" >&2; exit 1; }
-[ "${STATE_SPARE_ID}" = "${SPARE_GENERATED}" ] ||
-  { echo "FAIL: spare provider physicalId '${STATE_SPARE_ID}' != generated name '${SPARE_GENERATED}'" >&2; exit 1; }
+# go-to-k/cdkd#5064: each generated name is `<stack>-<logicalId>` cut to
+# 64 - 13 = 51 characters (a trailing hyphen dropped), then `-<12 hex>`.
+for pair in "${PROVIDER_LOGICAL} ${STATE_PROVIDER_ID}" "${SPARE_LOGICAL} ${STATE_SPARE_ID}" \
+  "${FUNCTION_LOGICAL} ${STATE_FUNCTION_ID}"; do
+  logical="${pair%% *}"
+  id="${pair#* }"
+  base="${STACK}-${logical}"
+  base="${base:0:51}"
+  base="${base%-}"
+  printf '%s' "${id}" | grep -qE "^${base}-[0-9a-f]{12}\$" ||
+    { echo "FAIL: ${logical} physicalId '${id}' is not the generated ${base}-<12 hex>" >&2; exit 1; }
+done
+# The capacity providers and the function share the stack's one suffix
+# derivation but not a suffix: each hashes its own logical id.
+PROVIDER_NAME="${STATE_PROVIDER_ID}"
+SPARE_GENERATED="${STATE_SPARE_ID}"
+FUNCTION_NAME="${STATE_FUNCTION_ID}"
 [ "${STATE_PROVIDER_ROUTE}" = "cc-api" ] && [ "${STATE_SPARE_ROUTE}" = "cc-api" ] ||
   { echo "FAIL: provisionedBy provider='${STATE_PROVIDER_ROUTE}' spare='${STATE_SPARE_ROUTE}', expected cc-api for both" >&2; exit 1; }
-[ "${STATE_FUNCTION_ID}" = "${FUNCTION_NAME}" ] ||
-  { echo "FAIL: function physicalId '${STATE_FUNCTION_ID}' != '${FUNCTION_NAME}' (cleanup targets that name)" >&2; exit 1; }
 echo "    state records ${PROVIDER_NAME} and ${SPARE_GENERATED} via cc-api"
 
 # Premise for the post-destroy operator-role assertions: both roles must be LIVE

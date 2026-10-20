@@ -69,6 +69,7 @@ function settle(userName: string) {
     events,
     run: () =>
       settleJournaledOrphansOnSuccess({
+        stackInstanceId: undefined,
         stateBackend: {
           loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
           reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

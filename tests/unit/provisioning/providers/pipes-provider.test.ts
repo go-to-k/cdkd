@@ -64,7 +64,7 @@ import {
   PipesPipeProvider,
   toUpdateSourceParameters,
 } from '../../../../src/provisioning/providers/pipes-provider.js';
-import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../../src/provisioning/resource-name.js';
 import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
@@ -436,7 +436,7 @@ describe('PipesPipeProvider.create', () => {
   it('generates a stack-prefixed name when the template gives none', async () => {
     route({ CreatePipeCommand: () => ({}), DescribePipeCommand: () => described() });
     const provider = new PipesPipeProvider({ sleep: noSleep });
-    const result = await withStackName('MyStack', () =>
+    const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pipe', TYPE, { RoleArn: 'r', Source: 's', Target: 't' })
     );
     expect(result.physicalId).toBe('MyStack-Pipe');
@@ -805,7 +805,7 @@ describe('PipesPipeProvider review-round cases', () => {
   it('caps a generated name at 64 characters', async () => {
     route({ CreatePipeCommand: () => ({}), DescribePipeCommand: () => described() });
     const provider = new PipesPipeProvider({ sleep: noSleep });
-    const result = await withStackName('S'.repeat(80), () =>
+    const result = await withStackScope({ stackName: 'S'.repeat(80), stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pipe', TYPE, { RoleArn: 'r', Source: 's', Target: 't' })
     );
     expect(result.physicalId.length).toBeLessThanOrEqual(64);

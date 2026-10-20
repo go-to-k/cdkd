@@ -64,7 +64,7 @@ describe('DeployEngine - Cloud Control fallback name is filled on CREATE, not on
   const stackName = 'lmi-stack';
   const RESOURCE_TYPE = 'AWS::Lambda::CapacityProvider';
   const PHYSICAL_ID = 'imported-provider-name';
-  // `DeployEngine.deploy` runs under `withStackName(stackName)`, so the name the
+  // `DeployEngine.deploy` runs under `withStackScope(stackName)`, so the name the
   // fill generates is exactly `<stack>-<logicalId>`.
   const GENERATED_NAME = 'lmi-stack-Provider';
 
@@ -295,6 +295,49 @@ describe('DeployEngine - Cloud Control fallback name is filled on CREATE, not on
    * engine hands the wrapper. `AWS::S3::Bucket` is a `FALLBACK_NAME_RULES` type
    * (`BucketName`), so a name the hook generates is one the update must drop.
    */
+  describe('go-to-k/cdkd#5095', () => {
+    const DIR = 'AWS::S3Express::DirectoryBucket';
+    const AZ_NAME_BAG = { LocationName: 'us-east-1a', DataRedundancy: 'SingleAvailabilityZone' };
+
+    it('CREATE of a required-name type: CodeCommit gets the name its SDK provider generates', async () => {
+      const TYPE = 'AWS::CodeCommit::Repository';
+      mockStateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(change('CREATE', {}, undefined, undefined, TYPE));
+
+      await makeEngine().deploy(stackName, templateWith({}, TYPE));
+
+      expect(createdBag()['RepositoryName']).toBe(GENERATED_NAME);
+    });
+
+    it('CREATE of a directory bucket whose zone id cannot be read is refused before Cloud Control', async () => {
+      mockStateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        change('CREATE', AZ_NAME_BAG, undefined, undefined, DIR)
+      );
+
+      const error = await makeEngine()
+        .deploy(stackName, templateWith(AZ_NAME_BAG, DIR))
+        .then(() => undefined, (e: unknown) => e);
+      const messages: string[] = [];
+      for (let e = error; e instanceof Error; e = e.cause) messages.push(e.message);
+      expect(messages.join('\n')).toMatch(/cannot generate a BucketName/);
+      expect(mockProvider.create).not.toHaveBeenCalled();
+    });
+
+    it('UPDATE of that directory bucket is not refused: an update sends no generated name', async () => {
+      const desired = { ...AZ_NAME_BAG, Tags: [{ Key: 'phase', Value: 'update' }] };
+      mockStateBackend.getState.mockResolvedValue({ state: priorState(AZ_NAME_BAG, DIR), etag: 'etag-old' });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(
+        change('UPDATE', desired, AZ_NAME_BAG, undefined, DIR)
+      );
+
+      await makeEngine().deploy(stackName, templateWith(desired, DIR));
+
+      expect(mockProvider.update).toHaveBeenCalledTimes(1);
+      expect(mockProvider.update.mock.calls.at(-1)![3]).not.toHaveProperty('BucketName');
+    });
+  });
+
   describe('through an SDK provider preparePropertiesForFallback hook', () => {
     const S3_TYPE = 'AWS::S3::Bucket';
     const HOOK_NAME = 'hook-generated-bucket';

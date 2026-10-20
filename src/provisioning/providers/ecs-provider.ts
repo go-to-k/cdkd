@@ -91,7 +91,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { markDeleteStarted } from '../delete-started.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -1157,7 +1157,7 @@ export class ECSProvider implements ResourceProvider {
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const family =
       (properties['Family'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::ECS::TaskDefinition', logicalId);
 
     try {
       // Issue #2080: after an earlier ambiguous attempt, name the revision it
@@ -1343,7 +1343,7 @@ export class ECSProvider implements ResourceProvider {
 
     const serviceName =
       (properties['ServiceName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::ECS::Service', logicalId);
     // go-to-k/cdkd#4583: the ARN of a service CreateService returned that the
     // cleanup below could not delete, named for the failed-CREATE journal.
     let survivorArn: string | undefined;
@@ -4109,7 +4109,7 @@ export class ECSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (resourceType !== 'AWS::ECS::Cluster' || properties['ClusterName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 255 });
+    return generatedNameFor('AWS::ECS::Cluster', logicalId);
   }
 
   /**

@@ -33,7 +33,13 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 vi.mock('../../../../src/provisioning/resource-name.js', () => ({
+  // go-to-k/cdkd#5064 phase 2: a replay binds the record's name generation.
+  withNameGeneration: (_binding: unknown, fn: () => unknown) => fn(),
+  isNameGeneration: (value: unknown) =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
+  stackInstanceNameSuffix: () => '000000000000',
   generateResourceName: vi.fn().mockReturnValue('generated-stream-name'),
+  generatedNameFor: vi.fn().mockReturnValue('generated-stream-name'),
 }));
 
 import {

@@ -184,7 +184,9 @@ healthy.
 ## `orphans` is not a list
 
 `orphans` lists resources that a rollback left in AWS and removed from
-`resources`, so that a later deploy can adopt them again. This section applies
+`resources`. A later deploy adopts them again only on a stack first deployed
+before generated names carried a suffix; elsewhere they record what the
+rollback left so a deploy can warn about it. This section applies
 when the field holds a string, a number, an object or `null`. An absent field
 and an empty `[]` are both healthy.
 

@@ -1443,21 +1443,26 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     it('deletes the region-scoped key and sweeps the matching legacy key', async () => {
       // 1st: DeleteObject (the create-token ledger, #4438 -- first, fail-closed)
       s3Client.send.mockResolvedValueOnce({});
-      // 2nd: DeleteObject (new key)
+      // 2nd: DeleteObject (the stack-instance sibling, #5064 -- fail-closed)
       s3Client.send.mockResolvedValueOnce({});
-      // 3rd: GetObject for legacy region match
+      // 3rd: DeleteObject (new key)
+      s3Client.send.mockResolvedValueOnce({});
+      // 4th: GetObject for legacy region match
       s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'us-east-1')) });
-      // 4th: DeleteObject (legacy key)
+      // 5th: DeleteObject (legacy key)
       s3Client.send.mockResolvedValueOnce({});
 
       await backend.deleteState('S', 'us-east-1');
 
       const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
       expect((cmds[0] as DeleteObjectCommand).input.Key).toBe('cdkd/S/us-east-1/create-tokens.json');
-      expect(cmds[1]).toBeInstanceOf(DeleteObjectCommand);
-      expect((cmds[1] as DeleteObjectCommand).input.Key).toBe('cdkd/S/us-east-1/state.json');
-      expect(cmds[3]).toBeInstanceOf(DeleteObjectCommand);
-      expect((cmds[3] as DeleteObjectCommand).input.Key).toBe('cdkd/S/state.json');
+      expect((cmds[1] as DeleteObjectCommand).input.Key).toBe(
+        'cdkd/S/us-east-1/stack-instance.json'
+      );
+      expect(cmds[2]).toBeInstanceOf(DeleteObjectCommand);
+      expect((cmds[2] as DeleteObjectCommand).input.Key).toBe('cdkd/S/us-east-1/state.json');
+      expect(cmds[4]).toBeInstanceOf(DeleteObjectCommand);
+      expect((cmds[4] as DeleteObjectCommand).input.Key).toBe('cdkd/S/state.json');
       // deleteState also sweeps the rollback journal (issue #1183).
       const deletedKeys = cmds
         .filter((c: unknown) => c instanceof DeleteObjectCommand)
@@ -1467,6 +1472,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
     it('leaves a legacy key alone when its region does not match', async () => {
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'us-west-2')) });
 
@@ -1491,6 +1497,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     // against resources that no longer existed.
     it('sweeps a legacy key whose body names NO region', async () => {
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) }); // probe: no region
       s3Client.send.mockResolvedValueOnce({}); // delete legacy key
@@ -1509,6 +1516,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // a 403 / 503 / malformed body says nothing about who owns the record,
       // and a read that failed must never authorise a delete.
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockRejectedValueOnce(
         Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
@@ -1530,6 +1538,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // have the sweep delete a record `getState` will not even read — issue
       // #2550's asymmetry pointing the other way.
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockResolvedValueOnce({
         Body: {
@@ -1555,6 +1564,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // an equality test (`'' === 'us-east-1'`) would refuse to sweep it,
       // which is #2550 verbatim.
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockResolvedValueOnce({
         Body: {
@@ -1577,6 +1587,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
     it('does not sweep when the probe response carries no body', async () => {
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockResolvedValueOnce({}); // probe: no Body
 
@@ -1627,6 +1638,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       it('warns with the error CLASS when the probe cannot be read', async () => {
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({}); // delete new key
         s3Client.send.mockRejectedValueOnce(
           Object.assign(
@@ -1651,6 +1663,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         // printing its message writes the caller's account, role and session
         // into terminal and CI output on every destroy.
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockRejectedValueOnce(
           Object.assign(
@@ -1676,6 +1689,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         // be the stack's, and the remedy needs the very permission whose
         // absence produces the commonest instance of this warning.
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockRejectedValueOnce(
           Object.assign(new Error('denied'), { name: 'AccessDenied' })
@@ -1697,6 +1711,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         // a default-verbosity warn through it, which is why `reason` carries
         // an error CLASS and never a message.
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({
           Body: {
@@ -1728,6 +1743,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         // (a) no body
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({});
         await backend.deleteState('S', 'us-east-1');
@@ -1737,6 +1753,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         // (b) region field of the wrong type
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({
           Body: {
@@ -1753,6 +1770,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         // (c) the throwing branch
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockRejectedValueOnce(
           Object.assign(new Error('denied'), { name: 'AccessDenied' })
@@ -1766,6 +1784,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         // are not permission problems, so nothing in the message may read as
         // one.
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({
           Body: {
@@ -1785,6 +1804,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       it('stays silent when the legacy key is simply absent', async () => {
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockRejectedValueOnce(
           Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
@@ -1797,6 +1817,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       it('stays silent when the legacy body names a region', async () => {
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'us-east-1')) });
         s3Client.send.mockResolvedValueOnce({}); // legacy delete
@@ -1808,6 +1829,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       it('stays silent when the legacy body names no region', async () => {
         s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+        s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
         s3Client.send.mockResolvedValueOnce({}); // legacy delete
@@ -1823,6 +1845,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // the same `undefined`, so accepting it would have sent a pointless
       // DeleteObject on every ordinary destroy.
       s3Client.send.mockResolvedValueOnce({}); // create-token ledger delete (#4438), first
+      s3Client.send.mockResolvedValueOnce({}); // stack-instance sibling delete (#5064), second
       s3Client.send.mockResolvedValueOnce({}); // delete new key
       s3Client.send.mockRejectedValueOnce(
         Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })

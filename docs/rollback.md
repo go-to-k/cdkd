@@ -88,12 +88,16 @@ A resource with no `DeletionPolicy` is deleted. The exception is an RDS
 cluster or a standalone RDS instance, which gets a final snapshot first, as
 it does in CloudFormation.
 
-A retained resource keeps its physical name, so creating it again on the next
-deploy would normally fail on that name. To avoid this, cdkd records the
-retained resource in state, and the next deploy takes the existing resource
-back under management.
+cdkd records a retained resource in state. What the next deploy does with it
+depends on the stack:
 
-The next deploy takes the resource back only when all of these hold:
+| Stack | Next deploy |
+| --- | --- |
+| First deployed by a cdkd with stack instance ids (state schema v13) | Creates a new resource under a new generated name, leaves the retained one alone, and warns. Adopt the retained one with `cdkd import` if you want it back. |
+| Recorded by an older cdkd (a legacy stack) | Takes the retained resource back under management, under its name. |
+
+On a legacy stack, the next deploy takes the resource back only when all of
+these hold:
 
 - the template still declares the resource, with the same type,
 - the template leaves the physical name for cdkd to generate,
@@ -110,7 +114,8 @@ prefix, or cdkd cannot check whether it is. For a nested stack, the check is
 on its `Parent~Child` record.
 
 The reason is that a create can take over a resource that already existed
-under the same generated name. That resource may belong to the other
+under the same name (a declared one, or a generated one in a stack first
+deployed before generated names carried a suffix). That resource may belong to the other
 deployment. cdkd warns, names the other prefix when it found one, and leaves
 the resource in the rollback journal.
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)

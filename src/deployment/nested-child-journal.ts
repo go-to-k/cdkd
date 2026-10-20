@@ -46,7 +46,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
-import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  StackState,
+  SupersededResourceRecord,
+} from '../types/state.js';
+import {
+  addSuperseded,
+  removeSuperseded,
+  supersededAfterRollback,
+} from './superseded-resources.js';
 import {
   isMarkFor,
   journalOpPhysicalId,
@@ -61,6 +71,7 @@ import {
   importableOutputKeys,
   importableOutputs,
   orphansAfterRollback,
+  stackInstanceIdCarriedFrom,
 } from '../types/state.js';
 import {
   refuseMalformedOrphanRecords,
@@ -85,9 +96,15 @@ import {
 import {
   getCurrentSkipPrefix,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../provisioning/resource-name.js';
-import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import { stackInstanceIdOf } from '../state/stack-instance-id.js';
+import {
+  nameScopeOf,
+  retiredAfterRollback,
+  type RolledBackCreate,
+} from '../state/name-generation.js';
+import { displayIdent, displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   ledgerForStack,
@@ -632,6 +649,12 @@ export async function revertNestedChildFromJournal(args: {
     refuseMalformedState(base, childStackName, region, refusalRecovery);
     refuseMalformedOrphans(base, childStackName, region, refusalRecovery);
     refuseMalformedOrphanRecords(base, childStackName, region, refusalRecovery);
+    // go-to-k/cdkd#5064: the CHILD's own lifetime, not the parent's scope.
+    const childNamingScope = nameScopeOf(
+      childStackName,
+      stackInstanceIdOf(base, displayStackName(childStackName)),
+      base
+    );
 
     const journal = await ctx.stateBackend.loadRollbackJournal(childStackName, region);
     const segments = (journal?.segments ?? []).filter((segment) => segment.runId === runId);
@@ -644,6 +667,12 @@ export async function revertNestedChildFromJournal(args: {
 
     const stateResources: Record<string, ResourceState> = { ...base.resources };
     const mintedOrphans: StackOrphanRecord[] = [];
+    // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
+    // it stands (as `mintedOrphans`), so each retires its generation.
+    const rolledBackCreates: RolledBackCreate[] = [];
+    // go-to-k/cdkd#5064: the new resources a renamed reversal's deferred
+    // delete has yet to remove, kept in every save meanwhile.
+    const supersededHost: { supersededResources?: SupersededResourceRecord[] } = {};
     // The OLDEST segment of the run that CARRIES a snapshot is the child
     // before this run touched it. Not `segments[0]` blindly: in a run where the
     // child failed and rolled itself back before a later attempt succeeded,
@@ -662,10 +691,14 @@ export async function revertNestedChildFromJournal(args: {
     const { skippedOutputs: _dropped, ...carried } = base;
     const next = (): StackState => ({
       ...carried,
+      ...stackInstanceIdCarriedFrom(base),
+      ...supersededAfterRollback(base, supersededHost),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,
       resources: { ...stateResources },
       ...orphansAfterRollback(base, mintedOrphans),
+      // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back.
+      ...retiredAfterRollback(base, mintedOrphans, rolledBackCreates),
       ...(restoring && restoredOutputs && { outputs: { ...restoredOutputs.outputs } }),
       ...(restoring &&
         restoredReads && {
@@ -791,7 +824,7 @@ export async function revertNestedChildFromJournal(args: {
       const split = splitImportedOps(segment.operations, segment);
       const result = await withNestedStackContext(childCtx, () =>
         withSkipPrefix(skipPrefix, () =>
-          withStackName(childStackName, () =>
+          withStackScope(childNamingScope, () =>
             // go-to-k/cdkd#4438: the CHILD's own create-token ledger, not the
             // parent's the enclosing replay bound.
             withCreateTokenLedger(ledgerForStack(ctx.stateBackend, childStackName, region), () =>
@@ -806,8 +839,11 @@ export async function revertNestedChildFromJournal(args: {
                     replayRollback(split.replay, stateResources, childStackName, execCtx, {
                       afterOp: save,
                       onOrphan: (record) => mintedOrphans.push(record),
+                      onRolledBackCreate: (create) => rolledBackCreates.push(create),
                       inlinePolicyWriters,
                       failedOperations: segment.failedOperations,
+                      onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+                      onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
                     })
                 );
                 for (const [id, below] of inner.settled) settledBelow.set(id, below);

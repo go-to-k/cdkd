@@ -52,7 +52,7 @@ import {
   createNameQuestion,
   replacementNameProbe,
 } from '../../../src/deployment/replacement-name-holder.js';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 const LB = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
 const TG = 'AWS::ElasticLoadBalancingV2::TargetGroup';
@@ -186,7 +186,7 @@ describe('the #3937 name probe against the real ELBv2 lookups', () => {
       });
 
       await withSkipPrefix(true, () =>
-        withStackName('MyStack', async () => {
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           await provider.import(lookupInput(c.type, { Name: 7 }));
           await provider.create('Res', c.type, { Name: 7, TargetType: 'lambda' });
         })
@@ -230,7 +230,7 @@ describe('the #3937 name probe against the real ELBv2 lookups', () => {
       });
 
       await withSkipPrefix(skip, () =>
-        withStackName('MyStack', async () => {
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           await provider.import(lookupInput(c.type, { Name: declared }));
           await provider.create('Res', c.type, { Name: declared, TargetType: 'lambda' });
         })

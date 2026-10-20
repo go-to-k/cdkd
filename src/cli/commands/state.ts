@@ -97,7 +97,8 @@ import {
 } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import { withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import {
   redactForState,
   maskReadbackAtCoordinates,
@@ -133,6 +134,7 @@ import {
 } from './state-refresh-observed.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
+import { stackInstanceIdOf, withStackInstanceIdWithheld } from '../../state/stack-instance-id.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
@@ -1582,7 +1584,7 @@ async function stateShowCommand(
 
     if (options.json) {
       process.stdout.write(
-        `${stringifyJsonPayload({ state: stateResult.state, lock: lockInfo })}\n`
+        `${stringifyJsonPayload({ state: withStackInstanceIdWithheld(stateResult.state), lock: lockInfo })}\n`
       );
       return;
     }
@@ -2253,7 +2255,8 @@ interface StateShowJson {
 
 function treeToShowJson(node: CdkdStateStackTreeWithLock): StateShowJson {
   return {
-    state: node.state,
+    // go-to-k/cdkd#5064: never the id the stack's names derive from.
+    state: withStackInstanceIdWithheld(node.state),
     lock: node.lock,
     children: node.children.map(treeToShowJson),
   };
@@ -4620,10 +4623,11 @@ async function refreshObservedForStack(
       logger
     );
 
-    // Refresh in parallel under withStackName so any provider-internal
-    // resource-name resolution sees the right stack (mirrors the deploy
-    // engine's enclosing scope).
-    await withStackName(stackName, async () => {
+    // Refresh in parallel under the stack's naming scope so any
+    // provider-internal resource-name resolution sees the right stack and
+    // lifetime (go-to-k/cdkd#5064; mirrors the deploy engine's scope).
+    const stackInstanceId = stackInstanceIdOf(state, displayStackName(stackName));
+    await withStackScope(nameScopeOf(stackName, stackInstanceId, state), async () => {
       // go-to-k/cdkd#3869: each read runs under the record's printing bag, as
       // `cdkd drift` does: a provider's debug line, and a failed read's AWS
       // error, name the physical id, which for a resource named from a secret
