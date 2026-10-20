@@ -70,10 +70,12 @@ export function supersededHolderOf(
   entry: SupersededResourceRecord,
   resources: Record<string, ResourceState>
 ): ResourceState | undefined {
-  return Object.values(resources).find(
+  const holders = Object.values(resources).filter(
     (record) =>
       typeof record === 'object' && record !== null && record.physicalId === entry.state.physicalId
   );
+  // A same-type holder first: it is the one that took the copy back.
+  return holders.find((record) => record.resourceType === entry.state.resourceType) ?? holders[0];
 }
 
 /**

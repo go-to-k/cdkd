@@ -21,6 +21,7 @@ import {
   holdsSupersededResources,
   isInUseRefusal,
   isSupersededHeld,
+  supersededHolderOf,
   retryWhileInUse,
   supersededInUseRetry,
   supersededResourcesOf,
@@ -449,6 +450,20 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
         } as unknown as StackState)
       )
     ).toHaveLength(1);
+  });
+
+  it('prefers a same-type holder, so no other-type warning fires beside it', () => {
+    const entry: SupersededResourceRecord = {
+      logicalId: 'Tg',
+      supersededAt: 1,
+      state: record(OLD_TG, TG, {}),
+    };
+    expect(
+      supersededHolderOf(entry, {
+        A: record(OLD_TG, 'AWS::Other::Thing', {}),
+        B: record(OLD_TG, TG, {}),
+      })?.resourceType
+    ).toBe(TG);
   });
 
   it('an entry is held by a record of ANY type naming its id', () => {
