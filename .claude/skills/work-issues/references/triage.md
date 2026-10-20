@@ -108,10 +108,11 @@ asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechan
 "premise on an unmerged branch". A fix choosing accept / refuse / replace /
 update has a CFn premise: `aws cloudformation describe-type --type RESOURCE
 --type-name <T> --query Schema` (`required`, `createOnlyProperties`), else a
-throwaway change set (delete its stack after), BEFORE design (#3769). cdkd
+throwaway change set (delete its stack after), BEFORE design (#3769): a removal
+ALONE and BESIDE another change, reads polled for minutes (lag reads as "CFn
+ignores it"), an ORDER measured, never reasoned (#5107, #5109, #5119). cdkd
 may refuse what CFn or the AWS CDK CLI rejects, never what they accept; MEASURE
-a CDK CLI premise by running the inputs through its parser from `node_modules`
-— one read off its source refused more (#2221).
+a CDK CLI premise by running its parser from `node_modules` (#2221).
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a real-AWS re-measure, a sibling repo's fix and

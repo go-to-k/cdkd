@@ -131,7 +131,8 @@ parser and fails CLOSED on anything unmodelled.
 
 You may fan out **one subagent per lane** (disjoint files): give each its
 tree, allowed files, "do NOT touch other lanes' files; STOP and report
-if the fix needs a forbidden one", and **the REPORT SHAPE — the FINAL report IS
+if the fix needs a forbidden one or meets a design branch (options plus what
+CFn does, never a lenient pick of its own; #5107, #5109)", and **the REPORT SHAPE — the FINAL report IS
 the deliverable**, since a lane's tool output never reaches you. **Name the
 parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on to its next step unless the
@@ -150,7 +151,9 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`).
-  A turn ended with nothing in the background is final.
+  A turn ended with nothing in the background is final; a MERGE-READY one
+  leaves nothing there, CI watchers included: the parent's integ takes that
+  tree next (#5109, #5114).
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
