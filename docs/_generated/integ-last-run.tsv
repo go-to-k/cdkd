@@ -8,7 +8,7 @@
 access-key-cloudmap-fix-forward-orphan	2026-10-15T19:20:59Z	PASS	216	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 acm-certificate	2026-10-20T05:07:15Z	PASS	115	verify.sh	rc ok, orph clean; #5105 acm/lambda tail thrown errors
 agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 removed Evaluator Description kept
-alb	2026-10-17T17:48:47Z	PASS	620	verify.sh	PR #5034 (#1160) 842d0d385; listener server.enabled kept false, Phase 2.5 listener back to SDK provider same ARN; destroy 21 deleted 0 errors, orph clean
+alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
 apigateway	2026-10-19T16:19:45Z	PASS	120	verify.sh	PR #5106 (#1160) Account CloudWatchRoleArn removal clears role; pre-fix probe RED at removal assertion; us-east-1; rc ok, orph clean
