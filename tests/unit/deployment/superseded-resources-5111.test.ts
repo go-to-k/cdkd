@@ -401,10 +401,21 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     // Another record names the same id (any type): a later run must never
     // delete it.
     state.resources['Other'] = record(OLD_TG, 'AWS::Other::Thing', {});
+    supersededInUseRetry.attempts = 1;
+    // The listener never moves, so the deploy's own retry fails too.
+    vi.mocked(provider.update).mockImplementation(async (_l: string, physicalId: string) => ({
+      physicalId,
+      wasReplaced: false,
+      attributes: {},
+    }));
 
     await run(state, changes).catch(() => undefined);
 
     expect(saved.some((s) => s.supersededResources !== undefined)).toBe(false);
+    // Not recorded at all, so the warning does not claim state keeps it.
+    const warned = printed.warn.filter((l) => l.includes(`Failed to delete old resource Tg`));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).not.toContain('cdkd keeps it in state');
   });
 
   it('an entry is held by a record of ANY type naming its id', () => {
