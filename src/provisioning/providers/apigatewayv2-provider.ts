@@ -61,10 +61,14 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import {
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+import { withRemovalDefaults } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -271,6 +275,19 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         'IdentityValidationExpression',
       ]),
     ],
+  ]);
+
+  /**
+   * Clear values for a property the template REMOVED (issue #1160). A removed
+   * Authorizer `IdentitySource` is CLEARED by CloudFormation (real
+   * CloudFormation A/B, #1160): on a REQUEST authorizer it reads back as none,
+   * and on a JWT authorizer, or a REQUEST one with caching on, the update fails
+   * because AWS requires it. `UpdateAuthorizer` with `IdentitySource: []` gives
+   * exactly that (direct probe, same A/B); an omitted member keeps the value.
+   * Every other removal in this provider is decided in its `update*` method.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    ['AWS::ApiGatewayV2::Authorizer', new Map<string, unknown>([['IdentitySource', []]])],
   ]);
 
   /**
@@ -522,7 +539,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           properties,
           previousProperties,
           log,
-          context?.desiredFromAwsReadback === true
+          context?.desiredFromAwsReadback === true,
+          context
         );
       case 'AWS::ApiGatewayV2::Route':
         return this.updateRoute(
@@ -541,7 +559,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          log
+          log,
+          context
         );
       default:
         throw new ResourceUpdateNotSupportedError(
@@ -2007,9 +2026,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Version = properties['Version'] as string;
       changed = true;
     }
-    // RouteSelectionExpression is NOT cleared: required (and immutable in
-    // practice) for WebSocket APIs, fixed for HTTP APIs, so removal is not a
-    // valid template transition — pass it through as a plain change only.
+    // RouteSelectionExpression: CloudFormation KEEPS the live value when it is
+    // removed, alone or beside another change (real CloudFormation A/B on a
+    // WebSocket API, #1160), so removal sends nothing. Pass through on change only.
     if (
       properties['RouteSelectionExpression'] !== undefined &&
       properties['RouteSelectionExpression'] !== previousProperties['RouteSelectionExpression']
@@ -2202,9 +2221,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
-    // Description is NOT cleared: UpdateStage silently ignores an empty-string
-    // reset (live-probed #1160 — unlike UpdateApi, the value persists), so the
-    // API cannot clear it and CloudFormation faces the same constraint.
+    // Description: CloudFormation KEEPS the live value when it is removed, alone
+    // or beside another change (real CloudFormation A/B, #1160), so removal sends
+    // nothing. (UpdateStage also ignores an empty-string reset, live-probed #1160.)
     if (
       properties['Description'] !== undefined &&
       properties['Description'] !== previousProperties['Description']
@@ -2236,9 +2255,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.StageVariables = properties['StageVariables'] as Record<string, string>;
       changed = true;
     }
-    // DefaultRouteSettings is NOT cleared: UpdateStage merges it and offers no
-    // whole-block reset (the throttle sub-fields have no account-default
-    // sentinel), so removal is left to match the CFn/API constraint (#1160).
+    // DefaultRouteSettings: CloudFormation KEEPS the live block when it is
+    // removed, alone or beside another change (real CloudFormation A/B, #1160),
+    // so removal sends nothing. Pass through on change only.
     if (
       properties['DefaultRouteSettings'] !== undefined &&
       !this.deepEqual(
@@ -2372,7 +2391,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
-    restoreFromAws = false
+    restoreFromAws = false,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -2434,11 +2454,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.TimeoutInMillis = properties['TimeoutInMillis'] as number;
       changed = true;
     }
-    // IntegrationType / IntegrationUri / IntegrationMethod /
-    // PayloadFormatVersion above are required per integration type — the API
-    // rejects an empty reset for them, so removal is not a valid transition and
-    // they pass through as plain changes only. TimeoutInMillis is likewise left
-    // alone (its default is integration-type-dependent with no clean reset).
+    // IntegrationUri / IntegrationMethod / PayloadFormatVersion /
+    // TimeoutInMillis above: CloudFormation KEEPS the live value when each is
+    // removed, alone or beside another change (real CloudFormation A/B on
+    // HTTP_PROXY, Lambda AWS_PROXY and WebSocket MOCK integrations, #1160), so
+    // removal sends nothing. They pass through on change only.
     // RequestParameters merges per key on the AWS side. On a deploy CloudFormation
     // KEEPS a key that is dropped from the template (real CloudFormation A/B,
     // #5004), so a removed key (or the whole block) sends nothing and stays live.
@@ -2477,11 +2497,12 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // nowhere and delivered nowhere, so a template using any of them lost it
     // silently. They pass through ON CHANGE ONLY.
     //
-    // Absent-field REMOVAL is deliberately NOT backfilled here: each would need
-    // its own live CloudFormation A/B, and a guessed reset would turn a silent
-    // drop into a silent OVERWRITE of a live integration. `RequestTemplates` and
-    // `ResponseParameters` stay whole-value pass-throughs (an empty string is a
-    // legitimate mapping-template body, so no per-key `''` sentinel is safe).
+    // Removal: CloudFormation KEEPS the live value of ConnectionId /
+    // ConnectionType (on a VPC_LINK integration), ContentHandlingStrategy,
+    // CredentialsArn, PassthroughBehavior, RequestTemplates, ResponseParameters,
+    // TemplateSelectionExpression and TlsConfig, alone or beside another change
+    // (real CloudFormation A/B, #1160), so a removed one sends nothing.
+    // IntegrationSubtype is the exception, handled below.
     if (
       properties['ConnectionId'] != null &&
       properties['ConnectionId'] !== previousProperties['ConnectionId']
@@ -2534,11 +2555,83 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     //   RequestParameters + IntegrationSubtype   -> OK
     //
     // The PREVIOUS side is the fallback because the constraint is about the
-    // LIVE integration, which stays a service integration even when the
-    // desired template drops the subtype (removal being out of scope here) —
-    // sourcing this only from the desired bag would send a discriminator-less
-    // patch for exactly that template and fail the deploy.
-    if (input.IntegrationSubtype === undefined) {
+    // LIVE integration, which stays a service integration while nothing turns it
+    // into a URI-based one.
+    //
+    // A REMOVED IntegrationSubtype follows CloudFormation (real CloudFormation
+    // A/B, #1160): removed alone or beside another change, its update FAILS with
+    // `Invalid integration URI specified`, and so does every UpdateIntegration
+    // without the subtype on a service integration, even an empty one (direct
+    // probe, same A/B). Removed in an update that also declares an
+    // IntegrationUri, it succeeds and the integration becomes URI-based. So a
+    // deploy refuses the first shape before any call, and for the second sends
+    // the update WITHOUT the live subtype (and with the declared URI, even when
+    // it equals the previous one). A rollback replay (`replayingState`) whose
+    // record declares an IntegrationUri restores that URI-based shape the same
+    // way; one whose record has no URI cannot be edited by the user, so it keeps
+    // the live subtype and warns. `cdkd drift --revert` names no removed
+    // property, so it keeps the fallback.
+    const subtypeRemoved =
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has('IntegrationSubtype')
+        : previousProperties['IntegrationSubtype'] != null &&
+          properties['IntegrationSubtype'] == null;
+    // Set when a rollback replay keeps a subtype its state record omits: what
+    // stays live is recorded, or the next deploy's previous side loses it and
+    // a later update would send no subtype (AWS refuses that).
+    let effectiveProperties: Record<string, unknown> | undefined;
+    if (
+      subtypeRemoved &&
+      (context?.replayingState !== true || properties['IntegrationUri'] != null)
+    ) {
+      if (properties['IntegrationUri'] == null) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            safeMsg`${logicalId} (${resourceType}): the previous deploy recorded IntegrationSubtype and this template does not declare it. CloudFormation fails that update (AWS refuses a service integration without its subtype: Invalid integration URI specified). Keep IntegrationSubtype declared, or declare an IntegrationUri to turn this into a URI-based integration. The integration was not updated.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      input.IntegrationUri = properties['IntegrationUri'] as string;
+      changed = true;
+    } else if (subtypeRemoved) {
+      // A rollback replay whose record has neither the subtype nor a URI. The
+      // PREVIOUS bag is not proof the subtype is live: on the revert-failed arm
+      // it is the FAILED attempt's bag, which never applied, and the context
+      // does not tell the two arms apart. So AWS is asked: only a subtype the
+      // integration really has is re-sent, recorded and warned about.
+      let liveSubtype: string | undefined;
+      try {
+        liveSubtype = (
+          await this.getClient().send(
+            new GetIntegrationCommand({ ApiId: apiId, IntegrationId: physicalId })
+          )
+        ).IntegrationSubtype;
+      } catch (error) {
+        const cause = error instanceof Error ? error : undefined;
+        throw this.wrapMaskedError(
+          log,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to read API Gateway V2 Integration ${logicalId} before restoring it: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+      }
+      if (liveSubtype) {
+        input.IntegrationSubtype = liveSubtype;
+        effectiveProperties = { ...properties, IntegrationSubtype: liveSubtype };
+        log.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored does not declare IntegrationSubtype; the rollback keeps the integration's current subtype, because AWS refuses a service integration without it.`
+        );
+      }
+    } else if (input.IntegrationSubtype === undefined) {
       const liveSubtype =
         properties['IntegrationSubtype'] ?? previousProperties['IntegrationSubtype'];
       if (liveSubtype !== undefined) input.IntegrationSubtype = liveSubtype as string;
@@ -2586,19 +2679,36 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.TlsConfig = properties['TlsConfig'] as TlsConfigInput;
       changed = true;
     }
+    if (changed && input.IntegrationSubtype !== undefined) {
+      input.RequestParameters = this.serviceIntegrationParameters(
+        logicalId,
+        physicalId,
+        resourceType,
+        input.RequestParameters ??
+          (properties['RequestParameters'] as Record<string, string> | undefined)
+      );
+    }
 
     if (!changed) {
       log.debug(
         `No mutable Integration fields changed for ${logicalId}; skipping UpdateIntegration`
       );
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(effectiveProperties && { effectiveProperties }),
+      };
     }
 
     log.debug(`Updating API Gateway V2 Integration ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(new UpdateIntegrationCommand(input));
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(effectiveProperties && { effectiveProperties }),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
@@ -2657,9 +2767,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const input: UpdateRouteCommandInput = { ApiId: apiId, RouteId: physicalId };
     let changed = false;
 
-    // RouteKey and Target are required in practice (a route cannot exist
-    // without a key, and a non-Mock route needs a target) — pass through as
-    // plain changes only.
+    // RouteKey is required (a route cannot exist without a key), so it is never
+    // removed. Target: CloudFormation KEEPS the live target when it is removed,
+    // alone or beside another change (real CloudFormation A/B, #1160), so
+    // removal sends nothing. Both pass through on change only.
     if (
       properties['RouteKey'] !== undefined &&
       properties['RouteKey'] !== previousProperties['RouteKey']
@@ -2770,11 +2881,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     const droppedRequestParameterKeys = restoreFromAws
       ? this.droppedKeys(properties['RequestParameters'], previousProperties['RequestParameters'])
       : [];
-    // ModelSelectionExpression / RouteResponseSelectionExpression are
-    // WebSocket-only selection expressions. Pass-through on change only, same
-    // treatment as the API-level RouteSelectionExpression above: removal is not
-    // a valid transition for a WebSocket route and no reset sentinel is
-    // documented.
+    // ModelSelectionExpression / RouteResponseSelectionExpression: CloudFormation
+    // KEEPS the live value when they are removed, alone or beside another change
+    // (real CloudFormation A/B on a WebSocket route, #1160), so removal sends
+    // nothing. Pass through on change only.
     if (
       properties['ModelSelectionExpression'] !== undefined &&
       properties['ModelSelectionExpression'] !== previousProperties['ModelSelectionExpression']
@@ -2856,8 +2966,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // A removed IdentitySource arrives as its `removalDefaults` clear value,
+    // `[]` (the caller injects it; this covers a direct call).
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
       throw new ProvisioningError(
@@ -2894,6 +3014,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.Name = properties['Name'] as string;
       changed = true;
     }
+    // IdentitySource: CloudFormation CLEARS it on removal (real CloudFormation
+    // A/B, #1160), so a removed one arrives here as its `removalDefaults` value,
+    // `[]`, and is sent like any change. AWS then refuses it for a JWT
+    // authorizer or a cached REQUEST one, as it does for CloudFormation.
     if (properties['IdentitySource'] !== undefined) {
       const next = Array.isArray(properties['IdentitySource'])
         ? (properties['IdentitySource'] as string[])
@@ -2908,6 +3032,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         changed = true;
       }
     }
+    // JwtConfiguration: CloudFormation KEEPS the live value when it is removed,
+    // alone or beside another change (real CloudFormation A/B, #1160), so
+    // removal sends nothing. Pass through on change only.
     if (
       properties['JwtConfiguration'] !== undefined &&
       !this.deepEqual(properties['JwtConfiguration'], previousProperties['JwtConfiguration'])
@@ -2917,9 +3044,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       ] as UpdateAuthorizerCommandInput['JwtConfiguration'];
       changed = true;
     }
-    // AuthorizerUri is required for REQUEST authorizers (a JWT authorizer has
-    // none) — removal implies a type change, not a clean reset, so it passes
-    // through as a plain change only.
+    // AuthorizerUri: CloudFormation KEEPS the live value when it is removed,
+    // alone or beside another change (real CloudFormation A/B on a REQUEST
+    // authorizer, #1160), so removal sends nothing. Pass through on change only.
     if (
       properties['AuthorizerUri'] !== undefined &&
       properties['AuthorizerUri'] !== previousProperties['AuthorizerUri']
@@ -2959,9 +3086,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       input.AuthorizerResultTtlInSeconds = properties['AuthorizerResultTtlInSeconds'] as number;
       changed = true;
     }
-    // EnableSimpleResponses is REQUEST-authorizer-only — UpdateAuthorizer
-    // rejects it (even `false`) on a JWT authorizer, so it cannot be blindly
-    // reset; pass through as a plain change only (#1160).
+    // EnableSimpleResponses: CloudFormation KEEPS the live value when it is
+    // removed, alone or beside another change (real CloudFormation A/B, #1160),
+    // so removal sends nothing. Pass through on change only.
     if (
       properties['EnableSimpleResponses'] !== undefined &&
       properties['EnableSimpleResponses'] !== previousProperties['EnableSimpleResponses']
@@ -3011,6 +3138,52 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
+   * The `RequestParameters` an `UpdateIntegration` carrying `IntegrationSubtype`
+   * sends: the DECLARED map, as CloudFormation does. AWS re-validates the
+   * service operation's required parameter mapping against the REQUEST on
+   * every such call (direct probe, #1160: `Description` + subtype fails with
+   * "requires enabling passthrough, or defining all of the following
+   * parameters in the parameter mapping: [Detail, DetailType, Source]"), so a
+   * call that changed something else must re-send the unchanged map.
+   *
+   * Nothing is carried from the previous record. Real CloudFormation A/B
+   * (#1160): beside a `Description` change, dropping one required key, or the
+   * whole map, FAILS the update with that same error, so a template without
+   * the full map gets AWS's refusal here too.
+   *
+   * A declared value that is a `{{resolve:...}}` reference or the `***` mask
+   * (a state record handed back by a rollback replay) REFUSES instead of being
+   * sent, naming only the keys: it would overwrite the live mapping with the
+   * stand-in. A deploy's declared bag is resolved, so it never trips this.
+   */
+  private serviceIntegrationParameters(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    sent: Record<string, string> | undefined
+  ): Record<string, string> | undefined {
+    if (sent == null) return undefined;
+    const redacted = Object.keys(sent).filter((key) => {
+      const value: unknown = sent[key];
+      return (
+        typeof value === 'string' &&
+        (dynamicReferenceTokens(value).length > 0 || value === SECRET_MASK)
+      );
+    });
+    if (redacted.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): this update must re-send the service integration's RequestParameters (AWS re-validates the full mapping beside IntegrationSubtype), but the value of ${redacted.join(', ')} is a redacted secret reference that cdkd cannot send. The integration was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return sent;
+  }
+
+  /**
    * Resolve an optional update field so that a property REMOVED from the
    * template is reset to a fixed value (issue #1160).
    *
@@ -3029,8 +3202,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * RequestParameters, Authorizer AuthorizerCredentialsArn /
    * AuthorizerPayloadFormatVersion / AuthorizerResultTtlInSeconds /
    * IdentityValidationExpression) is passed through on change only and sends
-   * nothing on removal. Fields required per protocol/authorizer type are never
-   * cleared.
+   * nothing on removal, as is the KEEP set the #1160 A/B measured for every
+   * other optional property. Authorizer `IdentitySource` (CFn clears it) is
+   * declared in `removalDefaults`; a removed Integration `IntegrationSubtype`
+   * is refused or dropped in `updateIntegration`.
    *
    * Returns `{ changed, value }`: `changed` is true only when the resolved
    * value actually differs from the previous one (so a no-op field never

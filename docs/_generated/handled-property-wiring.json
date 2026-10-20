@@ -2040,7 +2040,10 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in updateIntegration()",
+        "withRemovalDefaults(...) in updateAuthorizer()"
+      ]
     },
     {
       "file": "appsync-provider.ts",

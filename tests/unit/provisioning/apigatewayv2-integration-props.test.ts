@@ -341,14 +341,17 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
       });
     });
 
-    it('sources the re-sent IntegrationSubtype from the PREVIOUS side when the template drops it', async () => {
+    it('sources the re-sent IntegrationSubtype from the LIVE integration on a rollback replay that drops it', async () => {
+      // GetIntegration (the live read), then UpdateIntegration.
+      mockSend.mockResolvedValueOnce({ IntegrationSubtype: 'EventBridge-PutEvents' });
       mockSend.mockResolvedValueOnce({});
 
       // The constraint is about the LIVE integration, which stays a service
-      // integration even when the desired template drops the subtype (removal
-      // being out of scope). Reading the discriminator only from the desired
-      // bag would send a subtype-less patch for exactly this template and fail
-      // the deploy with `Invalid integration URI specified`.
+      // integration. A forward deploy that removes the subtype is refused
+      // (CloudFormation fails it, #1160 A/B); a rollback replay cannot edit
+      // its state record, so it reads the discriminator from the PREVIOUS bag.
+      // Reading it only from the desired bag would send a subtype-less patch
+      // and fail with `Invalid integration URI specified`.
       await provider.update(
         'L',
         INTEGRATION_ID,
@@ -358,10 +361,11 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
           ApiId: API_ID,
           IntegrationSubtype: 'EventBridge-PutEvents',
           RequestParameters: { Source: 'cdkd.integ', DetailType: 'before' },
-        }
+        },
+        { removedProperties: new Set(['IntegrationSubtype']), replayingState: true }
       );
 
-      expect(mockSend.mock.calls[0]?.[0].input).toMatchObject({
+      expect(mockSend.mock.calls[1]?.[0].input).toMatchObject({
         IntegrationSubtype: 'EventBridge-PutEvents',
       });
     });
@@ -414,17 +418,16 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('does NOT reset a backfilled property the template dropped', async () => {
-      // Deliberate scope decision, not an oversight: absent-field removal for
-      // this group needs its own live CloudFormation A/B (issue #1160). Until
-      // then a dropped field is a no-op, never a guessed reset value written
-      // over a live integration. This pins the decision so a later change to
-      // it is visible in the diff.
+    it('does NOT reset a backfilled property the template dropped (CFn KEEPS them, #1160 A/B)', async () => {
+      // Real CloudFormation A/B (#1160): CloudFormation keeps the live value of
+      // every backfilled property but IntegrationSubtype when it is removed, so
+      // a dropped one sends nothing. IntegrationSubtype stays declared here: its
+      // removal is refused (see the removal-semantics suite).
       await provider.update(
         'L',
         INTEGRATION_ID,
         INTEGRATION_TYPE,
-        { ApiId: API_ID },
+        { ApiId: API_ID, IntegrationSubtype: backfilled.IntegrationSubtype },
         { ApiId: API_ID, ...backfilled }
       );
 
