@@ -198,6 +198,53 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
   });
 
+  // A row cdkd cannot read may still name a live resource: it never makes the
+  // record "empty", and the destroy that cannot act on it keeps the state.
+  it.each([
+    ['a malformed row', [{ logicalId: 'Tg' }]],
+    ['a non-list field', 'garbage'],
+  ])('a record holding only %s keeps its state, as a skip', async (_label, rows) => {
+    const state = makeState({}, { supersededResources: rows as never });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+      /1 superseded resource entry in state could not be read/
+    );
+  });
+
+  it('deletes a well-formed entry beside a malformed one, and keeps the malformed one recorded', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const bad = { logicalId: 'Tg' };
+    const state = makeState({}, { supersededResources: [entry, bad] as never });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockProviderDelete.mock.calls.map((c) => c[1])).toEqual([OLD_TG]);
+    expect(result.deletedCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    const last = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    expect(last.supersededResources).toEqual([bad]);
+  });
+
+  it('an empty record that gained only a malformed row under the lock is not deleted', async () => {
+    const ctx = makeCtx();
+    (ctx.stateBackend as unknown as { getState: ReturnType<typeof vi.fn> }).getState = vi.fn(
+      async () => ({
+        state: makeState({}, { supersededResources: [{ logicalId: 'Tg' }] as never }),
+        etag: '"e"',
+      })
+    );
+
+    await expect(runDestroyForStack('TestStack', makeState({}), ctx)).rejects.toThrow(
+      /another cdkd process wrote to it/
+    );
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
   it('does not delete twice an entry a record holds again (a rollback took it back)', async () => {
     mockProviderDelete.mockResolvedValue(undefined);
     const state = makeState(

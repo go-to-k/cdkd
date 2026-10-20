@@ -146,6 +146,8 @@ import {
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
   deleteSupersededEntry,
+  holdsSupersededResources,
+  isSupersededResourceRecord,
   supersededHeldByOtherTypeWarning,
   supersededHolderOf,
   supersededResourcesOf,
@@ -994,7 +996,8 @@ async function destroyStackInRegion(
   // first-deploy-fails flow that produces this shape.
   const orphanCount = (state.orphans ?? []).length;
   // go-to-k/cdkd#5111: a replacement's old resource still to delete keeps the
-  // record from being empty, as an orphan does.
+  // record from being empty, as an orphan does -- and so does a row cdkd
+  // cannot read, which may name one (`holdsSupersededResources`).
   const supersededCount = supersededResourcesOf(state).length;
   // AT THE TOP OF THE DESTROY, and REFUSE rather than repair (issue #3207).
   //
@@ -1037,7 +1040,7 @@ async function destroyStackInRegion(
   if (
     resourceCount === 0 &&
     orphanCount === 0 &&
-    supersededCount === 0 &&
+    !holdsSupersededResources(state) &&
     journaledOrphans.count === 0
   ) {
     // Issue #2171: this used to delete the state record with NO lock at all,
@@ -1149,7 +1152,7 @@ async function destroyStackInRegion(
         !recheck ||
         (recheckResources === 0 &&
           recheckOrphans === 0 &&
-          supersededResourcesOf(recheck.state).length === 0);
+          !holdsSupersededResources(recheck.state));
       if (!stillEmpty) {
         // A concurrent writer populated the record between the caller's read
         // and this lock. Deleting now would drop resources cdkd tracks, so
@@ -2852,6 +2855,24 @@ async function destroyStackInRegion(
             'State preserved: it stays recorded, and a re-run of the destroy retries it.'
         );
       });
+    }
+
+    // A superseded row cdkd cannot read is carried, never acted on, and may
+    // name a live resource: a skip, so the state that holds it is kept.
+    const unreadableSuperseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.filter((row) => !isSupersededResourceRecord(row)).length
+      : holdsSupersededResources(state)
+        ? 1
+        : 0;
+    if (unreadableSuperseded > 0) {
+      result.skippedCount += unreadableSuperseded;
+      // The summary's skip hints name this record (`state show` / `state orphan`).
+      skippedStateTargets.add(stackName);
+      logger.warn(
+        `  ⚠ ${unreadableSuperseded} superseded resource entr${unreadableSuperseded === 1 ? 'y' : 'ies'} ` +
+          `in state could not be read, so nothing was deleted for ${unreadableSuperseded === 1 ? 'it' : 'them'}. ` +
+          'State preserved: it may name a resource still in AWS.'
+      );
     }
 
     // Carry the graceful-interrupt outcome (issue #816) into the result so the
