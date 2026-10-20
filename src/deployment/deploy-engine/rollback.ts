@@ -112,6 +112,7 @@ export interface RollbackDeps {
   resetResumedCreates: () => void;
   absentJournalVersionPurge: () => DeployEngine['absentJournalVersionPurge'];
   interrupted: () => DeployEngine['interrupted'];
+  userInterrupted: () => DeployEngine['userInterrupted'];
   noEchoDeps: () => NoEchoDeps;
   recordEvent: DeployEngine['recordEvent'];
   crossStackReadKeyNormalizer: DeployEngine['crossStackReadKeyNormalizer'];
@@ -444,6 +445,11 @@ export async function performRollback(
    * row is not settled).
    */
   skipped: number;
+  /**
+   * The user's Ctrl-C stopped the replay part-way: the caller keeps the
+   * journal segment, which `cdkd rollback` resumes.
+   */
+  interrupted: boolean;
   orphaned: StackOrphanRecord[];
   /** go-to-k/cdkd#5064: the CREATEs it took back, whose generations retire. */
   rolledBackCreates: RolledBackCreate[];
@@ -565,6 +571,10 @@ export async function performRollback(
           replayRollback(completedOperations, stateResources, stackName, ctx, {
             inlinePolicyWriters,
             failedOperations,
+            // Only the user's Ctrl-C (go-to-k/cdkd#5118): the sibling failure
+            // that started this rollback holds the engine's other flag. It
+            // also ends a name-release wait or a re-create retry here.
+            isInterrupted: () => deps.userInterrupted(),
             onSuperseded: (entry) => addSuperseded(supersededHost, entry),
             onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
           })
@@ -586,6 +596,7 @@ export async function performRollback(
     // which the executor does not count; the scope does.
     warnings: result.warnings + run.warnings + (failed?.warnings ?? 0),
     skipped: result.skipped + (failed?.skipped ?? 0),
+    interrupted: result.interrupted,
     orphaned: [...(failed?.orphaned ?? []), ...result.orphaned],
     rolledBackCreates: [...(failed?.rolledBackCreates ?? []), ...result.rolledBackCreates],
     superseded: supersededHost.supersededResources ?? [],

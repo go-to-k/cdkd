@@ -175,6 +175,9 @@ describe('DeployEngine per-call deps helpers read per-deploy state LIVE', () => 
 
     engine.interrupted = true;
     expect(deps.interrupted()).toBe(true);
+
+    engine.userInterrupted = true;
+    expect(deps.userInterrupted()).toBe(true);
   });
 
   it('outputsDeps forwards buildResolverContext and noEchoPositionSources bound to the CURRENT engine, not a snapshot', () => {

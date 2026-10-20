@@ -942,6 +942,7 @@ export class DeployEngine {
       },
       absentJournalVersionPurge: () => this.absentJournalVersionPurge,
       interrupted: () => this.interrupted,
+      userInterrupted: () => this.userInterrupted,
       noEchoDeps: () => this.noEchoDeps(),
       recordEvent: (...args) => this.recordEvent(...args),
       crossStackReadKeyNormalizer: (...args) => this.crossStackReadKeyNormalizer(...args),

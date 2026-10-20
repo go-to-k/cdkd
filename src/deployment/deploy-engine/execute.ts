@@ -1172,7 +1172,11 @@ export async function executeDeployment(
       // A survivor warning (a retained new copy) is not a skip: its op WAS
       // reverted, and its event names the survivor.
       autoRollbackClean =
-        autoRollbackJournaled && rollbackResult.failures === 0 && rollbackResult.skipped === 0;
+        autoRollbackJournaled &&
+        rollbackResult.failures === 0 &&
+        rollbackResult.skipped === 0 &&
+        // A Ctrl-C left ops unreverted: the segment stays for `cdkd rollback`.
+        !rollbackResult.interrupted;
       if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
         // The kept segment also keeps the failed op's record, which the next
         // deploy's generic note (a plain `cdkd rollback`, which discards it)

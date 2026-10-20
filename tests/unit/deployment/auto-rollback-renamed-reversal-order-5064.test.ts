@@ -198,6 +198,8 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
         saveState,
         appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
         deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
       } as never,
       {
         acquireLockWithRetry: vi.fn().mockResolvedValue(true),
@@ -309,4 +311,56 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
       warned.some((w) => w.includes(NEW_ROLE) && w.includes('is NOT recorded'))
     ).toBe(true);
   });
+
+  // Review N-a: the user's Ctrl-C reaches the automatic rollback's replay (a
+  // DynamoDB name-release wait, a re-create retry, the next op). Fired through
+  // the SIGINT listener `deploy()` itself registers; the sibling failure that
+  // started the rollback does not stop it (the tests above run to the end).
+  it("a Ctrl-C during the rollback stops its replay, and keeps the new role recorded", async () => {
+    const engine = buildEngine();
+    const { template, saveState } = engine as unknown as {
+      template: CloudFormationTemplate;
+      saveState: ReturnType<typeof vi.fn>;
+    };
+    const before = new Set(process.listeners('SIGINT'));
+    const provider = (
+      engine as unknown as { providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } } }
+    ).providerRegistry.getProviderFor().provider;
+    const create = provider.create.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    provider.create.mockImplementation(async (...args: unknown[]) => {
+      const out = await create(...args);
+      // The rollback's re-create of the old role: the user presses Ctrl-C.
+      if (args[0] === 'Role' && calls.filter((c) => c === 'create Role').length === 2) {
+        const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
+        expect(registered).toHaveLength(1);
+        (registered[0] as () => void)();
+      }
+      return out;
+    });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow();
+
+    const rollback = calls.slice(calls.indexOf('create Fail') + 1);
+    expect(rollback).toEqual(['create Role']);
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.supersededResources?.map((e) => e.state.physicalId)).toEqual([NEW_ROLE]);
+    // Ops were left unreverted: the journal stays for `cdkd rollback`.
+    const backend = (engine as unknown as { stateBackend: Record<string, ReturnType<typeof vi.fn>> })
+      .stateBackend;
+    expect(backend['deleteRollbackJournal']).not.toHaveBeenCalled();
+    expect(backend['reduceRollbackJournalToFailedOperations']).not.toHaveBeenCalled();
+    expect(backend['popRollbackJournalSegment']).not.toHaveBeenCalled();
+  });
+
+  it('a clean automatic rollback still settles its journal (control)', async () => {
+    const engine = buildEngine();
+    const { template } = engine as unknown as { template: CloudFormationTemplate };
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+    const backend = (engine as unknown as { stateBackend: Record<string, ReturnType<typeof vi.fn>> })
+      .stateBackend;
+    // The completed ops' segment is settled.
+    const settled = ['deleteRollbackJournal', 'reduceRollbackJournalToFailedOperations', 'popRollbackJournalSegment']
+      .filter((m) => backend[m]!.mock.calls.length > 0);
+    expect(settled).not.toEqual([]);
+  });
 });
+
