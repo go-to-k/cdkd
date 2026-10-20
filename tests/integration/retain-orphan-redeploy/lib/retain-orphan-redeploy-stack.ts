@@ -79,9 +79,8 @@ export class RetainOrphanRedeployStack extends cdk.Stack {
  * delete. The fixture's teardown deletes it by name, so it does not leak.
  *
  * `fixed` also declares `KeptTopic`, an un-named RETAIN topic (go-to-k/cdkd#5064).
- * A topic is a name-ADOPTING type, so the destroy records it in the stack's
- * `retained.json` (an IAM role is not recorded there: its create refuses a
- * taken name instead of adopting it). The redeploy after that destroy is a new
+ * The destroy records it and the RETAIN role in the stack's `retained.json`
+ * (every kept resource under a generated name). The redeploy after that destroy is a new
  * stack lifetime: verify.sh asserts it creates a NEW topic under a new name
  * rather than taking the kept one back, and warns once naming `cdkd import`.
  * Absent from `fail`, so the rollback still orphans exactly one resource.

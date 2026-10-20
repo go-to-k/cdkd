@@ -679,14 +679,29 @@ echo "    OK: adoption-arm state file is gone"
 
 # --- Phases 11b-11c: a NEW lifetime does not take kept resources back -------
 # go-to-k/cdkd#5064, CloudFormation parity. The destroy above kept the RETAIN
-# role and topic, recorded the topic (a name-ADOPTING type) in the stack's
-# `retained.json`, and deleted the record with its stack instance id. A
+# role and topic, recorded both in the stack's `retained.json` (every kept
+# resource under a generated name, except a name-adopting type made through
+# Cloud Control), and deleted the record with its stack instance id. A
 # redeploy is a FIRST deploy of a new lifetime: a new id, so new generated
 # names. Before #5064 it asked for the kept topic's name and took the topic
 # back (#4705's retained license). Now it must create a NEW topic and role
 # beside the kept ones, leave those untouched, and say once that an earlier
 # deployment kept a resource, naming `cdkd import`.
 echo "==> Phase 11b: redeploy the destroyed adoption stack (a new lifetime)"
+# The kept list the warning counts, read rather than assumed: exactly the
+# kept role and topic, by physical id.
+ADOPT_RETAINED="$(aws s3 cp "s3://${STATE_BUCKET}/cdkd/${ADOPT_STACK}/${REGION}/retained.json" -)" || {
+  echo "FAIL: phase 11's destroy wrote no retained.json for ${ADOPT_STACK}"
+  exit 1
+}
+KEPT_IDS="$(jq -r '[.resources[]?.physicalId] | sort | join(",")' <<<"${ADOPT_RETAINED}")"
+WANT_IDS="$(printf '%s\n%s\n' "${ADOPT_ROLE_NAME}" "${KEPT_TOPIC_ARN}" | sort | paste -sd, -)"
+if [ -z "${ADOPT_ROLE_NAME}" ] || [ -z "${KEPT_TOPIC_ARN}" ] || [ "${KEPT_IDS}" != "${WANT_IDS}" ]; then
+  echo "FAIL: retained.json lists '${KEPT_IDS}', expected the kept role and topic '${WANT_IDS}'"
+  exit 1
+fi
+KEPT_COUNT="$(jq '[.resources[]?] | length' <<<"${ADOPT_RETAINED}")"
+echo "    OK: retained.json lists the kept role and topic (${KEPT_COUNT})"
 ADOPT_KEPT_CREATED="$(aws iam get-role --role-name "${ADOPT_ROLE_NAME}" --query 'Role.CreateDate' --output text)"
 aws sns get-topic-attributes --topic-arn "${KEPT_TOPIC_ARN}" >/dev/null
 CDKD_TEST_ADOPT=fixed node "${LOCAL_DIST}" deploy "${ADOPT_STACK}" \
@@ -702,8 +717,9 @@ if ! grep -qF "adopt it with 'cdkd import'" "${ADOPT_LOG}"; then
   tail -40 "${ADOPT_LOG}"
   exit 1
 fi
-if ! grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | grep -qF "kept 1 resource(s) here"; then
-  echo "FAIL: the kept-resources warning is present but does not say exactly 1 resource was kept (wording drifted?):"
+WARN_LINES="$(grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}")"
+if ! grep -qF "kept ${KEPT_COUNT} resource(s) here" <<<"${WARN_LINES}"; then
+  echo "FAIL: the kept-resources warning is present but does not say exactly ${KEPT_COUNT} resource(s) were kept (wording drifted?):"
   grep -F "adopt it with 'cdkd import'" "${ADOPT_LOG}" | sed 's/^/  /'
   exit 1
 fi
