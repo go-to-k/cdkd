@@ -1358,10 +1358,29 @@ describe('cdkd import', () => {
         // the child from nothing, so only this read can carry it).
         mockSaveState.mockClear();
         mockStackInstanceIdForFirstWrite.mockClear();
+        // Its lifetime's retired generations and its superseded resources still
+        // to delete travel with the id (#5064 / #5111).
+        const retiredNameGenerations = { Gone: 3 };
+        const supersededResources = [
+          {
+            logicalId: 'Bucket',
+            supersededAt: 1,
+            state: { physicalId: 'old-b', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {} },
+          },
+        ];
         mockGetState.mockImplementation(async (name: string) =>
           name === 'P~Child'
             ? {
-                state: { version: 13, stackName: 'P~Child', resources: {}, outputs: {}, stackInstanceId: OTHER_ID, lastModified: 0 },
+                state: {
+                  version: 13,
+                  stackName: 'P~Child',
+                  resources: {},
+                  outputs: {},
+                  stackInstanceId: OTHER_ID,
+                  retiredNameGenerations,
+                  supersededResources,
+                  lastModified: 0,
+                },
                 etag: '"c"',
               }
             : null
@@ -1373,6 +1392,7 @@ describe('cdkd import', () => {
           expect.anything()
         );
         expect(saved('P~Child')?.stackInstanceId).toBe(OTHER_ID);
+        expect(saved('P~Child')).toMatchObject({ retiredNameGenerations, supersededResources });
 
         // A child with a LEGACY record stays legacy: no id is minted for it.
         const childRecord = (extra: Record<string, unknown>) => ({

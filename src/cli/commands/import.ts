@@ -4712,7 +4712,12 @@ async function importNestedStackChildrenRecursive(args: {
         : await stateBackend.stackInstanceIdForFirstWrite(childStackName, childRegion, {
             writeAhead: false,
           });
-      if (childStackInstanceId !== undefined) {
+      if (childPrior) {
+        // The id checked above, with the lifetime's retired name generations
+        // and the superseded resources still to delete (#5111): a rebuild
+        // from nothing would drop them, leaving live resources unrecorded.
+        Object.assign(childStackState, stackInstanceIdCarriedFrom(childPrior.state));
+      } else if (childStackInstanceId !== undefined) {
         childStackState.stackInstanceId = childStackInstanceId;
       }
 
