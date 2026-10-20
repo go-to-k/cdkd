@@ -47,6 +47,11 @@ import {
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true) drops the schema
  * registry again while keeping provisioned mode and batchSize 20, so the
  * removal must reach AWS as the `{ SchemaRegistryConfig: {} }` reset.
+ *
+ * DEFAULTS phase (the above plus CDKD_TEST_ESM_DEFAULTS=true, issue #1160)
+ * drops `batchSize`, the poller config and the `LoggingConfig` the UPDATE phase
+ * added. CloudFormation resets them (BatchSize 100, `LoggingConfig: {}`,
+ * `ProvisionedPollerConfig: {}`); cdkd used to leave all three live.
  */
 export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -54,6 +59,7 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = isUpdate && process.env.CDKD_TEST_REMOVAL === 'true';
+    const isDefaults = isRemoval && process.env.CDKD_TEST_ESM_DEFAULTS === 'true';
 
     const secret = new secretsmanager.Secret(this, 'KafkaAuth', {
       secretName: `${this.stackName}-kafka-auth`,
@@ -80,7 +86,8 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
         authenticationMethod: AuthenticationMethod.SASL_SCRAM_512_AUTH,
         startingPosition: lambda.StartingPosition.TRIM_HORIZON,
         batchSize: isUpdate ? 20 : 10,
-        ...(isUpdate && { provisionedPollerConfig: { minimumPollers: 1, maximumPollers: 2 } }),
+        ...(isUpdate &&
+          !isDefaults && { provisionedPollerConfig: { minimumPollers: 1, maximumPollers: 2 } }),
         ...(isUpdate &&
           !isRemoval && {
             schemaRegistryConfig: new ConfluentSchemaRegistry({
@@ -97,5 +104,14 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
         enabled: false,
       })
     );
+
+    // Issue #1160, on the L1: the L2 source has no logging prop, and it fills
+    // an omitted batchSize with 100, so only a deletion override drops it.
+    const cfnEsm = fn.node
+      .findAll()
+      .find((c): c is lambda.CfnEventSourceMapping => c instanceof lambda.CfnEventSourceMapping);
+    if (cfnEsm === undefined) throw new Error('no CfnEventSourceMapping under the function');
+    if (isDefaults) cfnEsm.addPropertyDeletionOverride('BatchSize');
+    else if (isUpdate) cfnEsm.addPropertyOverride('LoggingConfig', { SystemLogLevel: 'WARN' });
   }
 }

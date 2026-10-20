@@ -185,9 +185,10 @@ export function classifyEventSource(resp: {
  * The discriminating keys are identical in both shapes (`EventSourceArn` plus
  * the four `*EventSourceConfig` / `SelfManagedEventSource` markers), so this
  * is a thin type-narrowing adapter over the same logic. Used by `update()`'s
- * removal-clear path (issue #976) to gate source-kind-specific clears
+ * removal-clear path (issues #976, #1160) to gate source-kind-specific clears
  * (`FunctionResponseTypes` / `SourceAccessConfigurations` /
- * `MaximumBatchingWindowInSeconds`).
+ * `MaximumBatchingWindowInSeconds` / `BatchSize` / `LoggingConfig` /
+ * `ProvisionedPollerConfig`).
  */
 function classifyEventSourceFromProperties(properties: Record<string, unknown>): EventSourceKind {
   return classifyEventSource({
@@ -384,6 +385,19 @@ const KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT: ReadonlySet<EventSourceKind> = ne
  * restores in `update()`).
  */
 const KINDS_WITH_STREAM_NUMERICS: ReadonlySet<EventSourceKind> = new Set(['kinesis', 'dynamodb']);
+/**
+ * The `BatchSize` a mapping falls back to when the template drops it — what
+ * CloudFormation sends on that removal (issue #1160; see the restore in
+ * `update()`). `unknown` has no entry, so nothing is sent for it.
+ */
+const DEFAULT_BATCH_SIZE_BY_KIND: ReadonlyMap<EventSourceKind, number> = new Map([
+  ['sqs', 10],
+  ['kinesis', 100],
+  ['dynamodb', 100],
+  ['kafka', 100],
+  ['mq', 100],
+  ['documentdb', 100],
+]);
 
 /**
  * AWS Lambda Event Source Mapping Provider
@@ -1036,23 +1050,36 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // UpdateEventSourceMapping (the field only accepts whole-second
     // increments, so you must create a new mapping). We therefore restore
     // `0` on removal ONLY for the second-granular kinds; for the poll-based
-    // kinds we intentionally leave the field untouched (a template change
-    // that must restore 500 ms is a CFn-side replace, not an in-place clear).
+    // kinds the field is left untouched, as CloudFormation leaves it (issue
+    // #1160 CFn A/B: a self-managed Kafka mapping kept `3` after removal).
     if (
       wasSet('MaximumBatchingWindowInSeconds') &&
       KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT.has(prevKind)
     )
       updateParams.MaximumBatchingWindowInSeconds = 0;
 
-    // No documented clear sentinel — intentionally NOT cleared on removal:
-    //   - LoggingConfig: holds enum log-level fields, not a presence toggle;
-    //     AWS documents no `{}` reset. Removing it in the template is a
-    //     no-op against AWS (the last-applied log config survives).
-    //   - ProvisionedPollerConfig: no documented empty-object reset to
-    //     on-demand poller scaling. Left untouched on removal.
-    //   - BatchSize: source-dependent default (10 for SQS, 100 otherwise);
-    //     rarely removed, and a wrong default would change batching
-    //     behavior. Left untouched on removal (the last value survives).
+    // Issue #1160: a CloudFormation A/B (us-east-1, CloudTrail read of the
+    // UpdateEventSourceMapping request CloudFormation sent) measured what a
+    // removal resets, per source kind:
+    //   - BatchSize: the kind's default — `10` for SQS, `100` for DynamoDB
+    //     and self-managed Kafka (both measured); Kinesis / MQ / DocumentDB
+    //     take `100` per the Lambda API reference. An `unknown` kind sends
+    //     nothing, since no default can be named for it.
+    //   - LoggingConfig / ProvisionedPollerConfig on a Kafka mapping: `{}`,
+    //     which clears both (the readback shows neither afterwards). Measured
+    //     on self-managed Kafka; MSK shares the `kafka` kind and is assumed
+    //     to behave the same.
+    //   - ProvisionedPollerConfig on an SQS mapping: CloudFormation sends
+    //     nothing and the poller config stays, so cdkd leaves it too.
+    //   (LoggingConfig is Kafka-only: AWS refuses it on an SQS mapping.)
+    if (wasSet('BatchSize')) {
+      const defaultBatchSize = DEFAULT_BATCH_SIZE_BY_KIND.get(prevKind);
+      if (defaultBatchSize !== undefined) updateParams.BatchSize = defaultBatchSize;
+    }
+    if (prevKind === 'kafka') {
+      if (wasSet('LoggingConfig')) updateParams.LoggingConfig = {};
+      if (wasSet('ProvisionedPollerConfig')) updateParams.ProvisionedPollerConfig = {};
+    }
 
     const updateResp = await this.lambdaClient.send(
       new UpdateEventSourceMappingCommand(updateParams)

@@ -3,7 +3,8 @@
 # Base phase: asserts maxConcurrency + FilterCriteria reach AWS.
 # UPDATE phase (issue #976): removes FilterCriteria + ScalingConfig from the
 # template and asserts AWS actually CLEARS both (removal-on-UPDATE, not a
-# silent drop). Then destroys clean.
+# silent drop); it also removes BatchSize and asserts the SQS default 10
+# (issue #1160). Then destroys clean.
 
 set -euo pipefail
 
@@ -93,6 +94,12 @@ esm_filter_count() {
     --query 'length(EventSourceMappings[0].FilterCriteria.Filters || `[]`)' --output text 2>/dev/null
 }
 
+# Reads the ESM's BatchSize. Not silenced: a failed read aborts under `set -e`.
+esm_batch_size() {
+  aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
+    --query 'EventSourceMappings[0].BatchSize' --output text
+}
+
 echo "==> Deploy (base: FilterCriteria + ScalingConfig set)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -110,7 +117,14 @@ if [ "${FILTERS}" == "None" ] || [ "${FILTERS}" == "0" ] || [ -z "${FILTERS}" ];
 fi
 echo "    OK: base FilterCriteria has ${FILTERS} filter(s) on AWS"
 
-echo "==> Deploy (UPDATE: FilterCriteria + ScalingConfig removed from template)"
+BATCH=$(esm_batch_size)
+if [ "${BATCH}" != "5" ]; then
+  echo "FAIL: base BatchSize is '${BATCH}', expected '5'" >&2
+  exit 1
+fi
+echo "    OK: base BatchSize == 5 on AWS"
+
+echo "==> Deploy (UPDATE: FilterCriteria + ScalingConfig + BatchSize removed from template)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # Removal must CLEAR the cap on AWS — ScalingConfig.MaximumConcurrency gone.
@@ -128,6 +142,14 @@ if [ "${FILTERS_AFTER}" != "None" ] && [ "${FILTERS_AFTER}" != "0" ] && [ -n "${
   exit 1
 fi
 echo "    OK: FilterCriteria CLEARED on AWS after removal"
+
+# Removal must RESET BatchSize to the SQS default, as CloudFormation does.
+BATCH_AFTER=$(esm_batch_size)
+if [ "${BATCH_AFTER}" != "10" ]; then
+  echo "FAIL: after removal, BatchSize is '${BATCH_AFTER}', expected the SQS default '10' — removal silently dropped (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: BatchSize RESET to 10 on AWS after removal"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
