@@ -1681,7 +1681,9 @@ export class DeployEngine {
       logger: this.maskingRetryLogger(logicalId),
       isInterrupted: () => (interruptOnlyByUser === true ? this.userInterrupted : this.interrupted),
       onInterrupted: () =>
-        new InterruptedError(interruptOnlyByUser === true ? 'user' : (this.interruptCause ?? 'user')),
+        new InterruptedError(
+          interruptOnlyByUser === true ? 'user' : (this.interruptCause ?? 'user')
+        ),
     });
   }
 

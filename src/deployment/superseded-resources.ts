@@ -288,7 +288,11 @@ export function isInUseRefusal(error: unknown): boolean {
     if (typeof current !== 'object' || current === null) return false;
     const { name, message } = current as { name?: unknown; message?: unknown };
     if (typeof name === 'string' && IN_USE_ERROR_NAMES.has(name)) return true;
-    if (name === 'ConflictException' && typeof message === 'string' && IN_USE_CONFLICT.test(message)) {
+    if (
+      name === 'ConflictException' &&
+      typeof message === 'string' &&
+      IN_USE_CONFLICT.test(message)
+    ) {
       return true;
     }
     current = (current as { cause?: unknown }).cause;

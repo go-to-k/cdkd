@@ -327,7 +327,8 @@ async function replayRollbackUnbound(
   const failedOps = new Set<CompletedOperation>();
   const usedByFailedRevert = (target: CompletedOperation): boolean =>
     [...failedOps].some(
-      (failed) => failed !== target && revertReferences(failed, stateResources).has(target.logicalId)
+      (failed) =>
+        failed !== target && revertReferences(failed, stateResources).has(target.logicalId)
     );
   // The physical ids those pending deletes are to remove: still live, so a
   // reversal whose old id is one of them waits for its slot.

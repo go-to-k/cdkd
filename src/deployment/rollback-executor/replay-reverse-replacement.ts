@@ -1420,62 +1420,65 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         safeMsg`(${mask(current.physicalId)}) is deleted once the resources that reference it ` +
         `are reverted`
     );
-    deferral.defer(async () => {
-      let gone = false;
-      try {
-        // A record took the new resource's id while its delete waited (a
-        // reversal that re-created that id, or a name-idempotent create that
-        // returned it): cdkd never deletes an id a record names.
-        const holder = supersededHolderOf(superseded, stateResources);
-        if (holder !== undefined) {
+    deferral.defer(
+      async () => {
+        let gone = false;
+        try {
+          // A record took the new resource's id while its delete waited (a
+          // reversal that re-created that id, or a name-idempotent create that
+          // returned it): cdkd never deletes an id a record names.
+          const holder = supersededHolderOf(superseded, stateResources);
+          if (holder !== undefined) {
+            logger.warn(
+              safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} ` +
+                safeMsg`(${mask(current.physicalId)}): a record of this stack now holds its ` +
+                `physical id. Check it with cdkd drift.`
+            );
+            result.warnings++;
+            ctx.recordEvent?.({
+              eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+              stackName,
+              operation: 'UPDATE',
+              logicalId: op.logicalId,
+              resourceType: op.resourceType,
+              ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+              reason: mask(
+                `The old resource was re-created; the new one (${current.physicalId}) was not ` +
+                  `deleted because a record of this stack now holds its physical id.`
+              ),
+            });
+            gone = true;
+          } else {
+            gone = await finish();
+          }
+        } catch (finishError) {
           logger.warn(
-            safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} ` +
-              safeMsg`(${mask(current.physicalId)}): a record of this stack now holds its ` +
-              `physical id. Check it with cdkd drift.`
+            maskedFailureText(
+              `  Rollback failed for ${shownLogicalId(op.logicalId)} (UPDATE): `,
+              finishError,
+              mask
+            )
           );
-          result.warnings++;
+          result.failures++;
           ctx.recordEvent?.({
-            eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+            eventType: 'ROLLBACK_RESOURCE_FAILED',
             stackName,
-            operation: 'UPDATE',
+            operation: op.changeType,
             logicalId: op.logicalId,
             resourceType: op.resourceType,
             ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-            reason: mask(
-              `The old resource was re-created; the new one (${current.physicalId}) was not ` +
-                `deleted because a record of this stack now holds its physical id.`
-            ),
+            error: maskedRollbackEventError(finishError, mask),
           });
-          gone = true;
-        } else {
-          gone = await finish();
         }
-      } catch (finishError) {
-        logger.warn(
-          maskedFailureText(
-            `  Rollback failed for ${shownLogicalId(op.logicalId)} (UPDATE): `,
-            finishError,
-            mask
-          )
-        );
-        result.failures++;
-        ctx.recordEvent?.({
-          eventType: 'ROLLBACK_RESOURCE_FAILED',
-          stackName,
-          operation: op.changeType,
-          logicalId: op.logicalId,
-          resourceType: op.resourceType,
-          ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-          error: maskedRollbackEventError(finishError, mask),
-        });
-      }
-      // Gone, or held by a record: the entry goes, with a save. A delete that
-      // failed keeps it, so the next deploy retries it (#5111).
-      if (recordSuperseded && gone) {
-        deferral.onSupersededSettled?.(superseded);
-        await afterOp?.(op.logicalId);
-      }
-    }, recordSuperseded ? keep : undefined);
+        // Gone, or held by a record: the entry goes, with a save. A delete that
+        // failed keeps it, so the next deploy retries it (#5111).
+        if (recordSuperseded && gone) {
+          deferral.onSupersededSettled?.(superseded);
+          await afterOp?.(op.logicalId);
+        }
+      },
+      recordSuperseded ? keep : undefined
+    );
     return;
   }
   await finish();
