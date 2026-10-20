@@ -1041,6 +1041,53 @@ export function planRollback(
   });
 }
 
+/**
+ * go-to-k/cdkd#5064: a reverse-replacement whose old resource comes back under
+ * a DIFFERENT physical id than the new one holds (a generated name at the next
+ * generation, or any other renamed replacement), re-created first and its new
+ * copy deleted afterwards. The replay runs its re-create AHEAD of the ops that
+ * revert to the old id, which reverse completion order puts first: reverted
+ * before the old resource exists, they name one AWS does not have. A same-id
+ * re-create (go-to-k/cdkd#5096), a delete-first reversal and one whose old
+ * resource may survive keep their slot.
+ */
+export function renamedReverseReplacement(
+  op: CompletedOperation,
+  stateResources: Record<string, ResourceState>,
+  orphanLogicalIds: Set<string>
+): boolean {
+  if (op.changeType !== 'UPDATE') return false;
+  if (op.oldDeletedBeforeCreate === true || op.oldResourceMaySurvive !== undefined) return false;
+  const current = Object.hasOwn(stateResources, op.logicalId)
+    ? stateResources[op.logicalId]
+    : undefined;
+  const oldId = op.previousState?.physicalId;
+  if (typeof oldId !== 'string' || typeof current?.physicalId !== 'string') return false;
+  if (current.physicalId === oldId) return false;
+  return classifyRollbackOp(op, stateResources, orphanLogicalIds) === 'reverse-replacement';
+}
+
+/**
+ * go-to-k/cdkd#5064: the logical ids a step-1 op's revert may name: what its
+ * old record and its current one depend on. `undefined` when either record
+ * lists none, which may name any.
+ */
+export function revertReferences(
+  op: CompletedOperation,
+  stateResources: Record<string, ResourceState>
+): ReadonlySet<string> | undefined {
+  const current = Object.hasOwn(stateResources, op.logicalId)
+    ? stateResources[op.logicalId]
+    : undefined;
+  const refs = new Set<string>();
+  for (const record of [op.previousState, current]) {
+    if (record === undefined) continue;
+    if (!Array.isArray(record.dependencies)) return undefined;
+    for (const id of record.dependencies) if (typeof id === 'string') refs.add(id);
+  }
+  return refs;
+}
+
 export function partitionOps(operations: CompletedOperation[]): {
   createOps: CompletedOperation[];
   otherOps: CompletedOperation[];

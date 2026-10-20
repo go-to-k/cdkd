@@ -91,6 +91,8 @@ import {
   recordUnderIdIsNotOwn,
   recheckMismatchedFailedCreate,
   markDeleteFirstBlocked,
+  renamedReverseReplacement,
+  revertReferences,
 } from './rollback-executor/plan.js';
 import {
   createOpMasker,
@@ -290,12 +292,20 @@ async function replayRollbackUnbound(
   // Step 1: UPDATE/DELETE rollbacks in reverse completion order, except that
   // a standalone inline policy is reversed after an IAM writer sharing its
   // name on its principal (go-to-k/cdkd#4821).
-  for (const op of orderInlinePolicyReversals([...otherOps].reverse(), stateResources)) {
-    if (options.isInterrupted?.()) {
-      result.interrupted = true;
-      break;
-    }
-    await replaySingle(
+  //
+  // go-to-k/cdkd#5064: and except that a renamed reverse-replacement
+  // (`renamedReverseReplacement`) re-creates its old resource BEFORE the first
+  // op whose revert may name it, which reverse completion order runs first;
+  // its new copy is deleted at its own slot, once those ops have moved off it.
+  // The re-create of one it depends on runs before its own.
+  const stepOne = orderInlinePolicyReversals([...otherOps].reverse(), stateResources);
+  const stepOneIds = new Map<string, CompletedOperation>();
+  for (const op of stepOne) if (!stepOneIds.has(op.logicalId)) stepOneIds.set(op.logicalId, op);
+  // Every op replayed so far, ahead of its slot or at it: none runs twice.
+  const started = new Set<CompletedOperation>();
+  const pendingNewDeletes = new Map<CompletedOperation, () => Promise<void>>();
+  const runOp = (op: CompletedOperation, deferNewDelete?: (finish: () => Promise<void>) => void) =>
+    replaySingle(
       op,
       stateResources,
       stackName,
@@ -308,9 +318,47 @@ async function replayRollbackUnbound(
       options.afterOp,
       options.isInterrupted,
       createdInSegment,
-      options.onRolledBackCreate
+      options.onRolledBackCreate,
+      deferNewDelete
     );
+  const recreateAhead = async (refs: ReadonlySet<string> | undefined): Promise<void> => {
+    const targets =
+      refs === undefined ? [...stepOneIds.values()] : [...refs].map((id) => stepOneIds.get(id));
+    for (const target of targets) {
+      if (target === undefined || started.has(target)) continue;
+      if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds)) continue;
+      if (options.isInterrupted?.()) return;
+      started.add(target);
+      await recreateAhead(revertReferences(target, stateResources));
+      if (options.isInterrupted?.()) return;
+      await runOp(target, (finish) => pendingNewDeletes.set(target, finish));
+    }
+  };
+  for (const op of stepOne) {
+    if (options.isInterrupted?.()) {
+      result.interrupted = true;
+      break;
+    }
+    if (!started.has(op)) await recreateAhead(revertReferences(op, stateResources));
+    if (options.isInterrupted?.()) {
+      result.interrupted = true;
+      break;
+    }
+    if (started.has(op)) {
+      const finish = pendingNewDeletes.get(op);
+      pendingNewDeletes.delete(op);
+      await finish?.();
+      continue;
+    }
+    started.add(op);
+    await runOp(op);
   }
+  // Interrupted with a new copy still pending: its old resource is back and
+  // its record says so, so a re-run reads the op as done and would never
+  // delete it. Deleted now; an op left unreverted that still names it reverts
+  // to the old one on that re-run.
+  for (const finish of pendingNewDeletes.values()) await finish();
+  pendingNewDeletes.clear();
 
   // Step 2: CREATE rollbacks (deletions) in dependency-aware order.
   if (!result.interrupted && createOps.length > 0) {
@@ -472,7 +520,9 @@ async function replaySingle(
   afterOp?: (logicalId: string) => Promise<void> | void,
   isInterrupted?: () => boolean,
   createdInSegment: ReadonlySet<string> = new Set(),
-  onRolledBackCreate?: (create: RolledBackCreate) => void
+  onRolledBackCreate?: (create: RolledBackCreate) => void,
+  /** go-to-k/cdkd#5064: see `ReplayOpScope.deferNewDelete`. */
+  deferNewDelete?: (finish: () => Promise<void>) => void
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -529,6 +579,7 @@ async function replaySingle(
     mask,
     createdInSegment,
     createRollbackRoute: undefined,
+    deferNewDelete,
   };
 
   // go-to-k/cdkd#4408: the op completed when it replaced or dropped the

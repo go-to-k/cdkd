@@ -46,6 +46,14 @@ export interface ReplayOpScope {
    * `replaySingle`'s shared catch for its ROLLBACK_RESOURCE_FAILED event.
    */
   createRollbackRoute: 'sdk' | 'cc-api' | undefined;
+  /**
+   * go-to-k/cdkd#5064: set when the replay runs a renamed reverse-replacement
+   * AHEAD of the ops that revert to its old name. The create-first arm hands
+   * its delete of the new resource here instead of running it, and the replay
+   * runs it at the op's own slot, after those ops moved off the new resource.
+   * The handed function never throws.
+   */
+  readonly deferNewDelete: ((finish: () => Promise<void>) => void) | undefined;
 }
 
 /**
