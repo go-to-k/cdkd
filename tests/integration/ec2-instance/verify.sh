@@ -50,7 +50,7 @@
 # never-existed ids, then the settle's delete of the throwaways and the reads
 # once they are gone (see the phase's own comment).
 #
-# Phases 1d-1f are the issue #1160 removal arms: Monitoring removed is turned
+# Phases 1d-1g are the issue #1160 removal arms: Monitoring removed is turned
 # off and MetadataOptions / CreditSpecification removed are kept (1d); a
 # removed DisableApiTermination is REFUSED before any call (1e); an explicit
 # `false` is applied (1f), and `true` again (1g, for the destroy arm). See the
@@ -793,6 +793,14 @@ if [ "${ACTUAL_HTTP_TOKENS}" != "required" ]; then
   exit 1
 fi
 echo "    OK: MetadataOptions.HttpTokens == required on AWS (IMDSv2 enforced; MetadataOptions silent-drop CLOSED by #609)"
+# HttpPutResponseHopLimit: the fixture sets 3, NOT the AL2023 default (2), so
+# the issue #1160 removal phase can tell CloudFormation's KEEP from a reset.
+ACTUAL_HOP_LIMIT=$(echo "${INSTANCE}" | jq -r '.MetadataOptions.HttpPutResponseHopLimit // "null"')
+if [ "${ACTUAL_HOP_LIMIT}" != "3" ]; then
+  echo "FAIL: MetadataOptions.HttpPutResponseHopLimit is '${ACTUAL_HOP_LIMIT}', expected 3 (MetadataOptions silent-drop NOT closed)" >&2
+  exit 1
+fi
+echo "    OK: MetadataOptions.HttpPutResponseHopLimit == 3 on AWS"
 
 # DisableApiTermination: not on DescribeInstances — needs the dedicated
 # DescribeInstanceAttribute call. A silent-drop leaves it false.
@@ -807,20 +815,18 @@ if [ "${ACTUAL_DISABLE_TERM}" != "True" ] && [ "${ACTUAL_DISABLE_TERM}" != "true
 fi
 echo "    OK: DisableApiTermination == ${ACTUAL_DISABLE_TERM} on AWS (DisableApiTermination silent-drop CLOSED by #609)"
 
-# CreditSpecification: T-family burstable mode. The fixture sets
-# 'unlimited'; the t3 default is 'unlimited' too in many accounts, so this
-# is a weaker signal than the others, but a hard silent-drop (the create
-# payload omitting CreditSpecification entirely) is still caught by the
-# value reaching AWS via the dedicated API.
+# CreditSpecification: T-family burstable mode. The fixture sets 'standard',
+# which is NOT the t3 default ('unlimited'), so a silent-drop reads as
+# 'unlimited'.
 ACTUAL_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications \
   --instance-ids "${INSTANCE_ID}" \
   --region "${REGION}" \
   --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
-if [ "${ACTUAL_CPU_CREDITS}" != "unlimited" ]; then
-  echo "FAIL: CreditSpecification.CpuCredits is '${ACTUAL_CPU_CREDITS}', expected unlimited (CreditSpecification silent-drop NOT closed)" >&2
+if [ "${ACTUAL_CPU_CREDITS}" != "standard" ]; then
+  echo "FAIL: CreditSpecification.CpuCredits is '${ACTUAL_CPU_CREDITS}', expected standard (CreditSpecification silent-drop NOT closed)" >&2
   exit 1
 fi
-echo "    OK: CreditSpecification.CpuCredits == unlimited on AWS (CreditSpecification silent-drop CLOSED by #609)"
+echo "    OK: CreditSpecification.CpuCredits == standard on AWS (CreditSpecification silent-drop CLOSED by #609)"
 
 # AvailabilityZone (#1276): the CFn property maps to RunInstances'
 # `Placement.AvailabilityZone`. Compare AWS against the value cdkd recorded in
@@ -1107,7 +1113,7 @@ run_net_probe gone 9
 rm -f "${NET_IDS_FILE}"
 echo "    OK: isSameResource and the settle's delete for VPC / Subnet / SecurityGroup against live resources (issue #4606)"
 
-# --- Phases 1d-1f: REMOVAL of the in-place security props (issue #1160) ----
+# --- Phases 1d-1g: REMOVAL of the in-place security props (issue #1160) ----
 # CloudFormation A/B (go-to-k/cdkd#1160 issuecomment-6281778130): a removed
 # Monitoring is turned OFF; a removed MetadataOptions / CreditSpecification is
 # KEPT; a removed DisableApiTermination FAILS the whole update (from true or
@@ -1194,19 +1200,23 @@ fi
 poll_until "Monitoring.State after a removed Monitoring (CloudFormation turns it off)" "disabled disabling" read_monitoring
 echo "    OK: removed Monitoring reset: Monitoring.State == ${POLLED} (issue #1160)"
 # Kept, as CloudFormation keeps them (controls: a reset of either is the bug).
-RM_HTTP_TOKENS=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
-  --query 'Reservations[0].Instances[0].MetadataOptions.HttpTokens' --output text)
-if [ "${RM_HTTP_TOKENS}" != "required" ]; then
-  echo "FAIL: issue #1160 -- a removed MetadataOptions changed HttpTokens to '${RM_HTTP_TOKENS}'; CloudFormation keeps it (required)" >&2
+# Both values are NON-default (AL2023 hop limit 2, t3 credits `unlimited`), so
+# a reset fails these. HttpTokens `required` is the AL2023 default and proves
+# nothing here. They are read after the Monitoring poll above, which already
+# waited for the update to show.
+RM_HOP_LIMIT=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].MetadataOptions.HttpPutResponseHopLimit' --output text)
+if [ "${RM_HOP_LIMIT}" != "3" ]; then
+  echo "FAIL: issue #1160 -- a removed MetadataOptions changed HttpPutResponseHopLimit to '${RM_HOP_LIMIT}'; CloudFormation keeps it (3)" >&2
   exit 1
 fi
 RM_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
   --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
-if [ "${RM_CPU_CREDITS}" != "unlimited" ]; then
-  echo "FAIL: issue #1160 -- a removed CreditSpecification changed CpuCredits to '${RM_CPU_CREDITS}'; CloudFormation keeps it (unlimited)" >&2
+if [ "${RM_CPU_CREDITS}" != "standard" ]; then
+  echo "FAIL: issue #1160 -- a removed CreditSpecification changed CpuCredits to '${RM_CPU_CREDITS}'; CloudFormation keeps it (standard)" >&2
   exit 1
 fi
-echo "    OK: removed MetadataOptions / CreditSpecification kept (required / unlimited) (issue #1160)"
+echo "    OK: removed MetadataOptions / CreditSpecification kept (hop limit 3 / standard) (issue #1160)"
 
 # Phase 1e: DisableApiTermination removed, plus a marker tag in the SAME
 # update. CloudFormation fails the whole update, so cdkd refuses it before any

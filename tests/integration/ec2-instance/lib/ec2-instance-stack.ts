@@ -105,12 +105,16 @@ export class Ec2InstanceStack extends cdk.Stack {
             metadataOptions: {
               httpTokens: 'required',
               httpEndpoint: 'enabled',
-              httpPutResponseHopLimit: 1,
+              // Non-default on purpose (the AL2023 default is 2): the issue
+              // #1160 removal phase asserts CloudFormation's KEEP, which a reset
+              // to the default would otherwise pass.
+              httpPutResponseHopLimit: 3,
             },
             // Detailed CloudWatch monitoring.
             monitoring: true,
-            // T-family burstable CPU credit mode.
-            creditSpecification: { cpuCredits: 'unlimited' },
+            // T-family burstable CPU credit mode. `standard` is non-default
+            // for t3 (whose default is `unlimited`), for the same reason.
+            creditSpecification: { cpuCredits: 'standard' },
           }),
       // Dedicated EBS throughput.
       ebsOptimized: true,
