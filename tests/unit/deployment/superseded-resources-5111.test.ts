@@ -606,6 +606,46 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     expect(isInUseRefusal(new Error('ConflictException: in use'))).toBe(false);
   });
 
+  // A Lambda web function revision an endpoint still routes to: the class is
+  // ConflictException, which alone also means "not Active yet".
+  const conflict = (message: string): Error =>
+    new Error('Failed to delete Lambda web function revision Revision: ConflictException.', {
+      cause: Object.assign(new Error(message), { name: 'ConflictException' }),
+    });
+  const revisionInUse = (): Error =>
+    conflict('The revision rev-old cannot be deleted because the endpoints [prod] are using it.');
+
+  it("a web function revision's in-use conflict is one; another conflict is not", () => {
+    expect(isInUseRefusal(revisionInUse())).toBe(true);
+    expect(isInUseRefusal(conflict('Only revisions in Active state can be deployed'))).toBe(false);
+    // The message alone, without the class, is not.
+    expect(isInUseRefusal(new Error('endpoints [prod] are using it'))).toBe(false);
+  });
+
+  it("a revision's retry waits out its in-use conflict; a first success sends once and never waits", async () => {
+    const defaults = { ...supersededInUseRetry };
+    supersededInUseRetry.delayMs = 0;
+    supersededInUseRetry.attempts = 5;
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const freed = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(revisionInUse())
+        .mockResolvedValueOnce('deleted');
+      await expect(retryWhileInUse(freed, () => false)).resolves.toBe('deleted');
+      expect(freed).toHaveBeenCalledTimes(2);
+
+      timers.mockClear();
+      const first = vi.fn(async () => 'deleted');
+      await expect(retryWhileInUse(first, () => false)).resolves.toBe('deleted');
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(timers).not.toHaveBeenCalled();
+    } finally {
+      timers.mockRestore();
+      Object.assign(supersededInUseRetry, defaults);
+    }
+  });
+
   it('records a deferral only where a later run can send the same delete', () => {
     expect(canRecordSuperseded(record(OLD_TG, TG, {}), {})).toBe(true);
     expect(canRecordSuperseded(record('p', 'AWS::IAM::Policy', {}), {})).toBe(false);

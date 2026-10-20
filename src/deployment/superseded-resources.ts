@@ -275,12 +275,22 @@ const IN_USE_ERROR_NAMES = new Set([
   'DependencyViolation',
 ]);
 
+/**
+ * A Lambda web function revision an endpoint still routes to (409
+ * `ConflictException: ... endpoints [<name>] are using it`, go-to-k/cdkd#4900).
+ * Narrowed to that message: the class alone also means "not Active yet".
+ */
+const IN_USE_CONFLICT = /\bare using it\b/;
+
 /** Whether `error` (or an error it wraps) is an "in use" refusal. */
 export function isInUseRefusal(error: unknown): boolean {
   for (let current: unknown = error, depth = 0; current !== undefined && depth < 8; depth++) {
     if (typeof current !== 'object' || current === null) return false;
-    const name = (current as { name?: unknown }).name;
+    const { name, message } = current as { name?: unknown; message?: unknown };
     if (typeof name === 'string' && IN_USE_ERROR_NAMES.has(name)) return true;
+    if (name === 'ConflictException' && typeof message === 'string' && IN_USE_CONFLICT.test(message)) {
+      return true;
+    }
     current = (current as { cause?: unknown }).cause;
   }
   return false;
