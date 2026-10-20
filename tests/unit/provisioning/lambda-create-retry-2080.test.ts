@@ -649,7 +649,11 @@ describe('Lambda tokenless create retry safety (issue #2080, detection only)', (
     it('an SQS source: the report names the orphan the replayed create then collides with', async () => {
       aws.loseNextCreateResponse = transient500();
 
-      await expect(createWithRetry(ESM, SQS_PROPS)).rejects.toThrow(/uuid-1/);
+      // The thrown message names the error class only (go-to-k/cdkd#2319); the
+      // report below is what names the orphan's UUID.
+      await expect(createWithRetry(ESM, SQS_PROPS)).rejects.toThrow(
+        /ResourceConflictException\. .* AWS reports that it already exists\./
+      );
 
       // One mapping: Lambda refused the second, and nothing was deleted.
       expect(aws.mappings.map((m) => m.UUID)).toEqual(['uuid-1']);

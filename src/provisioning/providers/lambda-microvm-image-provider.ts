@@ -31,6 +31,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -38,6 +39,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 
 /**
  * AWS Lambda MicroVM Image Provider
@@ -149,7 +152,8 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tagList = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
@@ -228,7 +232,14 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      const thrown = this.wrapError('create', logicalId, resourceType, undefined, error);
+      const thrown = this.wrapError(
+        'create',
+        logicalId,
+        resourceType,
+        undefined,
+        error,
+        context?.maskSecrets
+      );
       // go-to-k/cdkd#4583: the image exists once CreateMicrovmImage returned its
       // ARN (the id delete() takes); name it for --revert-failed.
       if (createdArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, createdArn);
@@ -359,7 +370,14 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
         }),
       };
     } catch (error) {
-      throw this.wrapError('update', logicalId, resourceType, physicalId, error);
+      throw this.wrapError(
+        'update',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
     }
   }
 
@@ -395,7 +413,14 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
       await this.waitForDeleted(physicalId, logicalId);
       this.logger.debug(`Successfully deleted MicroVM image ${logicalId}`);
     } catch (error) {
-      throw this.wrapError('delete', logicalId, resourceType, physicalId, error);
+      throw this.wrapError(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
     }
   }
 
@@ -654,25 +679,47 @@ export class LambdaMicrovmImageProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The failure wrap every create / update / delete catch builds. A
+   * `ProvisioningError` raised deeper passes through untouched.
+   *
+   * An AWS-authored failure reaches the message as its CLASS plus the
+   * `--verbose` pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
+   * the deploy engine masks a thrown message. The delete checks
+   * `ResourceNotFoundException` by type before it wraps.
+   */
   private wrapError(
     operation: string,
     logicalId: string,
     resourceType: string,
     physicalId: string | undefined,
-    error: unknown
+    error: unknown,
+    mask: ((text: string) => string) | undefined
   ): ProvisioningError {
     if (error instanceof ProvisioningError) return error;
     const cause = error instanceof Error ? error : undefined;
     // The wrapped message can carry a pasteable flag (the poll-cap refusal's
     // `--resource-timeout`) on this same line, so the logical id is shown only
     // when plain (go-to-k/cdkd#4295).
-    return new ProvisioningError(
-      `Failed to ${operation} MicroVM image ${logicalIdShown(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to ${operation} MicroVM image ${logicalIdShown(logicalId)}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 }
 

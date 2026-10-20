@@ -888,7 +888,8 @@ export interface CreateContext extends SecretMaskingContext {
    * subscription today) receives no replay signal: none forwards
    * `replayingState` to its own `create()` (IAM role, IAM managed policy and
    * Lambda permission pass a `CreateContext` carrying ONLY `maskSecrets`,
-   * issue #2177; the rest pass none) — and during a rollback replay the
+   * issue #2177, and ACM certificate does too, go-to-k/cdkd#2319; SNS
+   * subscription passes none) — and during a rollback replay the
    * `properties` it forwards ARE a state record. The INFORMATION does reach `update()`: its context is
    * an {@link UpdateContext}, which since issue #3141 carries its own
    * {@link UpdateContext.replayingState}, set by both rollback revert arms. None

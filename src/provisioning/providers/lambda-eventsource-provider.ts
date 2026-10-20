@@ -15,7 +15,11 @@ import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -463,7 +467,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   }
 
   /**
-   * The masked sinks ONE `create()` / `update()` logs and refuses through
+   * The masked sinks ONE `create()` / `update()` / `delete()` logs and
+   * refuses through
    * (issue #2177, `.claude/rules/provider-masking.md`): `createMaskedLogSinks`
    * over the context's masker, extended by `withDerivedNameMasks` so a short
    * secret-derived `FunctionName`, or the bare name inside a secret ARN, is
@@ -489,20 +494,38 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2177): AWS quotes a rejected request value back (a source
-   * ARN, a Kafka bootstrap server, a filter pattern). The `cause` stays
-   * unmasked, and a message the mask changed is stamped so the retry
-   * classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A
-   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
-   * wrap.
+   * The `create()` / `update()` / `delete()` failure wrap. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text, which can quote a rejected
+   * request value back (a source
+   * ARN, a Kafka bootstrap server, a filter pattern), goes to `debug` through `log`,
+   * masked both raw and as the finished line (issue #2177). The wrap is stamped
+   * `markRedactedCause`, so retry classification reads the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps the masked pass-through of the
+   * shared `wrapMaskedAwsError`, which stamps when the mask changed the text
+   * (the #4244 class); a non-`Error` throw keeps its masked text, unstamped.
+   * The delete checks `ResourceNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
   private wrapMaskedError(
-    mask: MaskerFn,
+    log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(log.mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    return markRedactedCause(
+      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   /**
@@ -706,7 +729,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -836,7 +859,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -1109,7 +1132,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting event source mapping ${logicalId}: ${physicalId}`);
@@ -1150,12 +1173,17 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete event source mapping ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        this.operationSinks(context?.maskSecrets, properties ?? {}),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete event source mapping ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

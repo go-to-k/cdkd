@@ -31,14 +31,18 @@ import {
 } from './orphan-report.js';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { definedAttributes } from '../attribute-map.js';
 import { coerceCfnInteger } from '../config-shape.js';
 import type {
@@ -186,16 +190,29 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
           logicalId
         );
       }
-      const active = await this.waitForActive(input.functionName!, createdArn, logicalId);
+      const active = await this.waitForActive(
+        input.functionName!,
+        createdArn,
+        logicalId,
+        resourceType,
+        log.mask
+      );
       return { physicalId: createdArn, attributes: buildAttributes(active) };
     } catch (error) {
-      const thrown = this.wrapError('create', logicalId, resourceType, undefined, error);
+      const thrown = this.wrapError('create', logicalId, resourceType, undefined, error, log.mask);
       // go-to-k/cdkd#4945: delete the revision a later step (the readiness
       // wait) failed after, so a transient failure stays retryable.
       let leftBehindArn = createdArn;
       if (leftBehindArn) {
         try {
-          await this.delete(logicalId, leftBehindArn, resourceType);
+          // The create's masker reaches the cleanup delete's debug line.
+          await this.delete(
+            logicalId,
+            leftBehindArn,
+            resourceType,
+            undefined,
+            context?.maskSecrets ? { maskSecrets: context.maskSecrets } : undefined
+          );
           leftBehindArn = undefined;
         } catch (cleanupError) {
           log.warn(
@@ -351,7 +368,14 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
       // confirm it so a destroy never reports an orphan as deleted.
       await this.waitForGone(parts.functionArn, physicalId, logicalId);
     } catch (error) {
-      throw this.wrapError('delete', logicalId, resourceType, physicalId, error);
+      throw this.wrapError(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
     }
   }
 
@@ -570,7 +594,9 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
   private async waitForActive(
     functionName: string,
     revisionArn: string,
-    logicalId: string
+    logicalId: string,
+    resourceType: string,
+    mask: ((text: string) => string) | undefined
   ): Promise<GetWebFunctionRevisionResponse> {
     for (let attempt = 1; attempt <= LAMBDA_WEB_MAX_POLL_ATTEMPTS; attempt++) {
       const resp = await this.client.send(
@@ -578,12 +604,27 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
       );
       if (resp.state === 'Active') return resp;
       if (resp.state === 'Failed') {
-        const errors = (resp.errors ?? []).map((e) =>
-          `${e.errorCode ?? ''} ${e.errorMessage ?? ''}`.trim()
-        );
-        throw new Error(
-          `Lambda web function revision ${logicalIdShown(logicalId)} entered Failed: ${resp.stateReason ?? 'no reason given'}` +
-            (errors.length > 0 ? ` (${errors.join('; ')})` : '')
+        const errors = (resp.errors ?? [])
+          .map((e) => `${e.errorCode ?? ''} ${e.errorMessage ?? ''}`.trim())
+          .filter((e) => e !== '');
+        // AWS's reason and build errors, as one text; the first build error's
+        // code is what the thrown message keeps.
+        const reasonText =
+          resp.stateReason || errors.length > 0
+            ? `${resp.stateReason || 'no reason given'}` +
+              (errors.length > 0 ? ` (${errors.join('; ')})` : '')
+            : undefined;
+        throw this.wrapStatusReasonError(
+          mask,
+          { code: resp.errors?.find((e) => e.errorCode)?.errorCode, message: reasonText },
+          (text, cause) =>
+            new ProvisioningError(
+              `Lambda web function revision ${logicalIdShown(logicalId)} entered Failed: ${text}`,
+              resourceType,
+              logicalId,
+              revisionArn,
+              cause
+            )
         );
       }
       await sleep(LAMBDA_WEB_POLL_INTERVAL_MS);
@@ -616,22 +657,71 @@ export class LambdaWebFunctionRevisionProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * The error a FAILED state read off a successful Get throws
+   * (go-to-k/cdkd#2319). AWS's reason reaches the same persisted sink as a
+   * caught failure and can name the account, so the message carries the first build error's code (when
+   * AWS reports one)
+   * plus the `--verbose` pointer instead ({@link describeAwsStatusReason}). The
+   * reason goes to `debug` through the operation's masker, and becomes the
+   * `cause` the wrap is stamped `markRedactedCause` over, so the retry
+   * classifiers still read it as they read the message before. No reason keeps
+   * cdkd's fallback text.
+   *
+   * `build` runs twice, so it must stay a side-effect-free constructor call
+   * threading `cause`.
+   */
+  private wrapStatusReasonError(
+    mask: ((text: string) => string) | undefined,
+    reason: { code?: string | undefined; message?: string | undefined },
+    build: (text: string, cause: Error | undefined) => ProvisioningError
+  ): ProvisioningError {
+    const text = describeAwsStatusReason(reason, 'no reason given');
+    if (!text.redacted) return build(text.detail, undefined);
+    const m = mask ?? ((value: string) => value);
+    const cause = new Error(text.detail);
+    this.logger.debug(m(build(m(text.detail), cause).message));
+    return markRedactedCause(build(m(text.summary), cause));
+  }
+
+  /**
+   * The failure wrap every create / update / delete catch builds. A
+   * `ProvisioningError` raised deeper passes through untouched.
+   *
+   * An AWS-authored failure reaches the message as its CLASS plus the
+   * `--verbose` pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
+   * the deploy engine masks a thrown message. The delete checks
+   * `ResourceNotFoundException` by type before it wraps.
+   */
   private wrapError(
     operation: string,
     logicalId: string,
     resourceType: string,
     physicalId: string | undefined,
-    error: unknown
+    error: unknown,
+    mask: ((text: string) => string) | undefined
   ): ProvisioningError {
     if (error instanceof ProvisioningError) return error;
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `Failed to ${operation} Lambda web function revision ${logicalIdShown(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to ${operation} Lambda web function revision ${logicalIdShown(logicalId)}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
   }
 }
 

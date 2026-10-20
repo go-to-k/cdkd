@@ -66,6 +66,7 @@ import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -211,7 +212,10 @@ describe('LambdaWebFunctionRevisionProvider', () => {
       ])
     );
     const error = await provider.create('Rev', REV_TYPE, props).catch((e: unknown) => e);
-    expect(String(error)).toContain('entered Failed: build failed (E1 bad zip)');
+    // go-to-k/cdkd#2319: the message keeps the build error's code; AWS's text is the cause.
+    expect(String(error)).toContain(`entered Failed: E1. ${VERBOSE_POINTER}`);
+    expect(String(error)).not.toContain('bad zip');
+    expect((error as Error).cause).toEqual(new Error('build failed (E1 bad zip)'));
     // Premise: the cleanup delete was refused (no DeleteWebFunctionRevision answer).
     expect(callsOf(DeleteWebFunctionRevisionCommand)).toHaveLength(1);
     expect(createdBeforeFailure(error, 'Rev', REV_TYPE)).toBe(REV_ARN);
@@ -309,7 +313,9 @@ describe('LambdaWebFunctionRevisionProvider', () => {
         ],
       ])
     );
-    await expect(provider.delete('Rev', REV_ARN, REV_TYPE)).rejects.toThrow('endpoints [prod] are using it');
+    await expect(provider.delete('Rev', REV_ARN, REV_TYPE)).rejects.toThrow(
+      `ConflictException. ${VERBOSE_POINTER}`
+    );
   });
 
   it('delete refuses a recorded id that is not a revision ARN, without a call', async () => {
@@ -501,7 +507,9 @@ describe('LambdaWebFunctionEndpointProvider', () => {
         ['GetWebFunctionEndpointCommand', [{ ...active, updateStatus: 'Failed', updateStatusReason: 'no capacity' }]],
       ])
     );
-    await expect(provider.update('Ep', EP_ARN, EP_TYPE, props, props)).rejects.toThrow('update failed: no capacity');
+    await expect(provider.update('Ep', EP_ARN, EP_TYPE, props, props)).rejects.toThrow(
+      `update failed: ${VERBOSE_POINTER}`
+    );
   });
 
   it('delete addresses the endpoint by function ARN + name, then confirms it is gone', async () => {
@@ -656,7 +664,9 @@ describe('LambdaWebFunctionRevisionProvider — guards, attributes and ambiguous
       $fault: 'server',
     });
     respond(new Map<string, unknown[]>([['CreateWebFunctionRevisionCommand', [serverError]]]));
-    await expect(provider.create('Rev', REV_TYPE, base)).rejects.toThrow('internal error');
+    await expect(provider.create('Rev', REV_TYPE, base)).rejects.toThrow(
+      `InternalServerException. ${VERBOSE_POINTER}`
+    );
 
     mockSend.mockClear();
     const orphan = `${FN_ARN}/revision/rev-orphan`;
@@ -706,7 +716,8 @@ describe('LambdaWebFunctionEndpointProvider — guards, attributes and failures'
       ])
     );
     const failed = await provider.create('Ep', EP_TYPE, base).catch((e: unknown) => e);
-    expect(String(failed)).toContain('entered Failed: no capacity');
+    expect(String(failed)).toContain(`entered Failed: ${VERBOSE_POINTER}`);
+    expect(String(failed)).not.toContain('no capacity');
     expect(createdBeforeFailure(failed, 'Ep', EP_TYPE)).toBe(EP_ARN);
 
     respond(new Map<string, unknown[]>([['CreateWebFunctionEndpointCommand', [new Error('denied')]]]));
@@ -1068,7 +1079,9 @@ describe('Lambda Web providers — re-review round 2 gaps', () => {
     );
     await revision.create('Rev', REV_TYPE, revBase);
     respond(new Map<string, unknown[]>([['CreateWebFunctionRevisionCommand', [serverError()]]]));
-    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow('internal error');
+    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow(
+      `InternalServerException. ${VERBOSE_POINTER}`
+    );
     respond(
       new Map<string, unknown[]>([
         [
@@ -1103,7 +1116,9 @@ describe('Lambda Web providers — re-review round 2 gaps', () => {
         ],
       ])
     );
-    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow('bad zip');
+    await expect(revision.create('Rev', REV_TYPE, revBase)).rejects.toThrow(
+      `ValidationException. ${VERBOSE_POINTER}`
+    );
     respond(
       new Map<string, unknown[]>([
         ['CreateWebFunctionRevisionCommand', [{ revisionArn: REV_ARN, revisionId: 'rev-abc12' }]],
@@ -1140,7 +1155,9 @@ describe('Lambda Web providers — re-review round 2 gaps', () => {
         ['GetWebFunctionEndpointCommand', [notFound()]],
       ])
     );
-    await expect(endpoint.update('Ep', EP_ARN, EP_TYPE, epBase, epBase)).rejects.toThrow('does not exist');
+    await expect(endpoint.update('Ep', EP_ARN, EP_TYPE, epBase, epBase)).rejects.toThrow(
+      `ResourceNotFoundException. ${VERBOSE_POINTER}`
+    );
     expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(1);
     // Create: a not-found that outlasts the grace throws.
     mockSend.mockClear();
@@ -1150,7 +1167,9 @@ describe('Lambda Web providers — re-review round 2 gaps', () => {
         ['GetWebFunctionEndpointCommand', [notFound()]],
       ])
     );
-    await expect(endpoint.create('Ep', EP_TYPE, epBase)).rejects.toThrow('does not exist');
+    await expect(endpoint.create('Ep', EP_TYPE, epBase)).rejects.toThrow(
+      `ResourceNotFoundException. ${VERBOSE_POINTER}`
+    );
     expect(callsOf(GetWebFunctionEndpointCommand)).toHaveLength(11);
   });
 
