@@ -1152,7 +1152,9 @@ poll_until() {
   local what="$1" want="$2"; shift 2
   local _ w
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    POLLED=$("$@")
+    # A transient read failure (throttling) keeps polling instead of ending
+    # the run under `set -e` with no FAIL line.
+    POLLED=$("$@" 2>/dev/null) || POLLED="<read error>"
     for w in ${want}; do [ "${POLLED}" = "${w}" ] && return 0; done
     sleep 15
   done
