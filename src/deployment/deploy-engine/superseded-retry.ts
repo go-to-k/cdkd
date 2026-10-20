@@ -11,8 +11,9 @@ import { withStackRecords } from '../stack-records-scope.js';
 import {
   SUPERSEDED_KEPT_REMEDY,
   deleteSupersededEntry,
-  isSupersededHeld,
   removeSuperseded,
+  supersededHeldByOtherTypeWarning,
+  supersededHolderOf,
 } from '../superseded-resources.js';
 import { secretNameBagFor } from './masking.js';
 
@@ -51,9 +52,18 @@ export async function retryCarriedSupersededResources(
       secretNameBagFor(engine.secretsRun, logicalId),
       orphanRecordsPrintingBag([entry]),
     ]);
-    if (isSupersededHeld(entry, resources)) {
+    const holder = supersededHolderOf(entry, resources);
+    if (holder !== undefined) {
       removeSuperseded(host, entry);
       changed = true;
+      if (holder.resourceType !== resourceType) {
+        withPrintingSecrets(bag, () =>
+          engine.logger.warn(
+            safeMsg`  ⚠ ${supersededHeldByOtherTypeWarning(entry, holder.resourceType)}`
+          )
+        );
+        continue;
+      }
       withPrintingSecrets(bag, () =>
         engine.logger.debug(
           safeMsg`Superseded ${logicalId} (${physicalId}) is held by a record again; not deleting it`

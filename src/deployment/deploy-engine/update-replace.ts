@@ -594,7 +594,9 @@ export async function updateByReplacement(
               logicalId,
               undefined,
               undefined,
-              replaceProvider
+              replaceProvider,
+              // The old resource is gone: only the user's interrupt stops it.
+              true
             ),
           logicalId,
           {

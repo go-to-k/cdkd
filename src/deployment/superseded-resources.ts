@@ -57,9 +57,53 @@ export function isSupersededHeld(
   entry: SupersededResourceRecord,
   resources: Record<string, ResourceState>
 ): boolean {
-  return Object.values(resources).some(
+  return supersededHolderOf(entry, resources) !== undefined;
+}
+
+/**
+ * The record naming the entry's physical id, if any. A holder of ANOTHER
+ * type may be a different resource that happens to share the string (an IAM
+ * role and a function both called `foo`): the entry is still never deleted,
+ * but its caller warns that the superseded copy may be left in AWS.
+ */
+export function supersededHolderOf(
+  entry: SupersededResourceRecord,
+  resources: Record<string, ResourceState>
+): ResourceState | undefined {
+  return Object.values(resources).find(
     (record) =>
       typeof record === 'object' && record !== null && record.physicalId === entry.state.physicalId
+  );
+}
+
+/**
+ * Held by a record of the SAME type: a rollback took the copy back, or a
+ * same-id re-create made it live again. Dropped silently; another type's
+ * holder is left for the retry or destroy, which warns.
+ */
+export function isSupersededHeldBySameType(
+  entry: SupersededResourceRecord,
+  resources: Record<string, ResourceState>
+): boolean {
+  return Object.values(resources).some(
+    (record) =>
+      typeof record === 'object' &&
+      record !== null &&
+      record.physicalId === entry.state.physicalId &&
+      record.resourceType === entry.state.resourceType
+  );
+}
+
+/** The warning for an entry dropped because a record of another type names its id. */
+export function supersededHeldByOtherTypeWarning(
+  entry: SupersededResourceRecord,
+  holderType: string
+): string {
+  return (
+    `the superseded ${entry.state.resourceType} of ${entry.logicalId} (${entry.state.physicalId}) ` +
+    `was not deleted: a ${holderType} record of this stack has the same physical id, and cdkd never ` +
+    `deletes an id a record names. If the ${entry.state.resourceType} still exists, delete it by hand; ` +
+    `it is no longer tracked in state.`
   );
 }
 

@@ -241,4 +241,20 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
 
     expect(mockProviderDelete.mock.calls[0]![4]).toHaveProperty('removeProtection', true);
   });
+
+  it('never deletes an entry another TYPE of record names, and warns', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const state = makeState(
+      { Fn: res([], { physicalId: OLD_TG, resourceType: 'AWS::Lambda::Function' }) },
+      { supersededResources: [entry] }
+    );
+
+    await runDestroyForStack('TestStack', state, makeCtx());
+
+    expect(mockProviderDelete.mock.calls.map((c) => c[1])).toEqual([OLD_TG]);
+    expect(mockProviderDelete.mock.calls[0]![0]).toBe('Fn');
+    expect(
+      warnSpy.mock.calls.some((c) => String(c[0]).includes('record of this stack has the same physical id'))
+    ).toBe(true);
+  });
 });

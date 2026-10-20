@@ -124,4 +124,22 @@ describe('a delete-first re-create is not aborted by a sibling failure (A5)', ()
     await expect(recreate()).rejects.toThrow();
     expect(provider.create).toHaveBeenCalledTimes(1);
   }, 20_000);
+
+  it('the inner transient retry does not abort on a sibling failure either (a throttle)', async () => {
+    let attempts = 0;
+    vi.mocked(provider.create).mockImplementation(async () => {
+      attempts++;
+      if (attempts === 1) {
+        engine.interrupted = true;
+        engine.interruptCause = 'sibling-failure';
+        const throttle = new Error('Rate exceeded');
+        throttle.name = 'ThrottlingException';
+        throw throttle;
+      }
+      return { physicalId: NAME, attributes: {} };
+    });
+
+    await expect(recreate()).resolves.toMatchObject({ physicalId: NAME });
+    expect(attempts).toBe(2);
+  }, 30_000);
 });

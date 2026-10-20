@@ -21,7 +21,7 @@ import {
 import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
 import { retryCarriedSupersededResources } from './superseded-retry.js';
 import {
-  isSupersededHeld,
+  isSupersededHeldBySameType,
   removeSuperseded,
   supersededResourcesOf,
 } from '../superseded-resources.js';
@@ -215,7 +215,7 @@ export async function executeDeployment(
   const carriedSuperseded = supersededResourcesOf(currentState).filter((entry) => {
     // One a record holds again (`cdkd rollback` took it back) leaves the live
     // record too, so no later recording duplicates it.
-    if (!isSupersededHeld(entry, currentState.resources)) return true;
+    if (!isSupersededHeldBySameType(entry, currentState.resources)) return true;
     removeSuperseded(currentState, entry);
     return false;
   });

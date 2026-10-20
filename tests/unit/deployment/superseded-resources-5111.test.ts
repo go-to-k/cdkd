@@ -418,6 +418,39 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(warned[0]).not.toContain('cdkd keeps it in state');
   });
 
+  it('a carried entry another TYPE of record names is not deleted, and the drop warns', async () => {
+    const engine = makeEngine();
+    const entry: SupersededResourceRecord = {
+      logicalId: 'Tg',
+      supersededAt: 1,
+      state: record(OLD_TG, TG, {}),
+    };
+    const host = { supersededResources: [entry] } as StackState;
+
+    const changed = await retryCarriedSupersededResources(engine, host, [entry], {
+      Other: record(OLD_TG, 'AWS::Other::Thing', {}),
+    });
+
+    expect(changed).toBe(true);
+    expect(provider.delete).not.toHaveBeenCalled();
+    expect(host.supersededResources).toBeUndefined();
+    expect(printed.warn.some((l) => l.includes('AWS::Other::Thing record of this stack has the same physical id'))).toBe(true);
+    // The persist choke point keeps it until then: only a same-type holder drops it silently.
+    expect(
+      supersededResourcesOf(
+        engine.withParentInfo({
+          version: 13,
+          stackName: 'MyStack',
+          region: 'us-east-1',
+          resources: { Other: record(OLD_TG, 'AWS::Other::Thing', {}) },
+          supersededResources: [entry],
+          outputs: {},
+          lastModified: 0,
+        } as unknown as StackState)
+      )
+    ).toHaveLength(1);
+  });
+
   it('an entry is held by a record of ANY type naming its id', () => {
     const entry: SupersededResourceRecord = {
       logicalId: 'Tg',

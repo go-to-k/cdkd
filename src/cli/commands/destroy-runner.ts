@@ -146,7 +146,8 @@ import {
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
   deleteSupersededEntry,
-  isSupersededHeld,
+  supersededHeldByOtherTypeWarning,
+  supersededHolderOf,
   supersededResourcesOf,
   withoutSuperseded,
 } from '../../deployment/superseded-resources.js';
@@ -2774,12 +2775,6 @@ async function destroyStackInRegion(
       const drop = (): void => {
         remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
       };
-      // A record holds it again (a rollback took it back): deleted above, as
-      // that record's resource, or kept with it.
-      if (isSupersededHeld(entry, state.resources)) {
-        drop();
-        continue;
-      }
       // Every line names the id under the row's printing bag: the id can
       // spell a secret-derived name (go-to-k/cdkd#3869).
       // The OLD record's own needles too, judged as an orphan's are, beside
@@ -2788,6 +2783,20 @@ async function destroyStackInRegion(
         printingBagOf(logicalId),
         orphanRecordsPrintingBag([entry], noEchoValues),
       ]);
+      // A record names its id (a rollback took it back): deleted above, as
+      // that record's resource, or kept with it -- never deleted here.
+      const holder = supersededHolderOf(entry, state.resources);
+      if (holder !== undefined) {
+        drop();
+        if (holder.resourceType !== resourceType) {
+          withPrintingSecrets(bag, () =>
+            logger.warn(
+              safeMsg`  ⚠ ${supersededHeldByOtherTypeWarning(entry, holder.resourceType)}`
+            )
+          );
+        }
+        continue;
+      }
       await withPrintingSecrets(bag, async () => {
         logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
         let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;

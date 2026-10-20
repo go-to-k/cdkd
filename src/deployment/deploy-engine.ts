@@ -107,7 +107,7 @@ import {
 } from './deploy-engine/noecho.js';
 import type { ProducerRegionEvidence } from './producer-regions-scope.js';
 import {
-  isSupersededHeld,
+  isSupersededHeldBySameType,
   isSupersededResourceRecord,
   withoutSuperseded,
 } from './superseded-resources.js';
@@ -1179,7 +1179,7 @@ export class DeployEngine {
       ? state.supersededResources.flatMap((entry) => {
           // A malformed entry is the reader's to skip, never this writer's to drop.
           if (!isSupersededResourceRecord(entry)) return [entry];
-          if (isSupersededHeld(entry, state.resources)) return [];
+          if (isSupersededHeldBySameType(entry, state.resources)) return [];
           return [{ ...entry, state: scrubDroppedRecord(entry) }];
         })
       : undefined;
@@ -1654,7 +1654,13 @@ export class DeployEngine {
     logicalId: string,
     maxRetries?: number,
     initialDelayMs?: number,
-    provider?: ResourceProvider
+    provider?: ResourceProvider,
+    /**
+     * go-to-k/cdkd#5111: only the user's interrupt stops this retry, never a
+     * sibling's failure -- set by a re-create whose old resource is already
+     * deleted, where an abort leaves neither copy.
+     */
+    interruptOnlyByUser?: boolean
   ): Promise<T> {
     if (provider?.disableOuterRetry) {
       // Single-shot — provider handles transient errors internally.
@@ -1664,7 +1670,8 @@ export class DeployEngine {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),
       logger: this.maskingRetryLogger(logicalId),
-      isInterrupted: () => this.interrupted,
+      isInterrupted: () =>
+        this.interrupted && (interruptOnlyByUser !== true || this.interruptCause === 'user'),
       onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
     });
   }
