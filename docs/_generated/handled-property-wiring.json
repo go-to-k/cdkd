@@ -7,7 +7,7 @@
     "wired": 87,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 36
+    "classesWithBlindSpots": 37
   },
   "classes": [
     {
@@ -2040,7 +2040,9 @@
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "withRemovalDefaults(...) in updateAuthorizer()"
+      ]
     },
     {
       "file": "appsync-provider.ts",

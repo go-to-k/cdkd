@@ -556,15 +556,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           logicalId,
           physicalId,
           resourceType,
-          withRemovalDefaults(
-            this.removalDefaults,
-            resourceType,
-            properties,
-            previousProperties,
-            context
-          ),
+          properties,
           previousProperties,
-          log
+          log,
+          context
         );
       default:
         throw new ResourceUpdateNotSupportedError(
@@ -2610,7 +2605,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // the previous one when the template removed it (CloudFormation KEEPS a
     // removed map, so the previous values are the live ones).
     if (input.IntegrationSubtype !== undefined && input.RequestParameters === undefined) {
-      const liveParameters = properties['RequestParameters'] ?? previousProperties['RequestParameters'];
+      const liveParameters =
+        properties['RequestParameters'] ?? previousProperties['RequestParameters'];
       if (liveParameters != null) {
         input.RequestParameters = liveParameters as Record<string, string>;
       }
@@ -2928,8 +2924,18 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // A removed IdentitySource arrives as its `removalDefaults` clear value,
+    // `[]` (the caller injects it; this covers a direct call).
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
       throw new ProvisioningError(
