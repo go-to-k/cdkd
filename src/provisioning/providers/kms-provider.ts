@@ -819,12 +819,15 @@ export class KMSProvider implements ResourceProvider {
         ) {
           this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
           await this.sendRotation(
-            new EnableKeyRotationCommand({
-              KeyId: physicalId,
-              ...(rotationPeriodInDays !== undefined && {
-                RotationPeriodInDays: rotationPeriodInDays,
-              }),
-            }),
+            () =>
+              this.getClient().send(
+                new EnableKeyRotationCommand({
+                  KeyId: physicalId,
+                  ...(rotationPeriodInDays !== undefined && {
+                    RotationPeriodInDays: rotationPeriodInDays,
+                  }),
+                })
+              ),
             resourceType,
             logicalId,
             physicalId
@@ -833,7 +836,7 @@ export class KMSProvider implements ResourceProvider {
       } else if (newEnableKeyRotation !== oldEnableKeyRotation) {
         this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
         await this.sendRotation(
-          new DisableKeyRotationCommand({ KeyId: physicalId }),
+          () => this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId })),
           resourceType,
           logicalId,
           physicalId
@@ -938,18 +941,18 @@ export class KMSProvider implements ResourceProvider {
    * since a retry meets the same disabled key.
    */
   private async sendRotation(
-    command: EnableKeyRotationCommand | DisableKeyRotationCommand,
+    send: () => Promise<unknown>,
     resourceType: string,
     logicalId: string,
     physicalId: string
   ): Promise<void> {
     try {
-      await this.getClient().send(command as EnableKeyRotationCommand);
+      await send();
     } catch (error) {
       if (!(error instanceof DisabledException)) throw error;
       throw markNonRetryable(
         new ProvisioningError(
-          safeMsg`Failed to update KMS Key ${logicalId}: the key is disabled, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Declare Enabled: true (or enable the key) to change its rotation, or drop the rotation change from this update.`,
+          safeMsg`Failed to update KMS Key ${logicalId}: the key is currently disabled in AWS, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Enable the key first (declare Enabled: true, or enable it in AWS), or drop the rotation change from this update.`,
           resourceType,
           logicalId,
           physicalId,

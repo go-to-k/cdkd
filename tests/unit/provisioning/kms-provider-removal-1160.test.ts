@@ -255,7 +255,7 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       expect(err).toBeInstanceOf(Error);
       const msg = (err as Error).message;
       expect(msg).toBe(
-        'Failed to update KMS Key Key: the key is disabled, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Declare Enabled: true (or enable the key) to change its rotation, or drop the rotation change from this update.'
+        'Failed to update KMS Key Key: the key is currently disabled in AWS, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Enable the key first (declare Enabled: true, or enable it in AWS), or drop the rotation change from this update.'
       );
       expect(msg).not.toContain(KEY_ID);
       expect(msg).not.toContain(ACCOUNT);
