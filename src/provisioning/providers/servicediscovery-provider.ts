@@ -11,6 +11,7 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   CreateServiceCommand,
+  type CreateServiceCommandOutput,
   UpdateServiceCommand,
   DeleteServiceCommand,
   UpdateServiceAttributesCommand,
@@ -91,6 +92,15 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-fai
  */
 const PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL = 60;
 const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
+
+/**
+ * `CreateService`'s retry on `NamespaceNotFound` right after the namespace was
+ * created (issue #5113): 0.5s -> 1s -> 2s, then 4s flat, over 9 retries — 27.5s
+ * of backoff, about 30s with the calls themselves.
+ */
+const CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES = 9;
+const CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS = 500;
+const CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS = 4_000;
 
 /** The three namespace kinds, which share one Description removal reset. */
 const NAMESPACE_TYPES = [
@@ -1152,20 +1162,55 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     let leftBehindServiceId: string | undefined;
     try {
-      const response = await client.send(
-        new CreateServiceCommand({
-          Name: name,
-          ...(namespaceId && { NamespaceId: namespaceId }),
-          ...(description && { Description: description }),
-          ...(dnsConfig && { DnsConfig: dnsConfig }),
-          ...(healthCheckCustomConfig && {
-            HealthCheckCustomConfig: healthCheckCustomConfig,
-          }),
-          ...(healthCheckConfig && { HealthCheckConfig: healthCheckConfig }),
-          ...(tags.length > 0 && { Tags: tags }),
-          ...(type && { Type: type }),
-        })
-      );
+      // Issue #5113: right after its namespace's create operation reports
+      // SUCCESS, Cloud Map can still answer `NamespaceNotFound` (a
+      // read-after-write lag, observed live on the servicediscovery fixture:
+      // one of four parallel creates against a fresh namespace). Retry THAT
+      // error only, for ~27.5s of backoff; every other error surfaces at once.
+      //
+      // A retry cannot duplicate the service: `NamespaceNotFound` is a
+      // synchronous client-fault rejection, so no service exists after it,
+      // and only that error is retried. Each attempt carries its own
+      // `CreatorRequestId` — cdkd sends none, and the SDK mints a fresh
+      // idempotency token per `send` — so a retry is never matched against
+      // the rejected attempt's token.
+      //
+      // Interruptible (issue #2053), and through the masked sink (issue
+      // #2050): `withRetry` prints AWS's message, which quotes the RESOLVED
+      // `NamespaceId` back.
+      const watch = startInterruptWatch(`Cloud Map service ${logicalId}`);
+      let response: CreateServiceCommandOutput;
+      try {
+        response = await withRetry(
+          () =>
+            client.send(
+              new CreateServiceCommand({
+                Name: name,
+                ...(namespaceId && { NamespaceId: namespaceId }),
+                ...(description && { Description: description }),
+                ...(dnsConfig && { DnsConfig: dnsConfig }),
+                ...(healthCheckCustomConfig && {
+                  HealthCheckCustomConfig: healthCheckCustomConfig,
+                }),
+                ...(healthCheckConfig && { HealthCheckConfig: healthCheckConfig }),
+                ...(tags.length > 0 && { Tags: tags }),
+                ...(type && { Type: type }),
+              })
+            ),
+          logicalId,
+          {
+            maxRetries: CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES,
+            initialDelayMs: CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS,
+            maxDelayMs: CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS,
+            isRetryable: (_text, error) => error instanceof NamespaceNotFound,
+            logger: this.maskedRetryLogger(maskSecrets),
+            isInterrupted: watch.isInterrupted,
+            onInterrupted: watch.onInterrupted,
+          }
+        );
+      } finally {
+        watch.dispose();
+      }
 
       const service = response.Service;
       if (!service || !service.Id) {
