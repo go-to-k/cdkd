@@ -567,9 +567,8 @@ const CLEARED_BY_TLS_DOWNGRADE: ReadonlySet<string> = new Set(['SslPolicy', 'Cer
  * The ONE warning line for {@link LISTENER_LEFT_IN_PLACE_ON_REMOVAL} removals.
  * Names are template-borne, so they go through `safeMsg`. The deploy line
  * says CloudFormation keeps the value too (the CFn A/B above). A rollback
- * revert restores an earlier
- * state record, so there the property is one the failed deploy ADDED, and
- * the line says that instead.
+ * revert restores an earlier state record, so there the property is one the
+ * failed deploy ADDED, and the line says that instead.
  */
 const listenerLeftInPlaceWarning = (
   logicalId: string,
@@ -2759,7 +2758,8 @@ export class ELBv2Provider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     // Issue #1160: a removed property ModifyListener is not sent stays live,
-    // as CloudFormation leaves it (LISTENER_LEFT_IN_PLACE_ON_REMOVAL). Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
+    // as CloudFormation leaves it (LISTENER_LEFT_IN_PLACE_ON_REMOVAL).
+    // Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
     // change, which AWS drops itself. Named once, and only after the update
     // SUCCEEDED (the shared caller's warning has the same timing). Not on
     // `drift --revert`: its previous side is an AWS readback, so a key the
