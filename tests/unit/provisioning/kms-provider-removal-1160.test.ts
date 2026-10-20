@@ -263,6 +263,26 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       expect(names()).toEqual(['EnableKeyRotationCommand']);
     });
 
+    it('right after its own EnableKey, a DisabledException stays the ordinary, retryable wrap', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof EnableKeyRotationCommand
+          ? Promise.reject(new DisabledException({ message: 'is disabled.', $metadata: {} }))
+          : Promise.resolve({})
+      );
+      const err = await deployUpdate(
+        { EnableKeyRotation: true, RotationPeriodInDays: 180 },
+        { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 90 }
+      ).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).not.toContain('currently disabled in AWS');
+      expect((err as Error).message).toMatch(/^Failed to update KMS Key Key: /);
+      expect(isMarkedNonRetryable(err)).toBe(false);
+      expect(names()).toEqual(['EnableKeyCommand', 'EnableKeyRotationCommand']);
+    });
+
     it('wraps any other rotation failure as before', async () => {
       mockSend.mockImplementation((command: unknown) =>
         command instanceof DisableKeyRotationCommand

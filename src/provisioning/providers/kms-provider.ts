@@ -828,6 +828,7 @@ export class KMSProvider implements ResourceProvider {
                   }),
                 })
               ),
+            enabledChange === 'enable',
             resourceType,
             logicalId,
             physicalId
@@ -837,6 +838,7 @@ export class KMSProvider implements ResourceProvider {
         this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
         await this.sendRotation(
           () => this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId })),
+          enabledChange === 'enable',
           resourceType,
           logicalId,
           physicalId
@@ -938,10 +940,14 @@ export class KMSProvider implements ResourceProvider {
    * A rotation call (`EnableKeyRotation` / `DisableKeyRotation`). KMS refuses
    * it on a disabled key, as CloudFormation's update does (issue #1160 A/B), so
    * that refusal is restated as what the template must change; it is final,
-   * since a retry meets the same disabled key.
+   * since a retry meets the same disabled key. Not when this update has just
+   * enabled the key (`justEnabled`): there a DisabledException is KMS still
+   * catching up with the EnableKey, so it goes to the caller's ordinary wrap
+   * and the retry that heals it stays possible.
    */
   private async sendRotation(
     send: () => Promise<unknown>,
+    justEnabled: boolean,
     resourceType: string,
     logicalId: string,
     physicalId: string
@@ -949,7 +955,7 @@ export class KMSProvider implements ResourceProvider {
     try {
       await send();
     } catch (error) {
-      if (!(error instanceof DisabledException)) throw error;
+      if (!(error instanceof DisabledException) || justEnabled) throw error;
       throw markNonRetryable(
         new ProvisioningError(
           safeMsg`Failed to update KMS Key ${logicalId}: the key is currently disabled in AWS, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Enable the key first (declare Enabled: true, or enable it in AWS), or drop the rotation change from this update.`,
