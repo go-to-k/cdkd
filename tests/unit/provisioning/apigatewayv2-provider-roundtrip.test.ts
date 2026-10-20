@@ -43,6 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const API_ID = 'abcd1234';
 
@@ -1063,14 +1064,263 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('Authorizer: removed EnableSimpleResponses and IdentitySource are NOT reset — no SDK call', async () => {
+  it('Authorizer: removed EnableSimpleResponses / AuthorizerUri / JwtConfiguration are KEPT — no SDK call (#1160 A/B)', async () => {
+    // Real CloudFormation A/B (#1160): CloudFormation leaves each live value.
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID, IdentitySource: ['$request.header.Authorization'] },
+      {
+        ApiId: API_ID,
+        IdentitySource: ['$request.header.Authorization'],
+        EnableSimpleResponses: true,
+        AuthorizerUri: 'arn:aws:apigateway:us-east-1:lambda:path/fn',
+        JwtConfiguration: { Audience: ['a'], Issuer: 'https://issuer' },
+      }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Authorizer: a removed IdentitySource is cleared with [] (CFn CLEARS it, #1160 A/B)', async () => {
+    // `UpdateAuthorizer` keeps an omitted IdentitySource; `[]` clears it, which
+    // is what CloudFormation does (and what AWS refuses for a JWT authorizer).
+    mockSend.mockResolvedValueOnce({});
     await provider.update(
       'AuthLogical',
       'auth-1',
       'AWS::ApiGatewayV2::Authorizer',
       { ApiId: API_ID },
-      { ApiId: API_ID, EnableSimpleResponses: true, IdentitySource: ['$request.header.Authorization'] }
+      { ApiId: API_ID, IdentitySource: ['$request.header.Authorization'] }
+    );
+    expect(updateAuthorizerInput()).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      IdentitySource: [],
+    });
+  });
+
+  it('Authorizer: the clear rides beside a declared change, and a never-set IdentitySource stays absent', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID, Name: 'new' },
+      { ApiId: API_ID, Name: 'old', IdentitySource: '$request.header.Authorization' }
+    );
+    expect(updateAuthorizerInput()).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      Name: 'new',
+      IdentitySource: [],
+    });
+    mockSend.mockClear();
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID, Name: 'new2' },
+      { ApiId: API_ID, Name: 'new' }
+    );
+    expect(updateAuthorizerInput()).toEqual({ ApiId: API_ID, AuthorizerId: 'auth-1', Name: 'new2' });
+  });
+
+  it('Authorizer: an injected caller context is not injected twice, and drift --revert injects nothing', async () => {
+    // The caller already put `[]` in the bag (removedProperties is set), so the
+    // provider must take the bag as is.
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID, IdentitySource: [] },
+      { ApiId: API_ID, IdentitySource: ['$request.header.Authorization'] },
+      { removedProperties: new Set(['IdentitySource']) }
+    );
+    expect(updateAuthorizerInput()!['IdentitySource']).toEqual([]);
+    mockSend.mockClear();
+    // drift --revert: the previous side is an AWS readback and removedProperties
+    // is empty, so nothing reads as removed and nothing is sent.
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: API_ID },
+      { ApiId: API_ID, IdentitySource: ['$request.header.Authorization'] },
+      { removedProperties: new Set(), desiredFromAwsReadback: true }
     );
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── #1160 A/B: Api / Stage / Integration / Route KEEP rows ────────
+
+  it('Api: a removed RouteSelectionExpression is KEPT — no SDK call (#1160 A/B)', async () => {
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { ProtocolType: 'WEBSOCKET' },
+      { ProtocolType: 'WEBSOCKET', RouteSelectionExpression: '$request.body.action' }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Stage: removed Description / DefaultRouteSettings are KEPT; beside a change only the change is sent (#1160 A/B)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'StageLogical',
+      'ab',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: API_ID, StageName: 'ab', StageVariables: { k: 'v2' } },
+      {
+        ApiId: API_ID,
+        StageName: 'ab',
+        StageVariables: { k: 'v1' },
+        Description: 'd',
+        DefaultRouteSettings: { ThrottlingBurstLimit: 100 },
+      }
+    );
+    expect(updateStageInput()).toEqual({ ApiId: API_ID, StageName: 'ab', StageVariables: { k: 'v2' } });
+  });
+
+  it('Integration: removed URI / method / payload / timeout and the #609 fields are KEPT — no SDK call (#1160 A/B)', async () => {
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: API_ID, IntegrationType: 'HTTP_PROXY' },
+      {
+        ApiId: API_ID,
+        IntegrationType: 'HTTP_PROXY',
+        IntegrationUri: 'https://example.com',
+        IntegrationMethod: 'GET',
+        PayloadFormatVersion: '1.0',
+        TimeoutInMillis: 5000,
+        ConnectionType: 'VPC_LINK',
+        ConnectionId: 'link-1',
+        ContentHandlingStrategy: 'CONVERT_TO_TEXT',
+        CredentialsArn: 'arn:aws:iam::1:role/r',
+        PassthroughBehavior: 'NEVER',
+        RequestTemplates: { $default: '{}' },
+        ResponseParameters: { '404': { 'append:header.x': 'v' } },
+        TemplateSelectionExpression: '\\$default',
+        TlsConfig: { ServerNameToVerify: 'b.example.com' },
+      }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Route: removed Target / ModelSelectionExpression / RouteResponseSelectionExpression are KEPT (#1160 A/B)', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'RouteLogical',
+      'r-1',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: API_ID, RouteKey: '$default', OperationName: 'op2' },
+      {
+        ApiId: API_ID,
+        RouteKey: '$default',
+        OperationName: 'op1',
+        Target: 'integrations/int-1',
+        ModelSelectionExpression: '$request.body.model',
+        RouteResponseSelectionExpression: '$default',
+      }
+    );
+    expect(updateRouteInput()).toEqual({ ApiId: API_ID, RouteId: 'r-1', OperationName: 'op2' });
+  });
+
+  // ─── #1160 A/B: Integration IntegrationSubtype ─────────────────────
+
+  const EVENTS_PARAMS = { Source: 's', DetailType: 'd', Detail: '$request.body' };
+  const SERVICE_INTEGRATION = {
+    ApiId: API_ID,
+    IntegrationType: 'AWS_PROXY',
+    IntegrationSubtype: 'EventBridge-PutEvents',
+    CredentialsArn: 'arn:aws:iam::1:role/r',
+    RequestParameters: EVENTS_PARAMS,
+  };
+
+  it('Integration: a removed IntegrationSubtype with no IntegrationUri is REFUSED before any call (CFn fails it)', async () => {
+    const { IntegrationSubtype: _dropped, ...withoutSubtype } = SERVICE_INTEGRATION;
+    for (const context of [undefined, { removedProperties: new Set(['IntegrationSubtype']) }]) {
+      await expect(
+        provider.update(
+          'IntLogical',
+          'int-1',
+          'AWS::ApiGatewayV2::Integration',
+          { ...withoutSubtype, Description: 'new' },
+          SERVICE_INTEGRATION,
+          context
+        )
+      ).rejects.toThrow(/IntegrationSubtype was removed from the template, and CloudFormation fails that update/);
+    }
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Integration: a removed IntegrationSubtype beside a declared IntegrationUri is sent WITHOUT the subtype', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const { IntegrationSubtype: _dropped, RequestParameters: _rp, ...rest } = SERVICE_INTEGRATION;
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ...rest, IntegrationUri: 'arn:aws:lambda:us-east-1:1:function:f', IntegrationMethod: 'POST' },
+      SERVICE_INTEGRATION
+    );
+    const input = updateIntegrationInput()!;
+    expect(input['IntegrationSubtype']).toBeUndefined();
+    expect(input['RequestParameters']).toBeUndefined();
+    expect(input['IntegrationUri']).toBe('arn:aws:lambda:us-east-1:1:function:f');
+  });
+
+  it('Integration: a rollback replay without IntegrationSubtype keeps the live subtype and warns', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const { IntegrationSubtype: _dropped, ...withoutSubtype } = SERVICE_INTEGRATION;
+    const warn = vi.mocked(getLogger().child('ApiGatewayV2Provider').warn);
+    warn.mockClear();
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ...withoutSubtype, Description: 'restored' },
+      { ...SERVICE_INTEGRATION, Description: 'failed-deploy' },
+      { removedProperties: new Set(['IntegrationSubtype']), replayingState: true }
+    );
+    expect(updateIntegrationInput()!['IntegrationSubtype']).toBe('EventBridge-PutEvents');
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('keeps the integration'))).toBe(true);
+  });
+
+  it('Integration: a Description-only change on a service integration re-sends the subtype WITH the full RequestParameters', async () => {
+    // AWS re-validates the operation's required parameter mapping on every
+    // UpdateIntegration carrying the subtype (#1160 direct probe).
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ...SERVICE_INTEGRATION, Description: 'new' },
+      SERVICE_INTEGRATION
+    );
+    expect(updateIntegrationInput()).toEqual({
+      ApiId: API_ID,
+      IntegrationId: 'int-1',
+      Description: 'new',
+      IntegrationSubtype: 'EventBridge-PutEvents',
+      RequestParameters: EVENTS_PARAMS,
+    });
+  });
+
+  it('Integration: with RequestParameters removed from the template, the previous (live) map is re-sent beside the subtype', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const { RequestParameters: _rp, ...withoutParams } = SERVICE_INTEGRATION;
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      { ...withoutParams, Description: 'new' },
+      SERVICE_INTEGRATION
+    );
+    expect(updateIntegrationInput()!['RequestParameters']).toEqual(EVENTS_PARAMS);
   });
 });
