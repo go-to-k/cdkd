@@ -451,6 +451,49 @@ describe('renamed reversals that stay at their slot (review of go-to-k/cdkd#5064
     expect(result.failures).toBe(0);
   });
 
+  it('an old id a pending new copy still holds is not re-created early either', async () => {
+    // Same chain; C names A first, so A runs ahead and its new copy `y` waits
+    // for its slot. B's old id is that `y`.
+    const m = plainModel();
+    const state: Record<string, ResourceState> = {
+      B: record('z', TOPIC, { TopicName: 'z' }, []),
+      A: record('y', TOPIC, { TopicName: 'y' }, []),
+      C: record('q-C', QUEUE, { V: 2 }, ['A', 'B']),
+    };
+    const ops = [topicOp('B', 'y', 'z'), topicOp('A', 'x', 'y'), inPlaceOp('C', ['A', 'B'])];
+    await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['create A', 'update C', 'delete A y', 'create B', 'delete B z']);
+  });
+
+  it('the deferred delete skips a new id a record took meanwhile', async () => {
+    // A runs ahead (C names it); B, at its slot before A's, re-creates `y`,
+    // the id A's pending new copy has.
+    const m = plainModel();
+    const state: Record<string, ResourceState> = {
+      A: record('y', TOPIC, { TopicName: 'y' }, []),
+      B: record('z', TOPIC, { TopicName: 'z' }, []),
+      C: record('q-C', QUEUE, { V: 2 }, ['A']),
+    };
+    const ops = [topicOp('A', 'x', 'y'), topicOp('B', 'y', 'z'), inPlaceOp('C', ['A'])];
+    const result = await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['create A', 'update C', 'create B', 'delete B z']);
+    expect(state['B']!.physicalId).toBe('y');
+    expect(m.warns.some((w) => w.includes('now holds its physical id'))).toBe(true);
+    expect(result.warnings).toBe(1);
+  });
+
+  it('an op it names reverting AFTER its slot does not keep it at its slot', async () => {
+    const m = plainModel();
+    const state: Record<string, ResourceState> = {
+      Y: record('q-Y', QUEUE, { V: 2 }, []),
+      R: record('r-new', TOPIC, { TopicName: 'r-new' }, ['Y']),
+      X: record('q-X', QUEUE, { V: 2 }, ['R']),
+    };
+    const ops = [inPlaceOp('Y', []), topicOp('R', 'r-old', 'r-new', ['Y']), inPlaceOp('X', ['R'])];
+    await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['create R', 'update X', 'delete R r-new', 'update Y']);
+  });
+
   it("one whose old record names an op still to revert keeps its slot, after that op", async () => {
     // R's old record names Y (in place), which reverts between X and R.
     const m = plainModel();
@@ -522,6 +565,17 @@ describe('the deferred delete of the new resource (review of go-to-k/cdkd#5064)'
       `save Role:${OLD_ROLE} pending=`,
     ]);
     expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+  });
+
+  it('a failed deferred delete keeps the superseded entry for the next deploy', async () => {
+    const m = iamModel();
+    m.provider.delete.mockRejectedValue(new Error('DeleteConflict'));
+    const onSuperseded = vi.fn();
+    const onSupersededSettled = vi.fn();
+    await replayRollback(e1Ops(), e1State(), 'App', m.ctx, { onSuperseded, onSupersededSettled });
+    expect(onSuperseded).toHaveBeenCalledTimes(1);
+    expect(onSupersededSettled).not.toHaveBeenCalled();
+    expect(m.warns.some((w) => w.includes('next `cdkd deploy`'))).toBe(true);
   });
 
   it('a new copy a later run could not delete the same way is not recorded', async () => {

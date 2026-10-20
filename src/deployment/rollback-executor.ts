@@ -309,10 +309,17 @@ async function replayRollbackUnbound(
   // The re-create of one it depends on runs before its own.
   const stepOne = orderInlinePolicyReversals([...otherOps].reverse(), stateResources);
   const stepOneIds = new Map<string, CompletedOperation>();
-  for (const op of stepOne) if (!stepOneIds.has(op.logicalId)) stepOneIds.set(op.logicalId, op);
+  const stepOneIndex = new Map<CompletedOperation, number>();
+  stepOne.forEach((op, at) => {
+    if (!stepOneIds.has(op.logicalId)) stepOneIds.set(op.logicalId, op);
+    stepOneIndex.set(op, at);
+  });
   // Every op replayed so far, ahead of its slot or at it: none runs twice.
   const started = new Set<CompletedOperation>();
   const pendingNewDeletes = new Map<CompletedOperation, () => Promise<void>>();
+  // The physical ids those pending deletes are to remove: still live, so a
+  // reversal whose old id is one of them waits for its slot.
+  const pendingNewIds = new Set<string>();
   const runOp = (op: CompletedOperation, deferral?: ReplayDeferral) =>
     replaySingle(
       op,
@@ -333,10 +340,13 @@ async function replayRollbackUnbound(
   const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
     for (const target of [...refs].map((id) => stepOneIds.get(id))) {
       if (target === undefined || started.has(target)) continue;
-      if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds)) continue;
-      // Its own old record names an op still to revert that is not a renamed
-      // reversal: re-created now, it would read that op's NEW values. It keeps
-      // its slot, after that op.
+      if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds, pendingNewIds)) {
+        continue;
+      }
+      // Its own old record names an op still to revert BEFORE its slot that is
+      // not a renamed reversal: re-created now, it would read that op's NEW
+      // values. It keeps its slot, after that op. One reverting after its slot
+      // ran after the re-create before too.
       const ownRefs = revertReferences(target, stateResources);
       if (
         [...ownRefs].some((id) => {
@@ -344,7 +354,8 @@ async function replayRollbackUnbound(
           return (
             named !== undefined &&
             !started.has(named) &&
-            !renamedReverseReplacement(named, stateResources, orphanLogicalIds)
+            stepOneIndex.get(named)! < stepOneIndex.get(target)! &&
+            !renamedReverseReplacement(named, stateResources, orphanLogicalIds, pendingNewIds)
           );
         })
       ) {
@@ -354,8 +365,15 @@ async function replayRollbackUnbound(
       started.add(target);
       await recreateAhead(ownRefs);
       if (options.isInterrupted?.()) return;
+      const newId = stateResources[target.logicalId]?.physicalId;
       await runOp(target, {
-        defer: (finish) => pendingNewDeletes.set(target, finish),
+        defer: (finish) => {
+          pendingNewDeletes.set(target, async () => {
+            await finish();
+            if (typeof newId === 'string') pendingNewIds.delete(newId);
+          });
+          if (typeof newId === 'string') pendingNewIds.add(newId);
+        },
         onSuperseded: options.onSuperseded,
         onSupersededSettled: options.onSupersededSettled,
       });

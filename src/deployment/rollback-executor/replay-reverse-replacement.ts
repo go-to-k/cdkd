@@ -72,7 +72,11 @@ import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import type { SupersededResourceRecord } from '../../types/state.js';
-import { canRecordSuperseded } from '../superseded-resources.js';
+import {
+  canRecordSuperseded,
+  supersededHolderOf,
+  SUPERSEDED_KEPT_REMEDY,
+} from '../superseded-resources.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { probeReplacedSurvivor } from './replaced-survivor.js';
@@ -1219,15 +1223,16 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // Only what a later run can delete with the context this one has
   // (`canRecordSuperseded`); a principal's delete reads no inline-policy
   // claim, so a role qualifies. Anything else keeps the in-memory deferral.
-  const recordSuperseded = deferral !== undefined && canRecordSuperseded(current, {});
-  if (recordSuperseded) deferral.onSuperseded?.(superseded);
+  const recordSuperseded = deferral?.onSuperseded !== undefined && canRecordSuperseded(current, {});
+  if (recordSuperseded) deferral?.onSuperseded?.(superseded);
   await afterOp?.(op.logicalId);
 
   // The delete of the new resource and the closing line and event. A
   // renamed reversal run ahead of the ops reverting to the old name hands
   // it to the replay instead, which runs it at this op's own slot, after
   // those ops moved off the new resource (go-to-k/cdkd#5064).
-  const finish = async (): Promise<void> => {
+  /** Returns whether the new resource is gone (deleted, not kept). */
+  const finish = async (): Promise<boolean> => {
     // Survivor record for this arm's retain branch -- see the twin binding
     // in `reverse-replacement-readopt` above for why the EVENT, not the
     // warn, is what the user is left with.
@@ -1308,7 +1313,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
             `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
               `(${displaySafe(mask(current.physicalId))}) failed: ` +
               `${displaySafe(describeAwsFailure(deleteError).detail)}. ` +
-              `Delete it manually — it is no longer tracked in state.`
+              (recordSuperseded
+                ? `${SUPERSEDED_KEPT_REMEDY}.`
+                : `Delete it manually — it is no longer tracked in state.`)
           )
         );
         // Same class as the `Retain` arm above, and the reason this
@@ -1327,7 +1334,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
           `deleted after the old resource was re-created: ` +
           `${describeAwsFailure(deleteError).detail}. ` +
-          `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`;
+          (recordSuperseded
+            ? `It is live and still billing; ${SUPERSEDED_KEPT_REMEDY}.`
+            : `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`);
         result.warnings++;
       }
     }
@@ -1376,6 +1385,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         ),
       }),
     });
+    return survivorReason === undefined;
   };
   if (deferral !== undefined) {
     logger.info(
@@ -1384,8 +1394,23 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         `are reverted`
     );
     deferral.defer(async () => {
+      let gone = false;
       try {
-        await finish();
+        // A record took the new resource's id while its delete waited (a
+        // reversal that re-created that id, or a name-idempotent create that
+        // returned it): cdkd never deletes an id a record names.
+        const holder = supersededHolderOf(superseded, stateResources);
+        if (holder !== undefined) {
+          logger.warn(
+            safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} ` +
+              safeMsg`(${mask(current.physicalId)}): a record of this stack now holds its ` +
+              `physical id. Check it with cdkd drift.`
+          );
+          result.warnings++;
+          gone = true;
+        } else {
+          gone = await finish();
+        }
       } catch (finishError) {
         logger.warn(
           maskedFailureText(
@@ -1404,13 +1429,13 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
           error: maskedRollbackEventError(finishError, mask),
         });
-      } finally {
-        // Its delete ran (a failure is warned and named in the event, as it
-        // was before the delete could be deferred).
-        if (recordSuperseded) deferral.onSupersededSettled?.(superseded);
       }
-      // The save that drops the entry again.
-      if (recordSuperseded) await afterOp?.(op.logicalId);
+      // Gone, or held by a record: the entry goes, with a save. A delete that
+      // failed keeps it, so the next deploy retries it (#5111).
+      if (recordSuperseded && gone) {
+        deferral.onSupersededSettled?.(superseded);
+        await afterOp?.(op.logicalId);
+      }
     });
     return;
   }

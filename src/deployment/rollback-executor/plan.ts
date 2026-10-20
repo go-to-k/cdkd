@@ -1054,7 +1054,9 @@ export function planRollback(
 export function renamedReverseReplacement(
   op: CompletedOperation,
   stateResources: Record<string, ResourceState>,
-  orphanLogicalIds: Set<string>
+  orphanLogicalIds: Set<string>,
+  /** The new copies of reversals run ahead whose deferred delete is pending: holders too. */
+  pendingNewIds: ReadonlySet<string> = new Set()
 ): boolean {
   if (op.changeType !== 'UPDATE') return false;
   if (op.oldDeletedBeforeCreate === true || op.oldResourceMaySurvive !== undefined) return false;
@@ -1064,6 +1066,7 @@ export function renamedReverseReplacement(
   const oldId = op.previousState?.physicalId;
   if (typeof oldId !== 'string' || typeof current?.physicalId !== 'string') return false;
   if (current.physicalId === oldId) return false;
+  if (pendingNewIds.has(oldId)) return false;
   // Another record holds the old id (a name handed down a chain of renames,
   // whose holder reverts later): re-created early, it would collide with, or
   // a name-idempotent create would return, that live resource.
