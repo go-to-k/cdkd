@@ -661,7 +661,15 @@ describe('ECS Service config properties (#609)', () => {
   describe('declarations', () => {
     it('reports no silent-drop property left for the type', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
-      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+      // Added by AWS in the 2026-10-20 schema refresh (#5123); no published
+      // `@aws-sdk/client-ecs` (3.1153.0) models it, so the provider cannot
+      // write it and a template using it routes through Cloud Control. Drop
+      // the name from this set once the SDK models it and the provider wires it.
+      const sdkLacks = new Set(['GatewayConnectors']);
+      for (const property of sdkLacks) {
+        expect(coverage?.silentDrop.has(property), property).toBe(true);
+      }
+      expect([...(coverage?.silentDrop.keys() ?? [])].filter((p) => !sdkLacks.has(p))).toEqual([]);
       for (const property of [
         'AvailabilityZoneRebalancing',
         'DeploymentController',
