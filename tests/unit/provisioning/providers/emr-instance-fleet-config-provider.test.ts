@@ -240,7 +240,7 @@ describe('EMRInstanceFleetConfigProvider create', () => {
     // whole point of failing fast rather than timing out with a generic message.
     await expect(
       newProvider({ maxWaitMs: 60_000 }).create('Fleet', RESOURCE_TYPE, BASE_PROPS)
-    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    ).rejects.toThrow(/entered failed state SUSPENDED: Re-run with --verbose for AWS's own message\./);
     // Fail-fast means ONE poll, not a spin until the 5s vitest timeout fires.
     expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(1);
   });
@@ -436,7 +436,7 @@ describe('EMRInstanceFleetConfigProvider update', () => {
     const next = { ...BASE_PROPS, TargetOnDemandCapacity: 5 };
     await expect(
       newProvider({ maxWaitMs: 60_000 }).update('Fleet', FLEET_ID, RESOURCE_TYPE, next, BASE_PROPS)
-    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    ).rejects.toThrow(/entered failed state SUSPENDED: Re-run with --verbose for AWS's own message\./);
     expect(callsOf(ListInstanceFleetsCommand)).toHaveLength(3);
   });
 

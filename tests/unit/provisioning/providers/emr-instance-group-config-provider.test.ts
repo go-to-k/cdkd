@@ -202,7 +202,7 @@ describe('EMRInstanceGroupConfigProvider create', () => {
     // The error must carry the service's own state-change reason.
     await expect(
       newProvider({ maxWaitMs: 60_000 }).create('Grp', RESOURCE_TYPE, BASE_PROPS)
-    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    ).rejects.toThrow(/entered failed state SUSPENDED: Re-run with --verbose for AWS's own message\./);
     // Fail-fast means ONE poll, not a spin until the vitest timeout fires.
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(1);
   });
@@ -311,7 +311,7 @@ describe('EMRInstanceGroupConfigProvider update', () => {
     const next = { ...BASE_PROPS, InstanceCount: 5 };
     await expect(
       newProvider({ maxWaitMs: 60_000 }).update('Grp', GROUP_ID, RESOURCE_TYPE, next, BASE_PROPS)
-    ).rejects.toThrow(/entered failed state SUSPENDED: state is SUSPENDED/);
+    ).rejects.toThrow(/entered failed state SUSPENDED: Re-run with --verbose for AWS's own message\./);
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(3);
   });
 

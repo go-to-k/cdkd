@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { describeAwsFailure, safeStringify } from '../../../src/utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  describeAwsStatusReason,
+  safeStringify,
+  VERBOSE_POINTER,
+} from '../../../src/utils/aws-failure-text.js';
 import { CdkdError, ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
@@ -314,4 +319,37 @@ describe('safeStringify: the guarded 1:1 replacement for a bare String(x)', () =
       expect(safeStringify(hostile)).toBe('a value that could not be converted to text');
     }
   });
+});
+
+describe('describeAwsStatusReason: a Describe-reported reason (go-to-k/cdkd#2319)', () => {
+  const ROLE = 'arn:aws:iam::210987654321:role/EMR_DefaultRole';
+
+  it('withholds the message behind its code and the --verbose pointer', () => {
+    const text = describeAwsStatusReason(
+      { code: 'VALIDATION_ERROR', message: `Service role ${ROLE} has insufficient permissions` },
+      'no state-change reason reported'
+    );
+    expect(text.summary).toBe(`VALIDATION_ERROR. ${VERBOSE_POINTER}`);
+    expect(text.summary).not.toContain('210987654321');
+    expect(text.detail).toBe(`Service role ${ROLE} has insufficient permissions`);
+    expect(text.redacted).toBe(true);
+  });
+
+  it('omits the code clause when the service reports none (FSx)', () => {
+    const text = describeAwsStatusReason({ message: `quota for ${ROLE}` }, 'no failure details');
+    expect(text.summary).toBe(VERBOSE_POINTER);
+    expect(text.redacted).toBe(true);
+  });
+
+  it.each([undefined, {}, { code: 'X', message: '' }])(
+    'keeps the cdkd fallback, unredacted, when there is no message (%o)',
+    (reason) => {
+      const text = describeAwsStatusReason(reason, 'no state-change reason reported');
+      expect(text).toEqual({
+        summary: 'no state-change reason reported',
+        detail: 'no state-change reason reported',
+        redacted: false,
+      });
+    }
+  );
 });
