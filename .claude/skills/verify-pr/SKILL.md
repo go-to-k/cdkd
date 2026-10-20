@@ -16,7 +16,7 @@ Steps 6, 8 and 10-12 live in `references/*.md`, read at the step that uses them.
 
 Run each check and report pass/fail:
 
-0. **Worktree pre-flight**: `mise trust`, then `[ -d node_modules ] || pnpm install`.
+0. **Worktree pre-flight**: `mise trust`, then `[ -d node_modules ] || vp install`.
    `mise trust` is unconditional — an untrusted `.mise.toml` makes every
    `mise exec` in this run die with a config-parse error naming no cause. A fresh
    worktree has no `node_modules`, so typecheck / lint / build / test all fail
