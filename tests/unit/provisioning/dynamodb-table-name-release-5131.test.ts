@@ -58,6 +58,15 @@ describe('DynamoDBTableProvider.waitForNameReleased (go-to-k/cdkd#5131)', () => 
     expect(describes()).toBe(3);
   });
 
+  it('polls on past another refusal (a throttle), within the bound', async () => {
+    const throttle = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    mockSend.mockRejectedValueOnce(throttle).mockRejectedValueOnce(gone());
+    await new DynamoDBTableProvider().waitForNameReleased('Orders', NAME, TYPE, {
+      isInterrupted: () => false,
+    });
+    expect(describes()).toBe(2);
+  });
+
   it('is bounded: a name never released ends the wait without throwing', async () => {
     mockSend.mockResolvedValue(deleting());
     await expect(

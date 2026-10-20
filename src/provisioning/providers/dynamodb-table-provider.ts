@@ -3842,13 +3842,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
       } catch (error) {
         if (error instanceof ResourceNotFoundException) return;
-        // Not the answer this wait is for: the re-create reports what is wrong.
+        // Not the answer this wait is for (a throttle, say): poll on, within
+        // the bound; a lasting refusal ends it and the re-create reports.
         this.logger.debug(
           mask(
             `DynamoDB table ${logicalId}: name-release check failed: ${describeAwsFailure(error).detail}`
           )
         );
-        return;
       }
       await new Promise((resolve) => setTimeout(resolve, tableNameReleaseWait.intervalMs));
     }
