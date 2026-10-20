@@ -27,7 +27,7 @@ asset-bootstrap	2026-10-05T08:20:47Z	PASS	151	verify.sh	rc ok, orph clean; eu-we
 asset-migration	2026-10-11T09:33:22Z	PASS	641	verify.sh	PR #4720 (#4705) final c53f78f; rc 0 in eu-west-1, 0 orphans
 aws-custom-resource	2026-10-04T02:52:14Z	PASS	86	verify.sh	rc ok, orph clean (#1730)
 backup	2026-10-15T02:06:45Z	PASS	95	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
-basic	2026-10-20T09:35:55Z	PASS	89	standard	#5064 head re-run, clean
+basic	2026-10-20T11:00:00Z	PASS	90	standard	#5064 head re-run on 2f77a8d84, clean, orph clean
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-10-19T17:48:11Z	PASS	95	verify.sh	rc ok, orph clean; #1160 removed Runtime fields cleared, lifecycle 900/28800
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
@@ -170,7 +170,7 @@ fsx-openzfs	2026-10-02T10:50:28Z	PASS	1232	verify.sh	#1160 PR #4398; rc ok; unta
 fsx-windows	2026-10-02T10:50:28Z	PASS	4588	verify.sh	#1160 PR #4398; AD-joined rc ok, orph clean, no final backup
 full-stack-demo	2026-07-26T18:36:31Z	PASS	41	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 gc-custom-asset-names	2026-10-05T08:20:47Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
-generated-name-lifecycle	2026-10-20T08:48:46Z	FAIL	650	verify.sh	#5064 head re-run #2, same E1 rollback-plan ordering bug, byte-identical failure; CT confirms 14s role-absent window (DeleteRole 08:45:25Z -> CreateRole 08:45:39Z) during which Managed/inline Policy restore was attempted; deterministic not flake; AWS clean both runs
+generated-name-lifecycle	2026-10-20T10:03:46Z	PASS	1030	verify.sh	#5064 head re-run on 2f77a8d84 (7 commits past 280528675); E1/E2 role-rollback bug now fixed; A5/D1/D2/E1/E2/F1-F4/G all pass; orph clean
 generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
@@ -299,7 +299,7 @@ nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
 nested-stack-deep	2026-10-12T05:34:47Z	PASS	130	verify.sh	PR #4812 head build, rc ok, orph clean
 nested-stack-replace-guard	2026-10-12T05:36:03Z	PASS	61	verify.sh	PR #4812 head build, rc ok, orph clean
-nested-stack-rollback	2026-10-20T03:01:38Z	PASS	101	verify.sh	deploy+destroy clean, 0 orphans
+nested-stack-rollback	2026-10-20T10:30:19Z	PASS	124	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 nlb-source-nat	2026-10-14T14:46:11Z	PASS	370	verify.sh	PR #4915 (#1160) ce4ffaf68; rc 0, destroy 0 errors, orph clean
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
@@ -331,7 +331,7 @@ redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) 
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
 remove-protection	2026-10-20T04:17:50Z	PASS	2164	verify.sh	deploy+destroy clean, 0 orphans
 remove-protection-compensation	2026-10-18T14:09:14Z	PASS	250	verify.sh	PR #5046 (#2319) EC2 thrown-error identity; us-east-1 own run; rc ok, orph clean
-remove-protection-journaled-orphan	2026-10-20T06:28:27Z	PASS	706	verify.sh	deploy+destroy clean, 0 orphans
+remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-20T09:27:02Z	PASS	112	verify.sh	#5064 head re-run, clean
 replaced-delete-failed-rollback	2026-10-18T04:10:16Z	PASS	150	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
@@ -341,16 +341,16 @@ replacement-rename-onto-holder	2026-10-20T06:29:59Z	PASS	626	verify.sh	deploy+de
 require-approval-broadening	2026-10-12T18:28:19Z	PASS	100	verify.sh	rc ok, orph clean (own security classifier, #4845)
 retain-orphan-redeploy	2026-10-20T09:30:01Z	PASS	298	verify.sh	#5064 head re-run, clean
 retain-orphan-secret	2026-10-20T06:27:45Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
-rollback-command	2026-10-20T09:15:43Z	PASS	1028	verify.sh	#5064 head re-run, clean
+rollback-command	2026-10-20T10:20:58Z	PASS	974	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
 rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)
-rollback-failure-injection	2026-10-20T09:22:59Z	PASS	412	verify.sh	#5064 head re-run, clean
+rollback-failure-injection	2026-10-20T10:27:41Z	PASS	364	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-nested-cross-region-secret	2026-10-18T20:07:28Z	PASS	537	verify.sh	PR #5062 f0655a21a7; rc ok, orph clean both regions (us-east-1 + us-west-2)
 rollback-replacement-retain	2026-10-17T10:48:50Z	PASS	70	verify.sh	rc ok (solo rerun after a batch-script wave-placement race), orph clean (rollback refactor #5027)
-rollback-replay-cc-generated-name	2026-10-20T06:28:50Z	PASS	165	verify.sh	deploy+destroy clean, 0 orphans
-rollback-replay-effective-props	2026-10-20T06:31:50Z	PASS	240	verify.sh	deploy+destroy clean, 0 orphans
-rollback-same-id-recreate	2026-10-20T08:53:28Z	PASS	185	verify.sh	#5064 head re-run, clean
+rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
+rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
+rollback-same-id-recreate	2026-10-20T10:33:57Z	PASS	184	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-sqs-cooldown	2026-10-17T10:48:50Z	PASS	171	verify.sh	rc ok, orph clean (rollback refactor #5027)
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -411,7 +411,7 @@ stream-delete-redeploy	2026-10-15T23:44:38Z	PASS	226	verify.sh	rc ok, orph clean
 synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 tags-propagation	2026-10-19T00:17:40Z	PASS	201	verify.sh	rc ok, orph clean (#5077)
 throttle-wide-dag	2026-10-11T09:33:22Z	PASS	326	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-type-change-replacement	2026-10-20T08:58:14Z	PASS	247	verify.sh	#5064 head re-run, clean
+type-change-replacement	2026-10-20T10:58:10Z	PASS	234	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 unrecognized-key-autoroute	2026-10-11T09:33:22Z	PASS	115	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
