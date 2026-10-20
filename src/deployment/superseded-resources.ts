@@ -164,6 +164,22 @@ export function removeSuperseded(
   else host.supersededResources = remaining;
 }
 
+/**
+ * go-to-k/cdkd#5064: a rollback save's `supersededResources`: the state's own
+ * entries, plus the new resources a renamed reversal's deferred delete has yet
+ * to remove (`pending`). Nothing when there are none of the latter, so the
+ * carried field stays as it was.
+ */
+export function supersededAfterRollback(
+  base: Pick<StackState, 'supersededResources'>,
+  pending: Pick<StackState, 'supersededResources'>
+): Pick<StackState, 'supersededResources'> {
+  const added = Array.isArray(pending.supersededResources) ? pending.supersededResources : [];
+  if (added.length === 0) return {};
+  const own = Array.isArray(base.supersededResources) ? base.supersededResources : [];
+  return { supersededResources: [...own, ...added] };
+}
+
 /** The remedy a kept entry's warning names. */
 export const SUPERSEDED_KEPT_REMEDY =
   'cdkd keeps it in state: the next `cdkd deploy` of this stack retries the delete, and ' +

@@ -1,5 +1,10 @@
 import { Command, Option } from 'commander';
-import { holdsSupersededResources } from '../../deployment/superseded-resources.js';
+import {
+  addSuperseded,
+  holdsSupersededResources,
+  removeSuperseded,
+  supersededAfterRollback,
+} from '../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from './registry-release.js';
 import { recordRetainedForReadoption } from '../../deployment/retained-readoption.js';
 import { applyCrossPrefixScan } from '../../state/cross-prefix-stack-scan.js';
@@ -97,6 +102,7 @@ import {
   orphansAfterRollback,
   stackInstanceIdCarriedFrom,
   type StackOrphanRecord,
+  type SupersededResourceRecord,
   type LockInfo,
 } from '../../types/state.js';
 import { splitImportedOps, type ImportedResourceMark } from '../../types/rollback-journal.js';
@@ -1060,6 +1066,9 @@ export async function rollbackCommand(
         // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
         // it stands (as `mintedOrphans`), so each retires its generation.
         const rolledBackCreates: RolledBackCreate[] = [];
+        // go-to-k/cdkd#5064: the new resources a renamed reversal's deferred
+        // delete has yet to remove, kept in every save meanwhile.
+        const supersededHost: { supersededResources?: SupersededResourceRecord[] } = {};
         const orphanLogicalIds = new Set(options.orphan ?? []);
 
         // Informational role-arn note (issue #1183): the newest segment recorded
@@ -1332,6 +1341,7 @@ export async function rollbackCommand(
           const next = (): StackState => ({
             ...carriedState,
             ...stackInstanceIdCarriedFrom(baseState),
+            ...supersededAfterRollback(baseState, supersededHost),
             version: STATE_SCHEMA_VERSION_CURRENT,
             region,
             resources: { ...stateResources },
@@ -1614,6 +1624,8 @@ export async function rollbackCommand(
                           onRolledBackCreate: (create) => rolledBackCreates.push(create),
                           inlinePolicyWriters,
                           failedOperations: failedForGuard,
+                          onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+                          onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
                         })
                     );
                     return {

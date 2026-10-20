@@ -1064,6 +1064,19 @@ export function renamedReverseReplacement(
   const oldId = op.previousState?.physicalId;
   if (typeof oldId !== 'string' || typeof current?.physicalId !== 'string') return false;
   if (current.physicalId === oldId) return false;
+  // Another record holds the old id (a name handed down a chain of renames,
+  // whose holder reverts later): re-created early, it would collide with, or
+  // a name-idempotent create would return, that live resource.
+  const oldType = op.previousState?.resourceType ?? op.resourceType;
+  for (const [logicalId, other] of Object.entries(stateResources)) {
+    if (logicalId === op.logicalId || typeof other?.physicalId !== 'string') continue;
+    if (
+      other.physicalId === oldId ||
+      (other.resourceType === oldType && samePhysicalId(oldType, other.physicalId, oldId))
+    ) {
+      return false;
+    }
+  }
   return classifyRollbackOp(op, stateResources, orphanLogicalIds) === 'reverse-replacement';
 }
 

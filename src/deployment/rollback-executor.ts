@@ -54,8 +54,9 @@ import {
 import {
   noteRolledBackCreate,
   withReplayDeletePrinting,
+  type ReplayDeferral,
 } from './rollback-executor/replay-scope.js';
-import type { ResourceState, StackOrphanRecord } from '../types/state.js';
+import type { ResourceState, StackOrphanRecord, SupersededResourceRecord } from '../types/state.js';
 import {
   createSecretMasker,
   carryLogOnlyValues,
@@ -239,6 +240,14 @@ async function replayRollbackUnbound(
      * delete-first guard (`markDeleteFirstBlocked`). Absent counts none.
      */
     failedOperations?: readonly FailedOperation[] | undefined;
+    /**
+     * go-to-k/cdkd#5064: a new resource no record holds until its deferred
+     * delete runs ({@link ReplayDeferral}): the caller keeps it in
+     * `supersededResources` across every save in between. A caller without
+     * saves (`performRollback`) passes none.
+     */
+    onSuperseded?: (entry: SupersededResourceRecord) => void;
+    onSupersededSettled?: (entry: SupersededResourceRecord) => void;
   } = {}
 ): Promise<RollbackReplayResult> {
   const orphanLogicalIds = options.orphanLogicalIds ?? new Set<string>();
@@ -304,7 +313,7 @@ async function replayRollbackUnbound(
   // Every op replayed so far, ahead of its slot or at it: none runs twice.
   const started = new Set<CompletedOperation>();
   const pendingNewDeletes = new Map<CompletedOperation, () => Promise<void>>();
-  const runOp = (op: CompletedOperation, deferNewDelete?: (finish: () => Promise<void>) => void) =>
+  const runOp = (op: CompletedOperation, deferral?: ReplayDeferral) =>
     replaySingle(
       op,
       stateResources,
@@ -319,17 +328,37 @@ async function replayRollbackUnbound(
       options.isInterrupted,
       createdInSegment,
       options.onRolledBackCreate,
-      deferNewDelete
+      deferral
     );
   const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
     for (const target of [...refs].map((id) => stepOneIds.get(id))) {
       if (target === undefined || started.has(target)) continue;
       if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds)) continue;
+      // Its own old record names an op still to revert that is not a renamed
+      // reversal: re-created now, it would read that op's NEW values. It keeps
+      // its slot, after that op.
+      const ownRefs = revertReferences(target, stateResources);
+      if (
+        [...ownRefs].some((id) => {
+          const named = stepOneIds.get(id);
+          return (
+            named !== undefined &&
+            !started.has(named) &&
+            !renamedReverseReplacement(named, stateResources, orphanLogicalIds)
+          );
+        })
+      ) {
+        continue;
+      }
       if (options.isInterrupted?.()) return;
       started.add(target);
-      await recreateAhead(revertReferences(target, stateResources));
+      await recreateAhead(ownRefs);
       if (options.isInterrupted?.()) return;
-      await runOp(target, (finish) => pendingNewDeletes.set(target, finish));
+      await runOp(target, {
+        defer: (finish) => pendingNewDeletes.set(target, finish),
+        onSuperseded: options.onSuperseded,
+        onSupersededSettled: options.onSupersededSettled,
+      });
     }
   };
   for (const op of stepOne) {
@@ -519,8 +548,8 @@ async function replaySingle(
   isInterrupted?: () => boolean,
   createdInSegment: ReadonlySet<string> = new Set(),
   onRolledBackCreate?: (create: RolledBackCreate) => void,
-  /** go-to-k/cdkd#5064: see `ReplayOpScope.deferNewDelete`. */
-  deferNewDelete?: (finish: () => Promise<void>) => void
+  /** go-to-k/cdkd#5064: see {@link ReplayDeferral}. */
+  deferral?: ReplayDeferral
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
@@ -577,7 +606,7 @@ async function replaySingle(
     mask,
     createdInSegment,
     createRollbackRoute: undefined,
-    deferNewDelete,
+    deferral,
   };
 
   // go-to-k/cdkd#4408: the op completed when it replaced or dropped the

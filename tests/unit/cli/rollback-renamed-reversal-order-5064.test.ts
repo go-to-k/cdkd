@@ -243,6 +243,14 @@ describe('cdkd rollback re-creates a renamed replacement before its dependents r
     expect(saved.resources['Role']!.physicalId).toBe(OLD_ROLE);
     expect(saved.resources['Managed']!.properties['Roles']).toEqual([OLD_ROLE]);
     expect(saved.resources['RoleDefaultPolicy']!.properties['Roles']).toEqual([OLD_ROLE]);
+    // Every save between the re-create and the delete keeps the new role
+    // tracked as superseded; the last one, after the delete, drops it.
+    const saves = backend['saveState']!.mock.calls.map((c) => c[2] as StackState);
+    const pending = saves.filter((st) =>
+      (st.supersededResources ?? []).some((e) => e.state.physicalId === NEW_ROLE)
+    );
+    expect(pending.length).toBeGreaterThanOrEqual(3);
+    expect(saved.supersededResources).toBeUndefined();
   });
 
   it("a second rollback over a partial run's leftovers completes and pops the segment", async () => {

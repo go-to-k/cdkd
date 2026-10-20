@@ -46,7 +46,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { Logger } from '../types/config.js';
-import type { ResourceState, StackOrphanRecord, StackState } from '../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  StackState,
+  SupersededResourceRecord,
+} from '../types/state.js';
+import {
+  addSuperseded,
+  removeSuperseded,
+  supersededAfterRollback,
+} from './superseded-resources.js';
 import {
   isMarkFor,
   journalOpPhysicalId,
@@ -660,6 +670,9 @@ export async function revertNestedChildFromJournal(args: {
     // go-to-k/cdkd#5064: the CREATEs the replay took back, read by every save as
     // it stands (as `mintedOrphans`), so each retires its generation.
     const rolledBackCreates: RolledBackCreate[] = [];
+    // go-to-k/cdkd#5064: the new resources a renamed reversal's deferred
+    // delete has yet to remove, kept in every save meanwhile.
+    const supersededHost: { supersededResources?: SupersededResourceRecord[] } = {};
     // The OLDEST segment of the run that CARRIES a snapshot is the child
     // before this run touched it. Not `segments[0]` blindly: in a run where the
     // child failed and rolled itself back before a later attempt succeeded,
@@ -679,6 +692,7 @@ export async function revertNestedChildFromJournal(args: {
     const next = (): StackState => ({
       ...carried,
       ...stackInstanceIdCarriedFrom(base),
+      ...supersededAfterRollback(base, supersededHost),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,
       resources: { ...stateResources },
@@ -828,6 +842,8 @@ export async function revertNestedChildFromJournal(args: {
                       onRolledBackCreate: (create) => rolledBackCreates.push(create),
                       inlinePolicyWriters,
                       failedOperations: segment.failedOperations,
+                      onSuperseded: (entry) => addSuperseded(supersededHost, entry),
+                      onSupersededSettled: (entry) => removeSuperseded(supersededHost, entry),
                     })
                 );
                 for (const [id, below] of inner.settled) settledBelow.set(id, below);

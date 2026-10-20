@@ -61,6 +61,7 @@ import {
   collisionLine,
   shownLogicalId,
   maskedFailureText,
+  maskedRollbackEventError,
   recordRollbackSkip,
   rollbackCannotAddress,
   skipUnaddressableReplay,
@@ -70,6 +71,8 @@ import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.j
 import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import { createWithRollbackRetry, recordedPropertiesAfterReplayCreate } from './replay-retry.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import type { SupersededResourceRecord } from '../../types/state.js';
+import { canRecordSuperseded } from '../superseded-resources.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { probeReplacedSurvivor } from './replaced-survivor.js';
@@ -1186,6 +1189,38 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       createProvisionedBy
     );
   }
+  // go-to-k/cdkd#5064: a delete deferred past this save leaves the new
+  // resource in no record until it runs, so it is reported as superseded
+  // first; a run killed in between leaves it for the next deploy to delete.
+  const deferral =
+    s.deferral !== undefined &&
+    !deletedNewFirst &&
+    !adoptedLiveNewResource &&
+    !rollbackRetainsNewResource(current)
+      ? s.deferral
+      : undefined;
+  const supersededFinalSnapshot = rollbackFinalSnapshotId(
+    op.resourceType,
+    current,
+    op.provisionedBy
+  );
+  const supersededPolicy = current.updateReplacePolicy;
+  const superseded: SupersededResourceRecord = {
+    logicalId: op.logicalId,
+    supersededAt: Date.now(),
+    state: current,
+    ...((supersededPolicy === 'Delete' ||
+      supersededPolicy === 'Snapshot' ||
+      supersededPolicy === 'RetainExceptOnCreate') && { updateReplacePolicy: supersededPolicy }),
+    ...(supersededFinalSnapshot !== undefined && {
+      finalSnapshotIdentifier: supersededFinalSnapshot,
+    }),
+  };
+  // Only what a later run can delete with the context this one has
+  // (`canRecordSuperseded`); a principal's delete reads no inline-policy
+  // claim, so a role qualifies. Anything else keeps the in-memory deferral.
+  const recordSuperseded = deferral !== undefined && canRecordSuperseded(current, {});
+  if (recordSuperseded) deferral.onSuperseded?.(superseded);
   await afterOp?.(op.logicalId);
 
   // The delete of the new resource and the closing line and event. A
@@ -1342,18 +1377,13 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       }),
     });
   };
-  if (
-    s.deferNewDelete !== undefined &&
-    !deletedNewFirst &&
-    !adoptedLiveNewResource &&
-    !rollbackRetainsNewResource(current)
-  ) {
+  if (deferral !== undefined) {
     logger.info(
       safeMsg`  Rollback: old ${safe(op.logicalId)} re-created first; the new resource ` +
         safeMsg`(${mask(current.physicalId)}) is deleted once the resources that reference it ` +
         `are reverted`
     );
-    s.deferNewDelete(async () => {
+    deferral.defer(async () => {
       try {
         await finish();
       } catch (finishError) {
@@ -1365,7 +1395,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           )
         );
         result.failures++;
+        ctx.recordEvent?.({
+          eventType: 'ROLLBACK_RESOURCE_FAILED',
+          stackName,
+          operation: op.changeType,
+          logicalId: op.logicalId,
+          resourceType: op.resourceType,
+          ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          error: maskedRollbackEventError(finishError, mask),
+        });
+      } finally {
+        // Its delete ran (a failure is warned and named in the event, as it
+        // was before the delete could be deferred).
+        if (recordSuperseded) deferral.onSupersededSettled?.(superseded);
       }
+      // The save that drops the entry again.
+      if (recordSuperseded) await afterOp?.(op.logicalId);
     });
     return;
   }

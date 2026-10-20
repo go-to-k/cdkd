@@ -399,6 +399,142 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
   });
 });
 
+const TOPIC = 'AWS::SNS::Topic';
+const topicOp = (
+  logicalId: string,
+  oldId: string,
+  newId: string,
+  oldDeps: string[] = []
+): CompletedOperation => ({
+  logicalId,
+  changeType: 'UPDATE',
+  resourceType: TOPIC,
+  provisionedBy: 'sdk',
+  physicalId: newId,
+  previousState: record(oldId, TOPIC, { TopicName: oldId }, oldDeps),
+  oldResourceRetained: false,
+});
+const inPlaceOp = (logicalId: string, deps: string[]): CompletedOperation => ({
+  logicalId,
+  changeType: 'UPDATE',
+  resourceType: QUEUE,
+  provisionedBy: 'sdk',
+  physicalId: `q-${logicalId}`,
+  previousState: record(`q-${logicalId}`, QUEUE, { V: 1 }, deps),
+});
+
+describe('renamed reversals that stay at their slot (review of go-to-k/cdkd#5064)', () => {
+  function plainModel() {
+    const m = iamModel();
+    m.provider.create.mockImplementation(async (logicalId: string, _t: string, props: Record<string, unknown>) => {
+      m.calls.push(`create ${logicalId}`);
+      return { physicalId: String(props['TopicName'] ?? `${logicalId}-old`), attributes: {} };
+    });
+    m.provider.update.mockImplementation(async (logicalId: string, physicalId: string) => {
+      m.calls.push(`update ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    });
+    return m;
+  }
+
+  it('a name handed down a chain of renames: the old id another record holds is not re-created early', async () => {
+    // B renamed y -> z, then A renamed x -> y, then C (naming B) updated.
+    const m = plainModel();
+    const state: Record<string, ResourceState> = {
+      B: record('z', TOPIC, { TopicName: 'z' }, []),
+      A: record('y', TOPIC, { TopicName: 'y' }, []),
+      C: record('q-C', QUEUE, { V: 2 }, ['B']),
+    };
+    const ops = [topicOp('B', 'y', 'z'), topicOp('A', 'x', 'y'), inPlaceOp('C', ['B'])];
+    const result = await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['update C', 'create A', 'delete A y', 'create B', 'delete B z']);
+    expect(result.failures).toBe(0);
+  });
+
+  it("one whose old record names an op still to revert keeps its slot, after that op", async () => {
+    // R's old record names Y (in place), which reverts between X and R.
+    const m = plainModel();
+    const state: Record<string, ResourceState> = {
+      R: record('r-new', TOPIC, { TopicName: 'r-new' }, ['Y']),
+      Y: record('q-Y', QUEUE, { V: 2 }, []),
+      X: record('q-X', QUEUE, { V: 2 }, ['R']),
+    };
+    const ops = [topicOp('R', 'r-old', 'r-new', ['Y']), inPlaceOp('Y', []), inPlaceOp('X', ['R'])];
+    await replayRollback(ops, state, 'App', m.ctx);
+    expect(m.calls).toEqual(['update X', 'update Y', 'create R', 'delete R r-new']);
+  });
+});
+
+describe('the deferred delete of the new resource (review of go-to-k/cdkd#5064)', () => {
+  it('a failed deferred delete warns once and names the survivor in the closing event, after the dependents', async () => {
+    const m = iamModel();
+    m.provider.delete.mockImplementation(async (logicalId: string, physicalId: string) => {
+      m.calls.push(`delete ${logicalId} ${physicalId}`);
+      throw new Error('DeleteConflict');
+    });
+    const events: Array<Record<string, unknown>> = [];
+    const ctx = { ...m.ctx, recordEvent: (e: Record<string, unknown>) => events.push(e) } as RollbackExecutorContext;
+    const result = await replayRollback(e1Ops(), e1State(), 'App', ctx);
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(1);
+    const succeeded = events.filter((e) => e['eventType'] === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(succeeded.map((e) => e['logicalId'])).toEqual(['Managed', 'RoleDefaultPolicy', 'Role']);
+    const role = succeeded.at(-1)!;
+    expect(role['physicalId']).toBe(NEW_ROLE);
+    expect(String(role['reason'])).toContain('could not be deleted');
+  });
+
+  it('a new copy UpdateReplacePolicy: Retain keeps is not deferred: re-created early, nothing deleted', async () => {
+    const m = iamModel();
+    const state = e1State();
+    state['Role'] = { ...state['Role']!, updateReplacePolicy: 'Retain' };
+    const infos: string[] = [];
+    (m.ctx.logger.info as unknown as ReturnType<typeof vi.fn>).mockImplementation((l: string) => infos.push(l));
+    await replayRollback(e1Ops(), state, 'App', m.ctx);
+    expect(m.calls).toEqual(['create Role', `update Managed -> ${OLD_ROLE}`, `update RoleDefaultPolicy -> ${OLD_ROLE}`]);
+    expect(infos.some((l) => l.includes('re-created first'))).toBe(false);
+  });
+
+  it('records the new copy as superseded before the save that drops its record, and settles it after the delete', async () => {
+    const m = iamModel();
+    const state = e1State();
+    const log: string[] = [];
+    let pending: string[] = [];
+    await replayRollback(e1Ops(), state, 'App', m.ctx, {
+      onSuperseded: (entry) => {
+        log.push(`superseded ${entry.state.physicalId}`);
+        pending = [...pending, entry.state.physicalId];
+      },
+      onSupersededSettled: (entry) => {
+        log.push(`settled ${entry.state.physicalId}`);
+        pending = pending.filter((id) => id !== entry.state.physicalId);
+      },
+      afterOp: (id) => {
+        log.push(`save ${id}:${state['Role']!.physicalId} pending=${pending.join(',')}`);
+      },
+    });
+    expect(log).toEqual([
+      `superseded ${NEW_ROLE}`,
+      `save Role:${OLD_ROLE} pending=${NEW_ROLE}`,
+      `save Managed:${OLD_ROLE} pending=${NEW_ROLE}`,
+      `save RoleDefaultPolicy:${OLD_ROLE} pending=${NEW_ROLE}`,
+      `settled ${NEW_ROLE}`,
+      `save Role:${OLD_ROLE} pending=`,
+    ]);
+    expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+  });
+
+  it('a new copy a later run could not delete the same way is not recorded', async () => {
+    const m = iamModel();
+    const state = e1State();
+    state['Role'] = { ...state['Role']!, noEchoLeaves: [['X']] } as ResourceState;
+    const onSuperseded = vi.fn();
+    await replayRollback(e1Ops(), state, 'App', m.ctx, { onSuperseded });
+    expect(onSuperseded).not.toHaveBeenCalled();
+    expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+  });
+});
+
 describe('renamedReverseReplacement / revertReferences', () => {
   const [role, inline] = e1Ops();
   it('selects only a renamed create-first reversal', () => {
@@ -409,6 +545,7 @@ describe('renamedReverseReplacement / revertReferences', () => {
     expect(renamedReverseReplacement({ ...role!, oldResourceMaySurvive: 'unconfirmed' } as CompletedOperation, state, new Set())).toBe(false);
     expect(renamedReverseReplacement(role!, state, new Set(['Role']))).toBe(false);
     expect(renamedReverseReplacement(role!, { ...state, Role: roleRecord(OLD_ROLE) }, new Set())).toBe(false);
+    expect(renamedReverseReplacement(role!, { ...state, Other: roleRecord(OLD_ROLE) }, new Set())).toBe(false);
   });
   it('reads both records; a record listing none adds none', () => {
     expect([...revertReferences(inline!, e1State())]).toEqual(['Role']);
