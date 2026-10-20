@@ -215,7 +215,7 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
   it.each([['Description'], ['HealthCheckConfig'], ['DnsConfig']] as const)(
     'removal-only (%s): no UpdateService, so the live value is kept',
     async (key) => {
-      await provider.update('Svc', 'srv-1', TYPE, desired([key]), FULL);
+      await provider.update('Svc', 'srv-1', TYPE, desired([key]), structuredClone(FULL));
       expect(mockSend).not.toHaveBeenCalled();
     }
   );
@@ -308,7 +308,7 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
   });
 
   it('a declared but unchanged bag sends no UpdateService (a Tags-only change)', async () => {
-    await provider.update('Svc', 'srv-1', TYPE, desired([], { Tags: [{ Key: 'k', Value: 'v' }] }), FULL);
+    await provider.update('Svc', 'srv-1', TYPE, desired([], { Tags: [{ Key: 'k', Value: 'v' }] }), structuredClone(FULL));
     expect(updateCall()).toBeUndefined();
     const tag = mockSend.mock.calls.find(([c]) => c instanceof TagResourceCommand);
     expect((tag![0] as TagResourceCommand).input.ResourceARN).toBe(LIVE_ARN);
