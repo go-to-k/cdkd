@@ -351,6 +351,50 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     ).toBe(true);
   });
 
+  it('a re-run that replaces the load balancer waits out the in-use refusal on the recorded target group (D1, integ run 3)', async () => {
+    // What the killed run persisted: Tg at generation 2, generation 1 recorded
+    // as superseded, the listener still on the OLD load balancer forwarding to
+    // generation 1. The re-run replaces the load balancer (its listener moves to
+    // the new one); the old listener goes asynchronously with the old load
+    // balancer, so generation 1 still refuses its delete for a moment.
+    supersededInUseRetry.attempts = 6;
+    const entry: SupersededResourceRecord = {
+      logicalId: 'Tg',
+      supersededAt: 1,
+      state: record(OLD_TG, TG, { Port: 8080 }),
+    };
+    const state = {
+      version: 13,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      resources: {
+        Tg: record(NEW_TG, TG, { Port: 9090 }),
+        Listener: record(LISTENER_ARN, LISTENER, { DefaultActions: OLD_TG }),
+      },
+      supersededResources: [entry],
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    // The listener is replaced (a new one on the new load balancer)...
+    vi.mocked(provider.update).mockImplementation(async () => ({
+      physicalId: `${LISTENER_ARN}-new`,
+      wasReplaced: true,
+      attributes: {},
+    }));
+    // ...and AWS still sees the old one using generation 1 for two attempts.
+    let refusals = 2;
+    vi.mocked(provider.delete).mockImplementation(async (_l: string, physicalId: string) => {
+      if (physicalId === OLD_TG && refusals-- > 0) throw inUse(OLD_TG);
+      return undefined;
+    });
+
+    const final = await run(state, new Map([['Listener', listenerChange]]));
+
+    expect(vi.mocked(provider.delete).mock.calls.filter((c) => c[1] === OLD_TG)).toHaveLength(3);
+    expect(final.supersededResources).toBeUndefined();
+    expect(printed.warn.some((l) => l.includes('Failed to delete old resource Tg'))).toBe(false);
+  });
+
   it('drops, without deleting, an entry a record holds again (a rollback took it back)', async () => {
     const engine = makeEngine();
     const held: SupersededResourceRecord = {

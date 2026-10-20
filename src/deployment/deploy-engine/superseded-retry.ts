@@ -31,7 +31,8 @@ export async function retryCarriedSupersededResources(
   engine: DeployEngine,
   host: Pick<StackState, 'supersededResources'>,
   carried: readonly SupersededResourceRecord[],
-  resources: Record<string, ResourceState>
+  resources: Record<string, ResourceState>,
+  options: { waitInUse?: boolean } = {}
 ): Promise<boolean> {
   let changed = false;
   if (carried.length === 0) return changed;
@@ -78,8 +79,9 @@ export async function retryCarriedSupersededResources(
             region: engine.stackRegion,
             maskSecrets: createSecretMasker(bag),
             stop: () => engine.interrupted,
-            // One attempt: an entry still in use must not slow every deploy.
-            once: true,
+            // One attempt unless this deploy released a possible user: an
+            // entry still in use must not slow every deploy.
+            once: options.waitInUse !== true,
           });
         } catch (error) {
           outcome = { kind: 'failed' as const, error };

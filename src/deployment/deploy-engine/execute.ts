@@ -811,7 +811,22 @@ export async function executeDeployment(
         }
       }
       // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
-      await retryCarriedSupersededResources(engine, currentState, carriedSuperseded, newResources);
+      // go-to-k/cdkd#5111: a deploy that deleted or replaced anything may have
+      // just removed what used a carried entry (a deleted load balancer's
+      // listeners go asynchronously), so it waits out an "in use" refusal as
+      // its own retry does; any other deploy sends once.
+      const releasedSomething =
+        deleteChanges.size > 0 ||
+        completedOperations.some(
+          (op) =>
+            op.changeType === 'UPDATE' &&
+            op.previousState !== undefined &&
+            op.physicalId !== undefined &&
+            op.physicalId !== op.previousState.physicalId
+        );
+      await retryCarriedSupersededResources(engine, currentState, carriedSuperseded, newResources, {
+        waitInUse: releasedSomething,
+      });
     }
   } catch (error) {
     warnUnretriedReplacedDeletes(
