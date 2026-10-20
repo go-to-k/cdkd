@@ -57,7 +57,9 @@ import {
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  markRedactedCause,
   markReplayMayCollide,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
@@ -70,11 +72,7 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
-import {
-  createMaskedLogSinks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -250,19 +248,40 @@ export class EFSProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
+   * The failure wrap every `create()` / `update()` / `delete()` catch throws.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `log.debug` (masked), and
+   * the wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}).
+   *
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * masked (issue #2177): AWS quotes a rejected request value back (a subnet,
    * a KMS key, a policy) off the RESOLVED `properties` bag. The `cause` stays
-   * unmasked, and a message the mask changed is stamped so the retry
-   * classifiers read that chain (`wrapMaskedAwsError`, issue #4244). A method,
-   * so `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * unmasked, and a message the mask CHANGED is stamped too
+   * (`wrapMaskedAwsError`, issue #4244). A delete builds its sinks from
+   * `DeleteContext.maskSecrets`, and checks its `*NotFound` by type before it
+   * wraps, so no "already deleted" reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
-    mask: MaskerFn,
+    log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(log.mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    return markRedactedCause(
+      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -494,7 +513,7 @@ export class EFSProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -541,7 +560,7 @@ export class EFSProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -744,7 +763,7 @@ export class EFSProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : this.wrapMaskedError(
-              log.mask,
+              log,
               error,
               (text) =>
                 new ProvisioningError(
@@ -1165,12 +1184,18 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete EFS FileSystem ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EFS FileSystem ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1268,7 +1293,7 @@ export class EFSProvider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : this.wrapMaskedError(
-              log.mask,
+              log,
               error,
               (text) =>
                 new ProvisioningError(
@@ -1356,12 +1381,18 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete EFS MountTarget ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EFS MountTarget ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1547,7 +1578,7 @@ export class EFSProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -1829,12 +1860,18 @@ export class EFSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete EFS AccessPoint ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete EFS AccessPoint ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

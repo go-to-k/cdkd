@@ -655,7 +655,7 @@ describe('FSxFileSystemProvider create', () => {
     });
 
     await expect(newProvider().create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })).rejects.toThrow(
-      /FAILED: boom/
+      /FAILED: Re-run with --verbose for AWS's own message\./
     );
     expect(callsOf(DeleteFileSystemCommand)).toHaveLength(1);
   });
@@ -925,7 +925,7 @@ describe('FSxFileSystemProvider update', () => {
         },
         { ...LUSTRE_PROPS, LustreConfiguration: { DeploymentType: 'SCRATCH_2' } }
       )
-    ).rejects.toThrow(/FILE_SYSTEM_UPDATE administrative action.*update rejected/);
+    ).rejects.toThrow(/FILE_SYSTEM_UPDATE administrative action\): Re-run with --verbose for AWS's own message\./);
   });
 
   it('applies StorageType / FileSystemTypeVersion / NetworkType / MetadataConfiguration changes in one UpdateFileSystem', async () => {
@@ -1207,7 +1207,7 @@ describe('FSxFileSystemProvider delete', () => {
     });
 
     await expect(newProvider().delete('MyFs', FS_ID, RESOURCE_TYPE)).rejects.toThrow(
-      /FAILED during deletion: stuck/
+      /FAILED during deletion: Re-run with --verbose for AWS's own message\./
     );
   });
 });
