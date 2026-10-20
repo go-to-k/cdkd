@@ -37,6 +37,7 @@ import {
   evaluatorIdFromArn,
 } from '../../../../src/provisioning/providers/agentcore-evaluator-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 
 const EVALUATOR_ID = 'my-evaluator-Ab12Cd34Ef';
 const EVALUATOR_ARN = `arn:aws:bedrock-agentcore:us-east-1:123456789012:evaluator/${EVALUATOR_ID}`;
@@ -468,6 +469,57 @@ describe('AgentCoreEvaluatorProvider', () => {
           { EvaluatorConfig: CODE_BASED_CONFIG, Level: 'TRACE' }
         )
       ).rejects.toThrow('Failed to update BedrockAgentCore Evaluator MyEvaluator');
+    });
+
+    // Issue #1160: a CloudFormation A/B (us-east-1) KEPT a removed Description
+    // and KmsKeyArn (same evaluator, both values still set), and the
+    // merge-semantics UpdateEvaluator keeps an omitted field, so the removal
+    // sends neither, the caller injects no reset, and nothing is warned about.
+    it('keeps a removed Description / KmsKeyArn out of UpdateEvaluator, as CloudFormation keeps them (issue #1160)', async () => {
+      const desired = { EvaluatorName: 'my-evaluator', EvaluatorConfig: CODE_BASED_CONFIG, Level: 'SESSION' };
+      const previous = {
+        EvaluatorName: 'my-evaluator',
+        EvaluatorConfig: CODE_BASED_CONFIG,
+        Level: 'TRACE',
+        Description: 'old',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555',
+      };
+
+      const removal = prepareRemovalForUpdate(
+        provider,
+        'AWS::BedrockAgentCore::Evaluator',
+        desired,
+        previous
+      );
+      expect(removal.injected).toEqual([]);
+      expect(removal.unhandled).toEqual([]);
+      expect(removal.properties).toBe(desired);
+
+      // Queued only now: a failed expectation above must not leave it for the next test.
+      mockSend.mockResolvedValueOnce({ evaluatorArn: EVALUATOR_ARN, evaluatorId: EVALUATOR_ID });
+
+      await provider.update(
+        'MyEvaluator',
+        EVALUATOR_ARN,
+        'AWS::BedrockAgentCore::Evaluator',
+        removal.properties,
+        previous,
+        removal.context
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.constructor.name).toBe('UpdateEvaluatorCommand');
+      expect(Object.keys(updateCall.input).sort()).toEqual(['evaluatorConfig', 'evaluatorId', 'level']);
+    });
+
+    // The opt-in to the caller's removal warning must name every property
+    // the provider handles, or a removal it handles would be misreported.
+    it('opts every handled property into removalHandledInUpdate (issue #1160)', () => {
+      const type = 'AWS::BedrockAgentCore::Evaluator';
+      expect([...(provider.removalHandledInUpdate.get(type) ?? [])].sort()).toEqual(
+        [...(provider.handledProperties.get(type) ?? [])].sort()
+      );
     });
   });
 

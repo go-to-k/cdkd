@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
  * API Gateway + Lambda example stack
@@ -43,6 +44,11 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   identifier specified" / "Invalid Request Validator identifier specified".
  *   verify.sh curls a valid + invalid body and asserts 200 / 400.
  *
+ * - AWS::ApiGateway::Account removal (issue #1160): a CfnAccount whose
+ *   CloudWatchRoleArn is dropped under CDKD_TEST_REMOVAL=true; verify.sh
+ *   asserts the account's role ARN is cleared, as CloudFormation clears it.
+ *
+ * covers: AWS::ApiGateway::Account
  * covers: AWS::ApiGateway::Method
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Stage
@@ -180,6 +186,35 @@ exports.handler = async (event) => {
     pets.addMethod('POST', new apigateway.LambdaIntegration(handler), {
       requestValidator: bodyValidator,
       requestModels: { 'application/json': petModel },
+    });
+
+    // AWS::ApiGateway::Account removal (issue #1160). Declared as an L1 with
+    // an explicit role, NOT through `cloudWatchRole: true` (see above): this
+    // Account and Role carry the default `DeletionPolicy: Delete`, and the
+    // role's auto-generated name never collides across runs. The role lives
+    // under its own IAM path so verify.sh can find it and can tell a leftover
+    // of this fixture from a role someone else set on the account.
+    //
+    // The Account is a REGION-WIDE singleton: deploying it overwrites the
+    // account's CloudWatch role, and destroy clears it. verify.sh records the
+    // pre-run value and restores it on every exit path.
+    //
+    // CDKD_TEST_REMOVAL=true synthesizes the Account WITHOUT
+    // CloudWatchRoleArn (the role stays). A CloudFormation A/B in us-east-1
+    // showed CloudFormation clears the account's role ARN on that update;
+    // verify.sh asserts cdkd does the same.
+    const accountRole = new iam.Role(this, 'AccountCloudWatchRole', {
+      path: '/cdkd-integ-apigateway/',
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+        ),
+      ],
+    });
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    new apigateway.CfnAccount(this, 'Account', {
+      ...(removal ? {} : { cloudWatchRoleArn: accountRole.roleArn }),
     });
 
     // Outputs

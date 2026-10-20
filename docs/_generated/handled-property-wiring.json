@@ -1072,7 +1072,8 @@
       "gaps": [],
       "blindSpots": [
         "computed key in updateAuthorizer()",
-        "computed key in updateMethod()"
+        "computed key in updateMethod()",
+        "withRemovalDefaults(...) in update()"
       ]
     },
     {

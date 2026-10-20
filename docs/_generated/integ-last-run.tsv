@@ -7,11 +7,11 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-10-15T19:20:59Z	PASS	216	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 acm-certificate	2026-10-16T07:55:32Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4994)
-agentcore-tools	2026-10-14T14:47:46Z	PASS	75	verify.sh	PR #4899 (#2613 update-context region refusal) beef2d5; rc 0, destroy clean, orph clean
+agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 removed Evaluator Description kept
 alb	2026-10-17T17:48:47Z	PASS	620	verify.sh	PR #5034 (#1160) 842d0d385; listener server.enabled kept false, Phase 2.5 listener back to SDK provider same ARN; destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
-apigateway	2026-10-18T18:32:28Z	PASS	117	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
+apigateway	2026-10-19T16:19:45Z	PASS	120	verify.sh	PR #5106 (#1160) Account CloudWatchRoleArn removal clears role; pre-fix probe RED at removal assertion; us-east-1; rc ok, orph clean
 apigatewayv2-update-removal	2026-10-18T18:32:28Z	PASS	181	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-stage-props	2026-10-19T04:30:40Z	PASS	90	verify.sh	rc ok, orph clean, own CW role+Account (#5083)
@@ -27,7 +27,7 @@ aws-custom-resource	2026-10-04T02:52:14Z	PASS	86	verify.sh	rc ok, orph clean (#1
 backup	2026-10-15T02:06:45Z	PASS	95	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
+bedrock-agentcore	2026-10-19T17:48:11Z	PASS	95	verify.sh	rc ok, orph clean; #1160 removed Runtime fields cleared, lifecycle 900/28800
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bench-cdk-sample	2026-10-18T18:32:28Z	PASS	411	standard	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean

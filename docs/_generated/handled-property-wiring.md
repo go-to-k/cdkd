@@ -41,7 +41,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | Provider class | Blind spot(s) |
 | --- | --- |
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `withRemovalDefaults(...) in update()` |
-| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
+| `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()`, `withRemovalDefaults(...) in update()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in refuseChangedMalformedGraphQLApiBlocks()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()`, `object spread in withEnvironmentVariablesRecord()` |
 | `ASGProvider` (asg-provider.ts) | `computed key in canonicalizeDriftProperties()`, `object spread in canonicalizeDriftProperties()`, `withRemovalDefaults(...) in update()` |
 | `CloudTrailProvider` (cloudtrail-provider.ts) | `withRemovalDefaults(...) in update()` |
