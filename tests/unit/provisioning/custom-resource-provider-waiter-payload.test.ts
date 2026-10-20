@@ -367,7 +367,18 @@ describe('CustomResourceProvider readiness-waiter payload withholding (issue #42
       expect(error.message).toContain('Error (waiter FAILURE;');
       expect(error.message).toContain('State=Failed');
       expect(error.message).toContain('StateReasonCode=SubnetOutOfIPAddresses');
-      expect(error.message).toContain('StateReason=The function could not create an ENI');
+      // go-to-k/cdkd#2319: the reason SENTENCE is persisted-unsafe (AWS words
+      // it with ARNs), so the thrown text and its rewritten cause only mark it
+      // withheld, and the sentence reaches `debug`.
+      expect(error.message).toContain('StateReason withheld');
+      expect(error.message).toContain('Re-run with --verbose');
+      for (const text of everyRendering(error)) {
+        expect(text).not.toContain('The function could not create an ENI');
+      }
+      const debugged = debugSpy.mock.calls.map((c) => c.map(String).join(' '));
+      expect(
+        debugged.some((line) => line.includes('StateReason=The function could not create an ENI'))
+      ).toBe(true);
       expectNoLeak(everyRendering(error));
     });
   });

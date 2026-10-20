@@ -826,11 +826,13 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     expect(error).toBeDefined();
     expect(error?.message).not.toContain('hunter2-super-secret');
     expect(error?.message).not.toContain('DB_PASSWORD');
-    // The AWS-authored status fields ARE kept — withholding the payload must
-    // not cost the diagnosis.
+    // The AWS-authored state and reason CODE are kept — withholding the
+    // payload must not cost the diagnosis. The reason SENTENCE is not
+    // (go-to-k/cdkd#2319): AWS words it with ARNs, and this text is persisted.
     expect(error?.message).toContain('State=Failed');
     expect(error?.message).toContain('StateReasonCode=SubnetOutOfIPAddresses');
-    expect(error?.message).toContain('StateReason=The function could not create an ENI');
+    expect(error?.message).toContain('StateReason withheld');
+    expect(error?.message).not.toContain('The function could not create an ENI');
   });
 
   it('withholds the message of a waiter throw that is not waiter-shaped, keeping its name', async () => {
