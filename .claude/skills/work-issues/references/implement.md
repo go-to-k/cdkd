@@ -16,7 +16,7 @@ lane:
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp will not resolve
-pnpm install                 # worktrees have no node_modules
+vp install                   # worktrees have no node_modules
 vp run build                 # ...and no dist/ for CLI-spawning tests
 ```
 

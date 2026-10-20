@@ -29,7 +29,7 @@ Say out loud what you found, then fix it before running the checks.
 
 Run these sequentially and report results.
 
-0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install --frozen-lockfile`.
+0. **Worktree pre-flight**: `[ -d node_modules ] || vp install --frozen-lockfile`.
    `git worktree add` does not copy `node_modules`, and without it `vp check`
    fails with an unnamed `typescript(tsconfig-error): Invalid tsconfig — Cannot
    find type definition file for 'node'`, reading like a broken fixture
