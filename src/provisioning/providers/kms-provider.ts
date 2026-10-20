@@ -787,11 +787,14 @@ export class KMSProvider implements ResourceProvider {
         );
       }
 
-      // Enable before the rotation calls and disable after them: KMS refuses
-      // `EnableKeyRotation` on a disabled key (`DisabledException`), and
-      // CloudFormation orders it the same way (A/B: enabling the key and
-      // resetting the period in one update succeeds; a period change on a key
-      // that stays disabled fails there as it does here).
+      // Enable before the rotation calls and disable LAST, after every other
+      // call: KMS refuses `EnableKeyRotation` on a disabled key
+      // (`DisabledException`), and CloudFormation orders it the same way (A/B:
+      // enabling the key and resetting the period in one update succeeds; a
+      // period change on a key that stays disabled fails there as it does
+      // here). Disabling last also means a failure anywhere earlier leaves the
+      // key enabled, as the unchanged state record says, so a re-run (a retry,
+      // the next deploy) never sends a rotation call to a key cdkd disabled.
       if (enabledChange === 'enable') {
         this.logger.debug(`Enabling KMS Key ${logicalId}`);
         await this.getClient().send(new EnableKeyCommand({ KeyId: physicalId }));
@@ -807,7 +810,11 @@ export class KMSProvider implements ResourceProvider {
       if (newEnableKeyRotation === true) {
         if (
           newEnableKeyRotation !== oldEnableKeyRotation ||
-          rotationPeriodInDays !== previousProperties['RotationPeriodInDays']
+          // An absent desired period is never a change: a removal arrives as
+          // the injected 365, and `drift --revert` (whose previous side is a
+          // readback holding the live period) has nothing to send.
+          (rotationPeriodInDays !== undefined &&
+            rotationPeriodInDays !== previousProperties['RotationPeriodInDays'])
         ) {
           this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
           await this.getClient().send(
@@ -822,11 +829,6 @@ export class KMSProvider implements ResourceProvider {
       } else if (newEnableKeyRotation !== oldEnableKeyRotation) {
         this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
         await this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId }));
-      }
-
-      if (enabledChange === 'disable') {
-        this.logger.debug(`Disabling KMS Key ${logicalId}`);
-        await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
       }
 
       // Apply tag diff. KMS's TagResource takes [{TagKey, TagValue}] (NOT
@@ -890,6 +892,13 @@ export class KMSProvider implements ResourceProvider {
             Policy: await this.defaultKeyPolicy(physicalId),
           })
         );
+      }
+
+      // Last: see the EnableKey comment above. TagResource / UntagResource and
+      // PutKeyPolicy all work on a disabled key.
+      if (enabledChange === 'disable') {
+        this.logger.debug(`Disabling KMS Key ${logicalId}`);
+        await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
       }
 
       this.logger.debug(`Successfully updated KMS Key ${logicalId}`);

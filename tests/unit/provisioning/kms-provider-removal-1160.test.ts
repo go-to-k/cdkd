@@ -194,6 +194,62 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       );
       expect(names()).toEqual(['EnableKeyRotationCommand', 'DisableKeyCommand']);
     });
+
+    it('disables the key LAST, after the rotation, tag and policy calls', async () => {
+      await deployUpdate(
+        {
+          Description: 'v2',
+          Enabled: false,
+          EnableKeyRotation: true,
+          RotationPeriodInDays: 180,
+          KeyPolicy: { ...CUSTOM_POLICY, Id: 'next' },
+          Tags: [{ Key: 'k', Value: 'v' }],
+        },
+        {
+          Description: 'v1',
+          EnableKeyRotation: true,
+          RotationPeriodInDays: 90,
+          KeyPolicy: CUSTOM_POLICY,
+        }
+      );
+      expect(names()).toEqual([
+        'UpdateKeyDescriptionCommand',
+        'EnableKeyRotationCommand',
+        'TagResourceCommand',
+        'PutKeyPolicyCommand',
+        'DisableKeyCommand',
+      ]);
+    });
+
+    it('a failed PutKeyPolicy leaves the key enabled, so a re-run can still rotate', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof PutKeyPolicyCommand
+          ? Promise.reject(new Error('MalformedPolicyDocumentException'))
+          : Promise.resolve({})
+      );
+      const run = () =>
+        deployUpdate(
+          { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 180, KeyPolicy: { Id: 'x' } },
+          { EnableKeyRotation: true, RotationPeriodInDays: 90, KeyPolicy: CUSTOM_POLICY }
+        );
+      await expect(run()).rejects.toThrow(/Failed to update KMS Key Key/);
+      await expect(run()).rejects.toThrow(/Failed to update KMS Key Key/);
+      expect(sent(DisableKeyCommand)).toHaveLength(0);
+      expect(sent(EnableKeyRotationCommand)).toHaveLength(2);
+    });
+
+    it('drift --revert sends no rotation call for a period the desired bag does not carry', async () => {
+      await provider.update(
+        'Key',
+        KEY_ID,
+        TYPE,
+        { EnableKeyRotation: true },
+        { EnableKeyRotation: true, RotationPeriodInDays: 365 },
+        { removedProperties: new Set<string>(), desiredFromAwsReadback: true }
+      );
+      expect(sent(EnableKeyRotationCommand)).toHaveLength(0);
+      expect(sent(DisableKeyRotationCommand)).toHaveLength(0);
+    });
   });
 
   describe('KeyPolicy', () => {
