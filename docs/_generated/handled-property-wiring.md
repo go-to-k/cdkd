@@ -18,7 +18,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1174** (**1172** with read evidence)
 - Fully wired classes: **87**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **37**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **38**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
