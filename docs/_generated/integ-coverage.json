@@ -5055,6 +5055,7 @@
           "l2"
         ],
         "kms-encryption": [
+          "l1",
           "l2",
           "literal"
         ],
