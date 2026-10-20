@@ -66,6 +66,7 @@ import {
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 // These cases drive create() directly, outside a withStackName scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
@@ -260,8 +261,12 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to create EFS FileSystem Fs:');
       expect(message).not.toContain(LONG);
-      expect(message).toContain(MASKED_ECHO);
-      expect(message).toContain(SECRET_MASK);
+      // go-to-k/cdkd#2319: AWS's text is named by its class in the thrown
+      // (persisted) message, and reaches the debug log masked.
+      expect(message).toContain(`ValidationException. ${VERBOSE_POINTER}`);
+      expect(message).not.toContain('failed to satisfy');
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(transcript()).not.toContain(LONG);
     });
 
     it('create() FileSystem: the transient-retry line and the rollback warn', async () => {
@@ -314,7 +319,12 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to update EFS FileSystem Fs:');
       expect(message).not.toContain(LONG);
-      expect(message).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: AWS's text is named by its class in the thrown
+      // (persisted) message, and reaches the debug log masked.
+      expect(message).toContain(`ValidationException. ${VERBOSE_POINTER}`);
+      expect(message).not.toContain('failed to satisfy');
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(transcript()).not.toContain(LONG);
     });
 
     it('update() FileSystem: the transient-retry line', async () => {
@@ -358,7 +368,12 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to create EFS MountTarget Mt:');
       expect(message).not.toContain(LONG);
-      expect(message).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: AWS's text is named by its class in the thrown
+      // (persisted) message, and reaches the debug log masked.
+      expect(message).toContain(`ValidationException. ${VERBOSE_POINTER}`);
+      expect(message).not.toContain('failed to satisfy');
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(transcript()).not.toContain(LONG);
     });
 
     it('update() MountTarget failure message', async () => {
@@ -379,7 +394,12 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to update EFS MountTarget Mt:');
       expect(message).not.toContain(LONG);
-      expect(message).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: AWS's text is named by its class in the thrown
+      // (persisted) message, and reaches the debug log masked.
+      expect(message).toContain(`ValidationException. ${VERBOSE_POINTER}`);
+      expect(message).not.toContain('failed to satisfy');
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(transcript()).not.toContain(LONG);
     });
 
     it('create() AccessPoint failure message', async () => {
@@ -398,7 +418,12 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       );
       expect(message).toContain('Failed to create EFS AccessPoint Ap:');
       expect(message).not.toContain(LONG);
-      expect(message).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: AWS's text is named by its class in the thrown
+      // (persisted) message, and reaches the debug log masked.
+      expect(message).toContain(`ValidationException. ${VERBOSE_POINTER}`);
+      expect(message).not.toContain('failed to satisfy');
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(transcript()).not.toContain(LONG);
     });
 
     it('create() AccessPoint: the adoption read-back failure line', async () => {
@@ -593,7 +618,7 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
     it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
       fakeEfs({
         [command]: () => {
-          throw awsAuthored('BadRequest', 'Bad request parameter');
+          throw new Error('Bad request parameter');
         },
       });
       const failure = await thrown(run(retryMasker));
@@ -601,5 +626,38 @@ describe('EFSProvider masked log sinks (issue #2177)', () => {
       expect(hasRedactedCause(failure)).toBe(false);
       expect(retryable(failure)).toBe(false);
     });
+
+    it.each(SITES)(
+      '$site: an AWS-authored failure is stamped even when the mask left it unchanged (go-to-k/cdkd#2319)',
+      async ({ command, run }) => {
+        fakeEfs({
+          [command]: () => {
+            throw awsAuthored('BadRequest', 'Bad request parameter');
+          },
+        });
+        const failure = await thrown(run(retryMasker));
+        expect(failure.message).toContain(`BadRequest. ${VERBOSE_POINTER}`);
+        expect(failure.message).not.toContain('Bad request parameter');
+        expect(hasRedactedCause(failure)).toBe(true);
+        expect(retryable(failure)).toBe(false);
+      }
+    );
+
+    it.each(SITES)(
+      '$site: a non-AWS error quoting a request value back is masked in the message (issue #2177)',
+      async ({ command, run }) => {
+        fakeEfs({
+          [command]: () => {
+            throw new Error(`Value '${LONG}' at 'subnetId' failed to satisfy constraint`);
+          },
+        });
+        const failure = await thrown(run(maskSecrets));
+        expect(failure.message).toContain(
+          `Value '${SECRET_MASK}' at 'subnetId' failed to satisfy constraint`
+        );
+        expect(failure.message).not.toContain(LONG);
+        expect(failure.message).not.toContain(VERBOSE_POINTER);
+      }
+    );
   });
 });
