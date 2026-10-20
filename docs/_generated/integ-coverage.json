@@ -7881,9 +7881,13 @@
     {
       "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
       "integs": [
+        "servicediscovery",
         "servicediscovery-namespaces"
       ],
       "signals": {
+        "servicediscovery": [
+          "l1"
+        ],
         "servicediscovery-namespaces": [
           "l1",
           "literal"

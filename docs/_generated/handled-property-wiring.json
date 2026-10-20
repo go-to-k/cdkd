@@ -18352,6 +18352,7 @@
             "createNamespace",
             "createPublicDnsNamespace",
             "createService",
+            "planServiceChange",
             "update",
             "updateHttpNamespace",
             "updateNamespace",
@@ -18372,6 +18373,7 @@
           "seededBy": [
             "create",
             "createService",
+            "planServiceChange",
             "update",
             "updateService"
           ]
@@ -18389,6 +18391,7 @@
           "seededBy": [
             "create",
             "createService",
+            "planServiceChange",
             "update",
             "updateService"
           ]
@@ -18543,6 +18546,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in planServiceChange()",
         "withRemovalDefaults(...) in update()"
       ]
     },

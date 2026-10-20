@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   ServiceDiscoveryClient,
   CreateHttpNamespaceCommand,
@@ -52,6 +53,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -103,6 +105,56 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['AWS::ServiceDiscovery::PublicDnsNamespace', 'DNS_PUBLIC'],
   ['AWS::ServiceDiscovery::HttpNamespace', 'HTTP'],
 ]);
+
+/**
+ * Whether a RESOLVED desired value is the one the state record holds, for
+ * {@link ServiceDiscoveryProvider}'s Service change planning (issue #1160).
+ * The record is REDACTED: a dynamic reference may stay its
+ * `{{resolve:...}}` token (any kind, not only a secret one) and a `NoEcho`
+ * value is `***`, while the desired
+ * bag carries the plaintext. Such a recorded leaf cannot be compared, so it
+ * counts as CHANGED: a wildcard would silently drop a real template change
+ * (one secret reference swapped for another), and sending the declared value
+ * again is harmless. Every other leaf is compared deep and strict.
+ *
+ * Known divergence from CloudFormation, which compares TEMPLATES: an
+ * unchanged `Description` recorded as any dynamic reference
+ * (`{{resolve:...}}`) or a NoEcho `***`, with a
+ * `HealthCheckConfig` removed beside it sends the declared model and clears
+ * the health check (a removed `DnsConfig` beside it is refused), where
+ * CloudFormation keeps it. go-to-k/cdkd#5112 tracks passing the as-written
+ * changed keys to providers, which removes it.
+ */
+function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
+  if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;
+  if (Array.isArray(desired) && Array.isArray(recorded)) {
+    return (
+      desired.length === recorded.length &&
+      desired.every((item, i) => sameAsRecorded(item, recorded[i]))
+    );
+  }
+  if (
+    desired !== null &&
+    recorded !== null &&
+    typeof desired === 'object' &&
+    typeof recorded === 'object' &&
+    !Array.isArray(desired) &&
+    !Array.isArray(recorded)
+  ) {
+    const d = desired as Record<string, unknown>;
+    const r = recorded as Record<string, unknown>;
+    const keys = new Set([...Object.keys(d), ...Object.keys(r)]);
+    return [...keys].every(
+      (key) => Object.hasOwn(d, key) === Object.hasOwn(r, key) && sameAsRecorded(d[key], r[key])
+    );
+  }
+  return isDeepStrictEqual(desired, recorded);
+}
+
+/** A recorded string standing in for a resolved secret: a dynamic reference, or the mask. */
+function isRecordedStandIn(value: string): boolean {
+  return dynamicReferenceTokens(value).length > 0 || value.includes(SECRET_MASK);
+}
 
 /** The id forms Cloud Map generates: `ns-` / `srv-` and 16 lowercase alphanumerics. */
 const NAMESPACE_ID_PATTERN = /^ns-[a-z0-9]{16}$/;
@@ -174,6 +226,25 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     ['AWS::ServiceDiscovery::PrivateDnsNamespace', new Set(['Name', 'Vpc', 'Tags', 'Properties'])],
     ['AWS::ServiceDiscovery::HttpNamespace', new Set(['Name', 'Tags'])],
     ['AWS::ServiceDiscovery::PublicDnsNamespace', new Set(['Name', 'Tags', 'Properties'])],
+    // Name / NamespaceId / Type / HealthCheckCustomConfig are create-only;
+    // Tags and ServiceAttributes are diffed. A removed Description /
+    // DnsConfig / HealthCheckConfig follows CloudFormation — kept on its own,
+    // cleared (or, for DnsConfig, refused) beside a Description /
+    // HealthCheckConfig change; see planServiceChange.
+    [
+      'AWS::ServiceDiscovery::Service',
+      new Set([
+        'Name',
+        'NamespaceId',
+        'Type',
+        'HealthCheckCustomConfig',
+        'Tags',
+        'ServiceAttributes',
+        'Description',
+        'DnsConfig',
+        'HealthCheckConfig',
+      ]),
+    ],
   ]);
 
   private getClient(): ServiceDiscoveryClient {
@@ -1244,12 +1315,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `HealthCheckCustomConfig` are immutable on UpdateService — the
    * replacement-detection layer routes those through DELETE+CREATE.
    *
-   * Per AWS docs, omitting `DnsRecords` / `HealthCheckConfig` from the
-   * request DELETES that configuration. To preserve fields cdkd is not
-   * actively reverting, we always echo the AWS-current value when the
-   * caller did not supply a change. `cdkd drift --revert` passes the
-   * full AWS-current snapshot as `properties`, so the round-trip is
-   * value-preserving.
+   * The `ServiceChange` body REPLACES rather than merges: an omitted
+   * `Description` or `HealthCheckConfig` is cleared, and an omitted
+   * `DnsConfig` is refused on a DNS service (`Service dns config cannot be
+   * null`). WHEN to send it, and with what, follows CloudFormation
+   * ({@link planServiceChange}, issue #1160). `cdkd drift --revert` passes
+   * the full AWS-current snapshot as both bags with the drifted keys
+   * overlaid, so only a drifted field reads as a change.
    */
   private async updateService(
     logicalId: string,
@@ -1265,21 +1337,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    const serviceChange: ServiceChange = {};
-
-    if (properties['Description'] !== undefined) {
-      serviceChange.Description = properties['Description'] as string;
-    }
-
-    const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
-    if (dnsConfig?.DnsRecords !== undefined) {
-      const change: DnsConfigChange = { DnsRecords: dnsConfig.DnsRecords };
-      serviceChange.DnsConfig = change;
-    }
-
-    if (properties['HealthCheckConfig'] !== undefined) {
-      serviceChange.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
-    }
+    const servicePlan = this.planServiceChange(properties, previousProperties);
+    const serviceChange = servicePlan?.change ?? {};
 
     // ServiceAttributes is NOT part of the `ServiceChange` body — it is
     // mutated via its own `UpdateServiceAttributes` (upsert) /
@@ -1296,7 +1355,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
     const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !Object.hasOwn(newAttrs, k));
 
-    const hasServiceChange = Object.keys(serviceChange).length > 0;
+    const hasServiceChange = servicePlan !== undefined;
     const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;
     const hasAttrRemove = removedAttrKeys.length > 0;
 
@@ -1316,8 +1375,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     }
 
+    // The service's ARN when a GetService already ran in this update, so the
+    // Tags arm below does not read it a second time.
+    let knownArn: string | undefined;
     try {
       if (hasServiceChange) {
+        if (servicePlan.keepRemovedFromLive) {
+          knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
+        }
         const response = await client.send(
           new UpdateServiceCommand({
             Id: physicalId,
@@ -1398,8 +1463,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       if (hasTagChange) {
-        const described = await client.send(new GetServiceCommand({ Id: physicalId }));
-        const arn = described.Service?.Arn;
+        const arn =
+          knownArn ?? (await client.send(new GetServiceCommand({ Id: physicalId }))).Service?.Arn;
         if (!arn) {
           throw new ProvisioningError(
             safeMsg`Could not resolve the ARN of service discovery service ${logicalId}; its Tags were not updated`,
@@ -1444,6 +1509,82 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * Decide whether `UpdateService` is sent and what it carries, following
+   * CloudFormation (issue #1160; live A/Bs in us-east-1, go-to-k/cdkd#1160
+   * issuecomment-6272137682 and issuecomment-6281592365):
+   *
+   * - A DECLARED `Description` or `HealthCheckConfig` differing from the
+   *   previous template: CloudFormation sends the declared model as it is, so
+   *   a removed `Description` / `HealthCheckConfig` in the same update is
+   *   CLEARED and a removed `DnsConfig` is REFUSED by AWS (`Service dns
+   *   config cannot be null`). cdkd sends the same body.
+   * - Only `DnsConfig.DnsRecords` differing (a TTL, say): CloudFormation
+   *   sends nothing, so the record change is DROPPED and any removed field is
+   *   kept. cdkd DIVERGES deliberately and applies the record change, but
+   *   keeps a removed `Description` / `HealthCheckConfig` from the live
+   *   service ({@link keepUndeclaredServiceFields}), so their final state
+   *   still matches CloudFormation.
+   * - Nothing declared differing (a removal on its own, or a change only to
+   *   `ServiceAttributes` / `Tags`): no `UpdateService`, every removed field
+   *   is kept — as CloudFormation.
+   *
+   * Returns `undefined` when no `UpdateService` is due.
+   */
+  private planServiceChange(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
+    const declaredDiffers = (key: string): boolean =>
+      properties[key] !== undefined && !sameAsRecorded(properties[key], previousProperties[key]);
+
+    const change: ServiceChange = {};
+    if (properties['Description'] !== undefined) {
+      change.Description = properties['Description'] as string;
+    }
+    const desiredRecords = (properties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
+    const previousRecords = (previousProperties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
+    if (desiredRecords !== undefined) {
+      const dnsChange: DnsConfigChange = { DnsRecords: desiredRecords };
+      change.DnsConfig = dnsChange;
+    }
+    if (properties['HealthCheckConfig'] !== undefined) {
+      change.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
+    }
+
+    if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
+      return { change, keepRemovedFromLive: false };
+    }
+    if (desiredRecords !== undefined && !sameAsRecorded(desiredRecords, previousRecords)) {
+      return { change, keepRemovedFromLive: true };
+    }
+    return undefined;
+  }
+
+  /**
+   * The DnsRecords-only arm of {@link planServiceChange}: fill a
+   * `Description` / `HealthCheckConfig` the template does not declare with
+   * the service's live value, so the replace-style `UpdateService` keeps it,
+   * as CloudFormation (which sends nothing there) does. Returns the service
+   * ARN when it read one.
+   */
+  private async keepUndeclaredServiceFields(
+    physicalId: string,
+    serviceChange: ServiceChange
+  ): Promise<string | undefined> {
+    if (serviceChange.Description !== undefined && serviceChange.HealthCheckConfig !== undefined) {
+      return undefined;
+    }
+    const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
+    if (serviceChange.Description === undefined && live?.Description !== undefined) {
+      serviceChange.Description = live.Description;
+    }
+    if (serviceChange.HealthCheckConfig === undefined && live?.HealthCheckConfig !== undefined) {
+      serviceChange.HealthCheckConfig = live.HealthCheckConfig;
+    }
+    return live?.Arn;
   }
 
   private async deleteService(

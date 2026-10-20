@@ -175,12 +175,19 @@ describe('ServiceDiscoveryProvider read-update round-trip', () => {
       HealthCheckConfig: { Type: 'HTTP', ResourcePath: '/healthz', FailureThreshold: 3 },
     };
 
+    // `drift --revert` passes the AWS-current bag as `previousProperties`;
+    // the drifted Description and TTL are what make this an update (#1160).
+    const awsCurrent = {
+      ...observed,
+      Description: 'drifted desc',
+      DnsConfig: { ...observed.DnsConfig, DnsRecords: [{ Type: 'A', TTL: 300 }] },
+    };
     const result = await provider.update(
       'L',
       'srv-1',
       'AWS::ServiceDiscovery::Service',
       observed,
-      observed
+      awsCurrent
     );
     expect(result).toEqual({ physicalId: 'srv-1', wasReplaced: false });
 
@@ -214,14 +221,20 @@ describe('ServiceDiscoveryProvider read-update round-trip', () => {
       Description: '',
     };
 
-    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed);
+    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, {
+      ...observed,
+      Description: 'drifted desc',
+    });
 
     const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateServiceCommand);
     const input = call![0].input as { Service: { Description?: string } };
     expect(input.Service.Description).toBe('');
   });
 
-  it('Service — when only DnsConfig is supplied, HealthCheckConfig is NOT echoed (would delete the config per AWS docs)', async () => {
+  it('Service — a DnsRecords-only change does not invent a HealthCheckConfig the live service lacks', async () => {
+    // The DnsRecords-only arm reads the live service to keep an undeclared
+    // Description / HealthCheckConfig (#1160); this one has neither.
+    mockSend.mockResolvedValueOnce({ Service: { Id: 'srv-1' } });
     mockUpdateAndOperationSuccess('SERVICE');
 
     const observed = {
@@ -229,7 +242,10 @@ describe('ServiceDiscoveryProvider read-update round-trip', () => {
       DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
     };
 
-    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed);
+    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, {
+      ...observed,
+      DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 300 }] },
+    });
 
     const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateServiceCommand);
     const input = call![0].input as { Service: Record<string, unknown> };

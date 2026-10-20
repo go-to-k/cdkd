@@ -353,7 +353,7 @@ secrets-dynamic-ref	2026-10-18T21:57:16Z	PASS	888	verify.sh	rc ok, orph clean (P
 secrets-rotation-schedule	2026-10-18T05:55:24Z	PASS	64	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 secretsmanager-update-value-source	2026-10-01T03:22:05Z	PASS	120	verify.sh	rc ok, orph clean (#4257)
 serverless-api	2026-10-18T18:32:28Z	PASS	58	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
-servicediscovery	2026-10-16T09:35:29Z	PASS	115	verify.sh	rc ok, orph clean (#3341 slice 4997)
+servicediscovery	2026-10-20T05:51:22Z	PASS	209	verify.sh	rc ok, orph clean; #1160 removed Description / DnsConfig kept; re-run after a traced Cloud Map NamespaceNotFound flake in phase 1
 servicediscovery-namespaces	2026-10-06T02:22:44Z	PASS	146	verify.sh	PR #4598 (#4583/#4595 created-before-failure marks, 45 providers); rc 0, destroy clean, orph clean
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-10-18T21:41:29Z	PASS	440	verify.sh	rc ok, orph clean (#5071)

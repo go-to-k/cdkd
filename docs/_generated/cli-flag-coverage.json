@@ -2157,6 +2157,7 @@
     "--directory-ids",
     "--disable-api-stop",
     "--distribution-config",
+    "--dns-name",
     "--domain",
     "--drop-failed",
     "--duration-seconds",
