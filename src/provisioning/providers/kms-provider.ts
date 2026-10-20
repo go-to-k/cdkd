@@ -29,7 +29,7 @@ import {
   type OriginType,
 } from '@aws-sdk/client-kms';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -69,7 +69,6 @@ import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
-  isMarkedNonRetryable,
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
@@ -913,14 +912,9 @@ export class KMSProvider implements ResourceProvider {
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
-      // The disabled-key refusal below is already worded for the user.
-      if (
-        error instanceof ProvisioningError &&
-        error.cause instanceof DisabledException &&
-        isMarkedNonRetryable(error)
-      ) {
-        throw error;
-      }
+      // A cdkd-typed throw (the disabled-key refusal in `sendRotation`) is
+      // already worded for the user.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         mask,
