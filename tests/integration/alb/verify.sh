@@ -20,6 +20,9 @@
 # removed key keeps its live value too (routing.http.response.server.enabled
 # stays false, #1160), and keeps routing.http2.enabled templated as 'false' so
 # the readback shows the LB update did not reset the whole list (#1609 item 1).
+# Phase 3.5 then drops the listener's Port and Protocol: both keep their live
+# values, as CloudFormation keeps them (CFn A/B us-east-1 2026-10-20), and the
+# warning says so. A restore deploy puts them back before Phase 4.
 # MinimumLoadBalancerCapacity is unit-only: the integ account lacks the LCU
 # capacity-reservation entitlement (see the note in lib/alb-stack.ts).
 #
@@ -91,7 +94,7 @@ cleanup() {
   local rc=$?
   echo ""
   echo "==> Cleanup (errors tolerated)"
-  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}" "${P5_LOG:-}" "${P6_LOG:-}"
+  rm -f "${FF_LOG:-}" "${REMOVAL_LOG:-}" "${P35_LOG:-}" "${P5_LOG:-}" "${P6_LOG:-}"
   # go-to-k/cdkd#4606: the Phase 4 injection's load balancer is created with
   # deletion protection on, and unfixed, the fix-forward settle drops it from
   # the rollback journal, so nothing else reaches it. Clear the protection and
@@ -507,6 +510,54 @@ if [[ "${LISTENER_ATTR_P3}" != "false" ]]; then
   exit 1
 fi
 echo "    ${EXPECTED_ATTR_KEY} kept at false (✓)"
+
+# --- Phase 3.5: drop the listener's Port and Protocol (issue #1160) ----------
+# A CloudFormation update keeps a removed Port / Protocol (CFn A/B us-east-1
+# 2026-10-20, removed alone and beside a DefaultActions change). cdkd keeps
+# both too and warns once, saying CloudFormation leaves them. Before this
+# change the warning said nothing about CloudFormation, so the wording
+# assertion below is the one that goes red on the old code. A second deploy
+# restores both, so Phase 4 starts from the template it expects.
+echo ""
+echo "==> Phase 3.5: removal redeploy dropping the listener's Port and Protocol (#1160)"
+P35_LOG=$(mktemp)
+if ! CDKD_TEST_REMOVAL=true CDKD_TEST_LISTENER_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" \
+  --state-bucket "${STATE_BUCKET}" >"${P35_LOG}" 2>&1; then
+  cat "${P35_LOG}"
+  echo "FAIL: #1160: the Port / Protocol removal redeploy failed"
+  exit 1
+fi
+P35_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${P35_LOG}")"
+rm -f "${P35_LOG}"
+P35_LOG=""
+printf '%s\n' "${P35_PLAIN}" | sed 's/^/  /'
+[ "$(listener_record .provisionedBy)" = "sdk" ] || {
+  echo "FAIL: #1160 premise: the listener is not on the SDK provider, so updateListener did not run"
+  exit 1
+}
+[ "$(listener_record .physicalId)" = "${LISTENER_ARN}" ] || {
+  echo "FAIL: #1160: dropping Port / Protocol replaced the listener instead of updating it in place"
+  exit 1
+}
+P35_EXPECTED="${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener): properties Port, Protocol were removed from the template and keep their current AWS value, as CloudFormation leaves them;"
+if ! grep -qF "${P35_EXPECTED}" <<<"${P35_PLAIN}"; then
+  echo "FAIL: #1160: no warning saying the removed Port / Protocol keep their value as CloudFormation leaves them. Expected:"
+  echo "  ${P35_EXPECTED}"
+  echo "Listener lines in the output:"
+  grep -F "${LISTENER_LOGICAL} (AWS::ElasticLoadBalancingV2::Listener)" <<<"${P35_PLAIN}" || true
+  exit 1
+fi
+echo "    warning names Port, Protocol and CloudFormation's keep (✓)"
+P35_LIVE=$(aws elbv2 describe-listeners --listener-arns "${LISTENER_ARN}" --region "${AWS_REGION}" \
+  --query 'Listeners[0].[Port,Protocol]' --output text)
+if [ "${P35_LIVE}" != "$(printf '80\tHTTP')" ]; then
+  echo "FAIL: #1160: the listener reads '${P35_LIVE}' after Port / Protocol were removed, expected the live 80 / HTTP kept (CloudFormation keeps both)"
+  exit 1
+fi
+echo "    Port 80 / Protocol HTTP kept (✓)"
+
+echo "==> Phase 3.5: restore the listener's Port and Protocol"
+CDKD_TEST_REMOVAL=true ${CDKD} deploy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 
 # --- Phase 4: the fix-forward of a failed CREATE (go-to-k/cdkd#4606) ---------
 # A `--no-rollback` deploy whose OrphanLb CREATE fails after CreateLoadBalancer,
