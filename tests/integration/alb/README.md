@@ -17,8 +17,9 @@ Application Load Balancer deployment example for cdkd.
   silent-drop batch coverage: an explicit createOnly `IpAddressType: ipv4`, a
   `TargetGroupAttributes` list (`deregistration_delay` 45 → 60 on the
   `CDKD_TEST_UPDATE=true` redeploy, kept at 60 when the removal phase drops
-  it, as CloudFormation keeps a removed key), and registered IP `Targets` (10.0.0.100 →
-  10.0.0.101 on update, exercising RegisterTargets + DeregisterTargets)
+  it, as CloudFormation keeps a removed key), and registered IP `Targets`
+  (10.0.0.100 → 10.0.0.101 on update, exercising RegisterTargets +
+  DeregisterTargets)
 - **Listener** - HTTP listener on port 80 forwarding to target group.
   verify.sh Phase 3.5 (issue #1160) redeploys with
   `CDKD_TEST_LISTENER_REMOVAL=true`, which drops its `Port` and `Protocol`,
