@@ -21,7 +21,15 @@
 #      DisableExecuteApiEndpoint / IpAddressType, Integration Description +
 #      RequestParameters, AuthorizerResultTtlInSeconds, Route OperationName,
 #      Stage StageVariables stay live) and resets CorsConfiguration (cleared via
-#      DeleteCorsConfiguration).
+#      DeleteCorsConfiguration) and ClearAuthorizer's IdentitySource (#1160 A/B:
+#      CloudFormation clears it).
+#   2b. CDKD_TEST_REMOVAL=true: the delete-API-only members, plus (#1160) the
+#      WebSocket MOCK integration's and $default route's #609 fields, which
+#      CloudFormation keeps, and a Description-only change on the service
+#      integration, which AWS accepts only with the full RequestParameters.
+#   2c. CDKD_TEST_SUBTYPE_REMOVED=true: the service integration drops its
+#      IntegrationSubtype. CloudFormation fails that update (#1160 A/B), so the
+#      deploy must be refused and the subtype must stay live.
 #   3. Destroy; assert the API is gone and the state file is removed.
 #
 # Required env vars:
@@ -224,6 +232,23 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2; exit 1
 fi
 
+# Precondition: WsStage declares AccessLogSettings, which API Gateway accepts
+# only when the REGION's API Gateway account has a CloudWatch Logs role
+# (`cloudwatchRoleArn`). Without one, phase 1 fails with an opaque
+# BadRequestException. This fixture never sets the account role itself: it is
+# a region-wide setting other stacks may own.
+if ! APIGW_CW_ROLE="$(aws apigateway get-account --region "${REGION}" \
+  --query cloudwatchRoleArn --output text 2>&1)"; then
+  echo "FAIL: precheck could not read the API Gateway account in ${REGION}: ${APIGW_CW_ROLE}" >&2
+  exit 1
+fi
+case "${APIGW_CW_ROLE}" in
+  '' | None)
+    echo "FAIL: precondition: the API Gateway account in ${REGION} has no cloudwatchRoleArn, so the WebSocket stage's AccessLogSettings would be rejected. Set an account CloudWatch Logs role first, e.g. the dedicated cdkd-integ-apigw-cloudwatch-logs role: aws apigateway update-account --region ${REGION} --patch-operations op=replace,path=/cloudwatchRoleArn,value=<role arn>" >&2
+    exit 1
+    ;;
+esac
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then npm install; fi
 
@@ -242,7 +267,19 @@ fi
 INT_ID="$(int_id_by_type "${AID}" HTTP_PROXY)"
 EVENTS_INT_ID="$(int_id_by_type "${AID}" AWS_PROXY)"
 ROUTE_ID="$(first_id "${AID}" get-routes RouteId)"
-AUTH_ID="$(first_id "${AID}" get-authorizers AuthorizerId)"
+# By NAME: the HTTP API carries two authorizers (issue #1160 added the
+# caching-off one), so an Items[0] pick would be order-dependent.
+auth_id_by_name() { # auth_id_by_name <NAME>
+  aws apigatewayv2 get-authorizers --api-id "${AID}" --region "${REGION}" \
+    --query "Items[?Name=='$1'].AuthorizerId | [0]" --output text 2>/dev/null
+}
+AUTH_ID="$(auth_id_by_name "${STACK}-auth")"
+CLEAR_AUTH_ID="$(auth_id_by_name "${STACK}-clear-auth")"
+for ID_PAIR in "auth:${AUTH_ID}" "clear-auth:${CLEAR_AUTH_ID}"; do
+  case "${ID_PAIR#*:}" in
+    '' | None) echo "FAIL: could not resolve the ${ID_PAIR%%:*} authorizer id" >&2; exit 1 ;;
+  esac
+done
 
 if [ "$(api_field "${AID}" 'Description')" != "before removal" ] \
   || [ "$(api_field "${AID}" 'CorsConfiguration.AllowOrigins[0]')" != "https://example.com" ] \
@@ -303,6 +340,10 @@ if [ "$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')" != "EventBr
 fi
 if [ "$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')" != "300" ]; then
   echo "FAIL: Phase 1 Authorizer TTL not 300 (got '$(auth_field "${AID}" "${AUTH_ID}" AuthorizerResultTtlInSeconds)')" >&2
+  exit 1
+fi
+if [ "$(auth_field "${AID}" "${CLEAR_AUTH_ID}" 'IdentitySource[0]')" != '$request.header.Authorization' ]; then
+  echo "FAIL: Phase 1 ClearAuthorizer IdentitySource not set (got '$(auth_field "${AID}" "${CLEAR_AUTH_ID}" 'IdentitySource[0]')')" >&2
   exit 1
 fi
 if [ "$(route_field "${AID}" "${ROUTE_ID}" 'OperationName')" != "probeOp" ]; then
@@ -487,6 +528,15 @@ if [ "${RP}" != "y" ]; then echo "FAIL: Integration RequestParameters not RETAIN
 TTL="$(auth_field "${AID}" "${AUTH_ID}" 'AuthorizerResultTtlInSeconds')"
 # #5004: CloudFormation KEEPS AuthorizerResultTtlInSeconds on removal.
 if [ "${TTL}" != "300" ]; then echo "FAIL: Authorizer TTL not RETAINED at 300 (got '${TTL}')" >&2; exit 1; fi
+# Issue #1160 (real CloudFormation A/B): CloudFormation CLEARS a removed
+# IdentitySource, so cdkd sends `[]` and AWS reads back none (absent in the
+# A/B; an empty list counts too). A pre-fix cdkd sent nothing and the header
+# stayed. `0` only: an empty read is a probe error, never "cleared".
+CLEAR_IS="$(auth_field "${AID}" "${CLEAR_AUTH_ID}" 'length(IdentitySource || `[]`)')"
+if [ "${CLEAR_IS}" != "0" ]; then
+  echo "FAIL: ClearAuthorizer IdentitySource not cleared on removal (got '${CLEAR_IS}'; issue #1160: CloudFormation clears it)" >&2
+  exit 1
+fi
 
 # Issue #609 (::Integration backfill), phase 2. These CHANGE VALUE rather than
 # being removed: the backfill wires delivery on create AND update, and the
@@ -580,8 +630,20 @@ echo "    drift still clean after the update"
 # through their dedicated Delete* APIs (live-probed 2026-08-11). Omitting them
 # from the input is the silent no-op the #1160 umbrella tracks.
 echo "==> Phase 2b: re-deploy with the delete-API-only members removed"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Issue #1160: this deploy also changes ONLY the service integration's
+# Description. A cdkd that sends the subtype without the full RequestParameters
+# fails here with AWS's "requires enabling passthrough, or defining all of the
+# following parameters" — named, so the red run says which arm it was.
+set +e
+P2B_OUT="$(CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+P2B_RC=$?
+set -e
+printf '%s\n' "${P2B_OUT}"
+if [ "${P2B_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 2b deploy failed (rc=${P2B_RC}); a Description-only change on the EventBridge service integration must carry the full RequestParameters beside the subtype (issue #1160)" >&2
+  exit 1
+fi
 
 ALS="$(ws_stage_field "${WS_AID}" 'AccessLogSettings.Format')"
 if [ "${ALS}" != "None" ]; then
@@ -607,6 +669,62 @@ if [ "${RP}" != "False" ]; then
   exit 1
 fi
 echo "    Phase 2b: AccessLogSettings/RouteSettings removals landed, retained sibling intact, RequestParameters retained"
+
+EV_DESC="$(int_field "${AID}" "${EVENTS_INT_ID}" 'Description')"
+EV_ST="$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')"
+EV_DT="$(int_field "${AID}" "${EVENTS_INT_ID}" 'RequestParameters.DetailType')"
+if [ "${EV_DESC}" != "description-only change" ] || [ "${EV_ST}" != "EventBridge-PutEvents" ] \
+  || [ "${EV_DT}" != "updated" ]; then
+  echo "FAIL: Phase 2b service Integration Description-only change not applied intact (Desc='${EV_DESC}' Subtype='${EV_ST}' DetailType='${EV_DT}')" >&2
+  exit 1
+fi
+# Issue #1160 (real CloudFormation A/B): CloudFormation KEEPS the removed MOCK
+# integration fields and route selection expressions, so the phase 2 values stay.
+WS_RT="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'RequestTemplates."$default"')"
+WS_TSE="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'TemplateSelectionExpression')"
+WS_PB="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'PassthroughBehavior')"
+WS_CH="$(int_field "${WS_AID}" "${WS_MOCK_ID}" 'ContentHandlingStrategy')"
+if [ "${WS_RT}" != '{"statusCode":202}' ] || [ "${WS_TSE}" != '\$default' ] \
+  || [ "${WS_PB}" != "NEVER" ] || [ "${WS_CH}" != "CONVERT_TO_BINARY" ]; then
+  echo "FAIL: Phase 2b WS MOCK Integration removed fields not RETAINED (RT='${WS_RT}' TSE='${WS_TSE}' PB='${WS_PB}' CHS='${WS_CH}')" >&2
+  exit 1
+fi
+WS_MSE="$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" 'ModelSelectionExpression')"
+WS_RRSE="$(route_field "${WS_AID}" "${WS_DEFAULT_ID}" 'RouteResponseSelectionExpression')"
+if [ "${WS_MSE}" != '$request.body.updatedAction' ] || [ "${WS_RRSE}" != '$default' ]; then
+  echo "FAIL: Phase 2b WS \$default route selection expressions not RETAINED (MSE='${WS_MSE}' RRSE='${WS_RRSE}')" >&2
+  exit 1
+fi
+echo "    Phase 2b: Description-only service-integration change applied; removed #609 fields retained (#1160)"
+
+# --- Phase 2c: IntegrationSubtype removal is REFUSED (issue #1160) -----------
+# Real CloudFormation A/B: removing the subtype from a service integration
+# fails the update ("Invalid integration URI specified"), so cdkd refuses the
+# deploy before any call. A pre-fix cdkd sent nothing and reported success.
+echo "==> Phase 2c: re-deploy without the service integration's IntegrationSubtype (must be refused)"
+set +e
+P2C_OUT="$(CDKD_TEST_SUBTYPE_REMOVED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+P2C_RC=$?
+set -e
+printf '%s\n' "${P2C_OUT}"
+if [ "${P2C_RC}" -eq 0 ]; then
+  echo "FAIL: Phase 2c deploy succeeded; removing IntegrationSubtype must be refused like CloudFormation (issue #1160)" >&2
+  exit 1
+fi
+case "${P2C_OUT}" in
+  *"the previous deploy recorded IntegrationSubtype and this template does not declare it. CloudFormation fails that update"*) ;;
+  *)
+    echo "FAIL: Phase 2c deploy failed (rc=${P2C_RC}) without the IntegrationSubtype refusal" >&2
+    exit 1
+    ;;
+esac
+EV_ST="$(int_field "${AID}" "${EVENTS_INT_ID}" 'IntegrationSubtype')"
+if [ "${EV_ST}" != "EventBridge-PutEvents" ]; then
+  echo "FAIL: Phase 2c service Integration subtype changed by a refused deploy (got '${EV_ST}')" >&2
+  exit 1
+fi
+echo "    Phase 2c: IntegrationSubtype removal refused; subtype still live"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
