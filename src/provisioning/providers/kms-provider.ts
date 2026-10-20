@@ -20,6 +20,7 @@ import {
   UntagResourceCommand,
   ListKeysCommand,
   NotFoundException,
+  DisabledException,
   type CreateKeyCommandInput,
   type CreateKeyCommandOutput,
   type KeyMetadata,
@@ -68,8 +69,10 @@ import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
+  isMarkedNonRetryable,
   isThrottlingError,
   isTransientServerError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
@@ -787,14 +790,13 @@ export class KMSProvider implements ResourceProvider {
         );
       }
 
-      // Enable before the rotation calls and disable LAST, after every other
-      // call: KMS refuses `EnableKeyRotation` on a disabled key
-      // (`DisabledException`), and CloudFormation orders it the same way (A/B:
-      // enabling the key and resetting the period in one update succeeds; a
-      // period change on a key that stays disabled fails there as it does
-      // here). Disabling last also means a failure anywhere earlier leaves the
-      // key enabled, as the unchanged state record says, so a re-run (a retry,
-      // the next deploy) never sends a rotation call to a key cdkd disabled.
+      // CloudFormation's order (issue #1160 A/Bs, issuecomment-6286212485 and
+      // issuecomment-6287991009): EnableKey, rotation, DisableKey, then tags
+      // and the key policy. KMS refuses a rotation call on a disabled key
+      // (`DisabledException`), so the key is enabled first and disabled after
+      // it; and a policy that denies `kms:DisableKey` is put only after the
+      // disable, which CloudFormation accepts. A rotation change on a key that
+      // stays disabled fails, as it does in CloudFormation.
       if (enabledChange === 'enable') {
         this.logger.debug(`Enabling KMS Key ${logicalId}`);
         await this.getClient().send(new EnableKeyCommand({ KeyId: physicalId }));
@@ -817,18 +819,31 @@ export class KMSProvider implements ResourceProvider {
             rotationPeriodInDays !== previousProperties['RotationPeriodInDays'])
         ) {
           this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
-          await this.getClient().send(
+          await this.sendRotation(
             new EnableKeyRotationCommand({
               KeyId: physicalId,
               ...(rotationPeriodInDays !== undefined && {
                 RotationPeriodInDays: rotationPeriodInDays,
               }),
-            })
+            }),
+            resourceType,
+            logicalId,
+            physicalId
           );
         }
       } else if (newEnableKeyRotation !== oldEnableKeyRotation) {
         this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
-        await this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId }));
+        await this.sendRotation(
+          new DisableKeyRotationCommand({ KeyId: physicalId }),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+
+      if (enabledChange === 'disable') {
+        this.logger.debug(`Disabling KMS Key ${logicalId}`);
+        await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
       }
 
       // Apply tag diff. KMS's TagResource takes [{TagKey, TagValue}] (NOT
@@ -894,17 +909,18 @@ export class KMSProvider implements ResourceProvider {
         );
       }
 
-      // Last: see the EnableKey comment above. TagResource / UntagResource and
-      // PutKeyPolicy all work on a disabled key.
-      if (enabledChange === 'disable') {
-        this.logger.debug(`Disabling KMS Key ${logicalId}`);
-        await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
-      }
-
       this.logger.debug(`Successfully updated KMS Key ${logicalId}`);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
+      // The disabled-key refusal below is already worded for the user.
+      if (
+        error instanceof ProvisioningError &&
+        error.cause instanceof DisabledException &&
+        isMarkedNonRetryable(error)
+      ) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         mask,
@@ -917,6 +933,34 @@ export class KMSProvider implements ResourceProvider {
             physicalId,
             cause
           )
+      );
+    }
+  }
+
+  /**
+   * A rotation call (`EnableKeyRotation` / `DisableKeyRotation`). KMS refuses
+   * it on a disabled key, as CloudFormation's update does (issue #1160 A/B), so
+   * that refusal is restated as what the template must change; it is final,
+   * since a retry meets the same disabled key.
+   */
+  private async sendRotation(
+    command: EnableKeyRotationCommand | DisableKeyRotationCommand,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<void> {
+    try {
+      await this.getClient().send(command as EnableKeyRotationCommand);
+    } catch (error) {
+      if (!(error instanceof DisabledException)) throw error;
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`Failed to update KMS Key ${logicalId}: the key is disabled, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Declare Enabled: true (or enable the key) to change its rotation, or drop the rotation change from this update.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error
+        )
       );
     }
   }

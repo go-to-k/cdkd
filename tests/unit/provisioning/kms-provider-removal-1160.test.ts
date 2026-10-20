@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateKeyCommand,
   DescribeKeyCommand,
+  DisabledException,
   DisableKeyCommand,
   DisableKeyRotationCommand,
   EnableKeyCommand,
@@ -42,6 +43,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { KMSProvider } from '../../../src/provisioning/providers/kms-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::KMS::Key';
 const KEY_ID = '1234abcd-12ab-34cd-56ef-1234567890ab';
@@ -195,7 +197,10 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       expect(names()).toEqual(['EnableKeyRotationCommand', 'DisableKeyCommand']);
     });
 
-    it('disables the key LAST, after the rotation, tag and policy calls', async () => {
+    // CloudFormation's order (issue #1160, issuecomment-6287991009): the key
+    // is disabled after the rotation call and BEFORE tags and the key policy,
+    // so a policy denying kms:DisableKey still deploys.
+    it('pins the CloudFormation order: rotation, DisableKey, tags, then the key policy', async () => {
       await deployUpdate(
         {
           Description: 'v2',
@@ -215,27 +220,58 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       expect(names()).toEqual([
         'UpdateKeyDescriptionCommand',
         'EnableKeyRotationCommand',
+        'DisableKeyCommand',
         'TagResourceCommand',
         'PutKeyPolicyCommand',
-        'DisableKeyCommand',
       ]);
     });
 
-    it('a failed PutKeyPolicy leaves the key enabled, so a re-run can still rotate', async () => {
+    it('pins EnableKey before the rotation call and the key policy last', async () => {
+      await deployUpdate(
+        { EnableKeyRotation: true, RotationPeriodInDays: 180, KeyPolicy: { ...CUSTOM_POLICY, Id: 'n' } },
+        { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 90, KeyPolicy: CUSTOM_POLICY }
+      );
+      expect(names()).toEqual(['EnableKeyCommand', 'EnableKeyRotationCommand', 'PutKeyPolicyCommand']);
+    });
+
+    it('refuses a rotation change on a disabled key with what the template must change', async () => {
       mockSend.mockImplementation((command: unknown) =>
-        command instanceof PutKeyPolicyCommand
-          ? Promise.reject(new Error('MalformedPolicyDocumentException'))
+        command instanceof EnableKeyRotationCommand
+          ? Promise.reject(
+              new DisabledException({
+                message: `arn:aws:kms:us-east-1:${ACCOUNT}:key/${KEY_ID} is disabled.`,
+                $metadata: {},
+              })
+            )
           : Promise.resolve({})
       );
-      const run = () =>
-        deployUpdate(
-          { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 180, KeyPolicy: { Id: 'x' } },
-          { EnableKeyRotation: true, RotationPeriodInDays: 90, KeyPolicy: CUSTOM_POLICY }
-        );
-      await expect(run()).rejects.toThrow(/Failed to update KMS Key Key/);
-      await expect(run()).rejects.toThrow(/Failed to update KMS Key Key/);
-      expect(sent(DisableKeyCommand)).toHaveLength(0);
-      expect(sent(EnableKeyRotationCommand)).toHaveLength(2);
+      const err = await deployUpdate(
+        { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 180 },
+        { Enabled: false, EnableKeyRotation: true, RotationPeriodInDays: 90 }
+      ).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(Error);
+      const msg = (err as Error).message;
+      expect(msg).toBe(
+        'Failed to update KMS Key Key: the key is disabled, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Declare Enabled: true (or enable the key) to change its rotation, or drop the rotation change from this update.'
+      );
+      expect(msg).not.toContain(KEY_ID);
+      expect(msg).not.toContain(ACCOUNT);
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(names()).toEqual(['EnableKeyRotationCommand']);
+    });
+
+    it('wraps any other rotation failure as before', async () => {
+      mockSend.mockImplementation((command: unknown) =>
+        command instanceof DisableKeyRotationCommand
+          ? Promise.reject(new Error('socket hang up'))
+          : Promise.resolve({})
+      );
+      await expect(deployUpdate({}, { EnableKeyRotation: true })).rejects.toThrow(
+        'Failed to update KMS Key Key: socket hang up'
+      );
     });
 
     it('drift --revert sends no rotation call for a period the desired bag does not carry', async () => {
