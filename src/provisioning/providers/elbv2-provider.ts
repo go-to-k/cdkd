@@ -534,11 +534,13 @@ function elbv2ArnScope(resourceType: string, physicalId: string): string | undef
 
 /**
  * Issue #1160: Listener properties whose REMOVAL `ModifyListener` does not
- * apply. The API keeps any field it is not sent, and cdkd sends no reset:
- * CloudFormation's behavior on these removals is unmeasured, and a reset value
- * (`AlpnPolicy: ['None']`, `MutualAuthentication: { Mode: 'off' }`) is
- * rejected on a listener whose protocol does not take the field. Each is
- * named in `updateListener`'s own warning instead.
+ * apply. The API keeps any field it is not sent, and cdkd sends no reset,
+ * because CloudFormation keeps each of them too (CFn A/B us-east-1
+ * 2026-10-20: every one of the six, removed alone and removed beside a
+ * DefaultActions change, kept its live value, and no update failed). Each
+ * still changes how a client connects (port, protocol, TLS policy,
+ * certificate, ALPN, mTLS), so a kept value can mislead, and each is named in
+ * `updateListener`'s own warning.
  */
 const LISTENER_LEFT_IN_PLACE_ON_REMOVAL = [
   'AlpnPolicy',
@@ -563,8 +565,9 @@ const CLEARED_BY_TLS_DOWNGRADE: ReadonlySet<string> = new Set(['SslPolicy', 'Cer
 
 /**
  * The ONE warning line for {@link LISTENER_LEFT_IN_PLACE_ON_REMOVAL} removals.
- * Names are template-borne, so they go through `safeMsg`. It claims nothing
- * about CloudFormation's behavior. A rollback revert restores an earlier
+ * Names are template-borne, so they go through `safeMsg`. The deploy line
+ * says CloudFormation keeps the value too (the CFn A/B above). A rollback
+ * revert restores an earlier
  * state record, so there the property is one the failed deploy ADDED, and
  * the line says that instead.
  */
@@ -577,7 +580,7 @@ const listenerLeftInPlaceWarning = (
   const subject = one ? 'property' : 'properties';
   return caller === 'rollback'
     ? safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ModifyListener keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyListener keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+    : safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyListener keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
 };
 
 /**
@@ -747,7 +750,8 @@ export class ELBv2Provider implements ResourceProvider {
         'ListenerAttributes',
         'Tags',
         // Cleared by AWS on an HTTPS -> HTTP / TLS -> TCP change, otherwise
-        // left in place and named in updateListener's own warning (no reset).
+        // left in place, as CloudFormation leaves them (CFn A/B 2026-10-20),
+        // and named in updateListener's own warning (no reset).
         ...LISTENER_LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
@@ -2754,8 +2758,8 @@ export class ELBv2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
-    // Issue #1160: a removed property ModifyListener is not sent stays live.
-    // Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
+    // Issue #1160: a removed property ModifyListener is not sent stays live,
+    // as CloudFormation leaves it (LISTENER_LEFT_IN_PLACE_ON_REMOVAL). Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
     // change, which AWS drops itself. Named once, and only after the update
     // SUCCEEDED (the shared caller's warning has the same timing). Not on
     // `drift --revert`: its previous side is an AWS readback, so a key the

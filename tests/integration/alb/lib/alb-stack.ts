@@ -184,6 +184,16 @@ export class AlbStack extends cdk.Stack {
         { key: 'routing.http.response.server.enabled', value: 'false' },
       ];
     }
+    // CDKD_TEST_LISTENER_REMOVAL (issue #1160, verify.sh Phase 3.5): drop the
+    // listener's Port and Protocol. A CloudFormation update keeps both live
+    // values (CFn A/B us-east-1 2026-10-20), and cdkd does too, warning that
+    // it matches CloudFormation. Its own variable, not CDKD_TEST_REMOVAL:
+    // Phase 5 recreates the listener, and an ALB listener cannot be created
+    // without them.
+    if (process.env.CDKD_TEST_LISTENER_REMOVAL === 'true') {
+      cfnListener.addPropertyDeletionOverride('Port');
+      cfnListener.addPropertyDeletionOverride('Protocol');
+    }
 
     // ListenerRule (path-based routing)
     // go-to-k/cdkd#4690 (Phase 6 of `verify.sh`): `ALB_RULE_BAD_PRIORITY`
