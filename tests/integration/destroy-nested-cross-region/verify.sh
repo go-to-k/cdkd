@@ -136,7 +136,7 @@ WORK_DIR=""
 # Set once Phase 0 created the sentinel; gates its deletion in cleanup.
 SENTINEL_CREATED=0
 
-echo "=== destroy of a cross-region nested stack (issue #4941) ==="
+echo "=== destroy of a cross-region nested stack (issues #4941, #5115) ==="
 echo "Stack:        ${STACK} (${REGION})"
 echo "CLI region:   ${CLI_REGION}"
 echo "Stream name:  ${STREAM_NAME}"
@@ -258,7 +258,10 @@ deploy_and_check_premise() { # usage: deploy_and_check_premise <phase>
   fi
   # Exactly one, so the gone-probe after the destroy is never handed an empty
   # or stale id.
-  API_ID="$(api_ids_by_name "${REGION}")"
+  API_ID="$(api_ids_by_name "${REGION}")" || {
+    echo "FAIL: $1: REST API lookup undetermined (get-rest-apis in ${REGION} failed)" >&2
+    exit 1
+  }
   case "${API_ID}" in
     "" | None | *[[:space:]]*)
       echo "FAIL: $1: want exactly one REST API named ${API_NAME} in ${REGION} after the deploy, got: '${API_ID}'" >&2
