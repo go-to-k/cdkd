@@ -46,9 +46,12 @@ export function isSupersededResourceRecord(row: unknown): row is SupersededResou
 }
 
 /**
- * Whether a record of `resources` holds the entry's resource: the same
- * physical id under the same type. A rollback that took the old copy back
- * holds it, and it must not be deleted.
+ * Whether a record of `resources` holds the entry's physical id, under ANY
+ * type. A rollback that took the old copy back holds it, and so does a
+ * delete-first replacement that re-created the resource under the same id:
+ * deleting the entry would delete that live resource. An equal id under
+ * another type may name a different resource (#2668), but the safe answer
+ * is still "held": cdkd never deletes an id one of its records names.
  */
 export function isSupersededHeld(
   entry: SupersededResourceRecord,
@@ -56,10 +59,7 @@ export function isSupersededHeld(
 ): boolean {
   return Object.values(resources).some(
     (record) =>
-      typeof record === 'object' &&
-      record !== null &&
-      record.physicalId === entry.state.physicalId &&
-      record.resourceType === entry.state.resourceType
+      typeof record === 'object' && record !== null && record.physicalId === entry.state.physicalId
   );
 }
 

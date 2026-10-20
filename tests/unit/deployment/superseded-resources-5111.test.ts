@@ -20,6 +20,7 @@ import {
   deleteSupersededEntry,
   holdsSupersededResources,
   isInUseRefusal,
+  isSupersededHeld,
   retryWhileInUse,
   supersededInUseRetry,
   supersededResourcesOf,
@@ -393,6 +394,27 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(vi.mocked(provider.delete).mock.calls.filter((c) => c[1] === OLD_TG)).toHaveLength(3);
     expect(final.supersededResources).toBeUndefined();
     expect(printed.warn.some((l) => l.includes('Failed to delete old resource Tg'))).toBe(false);
+  });
+
+  it('never records a deferred delete whose id another record holds', async () => {
+    const { state, changes } = replacingDeploy();
+    // Another record names the same id (any type): a later run must never
+    // delete it.
+    state.resources['Other'] = record(OLD_TG, 'AWS::Other::Thing', {});
+
+    await run(state, changes).catch(() => undefined);
+
+    expect(saved.some((s) => s.supersededResources !== undefined)).toBe(false);
+  });
+
+  it('an entry is held by a record of ANY type naming its id', () => {
+    const entry: SupersededResourceRecord = {
+      logicalId: 'Tg',
+      supersededAt: 1,
+      state: record(OLD_TG, TG, {}),
+    };
+    expect(isSupersededHeld(entry, { X: record(OLD_TG, 'AWS::Other::Thing', {}) })).toBe(true);
+    expect(isSupersededHeld(entry, { X: record(NEW_TG, TG, {}) })).toBe(false);
   });
 
   it('drops, without deleting, an entry a record holds again (a rollback took it back)', async () => {

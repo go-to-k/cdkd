@@ -515,7 +515,10 @@ export async function replaceDeleteFirstAndRecreate(
         // parameter above), not looked up by logical id -- see
         // `DeployEngine.maskingRetryLoggerFor`.
         logger: deps.maskingRetryLoggerFor(secrets),
-        isInterrupted: () => deps.interrupted(),
+        // The old resource is already deleted: only the user's interrupt
+        // stops this re-create. A sibling's failure (which sets the same
+        // flag) left the stack with neither copy (generated-name-lifecycle A5).
+        isInterrupted: () => deps.interrupted() && deps.interruptCause() === 'user',
         onInterrupted: () => new InterruptedError(deps.interruptCause() ?? 'user'),
         isRetryable: isRecreateRetryableError,
       }
@@ -1045,7 +1048,13 @@ export async function deleteReplacedAfterCreate(
       const host = run.supersededHost;
       if (
         host !== undefined &&
-        canRecordSuperseded(currentResource, { noEchoDeleteValues, inlinePolicyClaimed })
+        canRecordSuperseded(currentResource, { noEchoDeleteValues, inlinePolicyClaimed }) &&
+        // Never an id ANOTHER record of this deploy holds: a later run would
+        // delete that live resource. (This row's own record still names the
+        // old id until the row completes; an equal new id refused above.)
+        !Object.entries(deps.deployStateResources()).some(
+          ([id, record]) => id !== logicalId && record?.physicalId === currentResource.physicalId
+        )
       ) {
         const entry: SupersededResourceRecord = {
           logicalId,

@@ -606,7 +606,9 @@ export async function updateByReplacement(
             // with and the very one the `createSecretMasker` one statement
             // up is built from, rather than looked up by logical id.
             logger: engine.maskingRetryLoggerFor(updateSecrets),
-            isInterrupted: () => engine.interrupted,
+            // The old resource is already deleted: only the user's interrupt
+            // stops this re-create, never a sibling's failure.
+            isInterrupted: () => engine.interrupted && engine.interruptCause === 'user',
             onInterrupted: () => new InterruptedError(engine.interruptCause ?? 'user'),
             isRetryable: isRecreateRetryableError,
           }
