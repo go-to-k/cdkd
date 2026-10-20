@@ -426,7 +426,7 @@ const inPlaceOp = (logicalId: string, deps: string[]): CompletedOperation => ({
 describe('renamed reversals that stay at their slot (review of go-to-k/cdkd#5064)', () => {
   function plainModel() {
     const m = iamModel();
-    m.provider.create.mockImplementation(async (logicalId: string, _t: string, props: Record<string, unknown>) => {
+    (m.provider.create as ReturnType<typeof vi.fn>).mockImplementation(async (logicalId: string, _t: string, props: Record<string, unknown>) => {
       m.calls.push(`create ${logicalId}`);
       return { physicalId: String(props['TopicName'] ?? `${logicalId}-old`), attributes: {} };
     });
