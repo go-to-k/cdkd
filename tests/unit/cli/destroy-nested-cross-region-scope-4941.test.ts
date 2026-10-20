@@ -21,6 +21,7 @@ const GRANDCHILD = 'TestStack~Child~Grand';
 interface LeafCall {
   logicalId: string;
   constructedRegion: string | undefined;
+  registryConstructedRegion: string | undefined;
   callRegion: string | undefined;
   scopeRegion: string | undefined;
   nestedRegistryIsCallers: boolean;
@@ -44,9 +45,14 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
   return { getLogger: () => l };
 });
-vi.mock('../../../src/provisioning/provider-registry.js', () => {
+vi.mock('../../../src/provisioning/provider-registry.js', async () => {
+  const { ambientRegion } = await import('../../../src/utils/stack-aws-scope.js');
   class FakeRegistry {
     leaf: unknown;
+    // Mirrors the real constructor, which builds its Cloud Control and
+    // custom-resource fallbacks there, each capturing `getAwsClients()`
+    // (go-to-k/cdkd#5115).
+    readonly constructedRegion = ambientRegion();
     getProviderFor({ resourceType }: { resourceType: string }) {
       return {
         provider: resourceType === 'AWS::CloudFormation::Stack' ? h.nestedProvider : this.leaf,
@@ -67,7 +73,7 @@ vi.mock('../../../src/provisioning/register-providers.js', async () => {
     loadProviderClasses: vi.fn(async () => ({})),
     // Mirrors a provider whose constructor captures `providerRegion =
     // ambientRegion()` (Kinesis, CodeBuild, Glue, ...).
-    registerAllProviders: vi.fn((registry: { leaf: unknown }) => {
+    registerAllProviders: vi.fn((registry: { leaf: unknown; constructedRegion?: string }) => {
       const constructedRegion = ambientRegion();
       registry.leaf = {
         delete: vi.fn(async (logicalId: string) => {
@@ -75,6 +81,7 @@ vi.mock('../../../src/provisioning/register-providers.js', async () => {
           h.leafCalls.push({
             logicalId,
             constructedRegion,
+            registryConstructedRegion: registry.constructedRegion,
             callRegion: ambientRegion(),
             scopeRegion: currentStackAwsScope()?.region,
             nestedRegistryIsCallers: nested?.providerRegistry === h.callerRegistry,
@@ -226,6 +233,9 @@ describe('cdkd destroy of a cross-region stack with a nested child (go-to-k/cdkd
     for (const call of h.leafCalls) {
       // Before the fix: the caller's registry, constructed under us-east-1.
       expect(call.constructedRegion).toBe(STACK_REGION);
+      // go-to-k/cdkd#5115: the registry itself, whose Cloud Control fallback
+      // is built in its constructor, before any provider is registered.
+      expect(call.registryConstructedRegion).toBe(STACK_REGION);
       expect(call.nestedRegistryIsCallers).toBe(false);
       // The clients a child's final snapshots and grandchildren take.
       expect(call.nestedClientsRegion).toBe(STACK_REGION);
@@ -247,6 +257,7 @@ describe('cdkd destroy of a cross-region stack with a nested child (go-to-k/cdkd
     expect(h.leafCalls).toHaveLength(2);
     for (const call of h.leafCalls) {
       expect(call.constructedRegion).toBe(CLI_REGION);
+      expect(call.registryConstructedRegion).toBe(CLI_REGION);
       expect(call.nestedRegistryIsCallers).toBe(true);
       expect(call.nestedClientsRegion).toBe(CLI_REGION);
       expect(call.scopeRegion).toBeUndefined();
