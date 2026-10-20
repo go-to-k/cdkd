@@ -1324,9 +1324,10 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     expect(updateIntegrationInput()!['IntegrationSubtype']).toBe('EventBridge-PutEvents');
   });
 
-  it('Integration: a dropped RequestParameters key is carried from the previous map beside the subtype', async () => {
-    // AWS validates the REQUEST map, so a map missing a required key fails;
-    // CloudFormation keeps the dropped key (#5004), so its previous value is live.
+  it('Integration: a declared map missing a key is sent AS DECLARED — nothing is carried from the previous record (CFn A/B)', async () => {
+    // Real CloudFormation A/B (#1160): dropping a required key beside a
+    // Description change FAILS the update, so CloudFormation sends the declared
+    // map; cdkd does the same and lets AWS refuse it.
     mockSend.mockResolvedValueOnce({});
     await provider.update(
       'IntLogical',
@@ -1335,24 +1336,10 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
       { ...SERVICE_INTEGRATION, RequestParameters: { Source: 's', DetailType: 'd' }, Description: 'n' },
       SERVICE_INTEGRATION
     );
-    expect(updateIntegrationInput()!['RequestParameters']).toEqual(EVENTS_PARAMS);
-    // ...and a CHANGED map that drops a key is completed the same way.
-    mockSend.mockClear();
-    mockSend.mockResolvedValueOnce({});
-    await provider.update(
-      'IntLogical',
-      'int-1',
-      'AWS::ApiGatewayV2::Integration',
-      { ...SERVICE_INTEGRATION, RequestParameters: { Source: 's2', DetailType: 'd' } },
-      SERVICE_INTEGRATION
-    );
-    expect(updateIntegrationInput()!['RequestParameters']).toEqual({
-      ...EVENTS_PARAMS,
-      Source: 's2',
-    });
+    expect(updateIntegrationInput()!['RequestParameters']).toEqual({ Source: 's', DetailType: 'd' });
   });
 
-  it('Integration: a carried RequestParameters leaf that is a redacted secret REFUSES instead of being sent', async () => {
+  it('Integration: a redacted secret stand-in in the map to send REFUSES; a redacted PREVIOUS value is never sent', async () => {
     for (const standIn of ['{{resolve:secretsmanager:x}}', 'pre-{{resolve:ssm:p}}', '***']) {
       mockSend.mockClear();
       await expect(
@@ -1360,18 +1347,14 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
           'IntLogical',
           'int-1',
           'AWS::ApiGatewayV2::Integration',
-          {
-            ...SERVICE_INTEGRATION,
-            RequestParameters: { Source: 's', DetailType: 'd' },
-            Description: 'n',
-          },
-          { ...SERVICE_INTEGRATION, RequestParameters: { ...EVENTS_PARAMS, Detail: standIn } }
+          // A rollback replay hands back a STATE record as the desired bag.
+          { ...SERVICE_INTEGRATION, RequestParameters: { ...EVENTS_PARAMS, Detail: standIn }, Description: 'restored' },
+          { ...SERVICE_INTEGRATION, Description: 'failed-deploy' },
+          { removedProperties: new Set(), replayingState: true }
         )
-      ).rejects.toThrow(/the recorded value of Detail is a redacted secret reference/);
+      ).rejects.toThrow(/the value of Detail is a redacted secret reference/);
       expect(mockSend).not.toHaveBeenCalled();
     }
-    // A redacted PREVIOUS value under a key the template still declares is
-    // never sent: the declared (resolved) value wins.
     mockSend.mockClear();
     mockSend.mockResolvedValueOnce({});
     await provider.update(
@@ -1453,7 +1436,10 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     });
   });
 
-  it('Integration: with RequestParameters removed from the template, the previous (live) map is re-sent beside the subtype', async () => {
+  it('Integration: with RequestParameters removed from the template, no map is sent beside the subtype (CFn A/B: AWS refuses it)', async () => {
+    // Real CloudFormation A/B (#1160): removing the whole map beside a
+    // Description change FAILS the update. Nothing from the previous record
+    // is sent, so AWS refuses cdkd's call the same way.
     mockSend.mockResolvedValueOnce({});
     const { RequestParameters: _rp, ...withoutParams } = SERVICE_INTEGRATION;
     await provider.update(
@@ -1463,6 +1449,8 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
       { ...withoutParams, Description: 'new' },
       SERVICE_INTEGRATION
     );
-    expect(updateIntegrationInput()!['RequestParameters']).toEqual(EVENTS_PARAMS);
+    const input = updateIntegrationInput()!;
+    expect(input['IntegrationSubtype']).toBe('EventBridge-PutEvents');
+    expect(input['RequestParameters']).toBeUndefined();
   });
 });

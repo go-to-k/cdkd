@@ -2656,8 +2656,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         physicalId,
         resourceType,
         input.RequestParameters ??
-          (properties['RequestParameters'] as Record<string, string> | undefined),
-        previousProperties['RequestParameters']
+          (properties['RequestParameters'] as Record<string, string> | undefined)
       );
     }
 
@@ -3111,40 +3110,32 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
   /**
    * The `RequestParameters` an `UpdateIntegration` carrying `IntegrationSubtype`
-   * must send: AWS re-validates the service operation's required parameter
-   * mapping against the REQUEST on every such call. Direct probe on an
-   * EventBridge-PutEvents integration (#1160 A/B): `Description` + subtype
-   * fails with "requires enabling passthrough, or defining all of the
-   * following parameters in the parameter mapping: [Detail, DetailType,
-   * Source]", and so does subtype + `{ Source }` alone; the full map succeeds.
+   * sends: the DECLARED map, as CloudFormation does. AWS re-validates the
+   * service operation's required parameter mapping against the REQUEST on
+   * every such call (direct probe, #1160: `Description` + subtype fails with
+   * "requires enabling passthrough, or defining all of the following
+   * parameters in the parameter mapping: [Detail, DetailType, Source]"), so a
+   * call that changed something else must re-send the unchanged map.
    *
-   * So the map sent is the previous one overlaid with what this update sends
-   * (or declares). A key the template dropped is carried from the previous
-   * side: CloudFormation KEEPS a dropped key (#5004), so that is the live value.
+   * Nothing is carried from the previous record. Real CloudFormation A/B
+   * (#1160): beside a `Description` change, dropping one required key, or the
+   * whole map, FAILS the update with that same error, so a template without
+   * the full map gets AWS's refusal here too.
    *
-   * The previous side is a STATE record, where a secret leaf is stored as its
-   * `{{resolve:...}}` reference or the `***` mask, never the plaintext. Sending
-   * one would overwrite the live mapping with the stand-in, so a carried leaf
-   * that is one REFUSES instead, naming only the keys. This holds on a rollback
-   * replay too: AWS refuses the call without that key anyway.
+   * A declared value that is a `{{resolve:...}}` reference or the `***` mask
+   * (a state record handed back by a rollback replay) REFUSES instead of being
+   * sent, naming only the keys: it would overwrite the live mapping with the
+   * stand-in. A deploy's declared bag is resolved, so it never trips this.
    */
   private serviceIntegrationParameters(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    sent: Record<string, string> | undefined,
-    previous: unknown
+    sent: Record<string, string> | undefined
   ): Record<string, string> | undefined {
-    const carried: Record<string, unknown> = {};
-    if (previous != null && typeof previous === 'object' && !Array.isArray(previous)) {
-      for (const [key, value] of Object.entries(previous as Record<string, unknown>)) {
-        if (sent === undefined || !Object.prototype.hasOwnProperty.call(sent, key)) {
-          carried[key] = value;
-        }
-      }
-    }
-    const redacted = Object.keys(carried).filter((key) => {
-      const value = carried[key];
+    if (sent == null) return undefined;
+    const redacted = Object.keys(sent).filter((key) => {
+      const value: unknown = sent[key];
       return (
         typeof value === 'string' &&
         (dynamicReferenceTokens(value).length > 0 || value === SECRET_MASK)
@@ -3153,15 +3144,14 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     if (redacted.length > 0) {
       throw markNonRetryable(
         new ProvisioningError(
-          safeMsg`${logicalId} (${resourceType}): this update must re-send the service integration's RequestParameters (AWS re-validates the full mapping beside IntegrationSubtype), but the recorded value of ${redacted.join(', ')} is a redacted secret reference that cdkd cannot send. Declare every RequestParameters key in the template. The integration was not updated.`,
+          safeMsg`${logicalId} (${resourceType}): this update must re-send the service integration's RequestParameters (AWS re-validates the full mapping beside IntegrationSubtype), but the value of ${redacted.join(', ')} is a redacted secret reference that cdkd cannot send. The integration was not updated.`,
           resourceType,
           logicalId,
           physicalId
         )
       );
     }
-    const merged = { ...(carried as Record<string, string>), ...(sent ?? {}) };
-    return Object.keys(merged).length > 0 ? merged : undefined;
+    return sent;
   }
 
   /**
