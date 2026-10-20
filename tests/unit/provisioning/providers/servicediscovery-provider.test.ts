@@ -220,6 +220,36 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
     }
   );
 
+  // The state record is REDACTED while the desired bag is resolved: an
+  // unchanged secret-sourced Description must not read as a change, or a
+  // HealthCheckConfig removed beside it would be cleared where
+  // CloudFormation (comparing templates) keeps it.
+  it.each([
+    ['a secret dynamic reference', '{{resolve:secretsmanager:svc-desc:SecretString:d}}'],
+    ['a NoEcho mask', '***'],
+  ])(
+    'a recorded Description that is %s reads as unchanged: HealthCheckConfig removal-only sends nothing',
+    async (_label, recorded) => {
+      await provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        desired(['HealthCheckConfig'], { Description: 'resolved-plaintext' }),
+        { ...FULL, Description: recorded }
+      );
+      expect(updateCall()).toBeUndefined();
+    }
+  );
+
+  it('a recorded stand-in leaf inside HealthCheckConfig does not hide a change to a sibling leaf', async () => {
+    const hc = { Type: 'HTTP', ResourcePath: '/resolved', FailureThreshold: 2 };
+    await provider.update('Svc', 'srv-1', TYPE, desired([], { HealthCheckConfig: hc }), {
+      ...FULL,
+      HealthCheckConfig: { Type: 'HTTP', ResourcePath: '{{resolve:ssm:/svc/path}}', FailureThreshold: 3 },
+    });
+    expect(sentChange().HealthCheckConfig).toEqual(hc);
+  });
+
   it('(a) Description removed + DnsRecords TTL changed: TTL is sent and the live Description kept', async () => {
     await provider.update('Svc', 'srv-1', TYPE, desired(['Description'], { DnsConfig: ttl(240) }), FULL);
     const change = sentChange();

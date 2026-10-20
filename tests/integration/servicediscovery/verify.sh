@@ -7,8 +7,8 @@
 # deploy: ServiceAttributes ({team: cdkd, tier: backend}) is applied via the
 # post-create UpdateServiceAttributes control-plane call and is readable back
 # via GetServiceAttributes. Then three issue #1160 removal phases that follow
-# the CloudFormation A/Bs: a removal on its own or beside a DnsRecords-only
-# change is KEPT, a Description removed beside a HealthCheckConfig change is
+# the CloudFormation A/Bs: a removal on its own, beside an unchanged declared
+# Description, or beside a DnsRecords-only change is KEPT, a Description removed beside a HealthCheckConfig change is
 # CLEARED, and a DnsConfig removed beside a Description change is REFUSED by
 # AWS. Then destroys and confirms a clean teardown.
 #
@@ -60,6 +60,8 @@ SERVICE_NAME="cdkd-svcdisc-service"
 TTL_NAME="cdkd-svcdisc-ttl"
 HC_NAME="cdkd-svcdisc-hc"
 REFUSED_NAME="cdkd-svcdisc-refused"
+DNS_KEPT_NAME="cdkd-svcdisc-dns-kept"
+HC_KEPT_NAME="cdkd-svcdisc-hc-kept"
 PUBLIC_NS_NAME="cdkd-svcdisc-hc.cdkd-integ-test.com"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -196,11 +198,15 @@ expect_same_id() {
 TTL_ID=$(require_id "${TTL_NAME}")
 HC_ID=$(require_id "${HC_NAME}")
 REFUSED_ID=$(require_id "${REFUSED_NAME}")
+DNS_KEPT_ID=$(require_id "${DNS_KEPT_NAME}")
+HC_KEPT_ID=$(require_id "${HC_KEPT_NAME}")
 expect_field "${SERVICE_ID}" Description cdkd-svcdisc-kept-description "phase 1 baseline"
 expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description "phase 1 baseline"
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
 expect_field "${HC_ID}" Description cdkd-svcdisc-hc-description "phase 1 baseline"
 expect_field "${HC_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
+expect_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
+expect_field "${HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
 echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshold 3 on AWS)"
 
 # The removal phases follow the CloudFormation A/Bs on #1160
@@ -209,13 +215,19 @@ echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshol
 # HealthCheckConfig changed, and sends the declared model as it is.
 
 # --- Phase 2 (kept): removals CloudFormation keeps (issue #1160) -------
-echo "==> Phase 2: drop ${SERVICE_NAME}'s Description on its own; drop ${TTL_NAME}'s Description beside a TTL change"
+echo "==> Phase 2: drop ${SERVICE_NAME}'s Description on its own; ${DNS_KEPT_NAME}'s DnsConfig and ${HC_KEPT_NAME}'s HealthCheckConfig beside an unchanged Description; ${TTL_NAME}'s Description beside a TTL change"
 if ! deploy_phase kept; then
-  echo "FAIL: the phase 2 deploy failed (issue #1160): a removed Description must be kept, as CloudFormation keeps it" >&2
+  echo "FAIL: the phase 2 deploy failed (issue #1160): a removal beside an unchanged declared Description must send no UpdateService (a DnsConfig-less one is refused), as CloudFormation sends none" >&2
   exit 1
 fi
 expect_same_id "${SERVICE_NAME}" "${SERVICE_ID}"
 expect_same_id "${TTL_NAME}" "${TTL_ID}"
+expect_same_id "${DNS_KEPT_NAME}" "${DNS_KEPT_ID}"
+expect_same_id "${HC_KEPT_NAME}" "${HC_KEPT_ID}"
+expect_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL" 90 \
+  "a DnsConfig removed beside an unchanged Description was not kept, as CloudFormation keeps it"
+expect_field "${HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
+  "a HealthCheckConfig removed beside an unchanged Description was not kept, as CloudFormation keeps it"
 expect_field "${SERVICE_ID}" Description cdkd-svcdisc-kept-description \
   "a Description removed on its own was not kept, as CloudFormation keeps it"
 expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description \
@@ -223,16 +235,15 @@ expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description \
 # CloudFormation drops a DnsRecords-only change; cdkd applies it (deliberate).
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 150 \
   "a DnsRecords TTL change was not applied"
-echo "    OK: removed Descriptions kept, TTL 90 -> 150 applied (issue #1160)"
+echo "    OK: removed Descriptions, DnsConfig and HealthCheckConfig kept; TTL 90 -> 150 applied (issue #1160)"
 
 # --- Phase 3 (combined): a removal beside a sent change (issue #1160) --
-echo "==> Phase 3: drop ${HC_NAME}'s Description beside a HealthCheckConfig change; drop ${SERVICE_NAME}'s DnsConfig on its own"
+echo "==> Phase 3: drop ${HC_NAME}'s Description beside a HealthCheckConfig change"
 if ! deploy_phase combined; then
   echo "FAIL: the phase 3 deploy failed (issue #1160)" >&2
   exit 1
 fi
 expect_same_id "${HC_NAME}" "${HC_ID}"
-expect_same_id "${SERVICE_NAME}" "${SERVICE_ID}"
 expect_field "${HC_ID}" HealthCheckConfig.FailureThreshold 2 "a HealthCheckConfig change was not applied"
 # A cleared Description is absent from GetService ("None" in text output);
 # an empty string would print as "" — both mean cleared.
@@ -241,9 +252,7 @@ if [ "${P3_HC_DESC}" != "None" ] && [ -n "${P3_HC_DESC}" ]; then
   echo "FAIL: a Description removed beside a HealthCheckConfig change was not cleared, as CloudFormation clears it (issue #1160): ${HC_ID} Description='${P3_HC_DESC}', expected it cleared" >&2
   exit 1
 fi
-expect_field "${SERVICE_ID}" "DnsConfig.DnsRecords[0].TTL" 60 \
-  "a DnsConfig removed on its own was not kept, as CloudFormation keeps it"
-echo "    OK: Description cleared beside the HealthCheckConfig change; DnsConfig removed on its own kept (issue #1160)"
+echo "    OK: Description cleared beside the HealthCheckConfig change (issue #1160)"
 
 # --- Phase 4 (refused): DnsConfig removed beside a Description change ---
 # CloudFormation's update fails here with AWS's own refusal; cdkd must too.
@@ -279,7 +288,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 # Cloud Map service deletion is synchronous; re-query once in case the
 # list index lags briefly.
-for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}"; do
+for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}"; do
   STILL=$(service_id "${name}")
   if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
     sleep 5 2>/dev/null || true

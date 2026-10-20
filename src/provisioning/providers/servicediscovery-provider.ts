@@ -53,6 +53,7 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -104,6 +105,47 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['AWS::ServiceDiscovery::PublicDnsNamespace', 'DNS_PUBLIC'],
   ['AWS::ServiceDiscovery::HttpNamespace', 'HTTP'],
 ]);
+
+/**
+ * Whether a RESOLVED desired value is the one the state record holds, for
+ * {@link ServiceDiscoveryProvider}'s Service change planning (issue #1160).
+ * The record is REDACTED: a secret dynamic reference stays its
+ * `{{resolve:...}}` token and a `NoEcho` value is `***`, while the desired
+ * bag carries the plaintext. Such a recorded leaf cannot be compared, so it
+ * matches anything — the template spelled it the same way unless proven
+ * otherwise, and CloudFormation, which compares templates, sees no change
+ * there. Every other leaf is compared deep and strict.
+ */
+function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
+  if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return true;
+  if (Array.isArray(desired) && Array.isArray(recorded)) {
+    return (
+      desired.length === recorded.length &&
+      desired.every((item, i) => sameAsRecorded(item, recorded[i]))
+    );
+  }
+  if (
+    desired !== null &&
+    recorded !== null &&
+    typeof desired === 'object' &&
+    typeof recorded === 'object' &&
+    !Array.isArray(desired) &&
+    !Array.isArray(recorded)
+  ) {
+    const d = desired as Record<string, unknown>;
+    const r = recorded as Record<string, unknown>;
+    const keys = new Set([...Object.keys(d), ...Object.keys(r)]);
+    return [...keys].every(
+      (key) => Object.hasOwn(d, key) === Object.hasOwn(r, key) && sameAsRecorded(d[key], r[key])
+    );
+  }
+  return isDeepStrictEqual(desired, recorded);
+}
+
+/** A recorded string standing in for a resolved secret: a dynamic reference, or the mask. */
+function isRecordedStandIn(value: string): boolean {
+  return dynamicReferenceTokens(value).length > 0 || value.includes(SECRET_MASK);
+}
 
 /** The id forms Cloud Map generates: `ns-` / `srv-` and 16 lowercase alphanumerics. */
 const NAMESPACE_ID_PATTERN = /^ns-[a-z0-9]{16}$/;
@@ -1487,7 +1529,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
     const declaredDiffers = (key: string): boolean =>
-      properties[key] !== undefined && !isDeepStrictEqual(properties[key], previousProperties[key]);
+      properties[key] !== undefined && !sameAsRecorded(properties[key], previousProperties[key]);
 
     const change: ServiceChange = {};
     if (properties['Description'] !== undefined) {
@@ -1506,7 +1548,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
       return { change, keepRemovedFromLive: false };
     }
-    if (desiredRecords !== undefined && !isDeepStrictEqual(desiredRecords, previousRecords)) {
+    if (desiredRecords !== undefined && !sameAsRecorded(desiredRecords, previousRecords)) {
       return { change, keepRemovedFromLive: true };
     }
     return undefined;

@@ -19,13 +19,15 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  * Issue #1160 removal phases, cumulative, selected by `CDKD_TEST_REMOVAL`
  * (`kept` < `combined` < `refused`). They follow the CloudFormation A/Bs on
  * go-to-k/cdkd#1160 (issuecomment-6272137682, issuecomment-6281592365):
- * - `kept`: `Service` drops its `Description` on its own (KEPT), and
- *   `TtlService` drops its `Description` beside a DnsRecords TTL change (the
- *   TTL applies — CloudFormation drops it, a deliberate divergence — and the
- *   Description is KEPT).
+ * - `kept`: `Service` drops its `Description` on its own; `DnsKeptService`
+ *   drops its `DnsConfig` and `HcKeptService` its `HealthCheckConfig`, each
+ *   beside a declared, UNCHANGED `Description` (all KEPT — before the fix
+ *   cdkd sent the declared fields, which cleared the first and third and was
+ *   refused for the second); and `TtlService` drops its `Description` beside
+ *   a DnsRecords TTL change (the TTL applies — CloudFormation drops it, a
+ *   deliberate divergence — and the Description is KEPT).
  * - `combined`: `HcService` drops its `Description` beside a
- *   `HealthCheckConfig` change (the Description is CLEARED), and `Service`
- *   drops its `DnsConfig` on its own (KEPT).
+ *   `HealthCheckConfig` change (the Description is CLEARED).
  * - `refused`: `RefusedService` drops its `DnsConfig` beside a `Description`
  *   change, which AWS refuses (`Service dns config cannot be null`) as it
  *   does for CloudFormation.
@@ -65,9 +67,7 @@ export class ServiceDiscoveryStack extends cdk.Stack {
       name: 'cdkd-svcdisc-service',
       namespaceId: namespace.attrId,
       ...(kept ? {} : { description: 'cdkd-svcdisc-kept-description' }),
-      ...(combined
-        ? {}
-        : { dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' } }),
+      dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' },
       serviceAttributes: {
         team: 'cdkd',
         tier: 'backend',
@@ -80,6 +80,14 @@ export class ServiceDiscoveryStack extends cdk.Stack {
       namespaceId: namespace.attrId,
       ...(kept ? {} : { description: 'cdkd-svcdisc-ttl-description' }),
       dnsConfig: { dnsRecords: [{ type: 'A', ttl: kept ? 150 : 90 }] },
+    });
+
+    // Issue #1160 `kept`: DnsConfig removed beside an unchanged Description.
+    new servicediscovery.CfnService(this, 'DnsKeptService', {
+      name: 'cdkd-svcdisc-dns-kept',
+      namespaceId: namespace.attrId,
+      description: 'cdkd-svcdisc-dns-kept',
+      ...(kept ? {} : { dnsConfig: { dnsRecords: [{ type: 'A', ttl: 90 }] } }),
     });
 
     // Issue #1160 `refused`: DnsConfig removed beside a Description change.
@@ -101,6 +109,18 @@ export class ServiceDiscoveryStack extends cdk.Stack {
       ...(combined ? {} : { description: 'cdkd-svcdisc-hc-description' }),
       dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' },
       healthCheckConfig: { type: 'HTTP', resourcePath: '/health', failureThreshold: combined ? 2 : 3 },
+    });
+
+    // Issue #1160 `kept`: HealthCheckConfig removed beside an unchanged
+    // Description.
+    new servicediscovery.CfnService(this, 'HcKeptService', {
+      name: 'cdkd-svcdisc-hc-kept',
+      namespaceId: publicNamespace.attrId,
+      description: 'cdkd-svcdisc-hc-kept',
+      dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' },
+      ...(kept
+        ? {}
+        : { healthCheckConfig: { type: 'HTTP', resourcePath: '/health', failureThreshold: 3 } }),
     });
 
     new cdk.CfnOutput(this, 'NamespaceId', {
