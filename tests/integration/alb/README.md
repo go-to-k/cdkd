@@ -16,10 +16,15 @@ Application Load Balancer deployment example for cdkd.
   `traffic-port` — issue #1160 elbv2 batch). Also carries the #609 LB+TG
   silent-drop batch coverage: an explicit createOnly `IpAddressType: ipv4`, a
   `TargetGroupAttributes` list (`deregistration_delay` 45 → 60 on the
-  `CDKD_TEST_UPDATE=true` redeploy, reset to the AWS default 300 when the
-  removal phase drops the list), and registered IP `Targets` (10.0.0.100 →
-  10.0.0.101 on update, exercising RegisterTargets + DeregisterTargets)
-- **Listener** - HTTP listener on port 80 forwarding to target group
+  `CDKD_TEST_UPDATE=true` redeploy, kept at 60 when the removal phase drops
+  it, as CloudFormation keeps a removed key), and registered IP `Targets`
+  (10.0.0.100 → 10.0.0.101 on update, exercising RegisterTargets +
+  DeregisterTargets)
+- **Listener** - HTTP listener on port 80 forwarding to target group.
+  verify.sh Phase 3.5 (issue #1160) redeploys with
+  `CDKD_TEST_LISTENER_REMOVAL=true`, which drops its `Port` and `Protocol`,
+  and asserts both keep their live values (as CloudFormation keeps them) and
+  that the warning says so, then restores them before Phase 4
 - **HealthRule** - a `ListenerRule` on the listener (`/health` -> fixed 200).
   verify.sh Phase 5 (issue #4689) recreates the listener with
   `--recreate-via-cc-api` and asserts the rule is replaced onto the new
