@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::TaskDefinition",
-  "generatedAt": "2026-10-10",
+  "generatedAt": "2026-10-20",
   "properties": [
     "ContainerDefinitions",
     "Cpu",
@@ -190,6 +190,7 @@
       "LinuxParameters",
       "LogConfiguration",
       "LogDriver",
+      "MaxComputePercent",
       "MaxSwap",
       "Memory",
       "MemoryReservation",
@@ -197,6 +198,7 @@
       "MountPoints",
       "Name",
       "Namespace",
+      "NvidiaMps",
       "Options",
       "Permissions",
       "PortMappings",
@@ -213,6 +215,7 @@
       "SecretOptions",
       "Secrets",
       "SharedMemorySize",
+      "SharingStrategy",
       "Size",
       "SoftLimit",
       "SourceContainer",
@@ -370,6 +373,10 @@
       "RepositoryCredentials",
       "RepositoryCredentials.CredentialsParameter",
       "ResourceRequirements",
+      "ResourceRequirements.SharingStrategy",
+      "ResourceRequirements.SharingStrategy.NvidiaMps",
+      "ResourceRequirements.SharingStrategy.NvidiaMps.MaxComputePercent",
+      "ResourceRequirements.SharingStrategy.NvidiaMps.Memory",
       "ResourceRequirements.Type",
       "ResourceRequirements.Value",
       "RestartPolicy",
@@ -424,6 +431,9 @@
       "EphemeralStorage": "object",
       "Tags": "array",
       "TaskDefinitionArn": "scalar"
+    },
+    "SharingStrategy": {
+      "NvidiaMps": "object"
     },
     "VolumeFrom": {
       "ReadOnly": "scalar",
@@ -539,6 +549,10 @@
       "Protocol": "scalar",
       "Name": "scalar"
     },
+    "NvidiaMpsAllocation": {
+      "Memory": "scalar",
+      "MaxComputePercent": "scalar"
+    },
     "TaskDefinitionPlacementConstraint": {
       "Type": "scalar",
       "Expression": "scalar"
@@ -617,6 +631,7 @@
     },
     "ResourceRequirement": {
       "Type": "scalar",
+      "SharingStrategy": "object",
       "Value": "scalar"
     },
     "InferenceAccelerator": {
@@ -637,6 +652,9 @@
     }
   },
   "definitionRequired": {
+    "SharingStrategy": [
+      "NvidiaMps"
+    ],
     "S3FilesVolumeConfiguration": [
       "FileSystemArn"
     ],
@@ -649,6 +667,9 @@
     ],
     "Tmpfs": [
       "Size"
+    ],
+    "NvidiaMpsAllocation": [
+      "Memory"
     ],
     "TaskDefinitionPlacementConstraint": [
       "Type"
@@ -697,6 +718,12 @@
     ],
     "ContainerDefinitions.ResourceRequirements": [
       "Type"
+    ],
+    "ContainerDefinitions.ResourceRequirements.SharingStrategy": [
+      "NvidiaMps"
+    ],
+    "ContainerDefinitions.ResourceRequirements.SharingStrategy.NvidiaMps": [
+      "Memory"
     ],
     "ContainerDefinitions.Secrets": [
       "Name",
@@ -772,6 +799,8 @@
     "ContainerDefinitions[].RepositoryCredentials": "object",
     "ContainerDefinitions[].ResourceRequirements": "array",
     "ContainerDefinitions[].ResourceRequirements[]": "object",
+    "ContainerDefinitions[].ResourceRequirements[].SharingStrategy": "object",
+    "ContainerDefinitions[].ResourceRequirements[].SharingStrategy.NvidiaMps": "object",
     "ContainerDefinitions[].RestartPolicy": "object",
     "ContainerDefinitions[].RestartPolicy.IgnoredExitCodes": "array",
     "ContainerDefinitions[].Secrets": "array",

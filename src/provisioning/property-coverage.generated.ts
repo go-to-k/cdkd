@@ -1506,7 +1506,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VolumeConfigurations',
         'VpcLatticeConfigurations',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['GatewayConnectors', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Name', 'ServiceArn']),
       ccRouteUnavailable: false,

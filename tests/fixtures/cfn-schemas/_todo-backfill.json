@@ -144,6 +144,9 @@
     "AWS::EC2::VPCGatewayAttachment": [
       "VpnGatewayId"
     ],
+    "AWS::ECS::Service": [
+      "GatewayConnectors"
+    ],
     "AWS::EFS::MountTarget": [
       "IpAddress",
       "IpAddressType",
