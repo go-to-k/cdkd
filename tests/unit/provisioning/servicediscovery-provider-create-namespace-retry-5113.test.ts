@@ -150,9 +150,12 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
       );
 
     expect(error).toBeInstanceOf(ProvisioningError);
-    expect((error as Error).message).toContain(
-      `Failed to create service discovery service TtlService: ${NAMESPACE_ID}`
+    expect((error as Error).message).toBe(
+      `Failed to create service discovery service TtlService: ${NAMESPACE_ID} ` +
+        `(Cloud Map still rejected the namespace after 27.5s of retries)`
     );
+    // The note must not hand the substring classifiers a not-found phrase.
+    expect((error as Error).message).not.toMatch(/not\s*found/i);
     expect((error as Error).cause).toBeInstanceOf(NamespaceNotFound);
     // 1 initial attempt + 9 retries.
     expect(createServiceCalls()).toHaveLength(10);
@@ -167,7 +170,7 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
 
     await expect(
       provider.create('TtlService', 'AWS::ServiceDiscovery::Service', properties)
-    ).rejects.toThrow(/Failed to create service discovery service TtlService: Invalid DnsConfig/);
+    ).rejects.toThrow(/^Failed to create service discovery service TtlService: Invalid DnsConfig$/);
 
     expect(createServiceCalls()).toHaveLength(1);
     expect(slept).toEqual([]);

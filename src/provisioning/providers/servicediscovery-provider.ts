@@ -101,6 +101,14 @@ const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
 const CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES = 9;
 const CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS = 500;
 const CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS = 4_000;
+/** The schedule's total backoff, for the give-up message (27.5). */
+const CREATE_SERVICE_NAMESPACE_LAG_BACKOFF_SECONDS =
+  Array.from({ length: CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES }, (_, i) =>
+    Math.min(
+      CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS * 2 ** i,
+      CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS
+    )
+  ).reduce((a, b) => a + b, 0) / 1000;
 
 /** The three namespace kinds, which share one Description removal reset. */
 const NAMESPACE_TYPES = [
@@ -1331,12 +1339,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
+      // Issue #5113: the retry above gives up silently at default verbosity
+      // (its custom classifier feeds none of `withRetry`'s give-up counters),
+      // so the wrap says the wait happened. Worded with no not-found phrase,
+      // which the substring classifiers would read.
+      const retriedNote =
+        error instanceof NamespaceNotFound
+          ? ` (Cloud Map still rejected the namespace after ${CREATE_SERVICE_NAMESPACE_LAG_BACKOFF_SECONDS}s of retries)`
+          : '';
       const thrown = this.wrapMaskedError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to create service discovery service ${logicalId}: ${text}`,
+            `Failed to create service discovery service ${logicalId}: ${text}${retriedNote}`,
             resourceType,
             logicalId,
             undefined,
