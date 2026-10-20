@@ -1177,6 +1177,25 @@ export async function executeDeployment(
         rollbackResult.skipped === 0 &&
         // A Ctrl-C left ops unreverted: the segment stays for `cdkd rollback`.
         !rollbackResult.interrupted;
+      if (
+        rollbackResult.interrupted &&
+        rollbackResult.failures === 0 &&
+        rollbackResult.skipped === 0
+      ) {
+        // go-to-k/cdkd#5118: the user's Ctrl-C stopped the replay part-way.
+        // A nested child is recovered through its top-level stack. A failed
+        // journal write already warned that nothing was kept.
+        const remedy = autoRollbackJournaled
+          ? recoveryHint(
+              engine.rollbackDeps(),
+              'The rollback journal keeps them; finish the rollback with: ' +
+                pasteableCommand('cdkd rollback', [{ value: stackName, hole: 'stack' }]).command
+            )
+          : '';
+        engine.logger.warn(
+          safeMsg`The automatic rollback was interrupted before it reverted every operation. ${remedy}`
+        );
+      }
       if (rollbackResult.failures === 0 && rollbackResult.skipped > 0) {
         // The kept segment also keeps the failed op's record, which the next
         // deploy's generic note (a plain `cdkd rollback`, which discards it)

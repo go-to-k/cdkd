@@ -349,6 +349,10 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     expect(backend['deleteRollbackJournal']).not.toHaveBeenCalled();
     expect(backend['reduceRollbackJournalToFailedOperations']).not.toHaveBeenCalled();
     expect(backend['popRollbackJournalSegment']).not.toHaveBeenCalled();
+    // ...and the remedy is named.
+    expect(
+      warned.filter((w) => w.includes('automatic rollback was interrupted') && w.includes(`cdkd rollback ${STACK}`))
+    ).toHaveLength(1);
   });
 
   it('a clean automatic rollback still settles its journal (control)', async () => {
@@ -361,6 +365,7 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     const settled = ['deleteRollbackJournal', 'reduceRollbackJournalToFailedOperations', 'popRollbackJournalSegment']
       .filter((m) => backend[m]!.mock.calls.length > 0);
     expect(settled).not.toEqual([]);
+    expect(warned.some((w) => w.includes('automatic rollback was interrupted'))).toBe(false);
   });
 });
 
