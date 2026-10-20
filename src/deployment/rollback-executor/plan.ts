@@ -1069,20 +1069,20 @@ export function renamedReverseReplacement(
 
 /**
  * go-to-k/cdkd#5064: the logical ids a step-1 op's revert may name: what its
- * old record and its current one depend on. `undefined` when either record
- * lists none, which may name any.
+ * old record and its current one list as dependencies. A record listing none
+ * names none: the op keeps its slot, as before, rather than pull every
+ * renamed reversal ahead of an order another rule chose (#4821).
  */
 export function revertReferences(
   op: CompletedOperation,
   stateResources: Record<string, ResourceState>
-): ReadonlySet<string> | undefined {
+): ReadonlySet<string> {
   const current = Object.hasOwn(stateResources, op.logicalId)
     ? stateResources[op.logicalId]
     : undefined;
   const refs = new Set<string>();
   for (const record of [op.previousState, current]) {
-    if (record === undefined) continue;
-    if (!Array.isArray(record.dependencies)) return undefined;
+    if (!Array.isArray(record?.dependencies)) continue;
     for (const id of record.dependencies) if (typeof id === 'string') refs.add(id);
   }
   return refs;

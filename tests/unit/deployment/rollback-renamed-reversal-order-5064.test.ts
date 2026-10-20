@@ -177,12 +177,17 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     expect([...m.roles]).toEqual([OLD_ROLE]);
   });
 
-  it('a dependent recording no dependencies is treated as naming it', async () => {
+  it('a dependent recording no dependencies keeps its slot, as before', async () => {
+    // Nothing says it names Role, so no other order is overridden (#4821).
     const m = iamModel();
     const result = await replayRollback(e1Ops(null), e1State(null), 'App', m.ctx);
-    expect(m.calls[0]).toBe('create Role');
-    expect(m.calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
-    expect(result.failures).toBe(0);
+    expect(m.calls).toEqual([
+      `update Managed -> ${OLD_ROLE}`,
+      `update RoleDefaultPolicy -> ${OLD_ROLE}`,
+      'create Role',
+      `delete Role ${NEW_ROLE}`,
+    ]);
+    expect(result.failures).toBe(2);
   });
 
   it('an op naming nothing it replaced keeps reverse completion order', async () => {
@@ -308,7 +313,7 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
 
   it('a reversal that failed at its own slot is not run again ahead of a later op', async () => {
     // Role completed LAST, so it runs first and its re-create fails; the queue
-    // after it records no dependencies, which may name anything.
+    // after it names Role.
     const m = iamModel();
     m.provider.create.mockImplementation(async () => {
       m.calls.push('create Role');
@@ -320,7 +325,7 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
     });
     const state: Record<string, ResourceState> = {
       Role: roleRecord(NEW_ROLE),
-      Queue: record('https://sqs/q', QUEUE, { VisibilityTimeout: 60 }, null),
+      Queue: record('https://sqs/q', QUEUE, { VisibilityTimeout: 60 }, ['Role']),
     };
     const ops: CompletedOperation[] = [
       {
@@ -329,7 +334,7 @@ describe('reversing a renamed replacement before its dependents revert (go-to-k/
         resourceType: QUEUE,
         provisionedBy: 'sdk',
         physicalId: 'https://sqs/q',
-        previousState: record('https://sqs/q', QUEUE, { VisibilityTimeout: 30 }, null),
+        previousState: record('https://sqs/q', QUEUE, { VisibilityTimeout: 30 }, ['Role']),
       },
       e1Ops()[0]!,
     ];
@@ -405,9 +410,12 @@ describe('renamedReverseReplacement / revertReferences', () => {
     expect(renamedReverseReplacement(role!, state, new Set(['Role']))).toBe(false);
     expect(renamedReverseReplacement(role!, { ...state, Role: roleRecord(OLD_ROLE) }, new Set())).toBe(false);
   });
-  it('reads both records, and an unknown list as unknown', () => {
-    expect([...revertReferences(inline!, e1State())!]).toEqual(['Role']);
-    expect(revertReferences(inline!, e1State(null))).toBeUndefined();
-    expect(revertReferences(e1Ops(null)[1]!, e1State())).toBeUndefined();
+  it('reads both records; a record listing none adds none', () => {
+    expect([...revertReferences(inline!, e1State())]).toEqual(['Role']);
+    expect([...revertReferences(e1Ops(null)[1]!, e1State(null))]).toEqual([]);
+    const state = e1State();
+    state['RoleDefaultPolicy']!.dependencies = ['Other'];
+    expect([...revertReferences(e1Ops(null)[1]!, state)]).toEqual(['Other']);
+    expect([...revertReferences(inline!, state)]).toEqual(['Role', 'Other']);
   });
 });

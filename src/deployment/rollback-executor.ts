@@ -321,10 +321,8 @@ async function replayRollbackUnbound(
       options.onRolledBackCreate,
       deferNewDelete
     );
-  const recreateAhead = async (refs: ReadonlySet<string> | undefined): Promise<void> => {
-    const targets =
-      refs === undefined ? [...stepOneIds.values()] : [...refs].map((id) => stepOneIds.get(id));
-    for (const target of targets) {
+  const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
+    for (const target of [...refs].map((id) => stepOneIds.get(id))) {
       if (target === undefined || started.has(target)) continue;
       if (!renamedReverseReplacement(target, stateResources, orphanLogicalIds)) continue;
       if (options.isInterrupted?.()) return;
