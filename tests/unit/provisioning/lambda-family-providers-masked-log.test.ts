@@ -6,7 +6,9 @@
  * the context's masker (extended by derived-name needles) and routes every log
  * line, and the AWS error text a failure message wraps, through it. A failure
  * whose text the mask changed is stamped `markRedactedCause` with the raw AWS
- * error kept as `cause`.
+ * error kept as `cause`. The Url and EventSourceMapping wraps go further
+ * (go-to-k/cdkd#2319): an AWS-authored failure's message names only its class,
+ * and the masked AWS text reaches the debug line instead.
  *
  * The secrets are sized for the arm each case must isolate:
  *
@@ -72,6 +74,7 @@ import { LambdaEventSourceMappingProvider } from '../../../src/provisioning/prov
 import { createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import { hasRedactedCause, isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /** Long enough for the masker's substring arm. */
 const LONG = 'lambda-secret-function-name';
@@ -144,6 +147,21 @@ function expectMaskedFailure(error: Error, raw: Error, secret: string): void {
   expect((error as { cause?: unknown }).cause).toBe(raw);
 }
 
+/**
+ * The redacted wrap an AWS-authored failure gets (go-to-k/cdkd#2319): the
+ * message names the error class, and AWS's own text reaches only the debug
+ * line, masked (`masked` is the needle the masked text must spell).
+ */
+function expectRedactedFailure(error: Error, raw: Error, secret: string, masked = '***'): void {
+  expect(error.message).toContain(`${raw.name}. ${VERBOSE_POINTER}`);
+  expect(error.message).not.toContain(secret);
+  expect(hasRedactedCause(error)).toBe(true);
+  expect((error as { cause?: unknown }).cause).toBe(raw);
+  const debugged = debugSpy.mock.calls.map((args) => String(args[0])).join('\n');
+  expect(debugged).toContain(masked);
+  expect(debugged).not.toContain(secret);
+}
+
 /** A pass-through masker that records every text it is handed. */
 function spyMasker(): { mask: (text: string) => string; seen: () => string[] } {
   const calls: string[] = [];
@@ -180,13 +198,10 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     const error = await thrown(
       new LambdaUrlProvider().create('Url', type, { TargetFunctionArn: TINY }, { maskSecrets })
     );
-    expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
-    expect(hasRedactedCause(error)).toBe(true);
-    expect((error as { cause?: unknown }).cause).toBe(raw);
+    expectRedactedFailure(error, raw, `function:${TINY}`, 'function:***');
   });
 
-  it('masks a rotated recorded function name on the update path, lines and failure alike', async () => {
+  it('masks a rotated recorded function name on the update path, lines and debug line alike', async () => {
     const physicalId = fnArn(ROTATED);
     const raw = awsAuthored('ResourceConflictException', `Conflict on ${physicalId}`);
     fakeLambda({
@@ -209,7 +224,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     expect(transcript()).toContain('Updating Lambda URL Url');
     expect(transcript()).not.toContain(ROTATED);
     expect(transcript()).toContain('***');
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('masks a short secret desired function name AWS quotes back on an update failure', async () => {
@@ -229,9 +244,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
-    expect(hasRedactedCause(error)).toBe(true);
+    expectRedactedFailure(error, raw, `function:${TINY}`, 'function:***');
   });
 
   it('masks a rotated recorded function AWS quotes back by bare name', async () => {
@@ -251,7 +264,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('routes the create path lines and warnings through the masker', async () => {
@@ -280,7 +293,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     const error = await thrown(
       new LambdaUrlProvider().create('Url', type, { TargetFunctionArn: ARN_SECRET }, { maskSecrets })
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks the bare name of a rotated QUALIFIED recorded function ARN', async () => {
@@ -300,7 +313,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('routes the AuthType warnings of a state-borne create and update through the masker', async () => {
@@ -362,7 +375,7 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('leaves an unthreaded call unmasked and unstamped (absent means identity)', async () => {
+  it('redacts an unthreaded call too, its debug line unmasked (absent means identity)', async () => {
     const raw = awsAuthored('ResourceNotFoundException', `Function not found: ${fnArn(LONG)}`);
     fakeLambda({
       CreateFunctionUrlConfigCommand: () => {
@@ -372,8 +385,10 @@ describe('LambdaUrlProvider masked log sinks (issue #2177)', () => {
     const error = await thrown(
       new LambdaUrlProvider().create('Url', type, { TargetFunctionArn: fnArn(LONG) })
     );
-    expect(error.message).toContain(LONG);
-    expect(hasRedactedCause(error)).toBe(false);
+    expect(error.message).toContain(`ResourceNotFoundException. ${VERBOSE_POINTER}`);
+    expect(error.message).not.toContain(LONG);
+    expect(hasRedactedCause(error)).toBe(true);
+    expect(debugSpy.mock.calls.map((args) => String(args[0])).join('\n')).toContain(LONG);
   });
 });
 
@@ -1002,10 +1017,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
         { maskSecrets }
       )
     );
-    expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
-    expect(hasRedactedCause(error)).toBe(true);
-    expect((error as { cause?: unknown }).cause).toBe(raw);
+    expectRedactedFailure(error, raw, `function:${TINY}`, 'function:***');
   });
 
   it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
@@ -1023,7 +1035,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks the bare name of a PREVIOUS whole-ARN secret function on an update failure', async () => {
@@ -1043,7 +1055,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a short secret FunctionName AWS quotes back on an update failure', async () => {
@@ -1063,10 +1075,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
         { maskSecrets }
       )
     );
-    expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
-    expect(hasRedactedCause(error)).toBe(true);
-    expect((error as { cause?: unknown }).cause).toBe(raw);
+    expectRedactedFailure(error, raw, `function:${TINY}`, 'function:***');
   });
 
   it('routes the create path lines and the replay warning through the masker', async () => {

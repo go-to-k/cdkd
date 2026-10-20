@@ -30,6 +30,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -38,6 +39,7 @@ import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { withRemovalDefaults } from '../update-removal.js';
 import { replacedDeleteFailureVerdict } from '../../deployment/rollback-executor/replaced-survivor.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 
 /**
  * go-to-k/cdkd#4911: the name half of {@link isCertificateInUseError}, the one
@@ -138,6 +140,37 @@ export class ACMCertificateProvider implements ResourceProvider {
   private readonly maxPollAttempts = Number(process.env['CDKD_ACM_POLL_ATTEMPTS'] ?? 60);
   private readonly pollIntervalMs = Number(process.env['CDKD_ACM_POLL_INTERVAL_MS'] ?? 10000);
 
+  /**
+   * The failure wrap the create / update / delete catches build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
+   * the deploy engine masks a thrown message. The delete checks
+   * `ResourceNotFoundException` by type before it wraps, and the in-use check
+   * ({@link isCertificateInUseError}) reads the error class, which the summary
+   * keeps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
   constructor() {
     this.acmClient = getAwsClients().acm;
   }
@@ -196,7 +229,8 @@ export class ACMCertificateProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Requesting ACM certificate ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -362,34 +396,29 @@ export class ACMCertificateProvider implements ResourceProvider {
         throw thrown;
       }
       const cause = error instanceof Error ? error : undefined;
-      const detail = describeAwsFailure(error).detail;
       // The survivor note can join this line with a pasteable `aws acm
       // delete-certificate`, so the logical id is shown only when plain
       // (go-to-k/cdkd#4295).
-      const message = `Failed to create ACM certificate ${logicalIdShown(logicalId)}: ${detail}`;
-      if (requestedArn && survivorNote !== undefined) {
-        const thrown = new ProvisioningError(
-          `${message} ${survivorNote}`,
+      const build = (text: string): ProvisioningError =>
+        new ProvisioningError(
+          `Failed to create ACM certificate ${logicalIdShown(logicalId)}: ` +
+            (survivorNote !== undefined ? `${text} ${survivorNote}` : text),
           resourceType,
           logicalId,
+          // The reporter's own ask (issue #2169): the ARN `RequestCertificate`
+          // returned survives the failure instead of being dropped. It names a
+          // DELETED certificate on the ordinary path, and a live one when the
+          // cleanup could not retire it -- which the survivor note appends.
           requestedArn,
           cause
         );
-        // go-to-k/cdkd#4583: only a FAILED cleanup leaves the certificate behind.
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, requestedArn);
-        throw thrown;
+      if (!requestedArn || survivorNote === undefined) {
+        throw this.wrapCaughtError(context?.maskSecrets, error, build);
       }
-      throw new ProvisioningError(
-        message,
-        resourceType,
-        logicalId,
-        // The reporter's own ask (issue #2169): the ARN `RequestCertificate`
-        // returned survives the failure instead of being dropped. It names a
-        // DELETED certificate on the ordinary path, and a live one when the
-        // cleanup could not retire it -- which the branch above appends.
-        requestedArn,
-        cause
-      );
+      const thrown = this.wrapCaughtError(context?.maskSecrets, error, build);
+      // go-to-k/cdkd#4583: only a FAILED cleanup leaves the certificate behind.
+      markCreatedBeforeFailure(thrown, logicalId, resourceType, requestedArn);
+      throw thrown;
     }
   }
 
@@ -597,7 +626,12 @@ export class ACMCertificateProvider implements ResourceProvider {
       // certificate, which cdkd must stay able to delete — which is a second
       // reason the delete policy is the right one for this provider rather
       // than a merely convenient one.
-      const createResult = await this.create(logicalId, resourceType, properties);
+      const createResult = await this.create(
+        logicalId,
+        resourceType,
+        properties,
+        context?.maskSecrets ? { maskSecrets: context.maskSecrets } : undefined
+      );
       // What the inner delete left behind, if anything. `undefined` means the
       // old certificate is genuinely gone; a string is the short reason that
       // rides out on the update's `'partial'` outcome (issue #1819) so the
@@ -709,12 +743,17 @@ export class ACMCertificateProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update ACM certificate ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ACM certificate ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -749,12 +788,17 @@ export class ACMCertificateProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ACM certificate ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ACM certificate ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete ACM certificate ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

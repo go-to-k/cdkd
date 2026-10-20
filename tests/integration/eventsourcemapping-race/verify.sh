@@ -179,13 +179,14 @@ if ! node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes >"${DEPLOY_LOG}" 2>&1; then
   echo "FAIL: cdkd deploy failed - possible EventSourceMapping fresh-source/role race." >&2
-  echo "      Look for InvalidParameterValueException ('Cannot access queue' /" >&2
-  echo "      'does not have permissions' / 'Function not found') below:" >&2
+  echo "      Look for 'Failed to create event source mapping ...: InvalidParameterValueException'" >&2
+  echo "      below; AWS's own text (e.g. 'Cannot access queue') is only in a --verbose run:" >&2
   echo "----- deploy output -----" >&2
   cat "${DEPLOY_LOG}" >&2
   echo "-------------------------" >&2
   # Surface any ESM-specific error line explicitly (BSD grep -E, no -P).
-  grep -E -i "EventSourceMapping|InvalidParameterValue|does not have permissions|Cannot access|Function not found|ResourceConflict" "${DEPLOY_LOG}" >&2 || true
+  # The thrown wrap names the AWS error CLASS, not AWS's text (go-to-k/cdkd#2319).
+  grep -E -i "EventSourceMapping|event source mapping|InvalidParameterValue|ResourceConflict|AccessDenied" "${DEPLOY_LOG}" >&2 || true
   rm -f "${DEPLOY_LOG}"
   exit 1
 fi
