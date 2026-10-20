@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  CreateKeyCommand,
   DescribeKeyCommand,
   DisableKeyCommand,
   DisableKeyRotationCommand,
@@ -269,6 +270,25 @@ describe('KMSProvider Key update on property removal (issue #1160)', () => {
       const puts = sent(PutKeyPolicyCommand);
       expect(puts).toHaveLength(1);
       expect(JSON.parse(puts[0]!.input.Policy!)).toEqual(next);
+    });
+  });
+
+  describe('create with string-typed booleans', () => {
+    beforeEach(() => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateKeyCommand) {
+          return Promise.resolve({ KeyMetadata: { KeyId: KEY_ID, Arn: keyArn } });
+        }
+        return Promise.resolve({});
+      });
+    });
+
+    it("'false' turns neither rotation on nor the key off; 'true' / 'false' act as booleans", async () => {
+      await provider.create('Key', TYPE, { EnableKeyRotation: 'false', Enabled: 'true' });
+      expect(names()).toEqual(['CreateKeyCommand']);
+      mockSend.mockClear();
+      await provider.create('Key', TYPE, { EnableKeyRotation: 'true', Enabled: 'false' });
+      expect(names()).toEqual(['CreateKeyCommand', 'EnableKeyRotationCommand', 'DisableKeyCommand']);
     });
   });
 

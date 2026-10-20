@@ -346,7 +346,7 @@ export class KMSProvider implements ResourceProvider {
     const keyPolicy = properties['KeyPolicy'];
     const keySpec = properties['KeySpec'] as string | undefined;
     const keyUsage = properties['KeyUsage'] as string | undefined;
-    const enableKeyRotation = properties['EnableKeyRotation'] as boolean | undefined;
+    const enableKeyRotation = templateBool(properties['EnableKeyRotation']);
     const multiRegion = properties['MultiRegion'] as boolean | undefined;
     const origin = properties['Origin'] as string | undefined;
     const bypassPolicyLockoutSafetyCheck = properties['BypassPolicyLockoutSafetyCheck'] as
@@ -384,7 +384,7 @@ export class KMSProvider implements ResourceProvider {
         JSON.stringify({
           input,
           enableKeyRotation: enableKeyRotation === true,
-          enabled: properties['Enabled'] !== false,
+          enabled: templateBool(properties['Enabled']) !== false,
         })
       )
       .digest('hex');
@@ -436,7 +436,7 @@ export class KMSProvider implements ResourceProvider {
       createdKeyId = keyId;
 
       // EnableKeyRotation must be called separately after key creation
-      if (enableKeyRotation) {
+      if (enableKeyRotation === true) {
         const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
         this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
         await this.getClient().send(
@@ -450,7 +450,7 @@ export class KMSProvider implements ResourceProvider {
       }
 
       // Disable key if Enabled is explicitly false
-      const enabled = properties['Enabled'] as boolean | undefined;
+      const enabled = templateBool(properties['Enabled']);
       if (enabled === false) {
         this.logger.debug(`Disabling KMS Key ${logicalId}`);
         await this.getClient().send(new DisableKeyCommand({ KeyId: keyId }));
@@ -1420,7 +1420,7 @@ export class KMSProvider implements ResourceProvider {
  * string), absent stays absent. Anything else is truthiness, as before.
  */
 function templateBool(value: unknown): boolean | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   if (typeof value === 'string') return value.toLowerCase() === 'true';
   return Boolean(value);
 }
