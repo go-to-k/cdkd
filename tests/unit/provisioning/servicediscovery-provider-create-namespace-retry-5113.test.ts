@@ -20,23 +20,16 @@ vi.mock('@aws-sdk/client-servicediscovery', async () => {
   };
 });
 
+// One logger object for the whole module, reachable from the test body.
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+  const logger: Record<string, unknown> = {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
   };
-  return {
-    getLogger: () => ({
-      child: () => childLogger,
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
-  };
+  logger['child'] = () => logger;
+  return { getLogger: () => logger };
 });
 
 // Record the backoff instead of sleeping it, so the ~30s budget runs
@@ -66,6 +59,13 @@ vi.mock('../../../src/deployment/retry.js', async () => {
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { getLogger } from '../../../src/utils/logger.js';
+import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
+
+const logger = getLogger() as unknown as {
+  debug: ReturnType<typeof vi.fn>;
+  warn: ReturnType<typeof vi.fn>;
+};
 
 const NAMESPACE_ID = 'ns-abcdefghijklmnop';
 
@@ -91,6 +91,8 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
 
   beforeEach(() => {
     mockSend.mockReset();
+    logger.debug.mockClear();
+    logger.warn.mockClear();
     slept.length = 0;
     provider = new ServiceDiscoveryProvider();
   });
@@ -165,6 +167,34 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
 
     expect(createServiceCalls()).toHaveLength(1);
     expect(slept).toEqual([]);
+  });
+
+  it('masks a secret-derived NamespaceId in the per-retry lines (issue #2050)', async () => {
+    // AWS's NamespaceNotFound message quotes the RESOLVED id back, and
+    // `withRetry` prints that message on every retry line.
+    const secret = 'sd-namespace-plaintext-5113-9c1f';
+    const maskSecrets = createSecretMasker(
+      new Map([[secret, '{{resolve:secretsmanager:ns:SecretString:id::}}']])
+    );
+    mockSend
+      .mockRejectedValueOnce(
+        new NamespaceNotFound({ message: secret, $metadata: { httpStatusCode: 400 } })
+      )
+      .mockResolvedValueOnce({ Service: { Id: 'srv-abcdefghijklmnop', Name: 'ttl-service' } });
+
+    await provider.create(
+      'TtlService',
+      'AWS::ServiceDiscovery::Service',
+      { ...properties, NamespaceId: secret },
+      { maskSecrets }
+    );
+
+    const retryLines = logger.debug.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('Retrying TtlService'));
+    expect(retryLines).toHaveLength(1);
+    expect(retryLines[0]).toContain(SECRET_MASK);
+    expect(retryLines[0]).not.toContain(secret);
   });
 
   it('does NOT retry a throttle either — the outer deploy retry owns that class', async () => {
