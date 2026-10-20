@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateServiceCommand,
   InvalidInput,
@@ -61,6 +61,10 @@ import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/se
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const logger = getLogger() as unknown as {
   debug: ReturnType<typeof vi.fn>;
@@ -210,5 +214,54 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
 
     expect(createServiceCalls()).toHaveLength(1);
     expect(slept).toEqual([]);
+  });
+});
+
+/**
+ * Issue #2053: the ~30s retry is a bounded wait, so a Ctrl-C ends it at the
+ * attempt the signal landed in. The discriminator is the ATTEMPT COUNT: an
+ * unwatched loop also rejects, after all ten.
+ */
+describe('ServiceDiscoveryProvider createService NamespaceNotFound retry aborts on Ctrl-C (#5113)', () => {
+  let baseline: readonly unknown[] = [];
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    slept.length = 0;
+    // Stand in for the SIGINT handler a real command installs; see
+    // servicediscovery-interrupt.test.ts for why the watch needs it to arm.
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    baseline = process.listeners('SIGINT');
+  });
+
+  afterEach(() => {
+    disarmInterruptWatchForTests();
+    delete interruptWatchTestSeam.commandOwnsInterrupts;
+  });
+
+  it('stops at the attempt the signal landed in, not after the whole budget', async () => {
+    let attempts = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof CreateServiceCommand) {
+        attempts += 1;
+        if (attempts === 2) {
+          for (const listener of process.listeners('SIGINT').filter((l) => !baseline.includes(l))) {
+            (listener as unknown as () => void)();
+          }
+        }
+        return Promise.reject(namespaceNotFound());
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      new ServiceDiscoveryProvider().create('TtlService', 'AWS::ServiceDiscovery::Service', {
+        Name: 'ttl-service',
+        NamespaceId: NAMESPACE_ID,
+      })
+    ).rejects.toThrow(/interrupted by user \(SIGINT\)/);
+
+    expect(attempts).toBe(2);
   });
 });
