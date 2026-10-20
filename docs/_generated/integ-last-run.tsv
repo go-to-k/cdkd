@@ -210,7 +210,7 @@ lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph 
 lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
-lambda-web-function-revision-replace	2026-10-20T05:07:15Z	FAIL	166	verify.sh	aws cli 2.36.19 lambda-web get-web-function-endpoint dies Errno 22 after phase 1 (env, not cdkd); cleanup done, 0 orphans; #5105
+lambda-web-function-revision-replace	2026-10-20T07:52:11Z	PASS	345	verify.sh	rc ok, orph clean; #5105, aws-cli 2.38.1 re-run
 launchtemplate-asg-inplace	2026-10-16T11:22:53Z	PASS	330	verify.sh	rc ok, orph clean, #5004 keep-on-removal
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
