@@ -8,9 +8,10 @@ import {
 // Issue #1160: removing a property from an AWS::EC2::Instance template.
 // A real CloudFormation A/B (us-east-1) showed: a removed `Monitoring` is
 // reset to off; a removed `MetadataOptions` / `CreditSpecification` is kept;
-// a removed `DisableApiTermination` fails the CloudFormation update and the
-// value stays. cdkd resets Monitoring, sends nothing for the other three, and
-// warns that termination protection was left in place.
+// a removed `DisableApiTermination` fails the CloudFormation update (from
+// true or false) while an explicit flip is applied. cdkd resets Monitoring,
+// keeps MetadataOptions / CreditSpecification, and refuses a forward removal
+// of DisableApiTermination (a rollback revert arm keeps + warns instead).
 
 const { mockSend, warn } = vi.hoisted(() => ({ mockSend: vi.fn(), warn: vi.fn() }));
 
@@ -138,57 +139,109 @@ describe('EC2Provider AWS::EC2::Instance property removal (#1160)', () => {
     expect(mutatingCommands()).toHaveLength(0);
   });
 
-  it('a removed DisableApiTermination is kept, with a warning naming the fix', async () => {
-    await provider.update(
-      'Web',
-      'i-1',
-      TYPE,
-      { ImageId: 'ami-1' },
-      { ImageId: 'ami-1', DisableApiTermination: true }
-    );
-    expect(
-      mutatingCommands().filter((c) => c instanceof ModifyInstanceAttributeCommand)
-    ).toHaveLength(0);
-    const warnings = terminationWarnings();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0][0]).toContain('Web (AWS::EC2::Instance)');
-    expect(warnings[0][0]).toContain('Set DisableApiTermination to false');
-  });
+  describe('DisableApiTermination removal (CloudFormation fails it; issuecomment-6281778130)', () => {
+    const REFUSAL = 'DisableApiTermination was removed from the template';
 
-  it('the caller-named removal warns too; drift --revert (none named) does not', async () => {
-    const previous = { ImageId: 'ami-1', DisableApiTermination: 'true' };
-    const prep = prepareRemovalForUpdate(provider, TYPE, { ImageId: 'ami-1' }, previous);
-    await provider.update('Web', 'i-1', TYPE, prep.properties, previous, prep.context);
-    expect(terminationWarnings()).toHaveLength(1);
-
-    warn.mockReset();
-    await provider.update('Web', 'i-1', TYPE, { ImageId: 'ami-1' }, previous, {
-      removedProperties: new Set(),
+    it('a forward deploy removing a true is refused before ANY call, tag change included', async () => {
+      const previous = { ImageId: 'ami-1', DisableApiTermination: true, Tags: [{ Key: 'a', Value: '1' }] };
+      const desired = { ImageId: 'ami-1', Tags: [{ Key: 'a', Value: '2' }] };
+      const prep = prepareRemovalForUpdate(provider, TYPE, desired, previous);
+      const err = await provider
+        .update('Web', 'i-1', TYPE, prep.properties, previous, prep.context)
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+      expect(err).toBeInstanceOf(Error);
+      expect(err?.message).toContain(`Web (${TYPE}): ${REFUSAL}`);
+      expect(err?.message).toContain('set it to false to turn termination protection off');
+      expect(mockSend).not.toHaveBeenCalled();
     });
-    expect(terminationWarnings()).toHaveLength(0);
-  });
 
-  it('a removed DisableApiTermination that was false does not warn (protection already off)', async () => {
-    await provider.update(
-      'Web',
-      'i-1',
-      TYPE,
-      { ImageId: 'ami-1' },
-      { ImageId: 'ami-1', DisableApiTermination: false }
-    );
-    expect(terminationWarnings()).toHaveLength(0);
-    expect(mutatingCommands()).toHaveLength(0);
-  });
+    it('a forward deploy removing a false is refused too (CloudFormation fails it as well)', async () => {
+      await expect(
+        provider.update('Web', 'i-1', TYPE, { ImageId: 'ami-1' }, { ImageId: 'ami-1', DisableApiTermination: false })
+      ).rejects.toThrow(REFUSAL);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
 
-  it('a present DisableApiTermination does not warn', async () => {
-    await provider.update(
-      'Web',
-      'i-1',
-      TYPE,
-      { ImageId: 'ami-1', DisableApiTermination: false },
-      { ImageId: 'ami-1', DisableApiTermination: true }
-    );
-    expect(terminationWarnings()).toHaveLength(0);
-    expect(mutatingCommands()[0]).toBeInstanceOf(ModifyInstanceAttributeCommand);
+    it('explicit flips are applied: true -> false and false -> true', async () => {
+      await provider.update(
+        'Web',
+        'i-1',
+        TYPE,
+        { ImageId: 'ami-1', DisableApiTermination: false },
+        { ImageId: 'ami-1', DisableApiTermination: true }
+      );
+      expect(mutatingCommands()).toHaveLength(1);
+      expect(mutatingCommands()[0].input).toEqual({
+        InstanceId: 'i-1',
+        DisableApiTermination: { Value: false },
+      });
+
+      mockSend.mockClear();
+      await provider.update(
+        'Web',
+        'i-1',
+        TYPE,
+        { ImageId: 'ami-1', DisableApiTermination: 'true' },
+        { ImageId: 'ami-1', DisableApiTermination: 'false' }
+      );
+      expect(mutatingCommands()[0].input).toEqual({
+        InstanceId: 'i-1',
+        DisableApiTermination: { Value: true },
+      });
+      expect(terminationWarnings()).toHaveLength(0);
+    });
+
+    it('an absent -> true addition is applied, not refused', async () => {
+      await provider.update('Web', 'i-1', TYPE, { ImageId: 'ami-1', DisableApiTermination: true }, { ImageId: 'ami-1' });
+      expect(mutatingCommands()[0]).toBeInstanceOf(ModifyInstanceAttributeCommand);
+    });
+
+    it('a rollback revert arm (replayingState) keeps the live value and warns, never refuses', async () => {
+      // The failed deploy ADDED DisableApiTermination: true; the record being
+      // restored (desired) does not declare it.
+      const attempted = { ImageId: 'ami-1', DisableApiTermination: true };
+      const restored = { ImageId: 'ami-1' };
+      const prep = prepareRemovalForUpdate(provider, TYPE, restored, attempted);
+      await provider.update('Web', 'i-1', TYPE, prep.properties, attempted, {
+        ...prep.context,
+        replayingState: true,
+      });
+      expect(
+        mutatingCommands().filter((c) => c instanceof ModifyInstanceAttributeCommand)
+      ).toHaveLength(0);
+      const warnings = terminationWarnings();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0][0]).toContain('Web (AWS::EC2::Instance)');
+      expect(warnings[0][0]).toContain('the rollback leaves termination protection');
+    });
+
+    it('a rollback revert arm restoring over an added false neither refuses nor warns', async () => {
+      await provider.update(
+        'Web',
+        'i-1',
+        TYPE,
+        { ImageId: 'ami-1' },
+        { ImageId: 'ami-1', DisableApiTermination: false },
+        { removedProperties: new Set(['DisableApiTermination']), replayingState: true }
+      );
+      expect(terminationWarnings()).toHaveLength(0);
+      expect(mutatingCommands()).toHaveLength(0);
+    });
+
+    it('drift --revert (readback previous, empty removedProperties) neither refuses nor warns', async () => {
+      await provider.update(
+        'Web',
+        'i-1',
+        TYPE,
+        { ImageId: 'ami-1' },
+        { ImageId: 'ami-1', DisableApiTermination: true },
+        { desiredFromAwsReadback: true, removedProperties: new Set() }
+      );
+      expect(terminationWarnings()).toHaveLength(0);
+      expect(mutatingCommands()).toHaveLength(0);
+    });
   });
 });

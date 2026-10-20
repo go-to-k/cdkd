@@ -31,20 +31,22 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * verify.sh — and (b) is the only place the new `Placement` create path runs
  * against real AWS.
  *
- * REMOVAL phase (CDKD_TEST_REMOVAL=true, issue #1160): the backfill instance
- * drops DisableApiTermination / MetadataOptions / Monitoring /
- * CreditSpecification. A CloudFormation A/B showed CloudFormation turns a
- * removed Monitoring off, keeps a removed MetadataOptions /
- * CreditSpecification, and FAILS the update for a removed
- * DisableApiTermination (the value stays). EbsOptimized stays declared: an
- * EbsOptimized change is routed to replacement, and this phase must update in
- * place.
+ * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
+ * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
+ * Monitoring / CreditSpecification: CloudFormation turns a removed Monitoring
+ * off and keeps the other two. CDKD_TEST_DAT selects DisableApiTermination:
+ * unset keeps `true`; `remove` drops it (CloudFormation fails that update, so
+ * cdkd refuses it) and adds a marker tag that must NOT land; `false` declares
+ * it explicitly off, which both apply. EbsOptimized stays declared: an
+ * EbsOptimized change is routed to replacement, and these phases must update
+ * in place.
  */
 export class Ec2InstanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    const datMode = process.env.CDKD_TEST_DAT;
 
     // Create VPC with 1 AZ and no NAT gateways (cost saving)
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -91,13 +93,14 @@ export class Ec2InstanceStack extends cdk.Stack {
       // the instance is protected when it is not. `cdkd destroy
       // --remove-protection` (exercised by verify.sh) flips this off before
       // terminate.
-      // The removal phase (issue #1160) drops the four properties below that
-      // update() modifies in place; see the class doc for what CloudFormation
-      // does with each.
+      // The removal phases (issue #1160) drop the properties below that
+      // update() modifies in place; see the class doc.
+      ...(datMode === 'remove'
+        ? { tags: [{ key: 'Cdkd1160Refused', value: 'must-not-land' }] }
+        : { disableApiTermination: datMode !== 'false' }),
       ...(isRemoval
         ? {}
         : {
-            disableApiTermination: true,
             // IMDSv2 enforcement inline on the instance (no LaunchTemplate).
             metadataOptions: {
               httpTokens: 'required',

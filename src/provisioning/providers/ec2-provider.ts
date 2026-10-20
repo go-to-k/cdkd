@@ -6381,6 +6381,15 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // Issue #1160: before any call too, so a refusal applies nothing.
+    this.guardTerminationProtectionRemoval(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
 
     try {
       await this.applyTagDiff(
@@ -6391,13 +6400,7 @@ export class EC2Provider implements ResourceProvider {
         properties['Tags']
       );
 
-      await this.updateInstanceSecurityProps(
-        logicalId,
-        physicalId,
-        properties,
-        previousProperties,
-        context
-      );
+      await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
 
       // Refresh attributes. The map REPLACES the record's (the engine does
       // not merge it with the previous one), and that is the right answer
@@ -6434,6 +6437,57 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
+   * Issue #1160: a `DisableApiTermination` the previous template declared and
+   * the desired one omits. CloudFormation FAILS that update, from `true` or
+   * from `false`, with or without other changes in it, and rolls the whole
+   * update back ("No attributes specified": its handler sends an empty
+   * ModifyInstanceAttribute). An explicit `true` <-> `false` change is applied.
+   * Real A/B, us-east-1: go-to-k/cdkd#1160 issuecomment-6281778130. So a
+   * forward deploy REFUSES the removal before any AWS call, and the refusal
+   * names the remedy CloudFormation accepts: keep the property and declare
+   * `false`.
+   *
+   * A rollback revert arm (`replayingState`) is undoing a failed deploy that
+   * ADDED the property. The user cannot edit a state record, so a refusal there
+   * would only strand the rollback. Instead it keeps the live value, and warns
+   * when that value was declared `true`. `cdkd drift --revert` names no removed
+   * property (`removedProperties` is empty; its previous side is an AWS
+   * readback), so neither arm fires there. A direct call with no context falls
+   * back to comparing the two bags.
+   */
+  private guardTerminationProtectionRemoval(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    const removed =
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has('DisableApiTermination')
+        : previousProperties['DisableApiTermination'] !== undefined &&
+          properties['DisableApiTermination'] === undefined;
+    if (!removed) return;
+    if (context?.replayingState === true) {
+      if (this.coerceBool(previousProperties['DisableApiTermination']) === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored does not declare DisableApiTermination; the rollback leaves termination protection at its current AWS value. Set DisableApiTermination to false to turn termination protection off.`
+        );
+      }
+      return;
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${logicalId} (${resourceType}): DisableApiTermination was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared, and set it to false to turn termination protection off. The instance was not updated.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
    * Apply in-place modifications for four of the five security-focused
    * backfill props (#609). Each is diffed against `previousProperties` so a
    * no-drift round-trip (`update(state, state)`) issues zero mutating calls
@@ -6451,35 +6505,17 @@ export class EC2Provider implements ResourceProvider {
    * from `removalDefaults`. It KEEPS a removed `MetadataOptions` and a removed
    * `CreditSpecification` (`HttpTokens: required` / hop limit 3 and
    * `CPUCredits: standard` stayed), so a removed one sends nothing. A removed
-   * `DisableApiTermination` FAILS the CloudFormation update ("No attributes
-   * specified", an empty ModifyInstanceAttribute) and the value stays; cdkd
-   * keeps it too, as the fail-safe direction for termination protection, and
-   * warns that it was left in place.
+   * `DisableApiTermination` never reaches this method: see
+   * `guardTerminationProtectionRemoval`.
    */
   private async updateInstanceSecurityProps(
-    logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>,
-    context: UpdateContext | undefined
+    previousProperties: Record<string, unknown>
   ): Promise<void> {
     // DisableApiTermination — ModifyInstanceAttribute.
     const newDisableApiTermination = this.coerceBool(properties['DisableApiTermination']);
     const oldDisableApiTermination = this.coerceBool(previousProperties['DisableApiTermination']);
-    // An update caller names the removed template keys; `drift --revert`
-    // names none (its previous side is an AWS readback, which always carries
-    // DisableApiTermination). A direct call falls back to the two bags.
-    // Only a removed `true` warns: a removed `false` leaves protection off.
-    const terminationProtectionRemoved =
-      oldDisableApiTermination === true &&
-      (context?.removedProperties !== undefined
-        ? context.removedProperties.has('DisableApiTermination')
-        : properties['DisableApiTermination'] === undefined);
-    if (terminationProtectionRemoved) {
-      this.logger.warn(
-        safeMsg`${logicalId} (AWS::EC2::Instance): DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value, as CloudFormation does not turn it off. Set DisableApiTermination to false to turn termination protection off.`
-      );
-    }
     if (
       newDisableApiTermination !== undefined &&
       newDisableApiTermination !== oldDisableApiTermination

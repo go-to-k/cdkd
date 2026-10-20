@@ -50,10 +50,11 @@
 # never-existed ids, then the settle's delete of the throwaways and the reads
 # once they are gone (see the phase's own comment).
 #
-# Phase 1d is the issue #1160 removal arm: a CDKD_TEST_REMOVAL=true redeploy
-# drops DisableApiTermination / MetadataOptions / Monitoring /
-# CreditSpecification. Monitoring must be turned off (CloudFormation resets
-# it), and the other three must keep their values (see the phase's comment).
+# Phases 1d-1f are the issue #1160 removal arms: Monitoring removed is turned
+# off and MetadataOptions / CreditSpecification removed are kept (1d); a
+# removed DisableApiTermination is REFUSED before any call (1e); an explicit
+# `false` is applied (1f), and `true` again (1g, for the destroy arm). See the
+# phases' comment.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -1106,98 +1107,146 @@ run_net_probe gone 9
 rm -f "${NET_IDS_FILE}"
 echo "    OK: isSameResource and the settle's delete for VPC / Subnet / SecurityGroup against live resources (issue #4606)"
 
-# --- Phase 1d: REMOVAL of the in-place security props (issue #1160) ---------
-# The backfill instance drops DisableApiTermination / MetadataOptions /
-# Monitoring / CreditSpecification. A CloudFormation A/B (us-east-1) showed:
-# a removed Monitoring is turned OFF; a removed MetadataOptions /
-# CreditSpecification is KEPT; a removed DisableApiTermination FAILS the
-# CloudFormation update and the value stays. cdkd resets Monitoring
-# (UnmonitorInstances), keeps the other three, and warns that termination
-# protection was left in place. Before #1160 the update sent nothing for
-# Monitoring, so detailed monitoring stayed `enabled`: the discriminating
-# assertion below.
-echo "==> Phase 1d: removal (drop DisableApiTermination / MetadataOptions / Monitoring / CreditSpecification; issue #1160)"
-# A private directory, so nothing can pre-place the log path.
-P1D_DIR="$(mktemp -d -t cdkd-ec2-instance-p1d.XXXXXX)"
-P1D_LOG="${P1D_DIR}/deploy.log"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
-  --yes >"${P1D_LOG}" 2>&1 || {
-  cat "${P1D_LOG}" >&2
-  rm -rf "${P1D_DIR}"
-  echo "FAIL: the issue #1160 removal deploy failed (log above)" >&2
+# --- Phases 1d-1f: REMOVAL of the in-place security props (issue #1160) ----
+# CloudFormation A/B (go-to-k/cdkd#1160 issuecomment-6281778130): a removed
+# Monitoring is turned OFF; a removed MetadataOptions / CreditSpecification is
+# KEPT; a removed DisableApiTermination FAILS the whole update (from true or
+# false), while an explicit true <-> false change is applied.
+#
+# Reads poll: `describe-instance-attribute disableApiTermination` returns a
+# change only 1.5 to 2 minutes later, so every changed read waits up to 3 min.
+
+# Run one removal-phase deploy, its output captured into the named variable
+# and echoed. `$1` = variable name, `$2` = expected outcome (ok|fail), rest =
+# env assignments for the deploy.
+removal_deploy() {
+  local var="$1" want="$2"; shift 2
+  local dir log rc
+  # A private directory, so nothing can pre-place the log path.
+  dir="$(mktemp -d -t cdkd-ec2-instance-1160.XXXXXX)"
+  log="${dir}/deploy.log"
+  set +e
+  env "$@" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" \
+    --yes >"${log}" 2>&1
+  rc=$?
+  set -e
+  printf -v "${var}" '%s' "$(cat "${log}")"
+  rm -rf "${dir}"
+  printf '%s\n' "${!var}"
+  if [ "${want}" = ok ] && [ "${rc}" -ne 0 ]; then
+    echo "FAIL: issue #1160 -- the deploy with $* failed (rc=${rc}, log above)" >&2
+    exit 1
+  fi
+  if [ "${want}" = fail ] && [ "${rc}" -eq 0 ]; then
+    echo "FAIL: issue #1160 -- the deploy with $* succeeded; removing DisableApiTermination must be refused, as CloudFormation fails that update" >&2
+    exit 1
+  fi
+}
+
+# Poll a command until its output equals one of the wanted values (12 x 15s).
+# `$1` = description, `$2` = space-separated wanted values, rest = command.
+POLLED=""
+poll_until() {
+  local what="$1" want="$2"; shift 2
+  local _ w
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    POLLED=$("$@")
+    for w in ${want}; do [ "${POLLED}" = "${w}" ] && return 0; done
+    sleep 15
+  done
+  echo "FAIL: issue #1160 -- ${what} is '${POLLED}' after 3 minutes; expected one of: ${want}" >&2
   exit 1
 }
-P1D_OUTPUT=$(cat "${P1D_LOG}")
-rm -rf "${P1D_DIR}"
-printf '%s\n' "${P1D_OUTPUT}"
+read_dat() {
+  aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute disableApiTermination \
+    --region "${REGION}" --query 'DisableApiTermination.Value' --output text
+}
+read_monitoring() {
+  aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].Monitoring.State' --output text
+}
+recorded_props() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+    | jq -r --arg id "${INSTANCE_ID}" '[.resources | to_entries[] | select(.value.physicalId == $id) | .value.properties | keys[] | select(. == "DisableApiTermination" or . == "MetadataOptions" or . == "Monitoring" or . == "CreditSpecification")] | join(",")'
+}
 
-RM_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-RM_INSTANCE_ID=$(echo "${RM_STATE}" | jq -r '.outputs.InstanceId // ""')
+# Phase 1d: MetadataOptions / Monitoring / CreditSpecification removed,
+# DisableApiTermination still declared true. Before #1160 the update sent
+# nothing for Monitoring, so it stayed `enabled`.
+echo "==> Phase 1d: removal (drop MetadataOptions / Monitoring / CreditSpecification; issue #1160)"
+removal_deploy P1D_OUTPUT ok CDKD_TEST_REMOVAL=true
+RM_INSTANCE_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.InstanceId // ""')
 if [ "${RM_INSTANCE_ID}" != "${INSTANCE_ID}" ]; then
-  echo "FAIL: issue #1160 -- the removal replaced the instance ('${INSTANCE_ID}' -> '${RM_INSTANCE_ID}'); these four properties update in place" >&2
+  echo "FAIL: issue #1160 -- the removal replaced the instance ('${INSTANCE_ID}' -> '${RM_INSTANCE_ID}'); these properties update in place" >&2
   exit 1
 fi
 # The template no longer declares them, so state must not either (an injected
 # reset value recorded in state would read as removed again on every deploy).
-RM_RECORDED=$(echo "${RM_STATE}" | jq -r '[.resources | to_entries[] | select(.value.physicalId == "'"${INSTANCE_ID}"'") | .value.properties | keys[] | select(. == "DisableApiTermination" or . == "MetadataOptions" or . == "Monitoring" or . == "CreditSpecification")] | join(",")')
-if [ -n "${RM_RECORDED}" ]; then
-  echo "FAIL: issue #1160 -- state still records removed properties for ${INSTANCE_ID}: ${RM_RECORDED}" >&2
+RM_RECORDED=$(recorded_props)
+if [ "${RM_RECORDED}" != "DisableApiTermination" ]; then
+  echo "FAIL: issue #1160 -- state records '${RM_RECORDED}' for ${INSTANCE_ID}; expected only DisableApiTermination" >&2
   exit 1
 fi
-
-# Read a few times: DescribeInstances is eventually consistent, so the first
-# read right after UnmonitorInstances can still say `enabled`. The pre-fix
-# code sends no call at all, so it stays `enabled` on every read.
-RM_MONITORING=""
-for _ in 1 2 3 4 5 6; do
-  RM_INSTANCE=$(aws ec2 describe-instances \
-    --instance-ids "${INSTANCE_ID}" \
-    --region "${REGION}" \
-    --query 'Reservations[0].Instances[0]' --output json)
-  RM_MONITORING=$(echo "${RM_INSTANCE}" | jq -r '.Monitoring.State // "null"')
-  if [ "${RM_MONITORING}" = "disabled" ] || [ "${RM_MONITORING}" = "disabling" ]; then
-    break
-  fi
-  sleep 5
-done
-if [ "${RM_MONITORING}" != "disabled" ] && [ "${RM_MONITORING}" != "disabling" ]; then
-  echo "FAIL: issue #1160 -- a removed Monitoring left Monitoring.State '${RM_MONITORING}' on ${INSTANCE_ID}; expected disabled/disabling, as CloudFormation turns it off" >&2
-  exit 1
-fi
-echo "    OK: removed Monitoring reset: Monitoring.State == ${RM_MONITORING} (issue #1160)"
-
+poll_until "Monitoring.State after a removed Monitoring (CloudFormation turns it off)" "disabled disabling" read_monitoring
+echo "    OK: removed Monitoring reset: Monitoring.State == ${POLLED} (issue #1160)"
 # Kept, as CloudFormation keeps them (controls: a reset of either is the bug).
-RM_HTTP_TOKENS=$(echo "${RM_INSTANCE}" | jq -r '.MetadataOptions.HttpTokens // "null"')
+RM_HTTP_TOKENS=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].MetadataOptions.HttpTokens' --output text)
 if [ "${RM_HTTP_TOKENS}" != "required" ]; then
   echo "FAIL: issue #1160 -- a removed MetadataOptions changed HttpTokens to '${RM_HTTP_TOKENS}'; CloudFormation keeps it (required)" >&2
   exit 1
 fi
-RM_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications \
-  --instance-ids "${INSTANCE_ID}" \
-  --region "${REGION}" \
+RM_CPU_CREDITS=$(aws ec2 describe-instance-credit-specifications --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
   --query 'InstanceCreditSpecifications[0].CpuCredits' --output text)
 if [ "${RM_CPU_CREDITS}" != "unlimited" ]; then
   echo "FAIL: issue #1160 -- a removed CreditSpecification changed CpuCredits to '${RM_CPU_CREDITS}'; CloudFormation keeps it (unlimited)" >&2
   exit 1
 fi
-RM_DISABLE_TERM=$(aws ec2 describe-instance-attribute \
-  --instance-id "${INSTANCE_ID}" \
-  --attribute disableApiTermination \
-  --region "${REGION}" \
-  --query 'DisableApiTermination.Value' --output text)
-if [ "${RM_DISABLE_TERM}" != "True" ]; then
-  echo "FAIL: issue #1160 -- a removed DisableApiTermination changed termination protection to '${RM_DISABLE_TERM}'; it must stay True (CloudFormation fails this update and keeps it)" >&2
+echo "    OK: removed MetadataOptions / CreditSpecification kept (required / unlimited) (issue #1160)"
+
+# Phase 1e: DisableApiTermination removed, plus a marker tag in the SAME
+# update. CloudFormation fails the whole update, so cdkd refuses it before any
+# AWS call: the tag must not land and protection must stay on. Before #1160
+# this deploy succeeded (the removal sent nothing) and the tag landed.
+echo "==> Phase 1e: removing DisableApiTermination is refused (issue #1160)"
+removal_deploy P1E_OUTPUT fail CDKD_TEST_REMOVAL=true CDKD_TEST_DAT=remove
+if ! grep -qF "DisableApiTermination was removed from the template, and CloudFormation fails that update for an existing instance" <<<"${P1E_OUTPUT}"; then
+  echo "FAIL: issue #1160 -- the refused deploy did not print the DisableApiTermination refusal" >&2
   exit 1
 fi
-# A here-string, not a pipe: `grep -q` exits on the first match, and under
-# pipefail the writer's SIGPIPE would fail the check.
-if ! grep -qF "DisableApiTermination is absent from the desired properties; cdkd leaves termination protection at its current AWS value" <<<"${P1D_OUTPUT}"; then
-  echo "FAIL: issue #1160 -- the removal deploy did not warn that termination protection was left in place" >&2
+P1E_TAG=$(aws ec2 describe-tags --region "${REGION}" \
+  --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=Cdkd1160Refused" \
+  --query 'length(Tags)' --output text)
+if [ "${P1E_TAG}" != "0" ]; then
+  echo "FAIL: issue #1160 -- the refused update still applied its tag change (Cdkd1160Refused count ${P1E_TAG}); the refusal must come before any call" >&2
   exit 1
 fi
-echo "    OK: removed MetadataOptions / CreditSpecification / DisableApiTermination kept (required / unlimited / True), with the termination-protection warning (issue #1160)"
+P1E_DAT=$(read_dat)
+if [ "${P1E_DAT}" != "True" ]; then
+  echo "FAIL: issue #1160 -- termination protection is '${P1E_DAT}' after the refused removal; it must stay True" >&2
+  exit 1
+fi
+if [ "$(recorded_props)" != "DisableApiTermination" ]; then
+  echo "FAIL: issue #1160 -- the refused deploy changed the state record's DisableApiTermination entry" >&2
+  exit 1
+fi
+echo "    OK: removal refused before any call: no tag, protection still True, state unchanged (issue #1160)"
+
+# Phase 1f: the remedy the refusal names -- declare it false. Applied, as in
+# CloudFormation; destroy then needs no flip (it still passes the flag).
+echo "==> Phase 1f: DisableApiTermination declared false (issue #1160)"
+removal_deploy P1F_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_DAT=false
+poll_until "termination protection after DisableApiTermination: false" "False" read_dat
+echo "    OK: explicit DisableApiTermination false applied (issue #1160)"
+
+# Phase 1g: declare it true again, so Phase 2's destroy still exercises the
+# --remove-protection flip of a protected instance (the #609 destroy arm).
+echo "==> Phase 1g: DisableApiTermination declared true again (issue #1160)"
+removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true
+poll_until "termination protection after DisableApiTermination: true" "True" read_dat
+echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
