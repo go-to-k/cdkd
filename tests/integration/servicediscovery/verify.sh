@@ -70,6 +70,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # Phase 4's deploy log, left behind when a run fails before it is removed.
+  [ -n "${P4_LOG_DIR:-}" ] && rm -rf "${P4_LOG_DIR}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -232,8 +234,13 @@ fi
 expect_same_id "${HC_NAME}" "${HC_ID}"
 expect_same_id "${SERVICE_NAME}" "${SERVICE_ID}"
 expect_field "${HC_ID}" HealthCheckConfig.FailureThreshold 2 "a HealthCheckConfig change was not applied"
-expect_field "${HC_ID}" Description None \
-  "a Description removed beside a HealthCheckConfig change was not cleared, as CloudFormation clears it"
+# A cleared Description is absent from GetService ("None" in text output);
+# an empty string would print as "" — both mean cleared.
+P3_HC_DESC=$(service_field "${HC_ID}" Description)
+if [ "${P3_HC_DESC}" != "None" ] && [ -n "${P3_HC_DESC}" ]; then
+  echo "FAIL: a Description removed beside a HealthCheckConfig change was not cleared, as CloudFormation clears it (issue #1160): ${HC_ID} Description='${P3_HC_DESC}', expected it cleared" >&2
+  exit 1
+fi
 expect_field "${SERVICE_ID}" "DnsConfig.DnsRecords[0].TTL" 60 \
   "a DnsConfig removed on its own was not kept, as CloudFormation keeps it"
 echo "    OK: Description cleared beside the HealthCheckConfig change; DnsConfig removed on its own kept (issue #1160)"
@@ -242,6 +249,7 @@ echo "    OK: Description cleared beside the HealthCheckConfig change; DnsConfig
 # CloudFormation's update fails here with AWS's own refusal; cdkd must too.
 echo "==> Phase 4: drop ${REFUSED_NAME}'s DnsConfig beside a Description change (expected refusal)"
 P4_LOG_DIR="$(mktemp -d -t cdkd-svcdisc-p4.XXXXXX)"
+# shellcheck disable=SC2034 # read by cleanup() on an early exit
 P4_LOG="${P4_LOG_DIR}/deploy.log"
 P4_RC=0
 deploy_phase refused > "${P4_LOG}" 2>&1 || P4_RC=$?
@@ -256,6 +264,7 @@ if ! grep -qF "Service dns config cannot be null" "${P4_LOG}"; then
 fi
 rm -f "${P4_LOG}"
 rmdir "${P4_LOG_DIR}"
+P4_LOG_DIR=""
 expect_same_id "${REFUSED_NAME}" "${REFUSED_ID}"
 expect_field "${REFUSED_ID}" Description cdkd-svcdisc-refused "the refused update changed the service"
 expect_field "${REFUSED_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "the refused update changed the service"
@@ -289,6 +298,15 @@ if [ -n "${STILL_NS}" ] && [ "${STILL_NS}" != "None" ]; then
   exit 1
 fi
 echo "    OK: public namespace ${PUBLIC_NS_NAME} is gone"
+# Cloud Map deletes the namespace's Route 53 hosted zone with it; a leftover
+# zone is a billed orphan.
+STILL_ZONE=$(aws route53 list-hosted-zones-by-name --dns-name "${PUBLIC_NS_NAME}." \
+  --max-items 1 --query "HostedZones[?Name=='${PUBLIC_NS_NAME}.'].Id | [0]" --output text)
+if [ -n "${STILL_ZONE}" ] && [ "${STILL_ZONE}" != "None" ]; then
+  echo "FAIL: hosted zone ${PUBLIC_NS_NAME} (${STILL_ZONE}) still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: hosted zone ${PUBLIC_NS_NAME} is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
