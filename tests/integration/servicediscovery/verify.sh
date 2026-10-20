@@ -8,9 +8,9 @@
 # post-create UpdateServiceAttributes control-plane call and is readable back
 # via GetServiceAttributes. Then three issue #1160 removal phases that follow
 # the CloudFormation A/Bs: a removal on its own, beside an unchanged declared
-# Description, or beside a DnsRecords-only change is KEPT, a Description removed beside a HealthCheckConfig change is
-# CLEARED, and a DnsConfig removed beside a Description change is REFUSED by
-# AWS. Then destroys and confirms a clean teardown.
+# Description, or beside a DnsRecords-only change is KEPT; a Description
+# removed beside a HealthCheckConfig change is CLEARED; and a DnsConfig removed
+# beside a Description change is REFUSED by AWS. Then destroys and confirms a clean teardown.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})

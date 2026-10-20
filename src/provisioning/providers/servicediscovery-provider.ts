@@ -112,12 +112,19 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
  * The record is REDACTED: a secret dynamic reference stays its
  * `{{resolve:...}}` token and a `NoEcho` value is `***`, while the desired
  * bag carries the plaintext. Such a recorded leaf cannot be compared, so it
- * matches anything — the template spelled it the same way unless proven
- * otherwise, and CloudFormation, which compares templates, sees no change
- * there. Every other leaf is compared deep and strict.
+ * counts as CHANGED: a wildcard would silently drop a real template change
+ * (one secret reference swapped for another), and sending the declared value
+ * again is harmless. Every other leaf is compared deep and strict.
+ *
+ * Known divergence from CloudFormation, which compares TEMPLATES: an
+ * unchanged secret- or NoEcho-sourced `Description` with a
+ * `HealthCheckConfig` removed beside it sends the declared model and clears
+ * the health check (a removed `DnsConfig` beside it is refused), where
+ * CloudFormation keeps it. go-to-k/cdkd#5112 tracks passing the as-written
+ * changed keys to providers, which removes it.
  */
 function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
-  if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return true;
+  if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;
   if (Array.isArray(desired) && Array.isArray(recorded)) {
     return (
       desired.length === recorded.length &&

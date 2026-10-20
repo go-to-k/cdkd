@@ -220,24 +220,42 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
     }
   );
 
-  // The state record is REDACTED while the desired bag is resolved: an
-  // unchanged secret-sourced Description must not read as a change, or a
-  // HealthCheckConfig removed beside it would be cleared where
-  // CloudFormation (comparing templates) keeps it.
+  // The state record is REDACTED while the desired bag is resolved, so a
+  // recorded `{{resolve:` / `***` leaf counts as CHANGED: never dropping a
+  // real template change. go-to-k/cdkd#5112 tracks a template-to-template
+  // compare.
+  it.each([
+    [
+      'a secret reference swapped for another',
+      '{{resolve:secretsmanager:svc-desc-a:SecretString:d}}',
+      'plaintext-b',
+    ],
+    ['text around an unchanged reference changed', 'dev {{resolve:ssm-secure:/svc/x}}', 'prod s3cr3t'],
+    ['a plain Description containing *** changed', 'a *** b', 'c *** d'],
+  ])('a recorded stand-in leaf counts as changed, so the update is SENT: %s', async (_label, recorded, next) => {
+    await provider.update('Svc', 'srv-1', TYPE, desired([], { Description: next }), {
+      ...structuredClone(FULL),
+      Description: recorded,
+    });
+    expect(sentChange().Description).toBe(next);
+  });
+
   it.each([
     ['a secret dynamic reference', '{{resolve:secretsmanager:svc-desc:SecretString:d}}'],
     ['a NoEcho mask', '***'],
   ])(
-    'a recorded Description that is %s reads as unchanged: HealthCheckConfig removal-only sends nothing',
+    'documented divergence (#5112): an unchanged Description recorded as %s with HealthCheckConfig removed clears the health check',
     async (_label, recorded) => {
       await provider.update(
         'Svc',
         'srv-1',
         TYPE,
         desired(['HealthCheckConfig'], { Description: 'resolved-plaintext' }),
-        { ...FULL, Description: recorded }
+        { ...structuredClone(FULL), Description: recorded }
       );
-      expect(updateCall()).toBeUndefined();
+      const change = sentChange();
+      expect(change.Description).toBe('resolved-plaintext');
+      expect(Object.hasOwn(change, 'HealthCheckConfig')).toBe(false);
     }
   );
 
