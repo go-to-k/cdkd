@@ -3803,6 +3803,48 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5131: `DeleteTable` returns with the table `DELETING`, and
+   * DynamoDB keeps the name until it is gone, so a same-name re-create right
+   * after cdkd's own delete fails `ResourceInUseException`. Polls
+   * `DescribeTable` until `ResourceNotFoundException`, as the GlobalTable
+   * provider's gone-wait does, within its poll budget. Only the replacement
+   * that deleted the table asks; `delete()` itself still returns at once.
+   */
+  async waitForNameReleased(
+    logicalId: string,
+    physicalId: string,
+    _resourceType: string,
+    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
+  ): Promise<void> {
+    const mask = context.maskSecrets ?? ((text: string) => text);
+    // A table can stay DELETING for minutes: say why the deploy waits.
+    this.logger.info(
+      mask(`  Waiting for the deleted DynamoDB table ${physicalId} to release its name...`)
+    );
+    for (let poll = 0; poll < tableNameReleaseWait.maxPolls; poll++) {
+      if (context.isInterrupted()) return;
+      try {
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return;
+        this.logger.debug(
+          mask(
+            `DynamoDB table ${logicalId}: name-release check failed: ${describeAwsFailure(error).detail}`
+          )
+        );
+        // A throttle or a server error: poll on, within the bound. Anything
+        // else (access denied, a malformed name) will not change: stop
+        // waiting, and the re-create reports what is wrong.
+        if (!isThrottlingError(error) && !isTransientServerError(error)) return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, tableNameReleaseWait.intervalMs));
+    }
+    this.logger.debug(
+      mask(`DynamoDB table ${logicalId} (${physicalId}) still held its name after the wait`)
+    );
+  }
+
+  /**
    * Delete a DynamoDB table
    *
    * A thin wrapper around {@link deleteTableResource} whose only job is the
@@ -3821,42 +3863,6 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * exit; the {@link ProtectionFlipRecord} — not the position of the catch — is
    * what decides whether there is anything to undo.
    */
-  /**
-   * go-to-k/cdkd#5131: `DeleteTable` returns with the table `DELETING`, and
-   * DynamoDB keeps the name until it is gone, so a same-name re-create right
-   * after cdkd's own delete fails `ResourceInUseException`. Polls
-   * `DescribeTable` until `ResourceNotFoundException`, as the GlobalTable
-   * provider's gone-wait does, within its poll budget. Only the replacement
-   * that deleted the table asks; `delete()` itself still returns at once.
-   */
-  async waitForNameReleased(
-    logicalId: string,
-    physicalId: string,
-    _resourceType: string,
-    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
-  ): Promise<void> {
-    const mask = context.maskSecrets ?? ((text: string) => text);
-    for (let poll = 0; poll < tableNameReleaseWait.maxPolls; poll++) {
-      if (context.isInterrupted()) return;
-      try {
-        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
-      } catch (error) {
-        if (error instanceof ResourceNotFoundException) return;
-        // Not the answer this wait is for (a throttle, say): poll on, within
-        // the bound; a lasting refusal ends it and the re-create reports.
-        this.logger.debug(
-          mask(
-            `DynamoDB table ${logicalId}: name-release check failed: ${describeAwsFailure(error).detail}`
-          )
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, tableNameReleaseWait.intervalMs));
-    }
-    this.logger.debug(
-      mask(`DynamoDB table ${logicalId} (${physicalId}) still held its name after the wait`)
-    );
-  }
-
   async delete(
     logicalId: string,
     physicalId: string,

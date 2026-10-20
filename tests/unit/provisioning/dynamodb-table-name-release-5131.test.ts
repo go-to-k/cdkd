@@ -67,6 +67,17 @@ describe('DynamoDBTableProvider.waitForNameReleased (go-to-k/cdkd#5131)', () => 
     expect(describes()).toBe(2);
   });
 
+  it('stops at once on a refusal that will not change (access denied)', async () => {
+    const denied = Object.assign(new Error('not authorized to perform dynamodb:DescribeTable'), {
+      name: 'AccessDeniedException',
+    });
+    mockSend.mockRejectedValue(denied);
+    await new DynamoDBTableProvider().waitForNameReleased('Orders', NAME, TYPE, {
+      isInterrupted: () => false,
+    });
+    expect(describes()).toBe(1);
+  });
+
   it('is bounded: a name never released ends the wait without throwing', async () => {
     mockSend.mockResolvedValue(deleting());
     await expect(
