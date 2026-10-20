@@ -1279,16 +1279,36 @@ describe('ApiGatewayV2Provider update() removal semantics (#1160, #5004)', () =>
     const { IntegrationSubtype: _dropped, ...withoutSubtype } = SERVICE_INTEGRATION;
     const warn = vi.mocked(getLogger().child('ApiGatewayV2Provider').warn);
     warn.mockClear();
-    await provider.update(
+    const replay = { removedProperties: new Set(['IntegrationSubtype']), replayingState: true };
+    const result = await provider.update(
       'IntLogical',
       'int-1',
       'AWS::ApiGatewayV2::Integration',
       { ...withoutSubtype, Description: 'restored' },
       { ...SERVICE_INTEGRATION, Description: 'failed-deploy' },
-      { removedProperties: new Set(['IntegrationSubtype']), replayingState: true }
+      replay
     );
     expect(updateIntegrationInput()!['IntegrationSubtype']).toBe('EventBridge-PutEvents');
     expect(warn.mock.calls.some((c) => String(c[0]).includes('keeps the integration'))).toBe(true);
+    // The kept subtype is RECORDED, so the next deploy's previous side still
+    // carries it (a later update without it would be refused by AWS).
+    expect(result.effectiveProperties).toEqual({
+      ...withoutSubtype,
+      Description: 'restored',
+      IntegrationSubtype: 'EventBridge-PutEvents',
+    });
+    // ...also when the replay has nothing else to send.
+    mockSend.mockClear();
+    const quiet = await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      withoutSubtype,
+      SERVICE_INTEGRATION,
+      replay
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(quiet.effectiveProperties).toEqual(SERVICE_INTEGRATION);
   });
 
   it('Integration: a Description-only change on a service integration re-sends the subtype WITH the full RequestParameters', async () => {

@@ -2572,6 +2572,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         ? context.removedProperties.has('IntegrationSubtype')
         : previousProperties['IntegrationSubtype'] != null &&
           properties['IntegrationSubtype'] == null;
+    // Set when a rollback replay keeps a subtype its state record omits: what
+    // stays live is recorded, or the next deploy's previous side loses it and
+    // a later update would send no subtype (AWS refuses that).
+    let effectiveProperties: Record<string, unknown> | undefined;
     if (subtypeRemoved && context?.replayingState !== true) {
       if (properties['IntegrationUri'] == null) {
         throw markNonRetryable(
@@ -2589,6 +2593,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         properties['IntegrationSubtype'] ?? previousProperties['IntegrationSubtype'];
       if (liveSubtype !== undefined) input.IntegrationSubtype = liveSubtype as string;
       if (subtypeRemoved && liveSubtype !== undefined) {
+        effectiveProperties = { ...properties, IntegrationSubtype: liveSubtype };
         log.warn(
           safeMsg`${logicalId} (${resourceType}): the state being restored does not declare IntegrationSubtype; the rollback keeps the integration's current subtype, because AWS refuses a service integration without it.`
         );
@@ -2659,14 +2664,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       log.debug(
         `No mutable Integration fields changed for ${logicalId}; skipping UpdateIntegration`
       );
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(effectiveProperties && { effectiveProperties }),
+      };
     }
 
     log.debug(`Updating API Gateway V2 Integration ${logicalId}: ${physicalId}`);
 
     try {
       await this.getClient().send(new UpdateIntegrationCommand(input));
-      return { physicalId, wasReplaced: false };
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(effectiveProperties && { effectiveProperties }),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
