@@ -418,6 +418,14 @@ export class DeployEngine {
    */
   /** @internal */
   interruptCause: InterruptCause | null = null;
+  /**
+   * Set by the SIGINT handler whatever `interruptCause` already holds: a
+   * sibling's failure claims the cause first, and a Ctrl-C after it must still
+   * stop the work only the user may stop (a re-create whose old resource is
+   * gone, go-to-k/cdkd#5118).
+   */
+  /** @internal */
+  userInterrupted = false;
 
   /**
    * The journal-key version purge a deploy starts when it finds no rollback
@@ -837,6 +845,7 @@ export class DeployEngine {
       deployStateResources: () => this.deployStateResources,
       interrupted: () => this.interrupted,
       interruptCause: () => this.interruptCause,
+      userInterrupted: () => this.userInterrupted,
       withRetry: (...args) => this.withRetry(...args),
       maskingRetryLoggerFor: (...args) => this.maskingRetryLoggerFor(...args),
       inlinePolicyClaimedFor: (...args) => this.inlinePolicyClaimedFor(...args),
@@ -1656,7 +1665,7 @@ export class DeployEngine {
     initialDelayMs?: number,
     provider?: ResourceProvider,
     /**
-     * go-to-k/cdkd#5111: only the user's interrupt stops this retry, never a
+     * go-to-k/cdkd#5118: only the user's interrupt stops this retry, never a
      * sibling's failure -- set by a re-create whose old resource is already
      * deleted, where an abort leaves neither copy.
      */
@@ -1670,9 +1679,9 @@ export class DeployEngine {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),
       logger: this.maskingRetryLogger(logicalId),
-      isInterrupted: () =>
-        this.interrupted && (interruptOnlyByUser !== true || this.interruptCause === 'user'),
-      onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
+      isInterrupted: () => (interruptOnlyByUser === true ? this.userInterrupted : this.interrupted),
+      onInterrupted: () =>
+        new InterruptedError(interruptOnlyByUser === true ? 'user' : (this.interruptCause ?? 'user')),
     });
   }
 

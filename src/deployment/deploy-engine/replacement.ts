@@ -226,6 +226,7 @@ export interface ReplacementDeps {
   deployStateResources: () => DeployEngine['deployStateResources'];
   interrupted: () => DeployEngine['interrupted'];
   interruptCause: () => DeployEngine['interruptCause'];
+  userInterrupted: () => DeployEngine['userInterrupted'];
   withRetry: DeployEngine['withRetry'];
   maskingRetryLoggerFor: DeployEngine['maskingRetryLoggerFor'];
   inlinePolicyClaimedFor: DeployEngine['inlinePolicyClaimedFor'];
@@ -520,8 +521,8 @@ export async function replaceDeleteFirstAndRecreate(
         // The old resource is already deleted: only the user's interrupt
         // stops this re-create. A sibling's failure (which sets the same
         // flag) left the stack with neither copy (generated-name-lifecycle A5).
-        isInterrupted: () => deps.interrupted() && deps.interruptCause() === 'user',
-        onInterrupted: () => new InterruptedError(deps.interruptCause() ?? 'user'),
+        isInterrupted: () => deps.userInterrupted(),
+        onInterrupted: () => new InterruptedError('user'),
         isRetryable: isRecreateRetryableError,
       }
     );

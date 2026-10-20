@@ -610,8 +610,8 @@ export async function updateByReplacement(
             logger: engine.maskingRetryLoggerFor(updateSecrets),
             // The old resource is already deleted: only the user's interrupt
             // stops this re-create, never a sibling's failure.
-            isInterrupted: () => engine.interrupted && engine.interruptCause === 'user',
-            onInterrupted: () => new InterruptedError(engine.interruptCause ?? 'user'),
+            isInterrupted: () => engine.userInterrupted,
+            onInterrupted: () => new InterruptedError('user'),
             isRetryable: isRecreateRetryableError,
           }
         )
@@ -685,7 +685,10 @@ export async function updateByReplacement(
             logicalId,
             undefined,
             undefined,
-            replaceProvider
+            replaceProvider,
+            // Went with its parent: the old copy is gone, so only the user's
+            // interrupt stops this re-create (go-to-k/cdkd#5118).
+            lostWithParent !== undefined
           )
       );
     } catch (createError) {

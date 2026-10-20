@@ -891,7 +891,11 @@ export async function updateInPlace(
                       logicalId,
                       undefined,
                       undefined,
-                      replProvider
+                      replProvider,
+                      // Delete-first: the old copy is gone unless Retain kept
+                      // it, so only the user's interrupt stops this re-create
+                      // (go-to-k/cdkd#5118).
+                      !retainOldOnReplace
                     )
                 );
         } catch (createError) {

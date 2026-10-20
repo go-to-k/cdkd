@@ -448,4 +448,51 @@ describe('DeployEngine - a child stored inside a parent recreated under the same
     expect(deleted).toHaveLength(1);
     expect(deleted[0]![1]).toBe(PERMISSION_ID);
   });
+
+  // go-to-k/cdkd#5118: once the old copy is gone only the user's interrupt
+  // stops a re-create. A sibling's failure claims `interruptCause` first, as
+  // `execute.ts` does (`??=`).
+  function siblingFails(engine: DeployEngine): void {
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    fields.interrupted = true;
+    fields.interruptCause ??= 'sibling-failure';
+  }
+  const throttle = (): Error =>
+    Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+
+  it("the lost child's re-create is not aborted by a sibling's failure (review S2)", async () => {
+    const engine = makeEngine();
+    let attempts = 0;
+    sdk.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Perm') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) {
+        siblingFails(engine);
+        return Promise.reject(throttle());
+      }
+      return Promise.resolve({ physicalId: 'Perm-new', attributes: {} });
+    });
+    await engine.deploy(STACK, template()).catch(() => undefined);
+    expect(attempts).toBe(2);
+  }, 30_000);
+
+  it('a Ctrl-C after a sibling has failed stops the delete-first re-create (review S1, the real SIGINT handler)', async () => {
+    const engine = makeEngine();
+    const before = new Set(process.listeners('SIGINT'));
+    let attempts = 0;
+    cc.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Fn') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) siblingFails(engine);
+      else if (attempts === 2) {
+        const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
+        expect(registered, 'deploy() registered no SIGINT listener').toHaveLength(1);
+        (registered[0] as () => void)();
+      } else return Promise.resolve({ physicalId: 'my-fn', attributes: {} });
+      // The late name release of the just-deleted function.
+      return Promise.reject(new Error('Function already exists: my-fn'));
+    });
+    await expect(engine.deploy(STACK, template())).rejects.toThrow();
+    expect(attempts).toBe(2);
+  }, 30_000);
 });

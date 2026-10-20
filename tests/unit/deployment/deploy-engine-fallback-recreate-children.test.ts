@@ -431,4 +431,26 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     const warned = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warned.some((line) => line.includes('Perm') && line.includes('record is dropped'))).toBe(false);
   });
+
+  // go-to-k/cdkd#5118 (review S2): the fallback deleted the function first, so
+  // only the user's interrupt stops its re-create -- a sibling's failure, which
+  // claims the engine's interrupt flag, must not leave neither copy.
+  it("the fallback's delete-first re-create is not aborted by a sibling's failure", async () => {
+    const engine = makeEngine();
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    let attempts = 0;
+    sdk.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Fn') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) {
+        fields.interrupted = true;
+        fields.interruptCause ??= 'sibling-failure';
+        return Promise.reject(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+      }
+      return Promise.resolve({ physicalId: 'my-fn', attributes: {} });
+    });
+    await engine.deploy(STACK, changedTemplate()).catch(() => undefined);
+    expect(callsFor(sdk.delete, 'Fn')).toHaveLength(1);
+    expect(attempts).toBe(2);
+  }, 30_000);
 });

@@ -155,6 +155,7 @@ export async function doDeployWithPrefetch(
   // lock through the normal path.
   engine.interrupted = false;
   engine.interruptCause = null;
+  engine.userInterrupted = false;
   const sigintHandler = () => {
     // Route the interrupt notice through the live renderer so it does not
     // collide with the in-flight task display.
@@ -165,6 +166,8 @@ export async function doDeployWithPrefetch(
     });
     engine.interrupted = true;
     engine.interruptCause ??= 'user';
+    // Unconditional: a sibling's failure may already hold the cause.
+    engine.userInterrupted = true;
   };
   process.on('SIGINT', sigintHandler);
 

@@ -116,13 +116,83 @@ describe('a delete-first re-create is not aborted by a sibling failure (A5)', ()
 
   it("the user's interrupt still stops it", async () => {
     vi.mocked(provider.create).mockImplementation(async () => {
+      // What the SIGINT handler sets (the test below fires the real one).
       engine.interrupted = true;
       engine.interruptCause = 'user';
+      engine.userInterrupted = true;
       throw lateNameRelease();
     });
 
     await expect(recreate()).rejects.toThrow();
     expect(provider.create).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  // go-to-k/cdkd#5118 review S1: a sibling's failure claims `interruptCause`
+  // first (`??=`), so a Ctrl-C that follows leaves the cause at
+  // `sibling-failure`. The SIGINT listener `deploy()` itself registers is
+  // fired here -- found by diffing the listener list, held by a lock acquire
+  // that never settles -- so the handler-to-retry link is what is proven.
+  // The second attempt's error picks the loop that must see the interrupt: a
+  // late name release reaches the outer re-create loop (`replacement.ts`), a
+  // throttle the engine's inner transient retry (`DeployEngine.withRetry`).
+  it.each([
+    ['the outer re-create loop (a late name release)', lateNameRelease],
+    [
+      'the inner transient retry (a throttle)',
+      () => Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }),
+    ],
+  ] as const)('a Ctrl-C after a sibling has failed still stops %s (the real SIGINT handler)', async (_label, secondError) => {
+    let endAcquire: (error: Error) => void = () => undefined;
+    const lockManager = {
+      acquireLockWithRetry: vi.fn(
+        () => new Promise<boolean>((_resolve, reject) => (endAcquire = reject))
+      ),
+      releaseLock: vi.fn(),
+    };
+    engine = new DeployEngine(
+      {} as never,
+      lockManager as never,
+      {} as never,
+      {} as never,
+      { getProviderFor: vi.fn() } as never,
+      { concurrency: 2, forceStatefulRecreation: true, replace: true } as never,
+      'us-east-1'
+    );
+    const before = new Set(process.listeners('SIGINT'));
+    const deploying = engine.deploy('Stack', { Resources: {} } as never).catch(() => undefined);
+    let registered: Array<(...args: unknown[]) => void> = [];
+    for (let i = 0; i < 50 && registered.length === 0; i++) {
+      await new Promise((r) => setImmediate(r));
+      registered = process.listeners('SIGINT').filter((l) => !before.has(l)) as typeof registered;
+    }
+    expect(registered, 'deploy() registered no SIGINT listener').toHaveLength(1);
+    try {
+      let attempts = 0;
+      vi.mocked(provider.create).mockImplementation(async () => {
+        attempts++;
+        if (attempts === 1) {
+          // As `execute.ts` does on a sibling's failure.
+          engine.interrupted = true;
+          engine.interruptCause ??= 'sibling-failure';
+        } else if (attempts === 2) {
+          registered[0]!();
+          expect(engine.interruptCause).toBe('sibling-failure');
+          throw secondError();
+        } else {
+          tableExists = true;
+          return { physicalId: NAME, attributes: {} };
+        }
+        throw lateNameRelease();
+      });
+
+      await expect(recreate()).rejects.toThrow();
+      expect(attempts).toBe(2);
+      expect(tableExists).toBe(false);
+    } finally {
+      endAcquire(new Error('test over'));
+      await deploying;
+    }
+    expect(process.listeners('SIGINT').filter((l) => !before.has(l))).toHaveLength(0);
   }, 20_000);
 
   it('the inner transient retry does not abort on a sibling failure either (a throttle)', async () => {
