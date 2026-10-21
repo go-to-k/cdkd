@@ -20,6 +20,8 @@ import {
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -38,6 +40,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -177,6 +180,36 @@ export class CloudTrailProvider implements ResourceProvider {
   private logger = getLogger().child('CloudTrailProvider');
 
   /**
+   * The failure wrap the create / update / delete catches build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision});
+   * a failure after `CreateTrail` returned is marked auxiliary on the `cause`,
+   * which the collision anchor still reads. A cdkd-authored or transport error,
+   * or a non-`Error` throw, keeps its text; the deploy engine masks a thrown
+   * message. The delete checks `TrailNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    const m = mask ?? ((text: string) => text);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
+  /**
    * Issue #1160: the CFn default a property REMOVED from the template is
    * reset to — the Modify/Update API keeps an absent field's live value.
    */
@@ -252,7 +285,8 @@ export class CloudTrailProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudTrail Trail ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -369,12 +403,17 @@ export class CloudTrailProvider implements ResourceProvider {
     } catch (error) {
       if (trailCreated) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create CloudTrail Trail ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CloudTrail Trail ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the trail is live with no state record; name it for
       // the failed-CREATE journal once CreateTrail has returned its ARN.
@@ -736,12 +775,17 @@ export class CloudTrailProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CloudTrail Trail ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CloudTrail Trail ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -788,12 +832,17 @@ export class CloudTrailProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete CloudTrail Trail ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CloudTrail Trail ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }
