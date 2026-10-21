@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { DeploymentApprovalRequest } from '../../../src/deployment/deploy-engine/options.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isSoftAbort } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -220,6 +221,8 @@ describe('DeployEngine --require-approval', () => {
         (e: unknown) => e
       );
     expect(err).toMatchObject({ code: 'DEPLOY_NOT_APPROVED' });
+    // go-to-k/cdkd#5136: printed as a soft abort, not a red failure.
+    expect(isSoftAbort(err)).toBe(true);
     expect((err as Error).message).toBe(
       'Deployment of stack MyStack was not approved (--require-approval=destructive). Nothing was changed.'
     );
@@ -338,6 +341,8 @@ describe('DeployEngine --require-approval', () => {
         outputsOnly: true,
       });
       expect(err).toMatchObject({ code: 'DEPLOY_NOT_APPROVED' });
+      // go-to-k/cdkd#5136: printed as a soft abort, not a red failure.
+      expect(isSoftAbort(err)).toBe(true);
       // A retried decline would ask again.
       expect(isMarkedNonRetryable(err)).toBe(true);
       expect(mockStateBackend.saveState).not.toHaveBeenCalled();

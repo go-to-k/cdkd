@@ -1,5 +1,7 @@
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { safeMsg } from '../utils/display-safe.js';
+import { DeploymentNotApprovedError, isSoftAbort } from '../utils/error-handler.js';
 
 /**
  * Node types in the work graph
@@ -112,7 +114,10 @@ export class WorkGraph {
               // `.detail`, not `String(error)`: this chain is never awaited, so a
               // value whose stringification throws, here or in the summary below,
               // became an unhandled rejection that exits the process (#3361).
-              this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
+              // go-to-k/cdkd#5136: a declined prompt is not a failure to report
+              // twice; the summary below prints it once, softly.
+              if (isSoftAbort(error)) this.logger.debug(safeMsg`Not approved: ${node.id}`);
+              else this.logger.error(`Failed: ${node.id}: ${describeAwsFailure(error).detail}`);
             })
             .finally(() => {
               active[node.type]--;
@@ -140,6 +145,21 @@ export class WorkGraph {
             const skippedCount = [...this.nodes.values()].filter(
               (n) => n.state === 'skipped'
             ).length;
+            // go-to-k/cdkd#5136: only declined prompts, as the AWS CDK CLI
+            // reports them: no failure framing, still a rejection (exit 1).
+            // A decline beside a genuine failure keeps the failure report.
+            if (errors.every((e) => isSoftAbort(e.error))) {
+              const lines = errors.map((e) => (e.error as Error).message);
+              if (skippedCount > 0) {
+                lines.push(`${skippedCount} node(s) depending on a declined stack were skipped.`);
+              }
+              reject(
+                errors.length === 1 && skippedCount === 0
+                  ? errors[0]!.error
+                  : new DeploymentNotApprovedError(lines.join('\n'))
+              );
+              return;
+            }
             const msg = errors
               .map((e) => `  - ${e.nodeId}: ${describeAwsFailure(e.error).detail}`)
               .join('\n');

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import { AWS_MESSAGE_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import {
   CdkdError,
+  DeploymentNotApprovedError,
   handleError,
+  isSoftAbort,
   MacroExpansionError,
   normalizeAwsError,
   PartialFailureError,
@@ -15,6 +17,7 @@ import {
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
+import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 /**
  * Build the AWS SDK v3 synthetic Unknown error shape that this helper is
@@ -240,6 +243,35 @@ describe('PartialFailureError + handleError exit code mapping', () => {
 
     expect(() => handleError(err)).toThrow('process.exit-mock');
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('handleError prints a declined prompt as a warning, without the error name, and exits 1', () => {
+    // go-to-k/cdkd#5136: the AWS CDK CLI's soft `AbortError` print.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const declined = new DeploymentNotApprovedError('Deployment of stack S was not approved.');
+
+    expect(() => handleError(declined)).toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Deployment of stack S was not approved.'
+    );
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'DeploymentNotApprovedError'
+    );
+    expect(error).not.toHaveBeenCalled();
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it('isSoftAbort survives maskSecretsInError and is false for a plain CdkdError', () => {
+    const declined = new DeploymentNotApprovedError('Deployment of stack s3cr3t-stack was not approved.');
+    const masked = maskSecretsInError(declined, new Map(), (t) => t.replace('s3cr3t-stack', '***'));
+    expect(masked).not.toBe(declined);
+    expect(masked.message).not.toContain('s3cr3t-stack');
+    expect(isSoftAbort(masked)).toBe(true);
+    expect(isSoftAbort(new CdkdError('x', 'DEPLOY_NOT_APPROVED'))).toBe(false);
+    expect(isSoftAbort('declined')).toBe(false);
   });
 
   it('handleError exits with code 1 for any other error type (regression guard)', () => {

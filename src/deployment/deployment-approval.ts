@@ -3,7 +3,7 @@ import { diffSecurity } from '../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange, ResourceState } from '../types/state.js';
 import { safeMsg } from '../utils/display-safe.js';
-import { CdkdError } from '../utils/error-handler.js';
+import { CdkdError, DeploymentNotApprovedError } from '../utils/error-handler.js';
 import type { DeployEngineOptions } from './deploy-engine/options.js';
 import { enclosingDeadlineExpired, whileEnclosingDeadlinesPaused } from './resource-deadline.js';
 import { markNonRetryable } from './retryable-errors.js';
@@ -116,9 +116,8 @@ export async function requireDeploymentApproval(args: {
   // messages carry a template-chosen stack name.
   if (!approved) {
     throw markNonRetryable(
-      new CdkdError(
-        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=${level}). Nothing was changed.`,
-        'DEPLOY_NOT_APPROVED'
+      new DeploymentNotApprovedError(
+        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=${level}). Nothing was changed.`
       )
     );
   }
@@ -264,9 +263,8 @@ export async function requireOutputsOnlyApproval(args: {
   }
   if (!approved) {
     throw markNonRetryable(
-      new CdkdError(
-        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=any-change). Nothing was changed.`,
-        'DEPLOY_NOT_APPROVED'
+      new DeploymentNotApprovedError(
+        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=any-change). Nothing was changed.`
       )
     );
   }
