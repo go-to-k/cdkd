@@ -11,8 +11,9 @@
 # until the stream is gone before delete() returns.
 #
 # Phases:
-#   1. Deploy a named Kinesis stream + a named Firehose delivery stream (S3
-#      destination). Assert both are ACTIVE on AWS.
+#   1. Deploy a named Kinesis stream + a named Firehose delivery stream
+#      (ExtendedS3 destination). Assert both are ACTIVE on AWS, and that the
+#      create applied FileExtension and CustomTimeZone (issue #1160).
 #   2. Destroy. Record whether each stream is ALREADY gone the moment destroy
 #      returns (the fix's contract), then IMMEDIATELY redeploy the same stack
 #      -- the arm that failed before the fix. Fail if the redeploy failed or if
@@ -21,6 +22,10 @@
 #      them under the same names).
 #   3b. Redeploy with a changed delivery stream tag: an in-place update, the
 #      stream's CreateTimestamp unchanged (issue #2613).
+#   3c. Redeploy with FileExtension changed and Prefix / ErrorOutputPrefix /
+#      CustomTimeZone removed from the template (issue #1160): the change
+#      applies in place, and the removed sub-fields stay live, as a measured
+#      CloudFormation update leaves them.
 #   4. Destroy, assert both streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
@@ -161,6 +166,18 @@ assert_eq "Kinesis status after Phase 1" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after Phase 1" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE"
 
+# The ExtendedS3 sub-fields the create used to drop (issue #1160). One read,
+# then one field per assertion, so a failed `aws` call trips `set -e`.
+firehose_dest() { # usage: firehose_dest <ExtendedS3DestinationDescription field>
+  aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.Destinations[0].ExtendedS3DestinationDescription.$1" --output text
+}
+P1_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension after Phase 1 (issue #1160: the create dropped it)" ".json" "${P1_EXT}"
+P1_TZ="$(firehose_dest CustomTimeZone)"
+assert_eq "Firehose CustomTimeZone after Phase 1 (issue #1160: the create dropped it)" "Asia/Tokyo" "${P1_TZ}"
+echo "    FileExtension and CustomTimeZone applied at create"
+
 # --- Phase 2: destroy, then IMMEDIATELY redeploy -------------------------
 echo "==> Phase 2: destroy"
 T0="$(date +%s)"
@@ -229,6 +246,27 @@ if [ -z "${POST_CREATED}" ] || [ "${POST_CREATED}" = None ]; then
 fi
 assert_eq "Firehose CreateTimestamp after Phase 3b (issue #2613: the tag change must update the stream in place, not replace it)" "${PRE_CREATED}" "${POST_CREATED}"
 echo "    delivery stream tag updated in place, CreateTimestamp unchanged (issue #2613)"
+
+# --- Phase 3c: a destination update with removed sub-fields (issue #1160) --
+# FileExtension changes, so the redeploy reaches UpdateDestination; Prefix,
+# ErrorOutputPrefix and CustomTimeZone leave the template. A live CloudFormation
+# A/B kept every removed destination sub-field, so cdkd must too.
+P3C_PRE_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension before Phase 3c" ".json" "${P3C_PRE_EXT}"
+echo "==> Phase 3c: redeploy with FileExtension changed and Prefix / ErrorOutputPrefix / CustomTimeZone removed"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3C_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension after Phase 3c (issue #1160: the update dropped it)" ".ndjson" "${P3C_EXT}"
+P3C_PREFIX="$(firehose_dest Prefix)"
+assert_eq "Firehose Prefix after Phase 3c (removed from the template; CloudFormation keeps it)" "data/" "${P3C_PREFIX}"
+P3C_ERR="$(firehose_dest ErrorOutputPrefix)"
+assert_eq "Firehose ErrorOutputPrefix after Phase 3c (removed from the template; CloudFormation keeps it)" "errors/" "${P3C_ERR}"
+P3C_TZ="$(firehose_dest CustomTimeZone)"
+assert_eq "Firehose CustomTimeZone after Phase 3c (removed from the template; CloudFormation keeps it)" "Asia/Tokyo" "${P3C_TZ}"
+P3C_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3c (the destination change must update the stream in place)" "${PRE_CREATED}" "${P3C_CREATED}"
+echo "    FileExtension updated in place; the removed sub-fields stayed live (issue #1160)"
 
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"

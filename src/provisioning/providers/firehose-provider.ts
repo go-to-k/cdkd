@@ -298,6 +298,9 @@ export class FirehoseProvider implements ResourceProvider {
                 httpConfig['S3Configuration'] as Record<string, unknown>
               )
             : undefined,
+          SecretsManagerConfiguration: httpConfig['SecretsManagerConfiguration'] as
+            | HttpEndpointDestinationConfiguration['SecretsManagerConfiguration']
+            | undefined,
         } as HttpEndpointDestinationConfiguration;
       }
 
@@ -320,6 +323,18 @@ export class FirehoseProvider implements ResourceProvider {
             | undefined,
           ProcessingConfiguration: rsConfig['ProcessingConfiguration'] as
             | RedshiftDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+          RetryOptions: rsConfig['RetryOptions'] as
+            | RedshiftDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: rsConfig['S3BackupMode'] as string | undefined,
+          S3BackupConfiguration: rsConfig['S3BackupConfiguration']
+            ? this.mapS3DestinationConfiguration(
+                rsConfig['S3BackupConfiguration'] as Record<string, unknown>
+              )
+            : undefined,
+          SecretsManagerConfiguration: rsConfig['SecretsManagerConfiguration'] as
+            | RedshiftDestinationConfiguration['SecretsManagerConfiguration']
             | undefined,
         } as RedshiftDestinationConfiguration;
       }
@@ -355,6 +370,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: esConfig['ProcessingConfiguration'] as
             | ElasticsearchDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          VpcConfiguration: esConfig['VpcConfiguration'] as
+            | ElasticsearchDestinationConfiguration['VpcConfiguration']
+            | undefined,
+          DocumentIdOptions: esConfig['DocumentIdOptions'] as
+            | ElasticsearchDestinationConfiguration['DocumentIdOptions']
+            | undefined,
         } as ElasticsearchDestinationConfiguration;
       }
 
@@ -389,6 +410,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: aosConfig['ProcessingConfiguration'] as
             | AmazonopensearchserviceDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          VpcConfiguration: aosConfig['VpcConfiguration'] as
+            | AmazonopensearchserviceDestinationConfiguration['VpcConfiguration']
+            | undefined,
+          DocumentIdOptions: aosConfig['DocumentIdOptions'] as
+            | AmazonopensearchserviceDestinationConfiguration['DocumentIdOptions']
+            | undefined,
         } as AmazonopensearchserviceDestinationConfiguration;
       }
 
@@ -420,6 +447,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: splunkConfig['ProcessingConfiguration'] as
             | SplunkDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          BufferingHints: splunkConfig['BufferingHints'] as
+            | SplunkDestinationConfiguration['BufferingHints']
+            | undefined,
+          SecretsManagerConfiguration: splunkConfig['SecretsManagerConfiguration'] as
+            | SplunkDestinationConfiguration['SecretsManagerConfiguration']
+            | undefined,
         } as SplunkDestinationConfiguration;
       }
 
@@ -449,6 +482,9 @@ export class FirehoseProvider implements ResourceProvider {
             | undefined,
           ProcessingConfiguration: aossConfig['ProcessingConfiguration'] as
             | AmazonOpenSearchServerlessDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+          VpcConfiguration: aossConfig['VpcConfiguration'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['VpcConfiguration']
             | undefined,
         } as AmazonOpenSearchServerlessDestinationConfiguration;
       }
@@ -840,7 +876,8 @@ export class FirehoseProvider implements ResourceProvider {
    * {@link mapExtendedS3ConfigToUpdate} produces the
    * `ExtendedS3DestinationUpdate` payload (CFn property names →
    * SDK camelCase, omitting `Prefix` / `BufferingHints` / etc. when the
-   * source is undefined so an empty diff doesn't clear AWS-side fields).
+   * source is undefined), which keeps a removed sub-field live as
+   * CloudFormation does (#1160).
    */
   private async applyExtendedS3DestinationUpdate(
     logicalId: string,
@@ -1171,6 +1208,22 @@ export class FirehoseProvider implements ResourceProvider {
       ] as ExtendedS3DestinationConfiguration['DataFormatConversionConfiguration'];
     }
 
+    // A dynamic-partitioning Prefix (`!{partitionKeyFromQuery:...}`) is refused
+    // without `DynamicPartitioningConfiguration`, so dropping it fails the create.
+    if (config['DynamicPartitioningConfiguration'] !== undefined) {
+      result.DynamicPartitioningConfiguration = config[
+        'DynamicPartitioningConfiguration'
+      ] as ExtendedS3DestinationConfiguration['DynamicPartitioningConfiguration'];
+    }
+
+    if (config['FileExtension'] !== undefined) {
+      result.FileExtension = config['FileExtension'] as string;
+    }
+
+    if (config['CustomTimeZone'] !== undefined) {
+      result.CustomTimeZone = config['CustomTimeZone'] as string;
+    }
+
     return result;
   }
 
@@ -1181,6 +1234,16 @@ export class FirehoseProvider implements ResourceProvider {
    * to `ExtendedS3DestinationConfiguration` but every field is optional
    * — only the fields present in `config` are forwarded so undefined
    * keys do not clobber AWS-side state.
+   *
+   * Omitting a sub-field REMOVED from the template is CloudFormation
+   * parity, not a gap (#1160): `UpdateDestination` merges, and a live
+   * CloudFormation A/B kept every removed sub-field (`Prefix`,
+   * `ErrorOutputPrefix`, `BufferingHints`, `CompressionFormat`,
+   * `FileExtension`, `CustomTimeZone`, `CloudWatchLoggingOptions`,
+   * `ProcessingConfiguration`, and the nested S3 configuration's fields on
+   * an HttpEndpoint destination) whether or not a sibling change forced the
+   * update. Every destination's reverse-mapper below relies on this; do not
+   * add a reset-on-removal here.
    *
    * `S3BackupConfiguration` is mapped through {@link mapS3ConfigToUpdate}
    * so its own optional fields likewise round-trip cleanly.
@@ -1241,6 +1304,21 @@ export class FirehoseProvider implements ResourceProvider {
       result.DataFormatConversionConfiguration = config[
         'DataFormatConversionConfiguration'
       ] as ExtendedS3DestinationUpdate['DataFormatConversionConfiguration'];
+    }
+    // On a stream with dynamic partitioning enabled, an `UpdateDestination`
+    // that omits this block reads as "disable it" and is refused ("Enabling
+    // or disabling Dynamic Partitioning is not supported"), so it is forwarded
+    // on every update, like the rest of the desired shape.
+    if (config['DynamicPartitioningConfiguration'] !== undefined) {
+      result.DynamicPartitioningConfiguration = config[
+        'DynamicPartitioningConfiguration'
+      ] as ExtendedS3DestinationUpdate['DynamicPartitioningConfiguration'];
+    }
+    if (config['FileExtension'] !== undefined) {
+      result.FileExtension = config['FileExtension'] as string;
+    }
+    if (config['CustomTimeZone'] !== undefined) {
+      result.CustomTimeZone = config['CustomTimeZone'] as string;
     }
     return result;
   }
@@ -2406,6 +2484,9 @@ function mapExtendedS3DescriptionToCfn(desc: Record<string, unknown>): Record<st
     pickDefinedDeep(desc['DataFormatConversionConfiguration']) ?? {};
   out['DynamicPartitioningConfiguration'] =
     pickDefinedDeep(desc['DynamicPartitioningConfiguration']) ?? {};
+  // AWS omits both from the description when they were never set.
+  if (desc['FileExtension'] !== undefined) out['FileExtension'] = desc['FileExtension'];
+  if (desc['CustomTimeZone'] !== undefined) out['CustomTimeZone'] = desc['CustomTimeZone'];
   // S3BackupConfiguration: AWS returns S3BackupDescription (deprecated
   // shape); reverse-map to the modern Configuration shape via the same
   // top-level helper. Field names align since the deprecated shape and

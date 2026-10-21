@@ -520,6 +520,40 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
     });
   });
 
+  it('surfaces FileExtension and CustomTimeZone when set, and omits them when AWS reports none', async () => {
+    const read = async (extra: Record<string, unknown>) => {
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: 'mystream',
+            Destinations: [
+              {
+                ExtendedS3DestinationDescription: {
+                  BucketARN: 'arn:aws:s3:::my-bucket',
+                  ...extra,
+                },
+              },
+            ],
+          },
+        })
+        .mockResolvedValueOnce({ Tags: [] });
+      const result = (await provider.readCurrentState(
+        'mystream',
+        'L',
+        'AWS::KinesisFirehose::DeliveryStream'
+      )) as Record<string, unknown> | undefined;
+      return result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    };
+
+    const set = await read({ FileExtension: '.json', CustomTimeZone: 'Asia/Tokyo' });
+    expect(set['FileExtension']).toBe('.json');
+    expect(set['CustomTimeZone']).toBe('Asia/Tokyo');
+
+    const unset = await read({});
+    expect(unset).not.toHaveProperty('FileExtension');
+    expect(unset).not.toHaveProperty('CustomTimeZone');
+  });
+
   it('surfaces EncryptionConfiguration KMSEncryptionConfig path', async () => {
     mockSend
       .mockResolvedValueOnce({
