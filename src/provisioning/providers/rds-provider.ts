@@ -57,6 +57,48 @@ import {
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+
+/**
+ * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` /
+ * `ModifyDBInstance` carries, or `undefined` to leave the live password alone.
+ * RDS treats ANY supplied password as a master-credential reset, so it is sent
+ * only when the template changed it, as CloudFormation does. A removed
+ * password sends nothing.
+ *
+ * The deploy's in-place update decides from `changedProperties`, which
+ * compares the templates as written: the record holds a secret as its
+ * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
+ * A changed reference, a secret read at a newer version, and a `NoEcho` value
+ * all count as changed there. These types are deliberately NOT in
+ * `CHANGED_PROPERTIES_CONSUMER_TYPES`: RDS never returns the password on a
+ * Describe, so the readback that opt-in buys could not confirm it.
+ *
+ * Without that set (a rollback revert, `drift --revert`, a direct call) the
+ * two bags are compared, and only an equal plain string counts as unchanged:
+ * a recorded token or mask cannot be compared, so it is sent. Compared in
+ * memory only; the value is never logged.
+ */
+function masterUserPasswordToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['MasterUserPassword'];
+  if (desired === undefined || desired === null) return undefined;
+  const changedProperties = context?.changedProperties;
+  if (changedProperties !== undefined) {
+    return changedProperties.has('MasterUserPassword') ? (desired as string) : undefined;
+  }
+  const recorded = previousProperties['MasterUserPassword'];
+  const unchanged =
+    typeof desired === 'string' &&
+    typeof recorded === 'string' &&
+    recorded === desired &&
+    dynamicReferenceTokens(recorded).length === 0 &&
+    !recorded.includes(SECRET_MASK);
+  return unchanged ? undefined : (desired as string);
+}
 
 /**
  * How long a cluster or instance delete waits for the resource to be gone:
@@ -423,7 +465,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -936,7 +979,8 @@ export class RDSProvider implements ResourceProvider {
             1
           ),
           ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
           // #609 security-cluster backfill — all mutable via ModifyDBCluster.
           ...(properties['ManageMasterUserPassword'] !== undefined && {
@@ -1391,7 +1435,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1465,9 +1510,8 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['Port'] !== undefined && {
             DBPortNumber: Number(properties['Port']),
           }),
-          ...(properties['MasterUserPassword'] !== undefined && {
-            MasterUserPassword: properties['MasterUserPassword'] as string,
-          }),
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
           ...(properties['VPCSecurityGroups'] !== undefined && {
             VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
           }),

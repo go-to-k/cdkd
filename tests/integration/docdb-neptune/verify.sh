@@ -31,6 +31,9 @@
 #       AutoMinorVersionUpgrade=false). Step 3c also drops both clusters'
 #       VpcSecurityGroupIds (#1160): Neptune must move to the VPC's default
 #       security group and DocDB must keep `Sg`, as CloudFormation does.
+#       Step 3c leaves the DocDB MasterUserPassword unchanged, so the DocDB
+#       cluster must never read `resetting-master-credentials` from the
+#       deploy's return until it is stable (#5153).
 #   3g. --remove-protection compensation (issue #2204): re-enable
 #       DeletionProtection on both clusters out of band, add one
 #       out-of-band instance to each (DeleteDBCluster then refuses: the
@@ -415,6 +418,9 @@ read_state() {
     --region "${REGION}" \
     --query 'DBClusters[0]' --output json) || return 1
   DOCDB_STATUS=$(echo "${DOCDB_AFTER}" | jq -r '.Status // "null"') || return 1
+  if [ "${DOCDB_STATUS}" = "resetting-master-credentials" ]; then
+    DOCDB_RESET_SEEN="yes"
+  fi
   DOCDB_PROT=$(echo "${DOCDB_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
   DOCDB_RETENTION=$(echo "${DOCDB_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
   DOCDB_MW=$(echo "${DOCDB_AFTER}" | jq -r '.PreferredMaintenanceWindow // "null"') || return 1
@@ -435,6 +441,19 @@ read_state() {
 }
 DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION="" DOCDB_MW=""
 NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM="" NEPTUNE_AMVU="" NEPTUNE_MW="" NEPTUNE_INST_MW=""
+# Issue #5153: step 3c leaves the DocDB cluster's templated MasterUserPassword
+# unchanged, so cdkd must not send it. A sent password resets the master
+# credentials, and the cluster shows `resetting-master-credentials` for a while
+# after the deploy returns. Every read_state below records that status, starting
+# with this short window right after the deploy; the check follows step 3d's
+# stability loop.
+DOCDB_RESET_SEEN=""
+for i in $(seq 1 12); do
+  read_state || exit 1
+  if [ "${i}" -lt 12 ]; then
+    sleep 5
+  fi
+done
 SETTLED=""
 for i in $(seq 1 60); do
   read_state || exit 1
@@ -451,11 +470,10 @@ if [ -z "${SETTLED}" ]; then
   exit 1
 fi
 sleep 30
-# A cluster can leave `available` again right after the first read: DocDB
-# enters `resetting-master-credentials` when an update re-sends the templated
-# MasterUserPassword. So the reads below are taken only once BOTH clusters
-# read `available` on two consecutive polls; the last poll's values are the
-# ones asserted.
+# A cluster can leave `available` again right after the first read (an update
+# that sent a password, which the #5153 check below refuses, is one cause).
+# So the reads below are taken only once BOTH clusters read `available` on two
+# consecutive polls; the last poll's values are the ones asserted.
 STABLE=""
 PREV_AVAILABLE=""
 for i in $(seq 1 60); do
@@ -477,6 +495,11 @@ if [ -z "${STABLE}" ]; then
   echo "[verify] FAIL: clusters did not stay available across two consecutive reads after the removal redeploy (docdb='${DOCDB_STATUS}', neptune='${NEPTUNE_STATUS}')" >&2
   exit 1
 fi
+if [ -n "${DOCDB_RESET_SEEN}" ]; then
+  echo "[verify] FAIL: #5153: the DocDB cluster entered 'resetting-master-credentials' after the step-3c redeploy, which did not change MasterUserPassword: cdkd re-sent the unchanged password (CloudFormation sends only a changed one)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: the DocDB cluster never read 'resetting-master-credentials' after the step-3c redeploy — unchanged MasterUserPassword not re-sent (#5153)"
 # Companion-change guard (#5004): the maintenance window moved tue -> wed in
 # the SAME removal deploy, so these must already read the new value. If a
 # Modify* call was never sent, they still read tue and this fails BEFORE the
