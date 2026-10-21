@@ -102,8 +102,8 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    * the `Inactive` wiring is marked auxiliary on the `cause`, which the
    * collision anchor still reads. A cdkd-authored or transport error keeps the
    * masked pass-through of `wrapMaskedAwsError`, which stamps when the mask
-   * changed the text (issue #4244); a non-`Error` throw keeps its masked text,
-   * unstamped. The delete checks `NoSuchEntityException` by type before it
+   * changed the text (issue #4244); a non-`Error` throw is withheld like an AWS
+   * one, unstamped (it has no chain). The delete checks `NoSuchEntityException` by type before it
    * wraps. No message here carries the `SecretAccessKey`: only the key id.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
@@ -116,12 +116,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(log.mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
-    return markRedactedCause(
-      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    const wrapped = build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**

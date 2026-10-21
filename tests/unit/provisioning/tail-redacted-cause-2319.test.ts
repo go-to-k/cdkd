@@ -74,6 +74,7 @@ import {
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { markReplayFollowedAmbiguous } from '../../../src/provisioning/providers/ambiguous-create.js';
 
 const CALLER_ACCOUNT = '210987654321';
 const CALLER_ROLE = 'cdkd-deploy-role';
@@ -98,7 +99,7 @@ function accessDenied(name: string, action: string): Error {
 function awsError(name: string, message: string, status = 400): Error {
   return Object.assign(new Error(message), {
     name,
-    $fault: 'client',
+    $fault: status >= 500 ? 'server' : 'client',
     $metadata: { httpStatusCode: status },
   });
 }
@@ -458,5 +459,201 @@ describe('IAMAccessKeyProvider (go-to-k/cdkd#2319)', () => {
       'Failed to delete IAM access key Key: cannot resolve the owning user for access key AKIAKEY'
     );
     expect(hasRedactedCause(error)).toBe(false);
+  });
+});
+
+/**
+ * The polarities every wrap shares, per provider: a cdkd-authored error keeps
+ * its text (masked, unstamped), and a non-`Error` throw is withheld like an
+ * AWS failure but unstamped, as it has no cause chain to read.
+ */
+describe.each([
+  {
+    provider: 'ElastiCache',
+    run: () =>
+      new ElastiCacheProvider().delete('Sg', 'sg', 'AWS::ElastiCache::SubnetGroup', SUBNET_GROUP, {
+        maskSecrets,
+      }),
+    prefix: 'Failed to delete CacheSubnetGroup Sg',
+  },
+  {
+    provider: 'CloudTrail',
+    run: () =>
+      new CloudTrailProvider().delete('Trail', TRAIL_ARN, 'AWS::CloudTrail::Trail', TRAIL, {
+        maskSecrets,
+      }),
+    prefix: 'Failed to delete CloudTrail Trail Trail',
+  },
+  {
+    provider: 'CloudFront',
+    run: () =>
+      new CloudFrontDistributionProvider().create('Cdn', 'AWS::CloudFront::Distribution', DISTRIBUTION, {
+        maskSecrets,
+      }),
+    prefix: 'Failed to create CloudFront Distribution Cdn',
+  },
+  {
+    provider: 'AccessKey',
+    run: () =>
+      new IAMAccessKeyProvider().update(
+        'Key',
+        'AKIAKEY',
+        'AWS::IAM::AccessKey',
+        { UserName: 'u', Status: 'Inactive' },
+        { UserName: 'u' },
+        { maskSecrets }
+      ),
+    prefix: 'Failed to update IAM access key Key',
+  },
+])('$provider wrap polarities (go-to-k/cdkd#2319)', ({ run, prefix }) => {
+  it('keeps a cdkd-authored failure text, masked and unstamped', async () => {
+    failAll(new Error(`socket hang up near ${SECRET}`));
+    const error = await thrown(run());
+    expect(error.message).toBe(`${prefix}: socket hang up near ***`);
+    expect(hasRedactedCause(error)).toBe(true); // the mask changed it (#4244)
+    failAll(new Error('socket hang up'));
+    const plain = await thrown(run());
+    expect(plain.message).toBe(`${prefix}: socket hang up`);
+    expect(hasRedactedCause(plain)).toBe(false);
+  });
+
+  it('withholds a non-Error throw, unstamped', async () => {
+    failAll(`raw ${CALLER_ARN}`);
+    const error = await thrown(run());
+    expect(error.message).toBe(`${prefix}: a non-Error value of type string. ${VERBOSE_POINTER}`);
+    expect(hasRedactedCause(error)).toBe(false);
+    expect(debugged()).toContain(`${prefix}: raw ${CALLER_ARN}`);
+  });
+});
+
+describe('collision restatement on the other create wraps (go-to-k/cdkd#2319)', () => {
+  it('ElastiCache CacheCluster', async () => {
+    failAll(awsError('CacheClusterAlreadyExistsFault', 'Cache cluster cc already exists.'));
+    const error = await thrown(
+      new ElastiCacheProvider().create('Cc', 'AWS::ElastiCache::CacheCluster', CACHE_CLUSTER)
+    );
+    expect(error.message).toBe(
+      `Failed to create CacheCluster Cc: CacheClusterAlreadyExistsFault. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+    expect(isNameCollisionErrorFrom(error, 'Cc')).toBe(true);
+  });
+
+  it('CloudFront restates only when AWS said so', async () => {
+    failAll(awsError('CNAMEAlreadyExists', 'One or more of the CNAMEs you provided are already associated with a different resource.', 409));
+    const error = await thrown(
+      new CloudFrontDistributionProvider().create('Cdn', 'AWS::CloudFront::Distribution', DISTRIBUTION)
+    );
+    expect(error.message).toBe(
+      `Failed to create CloudFront Distribution Cdn: CNAMEAlreadyExists. ${VERBOSE_POINTER}`
+    );
+  });
+});
+
+describe('IAMAccessKeyProvider default-verbosity warnings (go-to-k/cdkd#2319)', () => {
+  const create = (properties: Record<string, unknown> = { UserName: 'u' }) =>
+    new IAMAccessKeyProvider().create('Key', 'AWS::IAM::AccessKey', properties, { maskSecrets });
+
+  function expectWarnRedacted(lead: string, tail: string): void {
+    expect(warned()).toContain(`${lead}: AccessDenied. ${VERBOSE_POINTER} ${tail}`);
+    for (const leak of [CALLER_ACCOUNT, CALLER_ROLE, CALLER_SESSION, SECRET]) {
+      expect(warned()).not.toContain(leak);
+    }
+    expect(debugged()).toContain(`${lead}: User: ${CALLER_ARN}`);
+    expect(debugged()).not.toContain(SECRET);
+  }
+
+  it('a refused cleanup after a partial CreateAccessKey response', async () => {
+    const denied = accessDenied('AccessDenied', 'iam:DeleteAccessKey');
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      switch (command.constructor.name) {
+        case 'ListAccessKeysCommand':
+          return Promise.resolve({ AccessKeyMetadata: [] });
+        case 'CreateAccessKeyCommand':
+          return Promise.resolve({ AccessKey: { AccessKeyId: 'AKIAPART' } });
+        default:
+          return Promise.reject(denied);
+      }
+    });
+    await thrown(create());
+    expectWarnRedacted(
+      'Failed to clean up IAM access key Key (AKIAPART) minted by a partial CreateAccessKey response',
+      'Manual deletion may be required:'
+    );
+  });
+
+  it('a refused delete of the orphan a failed attempt left', async () => {
+    const denied = accessDenied('AccessDenied', 'iam:DeleteAccessKey');
+    let lists = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      switch (command.constructor.name) {
+        case 'ListAccessKeysCommand':
+          lists += 1;
+          return Promise.resolve({
+            AccessKeyMetadata:
+              lists === 1 ? [] : [{ AccessKeyId: 'AKIAORPHAN', CreateDate: new Date() }],
+          });
+        case 'CreateAccessKeyCommand':
+          return Promise.reject(awsError('ServiceFailure', 'response lost', 500));
+        default:
+          return Promise.reject(denied);
+      }
+    });
+    await thrown(create());
+    expect(lists).toBe(2); // premise: the reconcile ran
+    expectWarnRedacted(
+      'Failed to delete the orphaned IAM access key AKIAORPHAN for user u',
+      'Manual deletion may be required:'
+    );
+  });
+
+  it('a failed reconcile after a replayed CreateAccessKey', async () => {
+    const denied = accessDenied('AccessDenied', 'iam:ListAccessKeys');
+    const provider = new IAMAccessKeyProvider();
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      switch (command.constructor.name) {
+        case 'ListAccessKeysCommand':
+          return Promise.resolve({ AccessKeyMetadata: [] });
+        case 'CreateAccessKeyCommand': {
+          const output = {
+            AccessKey: { AccessKeyId: 'AKIAREPLAY', SecretAccessKey: 'replayed-secret-value' },
+            $metadata: { attempts: 2 },
+          };
+          markReplayFollowedAmbiguous(output);
+          return Promise.resolve(output);
+        }
+        default:
+          return Promise.resolve({});
+      }
+    });
+    // Its own reads catch their failures, so the reconcile throws only from
+    // outside them; stand that in directly.
+    vi.spyOn(
+      provider as unknown as { deleteOrphanFromFailedAttempt: () => Promise<never> },
+      'deleteOrphanFromFailedAttempt'
+    ).mockRejectedValue(denied);
+    const result = await provider.create('Key', 'AWS::IAM::AccessKey', { UserName: 'u' }, { maskSecrets });
+    expect(result.physicalId).toBe('AKIAREPLAY');
+    expectWarnRedacted(
+      'Could not check user u for an access key left by the replayed CreateAccessKey for Key',
+      "List the user's keys"
+    );
+    expect(`${warned()}\n${debugged()}`).not.toContain('replayed-secret-value');
+  });
+
+  it('a cdkd-authored cleanup failure keeps its text as one sentence', async () => {
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      switch (command.constructor.name) {
+        case 'ListAccessKeysCommand':
+          return Promise.resolve({ AccessKeyMetadata: [] });
+        case 'CreateAccessKeyCommand':
+          return Promise.resolve({ AccessKey: { AccessKeyId: 'AKIAPART' } });
+        default:
+          return Promise.reject(new Error('socket hang up'));
+      }
+    });
+    await thrown(create());
+    expect(warned()).toContain(
+      'Failed to clean up IAM access key Key (AKIAPART) minted by a partial CreateAccessKey response: socket hang up. Manual deletion may be required:'
+    );
   });
 });

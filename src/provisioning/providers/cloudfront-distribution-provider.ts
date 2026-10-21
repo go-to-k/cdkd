@@ -24,7 +24,9 @@ import {
   markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
@@ -174,8 +176,10 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    * retry classifiers read the withheld text on the `cause` chain. An "already
    * exists" is restated ({@link relayedNameCollision}), exactly when the old
    * message carried it, so the collision classifiers answer as before. A
-   * cdkd-authored or transport error, or a non-`Error` throw, keeps its text;
-   * the deploy engine masks a thrown message. The `DistributionAlreadyExists`
+   * cdkd-authored or transport error keeps its text, masked, stamped only when
+   * the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The
+   * `DistributionAlreadyExists`
    * orphan refusal and the delete's `NoSuchDistribution` check run on the
    * error's type before this wrap.
    *
@@ -187,11 +191,12 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([

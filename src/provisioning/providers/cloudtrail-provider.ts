@@ -20,8 +20,12 @@ import {
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
-import type { MaskerFn } from '../masked-retry-logger.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isRefusedByName, markDeleteStarted } from '../delete-started.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -190,9 +194,10 @@ export class CloudTrailProvider implements ResourceProvider {
    * `markRedactedCause`, so the retry classifiers read the withheld text on the
    * `cause` chain. An "already exists" is restated ({@link relayedNameCollision});
    * a failure after `CreateTrail` returned is marked auxiliary on the `cause`,
-   * which the collision anchor still reads. A cdkd-authored or transport error,
-   * or a non-`Error` throw, keeps its text; the deploy engine masks a thrown
-   * message. The delete checks `TrailNotFoundException` by type before it wraps.
+   * which the collision anchor still reads. A cdkd-authored or transport error
+   * keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like an
+   * AWS one, unstamped (it has no chain). The delete checks `TrailNotFoundException` by type before it wraps.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -202,11 +207,12 @@ export class CloudTrailProvider implements ResourceProvider {
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
