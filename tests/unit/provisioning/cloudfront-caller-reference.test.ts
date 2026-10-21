@@ -110,7 +110,11 @@ describe('CloudFrontDistributionProvider CallerReference (issue #2079)', () => {
 
     await expect(
       provider.create('Cdn', 'AWS::CloudFront::Distribution', PROPERTIES)
-    ).rejects.toThrow(/Internal Server Error/);
+    ).rejects.toMatchObject({
+      // go-to-k/cdkd#2319: the thrown message carries the class; AWS's text
+      // stays on the cause.
+      cause: { message: 'Internal Server Error' },
+    });
     await provider.create('Cdn', 'AWS::CloudFront::Distribution', PROPERTIES);
 
     const references = callerReferences();

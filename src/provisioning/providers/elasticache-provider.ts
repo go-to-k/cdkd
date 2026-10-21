@@ -18,6 +18,12 @@ import {
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -37,6 +43,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -72,6 +79,38 @@ export class ElastiCacheProvider implements ResourceProvider {
   private createClient?: ElastiCacheClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
+
+  /**
+   * The failure wrap every SubnetGroup / CacheCluster create, update and
+   * delete catch builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * `maskSecrets` (`mask`), and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}). A cdkd-authored or
+   * transport error keeps its text, masked, stamped only when the mask changed
+   * it (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The deletes check `*NotFoundFault` by name before
+   * they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -168,13 +207,15 @@ export class ElastiCacheProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
-        return this.createSubnetGroup(logicalId, resourceType, properties);
+        return this.createSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::ElastiCache::CacheCluster':
-        return this.createCacheCluster(logicalId, resourceType, properties);
+        return this.createCacheCluster(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -190,8 +231,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
         return this.updateSubnetGroup(
@@ -199,7 +241,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          mask
         );
       case 'AWS::ElastiCache::CacheCluster':
         return this.updateCacheCluster(
@@ -207,7 +250,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          mask
         );
       default:
         throw new ProvisioningError(
@@ -246,7 +290,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async createSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: `Tags` was declared handled and never sent; a
@@ -285,12 +330,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        cacheSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            cacheSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -300,7 +350,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -371,12 +422,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       // cdkd's own refusal (the missing-ARN one above) passes through as it is.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -410,12 +466,17 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -425,7 +486,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async createCacheCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -515,12 +577,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              cacheClusterId,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create CacheCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  cacheClusterId,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateCacheCluster returned (another owner's name).
@@ -536,7 +603,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -670,12 +738,17 @@ export class ElastiCacheProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CacheCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -746,12 +819,17 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CacheCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

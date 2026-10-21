@@ -20,7 +20,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
@@ -157,6 +163,41 @@ const CACHE_BEHAVIOR_QUANTITY_FIELDS = [
 export class CloudFrontDistributionProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
   private logger = getLogger().child('CloudFrontDistributionProvider');
+
+  /**
+   * The failure wrap the create / update / delete catches and the update's
+   * tag-diff catch build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * `maskSecrets` (`mask`), and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), exactly when the old
+   * message carried it, so the collision classifiers answer as before. A
+   * cdkd-authored or transport error keeps its text, masked, stamped only when
+   * the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The
+   * `DistributionAlreadyExists`
+   * orphan refusal and the delete's `NoSuchDistribution` check run on the
+   * error's type before this wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: SecretMasker | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::CloudFront::Distribution', new Set(['DistributionConfig', 'Tags'])],
@@ -342,12 +383,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -504,7 +550,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         properties['Tags'],
         physicalId,
         logicalId,
-        resourceType
+        resourceType,
+        context?.maskSecrets
       );
 
       // UpdateDistribution is fire-and-forget by default for the same reason
@@ -528,12 +575,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // ProvisioningError replaces its precise message with this outer one.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -665,12 +717,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1648,7 +1705,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     newTags: unknown,
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: SecretMasker
   ): Promise<void> {
     const { removed, upserts } = this.computeTagDiff(
       previousTags,
@@ -1692,14 +1750,20 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
     } catch (err) {
       const cause = err instanceof Error ? err : undefined;
-      throw new ProvisioningError(
-        `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
-          `upserts=${upserts.length}): ${describeAwsFailure(err).detail}. ` +
-          `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // A redacted summary already ends its sentence (the `--verbose` pointer).
+      throw this.wrapCaughtError(
+        mask,
+        err,
+        (text) =>
+          new ProvisioningError(
+            `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
+              `upserts=${upserts.length}): ${text}${text.endsWith('.') ? '' : '.'} ` +
+              `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

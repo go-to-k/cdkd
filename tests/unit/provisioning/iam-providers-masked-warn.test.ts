@@ -1856,11 +1856,31 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
     expect(retryable(failure)).toBe(true);
   });
 
-  it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
+  // go-to-k/cdkd#2319: the AccessKey wraps withhold every AWS-authored text, so
+  // they always stamp one; their unstamped arm is a cdkd-authored error.
+  const quotesAwsText = SITES.filter(({ site }) => !site.startsWith('AccessKey'));
+  const withholdsAwsText = SITES.filter(({ site }) => site.startsWith('AccessKey'));
+
+  it.each(quotesAwsText)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
     answerIam({ [command]: malformed('Bad request parameter') });
     const failure = await failureOf(() => run(retryMasker));
     expect(failure.message).toContain('Bad request parameter');
     expect(hasRedactedCause(failure)).toBe(false);
     expect(retryable(failure)).toBe(false);
+  });
+
+  it.each(withholdsAwsText)('$site: an AWS failure is withheld and stamped, a cdkd-authored one passes unstamped', async ({ command, run }) => {
+    expect(withholdsAwsText).toHaveLength(2); // premise: both AccessKey sites
+    answerIam({ [command]: malformed('Bad request parameter') });
+    const aws = await failureOf(() => run(retryMasker));
+    expect(aws.message).not.toContain('Bad request parameter');
+    expect(aws.message).toContain('MalformedPolicyDocumentException. Re-run with --verbose');
+    expect(hasRedactedCause(aws)).toBe(true);
+    expect(retryable(aws)).toBe(false);
+
+    answerIam({ [command]: new Error('Bad request parameter') });
+    const local = await failureOf(() => run(retryMasker));
+    expect(local.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(local)).toBe(false);
   });
 });

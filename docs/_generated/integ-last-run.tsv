@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-access-key-cloudmap-fix-forward-orphan	2026-10-15T19:20:59Z	PASS	216	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
+access-key-cloudmap-fix-forward-orphan	2026-10-21T13:42:45Z	PASS	218	verify.sh	PASS, own state bucket (foreignHolder settle scan), 0 orphans, bucket deleted
 acm-certificate	2026-10-20T05:07:15Z	PASS	115	verify.sh	rc ok, orph clean; #5105 acm/lambda tail thrown errors
 agentcore-tools	2026-10-19T17:48:11Z	PASS	75	verify.sh	rc ok, orph clean; #1160 removed Evaluator Description kept
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
@@ -35,7 +35,7 @@ bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run 
 bootstrap-free-region	2026-10-05T08:20:47Z	PASS	81	verify.sh	rc 0, 0 orphans; ca-central-1, delete-marker residue from earlier runs purged (#2624 PR #4573)
 bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 budgets	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-cache-streaming	2026-10-16T15:40:28Z	PASS	753	verify.sh	removal arm (#5004): KEEP x3 retained, log delivery reset; rc ok, orph clean
+cache-streaming	2026-10-21T13:56:47Z	PASS	634	verify.sh	rc ok, GetAtt redis endpoint verified, orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
 cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 cc-api-fallback-transitions	2026-10-15T18:54:20Z	PASS	80	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
@@ -49,7 +49,7 @@ cc-write-only-create-only	2026-10-11T09:33:22Z	PASS	170	verify.sh	PR #4720 (#470
 cdk-cross-account-lookup-role	2026-10-12T07:09:30Z	PASS	215	verify.sh	rc ok, orph clean; a/b1/b2/c arms pass on PR #4812 refusal texts
 ci-cd	2026-10-11T09:33:22Z	PASS	75	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cloudfront-function-url	2026-10-20T05:07:15Z	PASS	250	verify.sh	rc ok, orph clean; #5105
-cloudtrail-trail	2026-10-20T06:02:56Z	PASS	215	verify.sh	PASS on retry; 1st attempt hit CloudTrail/S3-bucket-policy IAM eventual-consistency Access denied (env flake)
+cloudtrail-trail	2026-10-21T13:56:47Z	PASS	200	verify.sh	rc ok, reset/retain split verified, orph clean (1 lambda log group routinely swept)
 cloudwatch	2026-10-20T05:58:30Z	PASS	65	standard	deploy+destroy clean, 0 orphans
 cloudwatch-anomaly-detector	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 codebuild-project	2026-10-20T05:59:05Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
@@ -126,7 +126,7 @@ ecs-service-update-props	2026-10-16T13:06:56Z	PASS	150	verify.sh	PR #5014 (#5004
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
 efs-lambda	2026-09-28T16:21:10Z	PASS	130	standard	human-driven, 22 created/22 deleted, orph clean (#3894)
 efs-standalone	2026-10-20T03:13:30Z	PASS	200	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
-elasticache-replicationgroup-getatt	2026-10-20T06:12:52Z	PASS	726	verify.sh	deploy+destroy clean, 0 orphans
+elasticache-replicationgroup-getatt	2026-10-21T13:56:47Z	PASS	604	verify.sh	rc ok, GetAtt PrimaryEndPoint verified, orph clean
 elbv2-same-name-replacement	2026-10-20T09:26:37Z	PASS	84	verify.sh	#5064 head re-run, clean
 emr-cluster	2026-10-20T15:35:16Z	PASS	1331	verify.sh	rc ok, 0 orph, phase2b new wording confirmed
 emr-instance-configs	2026-10-20T03:13:30Z	PASS	1060	verify.sh	PR #5104 (#2319 EMR/FSx/EFS thrown-error wraps); rc 0, destroy clean, orph clean
@@ -159,7 +159,7 @@ glue-securityconfig-replace	2026-10-17T17:11:05Z	PASS	65	verify.sh	rc ok, orph c
 glue-update-hardening	2026-10-21T09:12:02Z	PASS	292	verify.sh	PR #5147: phase 2g (new) crawler keep-on-removal, 0 errors, 0 orphans
 guardduty-detector-update	2026-10-15T04:32:09Z	PASS	210	verify.sh	PR #4935 (#4921) maintainer run on f7e8e94cd; own state bucket; all 6 phases incl. Phase 3b reverts; 3 destroys 0 err, no detector left, orph clean
 healthimaging-stateful-update-fallback	2026-10-12T05:13:18Z	PASS	320	verify.sh	PR #4823, #2925 on rebased sha 9ed27ba08: DescribeType-denied CC create/update path (fail-open narrowing); rc ok, destroy 0 errors, orph clean
-iam-access-key	2026-10-16T08:48:48Z	PASS	65	verify.sh	rc ok, orph clean (#3341 slice 4996)
+iam-access-key	2026-10-21T13:56:47Z	PASS	84	verify.sh	rc ok, orph clean, secret-value versions purged
 iam-managed-policy	2026-10-20T06:06:45Z	PASS	70	verify.sh	deploy+destroy clean, 0 orphans
 iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final head @79633ecf; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-10-15T19:36:36Z	PASS	130	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
@@ -328,7 +328,7 @@ rollback-sqs-cooldown	2026-10-17T10:48:50Z	PASS	171	verify.sh	rc ok, orph clean 
 route53	2026-10-19T08:51:28Z	PASS	470	verify.sh	rc ok, orph clean (#2319 PR 5087)
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-03T04:28:33Z	PASS	62	verify.sh	rc ok, orph clean (#4283 PR #4449)
-s3-cloudfront	2026-10-15T06:00:27Z	PASS	250	verify.sh	rc ok, orph clean (us-west-2)
+s3-cloudfront	2026-10-21T13:56:47Z	PASS	256	verify.sh	rc ok, tags backfill verified, orph clean
 s3-directory-bucket	2026-10-20T06:32:13Z	PASS	221	verify.sh	deploy+destroy clean, 0 orphans
 s3-event-notification	2026-10-11T09:33:22Z	PASS	100	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-fix-forward-orphan	2026-10-15T19:17:17Z	PASS	281	verify.sh	PR #4966 (#3252) d92a5794e; us-west-2; own state bucket; rc ok, destroy clean, orph clean

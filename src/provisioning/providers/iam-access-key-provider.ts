@@ -13,14 +13,15 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import {
-  createMaskedLogSinks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
+import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type { CreateContext, UpdateContext } from '../../types/resource.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -88,18 +89,51 @@ export class IAMAccessKeyProvider implements ResourceProvider {
   private logger = getLogger().child('IAMAccessKeyProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * The failure wrap the `create()` / `update()` / `delete()` catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `log`, masked both
+   * raw and as the finished line (issue #2177). The wrap is stamped
+   * `markRedactedCause`, so the retry classifiers -- the IAM-propagation
+   * cadence a denied call rides -- read the withheld text on the `cause` chain.
+   * An "already exists" is restated ({@link relayedNameCollision}); a failure of
+   * the `Inactive` wiring is marked auxiliary on the `cause`, which the
+   * collision anchor still reads. A cdkd-authored or transport error keeps the
+   * masked pass-through of `wrapMaskedAwsError`, which stamps when the mask
+   * changed the text (issue #4244); a non-`Error` throw is withheld like an AWS
+   * one, unstamped (it has no chain). The delete checks `NoSuchEntityException` by type before it
+   * wraps. No message here carries the `SecretAccessKey`: only the key id.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
-    mask: MaskerFn,
+    log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
+    log.debug(build(log.mask(failure.detail)).message);
+    const wrapped = build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The failure sentence a default-verbosity warning quotes after `lead`, its
+   * own already-masked opening (go-to-k/cdkd#2319): the class plus the
+   * `--verbose` pointer for an AWS-authored failure or a non-`Error` throw,
+   * with AWS's text sent to `debug` after `lead`, masked; otherwise the masked
+   * text and a full stop. Always ends its sentence.
+   */
+  private warnFailureSentence(log: MaskedLogSinks, lead: string, error: unknown): string {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return `${log.value(failure.detail)}.`;
+    log.debug(`${lead}: ${log.value(failure.detail)}`);
+    return log.value(failure.summary);
   }
 
   /**
@@ -248,8 +282,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             );
             leftBehindKeyId = undefined;
           } catch (cleanupError) {
+            const lead = `Failed to clean up IAM access key ${logicalId} (${v(accessKeyId)}) minted by a partial CreateAccessKey response`;
             log.warn(
-              `Failed to clean up IAM access key ${logicalId} (${v(accessKeyId)}) minted by a partial CreateAccessKey response: ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
+              `${lead}: ${this.warnFailureSentence(log, lead, cleanupError)} Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
         }
@@ -275,8 +310,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
               `Cleaned up partially-created IAM access key ${logicalId} (${v(accessKeyId)}) after status wiring failure`
             );
           } catch (cleanupError) {
+            const lead = `Failed to clean up partially-created IAM access key ${logicalId} (${v(accessKeyId)})`;
             log.warn(
-              `Failed to clean up partially-created IAM access key ${logicalId} (${v(accessKeyId)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
+              `${lead}: ${this.warnFailureSentence(log, lead, cleanupError)} Manual deletion may be required before the next deploy: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
             );
           }
           // The resource itself was created: an "already exists" from its wiring
@@ -311,8 +347,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
             'replayed'
           );
         } catch (reconcileError) {
+          const lead = `Could not check user ${v(userName)} for an access key left by the replayed CreateAccessKey for ${logicalId}`;
           log.warn(
-            `Could not check user ${v(userName)} for an access key left by the replayed CreateAccessKey for ${logicalId}: ${v(describeAwsFailure(reconcileError).detail)}. List the user's keys and delete any that no deploy records: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
+            `${lead}: ${this.warnFailureSentence(log, lead, reconcileError)} List the user's keys and delete any that no deploy records: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
           );
         }
       }
@@ -343,7 +380,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -491,8 +528,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         );
         deleted.add(accessKeyId);
       } catch (error) {
+        const lead = `Failed to delete the orphaned IAM access key ${v(accessKeyId)} for user ${v(userName)}`;
         log.warn(
-          `Failed to delete the orphaned IAM access key ${v(accessKeyId)} for user ${v(userName)}: ${v(describeAwsFailure(error).detail)}. Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
+          `${lead}: ${this.warnFailureSentence(log, lead, error)} Manual deletion may be required: ${aws`aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`.render()}`
         );
       }
     }
@@ -545,8 +583,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       // at default verbosity). Disarming this reconcile means a retried create
       // can leave an ACTIVE, untracked credential behind, which is exactly the
       // outcome a silent line would hide.
+      const lead = `Could not list existing access keys for user ${v(userName)} while creating ${logicalId}`;
       log.warn(
-        `Could not list existing access keys for user ${v(userName)} while creating ${logicalId}: ${v(describeAwsFailure(error).detail)}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
+        `${lead}: ${this.warnFailureSentence(log, lead, error)} Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: ${aws`aws iam list-access-keys --user-name ${userName}`.render()}`
       );
       return undefined;
     }
@@ -657,7 +696,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
-        log.mask,
+        log,
         error,
         (text) =>
           new ProvisioningError(
@@ -728,12 +767,17 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete IAM access key ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete IAM access key ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
