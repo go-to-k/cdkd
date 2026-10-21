@@ -797,8 +797,10 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
     expect(asked).toEqual(['MyStack']);
     expect(err!.message).toContain(
-      "It is Fn's own copy that a rolled-back deploy of this stack kept because of UpdateReplacePolicy: Retain"
+      "This stack's event history records that a rolled-back deploy kept Fn's replacement under this name because of UpdateReplacePolicy: Retain"
     );
+    // Conditional advice: the live holder may no longer be that copy.
+    expect(err!.message).toContain('If the holder is that copy and you no longer need it, delete it');
     expect(err!.message).not.toContain('delete the resource holding it if it is yours');
     expect(h.callOrder).toEqual(['import']);
   });
@@ -815,6 +817,21 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
 
     expect(err!.message).toContain('delete the resource holding it if it is yours');
     expect(err!.message).not.toContain('rolled-back deploy');
+  });
+
+  it('keeps the generic remedy when the history cannot be read', async () => {
+    h.importResult = { physicalId: THEIRS };
+    const engine = makeEngine(h);
+    const original = engine.replacementDeps.bind(engine);
+    vi.spyOn(engine, 'replacementDeps').mockImplementation(() => ({
+      ...original(),
+      rollbackRetainedCopies: () => Promise.reject(new Error('AccessDenied')),
+    }));
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('delete the resource holding it if it is yours');
   });
 
   it('reads no history when no resource holds the new name', async () => {

@@ -658,7 +658,7 @@ if [ "${P6B_RC}" -eq 0 ] || ! grep -q "already holds the name it asks for" "${WO
   tail -20 "${WORK_DIR}/phase6b.log" >&2
   exit 1
 fi
-if ! grep -q "It is RetainLogGroup's own copy that a rolled-back deploy of this stack kept" "${WORK_DIR}/phase6b.log"; then
+if ! grep -q "a rolled-back deploy kept RetainLogGroup's replacement under this name" "${WORK_DIR}/phase6b.log"; then
   echo "FAIL: phase 6b: the refusal does not name the holder as this stack's rollback-retained copy:" >&2
   grep -n "already holds" "${WORK_DIR}/phase6b.log" >&2
   exit 1

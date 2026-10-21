@@ -67,9 +67,9 @@ So when the deploy kept the old resource, both copies survive the rollback,
 and the state record names the old one.
 
 A copy that keeps a fixed name still holds it after the rollback, so the next
-deploy that asks for that name is refused. The refusal names the holder as the
-copy a rolled-back deploy of this stack kept. Delete it if you no longer need
-it, or choose another name.
+deploy that asks for that name is refused. The refusal says that this stack's
+event history records the kept copy under that name. If the holder is that copy
+and you no longer need it, delete it; otherwise choose another name.
 
 One combination fails: the old resource has to be re-created, and its name is
 held by a new resource that is retained. The operation fails and the journal

@@ -794,10 +794,14 @@ export async function checkedReplacementNameChange(
       copy.resourceType === resourceType &&
       probeFoundSameId(resourceType, copy.physicalId, found.physicalId)
   );
+  // Worded from what the history records, not as a fact about the live
+  // holder: the copy may since have been deleted and the name taken by an
+  // unrelated resource, which the advice must not tell anyone to delete.
   const remedy = ownRetainedCopy
-    ? `It is ${displaySafe(logicalId)}'s own copy that a rolled-back deploy of this stack kept ` +
-      `because of UpdateReplacePolicy: Retain, as CloudFormation also does, and cdkd no longer ` +
-      `tracks it. Delete it if you no longer need it, or choose another name.`
+    ? `This stack's event history records that a rolled-back deploy kept ` +
+      `${displaySafe(logicalId)}'s replacement under this name because of ` +
+      `UpdateReplacePolicy: Retain, as CloudFormation also does, untracked by cdkd. If the ` +
+      `holder is that copy and you no longer need it, delete it; otherwise choose another name.`
     : `Choose a name no other resource holds, or delete the resource holding it if it is yours.`;
   throw markNonRetryable(
     new CdkdError(

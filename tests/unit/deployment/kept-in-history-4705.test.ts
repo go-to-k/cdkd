@@ -10,6 +10,7 @@ import {
   keptInEarlierRecords,
   keptInEventHistory,
   loadKeptInHistory,
+  loadRollbackRetainedCopies,
   RETAINED_SURVIVOR_REASON_PREFIX,
   rollbackRetainedInEventHistory,
 } from '../../../src/deployment/kept-in-history.js';
@@ -164,5 +165,23 @@ describe('rollbackRetainedInEventHistory (go-to-k/cdkd#5143)', () => {
     ['another reason', { reason: 'The re-create returned the live new resource' }],
   ])('ignores %s', (_n, over) => {
     expect(rollbackRetainedInEventHistory([[ev(over)]], 'S')).toEqual([]);
+  });
+
+  it("reads a nested child's survivors from its top-level stack's runs", async () => {
+    const listRuns = vi.fn().mockResolvedValue([{ runId: 'r1' }]);
+    const readRunEvents = vi
+      .fn()
+      .mockResolvedValue([ev({ stackName: 'P~C' }), ev({ stackName: 'P' })]);
+
+    const copies = await loadRollbackRetainedCopies({ listRuns, readRunEvents }, 'P~C', 'us-east-1');
+
+    expect(listRuns).toHaveBeenCalledWith('P', 'us-east-1');
+    expect(readRunEvents).toHaveBeenCalledWith('P', 'us-east-1', 'r1');
+    expect(copies).toHaveLength(1);
+  });
+
+  it('answers none when the history cannot be listed', async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error('AccessDenied'));
+    expect(await loadRollbackRetainedCopies({ listRuns, readRunEvents: vi.fn() }, 'S', 'us-east-1')).toEqual([]);
   });
 });
