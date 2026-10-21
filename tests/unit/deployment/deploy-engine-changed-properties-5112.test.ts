@@ -338,6 +338,35 @@ describe('UpdateContext.changedProperties (go-to-k/cdkd#5112)', () => {
       expect(run.thrown).toBeUndefined();
       expect(run.changed['R']).toEqual(['Description', 'Value']);
     });
+
+    it('that AWS confirmed holding is left out beside another change (a create-only path, read back)', async () => {
+      const topicArn = 'arn:aws:sns:us-east-1:123456789012:topic-5112';
+      const run = await deploy({
+        state: stateOf({
+          R: {
+            physicalId: topicArn,
+            resourceType: 'AWS::SNS::Topic',
+            properties: { TopicName: '***', DisplayName: 'd' },
+            attributes: {},
+            dependencies: [],
+            noEchoLeaves: [['TopicName']],
+          } as ResourceState,
+        }),
+        template: {
+          Parameters: { Name: { Type: 'String', NoEcho: true, Default: 'topic-5112' } },
+          Resources: {
+            R: {
+              Type: 'AWS::SNS::Topic',
+              Properties: { TopicName: { Ref: 'Name' }, DisplayName: 'd2' },
+            },
+          },
+        } as CloudFormationTemplate,
+        readBack: { TopicName: 'topic-5112', DisplayName: 'd' },
+      });
+      expect(run.thrown).toBeUndefined();
+      expect(run.updated).toEqual(['R']);
+      expect(run.changed['R']).toEqual(['DisplayName']);
+    });
   });
 
   it('names a principal list whose unchanged secret reference the engine dropped from the previous side (go-to-k/cdkd#4064)', async () => {
