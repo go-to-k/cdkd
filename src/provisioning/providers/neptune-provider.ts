@@ -113,6 +113,12 @@ function isDbIdentifier(id: string): boolean {
 }
 
 /**
+ * Issue #5155: how long a delete that takes a final snapshot waits, after a
+ * `--remove-protection` flip, for the resource to return to `available`.
+ */
+const FINAL_SNAPSHOT_SETTLE_WAIT_MS = 15 * 60_000;
+
+/**
  * AWS Neptune Provider
  *
  * Implements resource provisioning for Neptune resources:
@@ -831,6 +837,11 @@ export class NeptuneProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait.
+      if (finalSnapshotId && flip.flippedOffByThisRun) {
+        await this.waitForProtectionOffBeforeFinalSnapshot(logicalId, physicalId);
+      }
       await this.getClient().send(
         new DeleteDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -1500,6 +1511,37 @@ export class NeptuneProvider implements ResourceProvider {
     }
     throw new Error(
       `Timed out waiting for Neptune DBCluster ${dbClusterIdentifier} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issue #5155: after `--remove-protection` turned DeletionProtection off, wait
+   * until the cluster reads protection OFF and `available` before a delete that
+   * takes a final snapshot: the snapshot needs `available`, and right after the
+   * flip the cluster is briefly `modifying`. Status alone can still read
+   * `available` before the change starts; the protection readback cannot.
+   * Fails closed: on a timeout the delete is never sent, so the compensation
+   * puts the guard back. An AWS failure of a describe propagates as-is.
+   */
+  private async waitForProtectionOffBeforeFinalSnapshot(
+    logicalId: string,
+    physicalId: string,
+    maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const current = await this.describeDBCluster(physicalId);
+      if (current === undefined) return;
+      if (current.DeletionProtection === false && current.Status === 'available') return;
+      this.logger.debug(
+        safeMsg`Neptune DBCluster ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.round(maxWaitMs / 60_000)} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
     );
   }
 
