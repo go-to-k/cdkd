@@ -88,11 +88,13 @@ import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
+import { keyOrderFreeJson } from '../deploy-value-equality.js';
 
 /** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
 export async function updateInPlace(
   engine: DeployEngine,
   {
+    changedProperties,
     conditions,
     counts,
     currentProps,
@@ -114,6 +116,11 @@ export async function updateInPlace(
     updateSecrets,
     reattach,
   }: {
+    /**
+     * go-to-k/cdkd#5112: the top-level keys `update.ts` found changed,
+     * template to template (`UpdateContext.changedProperties`).
+     */
+    changedProperties: ReadonlySet<string>;
     conditions: Record<string, boolean> | undefined;
     counts: ProvisionCounts | undefined;
     currentProps: Record<string, unknown>;
@@ -233,20 +240,22 @@ export async function updateInPlace(
   // way is dropped from the previous side (go-to-k/cdkd#4064): the
   // record's `{{resolve:...}}` is not a name, so every in-place update
   // was refused, and the desired side names that principal too.
+  const previousWithNoEchoHeld =
+    noEchoHeldPaths.size === 0
+      ? currentPropsAsWritten
+      : {
+          ...currentPropsAsWritten,
+          ...Object.fromEntries(
+            [...noEchoHeldPaths]
+              .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
+              .map((path) => [path, updateProps[path]])
+          ),
+        };
   const { previous: previousWithSecretsDropped, dropped: droppedPrincipalKinds } =
     withUnchangedSecretPrincipalLists(
       resourceType,
       currentResource.physicalId,
-      noEchoHeldPaths.size === 0
-        ? currentPropsAsWritten
-        : {
-            ...currentPropsAsWritten,
-            ...Object.fromEntries(
-              [...noEchoHeldPaths]
-                .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
-                .map((path) => [path, updateProps[path]])
-            ),
-          },
+      previousWithNoEchoHeld,
       desiredForSkipCheckAsWritten
     );
   // go-to-k/cdkd#4461: a child that survived a parent re-created under the
@@ -266,6 +275,19 @@ export async function updateInPlace(
         })
       : undefined;
   const previousForUpdate = reattached?.previous ?? previousWithSecretsDropped;
+  // go-to-k/cdkd#5112: a key whose previous side was rewritten above so the
+  // provider's own diff acts on it (a dropped secret principal list, a
+  // re-attachment) is a change the provider must not skip. The `NoEcho` held
+  // paths are not: their previous side was set EQUAL to what is sent.
+  const changedForProvider = new Set(changedProperties);
+  for (const key of new Set([
+    ...Object.keys(previousWithNoEchoHeld),
+    ...Object.keys(previousForUpdate),
+  ])) {
+    if (keyOrderFreeJson(previousForUpdate[key]) !== keyOrderFreeJson(previousWithNoEchoHeld[key])) {
+      changedForProvider.add(key);
+    }
+  }
   if (reattached !== undefined) {
     engine.logger.info(
       safeMsg`  ${logicalId} (${resourceType}) lost its attachment to ${reattached.parents.join(', ')}, which this deploy re-created under the same name: attaching it again`
@@ -385,6 +407,7 @@ export async function updateInPlace(
               recordedAttributes: currentResource.attributes,
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
+              changedProperties: changedForProvider,
             }
           )
         ),

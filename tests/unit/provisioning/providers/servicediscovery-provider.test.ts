@@ -222,8 +222,8 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
 
   // The state record is REDACTED while the desired bag is resolved, so a
   // recorded `{{resolve:` / `***` leaf counts as CHANGED: never dropping a
-  // real template change. go-to-k/cdkd#5112 tracks a template-to-template
-  // compare.
+  // real template change. That is the fallback: a deploy passes the keys that
+  // changed template to template (go-to-k/cdkd#5112, below).
   it.each([
     [
       'a secret reference swapped for another',
@@ -240,11 +240,74 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
     expect(sentChange().Description).toBe(next);
   });
 
-  it.each([
+  const STAND_INS = [
     ['a secret dynamic reference', '{{resolve:secretsmanager:svc-desc:SecretString:d}}'],
     ['a NoEcho mask', '***'],
-  ])(
-    'documented divergence (#5112): an unchanged Description recorded as %s with HealthCheckConfig removed clears the health check',
+  ] as const;
+
+  // go-to-k/cdkd#5112: the deploy engine passes the keys that changed
+  // template to template, so an unchanged stand-in no longer reads as a change.
+  it.each(STAND_INS)(
+    'with the engine changed keys, an unchanged Description recorded as %s beside a removed HealthCheckConfig sends nothing, keeping the health check (CloudFormation parity)',
+    async (_label, recorded) => {
+      await provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        desired(['HealthCheckConfig'], { Description: 'resolved-plaintext' }),
+        { ...structuredClone(FULL), Description: recorded },
+        { changedProperties: new Set(['HealthCheckConfig']) }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(STAND_INS)(
+    'with the engine changed keys, a Description recorded as %s that CHANGED is sent, clearing the removed health check as CloudFormation does',
+    async (_label, recorded) => {
+      await provider.update(
+        'Svc',
+        'srv-1',
+        TYPE,
+        desired(['HealthCheckConfig'], { Description: 'resolved-plaintext' }),
+        { ...structuredClone(FULL), Description: recorded },
+        { changedProperties: new Set(['Description', 'HealthCheckConfig']) }
+      );
+      const change = sentChange();
+      expect(change.Description).toBe('resolved-plaintext');
+      expect(Object.hasOwn(change, 'HealthCheckConfig')).toBe(false);
+    }
+  );
+
+  it('with the engine changed keys, a DnsConfig left out of them sends no records even beside a recorded stand-in TTL', async () => {
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      desired([], { DnsConfig: ttl(300) }),
+      { ...structuredClone(FULL), DnsConfig: { RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: '***' }] } },
+      { changedProperties: new Set<string>() }
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('with the engine changed keys naming DnsConfig, a records-only change is sent and keeps the live fields', async () => {
+    await provider.update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      desired(['Description', 'HealthCheckConfig'], { DnsConfig: ttl(300) }),
+      structuredClone(FULL),
+      { changedProperties: new Set(['Description', 'HealthCheckConfig', 'DnsConfig']) }
+    );
+    const change = sentChange();
+    expect(change.DnsConfig?.DnsRecords).toEqual([{ Type: 'A', TTL: 300 }]);
+    expect(change.Description).toBe('live-desc');
+    expect(change.HealthCheckConfig).toEqual(LIVE_HC);
+  });
+
+  it.each(STAND_INS)(
+    'with NO changed keys (a rollback revert, drift --revert), an unchanged Description recorded as %s still counts as changed: the fallback never drops a change',
     async (_label, recorded) => {
       await provider.update(
         'Svc',

@@ -821,6 +821,27 @@ export interface UpdateContext extends SecretMaskingContext {
    * ABSENT means a direct call, where `withRemovalDefaults` injects instead.
    */
   removedProperties?: ReadonlySet<string> | undefined;
+
+  /**
+   * go-to-k/cdkd#5112: the top-level properties this update CHANGES, decided
+   * as CloudFormation decides it, template to template. The state record is
+   * REDACTED (a dynamic reference stays its `{{resolve:...}}` token, a `NoEcho`
+   * value is `***`) while the desired bag is resolved, so a provider comparing
+   * the two cannot tell an unchanged secret from a changed one. The engine
+   * compares the AS-WRITTEN bags, and also counts as changed a key whose
+   * as-written form hides a move: a masked property whose template text or
+   * inputs moved, a secret read at a newer version than recorded, a fresh
+   * `NoEcho` value AWS did not confirm holding, and a key whose previous side
+   * the engine rewrote for the provider to act on (a re-attachment, a dropped
+   * secret principal list). Names only: no value reaches the provider.
+   *
+   * Set ONLY by the deploy's in-place UPDATE
+   * (`deploy-engine/update-in-place.ts`). ABSENT on the rollback revert arms
+   * (both bags are state records, compared alike), on `cdkd drift --revert`
+   * (both bags are AWS readbacks with the drifted keys overlaid) and on a direct
+   * call: a provider must then fall back to its own comparison of the two bags.
+   */
+  changedProperties?: ReadonlySet<string> | undefined;
 }
 
 /** A principal kind an inline policy is written onto. */

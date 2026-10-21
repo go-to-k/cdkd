@@ -987,6 +987,14 @@ export async function provisionUpdate(
     movedMasked.size === 0 &&
     rewrittenPaths.size === 0 &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
+  // The same three terms for ONE top-level key: its as-written value moved, or
+  // a move its redacted form hides (a masked property whose template moved, a
+  // rewritten or provenance-moved path).
+  const movedAsWritten = (key: string): boolean =>
+    movedMasked.has(key) ||
+    rewrittenPaths.has(key) ||
+    keyOrderFreeJson(desiredForSkipCheckAsWritten[key]) !==
+      keyOrderFreeJson(currentPropsAsWritten[key]);
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -1314,11 +1322,7 @@ export async function provisionUpdate(
       // replacement whatever AWS holds at the masked ones.
       // A masked property whose template moved (go-to-k/cdkd#4451) moved,
       // whatever its two `***` say.
-      const moved =
-        movedMasked.has(pc.path) ||
-        rewrittenPaths.has(pc.path) ||
-        keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
-          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+      const moved = movedAsWritten(pc.path);
       // A propagated CEILING whose value MOVED is kept, unless the type's
       // own conditional rule reads the move as in place (issue #4134) --
       // the same predicate the diff applies to a template edit. A
@@ -1416,11 +1420,7 @@ export async function provisionUpdate(
     // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
     // pre-v11 record's witness that differs, an exact change): the
     // replacement stands, as CloudFormation would replace.
-    const movedAt = (path: string): boolean =>
-      movedMasked.has(path) ||
-      rewrittenPaths.has(path) ||
-      keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
-        keyOrderFreeJson(currentPropsAsWritten[path]);
+    const movedAt = movedAsWritten;
     replacedAnyway =
       recreateDirectionFor(engine.options, stackName, logicalId) !== undefined ||
       lostWithParent !== undefined ||
@@ -1857,6 +1857,27 @@ export async function provisionUpdate(
   // stateful guard), or a Cloud Control patch writes it. The value is equal
   // by the witness, so the previous side gets it back, for the provider's
   // call only (go-to-k/cdkd#4831; marked and unmarked records alike).
+  // go-to-k/cdkd#5112: the top-level keys this update changes, template to
+  // template, for a provider that must decide WHETHER to send a field (Cloud
+  // Map's `UpdateService`). Compared over the as-written bags BEFORE the
+  // witness hands the previous side its plaintext back, with the hidden moves
+  // the skip check counts. A fresh `NoEcho` value is compared with nothing, so
+  // its key counts as changed unless AWS confirmed holding it: a missed change
+  // is worse than a re-sent value.
+  const changedProperties = new Set(
+    [
+      ...new Set([
+        ...Object.keys(desiredForSkipCheckAsWritten),
+        ...Object.keys(currentPropsAsWritten),
+        ...Object.keys(resolvedProps),
+      ]),
+    ].filter(
+      (key) =>
+        movedAsWritten(key) ||
+        (!confirmedPaths.has(key) &&
+          (pendingParameterLeaves.has(key) || otherFreshAt(key).length > 0))
+    )
+  );
   let previousForProvider = currentPropsAsWritten;
   for (const coordinate of witness?.confirmed ?? []) {
     const value = valueAtCoordinate(resolvedProps, coordinate);
@@ -1869,6 +1890,7 @@ export async function provisionUpdate(
       counts,
       currentProps,
       currentPropsAsWritten: previousForProvider,
+      changedProperties,
       currentResource,
       dependencies,
       desiredForSkipCheckAsWritten,
