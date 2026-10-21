@@ -9,6 +9,9 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 // Issue #4073: the update changes `env`, drops `team` and adds `owner`.
 const BASE_TAG_MAP = { env: 'integ', team: 'data-platform' };
 const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
+// The crawler's `Configuration` (16); verify.sh compares it byte for byte.
+const CRAWLER_CONFIGURATION =
+  '{"Version":1.0,"CrawlerOutput":{"Partitions":{"AddOrUpdateBehavior":"InheritFromTable"}}}';
 
 /**
  * Glue update / delete hardening integ stack.
@@ -77,7 +80,10 @@ const UPDATED_TAG_MAP = { env: 'integ-updated', owner: 'cdkd' };
  *     and MaxConcurrentRuns, the ON_DEMAND trigger's Description, and the
  *     EVENT trigger's Description and EventBatchingCondition. A CloudFormation
  *     A/B showed CloudFormation clears each one, and so do the full-replace
- *     UpdateWorkflow / UpdateTrigger calls that omit them.
+ *     UpdateWorkflow / UpdateTrigger calls that omit them. It also drops the
+ *     crawler's Description, TablePrefix, SchemaChangePolicy and
+ *     Configuration, which CloudFormation KEEPS (A/B): UpdateCrawler keeps a
+ *     field it is not sent, and cdkd names them in a warning.
  *
  * All resources are idle (no schedule; ON_DEMAND / EVENT triggers, and nothing
  * sends the event), so deploy + destroy
@@ -159,6 +165,15 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
       name: `${this.stackName}-crawler`.toLowerCase(),
       role: glueRole.roleArn,
       databaseName: `${this.stackName}-crawler-db`.toLowerCase(),
+      // 16. CDKD_TEST_REMOVAL drops these four optional properties.
+      ...(isRemoval
+        ? {}
+        : {
+            description: 'cdkd crawler',
+            tablePrefix: 'cdkd_',
+            schemaChangePolicy: { updateBehavior: 'LOG', deleteBehavior: 'LOG' },
+            configuration: CRAWLER_CONFIGURATION,
+          }),
       targets: {
         s3Targets: [{ path: `s3://${scriptBucket.bucketName}/data/` }],
         dynamoDbTargets: [
