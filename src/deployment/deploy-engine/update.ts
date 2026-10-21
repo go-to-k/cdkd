@@ -1417,24 +1417,23 @@ export async function provisionUpdate(
         : 'differs';
     };
     const lowered: PropertyChange[] = [];
-    // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
-    // pre-v11 record's witness that differs, an exact change): the
-    // replacement stands, as CloudFormation would replace.
-    const movedAt = movedAsWritten;
     replacedAnyway =
       recreateDirectionFor(engine.options, stackName, logicalId) !== undefined ||
       lostWithParent !== undefined ||
       (change.propertyChanges ?? []).some(
         (other) =>
           other.requiresReplacement &&
-          (!parameterCreateOnlyPaths.has(other.path) || movedAt(other.path))
+          (!parameterCreateOnlyPaths.has(other.path) || movedAsWritten(other.path))
       );
     for (const pc of change.propertyChanges ?? []) {
       if (!parameterCreateOnlyPaths.has(pc.path)) {
         lowered.push(pc);
         continue;
       }
-      const moved = movedAt(pc.path);
+      // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
+      // pre-v11 record's witness that differs, an exact change): the
+      // replacement stands, as CloudFormation would replace.
+      const moved = movedAsWritten(pc.path);
       if (moved) {
         // go-to-k/cdkd#4737: the path is create-only by the SCHEMA, while the
         // diff decided whether it replaces (registry first, then a whole
@@ -1850,13 +1849,6 @@ export async function provisionUpdate(
       )
     );
   }
-  // A leaf the witness CONFIRMED compares as the mask on both sides above,
-  // but the provider diffs the previous side against the plaintext it is
-  // sent: handed `***` there, a create-only one reads as changed and is
-  // re-created inside `update()` (bypassing `UpdateReplacePolicy` and the
-  // stateful guard), or a Cloud Control patch writes it. The value is equal
-  // by the witness, so the previous side gets it back, for the provider's
-  // call only (go-to-k/cdkd#4831; marked and unmarked records alike).
   // go-to-k/cdkd#5112: the top-level keys this update changes, template to
   // template, for a provider that must decide WHETHER to send a field (Cloud
   // Map's `UpdateService`). Compared over the as-written bags BEFORE the
@@ -1878,6 +1870,13 @@ export async function provisionUpdate(
           (pendingParameterLeaves.has(key) || otherFreshAt(key).length > 0))
     )
   );
+  // A leaf the witness CONFIRMED compares as the mask on both sides above,
+  // but the provider diffs the previous side against the plaintext it is
+  // sent: handed `***` there, a create-only one reads as changed and is
+  // re-created inside `update()` (bypassing `UpdateReplacePolicy` and the
+  // stateful guard), or a Cloud Control patch writes it. The value is equal
+  // by the witness, so the previous side gets it back, for the provider's
+  // call only (go-to-k/cdkd#4831; marked and unmarked records alike).
   let previousForProvider = currentPropsAsWritten;
   for (const coordinate of witness?.confirmed ?? []) {
     const value = valueAtCoordinate(resolvedProps, coordinate);

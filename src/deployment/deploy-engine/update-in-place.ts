@@ -284,7 +284,9 @@ export async function updateInPlace(
     ...Object.keys(previousWithNoEchoHeld),
     ...Object.keys(previousForUpdate),
   ])) {
-    if (keyOrderFreeJson(previousForUpdate[key]) !== keyOrderFreeJson(previousWithNoEchoHeld[key])) {
+    if (
+      keyOrderFreeJson(previousForUpdate[key]) !== keyOrderFreeJson(previousWithNoEchoHeld[key])
+    ) {
       changedForProvider.add(key);
     }
   }

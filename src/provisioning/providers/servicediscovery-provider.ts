@@ -1607,8 +1607,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       changedProperties !== undefined
         ? changedProperties.has(key)
         : !sameAsRecorded(properties[key], previousProperties[key]);
-    const declaredDiffers = (key: string): boolean =>
-      properties[key] !== undefined && changed(key);
+    const declaredDiffers = (key: string): boolean => properties[key] !== undefined && changed(key);
 
     const change: ServiceChange = {};
     if (properties['Description'] !== undefined) {

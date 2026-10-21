@@ -323,7 +323,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
 
     const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
     expect(updateContext).toBeDefined();
-    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['expectedRegion', 'maskSecrets', 'recordedAttributes', 'removedProperties']);
+    expect(Object.keys(updateContext ?? {}).sort()).toEqual(['changedProperties', 'expectedRegion', 'maskSecrets', 'recordedAttributes', 'removedProperties']);
     // The sibling flag stays off for the same reason: this bag is a template,
     // not an AWS readback.
     expect(updateContext?.desiredFromAwsReadback).toBeUndefined();
