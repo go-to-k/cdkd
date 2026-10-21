@@ -114,7 +114,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
       masterUsername: 'cdkdadmin',
       masterUserPassword: 'TempPass1234!',
       dbSubnetGroupName: docdbSubnetGroup.ref,
-      vpcSecurityGroupIds: [sg.securityGroupId],
+      // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
+      // KEEPS a DocDB cluster's groups on removal (real A/B), so verify.sh
+      // asserts the cluster is still on `Sg`.
+      vpcSecurityGroupIds: isRemoval ? undefined : [sg.securityGroupId],
       // #1160 / #5004 removable fields: non-default in the baseline deploy,
       // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
       // baseline values are RETAINED (CloudFormation keeps them).
@@ -129,6 +132,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
     docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     docdbCluster.addDependency(docdbSubnetGroup);
+    // Issue #1160: once the removal drops the Ref, this keeps `Sg` deleted
+    // AFTER the cluster that may still hold it (DependencyViolation otherwise).
+    docdbCluster.node.addDependency(sg);
     // Issue #3866 refusal phase (verify.sh step 1b): `CopyTagsToSnapshot` is a
     // property the SDK provider does not handle, on a type Cloud Control has
     // no handlers for, so cdkd must refuse the deploy pre-flight rather than
@@ -158,7 +164,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
 
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
-      vpcSecurityGroupIds: [sg.securityGroupId],
+      // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
+      // moves a Neptune cluster to the VPC's `default` security group on
+      // removal (real A/B), so verify.sh asserts exactly that.
+      vpcSecurityGroupIds: isRemoval ? undefined : [sg.securityGroupId],
       // #1160 / #5004 removable fields: non-default in the baseline deploy,
       // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
       // baseline values are RETAINED (CloudFormation keeps them).
@@ -173,6 +182,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
     neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     neptuneCluster.addDependency(neptuneSubnetGroup);
+    // Issue #1160: see the DocDB cluster's dependency on `Sg`.
+    neptuneCluster.node.addDependency(sg);
 
     const neptuneInstance = new neptune.CfnDBInstance(this, 'NeptuneInstance', {
       dbClusterIdentifier: neptuneCluster.ref,

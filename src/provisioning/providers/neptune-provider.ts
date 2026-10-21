@@ -16,7 +16,9 @@ import {
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-neptune';
+import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -136,6 +138,7 @@ function isDbIdentifier(id: string): boolean {
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;
   private createClient?: NeptuneClient;
+  private ec2Client?: EC2Client;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('NeptuneProvider');
   /**
@@ -225,6 +228,17 @@ export class NeptuneProvider implements ResourceProvider {
     return this.neptuneClient;
   }
 
+  /** Only a removed DBCluster `VpcSecurityGroupIds` reaches EC2 (issue #1160). */
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.ec2Client;
+  }
+
   /**
    * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance` go
    * through: SDK retries on, except a 5xx
@@ -274,7 +288,7 @@ export class NeptuneProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
@@ -291,7 +305,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::Neptune::DBInstance':
         return this.updateDBInstance(
@@ -602,20 +617,23 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
-      // cluster. readCurrentState always-emits `[]` for clusters that
-      // legitimately have no VPC SGs; the round-trip must NOT translate
-      // that placeholder into a destructive SDK call.
-      const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
-      const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
-
+      // Its own ProvisioningError names the cause; the catch passes it through.
+      const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template is sent as an explicit reset only where CloudFormation resets
@@ -632,12 +650,11 @@ export class NeptuneProvider implements ResourceProvider {
       //     a RANDOM window at create; there is no documented "reset to
       //     random" sentinel (doc-checked 2026-07-27: the Modify docs only
       //     describe the create-time random default).
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
       //   * Port / DBPort — Neptune documents a fixed default (8182), but
       //     resetting the port is connection-breaking for every client;
       //     leave unchanged.
+      // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
+      // group (`dbClusterSecurityGroupsToSend`).
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -660,7 +677,7 @@ export class NeptuneProvider implements ResourceProvider {
           // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
           // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
           EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
-          ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
+          ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
           Port:
             properties['DBPort'] != null
               ? Number(properties['DBPort'])
@@ -691,6 +708,7 @@ export class NeptuneProvider implements ResourceProvider {
         attributes: clusterAttributes(described),
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
@@ -1323,6 +1341,102 @@ export class NeptuneProvider implements ResourceProvider {
       })
     );
     return response.DBClusters?.[0];
+  }
+
+  /**
+   * The `VpcSecurityGroupIds` a DBCluster update sends, or `undefined` to omit
+   * it (ModifyDBCluster keeps the live groups then):
+   *
+   * - A non-empty declared list is sent as declared.
+   * - An EMPTY list is omitted: `[]` would detach every group, and
+   *   `readCurrentState` emits `[]` for a cluster with none, which
+   *   `drift --revert` hands back as the desired bag.
+   * - A list the previous template declared and the desired one omits is a
+   *   removal (issue #1160). A real CloudFormation A/B showed CloudFormation
+   *   then attaches the VPC's `default` security group in place of the
+   *   declared ones, so cdkd looks that group up and sends it. A previous
+   *   EMPTY list attached nothing, and a `drift --revert` baseline is a
+   *   readback rather than a template, so neither counts as a removal.
+   */
+  private async dbClusterSecurityGroupsToSend(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<string[] | undefined> {
+    const desired = properties['VpcSecurityGroupIds'] as string[] | undefined;
+    if (desired !== undefined) return desired.length > 0 ? desired : undefined;
+    const previous = previousProperties['VpcSecurityGroupIds'];
+    if (context?.desiredFromAwsReadback === true) return undefined;
+    if (!Array.isArray(previous) || previous.length === 0) return undefined;
+
+    // `missing` names what the lookup did not find (terminal); `awsError` is a
+    // failed call (left retryable).
+    let groupId: string | undefined;
+    let missing: string | undefined;
+    let awsError: unknown;
+    try {
+      const subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
+      const vpcId = subnetGroupName
+        ? (
+            await this.getClient().send(
+              new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
+            )
+          ).DBSubnetGroups?.[0]?.VpcId
+        : undefined;
+      if (!subnetGroupName) missing = 'the cluster reports no DB subnet group';
+      else if (!vpcId) missing = `DB subnet group ${subnetGroupName} reports no VPC`;
+      else {
+        const groups = await this.getEc2Client().send(
+          new DescribeSecurityGroupsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'group-name', Values: ['default'] },
+            ],
+          })
+        );
+        groupId = groups.SecurityGroups?.[0]?.GroupId;
+        if (!groupId) missing = `VPC ${vpcId} has no security group named default`;
+      }
+    } catch (error) {
+      awsError = error;
+    }
+    if (groupId === undefined) {
+      // go-to-k/cdkd#2319: the thrown message is persisted, so an AWS failure
+      // contributes only its summary (an EC2 UnauthorizedOperation names the
+      // caller's ARN). The full text goes to debug, masked, and the retry
+      // classifier reads it on `cause`.
+      const mask = context?.maskSecrets ?? ((text: string) => text);
+      const failure = missing === undefined ? describeAwsFailure(awsError) : undefined;
+      if (failure?.redacted === true) {
+        this.logger.debug(
+          safeMsg`${logicalId}: the VPC default security group lookup failed: ${mask(failure.detail)}`
+        );
+      }
+      const shown = mask(failure?.summary ?? '');
+      const refusal = new ProvisioningError(
+        `Failed to update Neptune DBCluster ${logicalId}: VpcSecurityGroupIds was removed from the template, so the cluster moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare VpcSecurityGroupIds in the template to choose the cluster's security groups.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        awsError instanceof Error ? awsError : undefined
+      );
+      if (missing !== undefined) throw markNonRetryable(refusal);
+      // Stamped whenever the message lost text the cause still holds: the
+      // AWS-authored summary, or a masker edit (the classifier must not miss
+      // retry wording a secret overlapped).
+      const withheld =
+        awsError instanceof Error &&
+        (failure?.redacted === true || shown !== (failure?.summary ?? ''));
+      throw withheld ? markRedactedCause(refusal) : refusal;
+    }
+    // A warning, not info: the default group may grant wider access.
+    this.logger.warn(
+      safeMsg`${logicalId}: VpcSecurityGroupIds was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
+    );
+    return [groupId];
   }
 
   private async describeDBInstance(dbInstanceIdentifier: string) {

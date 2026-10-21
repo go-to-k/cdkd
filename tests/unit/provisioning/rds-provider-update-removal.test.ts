@@ -73,7 +73,8 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
           MasterUserSecret: { KmsKeyId: 'arn:aws:kms:us-east-1:123:key/k1' },
           MonitoringRoleArn: 'arn:aws:iam::123:role/monitoring',
           ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
-          VpcSecurityGroupIds: ['sg-1'],
+          // A removed VpcSecurityGroupIds IS reset (to the VPC's default
+          // security group): db-cluster-sg-removal-1160.test.ts.
           Port: 5432,
         }
       );
@@ -95,7 +96,6 @@ describe('RDSProvider removal reset to CFn defaults (issue #1160)', () => {
       expect(modifyCall.input.MasterUserSecretKmsKeyId).toBeUndefined();
       expect(modifyCall.input.MonitoringRoleArn).toBeUndefined();
       expect(modifyCall.input.ServerlessV2ScalingConfiguration).toBeUndefined();
-      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
       expect(modifyCall.input.Port).toBeUndefined();
     });
 

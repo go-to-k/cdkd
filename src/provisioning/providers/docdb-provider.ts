@@ -453,9 +453,11 @@ export class DocDBProvider implements ResourceProvider {
       //     random" sentinel.
       //   * MasterUserPassword — a secret; removal cannot synthesize a
       //     reset value.
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
+      //   * VpcSecurityGroupIds — a real CloudFormation A/B (issue #1160)
+      //     showed CloudFormation KEEPS a DocDB cluster's groups when the
+      //     property is removed, so a removal sends nothing. RDS and Neptune
+      //     differ: there CloudFormation moves the cluster to the VPC's
+      //     default security group.
       //   * Port — DocDB documents a fixed default (27017), but resetting
       //     the port is connection-breaking for every client; leave unchanged.
       await this.getClient().send(

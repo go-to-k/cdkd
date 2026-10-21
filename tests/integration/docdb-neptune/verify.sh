@@ -28,7 +28,9 @@
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
-#       AutoMinorVersionUpgrade=false)
+#       AutoMinorVersionUpgrade=false). Step 3c also drops both clusters'
+#       VpcSecurityGroupIds (#1160): Neptune must move to the VPC's default
+#       security group and DocDB must keep `Sg`, as CloudFormation does.
 #   3g. --remove-protection compensation (issue #2204): re-enable
 #       DeletionProtection on both clusters out of band, add one
 #       out-of-band instance to each (DeleteDBCluster then refuses: the
@@ -290,6 +292,41 @@ if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
 fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters and the Neptune instance"
 
+# Issue #1160 VpcSecurityGroupIds removal arm. The baseline puts both clusters
+# on the stack's `Sg`; step 3c drops VpcSecurityGroupIds from both. A real
+# CloudFormation A/B showed CloudFormation moves a Neptune cluster to the VPC's
+# `default` group and KEEPS a DocDB cluster's groups, so step 3d asserts
+# Neptune -> default and DocDB -> Sg.
+# cluster_sgs <docdb|neptune> <cluster id>: "<sg id>:<status>" pairs, sorted.
+cluster_sgs() {
+  local out
+  out=$(aws "$1" describe-db-clusters --db-cluster-identifier "$2" --region "${REGION}" \
+    --query 'DBClusters[0].VpcSecurityGroups' --output json) || return 1
+  echo "${out}" | jq -r '[(. // [])[] | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(" ")'
+}
+CUSTOM_SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and (.key | test("^Sg"))) | .value.physicalId] | first // ""')
+VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+DEFAULT_SG_ID=""
+if [ -n "${VPC_ID}" ]; then
+  DEFAULT_SG_ID=$(aws ec2 describe-security-groups --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+fi
+case "${CUSTOM_SG_ID}" in sg-?*) ;; *) echo "[verify] FAIL: could not resolve the stack's Sg id from state (got '${CUSTOM_SG_ID}')" >&2; exit 1 ;; esac
+# --output text prints `None` for an empty match, so match the id shape.
+case "${DEFAULT_SG_ID}" in sg-?*) ;; *) echo "[verify] FAIL: could not resolve the default security group of VPC '${VPC_ID}' (got '${DEFAULT_SG_ID}')" >&2; exit 1 ;; esac
+if [ "${CUSTOM_SG_ID}" = "${DEFAULT_SG_ID}" ]; then
+  echo "[verify] FAIL: #1160 premise: the stack's Sg is the VPC default group, so the removal arm could not tell the two apart" >&2
+  exit 1
+fi
+DOCDB_BASE_SGS=$(cluster_sgs docdb "${DOCDB_CLUSTER_ID}")
+NEPTUNE_BASE_SGS=$(cluster_sgs neptune "${NEPTUNE_CLUSTER_ID}")
+if [ "${DOCDB_BASE_SGS}" != "${CUSTOM_SG_ID}:active" ] || [ "${NEPTUNE_BASE_SGS}" != "${CUSTOM_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160 premise: both clusters must start on Sg only (want '${CUSTOM_SG_ID}:active'; docdb='${DOCDB_BASE_SGS}', neptune='${NEPTUNE_BASE_SGS}')" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: both clusters on Sg ${CUSTOM_SG_ID}, not the VPC default ${DEFAULT_SG_ID} (#1160 premise)"
+
 # Issue #3650: each SSM parameter carries one DocDB / Neptune endpoint
 # `Fn::GetAtt`. Before the fix every one held the cluster / instance
 # IDENTIFIER, because cdkd recorded only RDS-style dotted keys these services
@@ -414,7 +451,32 @@ if [ -z "${SETTLED}" ]; then
   exit 1
 fi
 sleep 30
-read_state || exit 1
+# A cluster can leave `available` again right after the first read: DocDB
+# enters `resetting-master-credentials` when an update re-sends the templated
+# MasterUserPassword. So the reads below are taken only once BOTH clusters
+# read `available` on two consecutive polls; the last poll's values are the
+# ones asserted.
+STABLE=""
+PREV_AVAILABLE=""
+for i in $(seq 1 60); do
+  read_state || exit 1
+  if [ "${DOCDB_STATUS}" = "available" ] && [ "${NEPTUNE_STATUS}" = "available" ]; then
+    if [ -n "${PREV_AVAILABLE}" ]; then
+      STABLE="yes"
+      break
+    fi
+    PREV_AVAILABLE="yes"
+  else
+    PREV_AVAILABLE=""
+  fi
+  if [ "${i}" -lt 60 ]; then
+    sleep 10
+  fi
+done
+if [ -z "${STABLE}" ]; then
+  echo "[verify] FAIL: clusters did not stay available across two consecutive reads after the removal redeploy (docdb='${DOCDB_STATUS}', neptune='${NEPTUNE_STATUS}')" >&2
+  exit 1
+fi
 # Companion-change guard (#5004): the maintenance window moved tue -> wed in
 # the SAME removal deploy, so these must already read the new value. If a
 # Modify* call was never sent, they still read tue and this fails BEFORE the
@@ -435,6 +497,31 @@ if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "$
   exit 1
 fi
 echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"
+
+# Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
+# move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends
+# nothing and the cluster stays on Sg, which fails HERE. Polled, because the
+# group swap can sit in `adding` / `removing` for a while after `available`.
+NEPTUNE_SGS=""
+for i in $(seq 1 30); do
+  NEPTUNE_SGS=$(cluster_sgs neptune "${NEPTUNE_CLUSTER_ID}")
+  [ "${NEPTUNE_SGS}" = "${DEFAULT_SG_ID}:active" ] && break
+  if [ "${i}" -lt 30 ]; then
+    sleep 10
+  fi
+done
+if [ "${NEPTUNE_SGS}" != "${DEFAULT_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160: after VpcSecurityGroupIds was removed, the Neptune cluster's groups are '${NEPTUNE_SGS}', want '${DEFAULT_SG_ID}:active' (the VPC default group, as CloudFormation does; still '${CUSTOM_SG_ID}' means the removal sent nothing)" >&2
+  exit 1
+fi
+# DocDB: CloudFormation KEEPS the groups. Read after the Neptune poll, so a
+# reset sent through the same deploy has had the same time to land.
+DOCDB_SGS=$(cluster_sgs docdb "${DOCDB_CLUSTER_ID}")
+if [ "${DOCDB_SGS}" != "${CUSTOM_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160: after VpcSecurityGroupIds was removed, the DocDB cluster's groups are '${DOCDB_SGS}', want '${CUSTOM_SG_ID}:active' (CloudFormation keeps a DocDB cluster's groups)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: VpcSecurityGroupIds removal: Neptune moved to the VPC default ${DEFAULT_SG_ID}, DocDB kept Sg ${CUSTOM_SG_ID} (#1160, matches CloudFormation)"
 
 # Issue #2613: the description must have changed on the recorded group.
 if ! DOCDB_SG_DESC=$(aws docdb describe-db-subnet-groups --db-subnet-group-name "${DOCDB_SG_NAME}" \
