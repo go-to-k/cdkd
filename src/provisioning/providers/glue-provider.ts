@@ -4989,6 +4989,54 @@ function pickDefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Crawler properties whose REMOVAL from the template cdkd leaves in place
+ * (issue #1160). `UpdateCrawler` keeps a field it is not sent, and cdkd sends
+ * no reset, because CloudFormation keeps them too (CFn A/B us-east-1
+ * 2026-10-21: all ten schema properties removed at once, with no other change
+ * and again beside a `Targets` change, left every live value, and the
+ * handler's `UpdateCrawler` carried only Name, Role and Targets).
+ * `LineageConfiguration` is not in the
+ * CloudFormation schema at all (early validation refuses it); `UpdateCrawler`
+ * keeps it the same way.
+ */
+const CRAWLER_LEFT_IN_PLACE_ON_REMOVAL = [
+  'DatabaseName',
+  'Description',
+  'Classifiers',
+  'TablePrefix',
+  'Schedule',
+  'SchemaChangePolicy',
+  'RecrawlPolicy',
+  'LineageConfiguration',
+  'LakeFormationConfiguration',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+] as const;
+
+/**
+ * The ONE warning line for {@link CRAWLER_LEFT_IN_PLACE_ON_REMOVAL} removals.
+ * Names are template-borne, so they go through `safeMsg`. The deploy line
+ * says CloudFormation keeps the value too (the CFn A/B above), but only when
+ * every name is a CloudFormation property: `LineageConfiguration` is not one.
+ * A rollback revert restores an earlier state record, so there the property
+ * is one the failed deploy ADDED, and the line says that instead.
+ */
+const crawlerLeftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const cfnKeeps = names.includes('LineageConfiguration')
+    ? ''
+    : `, as CloudFormation leaves ${one ? 'it' : 'them'}`;
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateCrawler keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value${cfnKeeps}; UpdateCrawler keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+};
+
+/**
  * SDK Provider for `AWS::Glue::Crawler`.
  *
  * CFn `Schedule` is the structured `{ScheduleExpression: 'cron(...)'}`
@@ -5036,6 +5084,29 @@ export class GlueCrawlerProvider implements ResourceProvider {
         'Configuration',
         'CrawlerSecurityConfiguration',
         'Tags',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()`, so the shared caller (whose line
+   * claims a CloudFormation reset) warns about none.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Crawler',
+      new Set([
+        // Create-only: a removal replaces.
+        'Name',
+        // Required: a removal is not a valid template.
+        'Role',
+        'Targets',
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+        // Left in place, as CloudFormation leaves them, and named in
+        // update()'s own warning (no reset).
+        ...CRAWLER_LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
   ]);
@@ -5182,6 +5253,34 @@ export class GlueCrawlerProvider implements ResourceProvider {
         logicalId,
         log.warn
       );
+
+      // Issue #1160: a CRAWLER_LEFT_IN_PLACE_ON_REMOVAL property removed from
+      // the desired side is simply not sent, as CloudFormation does. Named
+      // once, and only after the update SUCCEEDED (the shared caller's warning
+      // has the same timing). Not on `drift --revert`: its previous side is an
+      // AWS readback, so a key the desired side lacks was never removed from a
+      // template.
+      if (!context?.desiredFromAwsReadback) {
+        // A direct call (no caller context) diffs the previous template itself.
+        const removed = context?.removedProperties;
+        const leftInPlace: string[] = [];
+        for (const key of CRAWLER_LEFT_IN_PLACE_ON_REMOVAL) {
+          const gone =
+            removed !== undefined
+              ? removed.has(key)
+              : properties[key] === undefined && previousProperties?.[key] !== undefined;
+          if (gone) leftInPlace.push(key);
+        }
+        if (leftInPlace.length > 0) {
+          log.warn(
+            crawlerLeftInPlaceWarning(
+              logicalId,
+              leftInPlace,
+              context?.replayingState ? 'rollback' : 'deploy'
+            )
+          );
+        }
+      }
 
       return { physicalId, wasReplaced: false };
     } catch (error) {

@@ -78,7 +78,11 @@
 #      CloudFormation clears each one (measured A/B), and so do UpdateWorkflow
 #      and UpdateTrigger, which replace every field they are not given; the
 #      arm fails if cdkd ever carries a removed value forward. Tags, Actions
-#      and the Workflow itself are kept.
+#      and the Workflow itself are kept. The crawler drops Description /
+#      TablePrefix / SchemaChangePolicy / Configuration, which CloudFormation
+#      KEEPS (measured A/B; UpdateCrawler keeps a field it is not sent): each
+#      must read unchanged afterwards, and the deploy must name them in the
+#      provider's own warning, which says CloudFormation keeps them too.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -595,6 +599,13 @@ assert_shape "EVENT trigger (create)" \
   "$(trigger_shape "${EVENT_TRIGGER_NAME}")"
 WF_CREATED=$(aws glue get-workflow --name "${WORKFLOW_NAME}" --region "${REGION}" \
   --query 'Workflow.CreatedOn' --output text)
+crawler_shape() {
+  aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}" --output json \
+    | jq -c '.Crawler | {Description, TablePrefix, SchemaChangePolicy, Configuration}'
+}
+# The same shape after phase 2g's removal: CloudFormation keeps all four.
+CRAWLER_KEPT_SHAPE='{"Description":"cdkd crawler","TablePrefix":"cdkd_","SchemaChangePolicy":{"UpdateBehavior":"LOG","DeleteBehavior":"LOG"},"Configuration":"{\"Version\":1.0,\"CrawlerOutput\":{\"Partitions\":{\"AddOrUpdateBehavior\":\"InheritFromTable\"}}}"}'
+assert_shape "Crawler (create)" "${CRAWLER_KEPT_SHAPE}" "$(crawler_shape)"
 
 # --- Sanity: connection exists (issue #4639) ---------------------------
 if aws glue get-connection --name "${CONNECTION_NAME}" --region "${REGION}" >/dev/null 2>&1; then
@@ -987,7 +998,7 @@ echo "    OK: --replace deleted '${RENAME_TO}' first and re-created it under the
 # EventBatchingCondition. CloudFormation clears each one (measured A/B), so
 # every one must read absent afterwards, in place. Phase 2f's flags stay set so
 # nothing else in the stack changes.
-echo "==> Phase 2g: removal (Workflow Description / DefaultRunProperties / MaxConcurrentRuns, trigger Description / EventBatchingCondition)"
+echo "==> Phase 2g: removal (Workflow Description / DefaultRunProperties / MaxConcurrentRuns, trigger Description / EventBatchingCondition, crawler Description / TablePrefix / SchemaChangePolicy / Configuration)"
 REMOVAL_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_RENAME=true CDKD_TEST_TOPLEVEL_NAME=true CDKD_TEST_REMOVAL=true \
   node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || {
@@ -1004,6 +1015,23 @@ if printf '%s' "${REMOVAL_OUT}" | grep -F 'cdkd leaves the current AWS value in 
   echo "FAIL: the removal deploy warned that a Glue Workflow / Trigger property was left in place (issue #1160)" >&2
   exit 1
 fi
+# The crawler's removal is named once, by the provider's own line (issue
+# #1160). The needle names the removed properties; the sentinel is an
+# independent substring of the same line, so a reworded warning fails loudly
+# instead of reading as "not fired". The shared caller's line claims a
+# CloudFormation reset, which CloudFormation does not do here, so it must not
+# name the crawler.
+CRAWLER_REMOVAL_NEEDLE="(AWS::Glue::Crawler): properties Description, TablePrefix, SchemaChangePolicy, Configuration were removed from the template and keep their current AWS value, as CloudFormation leaves them"
+CRAWLER_REMOVAL_SENTINEL="UpdateCrawler keeps a setting it is not sent"
+if ! printf '%s' "${REMOVAL_OUT}" | grep -F "${CRAWLER_REMOVAL_SENTINEL}" | grep -qF "${CRAWLER_REMOVAL_NEEDLE}"; then
+  echo "FAIL: the removal deploy did not name the crawler's kept properties in its warning (issue #1160)" >&2
+  exit 1
+fi
+if printf '%s' "${REMOVAL_OUT}" | grep -F 'CloudFormation would reset it to its default' | grep -qF 'AWS::Glue::Crawler'; then
+  echo "FAIL: the removal deploy claimed CloudFormation would reset a removed crawler property (issue #1160)" >&2
+  exit 1
+fi
+assert_shape "Crawler (removal, kept)" "${CRAWLER_KEPT_SHAPE}" "$(crawler_shape)"
 assert_shape "Workflow (removal)" \
   '{"Description":null,"DefaultRunProperties":null,"MaxConcurrentRuns":null}' \
   "$(workflow_shape)"
@@ -1021,7 +1049,7 @@ if [ -z "${WF_CREATED}" ] || [ "${RM_WF_CREATED}" != "${WF_CREATED}" ]; then
 fi
 # The Workflow's tags are not part of the removal: the updated set stays.
 assert_all_tag_sets "${UPDATED_TAGS}" 'removal'
-echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept (issue #1160)"
+echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept, removed crawler properties kept and named (issue #1160)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -1084,4 +1112,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + Workflow/Trigger property removal + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + Workflow/Trigger property removal + Crawler property keep-on-removal + clean destroy)"
