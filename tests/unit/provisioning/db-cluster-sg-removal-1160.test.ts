@@ -10,7 +10,7 @@
 // must look the default group up and send it, while DocDB sends nothing.
 // The empty-list guard stays: `[]` would detach every group, and
 // `readCurrentState` emits `[]` for a cluster with none.
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const dbSend = vi.fn();
 const ec2Send = vi.fn();
@@ -154,6 +154,14 @@ describe.each(ALL_THREE)(
       delete process.env['CDKD_NO_WAIT'];
       routeDbSends();
       routeEc2Sends();
+      // Every wait polls against Date.now with sleep mocked out: a clock that
+      // moves keeps a regressed wait FINITE (it times out and fails the case)
+      // instead of spinning the event loop.
+      let now = 0;
+      vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000));
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
     });
 
     it('waits through a group swap still in progress, then for each member instance', async () => {
