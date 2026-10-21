@@ -158,12 +158,21 @@ describe.each(TARGETS)('$name update: MasterUserPassword only when it changed (#
         { MasterUserPassword: SECRET_REF },
         { MasterUserPassword: SECRET_REF }
       );
-      expect(sent.value).toBe(SECRET_REF);
+      expect(sent.present).toBe(true);
     });
 
     it('never reads a recorded mask as equal, even spelled identically', async () => {
       const sent = await sentPassword({ MasterUserPassword: '***' }, { MasterUserPassword: '***' });
-      expect(sent.value).toBe('***');
+      expect(sent.present).toBe(true);
+    });
+
+    it('omits an unchanged literal password that merely contains the mask characters', async () => {
+      // The mask stands for a WHOLE leaf; a literal embedding `***` is a value.
+      const sent = await sentPassword(
+        { MasterUserPassword: 'Pa***word1234' },
+        { MasterUserPassword: 'Pa***word1234' }
+      );
+      expect(sent.present).toBe(false);
     });
   });
 
@@ -178,7 +187,7 @@ describe.each(TARGETS)('$name update: MasterUserPassword only when it changed (#
     });
 
     it('sends a password the set names, though the recorded value is equal', async () => {
-      // e.g. a secret read at a newer version under the same reference.
+      // e.g. a NoEcho parameter value AWS could not confirm holding.
       const sent = await sentPassword(
         { MasterUserPassword: PASSWORD },
         { MasterUserPassword: PASSWORD },

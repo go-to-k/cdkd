@@ -69,14 +69,14 @@ import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-red
  * The deploy's in-place update decides from `changedProperties`, which
  * compares the templates as written: the record holds a secret as its
  * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
- * A changed reference, a secret read at a newer version, and a `NoEcho` value
- * all count as changed there. These types are deliberately NOT in
+ * A changed reference and a `NoEcho` value count as changed there; a secret
+ * rotated under the same reference does not, as in CloudFormation. These types are deliberately NOT in
  * `CHANGED_PROPERTIES_CONSUMER_TYPES`: RDS never returns the password on a
  * Describe, so the readback that opt-in buys could not confirm it.
  *
  * Without that set (a rollback revert, `drift --revert`, a direct call) the
  * two bags are compared, and only an equal plain string counts as unchanged:
- * a recorded token or mask cannot be compared, so it is sent. Compared in
+ * a recorded token or `***` mask cannot be compared, so it is sent. Compared in
  * memory only; the value is never logged.
  */
 function masterUserPasswordToSend(
@@ -96,7 +96,7 @@ function masterUserPasswordToSend(
     typeof recorded === 'string' &&
     recorded === desired &&
     dynamicReferenceTokens(recorded).length === 0 &&
-    !recorded.includes(SECRET_MASK);
+    recorded !== SECRET_MASK;
   return unchanged ? undefined : (desired as string);
 }
 
