@@ -247,6 +247,10 @@ if [ -z "${NOECHO_DESC}" ] || [ "${NOECHO_DESC}" = "None" ]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${NOECHO_HC_KEPT_NAME} has no Description on AWS" >&2
   exit 1
 fi
+if printf '%s' "${P1_STATE}" | grep -qF -- "${NOECHO_DESC}"; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the NoEcho Description (value withheld)" >&2
+  exit 1
+fi
 if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${SECRET_HC_KEPT_NAME}'s Description as its {{resolve:...}} reference, so phase 2 proves nothing" >&2
   exit 1
