@@ -767,7 +767,9 @@
           ],
           "seededBy": [
             "create",
-            "createMethod"
+            "createMethod",
+            "update",
+            "updateMethod"
           ]
         },
         {
@@ -782,7 +784,9 @@
           ],
           "seededBy": [
             "create",
-            "createMethod"
+            "createMethod",
+            "update",
+            "updateMethod"
           ]
         },
         {
