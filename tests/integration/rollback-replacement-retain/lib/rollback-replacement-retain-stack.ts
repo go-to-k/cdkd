@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
@@ -9,6 +10,7 @@ import type { Construct } from 'constructs';
  * physical copy, and `DeletionPolicy` does not.
  *
  * covers: AWS::SSM::Parameter
+ * covers: AWS::Logs::LogGroup
  *
  * THREE parameters, one per row of the live CloudFormation A/B this behaviour
  * was measured against (us-east-1, 2026-09-05: a forced `AWS::SSM::Parameter`
@@ -109,6 +111,19 @@ export class RollbackReplacementRetainStack extends cdk.Stack {
     });
     deletionPolicy.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.RETAIN;
 
+    // go-to-k/cdkd#5143: a fixed-name log group with UpdateReplacePolicy:
+    // Retain. Its new copy survives the rollback and keeps its name, so the
+    // next deploy asking for that name is refused, and the refusal must name
+    // the holder as this stack's rollback-retained copy. A log group, not a
+    // parameter: only a name-adopting create (CreateLogGroup is one for cdkd)
+    // is probed before the replacement, which is where the hint lives. No
+    // DeletionPolicy, so `cdkd destroy` removes the re-adopted old copy.
+    const retainLogGroup = new logs.CfnLogGroup(this, 'RetainLogGroup', {
+      logGroupName: process.env['RETAIN_LOG_GROUP_NAME'] ?? `${base}/lg-v1`,
+      retentionInDays: 1,
+    });
+    retainLogGroup.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.RETAIN;
+
     if (process.env['ROLLBACK_RETAIN_INTEG_FAIL'] === 'true') {
       // MessageRetentionPeriod's ceiling is 1209600 (14 days); this is well
       // past it, so CreateQueue is rejected and the deploy rolls back. The
@@ -120,6 +135,7 @@ export class RollbackReplacementRetainStack extends cdk.Stack {
       failing.addDependency(retain);
       failing.addDependency(control);
       failing.addDependency(deletionPolicy);
+      failing.addDependency(retainLogGroup);
     }
   }
 }

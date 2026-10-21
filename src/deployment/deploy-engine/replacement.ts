@@ -1,4 +1,5 @@
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
+import { type RollbackRetainedCopy } from '../kept-in-history.js';
 import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from './masking.js';
 import {
@@ -247,6 +248,12 @@ export interface ReplacementDeps {
   ) => Promise<T>;
   /** Does the generated-name guard check `logicalId`'s create (its replacement included)? */
   generatedNameGuarded: (logicalId: string) => boolean;
+  /**
+   * go-to-k/cdkd#5143: the copies this stack's rollbacks kept under
+   * `UpdateReplacePolicy: Retain`, read from its event history. Asked only
+   * on the name-collision refusal, so a deploy that succeeds reads nothing.
+   */
+  rollbackRetainedCopies?: (stackName: string) => Promise<RollbackRetainedCopy[]>;
 }
 
 /**
@@ -777,6 +784,21 @@ export async function checkedReplacementNameChange(
   ) {
     return undefined;
   }
+  // go-to-k/cdkd#5143: the holder may be this resource's own copy that an
+  // earlier rolled-back deploy kept; say so only when the history shows it.
+  const keptByRollback =
+    (await deps.rollbackRetainedCopies?.(input.stackName).catch(() => [])) ?? [];
+  const ownRetainedCopy = keptByRollback.some(
+    (copy) =>
+      copy.logicalId === logicalId &&
+      copy.resourceType === resourceType &&
+      probeFoundSameId(resourceType, copy.physicalId, found.physicalId)
+  );
+  const remedy = ownRetainedCopy
+    ? `It is ${displaySafe(logicalId)}'s own copy that a rolled-back deploy of this stack kept ` +
+      `because of UpdateReplacePolicy: Retain, as CloudFormation also does, and cdkd no longer ` +
+      `tracks it. Delete it if you no longer need it, or choose another name.`
+    : `Choose a name no other resource holds, or delete the resource holding it if it is yours.`;
   throw markNonRetryable(
     new CdkdError(
       maskName(
@@ -784,8 +806,7 @@ export async function checkedReplacementNameChange(
           `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
           `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
           `would take that resource over and record it as this stack's. Nothing was ` +
-          `created or deleted. Choose a name no other resource holds, or delete the ` +
-          `resource holding it if it is yours.`
+          `created or deleted. ${remedy}`
       ),
       'NAMED_REPLACEMENT_COLLISION'
     )

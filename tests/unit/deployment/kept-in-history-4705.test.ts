@@ -10,8 +10,11 @@ import {
   keptInEarlierRecords,
   keptInEventHistory,
   loadKeptInHistory,
+  RETAINED_SURVIVOR_REASON_PREFIX,
+  rollbackRetainedInEventHistory,
 } from '../../../src/deployment/kept-in-history.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
+import { retainedSurvivorMessages } from '../../../src/deployment/rollback-executor/messages.js';
 
 const URL = 'https://sqs.us-east-1.amazonaws.com/1/App-Queue';
 const LG = '/cdkd/App-Logs';
@@ -126,5 +129,40 @@ describe('loadKeptInHistory', () => {
       'us-east-1'
     );
     expect(kept).toEqual([{ logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: LG }]);
+  });
+});
+
+describe('rollbackRetainedInEventHistory (go-to-k/cdkd#5143)', () => {
+  const survivorReason = retainedSurvivorMessages('Logs', 'AWS::Logs::LogGroup', '/aws/lambda/new', '').reason;
+  const ev = (over: Record<string, unknown>): DeploymentEvent =>
+    ({
+      eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
+      stackName: 'S',
+      operation: 'UPDATE',
+      logicalId: 'Logs',
+      resourceType: 'AWS::Logs::LogGroup',
+      physicalId: '/aws/lambda/new',
+      reason: survivorReason,
+      timestamp: '2026-10-21T00:00:00.000Z',
+      ...over,
+    }) as unknown as DeploymentEvent;
+
+  it('reads the survivor the rollback message writes, whatever follows its reason', () => {
+    expect(survivorReason.startsWith(RETAINED_SURVIVOR_REASON_PREFIX)).toBe(true);
+    expect(
+      rollbackRetainedInEventHistory([[ev({}), ev({ reason: `${survivorReason}; and more` })]], 'S')
+    ).toEqual([
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/aws/lambda/new' },
+      { logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: '/aws/lambda/new' },
+    ]);
+  });
+
+  it.each([
+    ['another stack', { stackName: 'T' }],
+    ['another event type', { eventType: 'RESOURCE_SUCCEEDED' }],
+    ['no survivor id', { physicalId: undefined }],
+    ['another reason', { reason: 'The re-create returned the live new resource' }],
+  ])('ignores %s', (_n, over) => {
+    expect(rollbackRetainedInEventHistory([[ev(over)]], 'S')).toEqual([]);
   });
 });

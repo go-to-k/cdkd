@@ -1,4 +1,6 @@
 import { getLogger } from '../utils/logger.js';
+import { DeploymentEventsReader } from '../state/deployment-events-store.js';
+import { loadRollbackRetainedCopies } from './kept-in-history.js';
 import type { GeneratedNameGuard } from './generated-name-guard.js';
 import { withStackScopeBeforeStateRead } from '../provisioning/resource-name.js';
 import {
@@ -853,6 +855,17 @@ export class DeployEngine {
       guardedReplacementCreate: (input, create) => guardedReplacementCreate(this, input, create),
       generatedNameGuarded: (logicalId) =>
         this.generatedNameGuard?.candidate(logicalId) !== undefined,
+      rollbackRetainedCopies: (stackName) => {
+        const reader = new DeploymentEventsReader(this.stateBackend);
+        return loadRollbackRetainedCopies(
+          {
+            listRuns: (s, r) => reader.listRuns(s, r),
+            readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+          },
+          stackName,
+          this.stackRegion
+        );
+      },
     };
   }
 

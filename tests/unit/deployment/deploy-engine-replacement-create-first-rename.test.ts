@@ -768,6 +768,64 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     ).toBeUndefined();
   });
 
+  // go-to-k/cdkd#5143: the holder is this resource's own copy an earlier
+  // rolled-back deploy kept under UpdateReplacePolicy: Retain.
+  const withRetainedCopies = (
+    engine: ReturnType<typeof makeEngine>,
+    copies: Array<{ logicalId: string; resourceType: string; physicalId: string }>
+  ): { engine: ReturnType<typeof makeEngine>; asked: string[] } => {
+    const asked: string[] = [];
+    const original = engine.replacementDeps.bind(engine);
+    vi.spyOn(engine, 'replacementDeps').mockImplementation(() => ({
+      ...original(),
+      rollbackRetainedCopies: async (stackName: string) => {
+        asked.push(stackName);
+        return copies;
+      },
+    }));
+    return { engine, asked };
+  };
+
+  it("names the holder as this resource's own rollback-retained copy when the history shows it", async () => {
+    h.importResult = { physicalId: THEIRS };
+    const { engine, asked } = withRetainedCopies(makeEngine(h), [
+      { logicalId: 'Fn', resourceType: QUEUE, physicalId: THEIRS },
+    ]);
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(asked).toEqual(['MyStack']);
+    expect(err!.message).toContain(
+      "It is Fn's own copy that a rolled-back deploy of this stack kept because of UpdateReplacePolicy: Retain"
+    );
+    expect(err!.message).not.toContain('delete the resource holding it if it is yours');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it.each([
+    ['another logical id', { logicalId: 'Other', resourceType: QUEUE, physicalId: THEIRS }],
+    ['another physical id', { logicalId: 'Fn', resourceType: QUEUE, physicalId: OLD_URL }],
+    ['another type', { logicalId: 'Fn', resourceType: 'AWS::SNS::Topic', physicalId: THEIRS }],
+  ])('keeps the generic remedy for a retained copy with %s', async (_n, copy) => {
+    h.importResult = { physicalId: THEIRS };
+    const { engine } = withRetainedCopies(makeEngine(h), [copy]);
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.message).toContain('delete the resource holding it if it is yours');
+    expect(err!.message).not.toContain('rolled-back deploy');
+  });
+
+  it('reads no history when no resource holds the new name', async () => {
+    h.importResult = null;
+    h.createIds = [THEIRS.replace('their-queue', 'free-queue')];
+    const { engine, asked } = withRetainedCopies(makeEngine(h), []);
+
+    expect(await provision(engine, queue('free-queue'))).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
   it('proceeds when no resource holds the new name (negative control)', async () => {
     h.importResult = null;
     h.createIds = [THEIRS.replace('their-queue', 'free-queue')];
