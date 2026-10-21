@@ -834,6 +834,9 @@ export interface UpdateContext extends SecretMaskingContext {
    * `NoEcho` value AWS did not confirm holding, and a key whose previous side
    * the engine rewrote for the provider to act on (a re-attachment, a dropped
    * secret principal list). Names only: no value reaches the provider.
+   * One deliberate exception to CloudFormation parity: a create-only path a
+   * `NoEcho` parameter feeds that cdkd decided not to replace (warned on every
+   * deploy) is left out, since it cannot be updated in place either.
    *
    * Set ONLY by the deploy's in-place UPDATE
    * (`deploy-engine/update-in-place.ts`). ABSENT on the rollback revert arms
