@@ -317,6 +317,21 @@ describe('enclosingDeadlineRemainingMs (issue #5155)', () => {
     expect(seen).toEqual([9_000, 9_000]);
   });
 
+  it('stays frozen while the enclosing deadline is paused', async () => {
+    const seen: number[] = [];
+    await withResourceDeadline(
+      async () => {
+        await whileEnclosingDeadlinesPaused(async () => {
+          seen.push(enclosingDeadlineRemainingMs());
+          await vi.advanceTimersByTimeAsync(3_000);
+          seen.push(enclosingDeadlineRemainingMs());
+        });
+      },
+      { warnAfterMs: 1_000, timeoutMs: 10_000, onTimeout: () => new Error('timed out') }
+    );
+    expect(seen).toEqual([10_000, 10_000]);
+  });
+
   it('is 0 once the deadline has expired', async () => {
     const seen: number[] = [];
     let release!: () => void;
