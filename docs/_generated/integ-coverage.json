@@ -6044,6 +6044,7 @@
         "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
+        "rollback-replacement-retain",
         "rollback-same-id-recreate",
         "route53",
         "scheduled-task",
@@ -6152,6 +6153,10 @@
           "literal"
         ],
         "retain-orphan-redeploy": [
+          "literal"
+        ],
+        "rollback-replacement-retain": [
+          "l1",
           "literal"
         ],
         "rollback-same-id-recreate": [
