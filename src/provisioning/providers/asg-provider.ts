@@ -58,11 +58,20 @@ import {
   pasteableAwsCommand,
   WITHHELD_AWS_COMMAND,
 } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import {
@@ -1030,7 +1039,7 @@ export class ASGProvider implements ResourceProvider {
       // would otherwise classify as retryable.
       // The AWS text goes through the operation's masker: a 5xx or a refusal
       // can quote a resolved secret-derived value (issue #2176).
-      const failure = wrapMaskedAwsError(
+      const failure = this.wrapCaughtError(
         maskSecrets,
         error,
         (text) =>
@@ -1135,9 +1144,20 @@ export class ASGProvider implements ResourceProvider {
       const outcome = deleteAccepted
         ? `cdkd started deleting it but could not confirm it is gone`
         : `cdkd could not delete it`;
+      // The note joins the THROWN (persisted) message, so an AWS-authored
+      // cleanup failure is named by its class there, and AWS's text goes to
+      // debug (go-to-k/cdkd#2319): a denied DeleteAutoScalingGroup names the
+      // caller's assumed-role ARN.
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      if (cleanupFailure.redacted) {
+        debug(
+          `Retiring AutoScalingGroup ${logicalId} after its create-time wiring failed did not ` +
+            `finish: ${cleanupFailure.detail}`
+        );
+      }
       return maskSecrets(
         `The group was created, and ${outcome} (` +
-          `${describeAwsFailure(cleanupError).detail}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
+          `${cleanupFailure.summary}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
           `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
           pasteableAwsCommand(
             maskSecrets
@@ -1507,10 +1527,46 @@ export class ASGProvider implements ResourceProvider {
   }
 
   /**
-   * The `update()` failure wrap. AWS can quote the group name, which can be
-   * secret-derived (go-to-k/cdkd#4275), so its text goes through the masker,
-   * stamped exactly when the mask changed it so the retry classifiers read
-   * the unmasked cause.
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a create-time wiring call's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as the
+   * group. A non-`Error` throw is withheld the same way, unstamped: it has no
+   * chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text masked (AWS's SDK and
+   * cdkd's own refusals can quote the group name, which can be secret-derived,
+   * go-to-k/cdkd#4275), stamped exactly when the mask changed it
+   * (`wrapMaskedAwsError`). The delete checks its not-found by type and
+   * message on the RAW error before it wraps, so no "already gone" reading
+   * depends on the wrapped text.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The `update()` failure wrap ({@link wrapCaughtError}), through the masker
+   * paired with the recorded group name. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
    */
   private wrapUpdateError(
     error: unknown,
@@ -1520,7 +1576,7 @@ export class ASGProvider implements ResourceProvider {
     maskSecrets: MaskerFn | undefined
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
+    return this.wrapCaughtError(
       maskerOrIdentity(maskSecrets),
       error,
       (text) =>
@@ -1815,12 +1871,17 @@ export class ASGProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete AutoScalingGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete AutoScalingGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

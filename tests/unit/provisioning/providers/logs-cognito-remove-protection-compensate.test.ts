@@ -60,6 +60,7 @@ import {
   userPoolProtectionSite,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
 import { WITHHELD_AWS_COMMAND } from '../../../../src/provisioning/replacement-protection-advice.js';
+import { isAwsAuthoredFailure, VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
 import { ResourceNotFoundException as LogsNotFound } from '@aws-sdk/client-cloudwatch-logs';
 import { ResourceNotFoundException as CognitoNotFound } from '@aws-sdk/client-cognito-identity-provider';
 
@@ -174,6 +175,26 @@ function iamDeny(): Error {
     { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
   );
 }
+
+/**
+ * The site's delete failure names `text`. The Cognito wrap withholds an
+ * AWS-authored failure's text into its `cause` and names it by its class at the
+ * top (go-to-k/cdkd#2319), so that site must be the wrap, never the raw error;
+ * the Logs site still relays the text in its own message.
+ */
+const says =
+  (site: Site, text: string) =>
+  (error: unknown): boolean => {
+    if (!(error instanceof Error)) return false;
+    if (site.name !== 'Cognito UserPool') return error.message.includes(text);
+    const cause = error.cause;
+    if (!(cause instanceof Error) || !cause.message.includes(text)) return false;
+    const tail = isAwsAuthoredFailure(cause) ? `${cause.name}. ${VERBOSE_POINTER}` : cause.message;
+    return (
+      /^Failed to delete Cognito User Pool \S+: /.test(error.message) &&
+      error.message.endsWith(`: ${tail}`)
+    );
+  };
 
 function notFound(): Error {
   const e = new Error('The specified resource does not exist.');
@@ -350,13 +371,13 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     const provider = site.make();
     script(site, { observe: true, del: iamDeny() });
     for (let i = 0; i < 3; i += 1) {
-      await expect(runDeleteAttempt(false, () => del(provider))).rejects.toThrow(
-        'not authorized to perform'
+      await expect(runDeleteAttempt(false, () => del(provider))).rejects.toSatisfy(
+        says(site, 'not authorized to perform')
       );
       expect(reEnableCalls(site)).toHaveLength(0);
     }
-    await expect(runDeleteAttempt(true, () => del(provider))).rejects.toThrow(
-      'not authorized to perform'
+    await expect(runDeleteAttempt(true, () => del(provider))).rejects.toSatisfy(
+      says(site, 'not authorized to perform')
     );
     const reEnables = reEnableCalls(site);
     expect(reEnables).toHaveLength(1);

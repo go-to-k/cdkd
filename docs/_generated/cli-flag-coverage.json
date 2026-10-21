@@ -1726,6 +1726,7 @@
       "integs": [
         "cache-streaming",
         "cdk-cross-account-lookup-role",
+        "cognito",
         "conditions",
         "created-before-failure-revert",
         "cross-region-state-bucket",
