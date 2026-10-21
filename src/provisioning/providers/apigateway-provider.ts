@@ -3329,6 +3329,18 @@ type MethodChildCall =
       command: PutIntegrationCommand | PutIntegrationResponseCommand | PutMethodResponseCommand;
     };
 
+/**
+ * Whether `props` carries `Integration` / `MethodResponses` in CloudFormation's
+ * shape (each absent, or an integration with a `Type` / an empty one, and an
+ * array of method responses), not `readCurrentState`'s read-back shape.
+ */
+function isCfnMethodChildShape(props: Record<string, unknown>): boolean {
+  const integration = integrationBlock(props['Integration']);
+  if (integration !== undefined && !('Type' in integration)) return false;
+  const responses = props['MethodResponses'];
+  return responses === undefined || Array.isArray(responses);
+}
+
 /** A CFn response list keyed by `StatusCode`; a malformed list reads as empty. */
 function responsesByStatus(value: unknown): Map<string, Record<string, unknown>> {
   const out = new Map<string, Record<string, unknown>>();
@@ -3377,6 +3389,12 @@ export function methodChildCalls(
   desired: Record<string, unknown>,
   previous: Record<string, unknown>
 ): MethodChildCall[] {
+  // `cdkd drift --revert` hands either side as `readCurrentState` emits it:
+  // the SDK's camelCase `methodIntegration` and a status-code-keyed map of
+  // method responses. Read as CloudFormation's shape, that plans an
+  // integration with no type and a put of every existing method response.
+  // Such an update leaves both alone, as before go-to-k/cdkd#5140.
+  if (!isCfnMethodChildShape(desired) || !isCfnMethodChildShape(previous)) return [];
   const newInt = integrationBlock(desired['Integration']);
   const oldInt = integrationBlock(previous['Integration']);
   const newMr = responsesByStatus(desired['MethodResponses']);

@@ -141,6 +141,36 @@ describe('methodChildCalls (go-to-k/cdkd#5140)', () => {
   });
 });
 
+describe('methodChildCalls leaves a read-back side alone (go-to-k/cdkd#5140 review)', () => {
+  // What `readCurrentState` emits for a method: the SDK's camelCase
+  // integration and a status-code-keyed map of method responses, as
+  // `cdkd drift --revert` passes it on either side.
+  const readBack = {
+    Integration: {
+      type: 'AWS_PROXY',
+      httpMethod: 'POST',
+      uri: OLD_URI,
+      integrationResponses: { '200': { statusCode: '200' } },
+    },
+    MethodResponses: { '200': { statusCode: '200' } },
+  };
+  const template = { Integration: integration(NEW_URI, [IR200]), MethodResponses: [MR200] };
+
+  it('plans nothing when either side is the read-back shape', () => {
+    expect(methodChildCalls(IDS, template, readBack)).toEqual([]);
+    expect(methodChildCalls(IDS, readBack, template)).toEqual([]);
+    expect(methodChildCalls(IDS, readBack, structuredClone(readBack))).toEqual([]);
+  });
+
+  it('never sends a PutIntegration with no type or a PutMethodResponse onto a read-back', () => {
+    const calls = [
+      ...methodChildCalls(IDS, template, readBack),
+      ...methodChildCalls(IDS, readBack, template),
+    ];
+    expect(calls.filter((c) => c.kind === 'put')).toEqual([]);
+  });
+});
+
 describe('ApiGatewayProvider.update Method applies the integration (go-to-k/cdkd#5140)', () => {
   beforeEach(() => mockSend.mockReset());
 
