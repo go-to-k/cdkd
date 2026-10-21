@@ -16,7 +16,7 @@ apigatewayv2-update-removal	2026-10-20T11:01:47Z	PASS	211	verify.sh	PR #5120 (#1
 apigw-cloudwatch-role-redeploy	2026-10-20T02:29:40Z	PASS	335	verify.sh	deploy+destroy clean, 0 orphans
 apigw-gateway-response	2026-10-18T18:32:28Z	PASS	245	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 apigw-stage-props	2026-10-19T04:30:40Z	PASS	90	verify.sh	rc ok, orph clean, own CW role+Account (#5083)
-apigw-stage-throttling	2026-10-21T05:33:27Z	FAIL	120	verify.sh	rc=1 phase2: GET /items (added on update) empty body; #5139 rebased over #5141; destroy clean, orph clean
+apigw-stage-throttling	2026-10-21T05:36:35Z	FAIL	130	verify.sh	rc=1 verify.sh failed on #5139 e1e364969; destroy clean, orph clean
 apigw-usage-plan-key	2026-10-19T01:54:58Z	PASS	70	verify.sh	PR #5081 CloudWatch-role fixture; us-east-1; rc ok, orph clean
 app-autoscaling-recreate	2026-10-08T03:35:50Z	PASS	0	verify.sh	#4706: an imported scalable target is recorded cc-api; --recreate-via-cc-api refused (also from a legacy sdk record), policy intact; destroy 0 errors, 0 orphans
 appconfig	2026-08-10T05:29:23Z	PASS	69	verify.sh	0810 P2 sweep b8; rc ok, 0 orph

@@ -130,7 +130,10 @@ cleanup
 curl_body_with_retry() {
   local url="$1"
   local body=""
-  for _ in 1 2 3 4 5 6; do
+  # Up to ~2 min: a stage retargeted to a new Deployment has been measured to
+  # keep answering "Missing Authentication Token" for a new route past 30 s
+  # (go-to-k/cdkd#5137 runs), with the route present and wired.
+  for _ in $(seq 1 24); do
     body="$(curl -fsS "${url}" 2>/dev/null || true)"
     if echo "${body}" | grep -q '"ok":true'; then
       echo "${body}"
@@ -148,8 +151,10 @@ route_diagnostics() { # usage: route_diagnostics <route> <function-name> <state-
   set +e
   echo "--- curl -i /${route}:" >&2
   curl -sS -i "${API_URL}/${route}" 2>&1 | head -20 >&2
-  echo "--- stage deploymentId / deployments:" >&2
-  aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}" --query deploymentId --output text >&2
+  echo "--- stage deploymentId / deployments / the deployed snapshot's routes:" >&2
+  DEP_ID=$(aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}" --query deploymentId --output text)
+  echo "${DEP_ID}" >&2
+  aws apigateway get-deployment --rest-api-id "${API_ID}" --deployment-id "${DEP_ID}" --embed apisummary --region "${REGION}" --query apiSummary --output json 2>&1 | jq -c 'keys' >&2
   aws apigateway get-deployments --rest-api-id "${API_ID}" --region "${REGION}" --query 'items[].[id,createdDate]' --output text >&2
   RES_ID=$(aws apigateway get-resources --rest-api-id "${API_ID}" --region "${REGION}" --query "items[?path=='/${route}'].id | [0]" --output text)
   echo "--- live integration uri for GET /${route}:" >&2
