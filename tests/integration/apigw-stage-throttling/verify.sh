@@ -334,13 +334,29 @@ for route in hello items; do
   ROUTE_BODY="$(curl_body_with_retry "${API_URL}/${route}")"
   if ! echo "${ROUTE_BODY}" | grep -q '"ok":true'; then
     echo "FAIL: GET /${route} does not serve after the function replacement; got: ${ROUTE_BODY}" >&2
+    # What the stage serves and what the function allows, so a FAIL names
+    # which half broke (best-effort: the run is already failing).
+    set +e
+    echo "--- curl -i /${route}:" >&2
+    curl -sS -i "${API_URL}/${route}" 2>&1 | head -20 >&2
+    echo "--- stage deploymentId / deployments:" >&2
+    aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}" --query deploymentId --output text >&2
+    aws apigateway get-deployments --rest-api-id "${API_ID}" --region "${REGION}" --query 'items[].[id,createdDate]' --output text >&2
+    RES_ID=$(aws apigateway get-resources --rest-api-id "${API_ID}" --region "${REGION}" --query "items[?path=='/${route}'].id | [0]" --output text)
+    echo "--- live integration uri for GET /${route}:" >&2
+    aws apigateway get-integration --rest-api-id "${API_ID}" --resource-id "${RES_ID}" --http-method GET --region "${REGION}" --query uri --output text >&2
+    echo "--- ${NEW_FN_NAME} policy:" >&2
+    aws lambda get-policy --function-name "${NEW_FN_NAME}" --region "${REGION}" --query Policy --output text 2>&1 | jq -c '.Statement[] | {Sid, arn: .Condition.ArnLike."AWS:SourceArn"}' >&2
+    echo "--- state rows (Method / Deployment / Stage):" >&2
+    echo "${STATE_AFTER_REPLACE}" | jq -c '.resources | to_entries[] | select(.value.resourceType | test("ApiGateway::(Method|Deployment|Stage)")) | {k: .key, id: .value.physicalId, uri: .value.properties.Integration.Uri, dep: .value.properties.DeploymentId}' >&2
+    set -e
     exit 1
   fi
 done
 echo "    OK: every permission replaced under a new statement id on ${NEW_FN_NAME}, old function gone, routes serve"
 
 # --- Phase 4: destroy ---------------------------------------------------
-echo "==> Phase 3: destroy"
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \

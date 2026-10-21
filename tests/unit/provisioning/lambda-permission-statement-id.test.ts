@@ -16,6 +16,7 @@ import {
   stackInstanceNameSuffix,
   withNameGeneration,
   withStackScope,
+  withStackScopeBeforeStateRead,
 } from '../../../src/provisioning/resource-name.js';
 
 const INSTANCE_ID = '6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b';
@@ -66,5 +67,14 @@ describe('LambdaPermissionProvider StatementId (go-to-k/cdkd#5137)', () => {
   it('keeps the bare logical id on a legacy stack', async () => {
     const { sent } = await sentStatementId('ApiPermission', { stackInstanceId: undefined });
     expect(sent).toBe('ApiPermission');
+  });
+  it('throws before the state read instead of falling back to the legacy id', async () => {
+    const provider = new LambdaPermissionProvider();
+    await expect(
+      withStackScopeBeforeStateRead('MyStack', () =>
+        provider.create('ApiPermission', 'AWS::Lambda::Permission', PROPS)
+      )
+    ).rejects.toThrow(/before the state record/);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

@@ -34,7 +34,11 @@ import {
 } from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
-import { generateResourceName, getCurrentStackInstanceId } from '../resource-name.js';
+import {
+  generateResourceName,
+  getCurrentStackInstanceId,
+  isBeforeStateRead,
+} from '../resource-name.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
@@ -665,7 +669,9 @@ export class LambdaPermissionProvider implements ResourceProvider {
  * AWS allows `[a-zA-Z0-9-_.]`, at most 100 characters; `.` is left out.
  */
 export function permissionStatementId(logicalId: string): string {
-  if (getCurrentStackInstanceId() !== undefined) {
+  // Before the state read the stack's instance id is unknown, so this must not
+  // fall back to the legacy id: `generateResourceName` refuses that scope.
+  if (getCurrentStackInstanceId() !== undefined || isBeforeStateRead()) {
     return generateResourceName(logicalId, {
       maxLength: 100,
       allowedPattern: /[^a-zA-Z0-9_-]/g,

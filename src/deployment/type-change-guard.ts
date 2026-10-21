@@ -48,7 +48,8 @@ import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
  *
  * For almost every type an id is self-describing, so no — and this answers
  * `false`, leaving every caller's id-equality reading byte-for-byte as it was.
- * `AWS::Glue::Table` is the exception: its id `<databaseName>|<tableName>` is
+ * Two types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
+ * see {@link permissionsOnDifferentFunctions}. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
  * placed by the recorded `DatabaseName`, and since both names may contain `|`,
  * table `db|orders` in database `my` and table `orders` in database `my|db`
  * share the id `my|db|orders`. A replacement that changes both names can
