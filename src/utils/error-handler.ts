@@ -104,6 +104,31 @@ export class DeployCancelledError extends CdkdError {
 }
 
 /**
+ * The operator declined the `--require-approval` prompt (go-to-k/cdkd#5136).
+ *
+ * A failure to the work graph, so stacks depending on the declined one are
+ * skipped, but an expected outcome to the operator: like the AWS CDK CLI's
+ * `AbortError`, it prints as a yellow line without the failure framing, and
+ * the run still exits 1 because the template was not applied. `softAbort` is
+ * an own property rather than an `instanceof` check, so it survives
+ * `maskSecretsInError`'s rebuilt copy.
+ */
+export class DeploymentNotApprovedError extends CdkdError {
+  readonly softAbort = true;
+
+  constructor(message: string) {
+    super(message, 'DEPLOY_NOT_APPROVED');
+    this.name = 'DeploymentNotApprovedError';
+    Object.setPrototypeOf(this, DeploymentNotApprovedError.prototype);
+  }
+}
+
+/** Whether `error` is a declined confirmation ({@link DeploymentNotApprovedError}). */
+export function isSoftAbort(error: unknown): boolean {
+  return error instanceof Error && (error as Error & { softAbort?: unknown }).softAbort === true;
+}
+
+/**
  * Asset errors
  */
 export class AssetError extends CdkdError {
@@ -1071,7 +1096,10 @@ export function formatError(error: unknown): string {
 export function handleError(error: unknown): never {
   const logger = getLogger();
   const silent = error instanceof CdkdError && (error as CdkdError & { silent?: boolean }).silent;
-  if (!silent) {
+  if (isSoftAbort(error)) {
+    // go-to-k/cdkd#5136: a declined prompt, as the AWS CDK CLI prints it.
+    logger.warn((error as Error).message);
+  } else if (!silent) {
     logger.error(formatError(error));
   }
 
