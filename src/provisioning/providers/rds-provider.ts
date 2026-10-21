@@ -973,6 +973,25 @@ export class RDSProvider implements ResourceProvider {
       // Describe to get updated attributes
       const described = await this.describeDBCluster(physicalId);
 
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
+      ) {
+        await this.waitForSecurityGroupsApplied(physicalId, vpcSgIds ?? []);
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForInstanceAvailable(member.DBInstanceIdentifier);
+          }
+        }
+      }
+
       // Apply tag diff using the cluster ARN.
       if (described?.DBClusterArn) {
         await this.applyTagDiff(
@@ -1924,6 +1943,42 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * Wait until the cluster is `available` AND reports exactly `expected` as its
+   * VPC security groups, all `active` (issue #1160). `available` alone can still
+   * read before the group swap has started; the group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...expected].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      const groups = cluster?.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      const settled =
+        cluster?.Status === 'available' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`DBCluster ${dbClusterIdentifier} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for DBCluster ${dbClusterIdentifier} to apply its new VPC security groups`
+    );
+  }
+
+  /**
    * Wait for a DBCluster to become available
    */
   private async waitForClusterAvailable(
@@ -2558,4 +2613,17 @@ export class RDSProvider implements ResourceProvider {
     // DB subnet group reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

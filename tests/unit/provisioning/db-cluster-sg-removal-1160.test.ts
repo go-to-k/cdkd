@@ -73,18 +73,36 @@ import type { UpdateContext } from '../../../src/types/resource.js';
 const SUBNET_GROUP = 'my-subnets';
 const VPC_ID = 'vpc-0abc';
 const DEFAULT_SG = 'sg-0default';
+const MEMBER = 'member-1';
 
-/** Routes each DB-client command by name; the cluster sits in SUBNET_GROUP. */
+/**
+ * Routes each DB-client command by name; the cluster sits in SUBNET_GROUP. The
+ * cluster reads back `available` with whatever groups the last ModifyDBCluster
+ * sent, all `active`, and one member instance, `available`.
+ */
 function routeDbSends(overrides: Record<string, () => unknown> = {}) {
-  dbSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+  let liveGroups: string[] = [];
+  dbSend.mockImplementation(async (command: { constructor: { name: string }; input?: any }) => {
     const name = command.constructor.name;
+    if (name === 'ModifyDBClusterCommand' && Array.isArray(command.input?.VpcSecurityGroupIds)) {
+      liveGroups = command.input.VpcSecurityGroupIds;
+    }
     if (overrides[name]) return overrides[name]();
     if (name === 'DescribeDBClustersCommand') {
       return {
         DBClusters: [
-          { DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:c', DBSubnetGroup: SUBNET_GROUP },
+          {
+            DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+            DBSubnetGroup: SUBNET_GROUP,
+            Status: 'available',
+            VpcSecurityGroups: liveGroups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
+            DBClusterMembers: [{ DBInstanceIdentifier: MEMBER }],
+          },
         ],
       };
+    }
+    if (name === 'DescribeDBInstancesCommand') {
+      return { DBInstances: [{ DBInstanceIdentifier: MEMBER, DBInstanceStatus: 'available' }] };
     }
     if (name === 'DescribeDBSubnetGroupsCommand') {
       return { DBSubnetGroups: [{ DBSubnetGroupName: SUBNET_GROUP, VpcId: VPC_ID }] };
@@ -105,10 +123,145 @@ const modifyInput = (): Record<string, unknown> | undefined => {
 
 const dbCommandNames = (): string[] => dbSend.mock.calls.map((c) => c[0].constructor.name);
 
+const countOf = (command: string): number =>
+  dbSend.mock.calls.filter((c) => c[0].constructor.name === command).length;
+
+/** No real sleeps: the waiters poll through `sleep`. */
+function withoutSleep<T extends object>(provider: T): T {
+  (provider as unknown as { sleep: () => Promise<void> }).sleep = vi.fn().mockResolvedValue(undefined);
+  return provider;
+}
+
 const RESETTING = [
-  { label: 'RDS', type: 'AWS::RDS::DBCluster', make: () => new RDSProvider() },
-  { label: 'Neptune', type: 'AWS::Neptune::DBCluster', make: () => new NeptuneProvider() },
+  { label: 'RDS', type: 'AWS::RDS::DBCluster', make: () => withoutSleep(new RDSProvider()) },
+  {
+    label: 'Neptune',
+    type: 'AWS::Neptune::DBCluster',
+    make: () => withoutSleep(new NeptuneProvider()),
+  },
 ] as const;
+
+const ALL_THREE = [
+  ...RESETTING,
+  { label: 'DocDB', type: 'AWS::DocDB::DBCluster', make: () => withoutSleep(new DocDBProvider()) },
+] as const;
+
+describe.each(ALL_THREE)(
+  '$label DBCluster: a changed VpcSecurityGroupIds waits for the cluster and its members to settle (#1160)',
+  ({ type, make }) => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      delete process.env['CDKD_NO_WAIT'];
+      routeDbSends();
+      routeEc2Sends();
+    });
+
+    it('waits through a group swap still in progress, then for each member instance', async () => {
+      let reads = 0;
+      routeDbSends({
+        DescribeDBClustersCommand: () => {
+          reads += 1;
+          // The post-update describe and the first poll see the swap in flight.
+          const settled = reads > 2;
+          return {
+            DBClusters: [
+              {
+                DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+                DBSubnetGroup: SUBNET_GROUP,
+                Status: settled ? 'available' : 'modifying',
+                VpcSecurityGroups: [
+                  { VpcSecurityGroupId: 'sg-new', Status: settled ? 'active' : 'adding' },
+                  ...(settled ? [] : [{ VpcSecurityGroupId: 'sg-old', Status: 'removing' }]),
+                ],
+                DBClusterMembers: [{ DBInstanceIdentifier: MEMBER }],
+              },
+            ],
+          };
+        },
+      });
+
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+      expect(reads).toBe(3);
+      expect(countOf('DescribeDBInstancesCommand')).toBe(1);
+    });
+
+    it('waits on an available cluster that still reports the OLD groups', async () => {
+      let reads = 0;
+      routeDbSends({
+        DescribeDBClustersCommand: () => {
+          reads += 1;
+          const ids = reads > 2 ? ['sg-new'] : ['sg-old'];
+          return {
+            DBClusters: [
+              {
+                DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+                DBSubnetGroup: SUBNET_GROUP,
+                Status: 'available',
+                VpcSecurityGroups: ids.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
+                DBClusterMembers: [],
+              },
+            ],
+          };
+        },
+      });
+
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+      expect(reads).toBe(3);
+    });
+
+    it('adds no call when the declared list is unchanged (only re-sent)', async () => {
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-b', 'sg-a'], DeletionProtection: true },
+        { VpcSecurityGroupIds: ['sg-a', 'sg-b'] }
+      );
+
+      expect(countOf('DescribeDBClustersCommand')).toBe(1);
+      expect(countOf('DescribeDBInstancesCommand')).toBe(0);
+    });
+
+    it('adds no call when no list is sent', async () => {
+      await make().update('Cluster', 'my-cluster', type, { DeletionProtection: true }, {});
+
+      expect(countOf('DescribeDBClustersCommand')).toBe(1);
+      expect(countOf('DescribeDBInstancesCommand')).toBe(0);
+    });
+
+    it('skips the wait under --no-wait, as create() does', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      try {
+        await make().update(
+          'Cluster',
+          'my-cluster',
+          type,
+          { VpcSecurityGroupIds: ['sg-new'] },
+          { VpcSecurityGroupIds: ['sg-old'] }
+        );
+      } finally {
+        delete process.env['CDKD_NO_WAIT'];
+      }
+
+      expect(countOf('DescribeDBClustersCommand')).toBe(1);
+      expect(countOf('DescribeDBInstancesCommand')).toBe(0);
+    });
+  }
+);
 
 describe.each(RESETTING)(
   '$label DBCluster: a removed VpcSecurityGroupIds moves to the VPC default group (#1160)',
@@ -140,6 +293,8 @@ describe.each(RESETTING)(
         ],
       });
       expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining(DEFAULT_SG));
+      // The reset is a changed list, so the cluster and its member are awaited.
+      expect(countOf('DescribeDBInstancesCommand')).toBe(1);
     });
 
     it('also resets when another property changes in the same update', async () => {
