@@ -109,9 +109,9 @@ export class DeployCancelledError extends CdkdError {
  * A failure to the work graph, so stacks depending on the declined one are
  * skipped, but an expected outcome to the operator: like the AWS CDK CLI's
  * `AbortError`, it prints as a yellow line without the failure framing, and
- * the run still exits 1 because the template was not applied. `softAbort` is
- * an own property rather than an `instanceof` check, so it survives
- * `maskSecretsInError`'s rebuilt copy.
+ * the run still exits 1 because the template was not applied. Read through
+ * {@link isSoftAbort}: `maskSecretsInError` hands on a rebuilt copy, which keeps
+ * the own `softAbort` property.
  */
 export class DeploymentNotApprovedError extends CdkdError {
   readonly softAbort = true;

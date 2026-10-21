@@ -17,6 +17,7 @@ import {
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from './paste-harness.js';
+import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 /**
  * Build the AWS SDK v3 synthetic Unknown error shape that this helper is
@@ -263,9 +264,12 @@ describe('PartialFailureError + handleError exit code mapping', () => {
     error.mockRestore();
   });
 
-  it('isSoftAbort reads the own property, which a rebuilt copy keeps', () => {
-    const copy = Object.assign(new Error('masked'), { softAbort: true });
-    expect(isSoftAbort(copy)).toBe(true);
+  it('isSoftAbort survives maskSecretsInError and is false for a plain CdkdError', () => {
+    const declined = new DeploymentNotApprovedError('Deployment of stack s3cr3t-stack was not approved.');
+    const masked = maskSecretsInError(declined, new Map(), (t) => t.replace('s3cr3t-stack', '***'));
+    expect(masked).not.toBe(declined);
+    expect(masked.message).not.toContain('s3cr3t-stack');
+    expect(isSoftAbort(masked)).toBe(true);
     expect(isSoftAbort(new CdkdError('x', 'DEPLOY_NOT_APPROVED'))).toBe(false);
     expect(isSoftAbort('declined')).toBe(false);
   });

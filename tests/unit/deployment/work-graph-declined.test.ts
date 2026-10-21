@@ -83,3 +83,23 @@ describe('WorkGraph: declined approval', () => {
     expect(log.error.mock.calls[0]![0]).toContain('Failed: stack:B: boom');
   });
 });
+
+describe('WorkGraph: several declines', () => {
+  it('joins every declined stack into one soft rejection', async () => {
+    const graph = new WorkGraph();
+    graph.addNode(stackNode('stack:A'));
+    graph.addNode(stackNode('stack:B'));
+
+    const rejection = await graph
+      .execute(CONCURRENCY, async (node) => {
+        throw declined(node.id.slice('stack:'.length));
+      })
+      .catch((e: unknown) => e);
+
+    expect(isSoftAbort(rejection)).toBe(true);
+    expect((rejection as Error).message.split('\n').sort()).toEqual([
+      'Deployment of stack A was not approved.',
+      'Deployment of stack B was not approved.',
+    ]);
+  });
+});
