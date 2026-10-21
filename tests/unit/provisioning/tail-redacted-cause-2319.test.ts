@@ -668,8 +668,10 @@ describe('IAMAccessKeyProvider default-verbosity warnings (go-to-k/cdkd#2319)', 
  * AWS's prose. `isNameCollisionErrorFrom`'s prose arm still needs an
  * AWS-authored link whose OWN message says "already exists", and
  * `isRecreateRetryableError` drops a redacted summary's class (#5088), so the
- * token alone must flip nothing. Every collision-shaped class these four
- * services model, against prose that does and does not say "already exists":
+ * token alone must flip nothing. Neither arm reads WHICH class the token
+ * names, so a sample of the collision-shaped classes these four services
+ * model stands for all of them, against prose that does and does not say
+ * "already exists":
  * the verdicts on the real wrap must equal those on the pre-#2319 message
  * (`<prefix>: <AWS message>`, unstamped, same `cause`).
  */
