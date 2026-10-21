@@ -69,7 +69,9 @@ import { resetIdempotencyTokensForTests } from '../../../src/provisioning/provid
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
   hasRedactedCause,
+  isNameCollisionError,
   isNameCollisionErrorFrom,
+  isRecreateRetryableError,
   isRetryableTransientError,
   retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
@@ -655,5 +657,112 @@ describe('IAMAccessKeyProvider default-verbosity warnings (go-to-k/cdkd#2319)', 
     expect(warned()).toContain(
       'Failed to clean up IAM access key Key (AKIAPART) minted by a partial CreateAccessKey response: socket hang up. Manual deletion may be required:'
     );
+  });
+});
+
+/**
+ * A redaction must not change a collision verdict (go-to-k/cdkd#2319 review).
+ *
+ * The new top-level message names the class -- `CNAMEAlreadyExists.` -- and
+ * `ALREADY_EXISTS_CODE` matches that token where the old message carried only
+ * AWS's prose. `isNameCollisionErrorFrom`'s prose arm still needs an
+ * AWS-authored link whose OWN message says "already exists", and
+ * `isRecreateRetryableError` drops a redacted summary's class (#5088), so the
+ * token alone must flip nothing. Every collision-shaped class these four
+ * services model, against prose that does and does not say "already exists":
+ * the verdicts on the real wrap must equal those on the pre-#2319 message
+ * (`<prefix>: <AWS message>`, unstamped, same `cause`).
+ */
+describe('collision and retry verdicts match the pre-redaction message (go-to-k/cdkd#2319)', () => {
+  const CLASSES = {
+    cloudfront: [
+      // `DistributionAlreadyExists` takes the CallerReference orphan refusal
+      // ahead of the wrap, unchanged by #2319.
+      'CNAMEAlreadyExists', 'CachePolicyAlreadyExists',
+      'OriginAccessControlAlreadyExists', 'FunctionAlreadyExists', 'KeyGroupAlreadyExists',
+      'ResourceInUse', 'StagingDistributionInUse',
+    ],
+    elasticache: [
+      'CacheSubnetGroupAlreadyExistsFault', 'CacheClusterAlreadyExistsFault',
+      'ReplicationGroupAlreadyExistsFault', 'CacheSubnetGroupInUse', 'SubnetInUse',
+    ],
+    cloudtrail: ['TrailAlreadyExistsException', 'ConflictException', 'ChannelExistsForEDSException'],
+    iam: ['EntityAlreadyExistsException', 'EntityAlreadyExists', 'DeleteConflictException'],
+  } as const;
+  const PROSE = {
+    unrelated: 'One or more of the CNAMEs you provided are already associated with a different resource.',
+    collision: 'The resource you requested already exists.',
+  };
+  const SITES = {
+    cloudfront: {
+      logicalId: 'Cdn',
+      prefix: 'Failed to create CloudFront Distribution Cdn',
+      run: () =>
+        new CloudFrontDistributionProvider().create('Cdn', 'AWS::CloudFront::Distribution', DISTRIBUTION),
+    },
+    elasticache: {
+      logicalId: 'Sg',
+      prefix: 'Failed to create CacheSubnetGroup Sg',
+      run: () => new ElastiCacheProvider().create('Sg', 'AWS::ElastiCache::SubnetGroup', SUBNET_GROUP),
+    },
+    cloudtrail: {
+      logicalId: 'Trail',
+      prefix: 'Failed to create CloudTrail Trail Trail',
+      run: () => new CloudTrailProvider().create('Trail', 'AWS::CloudTrail::Trail', TRAIL),
+    },
+    iam: {
+      logicalId: 'Key',
+      prefix: 'Failed to create IAM access key Key',
+      run: () => new IAMAccessKeyProvider().create('Key', 'AWS::IAM::AccessKey', { UserName: 'u' }),
+    },
+  } as const;
+
+  const verdicts = (error: Error, logicalId: string) => ({
+    collisionFrom: isNameCollisionErrorFrom(error, logicalId),
+    recreateRetryable: isRecreateRetryableError(retryClassificationText(error), error),
+    transientRetryable: isRetryableTransientError(error, retryClassificationText(error)),
+  });
+
+  const cases = (Object.keys(CLASSES) as (keyof typeof CLASSES)[]).flatMap((service) =>
+    CLASSES[service].flatMap((name) =>
+      (Object.keys(PROSE) as (keyof typeof PROSE)[]).map((prose) => ({ service, name, prose }))
+    )
+  );
+
+  it.each(cases)('$service $name ($prose prose)', async ({ service, name, prose }) => {
+    const site = SITES[service];
+    const aws = awsError(name, PROSE[prose], 409);
+    mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+      command.constructor.name === 'ListAccessKeysCommand'
+        ? Promise.resolve({ AccessKeyMetadata: [] })
+        : Promise.reject(aws)
+    );
+    const after = await thrown(site.run());
+    expect(after.message.startsWith(`${site.prefix}: ${name}. ${VERBOSE_POINTER}`)).toBe(true);
+    const before = new ProvisioningError(
+      `${site.prefix}: ${PROSE[prose]}`,
+      'AWS::Any::Type',
+      site.logicalId,
+      undefined,
+      aws
+    );
+    expect(verdicts(after, site.logicalId)).toEqual(verdicts(before, site.logicalId));
+  });
+
+  it('pins the two verdicts: an unrelated CNAMEAlreadyExists is no collision, a genuine one is', async () => {
+    failAll(awsError('CNAMEAlreadyExists', PROSE.unrelated, 409));
+    const cname = await thrown(SITES.cloudfront.run());
+    expect(isNameCollisionError(cname.message)).toBe(true); // premise: the token alone matches
+    expect(isNameCollisionErrorFrom(cname, 'Cdn')).toBe(false);
+    for (const service of ['cloudfront', 'elasticache', 'cloudtrail', 'iam'] as const) {
+      const name = CLASSES[service][0];
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'ListAccessKeysCommand'
+          ? Promise.resolve({ AccessKeyMetadata: [] })
+          : Promise.reject(awsError(name, PROSE.collision, 409))
+      );
+      const genuine = await thrown(SITES[service].run());
+      expect(isNameCollisionErrorFrom(genuine, SITES[service].logicalId)).toBe(true);
+    }
   });
 });
