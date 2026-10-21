@@ -141,6 +141,26 @@ curl_body_with_retry() {
   echo "${body}"
 }
 
+# What the stage serves and what the function allows, so a route FAIL names
+# which half broke (best-effort: the run is already failing).
+route_diagnostics() { # usage: route_diagnostics <route> <function-name> <state-json>
+  local route="$1" fn="$2" state="$3"
+  set +e
+  echo "--- curl -i /${route}:" >&2
+  curl -sS -i "${API_URL}/${route}" 2>&1 | head -20 >&2
+  echo "--- stage deploymentId / deployments:" >&2
+  aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}" --query deploymentId --output text >&2
+  aws apigateway get-deployments --rest-api-id "${API_ID}" --region "${REGION}" --query 'items[].[id,createdDate]' --output text >&2
+  RES_ID=$(aws apigateway get-resources --rest-api-id "${API_ID}" --region "${REGION}" --query "items[?path=='/${route}'].id | [0]" --output text)
+  echo "--- live integration uri for GET /${route}:" >&2
+  aws apigateway get-integration --rest-api-id "${API_ID}" --resource-id "${RES_ID}" --http-method GET --region "${REGION}" --query uri --output text >&2
+  echo "--- ${fn} policy:" >&2
+  aws lambda get-policy --function-name "${fn}" --region "${REGION}" --query Policy --output text 2>&1 | jq -c '.Statement[] | {Sid, arn: .Condition.ArnLike."AWS:SourceArn"}' >&2
+  echo "--- state rows (Method / Deployment / Stage / Permission):" >&2
+  echo "${state}" | jq -c '.resources | to_entries[] | select(.value.resourceType | test("ApiGateway::(Method|Deployment|Stage)|Lambda::Permission")) | {k: .key, id: .value.physicalId, uri: .value.properties.Integration.Uri, dep: .value.properties.DeploymentId, fn: .value.properties.FunctionName, src: .value.properties.SourceArn}' >&2
+  set -e
+}
+
 # --- Phase 1: deploy (base) -------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -245,6 +265,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 ITEMS_BODY="$(curl_body_with_retry "${API_URL}/items")"
 if ! echo "${ITEMS_BODY}" | grep -q '"ok":true'; then
   echo "FAIL: GET /items (added on update) did not return the Lambda body; got: ${ITEMS_BODY}" >&2
+  route_diagnostics items "${FN_NAME}" "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
   exit 1
 fi
 echo "    OK: GET /items (added on update) serves"
@@ -334,22 +355,7 @@ for route in hello items; do
   ROUTE_BODY="$(curl_body_with_retry "${API_URL}/${route}")"
   if ! echo "${ROUTE_BODY}" | grep -q '"ok":true'; then
     echo "FAIL: GET /${route} does not serve after the function replacement; got: ${ROUTE_BODY}" >&2
-    # What the stage serves and what the function allows, so a FAIL names
-    # which half broke (best-effort: the run is already failing).
-    set +e
-    echo "--- curl -i /${route}:" >&2
-    curl -sS -i "${API_URL}/${route}" 2>&1 | head -20 >&2
-    echo "--- stage deploymentId / deployments:" >&2
-    aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}" --query deploymentId --output text >&2
-    aws apigateway get-deployments --rest-api-id "${API_ID}" --region "${REGION}" --query 'items[].[id,createdDate]' --output text >&2
-    RES_ID=$(aws apigateway get-resources --rest-api-id "${API_ID}" --region "${REGION}" --query "items[?path=='/${route}'].id | [0]" --output text)
-    echo "--- live integration uri for GET /${route}:" >&2
-    aws apigateway get-integration --rest-api-id "${API_ID}" --resource-id "${RES_ID}" --http-method GET --region "${REGION}" --query uri --output text >&2
-    echo "--- ${NEW_FN_NAME} policy:" >&2
-    aws lambda get-policy --function-name "${NEW_FN_NAME}" --region "${REGION}" --query Policy --output text 2>&1 | jq -c '.Statement[] | {Sid, arn: .Condition.ArnLike."AWS:SourceArn"}' >&2
-    echo "--- state rows (Method / Deployment / Stage):" >&2
-    echo "${STATE_AFTER_REPLACE}" | jq -c '.resources | to_entries[] | select(.value.resourceType | test("ApiGateway::(Method|Deployment|Stage)")) | {k: .key, id: .value.physicalId, uri: .value.properties.Integration.Uri, dep: .value.properties.DeploymentId}' >&2
-    set -e
+    route_diagnostics "${route}" "${NEW_FN_NAME}" "${STATE_AFTER_REPLACE}"
     exit 1
   fi
 done
