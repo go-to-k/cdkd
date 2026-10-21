@@ -7923,7 +7923,8 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
-        "secretsmanager-update-value-source"
+        "secretsmanager-update-value-source",
+        "servicediscovery"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -7982,6 +7983,9 @@
         "secretsmanager-update-value-source": [
           "l2",
           "literal"
+        ],
+        "servicediscovery": [
+          "l1"
         ]
       }
     },

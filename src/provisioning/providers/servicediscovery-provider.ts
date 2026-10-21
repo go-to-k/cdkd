@@ -135,13 +135,15 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
  * (one secret reference swapped for another), and sending the declared value
  * again is harmless. Every other leaf is compared deep and strict.
  *
- * Known divergence from CloudFormation, which compares TEMPLATES: an
- * unchanged `Description` recorded as any dynamic reference
- * (`{{resolve:...}}`) or a NoEcho `***`, with a
- * `HealthCheckConfig` removed beside it sends the declared model and clears
- * the health check (a removed `DnsConfig` beside it is refused), where
- * CloudFormation keeps it. go-to-k/cdkd#5112 tracks passing the as-written
- * changed keys to providers, which removes it.
+ * Only the FALLBACK when the deploy engine passes no
+ * `UpdateContext.changedProperties` (go-to-k/cdkd#5112): a rollback revert,
+ * `cdkd drift --revert`, or a direct call. A deploy's in-place update passes
+ * the keys that changed template to template, as CloudFormation compares, so
+ * an unchanged `Description` recorded as a dynamic reference with a
+ * `HealthCheckConfig` removed beside it keeps the health check there. One
+ * recorded as a `NoEcho` `***` is left out of those keys only when the engine
+ * read the service back and AWS holds its value; otherwise it is named, and
+ * sent.
  */
 function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
   if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;
@@ -436,7 +438,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.changedProperties
         );
       default:
         throw new ProvisioningError(
@@ -1390,7 +1393,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    maskSecrets?: SecretMasker,
+    changedProperties?: ReadonlySet<string>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: `Tags` used to be ignored on update; a malformed
@@ -1398,7 +1402,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    const servicePlan = this.planServiceChange(properties, previousProperties);
+    const servicePlan = this.planServiceChange(properties, previousProperties, changedProperties);
     const serviceChange = servicePlan?.change ?? {};
 
     // ServiceAttributes is NOT part of the `ServiceChange` body — it is
@@ -1596,10 +1600,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    */
   private planServiceChange(
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    changedProperties: ReadonlySet<string> | undefined
   ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
-    const declaredDiffers = (key: string): boolean =>
-      properties[key] !== undefined && !sameAsRecorded(properties[key], previousProperties[key]);
+    // go-to-k/cdkd#5112: the engine's template-to-template answer when it gave
+    // one; otherwise (a rollback revert, `drift --revert`, a direct call) the
+    // two bags compared here, a recorded stand-in counting as changed.
+    const changed = (key: string): boolean =>
+      changedProperties !== undefined
+        ? changedProperties.has(key)
+        : !sameAsRecorded(properties[key], previousProperties[key]);
+    const declaredDiffers = (key: string): boolean => properties[key] !== undefined && changed(key);
 
     const change: ServiceChange = {};
     if (properties['Description'] !== undefined) {
@@ -1618,7 +1629,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
       return { change, keepRemovedFromLive: false };
     }
-    if (desiredRecords !== undefined && !sameAsRecorded(desiredRecords, previousRecords)) {
+    // `DnsConfig` unchanged as written leaves its records unchanged; changed,
+    // the records themselves are compared (its other members are create-only).
+    if (
+      desiredRecords !== undefined &&
+      (changedProperties === undefined || changedProperties.has('DnsConfig')) &&
+      !sameAsRecorded(desiredRecords, previousRecords)
+    ) {
       return { change, keepRemovedFromLive: true };
     }
     return undefined;

@@ -32,6 +32,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
+import { CHANGED_PROPERTIES_CONSUMER_TYPES } from '../../provisioning/changed-properties-consumers.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
@@ -987,6 +988,14 @@ export async function provisionUpdate(
     movedMasked.size === 0 &&
     rewrittenPaths.size === 0 &&
     keyOrderFreeJson(desiredForSkipCheckAsWritten) === keyOrderFreeJson(currentPropsAsWritten);
+  // The same three terms for ONE top-level key: its as-written value moved, or
+  // a move its redacted form hides (a masked property whose template moved, a
+  // rewritten or provenance-moved path).
+  const movedAsWritten = (key: string): boolean =>
+    movedMasked.has(key) ||
+    rewrittenPaths.has(key) ||
+    keyOrderFreeJson(desiredForSkipCheckAsWritten[key]) !==
+      keyOrderFreeJson(currentPropsAsWritten[key]);
   // The metadata-only arm both no-change skips share: refresh the record's
   // template attributes and call no provider.
   const applyAttributeOnlyUpdate = (
@@ -1314,11 +1323,7 @@ export async function provisionUpdate(
       // replacement whatever AWS holds at the masked ones.
       // A masked property whose template moved (go-to-k/cdkd#4451) moved,
       // whatever its two `***` say.
-      const moved =
-        movedMasked.has(pc.path) ||
-        rewrittenPaths.has(pc.path) ||
-        keyOrderFreeJson(desiredForSkipCheckAsWritten[pc.path]) !==
-          keyOrderFreeJson(currentPropsAsWritten[pc.path]);
+      const moved = movedAsWritten(pc.path);
       // A propagated CEILING whose value MOVED is kept, unless the type's
       // own conditional rule reads the move as in place (issue #4134) --
       // the same predicate the diff applies to a template edit. A
@@ -1402,7 +1407,19 @@ export async function provisionUpdate(
   const parameterHeldKeys = new Set<string>();
   const parameterUnreadablePaths: string[] = [];
   if (pendingParameterLeaves.size > 0 && !typeChanged) {
-    const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired;
+    // go-to-k/cdkd#5112: a type whose provider decides from
+    // `changedProperties` whether to send a field reads back a `NoEcho` key
+    // on an updatable path even when something else moved, so one AWS holds
+    // is left out of that set, as CloudFormation compares templates. Parity
+    // won only for those opted-in types: every other type makes no new call
+    // (performance first), and its unconfirmed key stays in the set, re-sent.
+    const consumerReadsBack =
+      CHANGED_PROPERTIES_CONSUMER_TYPES.has(resourceType) &&
+      currentResource.provisionedBy !== 'cc-api' &&
+      [...pendingParameterLeaves.keys()].some(
+        (key) => !parameterCreateOnlyPaths.has(key) && otherFreshAt(key).length === 0
+      );
+    const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired || consumerReadsBack;
     const read = mustRead ? await readOnce() : undefined;
     const verdictAt = (key: string): FreshNoEchoCeilingVerdict => {
       if (read === undefined) return 'not-readable';
@@ -1413,28 +1430,23 @@ export async function provisionUpdate(
         : 'differs';
     };
     const lowered: PropertyChange[] = [];
-    // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
-    // pre-v11 record's witness that differs, an exact change): the
-    // replacement stands, as CloudFormation would replace.
-    const movedAt = (path: string): boolean =>
-      movedMasked.has(path) ||
-      rewrittenPaths.has(path) ||
-      keyOrderFreeJson(desiredForSkipCheckAsWritten[path]) !==
-        keyOrderFreeJson(currentPropsAsWritten[path]);
     replacedAnyway =
       recreateDirectionFor(engine.options, stackName, logicalId) !== undefined ||
       lostWithParent !== undefined ||
       (change.propertyChanges ?? []).some(
         (other) =>
           other.requiresReplacement &&
-          (!parameterCreateOnlyPaths.has(other.path) || movedAt(other.path))
+          (!parameterCreateOnlyPaths.has(other.path) || movedAsWritten(other.path))
       );
     for (const pc of change.propertyChanges ?? []) {
       if (!parameterCreateOnlyPaths.has(pc.path)) {
         lowered.push(pc);
         continue;
       }
-      const moved = movedAt(pc.path);
+      // A leaf OTHER than the `NoEcho` one moved (a template edit, or a
+      // pre-v11 record's witness that differs, an exact change): the
+      // replacement stands, as CloudFormation would replace.
+      const moved = movedAsWritten(pc.path);
       if (moved) {
         // go-to-k/cdkd#4737: the path is create-only by the SCHEMA, while the
         // diff decided whether it replaces (registry first, then a whole
@@ -1499,6 +1511,10 @@ export async function provisionUpdate(
         // path nobody read back for it is sent).
         if (otherFreshAt(key).length > 0) continue;
         const verdict = verdictAt(key);
+        // A `held` key is settled as on the no-change arm, whichever reason
+        // took the read (go-to-k/cdkd#5112 included): the provider's previous
+        // side gets the value AWS holds, and the key leaves `changedProperties`.
+        // `differs` and an unreadable key stay pending, so both stay in it.
         if (verdict === 'held') {
           parameterSettledPaths.add(key);
           parameterHeldKeys.add(key);
@@ -1850,6 +1866,27 @@ export async function provisionUpdate(
       )
     );
   }
+  // go-to-k/cdkd#5112: the top-level keys this update changes, template to
+  // template, for a provider that must decide WHETHER to send a field (Cloud
+  // Map's `UpdateService`). Compared over the as-written bags BEFORE the
+  // witness hands the previous side its plaintext back, with the hidden moves
+  // the skip check counts. A fresh `NoEcho` value is compared with nothing, so
+  // its key counts as changed unless AWS confirmed holding it: a missed change
+  // is worse than a re-sent value.
+  const changedProperties = new Set(
+    [
+      ...new Set([
+        ...Object.keys(desiredForSkipCheckAsWritten),
+        ...Object.keys(currentPropsAsWritten),
+        ...Object.keys(resolvedProps),
+      ]),
+    ].filter(
+      (key) =>
+        movedAsWritten(key) ||
+        (!confirmedPaths.has(key) &&
+          (pendingParameterLeaves.has(key) || otherFreshAt(key).length > 0))
+    )
+  );
   // A leaf the witness CONFIRMED compares as the mask on both sides above,
   // but the provider diffs the previous side against the plaintext it is
   // sent: handed `***` there, a create-only one reads as changed and is
@@ -1869,6 +1906,7 @@ export async function provisionUpdate(
       counts,
       currentProps,
       currentPropsAsWritten: previousForProvider,
+      changedProperties,
       currentResource,
       dependencies,
       desiredForSkipCheckAsWritten,

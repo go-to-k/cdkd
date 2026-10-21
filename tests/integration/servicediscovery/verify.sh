@@ -55,6 +55,11 @@ cd "$(dirname "$0")"
 STACK="ServiceDiscoveryStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# go-to-k/cdkd#5112: SecretHcKeptService reads a secret, so every state object
+# version under the stack's prefix is swept (versioning keeps prior versions).
+# shellcheck source=../s3-versions.sh
+. ../s3-versions.sh
+PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 SERVICE_NAME="cdkd-svcdisc-service"
 TTL_NAME="cdkd-svcdisc-ttl"
@@ -62,6 +67,9 @@ HC_NAME="cdkd-svcdisc-hc"
 REFUSED_NAME="cdkd-svcdisc-refused"
 DNS_KEPT_NAME="cdkd-svcdisc-dns-kept"
 HC_KEPT_NAME="cdkd-svcdisc-hc-kept"
+SECRET_HC_KEPT_NAME="cdkd-svcdisc-secret-hc-kept"
+NOECHO_HC_KEPT_NAME="cdkd-svcdisc-noecho-hc-kept"
+DESC_SECRET_NAME="cdkd-svcdisc-desc-secret"
 PUBLIC_NS_NAME="cdkd-svcdisc-hc.cdkd-integ-test.com"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -85,7 +93,10 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    s3_purge_prefix_versions "${STATE_BUCKET:-}" "${PREFIX}" noncurrent || true
   fi
+  aws secretsmanager delete-secret --region "${REGION}" --secret-id "${DESC_SECRET_NAME}" \
+    --force-delete-without-recovery >/dev/null 2>&1
   set -eu
 }
 
@@ -200,6 +211,8 @@ HC_ID=$(require_id "${HC_NAME}")
 REFUSED_ID=$(require_id "${REFUSED_NAME}")
 DNS_KEPT_ID=$(require_id "${DNS_KEPT_NAME}")
 HC_KEPT_ID=$(require_id "${HC_KEPT_NAME}")
+SECRET_HC_KEPT_ID=$(require_id "${SECRET_HC_KEPT_NAME}")
+NOECHO_HC_KEPT_ID=$(require_id "${NOECHO_HC_KEPT_NAME}")
 expect_field "${SERVICE_ID}" Description cdkd-svcdisc-kept-description "phase 1 baseline"
 expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description "phase 1 baseline"
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
@@ -207,6 +220,41 @@ expect_field "${HC_ID}" Description cdkd-svcdisc-hc-description "phase 1 baselin
 expect_field "${HC_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
 expect_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
 expect_field "${HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
+expect_field "${SECRET_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
+# go-to-k/cdkd#5112: AWS holds the RESOLVED secret, and state its reference.
+SECRET_DESC=$(service_field "${SECRET_HC_KEPT_ID}" Description)
+if [ -z "${SECRET_DESC}" ] || [ "${SECRET_DESC}" = "None" ] || [[ "${SECRET_DESC}" == *"{{resolve:"* ]]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${SECRET_HC_KEPT_NAME} Description is not the resolved secret value" >&2
+  exit 1
+fi
+P1_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+# Anywhere in the record (properties, observedProperties, attributes), not
+# only the Description: a redaction regression fails here. Value withheld.
+if printf '%s' "${P1_STATE}" | grep -qF -- "${SECRET_DESC}"; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the resolved secret value (value withheld)" >&2
+  exit 1
+fi
+RECORDED_DESC=$(printf '%s' "${P1_STATE}" | jq -r '.resources.SecretHcKeptService.properties.Description // empty')
+# go-to-k/cdkd#5112: the NoEcho arm's premise -- AWS holds a value, state the mask.
+expect_field "${NOECHO_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
+NOECHO_RECORDED=$(printf '%s' "${P1_STATE}" | jq -r '.resources.NoEchoHcKeptService.properties.Description // empty')
+if [ "${NOECHO_RECORDED}" != "***" ]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${NOECHO_HC_KEPT_NAME}'s NoEcho Description as the mask, so phase 2 proves nothing" >&2
+  exit 1
+fi
+NOECHO_DESC=$(service_field "${NOECHO_HC_KEPT_ID}" Description)
+if [ -z "${NOECHO_DESC}" ] || [ "${NOECHO_DESC}" = "None" ]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${NOECHO_HC_KEPT_NAME} has no Description on AWS" >&2
+  exit 1
+fi
+if printf '%s' "${P1_STATE}" | grep -qF -- "${NOECHO_DESC}"; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the NoEcho Description (value withheld)" >&2
+  exit 1
+fi
+if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${SECRET_HC_KEPT_NAME}'s Description as its {{resolve:...}} reference, so phase 2 proves nothing" >&2
+  exit 1
+fi
 echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshold 3 on AWS)"
 
 # The removal phases follow the CloudFormation A/Bs on #1160
@@ -224,6 +272,8 @@ expect_same_id "${SERVICE_NAME}" "${SERVICE_ID}"
 expect_same_id "${TTL_NAME}" "${TTL_ID}"
 expect_same_id "${DNS_KEPT_NAME}" "${DNS_KEPT_ID}"
 expect_same_id "${HC_KEPT_NAME}" "${HC_KEPT_ID}"
+expect_same_id "${SECRET_HC_KEPT_NAME}" "${SECRET_HC_KEPT_ID}"
+expect_same_id "${NOECHO_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_ID}"
 expect_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL" 90 \
   "a DnsConfig removed beside an unchanged Description was not kept, as CloudFormation keeps it"
 expect_field "${HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
@@ -236,6 +286,21 @@ expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description \
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 150 \
   "a DnsRecords TTL change was not applied"
 echo "    OK: removed Descriptions, DnsConfig and HealthCheckConfig kept; TTL 90 -> 150 applied (issue #1160)"
+expect_field "${SECRET_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
+  "a HealthCheckConfig removed beside an unchanged secret-reference Description was cleared (go-to-k/cdkd#5112), where CloudFormation keeps it"
+# Compared without printing: either side is the secret's plaintext.
+if [ "$(service_field "${SECRET_HC_KEPT_ID}" Description)" != "${SECRET_DESC}" ]; then
+  echo "FAIL: the unchanged secret-reference Description of ${SECRET_HC_KEPT_NAME} moved (go-to-k/cdkd#5112); values withheld" >&2
+  exit 1
+fi
+echo "    OK: HealthCheckConfig kept beside an unchanged secret-reference Description (go-to-k/cdkd#5112)"
+expect_field "${NOECHO_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
+  "a HealthCheckConfig removed beside an unchanged NoEcho-parameter Description was cleared (go-to-k/cdkd#5112), where CloudFormation keeps it"
+if [ "$(service_field "${NOECHO_HC_KEPT_ID}" Description)" != "${NOECHO_DESC}" ]; then
+  echo "FAIL: the unchanged NoEcho-parameter Description of ${NOECHO_HC_KEPT_NAME} moved (go-to-k/cdkd#5112); values withheld" >&2
+  exit 1
+fi
+echo "    OK: HealthCheckConfig kept beside an unchanged NoEcho-parameter Description (go-to-k/cdkd#5112)"
 
 # --- Phase 3 (combined): a removal beside a sent change (issue #1160) --
 echo "==> Phase 3: drop ${HC_NAME}'s Description beside a HealthCheckConfig change"
@@ -288,7 +353,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 # Cloud Map service deletion is synchronous; re-query once in case the
 # list index lags briefly.
-for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}"; do
+for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}"; do
   STILL=$(service_id "${name}")
   if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
     sleep 5 2>/dev/null || true
@@ -300,6 +365,21 @@ for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DN
   fi
 done
 echo "    OK: every Cloud Map service is gone"
+# Force-deleted by cdkd; DescribeSecret can lag the delete briefly. Every probe
+# still goes through gone_probe, so a throttle or auth error hard-fails.
+SECRET_GONE=0
+for _ in $(seq 1 12); do
+  if gone_probe aws secretsmanager describe-secret --secret-id "${DESC_SECRET_NAME}" --region "${REGION}"; then
+    SECRET_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_GONE}" != "1" ]; then
+  echo "FAIL: secret ${DESC_SECRET_NAME} still exists 60s after destroy" >&2
+  exit 1
+fi
+echo "    OK: secret ${DESC_SECRET_NAME} is gone"
 STILL_NS=$(aws servicediscovery list-namespaces --region "${REGION}" \
   --query "Namespaces[?Name=='${PUBLIC_NS_NAME}'].Id | [0]" --output text)
 if [ -n "${STILL_NS}" ] && [ "${STILL_NS}" != "None" ]; then
@@ -319,6 +399,13 @@ echo "    OK: hosted zone ${PUBLIC_NS_NAME} is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+trap - EXIT INT TERM
+echo "==> Sweep every object version under the stack's state prefix (go-to-k/cdkd#5112)"
+# On the SUCCESS path, after the disarm: a sweep living only in `cleanup` never
+# runs here, and `noncurrent` would leave the delete marker behind.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${PREFIX}" "stack state teardown"
 
 echo ""
 echo "==> servicediscovery test passed (ServiceDiscovery::Service ServiceAttributes property-coverage backfill closed + #1160 removal phases follow CloudFormation + clean destroy)"
