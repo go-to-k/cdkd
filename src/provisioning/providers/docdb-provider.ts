@@ -56,7 +56,9 @@ import {
  * compares the templates as written: the record holds a secret as its
  * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
  * A changed reference and a `NoEcho` value count as changed there; a secret
- * rotated under the same reference does not, as in CloudFormation. This type is deliberately NOT in
+ * rotated under a reference the template spells literally does not, as in
+ * CloudFormation (one built by `Fn::Join` counts a newer read version). This
+ * type is deliberately NOT in
  * `CHANGED_PROPERTIES_CONSUMER_TYPES`: DescribeDBClusters never returns the
  * password, so the readback that opt-in buys could not confirm it.
  *

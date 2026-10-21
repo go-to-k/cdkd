@@ -70,7 +70,9 @@ import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-red
  * compares the templates as written: the record holds a secret as its
  * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
  * A changed reference and a `NoEcho` value count as changed there; a secret
- * rotated under the same reference does not, as in CloudFormation. These types are deliberately NOT in
+ * rotated under a reference the template spells literally does not, as in
+ * CloudFormation (one built by `Fn::Join` counts a newer read version). These
+ * types are deliberately NOT in
  * `CHANGED_PROPERTIES_CONSUMER_TYPES`: RDS never returns the password on a
  * Describe, so the readback that opt-in buys could not confirm it.
  *
