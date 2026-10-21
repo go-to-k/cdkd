@@ -85,7 +85,7 @@ function routeDbSends(overrides: Record<string, () => unknown> = {}) {
   dbSend.mockImplementation(async (command: { constructor: { name: string }; input?: any }) => {
     const name = command.constructor.name;
     if (name === 'ModifyDBClusterCommand' && Array.isArray(command.input?.VpcSecurityGroupIds)) {
-      liveGroups = command.input.VpcSecurityGroupIds;
+      liveGroups = [...new Set<string>(command.input.VpcSecurityGroupIds)];
     }
     if (overrides[name]) return overrides[name]();
     if (name === 'DescribeDBClustersCommand') {
@@ -221,6 +221,103 @@ describe.each(ALL_THREE)(
       );
 
       expect(reads).toBe(3);
+    });
+
+    it('settles on a list with a duplicate entry, which AWS reads back once', async () => {
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-a', 'sg-a'] },
+        { VpcSecurityGroupIds: ['sg-b'] }
+      );
+
+      expect(countOf('DescribeDBClustersCommand')).toBe(2);
+    });
+
+    it('does not hold the update for a cluster in a lasting state once the groups are active', async () => {
+      routeDbSends({
+        DescribeDBClustersCommand: () => ({
+          DBClusters: [
+            {
+              DBClusterArn: 'arn:aws:rds:us-east-1:123:cluster:c',
+              Status: 'backing-up',
+              VpcSecurityGroups: [{ VpcSecurityGroupId: 'sg-new', Status: 'active' }],
+              DBClusterMembers: [],
+            },
+          ],
+        }),
+      });
+
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+      expect(countOf('DescribeDBClustersCommand')).toBe(2);
+    });
+
+    it('waits out a member that is modifying, then stops', async () => {
+      let reads = 0;
+      routeDbSends({
+        DescribeDBInstancesCommand: () => {
+          reads += 1;
+          return {
+            DBInstances: [{ DBInstanceIdentifier: MEMBER, DBInstanceStatus: reads > 1 ? 'available' : 'modifying' }],
+          };
+        },
+      });
+
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+      expect(reads).toBe(2);
+    });
+
+    it('does not hold the update for a member in a lasting state', async () => {
+      routeDbSends({
+        DescribeDBInstancesCommand: () => ({
+          DBInstances: [{ DBInstanceIdentifier: MEMBER, DBInstanceStatus: 'maintenance' }],
+        }),
+      });
+
+      await make().update(
+        'Cluster',
+        'my-cluster',
+        type,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+      expect(countOf('DescribeDBInstancesCommand')).toBe(1);
+    });
+
+    it('skips a member deleted out of band', async () => {
+      routeDbSends({
+        DescribeDBInstancesCommand: () => {
+          throw Object.assign(new Error('DBInstance member-1 not found.'), {
+            name: 'DBInstanceNotFoundFault',
+          });
+        },
+      });
+
+      await expect(
+        make().update(
+          'Cluster',
+          'my-cluster',
+          type,
+          { VpcSecurityGroupIds: ['sg-new'] },
+          { VpcSecurityGroupIds: ['sg-old'] }
+        )
+      ).resolves.toBeDefined();
     });
 
     it('adds no call when the declared list is unchanged (only re-sent)', async () => {

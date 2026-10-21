@@ -8,6 +8,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
+const budget = vi.hoisted(() => ({ remainingMs: Number.POSITIVE_INFINITY }));
+
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  enclosingDeadlineRemainingMs: () => budget.remainingMs,
+}));
 
 function clientMock(name: string) {
   return async (importOriginal: () => Promise<unknown>) => {
@@ -175,9 +181,56 @@ const CASES = [
 describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)', (c) => {
   beforeEach(() => {
     vi.clearAllMocks();
+    budget.remainingMs = Number.POSITIVE_INFINITY;
   });
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('refuses at once, and puts the guard back, when the resource timeout leaves less than the margin', async () => {
+    budget.remainingMs = 30_000;
+    const order = route(c.kind, { protectionOn: true, afterFlip: Array(10).fill('modifying') });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    const error = await c
+      .make()
+      .delete('Res', 'res', c.type, c.properties, context)
+      .catch((e: unknown) => e);
+
+    expect((error as Error).message).toContain('the resource timeout leaves no time');
+    expect(order.some((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n))).toBe(false);
+    expect(order.reEnables).toHaveLength(1);
+    const flip = order.findIndex((n) => /^ModifyDB(Cluster|Instance)Command$/.test(n));
+    expect(
+      order.slice(flip + 1, order.reEnables[0]).filter((n) => /^DescribeDB/.test(n))
+    ).toHaveLength(0);
+  });
+
+  it('bounds the wait by the remaining resource budget, not the 15-minute cap', async () => {
+    budget.remainingMs = 60_000 + 3 * 60_000;
+    const order = route(c.kind, { protectionOn: true, afterFlip: Array(1000).fill('modifying') });
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 20_000));
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    const error = await c
+      .make()
+      .delete('Res', 'res', c.type, c.properties, context)
+      .catch((e: unknown) => e);
+
+    expect((error as Error).message).toContain('within 3 minutes');
+    expect(order.some((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n))).toBe(false);
+    expect(order.reEnables).toHaveLength(1);
+  });
+
+  it('does not hold the delete for a lasting state that is not the flip\'s own transition', async () => {
+    const lasting = c.kind === 'cluster' ? 'backing-up' : 'storage-optimization';
+    const order = route(c.kind, { protectionOn: true, afterFlip: [lasting, lasting, lasting] });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await c.make().delete('Res', 'res', c.type, c.properties, context);
+
+    expect(describesBetweenFlipAndDelete(order)).toBe(1);
   });
 
   it('waits for available after the flip when a final snapshot is requested', async () => {

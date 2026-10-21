@@ -20,6 +20,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -141,6 +142,9 @@ class GlobalClusterDetachError extends Error {
  * `--remove-protection` flip, for the resource to return to `available`.
  */
 const FINAL_SNAPSHOT_SETTLE_WAIT_MS = 15 * 60_000;
+
+/** Issue #5155: budget kept back from the wait for the delete call and the compensation. */
+const FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS = 60_000;
 
 /**
  * AWS RDS Provider
@@ -993,7 +997,7 @@ export class RDSProvider implements ResourceProvider {
         await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
         for (const member of described?.DBClusterMembers ?? []) {
           if (member.DBInstanceIdentifier) {
-            await this.waitForInstanceAvailable(member.DBInstanceIdentifier);
+            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
           }
         }
       }
@@ -1959,6 +1963,36 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * Issue #1160: wait out a member instance's `modifying` after its cluster's
+   * security groups changed. Only that transition is waited out: a member in
+   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
+   * deleted out of band does not hold the update, as CloudFormation reports
+   * the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterSecurityGroupChange(
+    dbInstanceIdentifier: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status !== 'modifying') return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+    );
+  }
+
+  /**
    * Wait until the cluster is `available` AND reports exactly `expected` as its
    * VPC security groups, all `active` (issue #1160). `available` alone can still
    * read before the group swap has started; the group statuses cannot.
@@ -1969,7 +2003,7 @@ export class RDSProvider implements ResourceProvider {
     expected: readonly string[],
     maxWaitMs = 1_800_000
   ): Promise<void> {
-    const want = [...expected].sort().join(' ');
+    const want = [...new Set(expected)].sort().join(' ');
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {
@@ -1979,8 +2013,11 @@ export class RDSProvider implements ResourceProvider {
         .map((group) => group.VpcSecurityGroupId ?? '')
         .sort()
         .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
       const settled =
-        cluster?.Status === 'available' &&
+        cluster !== undefined &&
+        cluster.Status !== 'modifying' &&
         groups.every((group) => group.Status === 'active') &&
         ids === want;
       if (settled) return;
@@ -2009,12 +2046,29 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
   ): Promise<void> {
+    // Bounded by what the engine's per-resource deadline leaves, minus a margin
+    // for the delete call and the compensation: the deadline does not cancel
+    // this wait, so a wait that outlived it would leave the guard down with
+    // nothing left to put it back (deletion-protection-compensation.ts, known
+    // narrowing 2).
+    const budgetMs = Math.min(
+      maxWaitMs,
+      enclosingDeadlineRemainingMs() - FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS
+    );
+    if (budgetMs <= 0) {
+      throw new Error(
+        `--remove-protection turned DeletionProtection off, but the resource timeout leaves no time to wait for the cluster to return to 'available', which the final snapshot its DeletionPolicy asks for needs. The delete was not sent and the guard is put back; re-run the destroy with a longer --resource-timeout`
+      );
+    }
     const startTime = Date.now();
     let delay = 5_000;
-    while (Date.now() - startTime < maxWaitMs) {
+    for (;;) {
       const current = await this.describeDBCluster(physicalId);
       if (current === undefined) return;
-      if (current.DeletionProtection === false && current.Status === 'available') return;
+      // Only the flip's own transition is waited out: protection still ON, or
+      // `modifying`. Any other state is AWS's to accept or refuse, as before.
+      if (current.DeletionProtection === false && current.Status !== 'modifying') return;
+      if (Date.now() - startTime + delay >= budgetMs) break;
       this.logger.debug(
         safeMsg`DBCluster ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.Status ?? 'unknown'})`
       );
@@ -2022,7 +2076,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.round(maxWaitMs / 60_000)} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
+      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.max(1, Math.round(budgetMs / 60_000))} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
     );
   }
 
@@ -2040,12 +2094,29 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
   ): Promise<void> {
+    // Bounded by what the engine's per-resource deadline leaves, minus a margin
+    // for the delete call and the compensation: the deadline does not cancel
+    // this wait, so a wait that outlived it would leave the guard down with
+    // nothing left to put it back (deletion-protection-compensation.ts, known
+    // narrowing 2).
+    const budgetMs = Math.min(
+      maxWaitMs,
+      enclosingDeadlineRemainingMs() - FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS
+    );
+    if (budgetMs <= 0) {
+      throw new Error(
+        `--remove-protection turned DeletionProtection off, but the resource timeout leaves no time to wait for the instance to return to 'available', which the final snapshot its DeletionPolicy asks for needs. The delete was not sent and the guard is put back; re-run the destroy with a longer --resource-timeout`
+      );
+    }
     const startTime = Date.now();
     let delay = 5_000;
-    while (Date.now() - startTime < maxWaitMs) {
+    for (;;) {
       const current = await this.describeDBInstance(physicalId);
       if (current === undefined) return;
-      if (current.DeletionProtection === false && current.DBInstanceStatus === 'available') return;
+      // Only the flip's own transition is waited out: protection still ON, or
+      // `modifying`. Any other state is AWS's to accept or refuse, as before.
+      if (current.DeletionProtection === false && current.DBInstanceStatus !== 'modifying') return;
+      if (Date.now() - startTime + delay >= budgetMs) break;
       this.logger.debug(
         safeMsg`DBInstance ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.DBInstanceStatus ?? 'unknown'})`
       );
@@ -2053,7 +2124,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `--remove-protection turned DeletionProtection off, but the instance did not return to 'available' within ${Math.round(maxWaitMs / 60_000)} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the instance is 'available'`
+      `--remove-protection turned DeletionProtection off, but the instance did not return to 'available' within ${Math.max(1, Math.round(budgetMs / 60_000))} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the instance is 'available'`
     );
   }
 
