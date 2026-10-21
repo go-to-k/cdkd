@@ -194,7 +194,7 @@ export class RdsAuroraStack extends cdk.Stack {
     // and ModifyDBCluster treats an absent field as "no change", so verify.sh
     // asserts both are still true after phase 2. Protection stays on, so its
     // destroys pass --remove-protection.
-    new rds.CfnDBCluster(this, 'SecurityCluster', {
+    const securityCluster = new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
       masterUsername: 'postgres',
       manageMasterUserPassword: true,
@@ -210,12 +210,18 @@ export class RdsAuroraStack extends cdk.Stack {
       monitoringInterval: 60,
       monitoringRoleArn: monitoringRole.roleArn,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
-      vpcSecurityGroupIds: [securityGroup.securityGroupId],
+      // Issue #1160: DROPPED in phase 2. CloudFormation moves the cluster to
+      // the VPC's `default` security group on removal (real A/B), so verify.sh
+      // asserts exactly that.
+      ...(isUpdate ? {} : { vpcSecurityGroupIds: [securityGroup.securityGroupId] }),
       serverlessV2ScalingConfiguration: {
         minCapacity: 0.5,
         maxCapacity: 1,
       },
     });
+    // Issue #1160: once phase 2 drops the Ref, this keeps the security group
+    // deleted AFTER the cluster that may still hold it.
+    securityCluster.node.addDependency(securityGroup);
 
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {

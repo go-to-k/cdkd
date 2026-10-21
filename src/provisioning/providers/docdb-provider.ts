@@ -10,6 +10,7 @@ import {
   DescribeDBInstancesCommand,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -103,6 +104,15 @@ function instanceAttributes(
 function isDbIdentifier(id: string): boolean {
   return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
 }
+
+/**
+ * Issue #5155: how long a delete that takes a final snapshot waits, after a
+ * `--remove-protection` flip, for the resource to return to `available`.
+ */
+const FINAL_SNAPSHOT_SETTLE_WAIT_MS = 15 * 60_000;
+
+/** Issue #5155: budget kept back from the wait for the delete call and the compensation. */
+const FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS = 60_000;
 
 /**
  * AWS DocumentDB Provider
@@ -453,9 +463,11 @@ export class DocDBProvider implements ResourceProvider {
       //     random" sentinel.
       //   * MasterUserPassword — a secret; removal cannot synthesize a
       //     reset value.
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
+      //   * VpcSecurityGroupIds — a real CloudFormation A/B (issue #1160)
+      //     showed CloudFormation KEEPS a DocDB cluster's groups when the
+      //     property is removed, so a removal sends nothing. RDS and Neptune
+      //     differ: there CloudFormation moves the cluster to the VPC's
+      //     default security group.
       //   * Port — DocDB documents a fixed default (27017), but resetting
       //     the port is connection-breaking for every client; leave unchanged.
       await this.getClient().send(
@@ -487,6 +499,32 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`Successfully updated DocDB DBCluster ${logicalId}`);
 
       const described = await this.describeDBCluster(physicalId);
+
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        securityGroupListChanged(
+          sendVpcSgIds ? vpcSgIds : undefined,
+          previousProperties['VpcSecurityGroupIds']
+        )
+      ) {
+        await this.waitForSecurityGroupsApplied(
+          physicalId,
+          logicalId,
+          (sendVpcSgIds ? vpcSgIds : undefined) ?? []
+        );
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
+          }
+        }
+      }
 
       if (described?.DBClusterArn) {
         await applyDocDBTagDiff(
@@ -609,6 +647,12 @@ export class DocDBProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        await this.waitForProtectionOffBeforeFinalSnapshot(logicalId, physicalId);
+      }
       await this.getClient().send(
         new DeleteDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -1023,6 +1067,124 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
+   * Issue #1160: wait out a member instance's `modifying` after its cluster's
+   * security groups changed. Only that transition is waited out: a member in
+   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
+   * deleted out of band does not hold the update, as CloudFormation reports
+   * the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterSecurityGroupChange(
+    dbInstanceIdentifier: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (isDocDBNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status !== 'modifying') return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+    );
+  }
+
+  /**
+   * Wait until the cluster is `available` AND reports exactly `expected` as its
+   * VPC security groups, all `active` (issue #1160). `available` alone can still
+   * read before the group swap has started; the group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...new Set(expected)].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      const groups = cluster?.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
+      const settled =
+        cluster !== undefined &&
+        cluster.Status !== 'modifying' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`DocDB DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for DocDB DBCluster ${logicalId} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issue #5155: after `--remove-protection` turned DeletionProtection off, wait
+   * until the cluster reads protection OFF and `available` before a delete that
+   * takes a final snapshot: the snapshot needs `available`, and right after the
+   * flip the cluster is briefly `modifying`. Status alone can still read
+   * `available` before the change starts; the protection readback cannot.
+   * Fails closed: on a timeout the delete is never sent, so the compensation
+   * puts the guard back. An AWS failure of a describe propagates as-is.
+   */
+  private async waitForProtectionOffBeforeFinalSnapshot(
+    logicalId: string,
+    physicalId: string,
+    maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
+  ): Promise<void> {
+    // Bounded by what the engine's per-resource deadline leaves, minus a margin
+    // for the delete call and the compensation: the deadline does not cancel
+    // this wait, so a wait that outlived it would leave the guard down with
+    // nothing left to put it back (deletion-protection-compensation.ts, known
+    // narrowing 2).
+    const budgetMs = Math.min(
+      maxWaitMs,
+      enclosingDeadlineRemainingMs() - FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS
+    );
+    if (budgetMs <= 0) {
+      throw new Error(
+        `--remove-protection turned DeletionProtection off, but the resource timeout leaves no time to wait for the cluster to return to 'available', which the final snapshot its DeletionPolicy asks for needs. The delete was not sent and the guard is put back; re-run the destroy with a longer --resource-timeout`
+      );
+    }
+    const startTime = Date.now();
+    let delay = 5_000;
+    for (;;) {
+      const current = await this.describeDBCluster(physicalId);
+      if (current === undefined) return;
+      // Only the flip's own transition is waited out: protection still ON, or
+      // `modifying`. Any other state is AWS's to accept or refuse, as before.
+      if (current.DeletionProtection === false && current.Status !== 'modifying') return;
+      if (Date.now() - startTime + delay >= budgetMs) break;
+      this.logger.debug(
+        safeMsg`DocDB DBCluster ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.max(1, Math.round(budgetMs / 60_000))} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
+    );
+  }
+
+  /**
    * Wait for a DBCluster to become available. DocDB's SDK does not ship a
    * `waitUntilDBClusterAvailable` waiter (only DBInstance has waiters),
    * so we poll Status manually with exponential backoff.
@@ -1327,4 +1489,17 @@ export class DocDBProvider implements ResourceProvider {
     // override or a `DBClusterIdentifier` in the template.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

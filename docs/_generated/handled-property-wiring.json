@@ -15818,6 +15818,7 @@
           "seededBy": [
             "create",
             "createDBCluster",
+            "dbClusterSecurityGroupsToSend",
             "update",
             "updateDBCluster"
           ]
@@ -16888,6 +16889,7 @@
           "seededBy": [
             "create",
             "createDBCluster",
+            "dbClusterSecurityGroupsToSend",
             "update",
             "updateDBCluster"
           ]

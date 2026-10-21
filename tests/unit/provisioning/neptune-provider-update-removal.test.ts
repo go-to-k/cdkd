@@ -95,7 +95,8 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
           DBClusterParameterGroupName: 'my-cluster-params',
           PreferredBackupWindow: '03:00-04:00',
           PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
-          VpcSecurityGroupIds: ['sg-1'],
+          // A removed VpcSecurityGroupIds IS reset (to the VPC's default
+          // security group): db-cluster-sg-removal-1160.test.ts.
           DBPort: 8182,
         }
       );
@@ -112,7 +113,6 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
       expect(modifyCall.input.DBClusterParameterGroupName).toBeUndefined();
       expect(modifyCall.input.PreferredBackupWindow).toBeUndefined();
       expect(modifyCall.input.PreferredMaintenanceWindow).toBeUndefined();
-      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
       expect(modifyCall.input.Port).toBeUndefined();
     });
 

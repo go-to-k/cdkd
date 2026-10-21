@@ -16,7 +16,10 @@ import {
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-neptune';
+import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
+import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -111,6 +114,15 @@ function isDbIdentifier(id: string): boolean {
 }
 
 /**
+ * Issue #5155: how long a delete that takes a final snapshot waits, after a
+ * `--remove-protection` flip, for the resource to return to `available`.
+ */
+const FINAL_SNAPSHOT_SETTLE_WAIT_MS = 15 * 60_000;
+
+/** Issue #5155: budget kept back from the wait for the delete call and the compensation. */
+const FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS = 60_000;
+
+/**
  * AWS Neptune Provider
  *
  * Implements resource provisioning for Neptune resources:
@@ -136,6 +148,7 @@ function isDbIdentifier(id: string): boolean {
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;
   private createClient?: NeptuneClient;
+  private ec2Client?: EC2Client;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('NeptuneProvider');
   /**
@@ -225,6 +238,17 @@ export class NeptuneProvider implements ResourceProvider {
     return this.neptuneClient;
   }
 
+  /** Only a removed DBCluster `VpcSecurityGroupIds` reaches EC2 (issue #1160). */
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.ec2Client;
+  }
+
   /**
    * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance` go
    * through: SDK retries on, except a 5xx
@@ -274,7 +298,7 @@ export class NeptuneProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
@@ -291,7 +315,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::Neptune::DBInstance':
         return this.updateDBInstance(
@@ -602,20 +627,23 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
-      // cluster. readCurrentState always-emits `[]` for clusters that
-      // legitimately have no VPC SGs; the round-trip must NOT translate
-      // that placeholder into a destructive SDK call.
-      const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
-      const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
-
+      // Its own ProvisioningError names the cause; the catch passes it through.
+      const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template is sent as an explicit reset only where CloudFormation resets
@@ -632,12 +660,11 @@ export class NeptuneProvider implements ResourceProvider {
       //     a RANDOM window at create; there is no documented "reset to
       //     random" sentinel (doc-checked 2026-07-27: the Modify docs only
       //     describe the create-time random default).
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
       //   * Port / DBPort — Neptune documents a fixed default (8182), but
       //     resetting the port is connection-breaking for every client;
       //     leave unchanged.
+      // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
+      // group (`dbClusterSecurityGroupsToSend`).
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -660,7 +687,7 @@ export class NeptuneProvider implements ResourceProvider {
           // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
           // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
           EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
-          ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
+          ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
           Port:
             properties['DBPort'] != null
               ? Number(properties['DBPort'])
@@ -674,6 +701,25 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
 
       const described = await this.describeDBCluster(physicalId);
+
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
+      ) {
+        await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterSecurityGroupChange(member.DBInstanceIdentifier);
+          }
+        }
+      }
 
       if (described?.DBClusterArn) {
         await this.applyTagDiff(
@@ -691,6 +737,7 @@ export class NeptuneProvider implements ResourceProvider {
         attributes: clusterAttributes(described),
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
@@ -794,6 +841,12 @@ export class NeptuneProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        await this.waitForProtectionOffBeforeFinalSnapshot(logicalId, physicalId);
+      }
       await this.getClient().send(
         new DeleteDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -1325,6 +1378,102 @@ export class NeptuneProvider implements ResourceProvider {
     return response.DBClusters?.[0];
   }
 
+  /**
+   * The `VpcSecurityGroupIds` a DBCluster update sends, or `undefined` to omit
+   * it (ModifyDBCluster keeps the live groups then):
+   *
+   * - A non-empty declared list is sent as declared.
+   * - An EMPTY list is omitted: `[]` would detach every group, and
+   *   `readCurrentState` emits `[]` for a cluster with none, which
+   *   `drift --revert` hands back as the desired bag.
+   * - A list the previous template declared and the desired one omits is a
+   *   removal (issue #1160). A real CloudFormation A/B showed CloudFormation
+   *   then attaches the VPC's `default` security group in place of the
+   *   declared ones, so cdkd looks that group up and sends it. A previous
+   *   EMPTY list attached nothing, and a `drift --revert` baseline is a
+   *   readback rather than a template, so neither counts as a removal.
+   */
+  private async dbClusterSecurityGroupsToSend(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<string[] | undefined> {
+    const desired = properties['VpcSecurityGroupIds'] as string[] | undefined;
+    if (desired !== undefined) return desired.length > 0 ? desired : undefined;
+    const previous = previousProperties['VpcSecurityGroupIds'];
+    if (context?.desiredFromAwsReadback === true) return undefined;
+    if (!Array.isArray(previous) || previous.length === 0) return undefined;
+
+    // `missing` names what the lookup did not find (terminal); `awsError` is a
+    // failed call (left retryable).
+    let groupId: string | undefined;
+    let missing: string | undefined;
+    let awsError: unknown;
+    try {
+      const subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
+      const vpcId = subnetGroupName
+        ? (
+            await this.getClient().send(
+              new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
+            )
+          ).DBSubnetGroups?.[0]?.VpcId
+        : undefined;
+      if (!subnetGroupName) missing = 'the cluster reports no DB subnet group';
+      else if (!vpcId) missing = `DB subnet group ${subnetGroupName} reports no VPC`;
+      else {
+        const groups = await this.getEc2Client().send(
+          new DescribeSecurityGroupsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'group-name', Values: ['default'] },
+            ],
+          })
+        );
+        groupId = groups.SecurityGroups?.[0]?.GroupId;
+        if (!groupId) missing = `VPC ${vpcId} has no security group named default`;
+      }
+    } catch (error) {
+      awsError = error;
+    }
+    if (groupId === undefined) {
+      // go-to-k/cdkd#2319: the thrown message is persisted, so an AWS failure
+      // contributes only its summary (an EC2 UnauthorizedOperation names the
+      // caller's ARN). The full text goes to debug, masked, and the retry
+      // classifier reads it on `cause`.
+      const mask = context?.maskSecrets ?? ((text: string) => text);
+      const failure = missing === undefined ? describeAwsFailure(awsError) : undefined;
+      if (failure?.redacted === true) {
+        this.logger.debug(
+          safeMsg`${logicalId}: the VPC default security group lookup failed: ${mask(failure.detail)}`
+        );
+      }
+      const shown = mask(failure?.summary ?? '');
+      const refusal = new ProvisioningError(
+        `Failed to update Neptune DBCluster ${logicalId}: VpcSecurityGroupIds was removed from the template, so the cluster moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare VpcSecurityGroupIds in the template to choose the cluster's security groups.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        awsError instanceof Error ? awsError : undefined
+      );
+      if (missing !== undefined) throw markNonRetryable(refusal);
+      // Stamped whenever the message lost text the cause still holds: the
+      // AWS-authored summary, or a masker edit (the classifier must not miss
+      // retry wording a secret overlapped).
+      const withheld =
+        awsError instanceof Error &&
+        (failure?.redacted === true || shown !== (failure?.summary ?? ''));
+      throw withheld ? markRedactedCause(refusal) : refusal;
+    }
+    // A warning, not info: the default group may grant wider access.
+    this.logger.warn(
+      safeMsg`${logicalId}: VpcSecurityGroupIds was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
+    );
+    return [groupId];
+  }
+
   private async describeDBInstance(dbInstanceIdentifier: string) {
     const response = await this.getClient().send(
       new DescribeDBInstancesCommand({
@@ -1332,6 +1481,124 @@ export class NeptuneProvider implements ResourceProvider {
       })
     );
     return response.DBInstances?.[0];
+  }
+
+  /**
+   * Issue #1160: wait out a member instance's `modifying` after its cluster's
+   * security groups changed. Only that transition is waited out: a member in
+   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
+   * deleted out of band does not hold the update, as CloudFormation reports
+   * the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterSecurityGroupChange(
+    dbInstanceIdentifier: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status !== 'modifying') return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for a member instance of the cluster to finish applying its new VPC security groups`
+    );
+  }
+
+  /**
+   * Wait until the cluster is `available` AND reports exactly `expected` as its
+   * VPC security groups, all `active` (issue #1160). `available` alone can still
+   * read before the group swap has started; the group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...new Set(expected)].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      const groups = cluster?.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
+      const settled =
+        cluster !== undefined &&
+        cluster.Status !== 'modifying' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`Neptune DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for Neptune DBCluster ${logicalId} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issue #5155: after `--remove-protection` turned DeletionProtection off, wait
+   * until the cluster reads protection OFF and `available` before a delete that
+   * takes a final snapshot: the snapshot needs `available`, and right after the
+   * flip the cluster is briefly `modifying`. Status alone can still read
+   * `available` before the change starts; the protection readback cannot.
+   * Fails closed: on a timeout the delete is never sent, so the compensation
+   * puts the guard back. An AWS failure of a describe propagates as-is.
+   */
+  private async waitForProtectionOffBeforeFinalSnapshot(
+    logicalId: string,
+    physicalId: string,
+    maxWaitMs = FINAL_SNAPSHOT_SETTLE_WAIT_MS
+  ): Promise<void> {
+    // Bounded by what the engine's per-resource deadline leaves, minus a margin
+    // for the delete call and the compensation: the deadline does not cancel
+    // this wait, so a wait that outlived it would leave the guard down with
+    // nothing left to put it back (deletion-protection-compensation.ts, known
+    // narrowing 2).
+    const budgetMs = Math.min(
+      maxWaitMs,
+      enclosingDeadlineRemainingMs() - FINAL_SNAPSHOT_COMPENSATION_MARGIN_MS
+    );
+    if (budgetMs <= 0) {
+      throw new Error(
+        `--remove-protection turned DeletionProtection off, but the resource timeout leaves no time to wait for the cluster to return to 'available', which the final snapshot its DeletionPolicy asks for needs. The delete was not sent and the guard is put back; re-run the destroy with a longer --resource-timeout`
+      );
+    }
+    const startTime = Date.now();
+    let delay = 5_000;
+    for (;;) {
+      const current = await this.describeDBCluster(physicalId);
+      if (current === undefined) return;
+      // Only the flip's own transition is waited out: protection still ON, or
+      // `modifying`. Any other state is AWS's to accept or refuse, as before.
+      if (current.DeletionProtection === false && current.Status !== 'modifying') return;
+      if (Date.now() - startTime + delay >= budgetMs) break;
+      this.logger.debug(
+        safeMsg`Neptune DBCluster ${logicalId}: waiting for the DeletionProtection change to settle before the final snapshot (status ${current.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `--remove-protection turned DeletionProtection off, but the cluster did not return to 'available' within ${Math.max(1, Math.round(budgetMs / 60_000))} minutes, and the final snapshot its DeletionPolicy asks for needs it. The delete was not sent and the guard is put back; re-run the destroy once the cluster is 'available'`
+    );
   }
 
   /**
@@ -1731,4 +1998,17 @@ export class NeptuneProvider implements ResourceProvider {
     // DB subnet group reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

@@ -188,8 +188,8 @@ aws logs describe-resource-policies --region us-east-1
 This section and the next are reference for setting up an identity. The policy
 under ["Access Denied" Error](troubleshooting.md#access-denied-error)
 has two sets: Set A, which every deploy needs, and Set B, the actions of the
-services in your template. Two CDK features need permissions that neither set
-shows.
+services in your template. The three cases below need permissions that neither
+set shows.
 
 ### A CDK context lookup
 
@@ -210,6 +210,16 @@ the temporary CloudFormation stack cdkd uses to expand the macro.
 
 If the macro is your own function and not an AWS-managed transform, the
 identity also needs `lambda:InvokeFunction` on that function.
+
+### Removing `VpcSecurityGroupIds` from an RDS or Neptune DB cluster
+
+When an `AWS::RDS::DBCluster` or `AWS::Neptune::DBCluster` drops
+`VpcSecurityGroupIds` from its template, cdkd moves the cluster to its VPC's
+`default` security group, as CloudFormation does. To find that group, the
+identity needs `ec2:DescribeSecurityGroups`. No other deploy calls it for these
+types. If the identity lacks it, cdkd retries for a short while, as it does for
+any `not authorized` error, and then the update fails before the cluster
+changes.
 
 ## What you lose without `cloudformation:DescribeType`
 

@@ -95,7 +95,7 @@ diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-16T16:09:57Z	PASS	100	verify.sh	PR #5010 (#5004) re-run on 41c3c1321 (post-rebase, comment-only commits); rc ok, orph clean; removal retained
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-docdb-neptune	2026-10-20T05:54:12Z	PASS	5177	verify.sh	deploy+destroy clean, 0 orphans
+docdb-neptune	2026-10-21T20:16:04Z	PASS	5340	verify.sh	PR #5152: #1160 SG removal + #5155 final-snapshot-wait; final destroy 8 deleted 0 errors, 0 orphans
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-21T04:50:49Z	PASS	383	verify.sh	destroy 0 errors, 0 orphans; PR 5135
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
@@ -290,7 +290,7 @@ pipes-fix-forward-orphan	2026-10-15T19:34:21Z	PASS	130	verify.sh	PR #4966 (#3252
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-11T09:33:22Z	PASS	126	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-16T17:34:17Z	PASS	4554	verify.sh	src b1367d11c; #5004 removal keeps + BackupRetentionPeriod 7->1 reset companion; rc ok, orph clean
+rds-aurora	2026-10-21T22:35:49Z	PASS	4681	verify.sh	PR #5152: #1160 SG removal + #5155 final-snapshot-wait; final destroy 4 deleted 0 errors, 0 orphans
 rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean
 rds-fix-forward-orphan	2026-10-15T19:12:27Z	PASS	1157	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 rds-full-stack	2026-10-20T06:36:25Z	PASS	1192	verify.sh	deploy+destroy clean, 0 orphans

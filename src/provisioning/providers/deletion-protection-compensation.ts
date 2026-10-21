@@ -321,7 +321,11 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
  *     reported failure (the same non-cancelling shape issue #1955 documents),
  *     and if that poll eventually succeeds the resource is gone anyway. Closing
  *     this would mean making the deadline cancel — a change to a mechanism
- *     every provider shares — so it is recorded, not fixed here.
+ *     every provider shares — so it is recorded, not fixed here. A provider
+ *     that WAITS with the guard down must therefore finish inside the deadline:
+ *     the RDS / DocDB / Neptune final-snapshot settle waits (issue #5155) bound
+ *     themselves by `enclosingDeadlineRemainingMs()` minus a margin, so their
+ *     own timeout throws, and is compensated, before the deadline fires.
  *  3. **The compensation itself is unbounded.** `reEnable` is one control-plane
  *     write with no timeout of its own, so on Ctrl-C it adds one SDK call per
  *     flipped resource to a teardown the user has already asked to end. Left

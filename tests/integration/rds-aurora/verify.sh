@@ -24,6 +24,9 @@
 # A companion change drops BackupRetentionPeriod (7 in phase 1), which
 # CloudFormation RESETS to 1: asserting the reset BEFORE the keeps proves
 # ModifyDBCluster fired in the removal deploy.
+# #1160 (VpcSecurityGroupIds removal): phase 2 also drops the SecurityCluster's
+# VpcSecurityGroupIds. A real CloudFormation A/B showed CloudFormation moves
+# the cluster to the VPC's `default` security group, so phase 2 asserts that.
 #
 # #1160 (DBProxy removal kept + warned): the proxy sets DebugLogging=true in
 # phase 1 and DROPS it in phase 2. ModifyDBProxy keeps an omitted setting and
@@ -405,6 +408,37 @@ if [ "${ACTUAL_RETENTION}" != "7" ]; then
 fi
 echo "    OK: base DBCluster BackupRetentionPeriod == 7 (phase-2 reset premise)"
 
+# #1160 VpcSecurityGroupIds removal premise: phase 1 puts the SecurityCluster
+# on AuroraSecurityGroup, which is not the VPC's default group.
+# cluster_sgs <cluster id>: "<sg id>:<status>" pairs, sorted.
+cluster_sgs() {
+  local out
+  out=$(aws rds describe-db-clusters --db-cluster-identifier "$1" --region "${REGION}" \
+    --query 'DBClusters[0].VpcSecurityGroups' --output json) || return 1
+  echo "${out}" | jq -r '[(. // [])[] | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(" ")'
+}
+CUSTOM_SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and (.key | test("^AuroraSecurityGroup"))) | .value.physicalId] | first // ""')
+SG_VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+DEFAULT_SG_ID=""
+if [ -n "${SG_VPC_ID}" ]; then
+  DEFAULT_SG_ID=$(aws ec2 describe-security-groups --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${SG_VPC_ID}" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+fi
+case "${CUSTOM_SG_ID}" in sg-?*) ;; *) echo "FAIL: could not resolve AuroraSecurityGroup's id from state (got '${CUSTOM_SG_ID}')" >&2; exit 1 ;; esac
+# --output text prints `None` for an empty match, so match the id shape.
+case "${DEFAULT_SG_ID}" in sg-?*) ;; *) echo "FAIL: could not resolve the default security group of VPC '${SG_VPC_ID}' (got '${DEFAULT_SG_ID}')" >&2; exit 1 ;; esac
+if [ "${CUSTOM_SG_ID}" = "${DEFAULT_SG_ID}" ]; then
+  echo "FAIL: #1160 premise: AuroraSecurityGroup is the VPC default group, so the removal arm could not tell the two apart" >&2
+  exit 1
+fi
+BASE_SGS=$(cluster_sgs "${DB_CLUSTER_ID}")
+if [ "${BASE_SGS}" != "${CUSTOM_SG_ID}:active" ]; then
+  echo "FAIL: #1160 premise: the SecurityCluster must start on AuroraSecurityGroup only (want '${CUSTOM_SG_ID}:active', got '${BASE_SGS}')" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster on AuroraSecurityGroup ${CUSTOM_SG_ID}, not the VPC default ${DEFAULT_SG_ID} (#1160 premise)"
+
 # NOTE: PubliclyAccessible is NOT asserted — AWS rejects it for aurora-postgresql
 # ("PubliclyAccessible isn't supported for DB engine aurora-postgresql"); it is
 # valid only for Multi-AZ DB clusters (non-Aurora). The provider wiring is
@@ -624,6 +658,24 @@ if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}
   exit 1
 fi
 echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true (#5004, matches CloudFormation)"
+
+# #1160: phase 2 removed the SecurityCluster's VpcSecurityGroupIds. It must
+# move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends
+# nothing and the cluster stays on AuroraSecurityGroup, which fails HERE.
+# Polled, because the swap can sit in `adding` / `removing` after `available`.
+AFTER_SGS=""
+for i in $(seq 1 30); do
+  AFTER_SGS=$(cluster_sgs "${DB_CLUSTER_ID}")
+  [ "${AFTER_SGS}" = "${DEFAULT_SG_ID}:active" ] && break
+  if [ "${i}" -lt 30 ]; then
+    sleep 10
+  fi
+done
+if [ "${AFTER_SGS}" != "${DEFAULT_SG_ID}:active" ]; then
+  echo "FAIL: #1160: after VpcSecurityGroupIds was removed, the SecurityCluster's groups are '${AFTER_SGS}', want '${DEFAULT_SG_ID}:active' (the VPC default group, as CloudFormation does; still '${CUSTOM_SG_ID}' means the removal sent nothing)" >&2
+  exit 1
+fi
+echo "    OK: after VpcSecurityGroupIds removal, the SecurityCluster moved to the VPC default ${DEFAULT_SG_ID} (#1160, matches CloudFormation)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")
