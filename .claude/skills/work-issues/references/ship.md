@@ -25,9 +25,13 @@ runner never reads this file), makes marker and ledger due once the last PID exi
 and, like a lane's, bans attribution lines in the ledger commit (#5104); a
 state record it cannot read is a STOP, never a purge (`/run-integ` step 7).
 Size it for ONE context (§8-d probe alone, then fixture batches), each run's
-fixture, PID, log, state prefix appended to `<scratch>/integ-<PR>.live` at
-launch. The brief never stops a runner stalling between phases: the PARENT
-arms its own Monitor alarming when no `.live` PID has run for 15 min unreported.
+fixture, `pid=<N>`, log, state prefix appended as one line to
+`<scratch>/integ-<PR>.live` at launch. The brief never stops a runner
+stalling between phases: the PARENT arms its own Monitor alarming when no
+PID — read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
+never a bare digit grep, whose match on a `mktemp` log path's zeroes makes
+`kill -0 0000` signal the process group and always succeed — has run for 15
+min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
