@@ -47,6 +47,9 @@ import {
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generatedNameFor } from '../resource-name.js';
@@ -62,7 +65,13 @@ import {
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
-import { createMaskedLogSinks, maskDeep, type MaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  maskerOrIdentity,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import {
   protectedReplacementAdvice,
   pasteableAwsCommand,
@@ -81,7 +90,11 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -1607,6 +1620,42 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     'definite' | 'ambiguous'
   >();
 
+  /**
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from an auxiliary call's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as the pool. A
+   * non-`Error` throw is withheld the same way, unstamped: it has no chain to
+   * read. A cdkd-authored or transport error
+   * keeps its text, masked and stamped when the mask changed it
+   * (`wrapMaskedAwsError`), as the ASG wrap does. The delete checks
+   * `ResourceNotFoundException` by type before it wraps, so no "already gone"
+   * reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    const m = maskerOrIdentity(mask);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Cognito::UserPool',
@@ -2133,18 +2182,33 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
         } catch (rollbackError) {
           poolLeftBehind = true;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteUserPool names the caller's assumed-role ARN.
+          const rollbackFailure = describeAwsFailure(rollbackError);
+          if (rollbackFailure.redacted) {
+            this.logger.debug(
+              maskerOrIdentity(context?.maskSecrets)(
+                `Rollback of partially-created Cognito User Pool ${createdUserPoolId} failed: ${rollbackFailure.detail}`
+              )
+            );
+          }
           this.logger.warn(
-            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${describeAwsFailure(rollbackError).detail}`
+            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackFailure.summary}`
           );
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        poolName,
-        cause
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            poolName,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the rollback delete failed, so this pool has no state
       // record; name it for the failed-CREATE journal.
@@ -2537,7 +2601,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is
       // not authorized to perform: cognito-idp:GetUserPoolMfaConfig ...` -- so
       // a default-verbosity line would print the account id, the role name and
-      // the session name, into a warning that is persisted to the events store.
+      // the session name to the terminal (a warning is not persisted).
       // Same split as the `dynamodb-index-busy-delete` DescribeTable arm.
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} ` +
@@ -3162,12 +3226,17 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -3626,12 +3695,17 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
