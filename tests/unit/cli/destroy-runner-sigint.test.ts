@@ -408,7 +408,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
  *
  * `rl.question` never settles when stdin is already at EOF, and EOF carries no
  * signal, so the abort arm the SIGINT block above fences could not help: there
- * was nothing to abort ON. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against real
+ * was nothing to abort ON. Measured on Node 24.15.0 (and 24.19 before it) against real
  * `node:readline/promises` -- `echo y |` resolves `"y"`, while `printf 'y' |`
  * (a real answer with no trailing newline) and `< /dev/null` both stay pending
  * indefinitely.
