@@ -1462,7 +1462,11 @@ reference stays its `{{resolve:...}}` token, a `NoEcho` value is `***`), so
 comparing it with the resolved desired value cannot tell an unchanged secret
 from a changed one. Only a deploy's in-place update sets it; without it (a
 rollback revert, `drift --revert`), compare the two bags, counting a recorded
-stand-in as changed.
+stand-in as changed. A provider that reads the set adds its type to
+`CHANGED_PROPERTIES_CONSUMER_TYPES` (`src/provisioning/changed-properties-consumers.ts`):
+only those types have a `NoEcho` parameter value confirmed by reading the
+resource back, so an unchanged one is left out; on any other type it stays in
+the set.
 
 Checklist when writing or reviewing an `update()`:
 
