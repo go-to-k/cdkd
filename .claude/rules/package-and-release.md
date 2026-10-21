@@ -50,7 +50,7 @@ Three different numbers, each with its own reason to exist:
 | Where | Value | Meaning |
 | --- | --- | --- |
 | `package.json` `engines` | Node.js >= 22.12.0 | the floor for USERS of cdkd |
-| `.node-version` | 24.15.0 | local dev and CI, managed by Vite+ / mise |
+| `.node-version` | 24.22.1 | local dev and CI, managed by Vite+ / mise |
 | `vp pack` `target` | node22 | the runtime cdkd SHIPS to users |
 
 The floor is restated in several prose files and
