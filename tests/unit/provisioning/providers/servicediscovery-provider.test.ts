@@ -245,10 +245,12 @@ describe('ServiceDiscoveryProvider — Service property removal follows CloudFor
     ['a NoEcho mask', '***'],
   ] as const;
 
-  // go-to-k/cdkd#5112: the deploy engine passes the keys that changed
-  // template to template, so an unchanged stand-in no longer reads as a change.
+  // go-to-k/cdkd#5112: the provider half only. Given keys that leave out an
+  // unchanged stand-in, it sends nothing. Which keys the ENGINE hands over (a
+  // NoEcho `***` is left out only once AWS confirmed holding it) is pinned in
+  // tests/unit/deployment/deploy-engine-changed-properties-5112.test.ts.
   it.each(STAND_INS)(
-    'with the engine changed keys, an unchanged Description recorded as %s beside a removed HealthCheckConfig sends nothing, keeping the health check (CloudFormation parity)',
+    'given changed keys leaving out an unchanged Description recorded as %s, a removed HealthCheckConfig beside it sends nothing, keeping the health check (CloudFormation parity)',
     async (_label, recorded) => {
       await provider.update(
         'Svc',

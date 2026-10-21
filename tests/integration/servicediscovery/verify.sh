@@ -68,6 +68,7 @@ REFUSED_NAME="cdkd-svcdisc-refused"
 DNS_KEPT_NAME="cdkd-svcdisc-dns-kept"
 HC_KEPT_NAME="cdkd-svcdisc-hc-kept"
 SECRET_HC_KEPT_NAME="cdkd-svcdisc-secret-hc-kept"
+NOECHO_HC_KEPT_NAME="cdkd-svcdisc-noecho-hc-kept"
 DESC_SECRET_NAME="cdkd-svcdisc-desc-secret"
 PUBLIC_NS_NAME="cdkd-svcdisc-hc.cdkd-integ-test.com"
 
@@ -211,6 +212,7 @@ REFUSED_ID=$(require_id "${REFUSED_NAME}")
 DNS_KEPT_ID=$(require_id "${DNS_KEPT_NAME}")
 HC_KEPT_ID=$(require_id "${HC_KEPT_NAME}")
 SECRET_HC_KEPT_ID=$(require_id "${SECRET_HC_KEPT_NAME}")
+NOECHO_HC_KEPT_ID=$(require_id "${NOECHO_HC_KEPT_NAME}")
 expect_field "${SERVICE_ID}" Description cdkd-svcdisc-kept-description "phase 1 baseline"
 expect_field "${TTL_ID}" Description cdkd-svcdisc-ttl-description "phase 1 baseline"
 expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 90 "phase 1 baseline"
@@ -233,6 +235,18 @@ if printf '%s' "${P1_STATE}" | grep -qF -- "${SECRET_DESC}"; then
   exit 1
 fi
 RECORDED_DESC=$(printf '%s' "${P1_STATE}" | jq -r '.resources.SecretHcKeptService.properties.Description // empty')
+# go-to-k/cdkd#5112: the NoEcho arm's premise -- AWS holds a value, state the mask.
+expect_field "${NOECHO_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 "phase 1 baseline"
+NOECHO_RECORDED=$(printf '%s' "${P1_STATE}" | jq -r '.resources.NoEchoHcKeptService.properties.Description // empty')
+if [ "${NOECHO_RECORDED}" != "***" ]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${NOECHO_HC_KEPT_NAME}'s NoEcho Description as the mask, so phase 2 proves nothing" >&2
+  exit 1
+fi
+NOECHO_DESC=$(service_field "${NOECHO_HC_KEPT_ID}" Description)
+if [ -z "${NOECHO_DESC}" ] || [ "${NOECHO_DESC}" = "None" ]; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${NOECHO_HC_KEPT_NAME} has no Description on AWS" >&2
+  exit 1
+fi
 if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${SECRET_HC_KEPT_NAME}'s Description as its {{resolve:...}} reference, so phase 2 proves nothing" >&2
   exit 1
@@ -255,6 +269,7 @@ expect_same_id "${TTL_NAME}" "${TTL_ID}"
 expect_same_id "${DNS_KEPT_NAME}" "${DNS_KEPT_ID}"
 expect_same_id "${HC_KEPT_NAME}" "${HC_KEPT_ID}"
 expect_same_id "${SECRET_HC_KEPT_NAME}" "${SECRET_HC_KEPT_ID}"
+expect_same_id "${NOECHO_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_ID}"
 expect_field "${DNS_KEPT_ID}" "DnsConfig.DnsRecords[0].TTL" 90 \
   "a DnsConfig removed beside an unchanged Description was not kept, as CloudFormation keeps it"
 expect_field "${HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
@@ -275,6 +290,13 @@ if [ "$(service_field "${SECRET_HC_KEPT_ID}" Description)" != "${SECRET_DESC}" ]
   exit 1
 fi
 echo "    OK: HealthCheckConfig kept beside an unchanged secret-reference Description (go-to-k/cdkd#5112)"
+expect_field "${NOECHO_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
+  "a HealthCheckConfig removed beside an unchanged NoEcho-parameter Description was cleared (go-to-k/cdkd#5112), where CloudFormation keeps it"
+if [ "$(service_field "${NOECHO_HC_KEPT_ID}" Description)" != "${NOECHO_DESC}" ]; then
+  echo "FAIL: the unchanged NoEcho-parameter Description of ${NOECHO_HC_KEPT_NAME} moved (go-to-k/cdkd#5112); values withheld" >&2
+  exit 1
+fi
+echo "    OK: HealthCheckConfig kept beside an unchanged NoEcho-parameter Description (go-to-k/cdkd#5112)"
 
 # --- Phase 3 (combined): a removal beside a sent change (issue #1160) --
 echo "==> Phase 3: drop ${HC_NAME}'s Description beside a HealthCheckConfig change"
@@ -327,7 +349,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 # Cloud Map service deletion is synchronous; re-query once in case the
 # list index lags briefly.
-for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}"; do
+for name in "${SERVICE_NAME}" "${TTL_NAME}" "${HC_NAME}" "${REFUSED_NAME}" "${DNS_KEPT_NAME}" "${HC_KEPT_NAME}" "${SECRET_HC_KEPT_NAME}" "${NOECHO_HC_KEPT_NAME}"; do
   STILL=$(service_id "${name}")
   if [ -n "${STILL}" ] && [ "${STILL}" != "None" ]; then
     sleep 5 2>/dev/null || true

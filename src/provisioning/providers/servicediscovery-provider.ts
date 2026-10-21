@@ -139,8 +139,11 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
  * `UpdateContext.changedProperties` (go-to-k/cdkd#5112): a rollback revert,
  * `cdkd drift --revert`, or a direct call. A deploy's in-place update passes
  * the keys that changed template to template, as CloudFormation compares, so
- * an unchanged `Description` recorded as a stand-in with a `HealthCheckConfig`
- * removed beside it keeps the health check there.
+ * an unchanged `Description` recorded as a dynamic reference with a
+ * `HealthCheckConfig` removed beside it keeps the health check there. One
+ * recorded as a `NoEcho` `***` is left out of those keys only when the engine
+ * read the service back and AWS holds its value; otherwise it is named, and
+ * sent.
  */
 function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
   if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;

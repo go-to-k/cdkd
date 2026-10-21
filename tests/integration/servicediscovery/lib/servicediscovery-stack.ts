@@ -31,7 +31,9 @@ import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
  *   `Description` read from a secret dynamic reference, which state records as
  *   its `{{resolve:...}}` token (go-to-k/cdkd#5112: KEPT, as CloudFormation
  *   compares templates; before the fix the token read as changed and the
- *   health check was cleared).
+ *   health check was cleared). `NoEchoHcKeptService` does the same beside a
+ *   `Description` from a `NoEcho` parameter, recorded as `***`: KEPT, because
+ *   the engine reads the service back and AWS holds the value.
  * - `combined`: `HcService` drops its `Description` beside a
  *   `HealthCheckConfig` change (the Description is CLEARED).
  * - `refused`: `RefusedService` drops its `DnsConfig` beside a `Description`
@@ -144,6 +146,23 @@ export class ServiceDiscoveryStack extends cdk.Stack {
         descriptionSecret.ref,
         ':SecretString:::}}',
       ]),
+      dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' },
+      ...(kept
+        ? {}
+        : { healthCheckConfig: { type: 'HTTP', resourcePath: '/health', failureThreshold: 3 } }),
+    });
+
+    // go-to-k/cdkd#5112 `kept`: HealthCheckConfig removed beside an unchanged
+    // Description from a NoEcho parameter (state records `***`).
+    const noEchoDescription = new cdk.CfnParameter(this, 'SvcNoEchoDescription', {
+      type: 'String',
+      noEcho: true,
+      default: 'cdkd-svcdisc-noecho-description',
+    });
+    new servicediscovery.CfnService(this, 'NoEchoHcKeptService', {
+      name: 'cdkd-svcdisc-noecho-hc-kept',
+      namespaceId: publicNamespace.attrId,
+      description: noEchoDescription.valueAsString,
       dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }], routingPolicy: 'WEIGHTED' },
       ...(kept
         ? {}

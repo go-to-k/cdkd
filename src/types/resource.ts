@@ -833,10 +833,19 @@ export interface UpdateContext extends SecretMaskingContext {
    * inputs moved, a secret read at a newer version than recorded, a fresh
    * `NoEcho` value AWS did not confirm holding, and a key whose previous side
    * the engine rewrote for the provider to act on (a re-attachment, a dropped
-   * secret principal list). Names only: no value reaches the provider.
-   * One deliberate exception to CloudFormation parity: a create-only path a
-   * `NoEcho` parameter feeds that cdkd decided not to replace (warned on every
-   * deploy) is left out, since it cannot be updated in place either.
+   * secret principal list). An update the engine forces with nothing changed
+   * (a `reput` child of a re-created parent) names EVERY key. Names only: no
+   * value reaches the provider.
+   *
+   * A fresh `NoEcho` parameter value is confirmed only by reading the resource
+   * back. That read is taken for it only on a type in
+   * `CHANGED_PROPERTIES_CONSUMER_TYPES`
+   * (`src/provisioning/changed-properties-consumers.ts`), the opt-in a provider
+   * that reads this set joins; on any other type an unconfirmed key stays in
+   * the set (wider than CloudFormation, never narrower) and no AWS call is
+   * added. One deliberate exception to CloudFormation parity: a create-only
+   * path a `NoEcho` parameter feeds that cdkd decided not to replace (warned on
+   * every deploy) is left out, since it cannot be updated in place either.
    *
    * Set ONLY by the deploy's in-place UPDATE
    * (`deploy-engine/update-in-place.ts`). ABSENT on the rollback revert arms

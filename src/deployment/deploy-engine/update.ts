@@ -32,6 +32,7 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getCreateOnlyPropertyPaths } from '../../provisioning/create-only-properties.js';
+import { CHANGED_PROPERTIES_CONSUMER_TYPES } from '../../provisioning/changed-properties-consumers.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
@@ -1406,7 +1407,19 @@ export async function provisionUpdate(
   const parameterHeldKeys = new Set<string>();
   const parameterUnreadablePaths: string[] = [];
   if (pendingParameterLeaves.size > 0 && !typeChanged) {
-    const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired;
+    // go-to-k/cdkd#5112: a type whose provider decides from
+    // `changedProperties` whether to send a field reads back a `NoEcho` key
+    // on an updatable path even when something else moved, so one AWS holds
+    // is left out of that set, as CloudFormation compares templates. Parity
+    // won only for those opted-in types: every other type makes no new call
+    // (performance first), and its unconfirmed key stays in the set, re-sent.
+    const consumerReadsBack =
+      CHANGED_PROPERTIES_CONSUMER_TYPES.has(resourceType) &&
+      currentResource.provisionedBy !== 'cc-api' &&
+      [...pendingParameterLeaves.keys()].some(
+        (key) => !parameterCreateOnlyPaths.has(key) && otherFreshAt(key).length === 0
+      );
+    const mustRead = parameterCreateOnlyPaths.size > 0 || recordMatchesDesired || consumerReadsBack;
     const read = mustRead ? await readOnce() : undefined;
     const verdictAt = (key: string): FreshNoEchoCeilingVerdict => {
       if (read === undefined) return 'not-readable';
@@ -1498,6 +1511,10 @@ export async function provisionUpdate(
         // path nobody read back for it is sent).
         if (otherFreshAt(key).length > 0) continue;
         const verdict = verdictAt(key);
+        // A `held` key is settled as on the no-change arm, whichever reason
+        // took the read (go-to-k/cdkd#5112 included): the provider's previous
+        // side gets the value AWS holds, and the key leaves `changedProperties`.
+        // `differs` and an unreadable key stay pending, so both stay in it.
         if (verdict === 'held') {
           parameterSettledPaths.add(key);
           parameterHeldKeys.add(key);

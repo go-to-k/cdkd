@@ -101,6 +101,11 @@ interface Run {
   /** `UpdateContext.changedProperties` per updated logical id, sorted. */
   changed: Record<string, string[] | undefined>;
   updated: string[];
+  /** The previous side each update was handed. */
+  previous: Record<string, Record<string, unknown>>;
+  /** Every `readCurrentState` call, by logical id. */
+  reads: string[];
+  created: string[];
 }
 
 async function deploy(opts: {
@@ -108,30 +113,43 @@ async function deploy(opts: {
   template: CloudFormationTemplate;
   levels?: string[][];
   readBack?: Record<string, unknown>;
+  /** A provider result per logical id (an update's or a create's). */
+  results?: Record<string, Record<string, unknown>>;
+  options?: Record<string, unknown>;
 }): Promise<Run> {
   const levels = opts.levels ?? [['R']];
   const changed: Record<string, string[] | undefined> = {};
   const updated: string[] = [];
+  const created: string[] = [];
+  const reads: string[] = [];
+  const previous: Record<string, Record<string, unknown>> = {};
   const provider = {
-    create: vi.fn().mockResolvedValue({ physicalId: 'created', attributes: {} }),
+    create: vi.fn(async (id: string) => {
+      created.push(id);
+      return opts.results?.[id] ?? { physicalId: 'created', attributes: {} };
+    }),
     update: vi.fn(
       async (
         id: string,
         pid: string,
         _type: string,
         _props: Record<string, unknown>,
-        _previous: Record<string, unknown>,
+        prev: Record<string, unknown>,
         context?: UpdateContext
       ) => {
         updated.push(id);
+        previous[id] = prev;
         changed[id] =
           context?.changedProperties === undefined ? undefined : [...context.changedProperties].sort();
-        return { physicalId: pid, attributes: {} };
+        return opts.results?.[id] ?? { physicalId: pid, attributes: {} };
       }
     ),
     delete: vi.fn(),
     getAttribute: vi.fn(),
-    readCurrentState: vi.fn().mockResolvedValue(opts.readBack),
+    readCurrentState: vi.fn(async (_pid: string, id: string) => {
+      reads.push(id);
+      return opts.readBack;
+    }),
   };
   const engine = new DeployEngine(
     {
@@ -161,14 +179,14 @@ async function deploy(opts: {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false },
+    { dryRun: false, forceStatefulRecreation: true, ...opts.options },
     'us-east-1'
   );
   let thrown: unknown;
   await engine.deploy('s', opts.template).catch((e: unknown) => {
     thrown = e;
   });
-  return { thrown, changed, updated };
+  return { thrown, changed, updated, previous, reads, created };
 }
 
 function stateOf(resources: Record<string, ResourceState>): StackState {
@@ -395,5 +413,193 @@ describe('UpdateContext.changedProperties (go-to-k/cdkd#5112)', () => {
     });
     expect(run.thrown).toBeUndefined();
     expect(run.changed['R']).toEqual(['PolicyDocument', 'Roles']);
+  });
+  describe('a NoEcho Description on a type that reads the set (AWS::ServiceDiscovery::Service)', () => {
+    const DNS = { RoutingPolicy: 'WEIGHTED', DnsRecords: [{ Type: 'A', TTL: 60 }] };
+    const HC = { Type: 'HTTP', ResourcePath: '/h', FailureThreshold: 3 };
+    const VALUE = 'svc-desc-5112';
+    const record = (type = 'AWS::ServiceDiscovery::Service'): ResourceState =>
+      ({
+        physicalId: 'srv-1',
+        resourceType: type,
+        properties: { Name: 'svc', NamespaceId: 'ns-1', Description: '***', DnsConfig: DNS, HealthCheckConfig: HC },
+        attributes: {},
+        dependencies: [],
+        noEchoLeaves: [['Description']],
+      }) as ResourceState;
+    // The HealthCheckConfig removal moves the record off the no-change arm,
+    // which is exactly when no readback used to be taken.
+    const run = (readBack: Record<string, unknown> | undefined, type?: string) =>
+      deploy({
+        state: stateOf({ R: record(type) }),
+        template: {
+          Parameters: { Desc: { Type: 'String', NoEcho: true, Default: VALUE } },
+          Resources: {
+            R: {
+              Type: type ?? 'AWS::ServiceDiscovery::Service',
+              Properties: { Name: 'svc', NamespaceId: 'ns-1', Description: { Ref: 'Desc' }, DnsConfig: DNS },
+            },
+          },
+        } as CloudFormationTemplate,
+        ...(readBack !== undefined && { readBack }),
+        options: { captureObservedState: false },
+      });
+
+    it('that AWS holds is left out, and the previous side carries the value AWS holds', async () => {
+      const result = await run({ Name: 'svc', Description: VALUE, DnsConfig: DNS });
+      expect(result.thrown).toBeUndefined();
+      expect(result.reads).toEqual(['R']);
+      expect(result.changed['R']).toEqual(['HealthCheckConfig']);
+      expect(result.previous['R']?.['Description']).toBe(VALUE);
+    });
+
+    it('that AWS holds differently is named', async () => {
+      const result = await run({ Name: 'svc', Description: 'svc-desc-old', DnsConfig: DNS });
+      expect(result.thrown).toBeUndefined();
+      expect(result.reads).toEqual(['R']);
+      expect(result.changed['R']).toEqual(['Description', 'HealthCheckConfig']);
+      expect(result.previous['R']?.['Description']).toBe('***');
+    });
+
+    it('that AWS does not report is named', async () => {
+      const result = await run(undefined);
+      expect(result.thrown).toBeUndefined();
+      expect(result.reads).toEqual(['R']);
+      expect(result.changed['R']).toEqual(['Description', 'HealthCheckConfig']);
+    });
+
+    it('on a type that does not read the set makes no readback, and names the key', async () => {
+      const result = await run({ Description: VALUE }, 'AWS::Test::NotAConsumer');
+      expect(result.thrown).toBeUndefined();
+      expect(result.updated).toEqual(['R']);
+      expect(result.reads).toEqual([]);
+      expect(result.changed['R']).toEqual(['Description', 'HealthCheckConfig']);
+    });
+  });
+
+  it('names every key a redaction rewrote in a reader of a producer this run replaced (go-to-k/cdkd#4838)', async () => {
+    // The secret rotated and the queue named from it is replaced (FifoQueue is
+    // create-only); the reader's new ARN redacts to the reference it recorded.
+    secret.queue = 'chg-q-2';
+    const run = await deploy({
+      levels: [['Q'], ['R']],
+      state: stateOf({
+        Q: {
+          physicalId: URL_1,
+          resourceType: 'AWS::SQS::Queue',
+          properties: { QueueName: REF },
+          attributes: { Arn: RECORDED_ARN, QueueUrl: URL_1 },
+          dependencies: [],
+        } as ResourceState,
+        R: ssmRecord(
+          { Name: '/p/r', Type: 'String', Value: RECORDED_ARN, Description: 'd', Tags: { Owner: REF } },
+          { dependencies: ['Q'] } as never
+        ),
+      }),
+      template: {
+        Resources: {
+          Q: { Type: 'AWS::SQS::Queue', Properties: { QueueName: REF, FifoQueue: true } },
+          R: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Name: '/p/r',
+              Type: 'String',
+              Value: { 'Fn::GetAtt': ['Q', 'Arn'] },
+              Description: 'd',
+              Tags: { Owner: REF },
+            },
+          },
+        },
+      },
+      results: {
+        Q: {
+          physicalId: URL_2,
+          attributes: { Arn: 'arn:aws:sqs:us-east-1:123456789012:chg-q-2', QueueUrl: URL_2 },
+        },
+      },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.created).toEqual(['Q']);
+    expect(run.updated).toEqual(['R']);
+    expect(run.changed['R']).toEqual(['Tags', 'Value']);
+  });
+
+  it('names an updatable key carrying a custom resource NoEcho value nobody read back (go-to-k/cdkd#3729 class)', async () => {
+    const token = 'arn:aws:lambda:us-east-1:123456789012:function:h';
+    const run = await deploy({
+      levels: [['Cr'], ['R']],
+      state: stateOf({
+        Cr: {
+          physicalId: 'cr-1',
+          resourceType: 'Custom::Thing',
+          properties: { ServiceToken: token, Seed: 'a' },
+          attributes: { Shown: '***' },
+          dependencies: [],
+        } as ResourceState,
+        R: {
+          physicalId: 'arn:aws:sns:us-east-1:123456789012:fixed-topic',
+          resourceType: 'AWS::SNS::Topic',
+          properties: { TopicName: 'fixed-topic', DisplayName: '***' },
+          attributes: {},
+          dependencies: ['Cr'],
+        } as ResourceState,
+      }),
+      template: {
+        Resources: {
+          Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: token, Seed: 'b' } },
+          R: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: 'fixed-topic', DisplayName: { 'Fn::GetAtt': ['Cr', 'Shown'] } },
+          },
+        },
+      },
+      results: {
+        Cr: {
+          physicalId: 'cr-1',
+          wasReplaced: false,
+          attributes: { Shown: 'cr-noecho-5112-value' },
+          noEchoAttributes: true,
+        },
+      },
+      options: { captureObservedState: false },
+    });
+    expect(run.thrown).toBeUndefined();
+    expect(run.updated).toEqual(['Cr', 'R']);
+    expect(run.changed['R']).toEqual(['DisplayName']);
+  });
+
+  describe('a record a pre-v11 binary wrote (plaintext at a NoEcho position, no marker)', () => {
+    const v10 = (stored: string): StackState => {
+      const state = stateOf({
+        R: ssmRecord({ Name: '/p/r', Type: 'String', Value: stored, Description: 'd' }),
+      });
+      state.version = 10 as never;
+      return state;
+    };
+    const template = (value: string, description: string): CloudFormationTemplate =>
+      ssmTemplate(
+        { Name: '/p/r', Type: 'String', Value: { Ref: 'Token' }, Description: description },
+        { Token: { Type: 'String', NoEcho: true, Default: value } }
+      );
+
+    it('names a value the witness finds different', async () => {
+      const run = await deploy({
+        state: v10('token-old-5112'),
+        template: template('token-new-5112', 'd'),
+        options: { captureObservedState: false },
+      });
+      expect(run.thrown).toBeUndefined();
+      expect(run.changed['R']).toEqual(['Value']);
+    });
+
+    it('leaves out a value the witness confirms beside another change', async () => {
+      const run = await deploy({
+        state: v10('token-same-5112'),
+        template: template('token-same-5112', 'd2'),
+        options: { captureObservedState: false },
+      });
+      expect(run.thrown).toBeUndefined();
+      expect(run.changed['R']).toEqual(['Description']);
+    });
   });
 });

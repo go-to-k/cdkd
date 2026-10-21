@@ -290,6 +290,14 @@ export async function updateInPlace(
       changedForProvider.add(key);
     }
   }
+  // Still nothing: an update the engine forces with no change as written (a
+  // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
+  // Every key counts, so no provider skips the write the update exists for.
+  if (changedForProvider.size === 0) {
+    for (const key of new Set([...Object.keys(updateProps), ...Object.keys(previousForUpdate)])) {
+      changedForProvider.add(key);
+    }
+  }
   if (reattached !== undefined) {
     engine.logger.info(
       safeMsg`  ${logicalId} (${resourceType}) lost its attachment to ${reattached.parents.join(', ')}, which this deploy re-created under the same name: attaching it again`
