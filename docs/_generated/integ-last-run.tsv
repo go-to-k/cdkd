@@ -320,7 +320,7 @@ rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok,
 rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)
 rollback-failure-injection	2026-10-20T10:27:41Z	PASS	364	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-nested-cross-region-secret	2026-10-18T20:07:28Z	PASS	537	verify.sh	PR #5062 f0655a21a7; rc ok, orph clean both regions (us-east-1 + us-west-2)
-rollback-replacement-retain	2026-10-17T10:48:50Z	PASS	70	verify.sh	rc ok (solo rerun after a batch-script wave-placement race), orph clean (rollback refactor #5027)
+rollback-replacement-retain	2026-10-21T05:11:44Z	PASS	90	verify.sh	rc ok, orph clean, phase 6b collision refusal names retained copy (#5143, 04a0136da)
 rollback-replay-cc-generated-name	2026-10-20T10:37:15Z	PASS	174	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean

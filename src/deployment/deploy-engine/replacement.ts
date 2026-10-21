@@ -1,4 +1,5 @@
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
+import { type RollbackRetainedCopy } from '../kept-in-history.js';
 import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from './masking.js';
 import {
@@ -247,6 +248,12 @@ export interface ReplacementDeps {
   ) => Promise<T>;
   /** Does the generated-name guard check `logicalId`'s create (its replacement included)? */
   generatedNameGuarded: (logicalId: string) => boolean;
+  /**
+   * go-to-k/cdkd#5143: the copies this stack's rollbacks kept under
+   * `UpdateReplacePolicy: Retain`, read from its event history. Asked only
+   * on the name-collision refusal, so a deploy that succeeds reads nothing.
+   */
+  rollbackRetainedCopies?: (stackName: string) => Promise<RollbackRetainedCopy[]>;
 }
 
 /**
@@ -777,6 +784,25 @@ export async function checkedReplacementNameChange(
   ) {
     return undefined;
   }
+  // go-to-k/cdkd#5143: the holder may be this resource's own copy that an
+  // earlier rolled-back deploy kept; say so only when the history shows it.
+  const keptByRollback =
+    (await deps.rollbackRetainedCopies?.(input.stackName).catch(() => [])) ?? [];
+  const ownRetainedCopy = keptByRollback.some(
+    (copy) =>
+      copy.logicalId === logicalId &&
+      copy.resourceType === resourceType &&
+      probeFoundSameId(resourceType, copy.physicalId, found.physicalId)
+  );
+  // Worded from what the history records, not as a fact about the live
+  // holder: the copy may since have been deleted and the name taken by an
+  // unrelated resource, which the advice must not tell anyone to delete.
+  const remedy = ownRetainedCopy
+    ? `This stack's event history records that a rolled-back deploy kept ` +
+      `${displaySafe(logicalId)}'s replacement under this name because of ` +
+      `UpdateReplacePolicy: Retain, as CloudFormation also does, untracked by cdkd. If the ` +
+      `holder is that copy and you no longer need it, delete it; otherwise choose another name.`
+    : `Choose a name no other resource holds, or delete the resource holding it if it is yours.`;
   throw markNonRetryable(
     new CdkdError(
       maskName(
@@ -784,8 +810,7 @@ export async function checkedReplacementNameChange(
           `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
           `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
           `would take that resource over and record it as this stack's. Nothing was ` +
-          `created or deleted. Choose a name no other resource holds, or delete the ` +
-          `resource holding it if it is yours.`
+          `created or deleted. ${remedy}`
       ),
       'NAMED_REPLACEMENT_COLLISION'
     )

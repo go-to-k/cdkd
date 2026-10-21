@@ -41,6 +41,7 @@ import {
   type RollbackReplayResult,
 } from './types.js';
 import type { ForeignHolding } from './journaled-orphans.js';
+import { RETAINED_SURVIVOR_REASON_PREFIX } from '../kept-in-history.js';
 
 /**
  * Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762): turn a
@@ -924,7 +925,7 @@ export function retainedSurvivorMessages(
       `and destroying the stack will not remove it. Delete it yourself once you no longer ` +
       `need it. ${displaySafe(clause)}`,
     reason:
-      `UpdateReplacePolicy: Retain kept the replacement's new ${resourceType} ` +
+      `${RETAINED_SURVIVOR_REASON_PREFIX} ${resourceType} ` +
       `(${survivorId}); it is live, still billing, and no longer tracked by ` +
       `cdkd. ${clause}`,
   };
