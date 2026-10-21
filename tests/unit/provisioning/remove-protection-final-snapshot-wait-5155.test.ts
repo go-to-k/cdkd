@@ -57,6 +57,8 @@ interface Scenario {
   protectionOn: boolean;
   /** Statuses the resource reports after the flip, one per describe. */
   afterFlip: string[];
+  /** Describes after the flip that still read the guard ON (default 0). */
+  protectionLag?: number;
 }
 
 /**
@@ -69,6 +71,7 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
   let flipped = false;
   let deleted = false;
   const queue = [...scenario.afterFlip];
+  let lag = scenario.protectionLag ?? 0;
   const order: string[] = [];
   mockSend.mockImplementation(async (command: { constructor: { name: string }; input?: any }) => {
     const name = command.constructor.name;
@@ -93,11 +96,21 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
         });
       }
       const status = flipped ? (queue.shift() ?? 'available') : 'available';
+      const readsOn = flipped && lag > 0;
+      if (readsOn) lag -= 1;
       return kind === 'cluster'
-        ? { DBClusters: [{ DBClusterIdentifier: 'res', DeletionProtection: protection, Status: status }] }
+        ? {
+            DBClusters: [
+              { DBClusterIdentifier: 'res', DeletionProtection: readsOn || protection, Status: status },
+            ],
+          }
         : {
             DBInstances: [
-              { DBInstanceIdentifier: 'res', DeletionProtection: protection, DBInstanceStatus: status },
+              {
+                DBInstanceIdentifier: 'res',
+                DeletionProtection: readsOn || protection,
+                DBInstanceStatus: status,
+              },
             ],
           };
     }
@@ -166,6 +179,17 @@ describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)'
     await c.make().delete('Res', 'res', c.type, c.properties, context);
 
     // modifying, modifying, then available: three reads before the delete.
+    expect(describesBetweenFlipAndDelete(order)).toBe(3);
+  });
+
+  it('keeps waiting while an available resource still reads the guard ON', async () => {
+    // `available` before the flip has even started: status alone would let
+    // the delete through and hit the same refusal.
+    const order = route(c.kind, { protectionOn: true, afterFlip: [], protectionLag: 2 });
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await c.make().delete('Res', 'res', c.type, c.properties, context);
+
     expect(describesBetweenFlipAndDelete(order)).toBe(3);
   });
 
