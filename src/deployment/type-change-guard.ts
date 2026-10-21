@@ -40,6 +40,7 @@ import type { ResourceChange, ResourceState } from '../types/state.js';
 import { isCustomResource } from '../provisioning/provider-registry.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
+import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
 /**
  * Do two records of ONE type that carry the SAME physical id nonetheless name
@@ -47,7 +48,8 @@ import { segmentAfterAnchor } from '../provisioning/composite-id.js';
  *
  * For almost every type an id is self-describing, so no — and this answers
  * `false`, leaving every caller's id-equality reading byte-for-byte as it was.
- * `AWS::Glue::Table` is the exception: its id `<databaseName>|<tableName>` is
+ * Two types are exceptions. `AWS::Lambda::Permission` (go-to-k/cdkd#5137):
+ * see {@link permissionsOnDifferentFunctions}. And `AWS::Glue::Table`: its id `<databaseName>|<tableName>` is
  * placed by the recorded `DatabaseName`, and since both names may contain `|`,
  * table `db|orders` in database `my` and table `orders` in database `my|db`
  * share the id `my|db|orders`. A replacement that changes both names can
@@ -76,6 +78,9 @@ export function equalIdNamesDifferentResources(input: {
   oldProperties: Record<string, unknown> | undefined;
   newProperties: Record<string, unknown> | undefined;
 }): boolean {
+  if (input.resourceType === 'AWS::Lambda::Permission') {
+    return permissionsOnDifferentFunctions(input.oldProperties, input.newProperties);
+  }
   if (input.resourceType !== 'AWS::Glue::Table' || input.physicalId === undefined) return false;
   const oldDb = input.oldProperties?.['DatabaseName'];
   const newDb = input.newProperties?.['DatabaseName'];
@@ -91,6 +96,27 @@ export function equalIdNamesDifferentResources(input: {
   // the other plus `|` (`my` and `my|db` on `my|db|orders`). Case folding
   // cannot make two such strings one database: an anchor matches exactly.
   return oldDb !== newDb;
+}
+
+/**
+ * go-to-k/cdkd#5137: a Lambda permission's id is its StatementId, which AWS
+ * scopes to the function, and a legacy stack's id is the bare logical id. So
+ * a replacement moving the permission to another function creates a NEW
+ * statement under the old id. Two different functions are proven only by two
+ * readable unqualified spellings whose function NAMES differ. A qualified
+ * ARN, an alias, a mask or an absent bag answers `false`, the safe direction.
+ */
+function permissionsOnDifferentFunctions(
+  oldProperties: Record<string, unknown> | undefined,
+  newProperties: Record<string, unknown> | undefined
+): boolean {
+  const oldFn = oldProperties?.['FunctionName'];
+  const newFn = newProperties?.['FunctionName'];
+  if (typeof oldFn !== 'string' || typeof newFn !== 'string') return false;
+  if (carriesSecretMask(oldFn) || carriesSecretMask(newFn)) return false;
+  const oldName = parseLambdaFunctionAddress(oldFn)?.name;
+  const newName = parseLambdaFunctionAddress(newFn)?.name;
+  return oldName !== undefined && newName !== undefined && oldName !== newName;
 }
 
 /**

@@ -223,6 +223,12 @@ layer, so moving it between layers or recreating it on the other one never
 changes the name cdkd expects. cdkd never sends a CodeBuild project or a
 budget through Cloud Control, so their SDK providers always name them.
 
+An `AWS::Lambda::Permission` has no name property; its statement id is the
+name. The SDK provider generates it as `<StackName>-<LogicalId>-<suffix>`, as
+CloudFormation does, with a new one each time the permission is replaced, and
+Cloud Control's handler picks its own. A stack without stack instance ids keeps
+sending the bare logical id.
+
 A stack first deployed by a cdkd without stack instance ids keeps the names
 each layer gave before:
 

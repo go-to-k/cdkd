@@ -159,6 +159,14 @@ export function getCurrentStackName(): string | undefined {
  * legacy stack, and where the call site opened a declared-names-only scope.
  * Never log it: the names derived from it must not be predictable from a log.
  */
+/**
+ * Whether the current scope derives names before the stack's state record was
+ * read ({@link withStackScopeBeforeStateRead}), where a generated name throws.
+ */
+export function isBeforeStateRead(): boolean {
+  return stackScopeStore.getStore()?.beforeStateRead === true;
+}
+
 export function getCurrentStackInstanceId(): string | undefined {
   return stackScopeStore.getStore()?.stackInstanceId;
 }

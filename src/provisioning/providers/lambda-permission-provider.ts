@@ -34,6 +34,11 @@ import {
 } from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
+import {
+  generateResourceName,
+  getCurrentStackInstanceId,
+  isBeforeStateRead,
+} from '../resource-name.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
@@ -207,17 +212,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
       );
     }
 
-    // Generate a unique StatementId from the logicalId (max 100 chars)
-    let statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
-    if (statementId.length > 100) {
-      // Simple hash: sum char codes and convert to hex
-      let hashNum = 0;
-      for (let i = 0; i < logicalId.length; i++) {
-        hashNum = ((hashNum << 5) - hashNum + logicalId.charCodeAt(i)) | 0;
-      }
-      const hash = Math.abs(hashNum).toString(16).padStart(8, '0').substring(0, 8);
-      statementId = `${statementId.substring(0, 91)}-${hash}`;
-    }
+    const statementId = permissionStatementId(logicalId);
 
     try {
       const addParams: import('@aws-sdk/client-lambda').AddPermissionCommandInput = {
@@ -658,4 +653,39 @@ export class LambdaPermissionProvider implements ResourceProvider {
     }
     return null;
   }
+}
+
+/**
+ * The StatementId a create sends (go-to-k/cdkd#5137). The template never
+ * names one, so cdkd generates it.
+ *
+ * - A stack with an instance id gets `{StackName}-{LogicalId}-{suffix}`, as
+ *   CloudFormation does, with a new suffix at each replacement's name
+ *   generation. A replacement then creates its statement under a new id,
+ *   whether the function changed or not, and the create runs first.
+ * - A legacy stack keeps the bare logical id it has always sent, cut to 100
+ *   characters with a hash.
+ *
+ * AWS allows `[a-zA-Z0-9-_.]`, at most 100 characters; `.` is left out.
+ */
+export function permissionStatementId(logicalId: string): string {
+  // Before the state read the stack's instance id is unknown, so this must not
+  // fall back to the legacy id: `generateResourceName` refuses that scope.
+  if (getCurrentStackInstanceId() !== undefined || isBeforeStateRead()) {
+    return generateResourceName(logicalId, {
+      maxLength: 100,
+      allowedPattern: /[^a-zA-Z0-9_-]/g,
+    });
+  }
+  let statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (statementId.length > 100) {
+    // Simple hash: sum char codes and convert to hex
+    let hashNum = 0;
+    for (let i = 0; i < logicalId.length; i++) {
+      hashNum = ((hashNum << 5) - hashNum + logicalId.charCodeAt(i)) | 0;
+    }
+    const hash = Math.abs(hashNum).toString(16).padStart(8, '0').substring(0, 8);
+    statementId = `${statementId.substring(0, 91)}-${hash}`;
+  }
+  return statementId;
 }

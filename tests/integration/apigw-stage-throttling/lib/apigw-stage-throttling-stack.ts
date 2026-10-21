@@ -5,6 +5,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as logs from 'aws-cdk-lib/aws-logs';
 
 const UPDATE = process.env.CDKD_TEST_UPDATE === 'true';
+const REPLACE_FN = process.env.CDKD_TEST_REPLACE_FN === 'true';
 
 /**
  * API Gateway REST API Stage: Ref correctness + AccessLogSetting delivery
@@ -30,6 +31,11 @@ const UPDATE = process.env.CDKD_TEST_UPDATE === 'true';
  * Method + a hash-suffixed replacement Deployment) and changes the throttling
  * limits — the new route must serve and the old Deployment must be deleted.
  *
+ * REPLACE_FN phase (CDKD_TEST_REPLACE_FN=true, go-to-k/cdkd#5137): names the
+ * function, which replaces it, and with it every Lambda Permission whose
+ * FunctionName points at it. Each replaced permission must create first under
+ * a new generated statement id on the new function.
+ *
  * covers: AWS::ApiGateway::RestApi
  * covers: AWS::ApiGateway::Resource
  * covers: AWS::ApiGateway::Method
@@ -45,6 +51,8 @@ export class ApigwStageThrottlingStack extends cdk.Stack {
     super(scope, id, props);
 
     const fn = new lambda.Function(this, 'Handler', {
+      // Under the stack-name prefix, so cleanup's log-group sweep covers it.
+      ...(REPLACE_FN && { functionName: `${this.stackName}-renamed-handler` }),
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromInline(

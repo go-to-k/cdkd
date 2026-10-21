@@ -463,8 +463,10 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
       /\bgenerateResourceName\(\s*logicalId\b/.test(readFileSync(join(dir, f), 'utf-8'))
     );
     // A budget's name is nested (`Budget.BudgetName`) and the type has no
-    // Cloud Control route in cdkd, so it has no rule.
-    expect(own).toEqual(['budgets-budget-provider.ts']);
+    // Cloud Control route in cdkd, so it has no rule. A Lambda permission has
+    // no name property: its statement id is generated (go-to-k/cdkd#5137),
+    // and Cloud Control's handler picks its own, so there is no rule to share.
+    expect(own).toEqual(['budgets-budget-provider.ts', 'lambda-permission-provider.ts']);
   });
 
   it("each generatedNameFor call is the fallback of its own type's name property", () => {
