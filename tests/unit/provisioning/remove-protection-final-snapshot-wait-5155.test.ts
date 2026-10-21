@@ -59,6 +59,8 @@ interface Scenario {
   afterFlip: string[];
   /** Describes after the flip that still read the guard ON (default 0). */
   protectionLag?: number;
+  /** After the delete the resource reads `deleting` instead of gone. */
+  deletingAfterDelete?: boolean;
 }
 
 /**
@@ -70,12 +72,17 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
   let protection = scenario.protectionOn;
   let flipped = false;
   let deleted = false;
+  let deleting = false;
   const queue = [...scenario.afterFlip];
   let lag = scenario.protectionLag ?? 0;
   const order: string[] = [];
+  const reEnables: number[] = [];
   mockSend.mockImplementation(async (command: { constructor: { name: string }; input?: any }) => {
     const name = command.constructor.name;
     order.push(name);
+    if (/^ModifyDB(Cluster|Instance)Command$/.test(name) && command.input?.DeletionProtection === true) {
+      reEnables.push(order.length - 1);
+    }
     if (/^ModifyDB(Cluster|Instance)Command$/.test(name) && command.input?.DeletionProtection === false) {
       protection = false;
       flipped = true;
@@ -86,7 +93,8 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
       return {};
     }
     if (/^DeleteDB(Cluster|Instance)Command$/.test(name)) {
-      deleted = true;
+      deleted = scenario.deletingAfterDelete !== true;
+      deleting = scenario.deletingAfterDelete === true;
       return {};
     }
     if (name === 'DescribeDBClustersCommand' || name === 'DescribeDBInstancesCommand') {
@@ -95,7 +103,7 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
           name: kind === 'cluster' ? 'DBClusterNotFoundFault' : 'DBInstanceNotFound',
         });
       }
-      const status = flipped ? (queue.shift() ?? 'available') : 'available';
+      const status = deleting ? 'deleting' : flipped ? (queue.shift() ?? 'available') : 'available';
       const readsOn = flipped && lag > 0;
       if (readsOn) lag -= 1;
       return kind === 'cluster'
@@ -116,7 +124,7 @@ function route(kind: 'cluster' | 'instance', scenario: Scenario) {
     }
     return {};
   });
-  return order;
+  return Object.assign(order, { reEnables });
 }
 
 /** Describes sent after the flip and before the delete. */
@@ -225,5 +233,43 @@ describe.each(CASES)('$label: --remove-protection then a final snapshot (#5155)'
     expect((error as Error).message).toContain("did not return to 'available'");
     expect((error as Error).message).toContain('re-run the destroy');
     expect(order.some((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n))).toBe(false);
+    // The timeout is terminal, so the compensation puts the guard back, as the
+    // message says.
+    expect(order.reEnables).toHaveLength(1);
+  });
+
+  it('does not wait again on a re-entry after AWS already accepted the delete', async () => {
+    // First attempt: the wait passes, the delete is accepted, and the
+    // gone-wait then fails retryably. The re-entry must not poll a
+    // `deleting` resource for `available`.
+    const order = route(c.kind, { protectionOn: true, afterFlip: [], deletingAfterDelete: true });
+    const provider = c.make();
+    const goneWait = c.kind === 'cluster' ? 'waitForClusterDeleted' : 'waitForInstanceDeleted';
+    (provider as unknown as Record<string, unknown>)[goneWait] = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Rate exceeded'), {
+          name: 'ThrottlingException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        })
+      )
+      .mockResolvedValue(undefined);
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000));
+    const context: DeleteContext = { removeProtection: true, finalSnapshotIdentifier: SNAP };
+
+    await expect(provider.delete('Res', 'res', c.type, c.properties, context)).rejects.toThrow();
+    const firstLength = order.length;
+    await provider.delete('Res', 'res', c.type, c.properties, context);
+
+    const second = order.slice(firstLength);
+    const del = second.findIndex((n) => /^DeleteDB(Cluster|Instance)Command$/.test(n));
+    expect(del).toBeGreaterThanOrEqual(0);
+    // Only the flip's own observe read precedes the second delete.
+    expect(
+      second.slice(0, del).filter((n) => /^DescribeDB(Clusters|Instances)Command$/.test(n))
+    ).toHaveLength(1);
+    expect(order.reEnables).toHaveLength(0);
   });
 });

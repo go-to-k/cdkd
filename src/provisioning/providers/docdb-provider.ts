@@ -512,6 +512,7 @@ export class DocDBProvider implements ResourceProvider {
       ) {
         await this.waitForSecurityGroupsApplied(
           physicalId,
+          logicalId,
           (sendVpcSgIds ? vpcSgIds : undefined) ?? []
         );
         for (const member of described?.DBClusterMembers ?? []) {
@@ -643,8 +644,9 @@ export class DocDBProvider implements ResourceProvider {
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
       // Issue #5155: a final snapshot needs `available`, which the flip above
-      // briefly takes away. Only a flip of this run AND a snapshot wait.
-      if (finalSnapshotId && flip.flippedOffByThisRun) {
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
         await this.waitForProtectionOffBeforeFinalSnapshot(logicalId, physicalId);
       }
       await this.getClient().send(
@@ -1067,6 +1069,7 @@ export class DocDBProvider implements ResourceProvider {
    */
   private async waitForSecurityGroupsApplied(
     dbClusterIdentifier: string,
+    logicalId: string,
     expected: readonly string[],
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1086,13 +1089,13 @@ export class DocDBProvider implements ResourceProvider {
         ids === want;
       if (settled) return;
       this.logger.debug(
-        safeMsg`DocDB DBCluster ${dbClusterIdentifier} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
+        safeMsg`DocDB DBCluster ${logicalId} security groups not settled yet (status ${cluster?.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
     throw new Error(
-      `Timed out waiting for DocDB DBCluster ${dbClusterIdentifier} to apply its new VPC security groups`
+      `Timed out waiting for DocDB DBCluster ${logicalId} to apply its new VPC security groups`
     );
   }
 
