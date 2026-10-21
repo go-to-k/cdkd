@@ -1025,6 +1025,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['MultiRegionConsistency', 'not yet implemented by cdkd'],
         ['ReadOnDemandThroughputSettings', 'not yet implemented by cdkd'],
         ['ReadProvisionedThroughputSettings', 'not yet implemented by cdkd'],
+        ['TableType', 'not yet implemented by cdkd'],
         ['VectorIndexes', 'not yet implemented by cdkd'],
         ['WarmThroughput', 'not yet implemented by cdkd'],
       ]),

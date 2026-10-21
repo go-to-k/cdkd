@@ -85,6 +85,7 @@
       "MultiRegionConsistency",
       "ReadOnDemandThroughputSettings",
       "ReadProvisionedThroughputSettings",
+      "TableType",
       "VectorIndexes",
       "WarmThroughput"
     ],
