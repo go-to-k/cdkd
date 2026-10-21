@@ -23,6 +23,10 @@
 #      pre-backfill this only worked because CC forwarded the full map)
 #   4. UPDATE: adding a route swaps in a new hash-suffixed Deployment; the new
 #      route must serve and the old Deployment must be deleted
+#   5. REPLACE_FN (go-to-k/cdkd#5137): naming the function replaces it and
+#      every Lambda Permission on it; each permission must come back under a
+#      NEW generated statement id on the new function, the old function must
+#      be gone, and the routes must still serve
 # Then destroys and confirms a clean teardown.
 #
 # Required env vars:
@@ -267,7 +271,75 @@ if [ "${NEW_DEPLOYMENT_IDS}" = "${OLD_DEPLOYMENT_IDS}" ]; then
 fi
 echo "    OK: replacement Deployment swapped in and the old one was deleted"
 
-# --- Phase 3: destroy ---------------------------------------------------
+# Every permission's statement id as state records it, and as the function's
+# resource policy carries it (sorted, one per line).
+permission_ids() {
+  echo "$1" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Permission") | .value.physicalId' | sort
+}
+policy_sids() {
+  aws lambda get-policy --function-name "$1" --region "${REGION}" --query Policy --output text \
+    | jq -r '.Statement[].Sid' | sort
+}
+
+STATE_BEFORE_REPLACE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+IDS_BEFORE_REPLACE="$(permission_ids "${STATE_BEFORE_REPLACE}")"
+PERMISSION_COUNT=$(echo "${IDS_BEFORE_REPLACE}" | grep -c . || true)
+if [ "${PERMISSION_COUNT}" -lt 2 ]; then
+  echo "FAIL: expected at least 2 Lambda Permissions before the replacement; got: ${IDS_BEFORE_REPLACE}" >&2
+  exit 1
+fi
+# A stack with an instance id sends `<StackName>-<LogicalId>-<12 hex>`, as
+# CloudFormation does, never the bare logical id (go-to-k/cdkd#5137).
+if echo "${IDS_BEFORE_REPLACE}" | grep -qvE "^${STACK}-[A-Za-z0-9_-]+-[0-9a-f]{12}\$"; then
+  echo "FAIL: a Lambda Permission statement id is not the generated <StackName>-<LogicalId>-<suffix> form:" >&2
+  echo "${IDS_BEFORE_REPLACE}" >&2
+  exit 1
+fi
+if [ "$(policy_sids "${FN_NAME}")" != "${IDS_BEFORE_REPLACE}" ]; then
+  echo "FAIL: the function's resource policy Sids differ from the recorded permission ids" >&2
+  exit 1
+fi
+echo "    OK: ${PERMISSION_COUNT} permission(s) carry generated statement ids"
+
+# --- Phase 3: REPLACE_FN (name the function -> replace it + its permissions)
+echo "==> Phase 3: REPLACE_FN (named function replaces it and every permission on it)"
+CDKD_TEST_UPDATE=true CDKD_TEST_REPLACE_FN=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+NEW_FN_NAME="${STACK}-renamed-handler"
+STATE_AFTER_REPLACE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+RECORDED_FN=$(echo "${STATE_AFTER_REPLACE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId')
+if [ "${RECORDED_FN}" != "${NEW_FN_NAME}" ]; then
+  echo "FAIL: the function was not replaced: state records '${RECORDED_FN}', expected '${NEW_FN_NAME}'" >&2
+  exit 1
+fi
+assert_gone "the replaced function ${FN_NAME} still exists" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
+IDS_AFTER_REPLACE="$(permission_ids "${STATE_AFTER_REPLACE}")"
+if [ "$(echo "${IDS_AFTER_REPLACE}" | grep -c . || true)" != "${PERMISSION_COUNT}" ]; then
+  echo "FAIL: permission count changed across the replacement: ${IDS_AFTER_REPLACE}" >&2
+  exit 1
+fi
+SHARED_IDS="$(comm -12 <(echo "${IDS_BEFORE_REPLACE}") <(echo "${IDS_AFTER_REPLACE}"))"
+if [ -n "${SHARED_IDS}" ]; then
+  echo "FAIL: a replaced permission kept its statement id (no new generation): ${SHARED_IDS}" >&2
+  exit 1
+fi
+if [ "$(policy_sids "${NEW_FN_NAME}")" != "${IDS_AFTER_REPLACE}" ]; then
+  echo "FAIL: the new function's resource policy Sids differ from the recorded permission ids" >&2
+  exit 1
+fi
+for route in hello items; do
+  ROUTE_BODY="$(curl_body_with_retry "${API_URL}/${route}")"
+  if ! echo "${ROUTE_BODY}" | grep -q '"ok":true'; then
+    echo "FAIL: GET /${route} does not serve after the function replacement; got: ${ROUTE_BODY}" >&2
+    exit 1
+  fi
+done
+echo "    OK: every permission replaced under a new statement id on ${NEW_FN_NAME}, old function gone, routes serve"
+
+# --- Phase 4: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
