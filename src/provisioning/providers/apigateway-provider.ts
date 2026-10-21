@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   APIGatewayClient,
   UpdateAccountCommand,
@@ -19,6 +20,9 @@ import {
   PutIntegrationCommand,
   PutIntegrationResponseCommand,
   PutMethodResponseCommand,
+  DeleteIntegrationCommand,
+  DeleteIntegrationResponseCommand,
+  DeleteMethodResponseCommand,
   CreateAuthorizerCommand,
   UpdateAuthorizerCommand,
   DeleteAuthorizerCommand,
@@ -2253,43 +2257,9 @@ export class ApiGatewayProvider implements ResourceProvider {
         const integration = properties['Integration'] as Record<string, unknown> | undefined;
         if (integration) {
           await this.apiGatewayClient.send(
-            new PutIntegrationCommand({
-              restApiId,
-              resourceId,
-              httpMethod,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-              type: integration['Type'] as any,
-              integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
-              uri: integration['Uri'] as string | undefined,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-              connectionType: integration['ConnectionType'] as any,
-              connectionId: integration['ConnectionId'] as string | undefined,
-              credentials: integration['Credentials'] as string | undefined,
-              requestParameters: integration['RequestParameters'] as
-                | Record<string, string>
-                | undefined,
-              requestTemplates: integration['RequestTemplates'] as
-                | Record<string, string>
-                | undefined,
-              passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-              contentHandling: integration['ContentHandling'] as any,
-              timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
-              cacheNamespace: integration['CacheNamespace'] as string | undefined,
-              cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
-              // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
-              // SDK input shape is { insecureSkipVerification } (camelCase);
-              // passing the CFn object verbatim would silently drop the field.
-              tlsConfig: integration['TlsConfig']
-                ? {
-                    insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
-                      'InsecureSkipVerification'
-                    ] as boolean | undefined,
-                  }
-                : undefined,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-              responseTransferMode: integration['ResponseTransferMode'] as any,
-            })
+            new PutIntegrationCommand(
+              putIntegrationInput({ restApiId, resourceId, httpMethod }, integration)
+            )
           );
         }
 
@@ -2307,18 +2277,10 @@ export class ApiGatewayProvider implements ResourceProvider {
           | undefined;
         if (methodResponses) {
           for (const resp of methodResponses) {
-            const statusCode = String(resp['StatusCode']);
             await this.apiGatewayClient.send(
-              new PutMethodResponseCommand({
-                restApiId,
-                resourceId,
-                httpMethod,
-                statusCode,
-                responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
-                responseParameters: resp['ResponseParameters'] as
-                  | Record<string, boolean>
-                  | undefined,
-              })
+              new PutMethodResponseCommand(
+                putMethodResponseInput({ restApiId, resourceId, httpMethod }, resp)
+              )
             );
           }
         }
@@ -2335,21 +2297,10 @@ export class ApiGatewayProvider implements ResourceProvider {
             | undefined;
           if (integrationResponses) {
             for (const ir of integrationResponses) {
-              const statusCode = String(ir['StatusCode']);
               await this.apiGatewayClient.send(
-                new PutIntegrationResponseCommand({
-                  restApiId,
-                  resourceId,
-                  httpMethod,
-                  statusCode,
-                  selectionPattern: ir['SelectionPattern'] as string | undefined,
-                  responseParameters: ir['ResponseParameters'] as
-                    | Record<string, string>
-                    | undefined,
-                  responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-                  contentHandling: ir['ContentHandling'] as any,
-                })
+                new PutIntegrationResponseCommand(
+                  putIntegrationResponseInput({ restApiId, resourceId, httpMethod }, ir)
+                )
               );
             }
           }
@@ -2425,15 +2376,9 @@ export class ApiGatewayProvider implements ResourceProvider {
    * `HttpMethod`, `ResourceId`, `RestApiId` are immutable (replacement
    * layer handles them via DELETE + CREATE).
    *
-   * `Integration` and `MethodResponses` are NOT touched here — they are
-   * separate API Gateway sub-resources (`UpdateIntegration` /
-   * `UpdateMethodResponse`) and the cdkd `create()` path treats them as
-   * inline children of the Method. Round-tripping their structurally-
-   * incomplete `{}` placeholders through `updateMethod` would require
-   * destroying / recreating the integration; that work is deferred and
-   * the empty placeholders are blocked from reaching AWS by the
-   * `!== undefined` gate plus the explicit "ignore Integration /
-   * MethodResponses" comment in this method body.
+   * `Integration` and `MethodResponses` are separate API Gateway
+   * sub-resources, applied after the patch by {@link methodChildCalls}
+   * (go-to-k/cdkd#5140), as CloudFormation updates them in place.
    *
    * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
    * `cdkd drift --revert`: `ApiKeyRequired: false` and empty-string
@@ -2521,22 +2466,36 @@ export class ApiGatewayProvider implements ResourceProvider {
       });
     }
 
-    if (patchOperations.length === 0) {
+    const ids = { restApiId: restApiId!, resourceId: resourceId!, httpMethod: httpMethod! };
+    const childCalls = methodChildCalls(ids, properties, previousProperties);
+    if (patchOperations.length === 0 && childCalls.length === 0) {
       log.debug(`No changes detected for API Gateway Method ${logicalId}`);
       return { physicalId, wasReplaced: false };
     }
 
     try {
-      await this.apiGatewayClient.send(
-        new UpdateMethodCommand({
-          restApiId,
-          resourceId,
-          httpMethod,
-          patchOperations,
-        })
-      );
+      if (patchOperations.length > 0) {
+        await this.apiGatewayClient.send(
+          new UpdateMethodCommand({
+            restApiId,
+            resourceId,
+            httpMethod,
+            patchOperations,
+          })
+        );
+      }
+      // go-to-k/cdkd#5140: the integration and the method / integration
+      // responses are sub-resources UpdateMethod does not reach.
+      for (const call of childCalls) {
+        try {
+          await this.apiGatewayClient.send(call.command as never);
+        } catch (error) {
+          // A delete of what is already gone has done its job.
+          if (!(call.kind === 'delete' && error instanceof NotFoundException)) throw error;
+        }
+      }
       log.debug(
-        `Successfully updated API Gateway Method ${logicalId} (${patchOperations.length} patch ops)`
+        `Successfully updated API Gateway Method ${logicalId} (${patchOperations.length} patch ops, ${childCalls.length} sub-resource calls)`
       );
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -3277,4 +3236,235 @@ function appendMapPatchOps(
       ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
     }
   }
+}
+
+/** The three ids addressing one API Gateway method. */
+interface MethodAddress {
+  restApiId: string;
+  resourceId: string;
+  httpMethod: string;
+}
+
+/**
+ * The `PutIntegration` request for a CFn `Integration` block. Every mutable
+ * field `PutIntegrationRequest` supports is forwarded; see `createMethod`'s
+ * JSDoc for why (the `ResponseTransferMode` regression).
+ */
+function putIntegrationInput(
+  ids: MethodAddress,
+  integration: Record<string, unknown>
+): ConstructorParameters<typeof PutIntegrationCommand>[0] {
+  return {
+    ...ids,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    type: integration['Type'] as any,
+    integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
+    uri: integration['Uri'] as string | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    connectionType: integration['ConnectionType'] as any,
+    connectionId: integration['ConnectionId'] as string | undefined,
+    credentials: integration['Credentials'] as string | undefined,
+    requestParameters: integration['RequestParameters'] as Record<string, string> | undefined,
+    requestTemplates: integration['RequestTemplates'] as Record<string, string> | undefined,
+    passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    contentHandling: integration['ContentHandling'] as any,
+    timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
+    cacheNamespace: integration['CacheNamespace'] as string | undefined,
+    cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
+    // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
+    // SDK input shape is { insecureSkipVerification } (camelCase);
+    // passing the CFn object verbatim would silently drop the field.
+    tlsConfig: integration['TlsConfig']
+      ? {
+          insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
+            'InsecureSkipVerification'
+          ] as boolean | undefined,
+        }
+      : undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    responseTransferMode: integration['ResponseTransferMode'] as any,
+  };
+}
+
+/** The `PutMethodResponse` request for one CFn `MethodResponses` entry. */
+function putMethodResponseInput(
+  ids: MethodAddress,
+  resp: Record<string, unknown>
+): ConstructorParameters<typeof PutMethodResponseCommand>[0] {
+  return {
+    ...ids,
+    statusCode: String(resp['StatusCode']),
+    responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
+    responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
+  };
+}
+
+/** The `PutIntegrationResponse` request for one CFn `IntegrationResponses` entry. */
+function putIntegrationResponseInput(
+  ids: MethodAddress,
+  ir: Record<string, unknown>
+): ConstructorParameters<typeof PutIntegrationResponseCommand>[0] {
+  return {
+    ...ids,
+    statusCode: String(ir['StatusCode']),
+    selectionPattern: ir['SelectionPattern'] as string | undefined,
+    responseParameters: ir['ResponseParameters'] as Record<string, string> | undefined,
+    responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    contentHandling: ir['ContentHandling'] as any,
+  };
+}
+
+type MethodChildCall =
+  | {
+      kind: 'delete';
+      command:
+        | DeleteIntegrationCommand
+        | DeleteIntegrationResponseCommand
+        | DeleteMethodResponseCommand;
+    }
+  | {
+      kind: 'put';
+      command: PutIntegrationCommand | PutIntegrationResponseCommand | PutMethodResponseCommand;
+    };
+
+/**
+ * Whether `props` carries `Integration` / `MethodResponses` in CloudFormation's
+ * shape (each absent, or an integration with a `Type` / an empty one, and an
+ * array of method responses), not `readCurrentState`'s read-back shape.
+ */
+function isCfnMethodChildShape(props: Record<string, unknown>): boolean {
+  const integration = integrationBlock(props['Integration']);
+  if (integration !== undefined && !('Type' in integration)) return false;
+  const responses = props['MethodResponses'];
+  return responses === undefined || Array.isArray(responses);
+}
+
+/** A CFn response list keyed by `StatusCode`; a malformed list reads as empty. */
+function responsesByStatus(value: unknown): Map<string, Record<string, unknown>> {
+  const out = new Map<string, Record<string, unknown>>();
+  if (!Array.isArray(value)) return out;
+  for (const entry of value) {
+    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      out.set(String(record['StatusCode']), record);
+    }
+  }
+  return out;
+}
+
+/**
+ * An `Integration` block, or `undefined` for none. An empty object is none:
+ * `readCurrentState` emits `{}` for a method without an integration, and
+ * putting it would send an integration with no type.
+ */
+function integrationBlock(value: unknown): Record<string, unknown> | undefined {
+  return value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length > 0
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * The calls that move a method's integration and responses from `previous` to
+ * `desired` (go-to-k/cdkd#5140), in the order API Gateway accepts, as
+ * measured live:
+ *
+ * - `PutIntegration` REPLACES the integration and drops every integration
+ *   response, so after it each desired integration response is put again.
+ * - `PutIntegrationResponse` overwrites an existing status code.
+ * - `PutMethodResponse` refuses an existing status code (`ConflictException`),
+ *   so a changed method response is deleted first, and the integration
+ *   response mapping onto it before that.
+ * - Method responses are put before the integration responses that map onto
+ *   them (see `createMethod`).
+ *
+ * Nothing is called when neither side changed.
+ */
+export function methodChildCalls(
+  ids: MethodAddress,
+  desired: Record<string, unknown>,
+  previous: Record<string, unknown>
+): MethodChildCall[] {
+  // `cdkd drift --revert` hands either side as `readCurrentState` emits it:
+  // the SDK's camelCase `methodIntegration` and a status-code-keyed map of
+  // method responses. Read as CloudFormation's shape, that plans an
+  // integration with no type and a put of every existing method response.
+  // Such an update leaves both alone, as before go-to-k/cdkd#5140.
+  if (!isCfnMethodChildShape(desired) || !isCfnMethodChildShape(previous)) return [];
+  const newInt = integrationBlock(desired['Integration']);
+  const oldInt = integrationBlock(previous['Integration']);
+  const newMr = responsesByStatus(desired['MethodResponses']);
+  const oldMr = responsesByStatus(previous['MethodResponses']);
+  const newIr = responsesByStatus(newInt?.['IntegrationResponses']);
+  const oldIr = responsesByStatus(oldInt?.['IntegrationResponses']);
+  const withoutResponses = (b: Record<string, unknown> | undefined): unknown => {
+    if (b === undefined) return undefined;
+    const { IntegrationResponses: _dropped, ...rest } = b;
+    return rest;
+  };
+  const integrationChanged = !isDeepStrictEqual(withoutResponses(newInt), withoutResponses(oldInt));
+  const mrGoing = [...oldMr.keys()].filter(
+    (code) => !newMr.has(code) || !isDeepStrictEqual(newMr.get(code), oldMr.get(code))
+  );
+  const mrComing = [...newMr.keys()].filter(
+    (code) => !oldMr.has(code) || !isDeepStrictEqual(newMr.get(code), oldMr.get(code))
+  );
+
+  const calls: MethodChildCall[] = [];
+  // Integration responses that live on until the integration is put again or
+  // re-put below: the live set after the deletes in step 1.
+  const liveIr = new Map(oldInt === undefined ? [] : oldIr);
+  // 1. Integration gone: delete it (its responses go with it). Otherwise
+  //    delete each integration response whose code leaves, or whose method
+  //    response is about to be deleted.
+  if (oldInt !== undefined && newInt === undefined) {
+    calls.push({ kind: 'delete', command: new DeleteIntegrationCommand(ids) });
+    liveIr.clear();
+  } else if (oldInt !== undefined) {
+    for (const code of oldIr.keys()) {
+      if (!newIr.has(code) || mrGoing.includes(code)) {
+        calls.push({
+          kind: 'delete',
+          command: new DeleteIntegrationResponseCommand({ ...ids, statusCode: code }),
+        });
+        liveIr.delete(code);
+      }
+    }
+  }
+  // 2. Method responses: delete the leaving and changed ones, then put the
+  //    new and changed ones.
+  for (const code of mrGoing) {
+    calls.push({
+      kind: 'delete',
+      command: new DeleteMethodResponseCommand({ ...ids, statusCode: code }),
+    });
+  }
+  for (const code of mrComing) {
+    calls.push({
+      kind: 'put',
+      command: new PutMethodResponseCommand(putMethodResponseInput(ids, newMr.get(code)!)),
+    });
+  }
+  // 3. The integration, then its responses.
+  if (newInt !== undefined) {
+    if (integrationChanged) {
+      calls.push({
+        kind: 'put',
+        command: new PutIntegrationCommand(putIntegrationInput(ids, newInt)),
+      });
+      liveIr.clear();
+    }
+    for (const [code, ir] of newIr) {
+      if (liveIr.has(code) && isDeepStrictEqual(liveIr.get(code), ir)) continue;
+      calls.push({
+        kind: 'put',
+        command: new PutIntegrationResponseCommand(putIntegrationResponseInput(ids, ir)),
+      });
+    }
+  }
+  return calls;
 }
