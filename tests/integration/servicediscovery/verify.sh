@@ -262,8 +262,11 @@ expect_field "${TTL_ID}" "DnsConfig.DnsRecords[0].TTL" 150 \
 echo "    OK: removed Descriptions, DnsConfig and HealthCheckConfig kept; TTL 90 -> 150 applied (issue #1160)"
 expect_field "${SECRET_HC_KEPT_ID}" HealthCheckConfig.FailureThreshold 3 \
   "a HealthCheckConfig removed beside an unchanged secret-reference Description was cleared (go-to-k/cdkd#5112), where CloudFormation keeps it"
-expect_field "${SECRET_HC_KEPT_ID}" Description "${SECRET_DESC}" \
-  "the unchanged secret-reference Description moved (go-to-k/cdkd#5112)"
+# Compared without printing: either side is the secret's plaintext.
+if [ "$(service_field "${SECRET_HC_KEPT_ID}" Description)" != "${SECRET_DESC}" ]; then
+  echo "FAIL: the unchanged secret-reference Description of ${SECRET_HC_KEPT_NAME} moved (go-to-k/cdkd#5112); values withheld" >&2
+  exit 1
+fi
 echo "    OK: HealthCheckConfig kept beside an unchanged secret-reference Description (go-to-k/cdkd#5112)"
 
 # --- Phase 3 (combined): a removal beside a sent change (issue #1160) --
