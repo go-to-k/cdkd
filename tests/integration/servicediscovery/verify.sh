@@ -225,7 +225,14 @@ if [ -z "${SECRET_DESC}" ] || [ "${SECRET_DESC}" = "None" ] || [[ "${SECRET_DESC
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${SECRET_HC_KEPT_NAME} Description is not the resolved secret value" >&2
   exit 1
 fi
-RECORDED_DESC=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.SecretHcKeptService.properties.Description // empty')
+P1_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+# Anywhere in the record (properties, observedProperties, attributes), not
+# only the Description: a redaction regression fails here. Value withheld.
+if printf '%s' "${P1_STATE}" | grep -qF -- "${SECRET_DESC}"; then
+  echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the resolved secret value (value withheld)" >&2
+  exit 1
+fi
+RECORDED_DESC=$(printf '%s' "${P1_STATE}" | jq -r '.resources.SecretHcKeptService.properties.Description // empty')
 if [[ "${RECORDED_DESC}" != "{{resolve:secretsmanager:"* ]]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state does not record ${SECRET_HC_KEPT_NAME}'s Description as its {{resolve:...}} reference, so phase 2 proves nothing" >&2
   exit 1
