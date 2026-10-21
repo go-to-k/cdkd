@@ -29,6 +29,11 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * `CDKD_SRD_TAG` sets the delivery stream's one tag; verify.sh's Phase 3b
  * changes it, an in-place update through the Firehose provider's `update()`
  * and its recorded-region guard (issue #2613).
+ *
+ * The destination is ExtendedS3, whose create and update must apply
+ * `FileExtension` and `CustomTimeZone` (issue #1160). `CDKD_SRD_FILE_EXT` sets
+ * the extension; `CDKD_SRD_TRIM=1` removes `Prefix`, `ErrorOutputPrefix` and
+ * `CustomTimeZone` from the template, which CloudFormation leaves live.
  */
 export class StreamDeleteRedeployStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -37,6 +42,8 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
     const runId = process.env.CDKD_SRD_RUN_ID ?? 'manual';
     const phase = process.env.CDKD_SRD_PHASE ?? 'a';
     const tagValue = process.env.CDKD_SRD_TAG ?? 'base';
+    const fileExtension = process.env.CDKD_SRD_FILE_EXT ?? '.json';
+    const trim = process.env.CDKD_SRD_TRIM === '1';
 
     const stream = new kinesis.Stream(this, 'Stream', {
       streamName: `cdkd-stream-redeploy-${runId}`,
@@ -63,9 +70,13 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
 
     const deliveryStream = new firehose.CfnDeliveryStream(this, 'DeliveryStream', {
       deliveryStreamName: `cdkd-stream-redeploy-${runId}`,
-      s3DestinationConfiguration: {
+      extendedS3DestinationConfiguration: {
         bucketArn: bucket.bucketArn,
         roleArn: role.roleArn,
+        fileExtension,
+        ...(trim
+          ? {}
+          : { prefix: 'data/', errorOutputPrefix: 'errors/', customTimeZone: 'Asia/Tokyo' }),
       },
       tags: [{ key: 'cdkd-srd', value: tagValue }],
     });
