@@ -100,6 +100,37 @@ export class SSMParameterProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled. `Name` is create-only (a removal replaces the
+   * parameter); `Value` is required (`update()` refuses its absence); `Type`
+   * is required by the schema, so CloudFormation refuses its removal, and the
+   * CDK always emits it (`update()` would default it to `String`); `Tags` are
+   * diffed. A removed `Description` / `AllowedPattern` / `Tier` / `DataType` /
+   * `Policies` is KEPT, as CloudFormation keeps it: `update()` omits it from
+   * the `PutParameter` overwrite, which leaves the stored value in place. A
+   * real CloudFormation A/B (us-east-1) removed each of the five from a
+   * deployed parameter and read every one back unchanged, `Tier: Advanced`,
+   * `DataType: aws:ec2:image` and an `Expiration` policy included. No reset is
+   * declared, since none exists to match.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::SSM::Parameter',
+      new Set([
+        'Name',
+        'Type',
+        'Value',
+        'Description',
+        'Tags',
+        'AllowedPattern',
+        'Tier',
+        'Policies',
+        'DataType',
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.ssmClient = awsClients.ssm;

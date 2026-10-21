@@ -64,7 +64,7 @@ cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc o
 composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 conditions	2026-10-18T11:16:06Z	PASS	35	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
-conditions-update-2	2026-10-14T05:21:01Z	PASS	85	verify.sh	rc ok, orph clean
+conditions-update-2	2026-10-21T08:34:51Z	PASS	99	verify.sh	rc ok, orph clean, PR #5146
 context-test	2026-10-17T13:23:24Z	PASS	30	standard	PR #5029 head dd1a5504a; rc ok, orph clean
 created-before-failure-revert	2026-10-15T12:20:43Z	PASS	121	verify.sh	PR #4956 us-east-1 own state bucket; rc 0, destroy clean, orph clean
 cross-backend-same-stack	2026-10-20T09:31:22Z	PASS	361	verify.sh	#5064 head re-run, clean, own ephemeral bucket swept
