@@ -350,7 +350,7 @@ jobs:
       # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
       # the two shells disagree on an unquoted `(` after a displayed value.
       - name: install zsh for the paste harness
-        timeout-minutes: 12  # why: the check-build-test step above
+        timeout-minutes: 12  # why: see the check-build-test step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: vp run test:once-leak
 
