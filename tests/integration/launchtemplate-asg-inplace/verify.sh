@@ -11,23 +11,26 @@
 # on the NEXT deploy.
 #
 # Issue #1160 leg: phases 1-2 set non-default HealthCheckGracePeriod (90) /
-# MaxInstanceLifetime (604800) / TerminationPolicies (['OldestInstance']) on the
+# MaxInstanceLifetime (604800) / TerminationPolicies (['OldestInstance']) /
+# AvailabilityZoneImpairmentPolicy (zonal shift on, ReplaceUnhealthy) on the
 # ASG; the removal phase (CDKD_TEST_REMOVAL=true) drops them from the template.
-# UpdateAutoScalingGroup has merge semantics (absent = unchanged). A real
-# CloudFormation A/B (issue #5004) shows CloudFormation RESETS MaxInstanceLifetime
-# but KEEPS HealthCheckGracePeriod and TerminationPolicies, so cdkd must match.
+# UpdateAutoScalingGroup has merge semantics (absent = unchanged). Real
+# CloudFormation A/Bs (issues #5004, #1160) show CloudFormation RESETS
+# MaxInstanceLifetime and the impairment policy but KEEPS HealthCheckGracePeriod
+# and TerminationPolicies, so cdkd must match.
 #
 # This test asserts:
 #   1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
-#      LaunchTemplate.Version resolves to "1", the three non-default ASG
+#      LaunchTemplate.Version resolves to "1", the four non-default ASG
 #      properties are live, and the group metrics and SNS notifications are
 #      live after this FIRST deploy (issue #3995: create never sent them).
 #   2. UPDATE phase (change only instanceType): the LaunchTemplate advances to
 #      version 2 AND the ASG's live LaunchTemplate.Version is "2" in the SAME
 #      deploy (NOT "1" -- the #985 symptom is a one-deploy-behind "1"). The
-#      three non-default ASG properties are still live (kept, not reset).
-#   3. REMOVAL phase (drop the three ASG properties): MaxInstanceLifetime is
-#      cleared (CloudFormation resets it, issue #1160), while
+#      four non-default ASG properties are still live (kept, not reset).
+#   3. REMOVAL phase (drop the four ASG properties): MaxInstanceLifetime is
+#      cleared and no AvailabilityZoneImpairmentPolicy is reported
+#      (CloudFormation resets both, issue #1160), while
 #      HealthCheckGracePeriod stays 90 and TerminationPolicies stays
 #      ['OldestInstance'] (CloudFormation keeps them, issue #5004).
 # Then destroys and confirms a clean teardown.
@@ -159,7 +162,16 @@ asg_removal_props() {
     --output text
 }
 
-# Assert the three #1160 properties hold their phase 1-2 non-default values.
+# The live AvailabilityZoneImpairmentPolicy as "<ZonalShiftEnabled> <behavior>"
+# ("None None" when AWS reports no policy).
+asg_impairment_policy() {
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$1" --region "${REGION}" \
+    --query 'AutoScalingGroups[0].[AvailabilityZoneImpairmentPolicy.ZonalShiftEnabled, AvailabilityZoneImpairmentPolicy.ImpairedZoneHealthCheckBehavior]' \
+    --output text
+}
+
+# Assert the four #1160 properties hold their phase 1-2 non-default values.
 assert_nondefault_props() {
   local phase="$1" asg_name="$2" grace lifetime policies
   read -r grace lifetime policies < <(asg_removal_props "${asg_name}")
@@ -168,6 +180,13 @@ assert_nondefault_props() {
     exit 1
   fi
   echo "    OK: ${phase}: non-default ASG props live (grace=90, lifetime=604800, policies=OldestInstance)"
+  local impairment
+  impairment=$(asg_impairment_policy "${asg_name}")
+  if [ "${impairment}" != "$(printf 'True\tReplaceUnhealthy')" ]; then
+    echo "FAIL: ${phase}: expected AvailabilityZoneImpairmentPolicy 'True ReplaceUnhealthy', got '${impairment}' (issue #1160)" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: AvailabilityZoneImpairmentPolicy live (zonal shift on, ReplaceUnhealthy)"
 }
 
 # The ASG's enabled metrics, sorted and space-joined (order-insensitive).
@@ -255,7 +274,7 @@ if [ "${ASG_V1}" != "1" ]; then
 fi
 echo "    OK: ASG LaunchTemplate.Version == 1"
 
-# Issue #1160 baseline: the three non-default properties must be live.
+# Issue #1160 baseline: the four non-default properties must be live.
 assert_nondefault_props "Phase 1" "${ASG_NAME}"
 
 # Issue #3995: MetricsCollection / NotificationConfigurations are not
@@ -303,16 +322,16 @@ if [ "${ASG_V2}" != "2" ]; then
 fi
 echo "    OK: ASG LaunchTemplate.Version == 2 in the SAME deploy (issue #985 fixed)"
 
-# The three non-default properties are still templated in Phase 2 — they must
+# The four non-default properties are still templated in Phase 2 — they must
 # pass through unchanged (kept fields are never spuriously reset).
 assert_nondefault_props "Phase 2 (props kept)" "${ASG_NAME}"
 
-# --- Phase 3: REMOVAL (drop the three ASG props) ------
+# --- Phase 3: REMOVAL (drop the four ASG props) ------
 # Issue #1160: UpdateAutoScalingGroup has merge semantics, so pre-fix the
 # removed properties silently kept their old live values. The removal phase
-# keeps the Phase-2 instance type, so the ONLY template delta is the three
+# keeps the Phase-2 instance type, so the ONLY template delta is the four
 # dropped ASG properties.
-echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies; only MaxInstanceLifetime resets)"
+echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies / AvailabilityZoneImpairmentPolicy; MaxInstanceLifetime and the policy reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -341,6 +360,17 @@ if [ "${POLICIES_R}" != "OldestInstance" ]; then
   exit 1
 fi
 echo "    OK: TerminationPolicies retained as ['OldestInstance'] (issue #5004)"
+# Issue #1160 (CloudFormation A/B): CloudFormation resets a removed
+# AvailabilityZoneImpairmentPolicy (ZonalShiftEnabled false, previous behavior),
+# after which AWS reports no policy. Pre-fix cdkd sent nothing and the policy
+# stayed 'True ReplaceUnhealthy' (the baseline above asserted it live).
+IMPAIRMENT_R=$(asg_impairment_policy "${ASG_NAME}")
+if [ "${IMPAIRMENT_R}" != "$(printf 'None\tNone')" ]; then
+  echo "FAIL: AvailabilityZoneImpairmentPolicy is '${IMPAIRMENT_R}' after removal, expected none reported (CloudFormation resets it, issue #1160)." >&2
+  echo "      This is the issue #1160 symptom -- UpdateAutoScalingGroup merge semantics kept the old live policy." >&2
+  exit 1
+fi
+echo "    OK: AvailabilityZoneImpairmentPolicy cleared (issue #1160)"
 
 # Issue #4013: the removal phase dropped GroupMaxSize from the FIRST of two
 # 1Minute GroupMetrics entries. Pre-fix the update kept only the LAST entry per
