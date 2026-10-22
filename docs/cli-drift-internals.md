@@ -559,8 +559,6 @@ the fallback:
    Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
-   `AWS::Budgets::Budget` (the response reorders notification subscribers and
-   adds the defaulted `ThresholdType`),
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under

@@ -3432,10 +3432,13 @@
             "AWS::Budgets::Budget"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "getDriftUnknownPaths",
+            "readCurrentState",
             "update"
           ]
         },
