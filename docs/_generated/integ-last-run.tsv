@@ -95,7 +95,7 @@ diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-22T07:45:16Z	PASS	110	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean
 docdb-fix-forward-orphan	2026-10-15T19:24:09Z	PASS	1859	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
-docdb-neptune	2026-10-22T03:05:03Z	PASS	5301	verify.sh	PR #5158: #5153 resend-password fix; step 3d never saw resetting-master-credentials; final destroy 7 deleted 0 errors, 0 orphans
+docdb-neptune	2026-10-22T17:28:50Z	PASS	5765	verify.sh	PR #5186: #5184 final-snapshot wait; step 5b 1 snapshot/cluster then deleted; step 3g OOB-member terminal refusal ok; rc=0, 0 err 0 orph
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-21T04:50:49Z	PASS	383	verify.sh	destroy 0 errors, 0 orphans; PR 5135
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
@@ -290,8 +290,8 @@ pipes-fix-forward-orphan	2026-10-22T07:45:16Z	PASS	176	verify.sh	PR #5161 (#2319
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-10-21T22:35:49Z	PASS	4681	verify.sh	PR #5152: #1160 SG removal + #5155 final-snapshot-wait; final destroy 4 deleted 0 errors, 0 orphans
-rds-dbinstance-backfill	2026-10-16T17:34:17Z	PASS	826	verify.sh	src b1367d11c; #5004 removal keeps + Port 5433->5434 Modify companion; rc ok, orph clean
+rds-aurora	2026-10-22T18:47:48Z	FAIL	4619	verify.sh	PR #5186: phase 2b FAIL - DeleteDBCluster hit InvalidDBClusterStateFault (CloudTrail: snapshot create rejected, cluster not available), not the expected member-refusal text; arm did not reach compensation. cdkd resource errors: 0 (full retry destroy 4 deleted 0 errors); AWS confirmed clean (S3 state, clusters, instances, snapshots, secrets, ENIs, SGs, VPC all gone)
+rds-dbinstance-backfill	2026-10-22T17:45:22Z	PASS	873	verify.sh	PR #5186: #5184 final-snapshot wait on standalone DBInstance; destroy 11 deleted 0 errors; final snapshot taken+deleted; rc=0, 0 orph
 rds-fix-forward-orphan	2026-10-22T11:55:53Z	PASS	3557	verify.sh	PR #5178; us-east-1; own state bucket; verify PASS, destroy 14 deleted 0 errors, orph clean
 rds-full-stack	2026-10-22T11:55:53Z	PASS	1065	verify.sh	PR #5178; us-east-1; verify PASS, destroy clean, 0 orphans
 recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)

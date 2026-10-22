@@ -39,12 +39,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * baseline values are still live after the removal redeploy (cdkd must not
  * reset them to false / 1 / false / true).
  *
- * Every L1 resource has `RemovalPolicy: DESTROY`. verify.sh then turns
- * DeletionProtection back ON out of band for its issue #2204 arm (a
- * `--remove-protection` destroy that fails terminally must restore it),
- * so the final destroy passes `--remove-protection`.
- * SkipFinalSnapshot on cluster delete is unconditional (set inside the
- * providers).
+ * Both clusters have `RemovalPolicy: SNAPSHOT` and every other L1 resource
+ * `RemovalPolicy: DESTROY`. verify.sh turns DeletionProtection back ON out
+ * of band for its issue #2204 arm (a `--remove-protection` destroy that fails
+ * terminally must restore it), so the final destroy passes
+ * `--remove-protection`. That destroy turns the guard off and then deletes
+ * each cluster with a final snapshot, which needs the cluster `available`
+ * again (issue #5184); verify.sh asserts both snapshots and deletes them.
  *
  * AZ + subnet layout uses `maxAzs: 2` (deterministic — DocDB / Neptune
  * subnet groups need at least 2 AZs and CDK's lookup picks the lowest
@@ -87,9 +88,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
     }).subnetIds;
 
     // ── DocDB ─────────────────────────────────────────────────────────
-    // Use L1 Cfn* directly so we can pin DeletionProtection: false and
-    // applyRemovalPolicy DESTROY explicitly without relying on CDK L2
-    // defaults. The L2 docdb.DatabaseCluster is opinionated and creates
+    // Use L1 Cfn* directly so each removal policy is explicit rather than a
+    // CDK L2 default. The L2 docdb.DatabaseCluster is opinionated and creates
     // additional resources (a SecretsManager secret, parameter groups);
     // staying at L1 keeps the integ surface focused on the provider.
     const docdbSubnetGroup = new docdb.CfnDBSubnetGroup(
@@ -130,7 +130,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
       preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
       storageEncrypted: true,
     });
-    docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // Issue #5184: the final destroy takes a final snapshot after the
+    // --remove-protection flip (see the file header).
+    docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.SNAPSHOT);
     docdbCluster.addDependency(docdbSubnetGroup);
     // Issue #1160: once the removal drops the Ref, this keeps `Sg` deleted
     // AFTER the cluster that may still hold it (DependencyViolation otherwise).
@@ -180,7 +182,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
       preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
       storageEncrypted: true,
     });
-    neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // Issue #5184: the final destroy takes a final snapshot after the
+    // --remove-protection flip (see the file header).
+    neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.SNAPSHOT);
     neptuneCluster.addDependency(neptuneSubnetGroup);
     // Issue #1160: see the DocDB cluster's dependency on `Sg`.
     neptuneCluster.node.addDependency(sg);
