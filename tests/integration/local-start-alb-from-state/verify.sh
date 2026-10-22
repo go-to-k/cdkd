@@ -26,6 +26,10 @@
 #      (go-to-k/cdkd#2602). Before cdk-local 0.151.0 it was dropped, so the
 #      body read "service=fn alb=" with nothing after it.
 #   7. SIGTERM cdkd. Assert clean teardown.
+#   7b. --image-override arms (go-to-k/cdkd#5156): --strict-overrides with
+#      OrdersService uncovered is refused before any replica starts; then
+#      both services are overridden by construct id / ServiceName and must
+#      serve the locally built image's marker file.
 #   8. cdkd destroy. Assert 0 errors, 0 orphans.
 #
 # Run via `/run-integ local-start-alb-from-state` (recommended) or
@@ -77,6 +81,8 @@ cleanup() {
     | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
+  docker images --filter "reference=cdkd-local-override-*" --format '{{.ID}}' \
+    | sort -u | xargs -r docker rmi -f >/dev/null 2>&1 || true
 
   if [[ "${DEPLOYED}" -eq 1 ]]; then
     echo "==> Cleanup: cdkd destroy (best-effort)"
@@ -247,6 +253,134 @@ if [[ "${LEFTOVER_NETS}" -ne 0 ]]; then
   exit 1
 fi
 
+# --- --image-override arms (go-to-k/cdkd#5156, via cdk-local 0.153.2) -------
+# start-alb keys each service by `Stack:LogicalId`, so before cdk-local 0.153.2
+# a documented short key (`WebService=...`) matched nothing: it was dropped
+# with a warning and the registry image ran. Both services here run a registry
+# image (`fromRegistry`), so both are override targets. The construct-id key
+# `WebService` matches only because that service sets no `serviceName` (a
+# service that sets one is known by it instead); OrdersService sets one, so it
+# is keyed by its ServiceName.
+OVERRIDE_DOCKERFILE="./web-override/Dockerfile"
+
+echo "==> --strict-overrides with one service left uncovered: refused before any replica starts"
+STRICT_OUT=$(mktemp)
+set +e
+${CDKD} local start-alb "${TARGET}" \
+  --from-state \
+  --state-bucket "${STATE_BUCKET}" \
+  --lb-port "80=${HOST_PORT}" \
+  --no-pull --container-host 127.0.0.1 \
+  --no-interactive-overrides --strict-overrides \
+  --image-override "WebService=${OVERRIDE_DOCKERFILE}" \
+  > "${STRICT_OUT}" 2>&1
+STRICT_RC=$?
+set -e
+STRICT_LOG=$(cat "${STRICT_OUT}")
+rm -f "${STRICT_OUT}"
+if [[ "${STRICT_RC}" -eq 0 ]]; then
+  echo "FAIL: --strict-overrides with OrdersService uncovered exited 0"
+  echo "${STRICT_LOG}"
+  exit 1
+fi
+if ! grep -qF -- "--strict-overrides set, but 1 pinned target(s) remain uncovered" <<<"${STRICT_LOG}"; then
+  echo "FAIL: expected the --strict-overrides refusal naming exactly 1 uncovered target"
+  echo "${STRICT_LOG}"
+  exit 1
+fi
+if grep -qF "Service(s) running:" <<<"${STRICT_LOG}"; then
+  echo "FAIL: --strict-overrides refused only after the replicas booted"
+  echo "${STRICT_LOG}"
+  exit 1
+fi
+STRICT_LEFTOVER=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${STRICT_LEFTOVER}" -ne 0 ]]; then
+  echo "FAIL: ${STRICT_LEFTOVER} containers present after the --strict-overrides refusal"
+  docker ps -a --filter "name=cdkd-local-" --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}'
+  exit 1
+fi
+echo "    OK: refused (rc=${STRICT_RC}) with no replica started"
+
+echo "==> --image-override by construct id (WebService) and ServiceName (orders): both matched"
+rm -f "${OUT_FILE}"
+OUT_FILE=$(mktemp)
+${CDKD} local start-alb "${TARGET}" \
+  --from-state \
+  --state-bucket "${STATE_BUCKET}" \
+  --lb-port "80=${HOST_PORT}" \
+  --no-pull --container-host 127.0.0.1 \
+  --no-interactive-overrides --strict-overrides \
+  --image-override "WebService=${OVERRIDE_DOCKERFILE}" \
+  --image-override "cdkd-local-alb-orders-svc=${OVERRIDE_DOCKERFILE}" \
+  > "${OUT_FILE}" 2>&1 &
+CDKD_PID=$!
+
+BOOTED=0
+for _ in $(seq 1 180); do
+  if grep -q "Service(s) running:" "${OUT_FILE}" 2>/dev/null; then
+    BOOTED=1
+    break
+  fi
+  if ! kill -0 "${CDKD_PID}" 2>/dev/null; then
+    echo "FAIL: cdkd exited before reaching the boot banner (override arm)"
+    echo "----- service output -----"
+    cat "${OUT_FILE}"
+    echo "--------------------------"
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "${BOOTED}" -ne 1 ]]; then
+  echo "FAIL: override arm did not reach the boot banner within 180s"
+  cat "${OUT_FILE}"
+  exit 1
+fi
+if grep -qF "not in the pinned-target set" "${OUT_FILE}"; then
+  echo "FAIL: a short --image-override key was dropped as unmatched"
+  cat "${OUT_FILE}"
+  exit 1
+fi
+
+probe_marker() {
+  # probe_marker <path>: the file only the locally built image carries
+  local url="http://127.0.0.1:${HOST_PORT}$1"
+  local body=""
+  for _ in $(seq 1 45); do
+    if body=$(curl --silent --show-error --max-time 5 "${url}" 2>&1) \
+      && [[ "${body}" == "cdkd-image-override" ]]; then
+      echo "    OK: ${url} -> '${body}'"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "FAIL: ${url} did not serve the override image's marker within 45s"
+  echo "      last response: ${body}"
+  echo "----- service output -----"
+  cat "${OUT_FILE}"
+  echo "--------------------------"
+  return 1
+}
+probe_marker /override.txt
+probe_marker /orders/override.txt
+# --from-state substitution still reaches the overridden containers.
+probe / web
+probe /orders/ orders
+
+kill -TERM "${CDKD_PID}"
+for _ in $(seq 1 60); do
+  if ! kill -0 "${CDKD_PID}" 2>/dev/null; then break; fi
+  sleep 1
+done
+if kill -0 "${CDKD_PID}" 2>/dev/null; then
+  echo "FAIL: cdkd did not exit within 60s after SIGTERM (override arm)"
+  kill -KILL "${CDKD_PID}" 2>/dev/null || true
+  exit 1
+fi
+wait "${CDKD_PID}" 2>/dev/null || true
+CDKD_PID=""
+rm -f "${OUT_FILE}"
+OUT_FILE=""
+
 echo "==> cdkd destroy"
 ${CDKD} destroy "${STACK_NAME}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force
 DEPLOYED=0
@@ -282,5 +416,7 @@ echo "    - Default route (path /) reached Web service with resolved env var"
 echo "    - ListenerRule path /orders/ reached Orders service with resolved env var"
 echo "    - Lambda target group /fn/x reached FnTarget with resolved env var"
 echo "    - --lb-port 80=8080 override took effect"
+echo "    - --strict-overrides refused before any replica started"
+echo "    - --image-override matched services by construct id and ServiceName"
 echo "    - SIGTERM tore down every replica + network cleanly"
 echo "    - cdkd destroy left no state behind"
