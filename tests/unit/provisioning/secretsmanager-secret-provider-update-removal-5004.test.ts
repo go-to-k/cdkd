@@ -2,6 +2,9 @@
 // live Description and KmsKeyId of an AWS::SecretsManager::Secret when they are
 // removed from the template. UpdateSecret has merge semantics (an omitted member
 // means "unchanged"), so cdkd must send neither member on a template removal.
+// go-to-k/cdkd#1160: the same A/B for `Type` (a managed-external-secret partner
+// type, `DatadogApiKey`) — CloudFormation updated the secret in place and KEPT
+// the live Type when the template removed it, so cdkd sends no `Type` either.
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateSecretCommand } from '@aws-sdk/client-secrets-manager';
 
@@ -32,13 +35,19 @@ const SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:0:secret:my-secret-AbCdEf';
 const TYPE = 'AWS::SecretsManager::Secret';
 const KEY = 'arn:aws:kms:us-east-1:0:key/abcd';
 
-function updateInput(): { Description?: string; KmsKeyId?: string } {
-  const calls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
-  expect(calls).toHaveLength(1);
-  return calls[0]![0].input as { Description?: string; KmsKeyId?: string };
+interface UpdateInput {
+  Description?: string;
+  KmsKeyId?: string;
+  Type?: string;
 }
 
-describe('SecretsManagerSecretProvider update() removal (issue #5004)', () => {
+function updateInput(): UpdateInput {
+  const calls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
+  expect(calls).toHaveLength(1);
+  return calls[0]![0].input as UpdateInput;
+}
+
+describe('SecretsManagerSecretProvider update() removal (issues #5004, #1160)', () => {
   let provider: SecretsManagerSecretProvider;
 
   beforeEach(() => {
@@ -97,5 +106,33 @@ describe('SecretsManagerSecretProvider update() removal (issue #5004)', () => {
     );
 
     expect(updateInput()).not.toHaveProperty('KmsKeyId');
+  });
+
+  it('KEEPS Type when it is removed: no Type member is sent (issue #1160)', async () => {
+    await provider.update(
+      'L',
+      SECRET_ARN,
+      TYPE,
+      { Name: 'my-secret', Description: 'changed' },
+      { Name: 'my-secret', Description: 'old', Type: 'DatadogApiKey' }
+    );
+
+    const input = updateInput();
+    expect(input).not.toHaveProperty('Type');
+    // The companion change still reaches UpdateSecret, so the omission is not
+    // the call being skipped.
+    expect(input.Description).toBe('changed');
+  });
+
+  it('still sends a declared Type (issue #1160)', async () => {
+    await provider.update(
+      'L',
+      SECRET_ARN,
+      TYPE,
+      { Name: 'my-secret', Type: 'DatadogApiKey' },
+      { Name: 'my-secret' }
+    );
+
+    expect(updateInput().Type).toBe('DatadogApiKey');
   });
 });

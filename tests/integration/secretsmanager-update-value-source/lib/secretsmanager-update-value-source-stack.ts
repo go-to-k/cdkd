@@ -29,6 +29,15 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  *                                AWSCURRENT, the old one now AWSPREVIOUS).
  *                                Without this arm the `true` assertion could
  *                                pass on a provider that never sends a value.
+ *   - CDKD_TEST_UPDATE=regen CDKD_TEST_REMOVAL=true:
+ *                                issue #1160 — the `Typed` secret's `Type`
+ *                                (a managed-external-secret partner type) is
+ *                                REMOVED from the template and its Description
+ *                                changes in the same deploy. CloudFormation
+ *                                updates in place and KEEPS the live Type
+ *                                (real A/B), so the Type must survive while
+ *                                the Description change proves UpdateSecret
+ *                                fired. Everything else matches `regen`.
  *
  * The literal is a fixed, non-secret marker string; it exists to exercise the
  * literal branch, and verify.sh sweeps the state bucket's object versions on
@@ -61,6 +70,23 @@ export class SecretsmanagerUpdateValueSourceStack extends cdk.Stack {
         isRegen ? 'cdkd-2472-literal-marker-v2' : 'cdkd-2472-literal-marker-v1'
       ),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Issue #1160: a secret carrying a partner `Type`. The L2 `Secret` has no
+    // `type` prop, so this is the L1. The value is a fixed dummy in the
+    // partner's documented shape (no partner account is contacted: rotation
+    // is never configured). Without a removalPolicy the L1 deletes on destroy.
+    const removeType = process.env.CDKD_TEST_REMOVAL === 'true';
+    new secretsmanager.CfnSecret(this, 'Typed', {
+      name: `${id}-typed`,
+      description: removeType
+        ? 'cdkd issue #1160 probe: Type removed'
+        : 'cdkd issue #1160 probe: Type declared',
+      secretString: JSON.stringify({
+        apiKey: '0123456789abcdef0123456789abcdef',
+        apiKeyId: '00000000-0000-0000-0000-000000000000',
+      }),
+      ...(removeType ? {} : { type: 'DatadogApiKey' }),
     });
 
     if (isUpdate) {
