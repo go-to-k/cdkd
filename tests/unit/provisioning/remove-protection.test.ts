@@ -161,6 +161,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { ModifyInstanceAttributeCommand, TerminateInstancesCommand } from '@aws-sdk/client-ec2';
 import {
+  DescribeLoadBalancerAttributesCommand,
   ModifyLoadBalancerAttributesCommand,
   DeleteLoadBalancerCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
@@ -203,6 +204,23 @@ import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provide
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+/** The debug line a failed pre-flip readback prints (#5180), or undefined. */
+function observeFailureLine(): string | undefined {
+  const debug = getLogger().child('x').debug as unknown as ReturnType<typeof vi.fn>;
+  return debug.mock.calls
+    .map((c) => String(c[0]))
+    .find((l) => l.startsWith('Could not read ') && l.includes('before disabling it'));
+}
+/** The debug line a rejected flip-off prints (#5180), or undefined. */
+function flipFailureLine(): string | undefined {
+  const debug = getLogger().child('x').debug as unknown as ReturnType<typeof vi.fn>;
+  return debug.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Could not disable '));
+}
+function clearDebug(): void {
+  (getLogger().child('x').debug as unknown as ReturnType<typeof vi.fn>).mockClear();
+}
 
 beforeEach(() => {
   mockLogsSend.mockReset().mockResolvedValue({});
@@ -378,6 +396,44 @@ describe('ELBv2 LoadBalancer Provider --remove-protection', () => {
     expect(flipInput.Attributes).toEqual([{ Key: 'deletion_protection.enabled', Value: 'false' }]);
   });
 
+  it("masks a failed pre-flip readback's debug line with the delete's maskSecrets (#5180)", async () => {
+    clearDebug();
+    mockElbv2Send.mockImplementation((command: unknown) =>
+      command instanceof DescribeLoadBalancerAttributesCommand
+        ? Promise.reject(new Error(`read failed for ${LB_ARN}`))
+        : Promise.resolve({})
+    );
+    await new ELBv2Provider().delete(
+      'LB',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      undefined,
+      { removeProtection: true, maskSecrets: (t: string) => t.split(LB_ARN).join('***') }
+    );
+    expect(observeFailureLine()).toBe(
+      'Could not read deletion_protection.enabled on *** before disabling it: read failed for ***'
+    );
+  });
+
+  it("masks a rejected flip-off's debug line with the delete's maskSecrets (#5180)", async () => {
+    clearDebug();
+    mockElbv2Send.mockImplementation((command: unknown) =>
+      command instanceof ModifyLoadBalancerAttributesCommand
+        ? Promise.reject(new Error(`cannot modify ${LB_ARN}`))
+        : Promise.resolve({})
+    );
+    await new ELBv2Provider().delete(
+      'LB',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      undefined,
+      { removeProtection: true, maskSecrets: (t: string) => t.split(LB_ARN).join('***') }
+    );
+    expect(flipFailureLine()).toBe(
+      'Could not disable deletion_protection.enabled on ***: cannot modify ***'
+    );
+  });
+
   it('does NOT issue ModifyLoadBalancerAttributes when removeProtection is unset', async () => {
     const provider = new ELBv2Provider();
     await provider.delete('LB', LB_ARN, 'AWS::ElasticLoadBalancingV2::LoadBalancer');
@@ -529,6 +585,44 @@ describe('ASGProvider --remove-protection', () => {
     }
     return undefined;
   };
+
+  it("masks a failed pre-flip readback's debug line with the delete's maskSecrets (#5180)", async () => {
+    clearDebug();
+    let describes = 0;
+    mockAsgSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeAutoScalingGroupsCommand && ++describes === 1) {
+        return Promise.reject(new Error('read failed for my-asg'));
+      }
+      return stubWaiter(command) ?? Promise.resolve({});
+    });
+    await new ASGProvider().delete('A', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+      removeProtection: true,
+      maskSecrets: (t: string) => t.split('my-asg').join('***'),
+    });
+    expect(observeFailureLine()).toBe(
+      'Could not read DeletionProtection on *** before disabling it: read failed for ***'
+    );
+  });
+
+  it("masks a rejected flip-off's debug line with the delete's maskSecrets (#5180)", async () => {
+    clearDebug();
+    mockAsgSend.mockImplementation((command: unknown) => {
+      if (
+        command instanceof UpdateAutoScalingGroupCommand &&
+        (command.input as { DeletionProtection?: string }).DeletionProtection === 'none'
+      ) {
+        return Promise.reject(new Error('cannot modify my-asg'));
+      }
+      return stubWaiter(command) ?? Promise.resolve({});
+    });
+    await new ASGProvider()
+      .delete('A', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+        removeProtection: true,
+        maskSecrets: (t: string) => t.split('my-asg').join('***'),
+      })
+      .catch(() => undefined);
+    expect(flipFailureLine()).toBe('Could not disable DeletionProtection on ***: cannot modify ***');
+  });
 
   it('issues UpdateAutoScalingGroup(DeletionProtection=none) before DeleteAutoScalingGroup with ForceDelete=true', async () => {
     mockAsgSend.mockImplementation((command: unknown) => {

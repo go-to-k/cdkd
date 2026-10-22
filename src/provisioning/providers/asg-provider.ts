@@ -1816,6 +1816,7 @@ export class ASGProvider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'DeletionProtection',
           observe: async () => {
             const group = await this.describeGroup(physicalId);
@@ -1844,7 +1845,9 @@ export class ASGProvider implements ResourceProvider {
         // Non-fatal: log and proceed. The actual delete below surfaces
         // any real error.
         this.logger.debug(
-          `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          maskerOrIdentity(context?.maskSecrets)(
+            `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          )
         );
       }
 

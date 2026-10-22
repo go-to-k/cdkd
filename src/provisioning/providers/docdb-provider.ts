@@ -44,6 +44,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
  * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` carries, or
@@ -668,6 +669,7 @@ export class DocDBProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -687,7 +689,9 @@ export class DocDBProvider implements ResourceProvider {
         } catch (disableError) {
           if (!isDocDBNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DocDB DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DocDB DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }

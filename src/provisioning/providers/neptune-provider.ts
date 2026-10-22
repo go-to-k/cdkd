@@ -52,6 +52,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
 } from './deletion-protection-compensation.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
  * The attribute map a Neptune DB cluster records (issue #3650), under
@@ -813,6 +814,7 @@ export class NeptuneProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -832,7 +834,9 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for Neptune DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for Neptune DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1120,6 +1124,7 @@ export class NeptuneProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBInstance(physicalId))?.DeletionProtection === true,
@@ -1139,7 +1144,9 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }

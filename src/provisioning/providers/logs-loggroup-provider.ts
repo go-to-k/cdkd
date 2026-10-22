@@ -1414,6 +1414,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'DeletionProtectionEnabled',
           observe: async () => {
             const resp = await this.logsClient.send(
@@ -1437,7 +1438,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
         );
       } catch (flipError) {
         this.logger.debug(
-          `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          maskerOrIdentity(context?.maskSecrets)(
+            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          )
         );
       }
     }

@@ -235,8 +235,12 @@ interface Behaviour extends TableShape {
    * observation gate decides.
    */
   observeFails?: boolean;
+  /** The error the failing observation rejects with (default: a throttle). */
+  observeError?: () => Error;
   /** Whether the flip-off `UpdateTable(false)` itself is REJECTED by AWS. */
   flipFails?: boolean;
+  /** The error a failing flip-off rejects with (default: ResourceInUseException). */
+  flipError?: () => Error;
   /**
    * A failure injected into the first `DescribeTable` AFTER `DeleteTable` was
    * accepted — i.e. into `waitForTableGone`'s own poll. See the suite that uses
@@ -263,7 +267,8 @@ function install(behaviour: Behaviour): void {
       behaviour.onDescribe?.(describes);
       if (describes === 1 && behaviour.observeFails === true) {
         return Promise.reject(
-          Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+          behaviour.observeError?.() ??
+            Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
         );
       }
       if (deleted && behaviour.afterDeleteDescribeError !== undefined) {
@@ -289,7 +294,8 @@ function install(behaviour: Behaviour): void {
       if (command.input.DeletionProtectionEnabled === false) {
         if (behaviour.flipFails === true) {
           return Promise.reject(
-            Object.assign(new Error('Table is being updated'), { name: 'ResourceInUseException' })
+            behaviour.flipError?.() ??
+              Object.assign(new Error('Table is being updated'), { name: 'ResourceInUseException' })
           );
         }
         flipped = true;
@@ -787,6 +793,84 @@ describe.each(PROVIDERS)(
       expect(flipOffCalls()).toHaveLength(1);
       expect(reEnableCalls()).toHaveLength(0);
       expect(warnLines()).not.toContain('re-enabled on');
+    }, 120_000);
+
+    it("masks the failed observation's debug line with the delete's maskSecrets (#5180)", async () => {
+      install({
+        protectionOn: true,
+        observeFails: true,
+        observeError: () =>
+          Object.assign(new Error(`Rate exceeded for ${TABLE_NAME}`), {
+            name: 'ThrottlingException',
+          }),
+        onDelete: () => Promise.reject(terminalDeleteRefusal()),
+      });
+      await expect(
+        provider.make().delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+          ...REMOVE_PROTECTION,
+          maskSecrets: (text: string) => text.split(TABLE_NAME).join('***'),
+        })
+      ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+      const line = logger.debug.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.startsWith('Could not read DeletionProtectionEnabled'));
+      expect(line).toBe(
+        'Could not read DeletionProtectionEnabled on *** before disabling it: Rate exceeded for ***'
+      );
+    }, 120_000);
+
+    it('masks the flip-off and post-flip wait failure lines with the delete\'s maskSecrets (#5180)', async () => {
+      const awsError = (what: string) =>
+        Object.assign(new Error(`${what} for ${TABLE_NAME}`), { name: 'InternalServerError' });
+      const run = async (b: Partial<Behaviour>) => {
+        logger.debug.mockClear();
+        install({ protectionOn: true, onDelete: () => Promise.reject(terminalDeleteRefusal()), ...b });
+        await provider
+          .make()
+          .delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+            ...REMOVE_PROTECTION,
+            maskSecrets: (text: string) => text.split(TABLE_NAME).join('***'),
+          })
+          .catch(() => undefined);
+        return logger.debug.mock.calls
+          .map((c) => String(c[0]))
+          .filter((l) => l.startsWith('Could not '));
+      };
+      const flipLines = await run({ flipFails: true, flipError: () => awsError('flip refused') });
+      const flip = flipLines.find((l) => l.startsWith('Could not disable DeletionProtectionEnabled'));
+      expect(flip).toContain('flip refused for ***');
+      expect(flip).not.toContain(TABLE_NAME);
+      const waitLines = await run({
+        onDescribe: (n) => {
+          if (n === 2) throw awsError('wait failed');
+        },
+      });
+      const wait = waitLines.find((l) => l.startsWith('Could not wait for table'));
+      expect(wait).toContain('wait failed for ***');
+      expect(wait).not.toContain(TABLE_NAME);
+    }, 120_000);
+
+    it('flattens a line break in the failed observation, masking the value first (#5180)', async () => {
+      const secret = 'first\nsecond';
+      install({
+        protectionOn: true,
+        observeFails: true,
+        observeError: () =>
+          Object.assign(new Error(`Rate exceeded for ${secret}`), { name: 'ThrottlingException' }),
+        onDelete: () => Promise.reject(terminalDeleteRefusal()),
+      });
+      await expect(
+        provider.make().delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+          ...REMOVE_PROTECTION,
+          maskSecrets: (text: string) => text.split(secret).join('***'),
+        })
+      ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+      const line = logger.debug.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.startsWith('Could not read DeletionProtectionEnabled'));
+      expect(line).toBe(
+        `Could not read DeletionProtectionEnabled on ${TABLE_NAME} before disabling it: Rate exceeded for ***`
+      );
     }, 120_000);
 
     it('does NOT re-enable when the flip-off UpdateTable was REJECTED', async () => {

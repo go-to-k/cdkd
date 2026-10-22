@@ -1897,7 +1897,8 @@ export class CloudControlProvider implements ResourceProvider {
             physicalId,
             resourceType,
             protectionEntry!,
-            flip
+            flip,
+            context?.maskSecrets
           );
         }
         try {
@@ -2735,13 +2736,15 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     entry: CcProtectionEntry,
-    flip: ProtectionFlipRecord
+    flip: ProtectionFlipRecord,
+    mask: MaskerFn | undefined
   ): Promise<void> {
     try {
       await observeThenDisableProtection({
         flip,
         logger: this.logger,
         physicalId,
+        mask,
         guardName: entry.property,
         observe: async () => {
           const model = await this.getResourceState(resourceType, physicalId);

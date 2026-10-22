@@ -1266,6 +1266,7 @@ export class RDSProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -1780,6 +1781,7 @@ export class RDSProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBInstance(physicalId))?.DeletionProtection === true,

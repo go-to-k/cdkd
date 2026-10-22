@@ -41,7 +41,7 @@ cc-api-fallback	2026-10-17T13:29:07Z	PASS	50	verify.sh	rc ok, orph clean (last-m
 cc-api-fallback-transitions	2026-10-15T18:54:20Z	PASS	80	verify.sh	PR #4966 (#3252) d92a5794e; us-east-1; own state bucket; rc ok, destroy clean, orph clean
 cc-final-snapshot-handlers	2026-10-22T07:45:16Z	PASS	1103	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; 0 surviving state versions
 cc-getatt-readback	2026-10-18T04:24:32Z	PASS	104	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-cc-protection-flip	2026-10-03T00:39:18Z	PASS	556	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
+cc-protection-flip	2026-10-22T15:37:12Z	PASS	547	verify.sh	rc ok, orph clean
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-required-name-generation	2026-10-20T05:58:39Z	PASS	75	verify.sh	deploy+destroy clean, 0 orphans
 cc-to-sdk-reroute	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -302,8 +302,8 @@ recreate-via-cc-api	2026-10-17T13:29:07Z	PASS	136	verify.sh	rc ok, orph clean (l
 recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-10-03T06:39:46Z	PASS	315	verify.sh	rc ok, orph clean (#4497)
-remove-protection	2026-10-21T05:33:05Z	PASS	2113	verify.sh	destroy 0 errors, 0 orphans, ASG instance terminated; PR 5135
-remove-protection-compensation	2026-10-21T14:41:53Z	PASS	261	verify.sh	PR #5150 (#2319) cognito/asg redaction; all 3 phases passed, 0 orphans
+remove-protection	2026-10-22T15:37:12Z	PASS	2120	verify.sh	rc ok, orph clean
+remove-protection-compensation	2026-10-22T15:37:12Z	PASS	251	verify.sh	rc ok, orph clean
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
 rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 replace-squatter-refusal	2026-10-20T09:27:02Z	PASS	112	verify.sh	#5064 head re-run, clean

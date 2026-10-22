@@ -3502,8 +3502,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             // and the "still off" ERROR (with a bare restore command to paste)
             // would be false and harmful. Say what is known instead.
             if (readOn && !(failure instanceof ResourceNotFoundException)) {
+              const mask = maskerOrIdentity(context?.maskSecrets);
               this.logger.debug(
-                safeMsg`Writing DeletionProtection back on ${physicalId} failed: ${describeAwsFailure(failure).detail}`
+                mask(
+                  safeMsg`Writing DeletionProtection back on ${mask(physicalId)} failed: ${mask(describeAwsFailure(failure).detail)}`
+                )
               );
               return 'read-on-write-failed';
             }
@@ -3615,6 +3618,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () => {
               const describeResponse = await this.getClient()
@@ -3660,7 +3664,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               this.logger.debug(
                 `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
               );
-              await this.disableUserPoolDeletionProtection(physicalId, observedPool, flip);
+              await this.disableUserPoolDeletionProtection(
+                physicalId,
+                observedPool,
+                flip,
+                maskerOrIdentity(context?.maskSecrets)
+              );
             },
           });
         } catch (flipError) {
@@ -3670,8 +3679,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           // Non-fatal — log and proceed. The actual delete below will
           // surface any real authorization / state error, a missing pool
           // included (its NotFound arm below runs the region check).
+          // Masked (#5180): AWS's validation text can quote an echoed,
+          // template-authored member (USER_POOL_ECHO_MEMBERS).
           this.logger.debug(
-            `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
         if (transientReadError !== undefined) throw transientReadError;
@@ -3799,7 +3812,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private async disableUserPoolDeletionProtection(
     physicalId: string,
     pool: UserPoolType,
-    flip: ProtectionFlipRecord
+    flip: ProtectionFlipRecord,
+    mask: MaskerFn
   ): Promise<void> {
     // The guard reads ACTIVE again, so an earlier attempt's bare write that
     // got no clear answer did NOT land: forget it, or a later INACTIVE read
@@ -3844,7 +3858,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Retried by the caller before any DeleteUserPool; no warn here.
       if (isTransientCognitoFailure(echoError)) throw echoError;
       if (!isRefusedEcho(echoError)) {
-        this.warnGuardLeftOn(physicalId, echoError);
+        this.warnGuardLeftOn(physicalId, mask, echoError);
         throw echoError;
       }
       try {
@@ -3873,7 +3887,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           }
           throw bareError;
         }
-        this.warnGuardLeftOn(physicalId, bareError, echoError);
+        this.warnGuardLeftOn(physicalId, mask, bareError, echoError);
         throw bareError;
       }
       const kept = this.preFlipPools.get(flip);
@@ -3885,7 +3899,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         kept.echoedSince = false;
       }
       this.logger.debug(
-        safeMsg`UpdateUserPool refused the echoed configuration of ${physicalId}: ${describeAwsFailure(echoError).detail}`
+        mask(
+          safeMsg`UpdateUserPool refused the echoed configuration of ${mask(physicalId)}: ${mask(describeAwsFailure(echoError).detail)}`
+        )
       );
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
@@ -3906,7 +3922,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * guard may be OFF with the pool's settings intact; the line says so rather
    * than claiming the guard is on.
    */
-  private warnGuardLeftOn(physicalId: string, error: unknown, echoError?: unknown): void {
+  private warnGuardLeftOn(
+    physicalId: string,
+    mask: MaskerFn,
+    error: unknown,
+    echoError?: unknown
+  ): void {
     const name =
       typeof error === 'object' && error !== null ? String((error as { name?: unknown }).name) : '';
     const accessHint = /AccessDenied|NotAuthorized|Unauthorized/.test(name)
@@ -3916,8 +3937,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       echoError === undefined
         ? ''
         : safeMsg`; the pool's own settings sent back were refused first (${describeAwsFailure(echoError).summary})`;
+    // Masked (#5180): AWS's text can quote an echoed template-authored member.
     this.logger.debug(
-      safeMsg`UpdateUserPool did not turn DeletionProtection off on ${physicalId}: ${describeAwsFailure(error).detail}`
+      mask(
+        safeMsg`UpdateUserPool did not turn DeletionProtection off on ${mask(physicalId)}: ${mask(describeAwsFailure(error).detail)}`
+      )
     );
     const refused = error instanceof Error && isAwsAuthoredFailure(error);
     this.logger.warn(

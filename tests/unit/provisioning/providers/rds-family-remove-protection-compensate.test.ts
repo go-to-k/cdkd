@@ -68,6 +68,7 @@ import { NeptuneProvider } from '../../../../src/provisioning/providers/neptune-
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
+  observeThenDisableProtection,
   rdsFamilyProtectionSite,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
 import { WITHHELD_AWS_COMMAND } from '../../../../src/provisioning/replacement-protection-advice.js';
@@ -398,6 +399,49 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
   });
 });
 
+describe.each(SITES)('$name: the failed pre-flip readback line is masked (#5180)', (site) => {
+  it("routes the physical id and AWS's text through the delete's maskSecrets", async () => {
+    const secret = 's3cr3t-db-name';
+    const readFailure = new Error(`Rate exceeded reading ${secret}`);
+    readFailure.name = 'ThrottlingException';
+    script(site, { observe: readFailure, del: terminalRefusal() });
+    await expect(
+      site.make().delete('Res', secret, site.resourceType, undefined, {
+        ...CTX,
+        maskSecrets: (text: string) => text.split(secret).join('***'),
+      })
+    ).rejects.toThrow('non-deleting state');
+    const line = childLogger.debug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith('Could not read DeletionProtection'));
+    expect(line).toBe(
+      'Could not read DeletionProtection on *** before disabling it: Rate exceeded reading ***'
+    );
+  });
+});
+
+describe.each(SITES)('$name: the rejected flip-off line is masked (#5180)', (site) => {
+  it("routes AWS's text about the id through the delete's maskSecrets", async () => {
+    const secret = 's3cr3t-db-name';
+    script(site, {
+      observe: true,
+      disable: new Error(`cannot modify ${secret}`),
+      del: terminalRefusal(),
+    });
+    await expect(
+      site.make().delete('Res', secret, site.resourceType, undefined, {
+        ...CTX,
+        maskSecrets: (text: string) => text.split(secret).join('***'),
+      })
+    ).rejects.toThrow('non-deleting state');
+    const line = childLogger.debug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith('Could not disable deletion protection'));
+    expect(line).toContain('cannot modify ***');
+    expect(line).not.toContain(secret);
+  });
+});
+
 describe('RDS: a cluster and an instance of the same name do not share a flip record', () => {
   it('keys by resource type', async () => {
     const provider = new RDSProvider();
@@ -584,5 +628,66 @@ describe('deleteWithProtectionCompensation', () => {
       },
     });
     expect(registry.size).toBe(0);
+  });
+});
+
+describe('observeThenDisableProtection: the failed readback line is masked (#5180)', () => {
+  function logger() {
+    return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  }
+  async function run(physicalId: string, awsText: string, mask?: (t: string) => string) {
+    const log = logger();
+    const flip = { flippedOffByThisRun: false, deleteAccepted: false };
+    const disable = vi.fn(async () => undefined);
+    await observeThenDisableProtection({
+      flip: flip as never,
+      logger: log as never,
+      physicalId,
+      guardName: 'DeletionProtection',
+      observe: () => Promise.reject(Object.assign(new Error(awsText), { name: 'AccessDenied' })),
+      disable,
+      ...(mask ? { mask } : {}),
+    });
+    expect(disable).toHaveBeenCalledTimes(1);
+    expect(flip.flippedOffByThisRun).toBe(false);
+    return log.debug.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('masks a secret-derived physical id and the AWS text that quotes it', async () => {
+    const secret = 'pl41ntext-id';
+    const lines = await run(secret, `not authorized on ${secret}`, (t) =>
+      t.split(secret).join('***')
+    );
+    expect(lines).toEqual([
+      'Could not read DeletionProtection on *** before disabling it: not authorized on ***',
+    ]);
+  });
+
+  it('masks each value BEFORE the line flattens it: a secret spanning a line break', async () => {
+    // `safeMsg` flattens a value's line break, so the finished line no longer
+    // holds the secret's literal spelling; only the per-value mask sees it.
+    const secret = 'first\nsecond';
+    const lines = await run('db-1', `bad value ${secret}`, (t) => t.split(secret).join('***'));
+    expect(lines).toEqual(['Could not read DeletionProtection on db-1 before disabling it: bad value ***']);
+    expect(lines[0]).not.toContain('second');
+  });
+
+  it('masks the physical id BEFORE the line flattens it: an id spanning a line break', async () => {
+    const secret = 'db\nsecret';
+    const lines = await run(secret, 'boom', (t) => t.split(secret).join('***'));
+    expect(lines).toEqual(['Could not read DeletionProtection on *** before disabling it: boom']);
+  });
+
+  it('masks the FINISHED line too: a secret only the joined text spells', async () => {
+    // The masker sees `on db-1 before`, which neither value holds alone.
+    const lines = await run('db-1', 'boom', (t) => t.split('on db-1 before').join('***'));
+    expect(lines).toEqual(['Could not read DeletionProtection *** disabling it: boom']);
+  });
+
+  it('NEGATIVE CONTROL: no masker prints the line unchanged', async () => {
+    const lines = await run('pl41ntext-id', 'not authorized on pl41ntext-id');
+    expect(lines).toEqual([
+      'Could not read DeletionProtection on pl41ntext-id before disabling it: not authorized on pl41ntext-id',
+    ]);
   });
 });
