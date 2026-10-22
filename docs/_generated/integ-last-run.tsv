@@ -222,35 +222,35 @@ list-parameters	2026-10-07T19:50:43Z	PASS	105	verify.sh	rc ok, orph clean (PR #4
 local-ecs-service-connect	2026-10-22T05:48:49Z	PASS	21	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-engine-role-identity	2026-10-22T05:48:49Z	PASS	93	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke	2026-10-22T04:25:39Z	PASS	30	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
-local-invoke-agentcore	2026-10-22T05:48:49Z	PASS	104	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-invoke-agentcore-from-state	2026-10-22T05:48:49Z	PASS	96	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-invoke-agentcore	2026-10-22T19:55:36Z	PASS	100	verify.sh	PR #5174 cdk-local 0.154.0 bump; all 22 sub-tests passed (ws/watch/SSE); docker sweep clean
+local-invoke-agentcore-from-state	2026-10-22T19:57:56Z	PASS	100	verify.sh	PR #5174 cdk-local 0.154.0 bump; real AgentCore Runtime+S3 deploy, --from-state intrinsic env var substitution (G2); destroy+docker sweep clean
 local-invoke-buildkit	2026-10-22T05:48:49Z	PASS	33	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-invoke-container	2026-10-22T05:48:49Z	PASS	31	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-invoke-container	2026-10-22T19:33:52Z	PASS	35	verify.sh	PR #5174 cdk-local 0.154.0 bump; stale ECR-public docker login caused 1st rc=1 (not a FAIL), docker logout cleared it; retry passed, docker sweep clean
 local-invoke-dotnet	2026-10-22T05:48:49Z	PASS	37	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke-from-cfn-stack	2026-10-22T04:25:39Z	PASS	106	verify.sh	rc ok, orph clean; two prior runs blocked in step 1a before deploy (untrusted .mise.toml, mise pnpm shim; ran with a corepack pnpm wrapper on PATH)
 local-invoke-from-cfn-stack-multi-stack	2026-10-22T05:48:49Z	PASS	121	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-invoke-from-state	2026-10-22T05:48:49Z	PASS	242	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-invoke-from-state	2026-10-22T19:38:27Z	PASS	220	verify.sh	PR #5174 cdk-local 0.154.0 bump; secret-argv needle; deploy+destroy+docker sweep clean
 local-invoke-java	2026-10-22T05:48:49Z	PASS	37	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke-layers	2026-10-22T05:48:49Z	PASS	14	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke-provided	2026-10-22T05:48:49Z	PASS	30	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke-python	2026-10-22T05:48:49Z	PASS	37	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-invoke-ruby	2026-10-22T06:12:36Z	PASS	17	verify.sh	pinned to HOST_ARCHITECTURE (cdkd#2287); rc ok, 4/4 invokes passed, docker sweep clean
-local-invoke-stage	2026-10-22T05:48:49Z	PASS	19	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-invoke-stage	2026-10-22T20:00:19Z	PASS	25	verify.sh	PR #5174 cdk-local 0.154.0 bump; the direct Stage-stack-resolution needle (all 4 sub-tests incl. nested Stage + start-api w/ no --stack); docker sweep clean
 local-run-task	2026-10-22T04:25:39Z	PASS	25	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
 local-run-task-awsvpc	2026-10-22T05:48:49Z	PASS	9	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-run-task-cdkd-assets	2026-10-22T05:48:49Z	PASS	14	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-run-task-from-state	2026-10-22T05:48:49Z	PASS	214	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-run-task-multi-container	2026-10-22T05:48:49Z	PASS	10	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-start-agentcore	2026-10-22T05:48:49Z	PASS	13	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-start-alb	2026-10-22T04:25:39Z	PASS	25	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
-local-start-alb-from-state	2026-10-22T04:25:39Z	PASS	296	verify.sh	rc ok, orph clean; new strict-overrides + construct-id/ServiceName image-override arms (#5156); prior run FAIL at /fn/x: RIE SIGSEGV under amd64 emulation (pre-existing arm), destroy clean
+local-start-agentcore	2026-10-22T19:59:29Z	PASS	15	verify.sh	PR #5174 cdk-local 0.154.0 bump; 1st attempt rc=1 bc runner omitted AWS_REGION (step 8 --sigv4 needs a region), not a FAIL; retry w/ AWS_REGION=us-east-1 passed all 10 steps, docker sweep clean
+local-start-alb	2026-10-22T19:42:03Z	PASS	20	verify.sh	PR #5174 cdk-local 0.154.0 bump; front-door routed inbound request, clean teardown, docker sweep clean
+local-start-alb-from-state	2026-10-22T19:48:15Z	PASS	325	verify.sh	PR #5174 cdk-local 0.154.0 bump; VPC+ALB+2 Fargate svc+Lambda target, --image-override by construct id/ServiceName, destroy+docker sweep clean
 local-start-api	2026-10-22T04:25:39Z	PASS	30	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
 local-start-api-container	2026-10-22T05:48:49Z	PASS	15	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-api-rest-v1-non-proxy	2026-10-22T05:48:49Z	PASS	12	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-api-websocket	2026-10-22T05:48:49Z	PASS	103	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-start-cloudfront	2026-10-22T05:48:49Z	PASS	6	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-start-cloudfront-from-state	2026-10-22T05:48:49Z	PASS	223	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-start-service	2026-10-22T04:25:39Z	PASS	110	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump (#5156/#5157)
+local-start-cloudfront	2026-10-22T19:48:48Z	PASS	10	verify.sh	PR #5174 cdk-local 0.154.0 bump; full pipeline incl. --watch reload + escaping-origin refusal; no AWS/docker
+local-start-cloudfront-from-state	2026-10-22T19:53:26Z	PASS	240	verify.sh	PR #5174 cdk-local 0.154.0 bump; served deployed S3 origin byte-for-byte; destroy+docker sweep clean
+local-start-service	2026-10-22T19:41:02Z	PASS	105	verify.sh	PR #5174 cdk-local 0.154.0 bump; 2 replicas + dual-stack/FIPS ECR pull; destroy+docker sweep clean
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 log-pipeline	2026-10-20T06:16:25Z	PASS	185	standard	PASS on retry; 1st attempt hit CWL subscription-filter invoke-permission eventual-consistency (env flake)
 loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
@@ -373,7 +373,7 @@ sqs-esm-max-concurrency	2026-10-20T12:43:49Z	PASS	80	verify.sh	issue #1160 Batch
 ssm-secure-dynamic-ref	2026-10-18T05:02:48Z	PASS	143	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 stack-copy-create-tokens	2026-10-11T09:33:22Z	PASS	2034	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 stack-lock-renewal	2026-10-13T02:41:29Z	PASS	416	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
-stage-assets	2026-10-11T21:14:13Z	PASS	150	verify.sh	PR #4809, rc ok, orph clean
+stage-assets	2026-10-22T20:04:14Z	PASS	186	verify.sh	PR #5174 cdk-local 0.154.0 bump; Stage-asset ../ containment, ZIP+Docker asset publish, both markers correct; destroy+sweep clean
 stale-attribute-heal	2026-10-18T00:55:44Z	PASS	85	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-10-08T05:48:01Z	PASS	155	verify.sh	rc ok, orph clean (#4648)
