@@ -352,8 +352,9 @@ echo "    notification and both subscribers kept"
 # The fixture's FilterExpression is read back only on ShowFilterExpression; a
 # readback without it would have sent UpdateBudget an unfiltered budget.
 FILTER_REVERT="$(aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
-  --show-filter-expression --query 'Budget.FilterExpression.Dimensions.Values' --output json | tr -d ' \n')"
-if [ "${FILTER_REVERT}" != '["Amazon Simple Queue Service"]' ]; then
+  --show-filter-expression --query 'Budget.FilterExpression.Dimensions.[Key, join(`|`, Values)]' --output text)"
+# Text output, not JSON piped through `tr -d ' '`: the value has spaces in it.
+if [ "${FILTER_REVERT}" != "$(printf 'SERVICE\tAmazon Simple Queue Service')" ]; then
   echo "FAIL: --revert dropped the budget's FilterExpression, got ${FILTER_REVERT} (go-to-k/cdkd#5183)" >&2
   exit 1
 fi

@@ -24,6 +24,7 @@ import {
   DescribeSubscribersForNotificationCommand,
   ListTagsForResourceCommand,
   NotFoundException,
+  UpdateBudgetCommand,
 } from '@aws-sdk/client-budgets';
 import { BudgetsBudgetProvider } from '../../../../src/provisioning/providers/budgets-budget-provider.js';
 import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
@@ -689,5 +690,68 @@ describe('BudgetsBudgetProvider drift comparison (go-to-k/cdkd#5183)', () => {
   it('declares the notification list (and the subscriber lists inside it) unordered', () => {
     expect(provider.getDriftUnorderedPaths(TYPE)).toEqual(['NotificationsWithSubscribers']);
     expect(provider.getDriftUnorderedPaths('AWS::SQS::Queue')).toEqual([]);
+  });
+});
+
+describe('BudgetsBudgetProvider drift --revert round trip (go-to-k/cdkd#5183)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStsSend.mockResolvedValue({ Account: ACCOUNT });
+  });
+
+  it('sends UpdateBudget the readback FilterExpression and Metrics, so the filter survives a revert', async () => {
+    // `drift --revert` overlays the drifted path onto the AWS readback and
+    // hands that bag to `update()`: the FilterExpression shape must reach
+    // UpdateBudget whole, or AWS resets the budget to all spend.
+    const provider = new BudgetsBudgetProvider();
+    const filter = { Dimensions: { Key: 'SERVICE', Values: ['Amazon Simple Queue Service'] } };
+    awsHolds({
+      notifications: [],
+      budget: {
+        BudgetName: NAME,
+        BudgetType: 'COST',
+        TimeUnit: 'MONTHLY',
+        BudgetLimit: { Amount: '3.0', Unit: 'USD' },
+        TimePeriod: { Start: new Date('2026-10-01T00:00:00Z'), End: new Date('2087-06-15T00:00:00Z') },
+        FilterExpression: filter,
+        Metrics: ['UnblendedCost'],
+      },
+    });
+    const read = (await provider.readCurrentState(NAME, 'CostBudget', TYPE)) as Record<
+      string,
+      unknown
+    >;
+    const reverted = {
+      ...read,
+      Budget: {
+        ...(read['Budget'] as Record<string, unknown>),
+        BudgetLimit: { Amount: 2, Unit: 'USD' },
+      },
+    };
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
+
+    await provider.update('CostBudget', NAME, TYPE, reverted, read);
+
+    const updates = mockSend.mock.calls
+      .filter((c) => c[0] instanceof UpdateBudgetCommand)
+      .map((c) => c[0].input);
+    expect(updates).toEqual([
+      {
+        AccountId: ACCOUNT,
+        NewBudget: {
+          BudgetName: NAME,
+          BudgetType: 'COST',
+          TimeUnit: 'MONTHLY',
+          BudgetLimit: { Amount: '2', Unit: 'USD' },
+          TimePeriod: {
+            Start: new Date('2026-10-01T00:00:00Z'),
+            End: new Date('2087-06-15T00:00:00Z'),
+          },
+          FilterExpression: filter,
+          Metrics: ['UnblendedCost'],
+        },
+      },
+    ]);
   });
 });
