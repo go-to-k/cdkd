@@ -554,16 +554,24 @@ and Cloud Control's response is usually the same shape, but for some resource
 types it diverges enough to fire false drift on every run. Two guards protect
 the fallback:
 
-1. **Deny-list.** Types with verified structural divergence short-circuit to
-   `drift unknown` before the Cloud Control call fires. Current entries are
+1. **Deny-list.** Types with verified structural divergence, or a physical id
+   Cloud Control cannot address, short-circuit to `drift unknown` before the
+   Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
+   `AWS::Budgets::Budget` (the response reorders notification subscribers and
+   adds the defaulted `ThresholdType`),
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
-   [Nested stacks](cli-drift-nested-stacks.md)), and
+   [Nested stacks](cli-drift-nested-stacks.md)),
+   `AWS::CloudWatch::AnomalyDetector` (its physical id is a cdkd-derived
+   descriptor, not the type's identifier),
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
-   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
+   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`), and
+   `AWS::EMR::InstanceFleetConfig` and `AWS::EMR::InstanceGroupConfig` (the
+   physical id is the bare fleet / group id, and Cloud Control needs the
+   cluster id with it).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
    (`CreationDate`, `LastModifiedTime`, `OwnerId`, `RevisionId`, and
    similar) are removed from Cloud Control responses before the comparator

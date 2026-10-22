@@ -215,15 +215,17 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    budget routed via SDK provider (provisionedBy=sdk)"
 
-# --- Phase 2b: drift over a type with NO Cloud Control READ handler --------
-# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#2154, moved here from the
-# cloudwatch-anomaly-detector fixture once AWS gave that type Cloud Control
-# handlers (go-to-k/cdkd#4668). `AWS::Budgets::Budget` is NON_PROVISIONABLE in
-# the CloudFormation registry and its SDK provider implements no
-# `readCurrentState`, so drift takes the Cloud Control fallback, which has no
-# READ handler to call. Beside it sits an SQS queue drift CAN compare. Before
-# #2151 that fallback's throw escaped the command with exit 1 and no report.
-echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
+# --- Phase 2b: drift over a deny-listed Cloud Control fallback -----------
+# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#2154 / go-to-k/cdkd#5179. The budget's
+# SDK provider implements no `readCurrentState`. Cloud Control had no READ
+# handler for the type, so this arm exercised #2151's no-READ-handler throw.
+# AWS then gave the type a READ handler whose response diffs on an unchanged
+# budget (subscriber order, the defaulted `ThresholdType`), so the type is now
+# on `CC_API_FALLBACK_DENY_LIST`: the row must still report drift unknown, the
+# run must still complete and exit 0, and the SQS queue beside it must still be
+# compared. No deployable type still reaches the throw itself, which the unit
+# suite covers (tests/unit/cli/drift-per-resource-failure.test.ts).
+echo "==> Phase 2b: drift reports the deny-listed budget as drift unknown"
 # Removed by `cleanup`: a second `trap ... EXIT` would REPLACE the teardown.
 DRIFT_OUT="$(mktemp)"
 set +e
@@ -233,6 +235,14 @@ node "${LOCAL_DIST}" drift "${STACK}" \
 DRIFT_RC=$?
 set -e
 cat "${DRIFT_OUT}"
+
+# 0. Not compared as drifted: Cloud Control's shape diffs on an unchanged
+#    budget, which is what the deny-list entry exists to stop.
+if grep -qF '~ CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift compared CostBudget through Cloud Control and reported false drift (go-to-k/cdkd#5179)" >&2
+  exit 1
+fi
+echo "    OK: CostBudget not reported as drifted"
 
 # 1. The command produced a per-resource report for the budget.
 if ! grep -q '? CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
@@ -249,16 +259,16 @@ if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
 fi
 echo "    OK: the sibling SQS queue was still compared"
 
-# 3. Exit 0: a type with no READ handler is permanent, not actionable.
+# 3. Exit 0: a deny-listed type is permanent, not actionable.
 if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a type with no READ handler is not an actionable failure (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a deny-listed type is not an actionable failure (go-to-k/cdkd#2151, go-to-k/cdkd#5179)" >&2
   exit 1
 fi
 echo "    OK: exit 0"
 
 # 4. Not misreported as the actionable read-failure cause.
 if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
-  echo "FAIL: CostBudget was reported as a read FAILURE; a type with no READ handler must report drift unknown (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: CostBudget was reported as a read FAILURE; a deny-listed type must report drift unknown (go-to-k/cdkd#2151, go-to-k/cdkd#5179)" >&2
   exit 1
 fi
 echo "    OK: classified as drift unknown, not as a read failure"

@@ -310,7 +310,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('a Cloud Control fallback that throws UnsupportedActionException reports unsupported, and the sibling is still compared', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
+        Detector: resource('AWS::IAM::UserToGroupAddition', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -320,7 +320,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     mockCcReadCurrentState.mockRejectedValue(
       awsError(
         'UnsupportedActionException',
-        'Resource type AWS::Budgets::Budget does not support READ action'
+        'Resource type AWS::IAM::UserToGroupAddition does not support READ action'
       )
     );
 
@@ -328,7 +328,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     // THE discriminator. Pre-fix the throw propagated out of the loop, so the
     // command produced no report at all and this string could not appear.
-    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
+    expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
     expect(output).toContain('drift unknown');
     // The sibling was compared -- the whole point of the guard.
     expect(output).toContain('(1 resource checked, 1 unsupported)');
@@ -378,6 +378,102 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
+   * go-to-k/cdkd#5179: AWS gave AWS::Budgets::Budget a Cloud Control READ
+   * handler, and the response it returns diffs on an unchanged budget
+   * (subscriber order, the defaulted `ThresholdType`). With no SDK
+   * `readCurrentState`, the deny-list keeps the row `unsupported` and Cloud
+   * Control is never asked.
+   */
+  it('a Budget row is deny-listed off the Cloud Control fallback and reports unsupported', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        CostBudget: resource('AWS::Budgets::Budget', {
+          Budget: { BudgetType: 'COST', TimeUnit: 'MONTHLY' },
+          NotificationsWithSubscribers: [
+            {
+              Notification: {
+                NotificationType: 'ACTUAL',
+                ComparisonOperator: 'GREATER_THAN',
+                Threshold: 90,
+              },
+              Subscribers: [
+                { SubscriptionType: 'EMAIL', Address: 'a@example.com' },
+                { SubscriptionType: 'EMAIL', Address: 'b@example.com' },
+              ],
+            },
+          ],
+        }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? SIBLING_PROVIDER : {}
+    );
+    // The shape Cloud Control returns today: subscribers reordered, plus the
+    // AWS-defaulted ThresholdType. Compared, it would report drift.
+    mockCcReadCurrentState.mockResolvedValue({
+      Budget: { BudgetType: 'COST', TimeUnit: 'MONTHLY' },
+      NotificationsWithSubscribers: [
+        {
+          Notification: {
+            NotificationType: 'ACTUAL',
+            ComparisonOperator: 'GREATER_THAN',
+            Threshold: 90,
+            ThresholdType: 'PERCENTAGE',
+          },
+          Subscribers: [
+            { SubscriptionType: 'EMAIL', Address: 'b@example.com' },
+            { SubscriptionType: 'EMAIL', Address: 'a@example.com' },
+          ],
+        },
+      ],
+    });
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(mockCcReadCurrentState).not.toHaveBeenCalled();
+    expect(output).not.toContain('~ CostBudget');
+    expect(output).toContain('? CostBudget (AWS::Budgets::Budget)');
+    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).not.toContain('NOT fully compared');
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * go-to-k/cdkd#5179's sweep: both EMR config types gained Cloud Control
+   * handlers keyed by a composite primaryIdentifier, and the SDK providers
+   * record the bare fleet / group id, so GetResource refuses it on every run
+   * (the #4668 class). Deny-listed, the row is `unsupported` (exit 0), not a
+   * permanent `readFailed` (exit 2).
+   */
+  it.each([
+    ['AWS::EMR::InstanceFleetConfig', 'if-ABCDEFGHIJKLM', '[/properties/ClusterId, /properties/InstanceFleetId]'],
+    ['AWS::EMR::InstanceGroupConfig', 'ig-ABCDEFGHIJKLM', '[/properties/InstanceGroupId, /properties/JobFlowId]'],
+  ])('a %s row is deny-listed off the Cloud Control fallback and reports unsupported', async (type, id, ident) => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Group: { ...resource(type, { Name: 'core' }), physicalId: id },
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((t: string) => (t === QUEUE ? SIBLING_PROVIDER : {}));
+    // What GetResource answers for the bare id today (measured live).
+    mockCcReadCurrentState.mockRejectedValue(
+      awsError('ValidationException', `Identifier ${id} is not valid for identifier ${ident}`)
+    );
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(mockCcReadCurrentState).not.toHaveBeenCalled();
+    expect(output).toContain(`? Group (${type})`);
+    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).not.toContain('NOT fully compared');
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
    * The same site, but an error a RE-RUN CAN CLEAR. This is the half that must
    * NOT be reported `unsupported`: saying "cdkd cannot read this type" about a
    * type it reads fine on every other run is a false statement, and it would
@@ -386,7 +482,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('a Cloud Control fallback that throws AccessDenied reports readFailed and exits 2, and the sibling is still compared', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
+        Detector: resource('AWS::IAM::UserToGroupAddition', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -401,7 +497,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     expect(output).toContain('NOT fully compared');
     expect(output).toContain('not compared AT ALL (the read or comparison failed)');
-    expect(output).toContain('! Detector (AWS::Budgets::Budget)');
+    expect(output).toContain('! Detector (AWS::IAM::UserToGroupAddition)');
     // The SUMMARY line's conditional arm, which is a different string from the
     // block heading above and was unfenced: `not fully compared` appeared
     // nowhere under tests/, so swapping the ternary's two arms left the suite
@@ -506,7 +602,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('an UnsupportedActionException wrapped in another error is still recognized through the cause chain', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
+        Detector: resource('AWS::IAM::UserToGroupAddition', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -523,7 +619,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     const { output, error } = await runDrift(ARGS);
 
-    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
+    expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
   });
@@ -570,7 +666,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('an error that lost its name and cause is still recognized by its message', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        Detector: resource('AWS::Budgets::Budget', { MetricName: 'm' }),
+        Detector: resource('AWS::IAM::UserToGroupAddition', { MetricName: 'm' }),
         Queue: resource(QUEUE, { QueueName: 'ok' }),
       })
     );
@@ -580,12 +676,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // Deliberately a bare `Error`: `name` is 'Error' and there is no `cause`, so
     // the name walk cannot match and only the phrase can.
     mockCcReadCurrentState.mockRejectedValue(
-      new Error('Resource type AWS::Budgets::Budget does not support READ action')
+      new Error('Resource type AWS::IAM::UserToGroupAddition does not support READ action')
     );
 
     const { output, error } = await runDrift(ARGS);
 
-    expect(output).toContain('? Detector (AWS::Budgets::Budget)');
+    expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
     expect(exitSpy).not.toHaveBeenCalled();
     void error;
   });
@@ -1604,7 +1700,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
         // `U` takes the fallback, which needs a type with no SDK read.
         resourceType:
           role === 'U'
-            ? 'AWS::Budgets::Budget'
+            ? 'AWS::IAM::UserToGroupAddition'
             : role === 'Q' || role === 'X'
               ? CC_READ_TYPE
               : role === 'K' || role === 'R'
@@ -1681,7 +1777,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
       }
       throw awsError(
         'UnsupportedActionException',
-        'Resource type AWS::Budgets::Budget does not support READ action'
+        'Resource type AWS::IAM::UserToGroupAddition does not support READ action'
       );
     });
   }
