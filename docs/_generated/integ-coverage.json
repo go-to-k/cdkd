@@ -311,6 +311,7 @@
         "cc-api-fallback-transitions",
         "drift-revert",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -339,6 +340,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l2"
         ],
         "local-start-api": [
           "l2"
@@ -390,6 +394,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -403,6 +408,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l2"
         ],
         "local-start-api": [
           "l1",
@@ -428,6 +436,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -439,6 +448,9 @@
           "l1"
         ],
         "export": [
+          "l2"
+        ],
+        "local-invoke-stage": [
           "l2"
         ],
         "local-start-api": [
@@ -466,6 +478,7 @@
         "apigatewayv2-update-removal",
         "drift-revert",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -484,6 +497,10 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l1",
+          "l2"
         ],
         "local-start-api": [
           "l2"
